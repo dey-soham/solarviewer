@@ -3,3 +3,5 @@ venv/
 dist/
 build/
 __pycache__
+casa*.log
+test_data/
