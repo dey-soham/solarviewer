@@ -1,0 +1,2227 @@
+import sys
+import os
+import numpy as np
+import matplotlib
+
+matplotlib.use("Qt5Agg")
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize, LogNorm
+from matplotlib.patches import Ellipse
+from matplotlib.figure import Figure
+from matplotlib.widgets import RectangleSelector
+from matplotlib.backends.backend_qt5agg import (
+    FigureCanvasQTAgg as FigureCanvas,
+    NavigationToolbar2QT as NavigationToolbar,
+)
+from matplotlib import rcParams
+from scipy.optimize import curve_fit
+
+
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QAction,
+    QFileDialog,
+    QMessageBox,
+    QHBoxLayout,
+    QVBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QComboBox,
+    QSlider,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QFrame,
+    QInputDialog,
+    QMenuBar,
+    QMenu,
+    QRadioButton,
+    QButtonGroup,
+    QDialog,
+    QDialogButtonBox,
+    QPlainTextEdit,
+    QListWidget,
+    QSpinBox,
+    QCheckBox,
+    QGridLayout,
+    QStatusBar,
+    QGroupBox,
+    QToolBar,
+    QHeaderView,
+    QFormLayout,
+    QSplitter,
+    QListWidget,
+    QListWidgetItem,
+    QActionGroup,
+    QDoubleSpinBox,
+)
+from PyQt5.QtCore import Qt, QSettings, QSize
+from PyQt5.QtGui import QIcon, QColor, QPalette
+
+from .norms import SqrtNorm, AsinhNorm, PowerNorm
+from .utils import (
+    estimate_rms_near_Sun,
+    remove_pixels_away_from_sun,
+    get_pixel_values_from_image,
+    get_image_metadata,
+    twoD_gaussian,
+    twoD_elliptical_ring,
+    IA,
+)
+from .styles import STYLESHEET, DARK_PALETTE
+from .searchable_combobox import ColormapSelector
+
+rcParams["axes.linewidth"] = 1.4
+rcParams["font.size"] = 12
+
+
+# For region selection modes
+class RegionMode:
+    RECTANGLE = 0
+
+
+class SolarRadioImageTab(QWidget):
+    def __init__(self, parent=None, tab_name=""):
+        super().__init__(parent)
+        self.setObjectName(tab_name)
+        self.setStyleSheet(STYLESHEET)
+
+        self.stokes_combo = None
+        self.current_image_data = None
+        self.current_wcs = None
+        self.psf = None
+        self.current_roi = None
+        self.roi_selector = None
+        self.imagename = None
+        self.solar_disk_center = None
+        self.solar_disk_diameter_arcmin = 32.0
+
+        self.contour_settings = {
+            "source": "same",
+            "external_image": "",
+            "stokes": "I",
+            "pos_levels": [0.1, 0.3, 0.5, 0.7, 0.9],
+            "neg_levels": [0.1, 0.3, 0.5, 0.7, 0.9],
+            "levels": [0.1, 0.3, 0.5, 0.7, 0.9],
+            "level_type": "fraction",
+            "color": "white",
+            "linewidth": 1.0,
+            "pos_linestyle": "-",
+            "neg_linestyle": "--",
+            "linestyle": "-",
+            "contour_data": None,
+            "use_default_rms_region": True,
+            "rms_box": (0, 200, 0, 130),
+        }
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(15)
+
+        # Left Control Panel
+        control_panel = QWidget()
+        control_panel.setFixedWidth(350)
+        control_layout = QVBoxLayout(control_panel)
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(15)
+        self.create_file_controls(control_layout)
+        self.create_display_controls(control_layout)
+        self.create_range_controls(control_layout)
+        self.create_nav_controls(control_layout)
+        main_layout.addWidget(control_panel)
+
+        # Center Figure Panel
+        figure_panel = QWidget()
+        figure_layout = QVBoxLayout(figure_panel)
+        figure_layout.setContentsMargins(0, 0, 0, 0)
+        figure_layout.setSpacing(10)
+        self.setup_figure_toolbar(figure_layout)
+        self.setup_canvas(figure_layout)
+        main_layout.addWidget(figure_panel, 1)
+
+        # Right Stats Panel
+        stats_panel = QWidget()
+        stats_panel.setFixedWidth(350)
+        stats_layout = QVBoxLayout(stats_panel)
+        stats_layout.setContentsMargins(0, 0, 0, 0)
+        stats_layout.setSpacing(15)
+        self.create_stats_table(stats_layout)
+        self.create_coord_display(stats_layout)
+        main_layout.addWidget(stats_panel)
+
+    def create_file_controls(self, parent_layout):
+        from PyQt5.QtWidgets import QGroupBox, QFormLayout
+
+        group = QGroupBox("Image Selection")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(10)
+        file_layout = QHBoxLayout()
+        file_layout.setSpacing(8)
+        self.dir_entry = QLineEdit()
+        self.dir_entry.setPlaceholderText("Select image directory...")
+        browse_btn = QPushButton("Browse")
+        browse_btn.setIcon(QIcon.fromTheme("document-open"))
+        browse_btn.clicked.connect(self.select_directory)
+        file_layout.addWidget(self.dir_entry, 1)
+        file_layout.addWidget(browse_btn)
+        layout.addLayout(file_layout)
+        stokes_layout = QFormLayout()
+        stokes_layout.setSpacing(10)
+        stokes_layout.setVerticalSpacing(10)
+        stokes_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.stokes_combo = QComboBox()
+        self.stokes_combo.addItems(
+            ["I", "Q", "U", "V", "L", "Lfrac", "Vfrac", "Q/I", "U/I", "U/V"]
+        )
+        self.stokes_combo.currentTextChanged.connect(self.on_stokes_changed)
+        stokes_layout.addRow("Stokes Parameter:", self.stokes_combo)
+        self.threshold_entry = QLineEdit("10")
+        stokes_layout.addRow("Threshold (σ):", self.threshold_entry)
+        layout.addLayout(stokes_layout)
+        parent_layout.addWidget(group)
+
+    def create_display_controls(self, parent_layout):
+        from PyQt5.QtWidgets import QGroupBox, QFormLayout
+
+        group = QGroupBox("Display Settings")
+        layout = QFormLayout(group)
+        radio_colormaps = [
+            "viridis",
+            "plasma",
+            "inferno",
+            "magma",
+            "gist_heat",
+            "hot",
+            "CMRmap",
+            "gnuplot2",
+            "jet",
+            "twilight",
+        ]
+        all_colormaps = sorted(plt.colormaps())
+        self.cmap_combo = ColormapSelector(
+            preferred_items=radio_colormaps, all_items=all_colormaps
+        )
+        self.cmap_combo.setCurrentText("viridis")
+        self.cmap_combo.colormapSelected.connect(self.on_visualization_changed)
+        layout.addRow("Colormap:", self.cmap_combo)
+        self.stretch_combo = QComboBox()
+        self.stretch_combo.addItems(["linear", "sqrt", "log", "arcsinh", "power"])
+        self.stretch_combo.setCurrentText("power")
+        self.stretch_combo.currentIndexChanged.connect(self.on_stretch_changed)
+        layout.addRow("Stretch:", self.stretch_combo)
+        beam_layout = QHBoxLayout()
+        self.show_beam_checkbox = QCheckBox("Show Beam")
+        self.show_beam_checkbox.setChecked(True)
+        self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        self.show_grid_checkbox = QCheckBox("Show Grid")
+        self.show_grid_checkbox.setChecked(True)
+        self.show_grid_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        beam_layout.addWidget(self.show_beam_checkbox)
+        beam_layout.addWidget(self.show_grid_checkbox)
+        layout.addRow("Overlays:", beam_layout)
+        contour_layout = QHBoxLayout()
+        self.show_contours_checkbox = QCheckBox("Show Contours")
+        self.show_contours_checkbox.setChecked(False)
+        self.show_contours_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        self.contour_settings_button = QPushButton("Settings")
+        self.contour_settings_button.setIcon(QIcon.fromTheme("preferences-system"))
+        self.contour_settings_button.clicked.connect(self.show_contour_settings)
+        contour_layout.addWidget(self.show_contours_checkbox)
+        contour_layout.addWidget(self.contour_settings_button)
+        layout.addRow("Contours:", contour_layout)
+        parent_layout.addWidget(group)
+
+    def create_range_controls(self, parent_layout):
+        from PyQt5.QtWidgets import QGroupBox
+
+        group = QGroupBox("Intensity Range")
+        layout = QVBoxLayout(group)
+        range_layout = QHBoxLayout()
+        self.vmin_entry = QLineEdit("0.0")
+        self.vmin_entry.editingFinished.connect(self.on_visualization_changed)
+        self.vmax_entry = QLineEdit("1.0")
+        self.vmax_entry.editingFinished.connect(self.on_visualization_changed)
+        range_layout.addWidget(QLabel("Min:"))
+        range_layout.addWidget(self.vmin_entry)
+        range_layout.addWidget(QLabel("Max:"))
+        range_layout.addWidget(self.vmax_entry)
+        gamma_layout = QHBoxLayout()
+        self.gamma_slider = QSlider(Qt.Horizontal)
+        self.gamma_slider.setRange(1, 100)
+        self.gamma_slider.setValue(10)
+        self.gamma_slider.valueChanged.connect(self.update_gamma_value)
+        self.gamma_entry = QLineEdit("1.0")
+        self.gamma_entry.setFixedWidth(60)
+        self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
+        gamma_layout.addWidget(QLabel("Gamma:"))
+        gamma_layout.addWidget(self.gamma_slider)
+        gamma_layout.addWidget(self.gamma_entry)
+        preset_layout = QHBoxLayout()
+        self.auto_minmax_button = QPushButton("Auto")
+        self.auto_minmax_button.clicked.connect(self.auto_minmax)
+        self.auto_percentile_button = QPushButton("5-95%")
+        self.auto_percentile_button.clicked.connect(self.auto_percentile)
+        self.auto_median_button = QPushButton("Med±3σ")
+        self.auto_median_button.clicked.connect(self.auto_median_rms)
+        preset_layout.addWidget(self.auto_minmax_button)
+        preset_layout.addWidget(self.auto_percentile_button)
+        preset_layout.addWidget(self.auto_median_button)
+        layout.addLayout(range_layout)
+        layout.addLayout(gamma_layout)
+        layout.addLayout(preset_layout)
+        parent_layout.addWidget(group)
+
+    def create_nav_controls(self, parent_layout):
+        from PyQt5.QtWidgets import QGroupBox
+
+        group = QGroupBox("Navigation")
+        layout = QVBoxLayout(group)
+        zoom_layout = QHBoxLayout()
+        self.zoom_in_button = QPushButton("Zoom In")
+        self.zoom_in_button.setIcon(QIcon.fromTheme("zoom-in"))
+        self.zoom_in_button.clicked.connect(self.zoom_in)
+        self.zoom_out_button = QPushButton("Zoom Out")
+        self.zoom_out_button.setIcon(QIcon.fromTheme("zoom-out"))
+        self.zoom_out_button.clicked.connect(self.zoom_out)
+        self.zoom_60arcmin_button = QPushButton("1°×1°")
+        self.zoom_60arcmin_button.clicked.connect(self.zoom_60arcmin)
+        zoom_layout.addWidget(self.zoom_in_button)
+        zoom_layout.addWidget(self.zoom_out_button)
+        zoom_layout.addWidget(self.zoom_60arcmin_button)
+        layout.addLayout(zoom_layout)
+        self.plot_button = QPushButton("Update Display")
+        self.plot_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #3871DE; 
+                color: white; 
+                padding: 5px; 
+                font-weight: bold;
+                border-radius: 3px;
+                min-height: 25px;
+            }
+            QPushButton:hover {
+                background-color: #4A82EF;
+            }
+            """
+        )
+        self.plot_button.clicked.connect(self.on_visualization_changed)
+        layout.addWidget(self.plot_button)
+        parent_layout.addWidget(group)
+
+    def setup_figure_toolbar(self, parent_layout):
+        from PyQt5.QtWidgets import QToolBar, QActionGroup
+
+        toolbar = QToolBar()
+        toolbar.setIconSize(QSize(20, 20))
+        action_group = QActionGroup(self)
+        self.rect_action = QAction(
+            QIcon.fromTheme("edit-select"), "Rectangle Select", self
+        )
+        self.rect_action.setCheckable(True)
+        self.rect_action.setChecked(True)
+        self.rect_action.triggered.connect(
+            lambda: self.set_region_mode(RegionMode.RECTANGLE)
+        )
+        action_group.addAction(self.rect_action)
+        self.zoom_in_action = QAction(QIcon.fromTheme("zoom-in"), "Zoom In", self)
+        self.zoom_in_action.triggered.connect(self.zoom_in)
+        self.zoom_out_action = QAction(QIcon.fromTheme("zoom-out"), "Zoom Out", self)
+        self.zoom_out_action.triggered.connect(self.zoom_out)
+        toolbar.addActions(
+            [self.rect_action, self.zoom_in_action, self.zoom_out_action]
+        )
+        toolbar.addSeparator()
+        solar_group = QWidget()
+        solar_layout = QHBoxLayout(solar_group)
+        solar_layout.setContentsMargins(0, 0, 0, 0)
+        self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
+        self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        self.solar_disk_center_button = QPushButton("Set Center")
+        self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
+        solar_layout.addWidget(self.show_solar_disk_checkbox)
+        solar_layout.addWidget(self.solar_disk_center_button)
+        toolbar.addWidget(solar_group)
+        parent_layout.addWidget(toolbar)
+
+    def create_stats_table(self, parent_layout):
+        from PyQt5.QtWidgets import QGroupBox, QHeaderView
+
+        group = QGroupBox("Region Statistics")
+        layout = QVBoxLayout(group)
+        self.info_label = QLabel("No selection")
+        self.info_label.setStyleSheet(
+            "color: #BBB; font-style: italic; font-size: 11pt;"
+        )
+        self.info_label.setWordWrap(True)
+        layout.addWidget(self.info_label)
+        self.stats_table = QTableWidget(5, 2)
+        self.stats_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        self.stats_table.verticalHeader().setVisible(False)
+        self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.stats_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for i in range(5):
+            self.stats_table.setRowHeight(i, 30)
+        self.stats_table.setColumnWidth(1, 180)
+        headers = ["Min", "Max", "Mean", "Std Dev", "Sum"]
+        for row, label in enumerate(headers):
+            self.stats_table.setItem(row, 0, QTableWidgetItem(label))
+            self.stats_table.setItem(row, 1, QTableWidgetItem("−"))
+            self.stats_table.item(row, 1).setTextAlignment(
+                Qt.AlignRight | Qt.AlignVCenter
+            )
+        layout.addWidget(self.stats_table)
+        parent_layout.addWidget(group)
+
+    def create_coord_display(self, parent_layout):
+        from PyQt5.QtWidgets import QGroupBox
+
+        group = QGroupBox("Cursor Position")
+        layout = QVBoxLayout(group)
+        self.coord_label = QLabel("RA: −\nDEC: −")
+        self.coord_label.setAlignment(Qt.AlignCenter)
+        self.coord_label.setStyleSheet("font-family: monospace; font-size: 12pt;")
+        self.coord_label.setMinimumHeight(70)
+        layout.addWidget(self.coord_label)
+        parent_layout.addWidget(group)
+
+    def select_directory(self):
+        from PyQt5.QtWidgets import QFileDialog
+
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select a CASA Image Directory"
+        )
+        if directory:
+            self.imagename = directory
+            self.dir_entry.setText(directory)
+            self.on_visualization_changed()
+            self.auto_minmax()
+
+    def plot_data(self):
+        self.on_visualization_changed()
+
+    def on_visualization_changed(self, colormap_name=None):
+        if not hasattr(self, "imagename") or not self.imagename:
+            QMessageBox.warning(
+                self, "No Image", "Please select a CASA image directory first!"
+            )
+            return
+
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage("Loading data...")
+            QApplication.processEvents()
+
+        stokes = self.stokes_combo.currentText() if self.stokes_combo else "I"
+        try:
+            threshold = float(self.threshold_entry.text())
+        except (ValueError, AttributeError):
+            threshold = 10.0
+            if hasattr(self, "threshold_entry"):
+                self.threshold_entry.setText("10.0")
+
+        try:
+            try:
+                vmin_val = float(self.vmin_entry.text())
+                vmax_val = float(self.vmax_entry.text())
+            except (ValueError, AttributeError):
+                vmin_val = None
+                vmax_val = None
+
+            try:
+                gamma = float(self.gamma_entry.text())
+            except (ValueError, AttributeError):
+                gamma = 1.0
+                if hasattr(self, "gamma_entry"):
+                    self.gamma_entry.setText("1.0")
+
+            stretch = (
+                self.stretch_combo.currentText()
+                if hasattr(self, "stretch_combo")
+                else "linear"
+            )
+
+            cmap = "viridis"
+            if colormap_name and colormap_name in plt.colormaps():
+                cmap = colormap_name
+            elif hasattr(self, "cmap_combo"):
+                cmap_text = self.cmap_combo.currentText()
+                if cmap_text in plt.colormaps():
+                    cmap = cmap_text
+                else:
+                    matches = [
+                        cm for cm in plt.colormaps() if cmap_text.lower() in cm.lower()
+                    ]
+                    if matches:
+                        cmap = matches[0]
+                        self.cmap_combo.setCurrentText(cmap)
+                    else:
+                        self.cmap_combo.setCurrentText("viridis")
+
+            self.load_data(self.imagename, stokes, threshold)
+
+            if vmin_val is None or vmax_val is None:
+                self.auto_minmax()
+            else:
+                self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+
+            if main_window and hasattr(main_window, "statusBar"):
+                img_name = os.path.basename(self.imagename)
+                main_window.statusBar().showMessage(
+                    f"Loaded {img_name}, Stokes {stokes}, Threshold {threshold}"
+                )
+        except Exception as e:
+            if main_window and hasattr(main_window, "statusBar"):
+                main_window.statusBar().showMessage(f"Error: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to load/plot data: {str(e)}")
+
+    def auto_minmax(self):
+        if self.current_image_data is None:
+            return
+
+        data = self.current_image_data
+        dmin = float(data.min())
+        dmax = float(data.max())
+        self.set_range(dmin, dmax)
+
+        stretch = (
+            self.stretch_combo.currentText()
+            if hasattr(self, "stretch_combo")
+            else "linear"
+        )
+        cmap = (
+            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+        )
+        try:
+            gamma = float(self.gamma_entry.text())
+        except (ValueError, AttributeError):
+            gamma = 1.0
+
+        self.plot_image(dmin, dmax, stretch, cmap, gamma)
+
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(
+                f"Set display range to min/max: [{dmin:.4g}, {dmax:.4g}]"
+            )
+
+    def auto_percentile(self):
+        if self.current_image_data is None:
+            return
+
+        data = self.current_image_data
+        p5 = np.percentile(data, 5)
+        p95 = np.percentile(data, 95)
+        self.set_range(p5, p95)
+
+        stretch = (
+            self.stretch_combo.currentText()
+            if hasattr(self, "stretch_combo")
+            else "linear"
+        )
+        cmap = (
+            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+        )
+        try:
+            gamma = float(self.gamma_entry.text())
+        except (ValueError, AttributeError):
+            gamma = 1.0
+
+        self.plot_image(p5, p95, stretch, cmap, gamma)
+
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(
+                f"Set display range to 5-95 percentile: [{p5:.4g}, {p95:.4g}]"
+            )
+
+    def auto_median_rms(self):
+        if self.current_image_data is None:
+            return
+
+        data = self.current_image_data
+        median_val = np.median(data)
+        rms_val = np.sqrt(np.mean((data - median_val) ** 2))
+        low = median_val - 3 * rms_val
+        high = median_val + 3 * rms_val
+        self.set_range(low, high)
+
+        stretch = (
+            self.stretch_combo.currentText()
+            if hasattr(self, "stretch_combo")
+            else "linear"
+        )
+        cmap = (
+            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+        )
+        try:
+            gamma = float(self.gamma_entry.text())
+        except (ValueError, AttributeError):
+            gamma = 1.0
+
+        self.plot_image(low, high, stretch, cmap, gamma)
+
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(
+                f"Set display range to median±3×RMS: [{low:.4g}, {high:.4g}]"
+            )
+
+    def set_range(self, vmin_val, vmax_val):
+        if self.current_image_data is None:
+            return
+
+        data = self.current_image_data
+        dmin = float(data.min())
+        dmax = float(data.max())
+        rng = dmax - dmin
+        if rng <= 0:
+            return
+
+        if vmin_val < dmin:
+            vmin_val = dmin
+        if vmax_val > dmax:
+            vmax_val = dmax
+        if vmax_val <= vmin_val:
+            vmax_val = vmin_val + 1e-6
+
+        self.vmin_entry.setText(f"{vmin_val:.3f}")
+        self.vmax_entry.setText(f"{vmax_val:.3f}")
+
+    def update_gamma_value(self):
+        gamma = self.gamma_slider.value() / 10.0
+        self.gamma_entry.setText(f"{gamma:.1f}")
+
+        if (
+            self.current_image_data is not None
+            and self.stretch_combo.currentText() == "power"
+        ):
+            try:
+                vmin_val = float(self.vmin_entry.text())
+                vmax_val = float(self.vmax_entry.text())
+                stretch = self.stretch_combo.currentText()
+                cmap = self.cmap_combo.currentText()
+                self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+            except ValueError:
+                pass
+
+    def update_gamma_slider(self):
+        try:
+            gamma = float(self.gamma_entry.text())
+            if 0.1 <= gamma <= 10.0:
+                self.gamma_slider.blockSignals(True)
+                self.gamma_slider.setValue(int(gamma * 10))
+                self.gamma_slider.blockSignals(False)
+
+                if (
+                    self.current_image_data is not None
+                    and self.stretch_combo.currentText() == "power"
+                ):
+                    try:
+                        vmin_val = float(self.vmin_entry.text())
+                        vmax_val = float(self.vmax_entry.text())
+                        stretch = self.stretch_combo.currentText()
+                        cmap = self.cmap_combo.currentText()
+                        self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+                    except ValueError:
+                        pass
+        except ValueError:
+            self.gamma_entry.setText("1.0")
+            self.gamma_slider.setValue(10)
+
+    def on_stretch_changed(self, index):
+        self.update_gamma_slider_state()
+
+        try:
+            vmin_val = float(self.vmin_entry.text())
+            vmax_val = float(self.vmax_entry.text())
+        except (ValueError, AttributeError):
+            if self.current_image_data is not None:
+                vmin_val = float(self.current_image_data.min())
+                vmax_val = float(self.current_image_data.max())
+            else:
+                return
+
+        stretch = self.stretch_combo.currentText()
+        cmap = self.cmap_combo.currentText()
+
+        try:
+            gamma = float(self.gamma_entry.text())
+        except (ValueError, AttributeError):
+            gamma = 1.0
+
+        if self.current_image_data is not None:
+            self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(f"Changed stretch to {stretch}")
+
+    def update_gamma_slider_state(self):
+        is_power = self.stretch_combo.currentText() == "power"
+        self.gamma_slider.setEnabled(is_power)
+        self.gamma_entry.setEnabled(is_power)
+
+        if is_power:
+            self.gamma_slider.setStyleSheet("")
+            self.gamma_entry.setStyleSheet("")
+        else:
+            self.gamma_slider.setStyleSheet("background-color: #555555;")
+            self.gamma_entry.setStyleSheet("background-color: #555555;")
+
+    def show_roi_stats(self, roi, ra_dec_info=""):
+        if roi.size == 0:
+            return
+
+        rmin = roi.min()
+        rmax = roi.max()
+        rmean = roi.mean()
+        rstd = roi.std()
+        rsum = roi.sum()
+
+        self.info_label.setText(f"ROI Stats: {roi.size} pixels{ra_dec_info}")
+
+        stats_values = [rmin, rmax, rmean, rstd, rsum]
+        for i, val in enumerate(stats_values):
+            self.stats_table.setItem(i, 1, QTableWidgetItem(f"{val:.6g}"))
+
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(
+                f"ROI selected: {roi.size} pixels, Mean={rmean:.4g}, Sum={rsum:.4g}"
+            )
+
+    def set_region_mode(self, mode_id):
+        self.region_mode = RegionMode.RECTANGLE
+        self.plot_image()
+
+    def load_data(self, imagename, stokes, threshold):
+        self.imagename = imagename
+        pix, csys, psf = get_pixel_values_from_image(imagename, stokes, threshold)
+        self.current_image_data = pix
+        self.current_wcs = csys
+        self.psf = psf
+
+        if pix is not None:
+            height, width = pix.shape
+            self.solar_disk_center = (width // 2, height // 2)
+
+        if not self.psf:
+            self.show_beam_checkbox.setChecked(False)
+            self.show_beam_checkbox.setEnabled(False)
+        else:
+            self.show_beam_checkbox.setEnabled(True)
+
+        self.plot_image()
+
+    def plot_image(
+        self, vmin_val=None, vmax_val=None, stretch="linear", cmap="viridis", gamma=1.0
+    ):
+        if self.current_image_data is None:
+            return
+        data = self.current_image_data
+
+        stored_xlim = None
+        stored_ylim = None
+        if self.figure.axes:
+            try:
+                stored_xlim = self.figure.axes[0].get_xlim()
+                stored_ylim = self.figure.axes[0].get_ylim()
+            except Exception:
+                stored_xlim = None
+                stored_ylim = None
+
+        self.figure.clear()
+
+        dmin = data.min()
+        dmax = data.max()
+        if vmin_val is None:
+            vmin_val = dmin
+        if vmax_val is None:
+            vmax_val = dmax
+        if vmax_val <= vmin_val:
+            vmax_val = vmin_val + 1e-6
+
+        if stretch == "log":
+            safe_min = max(vmin_val, 1e-8)
+            safe_max = max(vmax_val, safe_min * 1.01)
+            norm = LogNorm(vmin=safe_min, vmax=safe_max)
+        elif stretch == "sqrt":
+            norm = SqrtNorm(vmin=vmin_val, vmax=vmax_val)
+        elif stretch == "arcsinh":
+            norm = AsinhNorm(vmin=vmin_val, vmax=vmax_val)
+        elif stretch == "power":
+            norm = PowerNorm(vmin=vmin_val, vmax=vmax_val, gamma=gamma)
+        else:
+            norm = Normalize(vmin=vmin_val, vmax=vmax_val)
+
+        wcs_obj = None
+        if self.current_wcs:
+            try:
+                from astropy.wcs import WCS
+
+                ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
+                ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
+                increment = self.current_wcs.increment()["numeric"][0:2]
+                wcs_obj = WCS(naxis=2)
+                wcs_obj.wcs.crpix = ref_pix
+                wcs_obj.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
+                wcs_obj.wcs.cdelt = [
+                    increment[0] * 180 / np.pi,
+                    increment[1] * 180 / np.pi,
+                ]
+                wcs_obj.wcs.ctype = ["RA---SIN", "DEC--SIN"]
+            except Exception as e:
+                print(f"Error creating WCS: {e}")
+                wcs_obj = None
+
+        if wcs_obj is not None:
+            try:
+                ax = self.figure.add_subplot(111, projection=wcs_obj)
+                im = ax.imshow(data.transpose(), origin="lower", cmap=cmap, norm=norm)
+                ax.set_xlabel("Right Ascension (J2000)")
+                ax.set_ylabel("Declination (J2000)")
+                if (
+                    hasattr(self, "show_grid_checkbox")
+                    and self.show_grid_checkbox.isChecked()
+                ):
+                    ax.coords.grid(True, color="white", alpha=0.5, linestyle="--")
+                else:
+                    ax.coords.grid(False)
+                ra_axis = ax.coords[0]
+                dec_axis = ax.coords[1]
+                ra_axis.set_major_formatter("hh:mm:ss.s")
+                dec_axis.set_major_formatter("dd:mm:ss")
+                ax.tick_params(axis="both", which="major", labelsize=10)
+            except Exception as e:
+                print(f"Error setting up WCS axes: {e}")
+                ax = self.figure.add_subplot(111)
+                im = ax.imshow(data.transpose(), origin="lower", cmap=cmap, norm=norm)
+                ax.set_xlabel("Pixel X")
+                ax.set_ylabel("Pixel Y")
+        else:
+            ax = self.figure.add_subplot(111)
+            im = ax.imshow(data.transpose(), origin="lower", cmap=cmap, norm=norm)
+            ax.set_xlabel("Pixel X")
+            ax.set_ylabel("Pixel Y")
+
+        if stored_xlim is not None and stored_ylim is not None:
+            ax.set_xlim(stored_xlim)
+            ax.set_ylim(stored_ylim)
+
+        ax.set_title(os.path.basename(self.imagename) if self.imagename else "No Image")
+        self.figure.colorbar(im, ax=ax, label="Data")
+
+        if self.psf and self.show_beam_checkbox.isChecked():
+            try:
+                if isinstance(self.psf["major"]["value"], list):
+                    major_deg = float(self.psf["major"]["value"][0]) / 3600.0
+                else:
+                    major_deg = float(self.psf["major"]["value"]) / 3600.0
+
+                if isinstance(self.psf["minor"]["value"], list):
+                    minor_deg = float(self.psf["minor"]["value"][0]) / 3600.0
+                else:
+                    minor_deg = float(self.psf["minor"]["value"]) / 3600.0
+
+                if isinstance(self.psf["positionangle"]["value"], list):
+                    pa_deg = float(self.psf["positionangle"]["value"][0]) - 90
+                else:
+                    pa_deg = float(self.psf["positionangle"]["value"]) - 90
+
+                ny, nx = data.shape
+                if self.current_wcs:
+                    cdelt = self.current_wcs.increment()["numeric"][0:2]
+                    if isinstance(cdelt, list):
+                        cdelt = [float(c) for c in cdelt]
+                    cdelt = np.array(cdelt) * 180 / np.pi
+                    dx_deg = abs(cdelt[0])
+                else:
+                    dx_deg = 1.0 / 3600
+
+                major_pix = major_deg / dx_deg
+                minor_pix = minor_deg / dx_deg
+
+                xlim = ax.get_xlim()
+                ylim = ax.get_ylim()
+                view_width = xlim[1] - xlim[0]
+                view_height = ylim[1] - ylim[0]
+                margin_x = view_width * 0.05
+                margin_y = view_height * 0.05
+                beam_x = xlim[0] + margin_x + major_pix / 2
+                beam_y = ylim[0] + margin_y + minor_pix / 2
+
+                ellipse = Ellipse(
+                    (beam_x, beam_y),
+                    width=major_pix,
+                    height=minor_pix,
+                    angle=pa_deg,
+                    fill=True,
+                    edgecolor="black",
+                    linewidth=1.5,
+                    facecolor="white",
+                    alpha=0.4,
+                )
+                ax.add_patch(ellipse)
+                self.beam_properties = {
+                    "major_pix": major_pix,
+                    "minor_pix": minor_pix,
+                    "pa_deg": pa_deg,
+                    "margin": 0.05,
+                }
+            except Exception as e:
+                print(f"Error drawing beam: {e}")
+
+        if (
+            hasattr(self, "show_solar_disk_checkbox")
+            and self.show_solar_disk_checkbox.isChecked()
+        ):
+            try:
+                if self.solar_disk_center is None:
+                    height, width = data.shape
+                    self.solar_disk_center = (width // 2, height // 2)
+
+                center_x, center_y = self.solar_disk_center
+
+                if self.current_wcs:
+                    radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
+                    cdelt = self.current_wcs.increment()["numeric"][0:2]
+                    if isinstance(cdelt, list):
+                        cdelt = [float(c) for c in cdelt]
+                    cdelt = np.array(cdelt) * 180 / np.pi
+                    dx_deg = abs(cdelt[0])
+                    radius_pix = radius_deg / dx_deg
+                else:
+                    radius_pix = min(data.shape) / 8
+
+                circle = plt.Circle(
+                    (center_x, center_y),
+                    radius_pix,
+                    fill=False,
+                    edgecolor="yellow",
+                    linestyle="--",
+                    linewidth=2,
+                    alpha=0.8,
+                )
+                ax.add_patch(circle)
+
+                cross_size = radius_pix / 20
+                ax.plot(
+                    [center_x - cross_size, center_x + cross_size],
+                    [center_y, center_y],
+                    color="yellow",
+                    linewidth=1.5,
+                    alpha=0.8,
+                )
+                ax.plot(
+                    [center_x, center_x],
+                    [center_y - cross_size, center_y + cross_size],
+                    color="yellow",
+                    linewidth=1.5,
+                    alpha=0.8,
+                )
+            except Exception as e:
+                print(f"Error drawing solar disk: {e}")
+
+        if (
+            hasattr(self, "show_contours_checkbox")
+            and self.show_contours_checkbox.isChecked()
+        ):
+            self.draw_contours(ax)
+
+        self.init_region_editor(ax)
+        self.canvas.draw()
+
+    def _update_beam_position(self, ax):
+        if not hasattr(self, "beam_properties") or not self.beam_properties:
+            return
+
+        for patch in ax.patches:
+            if isinstance(patch, Ellipse):
+                patch.remove()
+
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        major_pix = self.beam_properties["major_pix"]
+        minor_pix = self.beam_properties["minor_pix"]
+        pa_deg = self.beam_properties["pa_deg"]
+        margin = self.beam_properties["margin"]
+
+        view_width = xlim[1] - xlim[0]
+        view_height = ylim[1] - ylim[0]
+
+        margin_x = view_width * 0.05
+        margin_y = view_height * 0.05
+
+        beam_x = xlim[0] + margin_x + major_pix / 2
+        beam_y = ylim[0] + margin_y + minor_pix / 2
+
+        ellipse = Ellipse(
+            (beam_x, beam_y),
+            width=major_pix,
+            height=minor_pix,
+            angle=pa_deg,
+            fill=True,
+            edgecolor="black",
+            facecolor="white",
+            linewidth=1.5,
+            alpha=0.4,
+        )
+        ax.add_patch(ellipse)
+
+    def on_stokes_changed(self, stokes):
+        if not self.imagename:
+            return
+
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(f"Loading data for Stokes {stokes}...")
+            QApplication.processEvents()
+
+        try:
+            threshold = float(self.threshold_entry.text())
+        except (ValueError, AttributeError):
+            threshold = 10.0
+            if hasattr(self, "threshold_entry"):
+                self.threshold_entry.setText("10.0")
+
+        self.load_data(self.imagename, stokes, threshold)
+
+        data = self.current_image_data
+        if data is not None:
+            dmin = float(data.min())
+            dmax = float(data.max())
+            self.set_range(dmin, dmax)
+
+            stretch = (
+                self.stretch_combo.currentText()
+                if hasattr(self, "stretch_combo")
+                else "linear"
+            )
+            cmap = (
+                self.cmap_combo.currentText()
+                if hasattr(self, "cmap_combo")
+                else "viridis"
+            )
+            try:
+                gamma = float(self.gamma_entry.text())
+            except (ValueError, AttributeError):
+                gamma = 1.0
+
+            self.plot_image(dmin, dmax, stretch, cmap, gamma)
+
+            if main_window and hasattr(main_window, "statusBar"):
+                main_window.statusBar().showMessage(
+                    f"Stokes changed to {stokes}, display range: [{dmin:.4g}, {dmax:.4g}]"
+                )
+
+    def on_checkbox_changed(self):
+        if not hasattr(self, "current_image_data") or self.current_image_data is None:
+            return
+
+        try:
+            vmin_val = float(self.vmin_entry.text())
+            vmax_val = float(self.vmax_entry.text())
+        except (ValueError, AttributeError):
+            vmin_val = None
+            vmax_val = None
+
+        try:
+            gamma = float(self.gamma_entry.text())
+        except (ValueError, AttributeError):
+            gamma = 1.0
+
+        stretch = (
+            self.stretch_combo.currentText()
+            if hasattr(self, "stretch_combo")
+            else "linear"
+        )
+        cmap = (
+            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+        )
+
+        self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+
+    def add_text_annotation(self, x, y, text):
+        ax = self.figure.gca()
+        ax.text(x, y, text, color="yellow", fontsize=10)
+        self.canvas.draw()
+
+    def add_arrow_annotation(self, x1, y1, x2, y2):
+        ax = self.figure.gca()
+        ax.arrow(x1, y1, x2 - x1, y2 - y1, color="red", width=0.3)
+        self.canvas.draw()
+
+    def set_solar_disk_center(self):
+        if self.current_image_data is None:
+            QMessageBox.warning(self, "No Image", "Please load an image first.")
+            return
+
+        height, width = self.current_image_data.shape
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Set Solar Disk Center")
+        layout = QVBoxLayout(dialog)
+
+        form_layout = QHBoxLayout()
+        x_label = QLabel("X coordinate:")
+        x_spinbox = QSpinBox()
+        x_spinbox.setRange(0, width - 1)
+        if self.solar_disk_center is not None:
+            x_spinbox.setValue(self.solar_disk_center[0])
+        else:
+            x_spinbox.setValue(width // 2)
+        form_layout.addWidget(x_label)
+        form_layout.addWidget(x_spinbox)
+        y_label = QLabel("Y coordinate:")
+        y_spinbox = QSpinBox()
+        y_spinbox.setRange(0, height - 1)
+        if self.solar_disk_center is not None:
+            y_spinbox.setValue(self.solar_disk_center[1])
+        else:
+            y_spinbox.setValue(height // 2)
+        form_layout.addWidget(y_label)
+        form_layout.addWidget(y_spinbox)
+        layout.addLayout(form_layout)
+
+        diameter_layout = QHBoxLayout()
+        diameter_label = QLabel("Diameter (arcmin):")
+        diameter_spinbox = QSpinBox()
+        diameter_spinbox.setRange(1, 100)
+        diameter_spinbox.setValue(int(self.solar_disk_diameter_arcmin))
+        diameter_layout.addWidget(diameter_label)
+        diameter_layout.addWidget(diameter_spinbox)
+        layout.addLayout(diameter_layout)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec_() == QDialog.Accepted:
+            self.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
+            self.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
+            self.plot_image()
+
+    def zoom_in(self):
+        if self.current_image_data is None:
+            return
+
+        ax = self.figure.axes[0]
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        xcenter = (xlim[0] + xlim[1]) / 2
+        ycenter = (ylim[0] + ylim[1]) / 2
+
+        width = (xlim[1] - xlim[0]) / 2
+        height = (ylim[1] - ylim[0]) / 2
+
+        ax.set_xlim(xcenter - width / 2, xcenter + width / 2)
+        ax.set_ylim(ycenter - height / 2, ycenter + height / 2)
+
+        self._update_beam_position(ax)
+        self.canvas.draw()
+
+    def zoom_out(self):
+        if self.current_image_data is None:
+            return
+
+        ax = self.figure.axes[0]
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        xcenter = (xlim[0] + xlim[1]) / 2
+        ycenter = (ylim[0] + ylim[1]) / 2
+
+        width = (xlim[1] - xlim[0]) * 2
+        height = (ylim[1] - ylim[0]) * 2
+
+        ax.set_xlim(xcenter - width / 2, xcenter + width / 2)
+        ax.set_ylim(ycenter - height / 2, ycenter + height / 2)
+
+        self._update_beam_position(ax)
+        self.canvas.draw()
+
+    def zoom_60arcmin(self):
+        if self.current_image_data is None or self.current_wcs is None:
+            return
+
+        try:
+            ax = self.figure.axes[0]
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            xcenter = (xlim[0] + xlim[1]) / 2
+            ycenter = (ylim[0] + ylim[1]) / 2
+
+            cdelt = self.current_wcs.increment()["numeric"][0:2]
+            if isinstance(cdelt, list):
+                cdelt = [float(c) for c in cdelt]
+            cdelt = np.array(cdelt) * 180 / np.pi
+            arcmin_60_deg = 60.0 / 60.0
+            pixels_x = arcmin_60_deg / abs(cdelt[0])
+            pixels_y = arcmin_60_deg / abs(cdelt[1])
+
+            ax.set_xlim(xcenter - pixels_x / 2, xcenter + pixels_x / 2)
+            ax.set_ylim(ycenter - pixels_y / 2, ycenter + pixels_y / 2)
+
+            self._update_beam_position(ax)
+            self.canvas.draw()
+        except Exception as e:
+            print(f"Error in zoom_60arcmin: {e}")
+
+    def init_region_editor(self, ax):
+        if self.roi_selector:
+            self.roi_selector.disconnect_events()
+            self.roi_selector = None
+
+        self.roi_selector = RectangleSelector(
+            ax, self.on_rectangle, useblit=True, button=[1], interactive=True
+        )
+        self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+
+    def on_rectangle(self, eclick, erelease):
+        if self.current_image_data is None:
+            return
+        try:
+            x1, x2 = int(eclick.xdata), int(erelease.xdata)
+            y1, y2 = int(eclick.ydata), int(erelease.ydata)
+        except:
+            return
+
+        xlow, xhigh = sorted([x1, x2])
+        ylow, yhigh = sorted([y1, y2])
+
+        xlow = max(0, xlow)
+        ylow = max(0, ylow)
+        xhigh = min(self.current_image_data.shape[0], xhigh)
+        yhigh = min(self.current_image_data.shape[1], yhigh)
+
+        self.current_roi = (xlow, xhigh, ylow, yhigh)
+        roi = self.current_image_data[xlow:xhigh, ylow:yhigh]
+
+        ra_dec_info = ""
+        if self.current_wcs:
+            try:
+                from astropy.wcs import WCS
+                from astropy.coordinates import SkyCoord
+                import astropy.units as u
+
+                ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
+                ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
+                increment = self.current_wcs.increment()["numeric"][0:2]
+
+                w = WCS(naxis=2)
+                w.wcs.crpix = ref_pix
+                w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
+                w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
+
+                ra1, dec1 = w.wcs_pix2world(xlow, ylow, 0)
+                ra2, dec2 = w.wcs_pix2world(xhigh, yhigh, 0)
+
+                coord1 = SkyCoord(ra=ra1 * u.degree, dec=dec1 * u.degree)
+                coord2 = SkyCoord(ra=ra2 * u.degree, dec=dec2 * u.degree)
+
+                center_ra = (ra1 + ra2) / 2
+                center_dec = (dec1 + dec2) / 2
+                center_coord = SkyCoord(
+                    ra=center_ra * u.degree, dec=center_dec * u.degree
+                )
+
+                width = abs(ra2 - ra1) * u.degree
+                height = abs(dec2 - dec1) * u.degree
+
+                ra_dec_info = (
+                    f"\nRegion Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
+                    f"Dec={center_coord.dec.to_string(sep=':', precision=2)}"
+                    f"\nAngular Size: {width.to(u.arcsec):.2f} × {height.to(u.arcsec):.2f}"
+                    f"\nCorners: "
+                    f"\n  Bottom-Left: RA={coord1.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
+                    f"Dec={coord1.dec.to_string(sep=':', precision=2)}"
+                    f"\n  Top-Right: RA={coord2.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
+                    f"Dec={coord2.dec.to_string(sep=':', precision=2)}"
+                )
+            except Exception as e:
+                ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
+
+        self.show_roi_stats(roi, ra_dec_info)
+
+    def on_mouse_move(self, event):
+        if not event.inaxes or self.current_image_data is None:
+            return
+
+        x, y = int(event.xdata), int(event.ydata)
+
+        try:
+            value = self.current_image_data[x, y]
+            pixel_info = f"<b>Pixel:</b> X={x}, Y={y}<br><b>Value:</b> {value:.3g}"
+        except (IndexError, TypeError):
+            pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
+
+        if self.current_wcs:
+            try:
+                from astropy.wcs import WCS
+                from astropy.coordinates import SkyCoord
+                import astropy.units as u
+
+                ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
+                ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
+                increment = self.current_wcs.increment()["numeric"][0:2]
+
+                w = WCS(naxis=2)
+                w.wcs.crpix = ref_pix
+                w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
+                w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
+                w.wcs.ctype = ["RA---SIN", "DEC--SIN"]
+
+                ra, dec = w.wcs_pix2world(x, y, 0)
+                coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
+                ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=2)
+                dec_str = coord.dec.to_string(sep=":", precision=2)
+
+                coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
+                self.coord_label.setText(coord_info)
+            except Exception as e:
+                self.coord_label.setText(f"{pixel_info}<br><b>WCS Error:</b> {str(e)}")
+        else:
+            self.coord_label.setText(pixel_info)
+
+    def setup_canvas(self, parent_layout):
+        self.figure = Figure(figsize=(5, 5), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        self.nav_toolbar = NavigationToolbar(self.canvas, self)
+        parent_layout.addWidget(self.nav_toolbar)
+        parent_layout.addWidget(self.canvas, 1)
+
+        self.current_image_data = None
+        self.current_wcs = None
+        self.psf = None
+        self.current_roi = None
+        self.roi_selector = None
+        self.imagename = None
+
+        self.solar_disk_center = None
+        self.solar_disk_diameter_arcmin = 32.0
+
+        self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+
+    def show_contour_settings(self):
+        from .dialogs import ContourSettingsDialog
+
+        dialog = ContourSettingsDialog(self, self.contour_settings)
+        if dialog.exec_() == QDialog.Accepted:
+            self.contour_settings = dialog.get_settings()
+            if self.show_contours_checkbox.isChecked():
+                self.load_contour_data()
+                self.on_visualization_changed()
+
+    def load_contour_data(self):
+        try:
+            rms_box = (0, 200, 0, 130)
+            if not self.contour_settings.get("use_default_rms_region", True):
+                rms_box = self.contour_settings.get("rms_box", rms_box)
+
+            if self.contour_settings["source"] == "same":
+                if self.imagename:
+                    stokes = self.contour_settings["stokes"]
+                    threshold = 3.0
+
+                    if stokes in ["I", "Q", "U", "V"]:
+                        pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, stokes, threshold, rms_box
+                        )
+                        self.contour_settings["contour_data"] = pix
+                    elif stokes in ["Q/I", "U/I", "V/I"]:
+                        numerator_stokes = stokes.split("/")[0]
+                        numerator_pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, numerator_stokes, threshold, rms_box
+                        )
+                        denominator_pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, "I", threshold, rms_box
+                        )
+                        mask = denominator_pix != 0
+                        ratio = np.zeros_like(numerator_pix)
+                        ratio[mask] = numerator_pix[mask] / denominator_pix[mask]
+                        self.contour_settings["contour_data"] = ratio
+                    elif stokes == "L":
+                        q_pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, "Q", threshold, rms_box
+                        )
+                        u_pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, "U", threshold, rms_box
+                        )
+                        l_pix = np.sqrt(q_pix**2 + u_pix**2)
+                        self.contour_settings["contour_data"] = l_pix
+                    elif stokes == "Lfrac":
+                        q_pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, "Q", threshold, rms_box
+                        )
+                        u_pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, "U", threshold, rms_box
+                        )
+                        i_pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, "I", threshold, rms_box
+                        )
+                        l_pix = np.sqrt(q_pix**2 + u_pix**2)
+                        mask = i_pix != 0
+                        lfrac = np.zeros_like(l_pix)
+                        lfrac[mask] = l_pix[mask] / i_pix[mask]
+                        self.contour_settings["contour_data"] = lfrac
+                    elif stokes == "PANG":
+                        q_pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, "Q", threshold, rms_box
+                        )
+                        u_pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, "U", threshold, rms_box
+                        )
+                        pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
+                        self.contour_settings["contour_data"] = pang
+                    else:
+                        pix, _, _ = get_pixel_values_from_image(
+                            self.imagename, "I", threshold, rms_box
+                        )
+                        self.contour_settings["contour_data"] = pix
+                else:
+                    self.contour_settings["contour_data"] = None
+            else:
+                external_image = self.contour_settings["external_image"]
+                if external_image and os.path.exists(external_image):
+                    stokes = self.contour_settings["stokes"]
+                    threshold = 3.0
+
+                    if stokes in ["I", "Q", "U", "V"]:
+                        pix, _, _ = get_pixel_values_from_image(
+                            external_image, stokes, threshold, rms_box
+                        )
+                        self.contour_settings["contour_data"] = pix
+                    elif stokes in ["Q/I", "U/I", "V/I"]:
+                        numerator_stokes = stokes.split("/")[0]
+                        numerator_pix, _, _ = get_pixel_values_from_image(
+                            external_image, numerator_stokes, threshold, rms_box
+                        )
+                        denominator_pix, _, _ = get_pixel_values_from_image(
+                            external_image, "I", threshold, rms_box
+                        )
+                        mask = denominator_pix != 0
+                        ratio = np.zeros_like(numerator_pix)
+                        ratio[mask] = numerator_pix[mask] / denominator_pix[mask]
+                        self.contour_settings["contour_data"] = ratio
+                    elif stokes == "L":
+                        q_pix, _, _ = get_pixel_values_from_image(
+                            external_image, "Q", threshold, rms_box
+                        )
+                        u_pix, _, _ = get_pixel_values_from_image(
+                            external_image, "U", threshold, rms_box
+                        )
+                        l_pix = np.sqrt(q_pix**2 + u_pix**2)
+                        self.contour_settings["contour_data"] = l_pix
+                    elif stokes == "Lfrac":
+                        q_pix, _, _ = get_pixel_values_from_image(
+                            external_image, "Q", threshold, rms_box
+                        )
+                        u_pix, _, _ = get_pixel_values_from_image(
+                            external_image, "U", threshold, rms_box
+                        )
+                        i_pix, _, _ = get_pixel_values_from_image(
+                            external_image, "I", threshold, rms_box
+                        )
+                        l_pix = np.sqrt(q_pix**2 + u_pix**2)
+                        mask = i_pix != 0
+                        lfrac = np.zeros_like(l_pix)
+                        lfrac[mask] = l_pix[mask] / i_pix[mask]
+                        self.contour_settings["contour_data"] = lfrac
+                    elif stokes == "PANG":
+                        q_pix, _, _ = get_pixel_values_from_image(
+                            external_image, "Q", threshold, rms_box
+                        )
+                        u_pix, _, _ = get_pixel_values_from_image(
+                            external_image, "U", threshold, rms_box
+                        )
+                        pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
+                        self.contour_settings["contour_data"] = pang
+                    else:
+                        pix, _, _ = get_pixel_values_from_image(
+                            external_image, "I", threshold, rms_box
+                        )
+                        self.contour_settings["contour_data"] = pix
+                else:
+                    self.contour_settings["contour_data"] = None
+
+            main_window = self.parent()
+            if main_window and hasattr(main_window, "statusBar"):
+                if self.contour_settings["contour_data"] is not None:
+                    main_window.statusBar().showMessage(
+                        f"Contour data loaded: {self.contour_settings['source']} image, Stokes {self.contour_settings['stokes']}"
+                    )
+                else:
+                    main_window.statusBar().showMessage("Failed to load contour data")
+        except Exception as e:
+            print(f"Error loading contour data: {e}")
+            self.contour_settings["contour_data"] = None
+            main_window = self.parent()
+            if main_window and hasattr(main_window, "statusBar"):
+                main_window.statusBar().showMessage(
+                    f"Error loading contour data: {str(e)}"
+                )
+
+    def draw_contours(self, ax):
+        if self.contour_settings["contour_data"] is None:
+            self.load_contour_data()
+
+        if self.contour_settings["contour_data"] is None:
+            return
+
+        try:
+            contour_data = self.contour_settings["contour_data"]
+            abs_max = np.nanmax(np.abs(contour_data))
+
+            if self.contour_settings["level_type"] == "fraction":
+                vmax = np.max(contour_data)
+                if vmax > 0:
+                    pos_levels = sorted(
+                        [
+                            level * abs_max
+                            for level in self.contour_settings["pos_levels"]
+                        ]
+                    )
+                else:
+                    pos_levels = []
+            elif self.contour_settings["level_type"] == "sigma":
+                mean = np.mean(contour_data)
+                std = np.std(contour_data)
+                pos_levels = sorted(
+                    [
+                        mean + level * std
+                        for level in self.contour_settings["pos_levels"]
+                    ]
+                )
+            else:
+                pos_levels = sorted(self.contour_settings["pos_levels"])
+
+            if pos_levels and len(pos_levels) > 0:
+                try:
+                    ax.contour(
+                        contour_data.transpose(),
+                        levels=pos_levels,
+                        colors=self.contour_settings["color"],
+                        linewidths=self.contour_settings["linewidth"],
+                        linestyles=self.contour_settings["pos_linestyle"],
+                        origin="lower",
+                    )
+                except Exception as e:
+                    print(f"Error drawing positive contours: {e}, levels: {pos_levels}")
+
+            if self.contour_settings["level_type"] == "fraction":
+                vmin = np.min(contour_data)
+                if vmin < 0:
+                    neg_levels = sorted(
+                        [
+                            level * abs_max
+                            for level in self.contour_settings["neg_levels"]
+                        ]
+                    )
+                    neg_levels = [-level for level in reversed(neg_levels)]
+                else:
+                    neg_levels = []
+            elif self.contour_settings["level_type"] == "sigma":
+                mean = np.mean(contour_data)
+                std = np.std(contour_data)
+                neg_levels = sorted(
+                    [
+                        -(mean - level * std)
+                        for level in reversed(self.contour_settings["neg_levels"])
+                    ]
+                )
+            else:
+                neg_levels = sorted(
+                    [-level for level in reversed(self.contour_settings["neg_levels"])]
+                )
+
+            if neg_levels and len(neg_levels) > 0:
+                try:
+                    ax.contour(
+                        contour_data.transpose(),
+                        levels=neg_levels,
+                        colors=self.contour_settings["color"],
+                        linewidths=self.contour_settings["linewidth"],
+                        linestyles=self.contour_settings["neg_linestyle"],
+                        origin="lower",
+                    )
+                except Exception as e:
+                    print(f"Error drawing negative contours: {e}, levels: {neg_levels}")
+
+        except Exception as e:
+            print(f"Error drawing contours: {e}")
+            main_window = self.parent()
+            if main_window and hasattr(main_window, "statusBar"):
+                main_window.statusBar().showMessage(f"Error drawing contours: {str(e)}")
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+
+
+class SolarRadioImageViewerApp(QMainWindow):
+    def __init__(self, imagename=None):
+        super().__init__()
+        self.setWindowTitle("Solar Radio Image Viewer")
+        self.resize(1400, 800)
+
+        self.tab_widget = QTabWidget()
+        self.setCentralWidget(self.tab_widget)
+        self.tabs = []
+        self.max_tabs = 10
+        self.settings = QSettings("SolarRadioImageViewer", "ImageViewer")
+
+        self.statusBar().showMessage("Ready")
+        self.create_menus()
+
+        first_tab = self.add_new_tab("Tab1")
+        if imagename and os.path.exists(imagename):
+            first_tab.imagename = imagename
+            first_tab.dir_entry.setText(imagename)
+            first_tab.on_visualization_changed()
+            first_tab.auto_minmax()
+
+    def create_menus(self):
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("&File")
+
+        open_act = QAction("Open Solar Radio Image...", self)
+        open_act.setShortcut("Ctrl+O")
+        open_act.setStatusTip("Open a Solar Radio Image directory")
+        open_act.triggered.connect(self.select_directory)
+        file_menu.addAction(open_act)
+
+        export_act = QAction("Export Figure", self)
+        export_act.setShortcut("Ctrl+E")
+        export_act.setStatusTip("Export current figure as image file")
+        export_act.triggered.connect(self.export_data)
+        file_menu.addAction(export_act)
+
+        export_data_act = QAction("Export Data as FITS", self)
+        export_data_act.setShortcut("Ctrl+F")
+        export_data_act.setStatusTip("Export current data as FITS file")
+        export_data_act.triggered.connect(self.export_as_fits)
+        file_menu.addAction(export_data_act)
+
+        file_menu.addSeparator()
+        exit_act = QAction("Exit", self)
+        exit_act.setShortcut("Ctrl+Q")
+        exit_act.setStatusTip("Exit the application")
+        exit_act.triggered.connect(self.close)
+        file_menu.addAction(exit_act)
+
+        tools_menu = menubar.addMenu("&Tools")
+        from .dialogs import BatchProcessDialog, ImageInfoDialog
+
+        batch_act = QAction("Batch Processing", self)
+        batch_act.setShortcut("Ctrl+B")
+        batch_act.setStatusTip("Process multiple images in batch mode")
+        batch_act.triggered.connect(self.show_batch_dialog)
+        tools_menu.addAction(batch_act)
+
+        metadata_act = QAction("Image Metadata", self)
+        metadata_act.setShortcut("Ctrl+M")
+        metadata_act.setStatusTip("View detailed metadata for the current image")
+        metadata_act.triggered.connect(self.show_metadata)
+        tools_menu.addAction(metadata_act)
+
+        region_menu = menubar.addMenu("&Region")
+        subimg_act = QAction("Export Sub-Image (ROI)", self)
+        subimg_act.setShortcut("Ctrl+S")
+        subimg_act.setStatusTip("Export the selected region as a new CASA image")
+        subimg_act.triggered.connect(self.save_sub_image)
+        region_menu.addAction(subimg_act)
+
+        export_roi_act = QAction("Export ROI as Region", self)
+        export_roi_act.setShortcut("Ctrl+R")
+        export_roi_act.setStatusTip("Export the selected region as a CASA region file")
+        export_roi_act.triggered.connect(self.export_casa_region)
+        region_menu.addAction(export_roi_act)
+
+        fitting_menu = menubar.addMenu("F&itting")
+        gauss_act = QAction("Fit 2D Gaussian", self)
+        gauss_act.setShortcut("Ctrl+G")
+        gauss_act.setStatusTip("Fit a 2D Gaussian to the selected region")
+        gauss_act.triggered.connect(self.fit_2d_gaussian)
+        fitting_menu.addAction(gauss_act)
+        ring_act = QAction("Fit Elliptical Ring", self)
+        ring_act.setShortcut("Ctrl+L")
+        ring_act.setStatusTip("Fit an elliptical ring to the selected region")
+        ring_act.triggered.connect(self.fit_2d_ring)
+        fitting_menu.addAction(ring_act)
+
+        annot_menu = menubar.addMenu("&Annotations")
+        text_act = QAction("Add Text Annotation", self)
+        text_act.setShortcut("Ctrl+T")
+        text_act.setStatusTip("Add text annotation to the image")
+        text_act.triggered.connect(self.add_text_annotation)
+        annot_menu.addAction(text_act)
+
+        arrow_act = QAction("Add Arrow Annotation", self)
+        arrow_act.setShortcut("Ctrl+A")
+        arrow_act.setStatusTip("Add arrow annotation to the image")
+        arrow_act.triggered.connect(self.add_arrow_annotation)
+        annot_menu.addAction(arrow_act)
+
+        preset_menu = menubar.addMenu("Presets")
+        auto_minmax_act = QAction("Auto Min/Max", self)
+        auto_minmax_act.setShortcut("F5")
+        auto_minmax_act.setStatusTip("Set display range to data min/max")
+        auto_minmax_act.triggered.connect(self.auto_minmax)
+        preset_menu.addAction(auto_minmax_act)
+        auto_percentile_act = QAction("Auto Percentile (5%,95%)", self)
+        auto_percentile_act.setShortcut("F6")
+        auto_percentile_act.setStatusTip(
+            "Set display range to 5th and 95th percentiles"
+        )
+        auto_percentile_act.triggered.connect(self.auto_percentile)
+        preset_menu.addAction(auto_percentile_act)
+        auto_median_rms_act = QAction("Auto Median ± 3×RMS", self)
+        auto_median_rms_act.setShortcut("F7")
+        auto_median_rms_act.setStatusTip("Set display range to median ± 3×RMS")
+        auto_median_rms_act.triggered.connect(self.auto_median_rms)
+        preset_menu.addAction(auto_median_rms_act)
+
+        tabs_menu = menubar.addMenu("&Tabs")
+        new_tab_act = QAction("Add New Tab", self)
+        new_tab_act.setShortcut("Ctrl+N")
+        new_tab_act.setStatusTip("Add a new tab for comparing images")
+        new_tab_act.triggered.connect(self.handle_add_tab)
+        tabs_menu.addAction(new_tab_act)
+        close_tab_act = QAction("Close Current Tab", self)
+        close_tab_act.setShortcut("Ctrl+W")
+        close_tab_act.setStatusTip("Close the current tab")
+        close_tab_act.triggered.connect(self.close_current_tab)
+        tabs_menu.addAction(close_tab_act)
+
+        help_menu = menubar.addMenu("&Help")
+        shortcuts_act = QAction("Keyboard Shortcuts", self)
+        shortcuts_act.setShortcut("F1")
+        shortcuts_act.setStatusTip("Show keyboard shortcuts")
+        shortcuts_act.triggered.connect(self.show_keyboard_shortcuts)
+        help_menu.addAction(shortcuts_act)
+        about_act = QAction("About", self)
+        about_act.setStatusTip("Show information about this application")
+        about_act.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_act)
+
+    def add_new_tab(self, name):
+        if len(self.tabs) >= self.max_tabs:
+            QMessageBox.warning(
+                self, "Tab Limit", f"Maximum of {self.max_tabs} tabs allowed."
+            )
+            return None
+
+        new_tab = SolarRadioImageTab(self, name)
+        self.tabs.append(new_tab)
+        self.tab_widget.addTab(new_tab, name)
+        self.tab_widget.setCurrentWidget(new_tab)
+        return new_tab
+
+    def handle_add_tab(self):
+        tab_count = len(self.tabs) + 1
+        tab_name, ok = QInputDialog.getText(
+            self, "New Tab", "Enter tab name:", text=f"Tab{tab_count}"
+        )
+        if ok and tab_name:
+            self.add_new_tab(tab_name)
+
+    def close_current_tab(self):
+        if len(self.tabs) <= 1:
+            QMessageBox.warning(
+                self, "Cannot Close", "At least one tab must remain open."
+            )
+            return
+
+        current_idx = self.tab_widget.currentIndex()
+        if current_idx >= 0:
+            self.tab_widget.removeTab(current_idx)
+            del self.tabs[current_idx]
+
+    def select_directory(self):
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab:
+            current_tab.select_directory()
+
+    def auto_minmax(self):
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab:
+            current_tab.auto_minmax()
+
+    def auto_percentile(self):
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab:
+            current_tab.auto_percentile()
+
+    def auto_median_rms(self):
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab:
+            current_tab.auto_median_rms()
+
+    def export_data(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Figure",
+            "",
+            "PNG Files (*.png);;PDF Files (*.pdf);;All Files (*)",
+        )
+        if path:
+            current_tab.figure.savefig(path, dpi=300, bbox_inches="tight")
+            QMessageBox.information(self, "Exported", f"Figure saved to {path}")
+
+    def export_as_fits(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or current_tab.current_image_data is None:
+            QMessageBox.warning(self, "No Data", "No image data to export")
+            return
+
+        try:
+            from astropy.io import fits
+
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Export as FITS", "", "FITS Files (*.fits);;All Files (*)"
+            )
+            if path:
+                hdu = fits.PrimaryHDU(current_tab.current_image_data)
+                hdul = fits.HDUList([hdu])
+                hdul.writeto(path, overwrite=True)
+                QMessageBox.information(self, "Exported", f"Data saved to {path}")
+        except ImportError:
+            QMessageBox.warning(
+                self,
+                "Missing Dependency",
+                "Astropy is required for FITS export. Please install it.",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
+
+    def show_batch_dialog(self):
+        from .dialogs import BatchProcessDialog
+
+        dialog = BatchProcessDialog(self)
+        dialog.exec_()
+
+    def show_metadata(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or not current_tab.imagename:
+            QMessageBox.warning(self, "No Image", "No image loaded")
+            return
+
+        try:
+            metadata = get_image_metadata(current_tab.imagename)
+            from .dialogs import ImageInfoDialog
+
+            dialog = ImageInfoDialog(self, metadata)
+            dialog.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to get metadata: {str(e)}")
+
+    def save_sub_image(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or not current_tab.current_roi:
+            QMessageBox.warning(self, "No ROI", "Please select a region first")
+            return
+
+        if not current_tab.imagename:
+            QMessageBox.warning(self, "No Image", "No image loaded")
+            return
+
+        output_dir, _ = QFileDialog.getSaveFileName(
+            self, "Save Subimage As", "", "CASA Image (*);;All Files (*)"
+        )
+
+        if output_dir:
+            try:
+                ia_tool = IA()
+                ia_tool.open(current_tab.imagename)
+
+                if isinstance(current_tab.current_roi, tuple):
+                    xlow, xhigh, ylow, yhigh = current_tab.current_roi
+                    region_dict = (
+                        "box[["
+                        + str(xlow)
+                        + "pix, "
+                        + str(ylow)
+                        + "pix],["
+                        + str(xhigh)
+                        + "pix, "
+                        + str(yhigh)
+                        + "pix]]"
+                    )
+
+                    ia_tool.subimage(outfile=output_dir, region=region_dict)
+                else:
+                    QMessageBox.information(
+                        self,
+                        "Not Implemented",
+                        "Subimage for polygon/circle ROI not implemented yet",
+                    )
+                    return
+
+                ia_tool.close()
+                QMessageBox.information(
+                    self, "Success", f"Subimage saved to {output_dir}"
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Error", f"Failed to create subimage: {str(e)}"
+                )
+
+    def export_casa_region(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or not current_tab.current_roi:
+            QMessageBox.warning(self, "No ROI", "Please select a region first")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Region", "", "CASA Region (*.crtf);;All Files (*)"
+        )
+
+        if path:
+            try:
+                with open(path, "w") as f:
+                    f.write("#CRTFv0\n")
+
+                if isinstance(current_tab.current_roi, tuple):
+                    xlow, xhigh, ylow, yhigh = current_tab.current_roi
+                    with open(path, "a") as f:
+                        f.write(
+                            f"box[[{xlow}pix, {ylow}pix], [{xhigh}pix, {yhigh}pix]]\n"
+                        )
+                else:
+                    with open(path, "a") as f:
+                        f.write("# Complex region - simplified representation\n")
+                        f.write("circle[[512pix, 512pix], 100pix]\n")
+
+                QMessageBox.information(self, "Success", f"Region saved to {path}")
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Error", f"Failed to export region: {str(e)}"
+                )
+
+    def fit_2d_gaussian(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or current_tab.current_image_data is None:
+            QMessageBox.warning(self, "No Data", "Load data first.")
+            return
+
+        data = current_tab.current_image_data
+
+        if current_tab.current_roi and isinstance(current_tab.current_roi, tuple):
+            xlow, xhigh, ylow, yhigh = current_tab.current_roi
+            data = data[xlow:xhigh, ylow:yhigh]
+            if data.size == 0:
+                QMessageBox.warning(self, "Invalid ROI", "ROI contains no data")
+                return
+
+        ny, nx = data.shape
+        x = np.arange(nx)
+        y = np.arange(ny)
+        xmesh, ymesh = np.meshgrid(x, y)
+        coords = np.vstack((xmesh.ravel(), ymesh.ravel()))
+        data_flat = data.ravel()
+
+        guess = [data.max(), nx / 2, ny / 2, nx / 4, ny / 4, 0, np.median(data)]
+
+        try:
+            popt, pcov = curve_fit(twoD_gaussian, coords, data_flat, p0=guess)
+            perr = np.sqrt(np.diag(pcov))
+
+            msg = (
+                f"2D Gaussian Fit:\n"
+                f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
+                f"X0={popt[1]:.2f}±{perr[1]:.2f}, Y0={popt[2]:.2f}±{perr[2]:.2f}\n"
+                f"SigmaX={popt[3]:.2f}±{perr[3]:.2f}, SigmaY={popt[4]:.2f}±{perr[4]:.2f}\n"
+                f"Theta={popt[5]:.2f}±{perr[5]:.2f}, Offset={popt[6]:.4g}±{perr[6]:.4g}"
+            )
+
+            QMessageBox.information(self, "Fit Result", msg)
+
+            if (
+                QMessageBox.question(
+                    self,
+                    "Overlay Fit",
+                    "Would you like to overlay the fit on the image?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                == QMessageBox.Yes
+            ):
+
+                fitted_data = twoD_gaussian(coords, *popt).reshape(data.shape)
+
+                fig = Figure(figsize=(10, 5))
+                canvas = FigureCanvas(fig)
+
+                ax1 = fig.add_subplot(121)
+                ax1.imshow(data.transpose(), origin="lower", cmap="viridis")
+                ax1.set_title("Original Data")
+
+                ax2 = fig.add_subplot(122)
+                ax2.imshow(fitted_data.transpose(), origin="lower", cmap="viridis")
+                ax2.set_title("Gaussian Fit")
+
+                fig.tight_layout()
+
+                dialog = QDialog(self)
+                dialog.setWindowTitle("Gaussian Fit Comparison")
+                layout = QVBoxLayout(dialog)
+                layout.addWidget(canvas)
+
+                buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+                buttons.accepted.connect(dialog.accept)
+                layout.addWidget(buttons)
+
+                dialog.setLayout(layout)
+                dialog.exec_()
+
+        except Exception as e:
+            QMessageBox.warning(self, "Fit Error", f"Gaussian fit failed: {str(e)}")
+
+    def fit_2d_ring(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or current_tab.current_image_data is None:
+            QMessageBox.warning(self, "No Data", "Load data first.")
+            return
+
+        data = current_tab.current_image_data
+
+        if current_tab.current_roi and isinstance(current_tab.current_roi, tuple):
+            xlow, xhigh, ylow, yhigh = current_tab.current_roi
+            data = data[xlow:xhigh, ylow:yhigh]
+            if data.size == 0:
+                QMessageBox.warning(self, "Invalid ROI", "ROI contains no data")
+                return
+
+        ny, nx = data.shape
+        x = np.arange(nx)
+        y = np.arange(ny)
+        xmesh, ymesh = np.meshgrid(x, y)
+        coords = np.vstack((xmesh.ravel(), ymesh.ravel()))
+        data_flat = data.ravel()
+
+        guess = [data.max(), nx / 2, ny / 2, nx / 6, nx / 3, np.median(data)]
+
+        try:
+            popt, pcov = curve_fit(twoD_elliptical_ring, coords, data_flat, p0=guess)
+            perr = np.sqrt(np.diag(pcov))
+
+            msg = (
+                f"2D Elliptical Ring Fit:\n"
+                f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
+                f"X0={popt[1]:.2f}±{perr[1]:.2f}, Y0={popt[2]:.2f}±{perr[2]:.2f}\n"
+                f"Inner R={popt[3]:.2f}±{perr[3]:.2f}, Outer R={popt[4]:.2f}±{perr[4]:.2f}\n"
+                f"Offset={popt[5]:.4g}±{perr[5]:.4g}"
+            )
+
+            QMessageBox.information(self, "Fit Result", msg)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Fit Error", f"Ring fit failed: {str(e)}")
+
+    def add_text_annotation(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or current_tab.current_image_data is None:
+            QMessageBox.warning(self, "No Data", "Load data first.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Text Annotation")
+        layout = QVBoxLayout(dialog)
+
+        form_layout = QGridLayout()
+        form_layout.addWidget(QLabel("X Position:"), 0, 0)
+        x_pos = QLineEdit("100")
+        form_layout.addWidget(x_pos, 0, 1)
+        form_layout.addWidget(QLabel("Y Position:"), 1, 0)
+        y_pos = QLineEdit("100")
+        form_layout.addWidget(y_pos, 1, 1)
+        form_layout.addWidget(QLabel("Text:"), 2, 0)
+        text_input = QLineEdit("Annotation")
+        form_layout.addWidget(text_input, 2, 1)
+        layout.addLayout(form_layout)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec_() == QDialog.Accepted:
+            try:
+                x = int(x_pos.text())
+                y = int(y_pos.text())
+                text = text_input.text()
+                current_tab.add_text_annotation(x, y, text)
+            except ValueError:
+                QMessageBox.warning(
+                    self, "Invalid Input", "Please enter valid numeric coordinates"
+                )
+
+    def add_arrow_annotation(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or current_tab.current_image_data is None:
+            QMessageBox.warning(self, "No Data", "Load data first.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Arrow Annotation")
+        layout = QVBoxLayout(dialog)
+
+        form_layout = QGridLayout()
+        form_layout.addWidget(QLabel("Start X:"), 0, 0)
+        x1_pos = QLineEdit("100")
+        form_layout.addWidget(x1_pos, 0, 1)
+        form_layout.addWidget(QLabel("Start Y:"), 1, 0)
+        y1_pos = QLineEdit("100")
+        form_layout.addWidget(y1_pos, 1, 1)
+        form_layout.addWidget(QLabel("End X:"), 2, 0)
+        x2_pos = QLineEdit("150")
+        form_layout.addWidget(x2_pos, 2, 1)
+        form_layout.addWidget(QLabel("End Y:"), 3, 0)
+        y2_pos = QLineEdit("150")
+        form_layout.addWidget(y2_pos, 3, 1)
+        layout.addLayout(form_layout)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec_() == QDialog.Accepted:
+            try:
+                x1 = int(x1_pos.text())
+                y1 = int(y1_pos.text())
+                x2 = int(x2_pos.text())
+                y2 = int(y2_pos.text())
+                current_tab.add_arrow_annotation(x1, y1, x2, y2)
+            except ValueError:
+                QMessageBox.warning(
+                    self, "Invalid Input", "Please enter valid numeric coordinates"
+                )
+
+    def show_about_dialog(self):
+        about_text = """
+        <h2>Solar Radio Image Viewer</h2>
+        <p>A tool for visualizing and analyzing CASA radio astronomy images.</p>
+        
+        <h3>Features:</h3>
+        <ul>
+            <li>Multi-tab interface for comparing images</li>
+            <li>Various color maps and stretches including power-law normalization</li>
+            <li>Region selection and statistics</li>
+            <li>2D model fitting (Gaussian and Elliptical Ring)</li>
+            <li>Annotations</li>
+            <li>Batch processing</li>
+            <li>Dark theme for comfortable viewing</li>
+            <li>Keyboard shortcuts for efficient workflow</li>
+        </ul>
+        
+        <p>Press F1 for keyboard shortcuts</p>
+        
+        <h3>Author Information:</h3>
+        <p>Developed by: Soham Dey</p>
+        <p>Email: sohamd943@gmail.com</p>
+        <p>Date: March 2025</p>
+        
+        <p><small>Version 1.0</small></p>
+        """
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("About Solar Radio Image Viewer")
+        msg_box.setTextFormat(Qt.RichText)
+        msg_box.setText(about_text)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.exec_()
+
+    def show_keyboard_shortcuts(self):
+        shortcuts_text = """
+        <h3>Keyboard Shortcuts</h3>
+        <table>
+            <tr><th>Key</th><th>Action</th></tr>
+            <tr><td>Ctrl+O</td><td>Open CASA Image</td></tr>
+            <tr><td>Ctrl+E</td><td>Export Figure</td></tr>
+            <tr><td>Ctrl+F</td><td>Export as FITS</td></tr>
+            <tr><td>Ctrl+Q</td><td>Exit</td></tr>
+            <tr><td>Ctrl+B</td><td>Batch Processing</td></tr>
+            <tr><td>Ctrl+M</td><td>Image Metadata</td></tr>
+            <tr><td>Ctrl+S</td><td>Export Sub-Image</td></tr>
+            <tr><td>Ctrl+R</td><td>Export ROI as Region</td></tr>
+            <tr><td>Ctrl+G</td><td>Fit 2D Gaussian</td></tr>
+            <tr><td>Ctrl+L</td><td>Fit Elliptical Ring</td></tr>
+            <tr><td>Ctrl+T</td><td>Add Text Annotation</td></tr>
+            <tr><td>Ctrl+A</td><td>Add Arrow Annotation</td></tr>
+            <tr><td>F5</td><td>Auto Min/Max</td></tr>
+            <tr><td>F6</td><td>Auto Percentile</td></tr>
+            <tr><td>F7</td><td>Auto Median±3×RMS</td></tr>
+            <tr><td>Ctrl+N</td><td>Add New Tab</td></tr>
+            <tr><td>Ctrl+W</td><td>Close Current Tab</td></tr>
+            <tr><td>Space</td><td>Cycle Region Selection Mode</td></tr>
+            <tr><td>1</td><td>Auto Min/Max</td></tr>
+            <tr><td>2</td><td>Auto Percentile</td></tr>
+            <tr><td>3</td><td>Auto Median±3×RMS</td></tr>
+            <tr><td>Left Arrow</td><td>Previous Tab</td></tr>
+            <tr><td>Right Arrow</td><td>Next Tab</td></tr>
+        </table>
+        """
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Keyboard Shortcuts")
+        msg_box.setTextFormat(Qt.RichText)
+        msg_box.setText(shortcuts_text)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.exec_()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Space:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.radio_rect.setChecked(True)
+                current_tab.set_region_mode(RegionMode.RECTANGLE)
+                self.statusBar().showMessage("Rectangle selection mode")
+        elif event.key() == Qt.Key_1:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.auto_minmax()
+        elif event.key() == Qt.Key_2:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.auto_percentile()
+        elif event.key() == Qt.Key_3:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.auto_median_rms()
+        elif event.key() == Qt.Key_Left:
+            current_idx = self.tab_widget.currentIndex()
+            if current_idx > 0:
+                self.tab_widget.setCurrentIndex(current_idx - 1)
+        elif event.key() == Qt.Key_Right:
+            current_idx = self.tab_widget.currentIndex()
+            if current_idx < self.tab_widget.count() - 1:
+                self.tab_widget.setCurrentIndex(current_idx + 1)
+        else:
+            super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        try:
+            casa_logs = [
+                f
+                for f in os.listdir(".")
+                if f.startswith("casa-") and f.endswith(".log")
+            ]
+            for log in casa_logs:
+                try:
+                    os.remove(log)
+                except:
+                    pass
+        except:
+            pass
+        super().closeEvent(event)
