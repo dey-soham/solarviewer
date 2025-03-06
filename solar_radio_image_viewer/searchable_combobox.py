@@ -15,6 +15,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QIcon
+import pkg_resources
+
 
 class SearchDialog(QDialog):
     """A dialog for searching and selecting colormaps"""
@@ -90,7 +92,10 @@ class SearchDialog(QDialog):
             if obj == self.search_edit:
                 if event.key() == Qt.Key_Up or event.key() == Qt.Key_Down:
                     self.list_widget.setFocus()
-                    if (self.list_widget.count() > 0 and not self.list_widget.currentItem()):
+                    if (
+                        self.list_widget.count() > 0
+                        and not self.list_widget.currentItem()
+                    ):
                         self.list_widget.setCurrentRow(0)
                     return True
                 elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
@@ -111,11 +116,13 @@ class SearchDialog(QDialog):
                     return True
         return super().eventFilter(obj, event)
 
+
 class ColormapSelector(QWidget):
     """
     A widget that combines a simple dropdown for preferred colormaps
     and a search button that expands to show a search area for all colormaps.
     """
+
     colormapSelected = pyqtSignal(str)
 
     def __init__(self, parent=None, preferred_items=None, all_items=None):
@@ -134,11 +141,19 @@ class ColormapSelector(QWidget):
         self.combo.currentTextChanged.connect(self.on_combo_changed)
         self.main_layout.addWidget(self.combo, 1)
 
-        self.search_button = QPushButton("All")
+        self.search_button = QPushButton()
+        self.search_button.setObjectName("IconOnlyNBGButton")
         self.search_button.setToolTip("Search all colormaps")
-        self.search_button.setMaximumWidth(40)
-        search_icon = self.style().standardIcon(QStyle.SP_FileDialogContentsView)
-        self.search_button.setIcon(search_icon)
+        self.search_button.setMaximumWidth(32)
+        self.search_button.setFixedSize(32, 32)
+        self.search_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/search.png"
+                )
+            )
+        )
+        self.search_button.setIconSize(QSize(24, 24))
         self.search_button.clicked.connect(self.show_search_dialog)
         self.main_layout.addWidget(self.search_button)
 
@@ -190,4 +205,3 @@ class ColormapSelector(QWidget):
             if not found:
                 self.combo.addItem(text)
                 self.combo.setCurrentText(text)
-

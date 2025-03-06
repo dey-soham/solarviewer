@@ -136,6 +136,7 @@ def get_pixel_values_from_image(
     Raises:
       RuntimeError: For errors in reading the image or if required dimensions are missing.
     """
+
     if not CASA_AVAILABLE:
         raise RuntimeError("CASA is not available")
 

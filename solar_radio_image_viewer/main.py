@@ -3,6 +3,7 @@ import sys
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QPalette, QColor
 from PyQt5.QtCore import Qt
+
 from .viewer import SolarRadioImageViewerApp
 from .styles import DARK_PALETTE, STYLESHEET
 
