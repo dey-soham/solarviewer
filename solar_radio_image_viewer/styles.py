@@ -43,7 +43,7 @@ STYLESHEET = f"""
     QPushButton:hover {{
         background-color: #484848;
     }}
-    
+
     QPushButton:pressed {{
         background-color: #303030;
     }}
@@ -51,6 +51,33 @@ STYLESHEET = f"""
     QPushButton:disabled {{
         color: {DARK_PALETTE['disabled']};
     }}
+
+    QPushButton#IconOnlyButton {{
+        min-width: 30px;
+        max-width: 30px;
+        /*min-height: 32px;*/
+        max-height: 30px;
+        /*padding: 2px;*/
+    }}
+
+    QPushButton#IconOnlyNBGButton {{
+        background-color: transparent;  /* no background */
+        border: none;                  /* no border */
+        padding: 12px;                  /* no extra space */
+        margin: 0px;                   /* optional: remove outer margins */
+        min-width: 0px;                  /* override any global min-width */
+        min-height: 0px;                 /* override any global min-height */
+    }}
+
+    QPushButton#IconOnlyNBGButton:hover {{
+        background-color: #484848;  
+    }}
+
+    QPushButton#IconOnlyNBGButton:pressed {{
+        background-color: #303030;
+    }}
+
+
     
     QLineEdit, QComboBox, QSpinBox {{
         background-color: {DARK_PALETTE['base']};
@@ -108,4 +135,3 @@ STYLESHEET = f"""
         min-height: 28px;
     }}
 """
-

@@ -1,6 +1,7 @@
 import sys
 import os
 import numpy as np
+import pkg_resources
 import matplotlib
 
 matplotlib.use("Qt5Agg")
@@ -58,8 +59,9 @@ from PyQt5.QtWidgets import (
     QActionGroup,
     QDoubleSpinBox,
 )
-from PyQt5.QtCore import Qt, QSettings, QSize
+from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
 from PyQt5.QtGui import QIcon, QColor, QPalette
+
 
 from .norms import SqrtNorm, AsinhNorm, PowerNorm
 from .utils import (
@@ -181,9 +183,39 @@ class SolarRadioImageTab(QWidget):
         file_layout.setSpacing(8)
         self.dir_entry = QLineEdit()
         self.dir_entry.setPlaceholderText("Select image directory or FITS file...")
-        browse_btn = QPushButton("Browse")
-        browse_btn.setIcon(QIcon.fromTheme("document-open"))
+        browse_btn = QPushButton()
+        browse_btn.setObjectName("IconOnlyNBGButton")
+        browse_btn.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/browse.png"
+                )
+            )
+        )
+        browse_btn.setIconSize(QSize(32, 32))
+        browse_btn.setToolTip("Browse")
+        browse_btn.setFixedSize(32, 32)
         browse_btn.clicked.connect(self.select_file_or_directory)
+        browse_btn.setStyleSheet(
+            """
+        QPushButton {
+            background-color: transparent;
+            min-width: 0px;
+            min-height: 0px;
+            padding-left: 22px;
+            padding-right: 22px;
+            padding-top: 22px;
+            padding-bottom: 18px;
+            margin-top: -4px;
+        }
+        QPushButton:hover {
+            background-color: #484848;
+        }
+        QPushButton:pressed {
+            background-color: #303030;
+        }
+        """
+        )
         file_layout.addWidget(self.dir_entry, 1)
         file_layout.addWidget(browse_btn)
         layout.addLayout(file_layout)
@@ -243,8 +275,18 @@ class SolarRadioImageTab(QWidget):
         self.show_contours_checkbox = QCheckBox("Show Contours")
         self.show_contours_checkbox.setChecked(False)
         self.show_contours_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        self.contour_settings_button = QPushButton("Settings")
-        self.contour_settings_button.setIcon(QIcon.fromTheme("preferences-system"))
+        self.contour_settings_button = QPushButton()
+        self.contour_settings_button.setObjectName("IconOnlyNBGButton")
+        self.contour_settings_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/settings.png"
+                )
+            )
+        )
+        self.contour_settings_button.setIconSize(QSize(24, 24))
+        self.contour_settings_button.setToolTip("Contour Settings")
+        self.contour_settings_button.setFixedSize(32, 32)
         self.contour_settings_button.clicked.connect(self.show_contour_settings)
         contour_layout.addWidget(self.show_contours_checkbox)
         contour_layout.addWidget(self.contour_settings_button)
@@ -293,11 +335,31 @@ class SolarRadioImageTab(QWidget):
         group = QGroupBox("Navigation")
         layout = QVBoxLayout(group)
         zoom_layout = QHBoxLayout()
-        self.zoom_in_button = QPushButton("Zoom In")
-        self.zoom_in_button.setIcon(QIcon.fromTheme("zoom-in"))
+        self.zoom_in_button = QPushButton()
+        self.zoom_in_button.setObjectName("IconOnlyButton")
+        self.zoom_in_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/zoom_in.png"
+                )
+            )
+        )
+        self.zoom_in_button.setIconSize(QSize(24, 24))
+        self.zoom_in_button.setToolTip("Zoom In")
+        self.zoom_in_button.setFixedSize(32, 32)
         self.zoom_in_button.clicked.connect(self.zoom_in)
-        self.zoom_out_button = QPushButton("Zoom Out")
-        self.zoom_out_button.setIcon(QIcon.fromTheme("zoom-out"))
+        self.zoom_out_button = QPushButton()
+        self.zoom_out_button.setObjectName("IconOnlyButton")
+        self.zoom_out_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/zoom_out.png"
+                )
+            )
+        )
+        self.zoom_out_button.setIconSize(QSize(24, 24))
+        self.zoom_out_button.setToolTip("Zoom Out")
+        self.zoom_out_button.setFixedSize(32, 32)
         self.zoom_out_button.clicked.connect(self.zoom_out)
         self.zoom_60arcmin_button = QPushButton("1°×1°")
         self.zoom_60arcmin_button.clicked.connect(self.zoom_60arcmin)
@@ -327,20 +389,45 @@ class SolarRadioImageTab(QWidget):
 
     def setup_figure_toolbar(self, parent_layout):
         toolbar = QToolBar()
-        toolbar.setIconSize(QSize(20, 20))
+        toolbar.setIconSize(QSize(24, 24))
         action_group = QActionGroup(self)
         self.rect_action = QAction(
-            QIcon.fromTheme("edit-select"), "Rectangle Select", self
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/rectangle_selection.png"
+                )
+            ),
+            "",
+            self,
         )
+        self.rect_action.setToolTip("Rectangle Select")
         self.rect_action.setCheckable(True)
         self.rect_action.setChecked(True)
         self.rect_action.triggered.connect(
             lambda: self.set_region_mode(RegionMode.RECTANGLE)
         )
         action_group.addAction(self.rect_action)
-        self.zoom_in_action = QAction(QIcon.fromTheme("zoom-in"), "Zoom In", self)
+        self.zoom_in_action = QAction(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/zoom_in.png"
+                )
+            ),
+            "",
+            self,
+        )
+        self.zoom_in_action.setToolTip("Zoom In")
         self.zoom_in_action.triggered.connect(self.zoom_in)
-        self.zoom_out_action = QAction(QIcon.fromTheme("zoom-out"), "Zoom Out", self)
+        self.zoom_out_action = QAction(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/zoom_out.png"
+                )
+            ),
+            "",
+            self,
+        )
+        self.zoom_out_action.setToolTip("Zoom Out")
         self.zoom_out_action.triggered.connect(self.zoom_out)
         toolbar.addActions(
             [self.rect_action, self.zoom_in_action, self.zoom_out_action]
@@ -351,7 +438,18 @@ class SolarRadioImageTab(QWidget):
         solar_layout.setContentsMargins(0, 0, 0, 0)
         self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
         self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        self.solar_disk_center_button = QPushButton("Set Center")
+        self.solar_disk_center_button = QPushButton()
+        self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
+        self.solar_disk_center_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/settings.png"
+                )
+            )
+        )
+        self.solar_disk_center_button.setIconSize(QSize(24, 24))
+        self.solar_disk_center_button.setToolTip("Set Solar Disk Center")
+        self.solar_disk_center_button.setFixedSize(32, 32)
         self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
         solar_layout.addWidget(self.show_solar_disk_checkbox)
         solar_layout.addWidget(self.solar_disk_center_button)
@@ -416,6 +514,25 @@ class SolarRadioImageTab(QWidget):
                 self.dir_entry.setText(file_path)
                 self.on_visualization_changed()
                 self.auto_minmax()
+
+    def schedule_plot(self):
+        # If a timer already exists and is active, stop it.
+        if hasattr(self, "_plot_timer") and self._plot_timer.isActive():
+            self._plot_timer.stop()
+        else:
+            self._plot_timer = QTimer(self)
+            self._plot_timer.setSingleShot(True)
+            # Use a lambda to call plot_image with current parameters.
+            self._plot_timer.timeout.connect(
+                lambda: self.plot_image(
+                    float(self.vmin_entry.text()),
+                    float(self.vmax_entry.text()),
+                    self.stretch_combo.currentText(),
+                    self.cmap_combo.currentText(),
+                    float(self.gamma_entry.text()),
+                )
+            )
+        self._plot_timer.start(10)  # 10ms delay
 
     def plot_data(self):
         self.on_visualization_changed()
@@ -671,8 +788,8 @@ class SolarRadioImageTab(QWidget):
             gamma = 1.0
 
         if self.current_image_data is not None:
-            self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
-
+            # self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+            self.schedule_plot()
         main_window = self.parent()
         if main_window and hasattr(main_window, "statusBar"):
             main_window.statusBar().showMessage(f"Changed stretch to {stretch}")
@@ -721,7 +838,6 @@ class SolarRadioImageTab(QWidget):
         self.current_image_data = pix
         self.current_wcs = csys
         self.psf = psf
-
         if pix is not None:
             height, width = pix.shape
             self.solar_disk_center = (width // 2, height // 2)
@@ -732,14 +848,23 @@ class SolarRadioImageTab(QWidget):
         else:
             self.show_beam_checkbox.setEnabled(True)
 
-        self.plot_image()
+        # self.plot_image()
+        self.schedule_plot()
 
     def plot_image(
         self, vmin_val=None, vmax_val=None, stretch="linear", cmap="viridis", gamma=1.0
     ):
         if self.current_image_data is None:
             return
+
         data = self.current_image_data
+        n_dims = len(data.shape)
+
+        # Cache the transposed image if the current image hasn't changed.
+        if not hasattr(self, "_cached_data_id") or self._cached_data_id != id(data):
+            self._cached_transposed = data.transpose()
+            self._cached_data_id = id(data)
+        transposed_data = self._cached_transposed
 
         stored_xlim = None
         stored_ylim = None
@@ -753,6 +878,7 @@ class SolarRadioImageTab(QWidget):
 
         self.figure.clear()
 
+        # Determine vmin/vmax
         dmin = data.min()
         dmax = data.max()
         if vmin_val is None:
@@ -762,6 +888,7 @@ class SolarRadioImageTab(QWidget):
         if vmax_val <= vmin_val:
             vmax_val = vmin_val + 1e-6
 
+        # Create the normalization object
         if stretch == "log":
             safe_min = max(vmin_val, 1e-8)
             safe_max = max(vmax_val, safe_min * 1.01)
@@ -775,30 +902,40 @@ class SolarRadioImageTab(QWidget):
         else:
             norm = Normalize(vmin=vmin_val, vmax=vmax_val)
 
+        # Cache the WCS object if current_wcs hasn't changed.
         wcs_obj = None
         if self.current_wcs:
-            try:
-                from astropy.wcs import WCS
+            if (not hasattr(self, "_cached_wcs_id")) or (
+                self._cached_wcs_id != id(self.current_wcs)
+            ):
+                try:
+                    from astropy.wcs import WCS
 
-                ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
-                ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
-                increment = self.current_wcs.increment()["numeric"][0:2]
-                wcs_obj = WCS(naxis=2)
-                wcs_obj.wcs.crpix = ref_pix
-                wcs_obj.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
-                wcs_obj.wcs.cdelt = [
-                    increment[0] * 180 / np.pi,
-                    increment[1] * 180 / np.pi,
-                ]
-                wcs_obj.wcs.ctype = ["RA---SIN", "DEC--SIN"]
-            except Exception as e:
-                print(f"Error creating WCS: {e}")
-                wcs_obj = None
+                    ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
+                    ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
+                    increment = self.current_wcs.increment()["numeric"][0:2]
+                    self._cached_wcs_obj = WCS(naxis=2)
+                    self._cached_wcs_obj.wcs.crpix = ref_pix
+                    self._cached_wcs_obj.wcs.crval = [
+                        ref_val[0] * 180 / np.pi,
+                        ref_val[1] * 180 / np.pi,
+                    ]
+                    self._cached_wcs_obj.wcs.cdelt = [
+                        increment[0] * 180 / np.pi,
+                        increment[1] * 180 / np.pi,
+                    ]
+                    self._cached_wcs_obj.wcs.ctype = ["RA---SIN", "DEC--SIN"]
+                    self._cached_wcs_id = id(self.current_wcs)
+                except Exception as e:
+                    print(f"Error creating WCS: {e}")
+                    self._cached_wcs_obj = None
+            wcs_obj = self._cached_wcs_obj
 
+        # Plot with or without WCS
         if wcs_obj is not None:
             try:
                 ax = self.figure.add_subplot(111, projection=wcs_obj)
-                im = ax.imshow(data.transpose(), origin="lower", cmap=cmap, norm=norm)
+                im = ax.imshow(transposed_data, origin="lower", cmap=cmap, norm=norm)
                 ax.set_xlabel("Right Ascension (J2000)")
                 ax.set_ylabel("Declination (J2000)")
                 if (
@@ -808,20 +945,18 @@ class SolarRadioImageTab(QWidget):
                     ax.coords.grid(True, color="white", alpha=0.5, linestyle="--")
                 else:
                     ax.coords.grid(False)
-                ra_axis = ax.coords[0]
-                dec_axis = ax.coords[1]
-                ra_axis.set_major_formatter("hh:mm:ss.s")
-                dec_axis.set_major_formatter("dd:mm:ss")
+                ax.coords[0].set_major_formatter("hh:mm:ss.s")
+                ax.coords[1].set_major_formatter("dd:mm:ss")
                 ax.tick_params(axis="both", which="major", labelsize=10)
             except Exception as e:
                 print(f"Error setting up WCS axes: {e}")
                 ax = self.figure.add_subplot(111)
-                im = ax.imshow(data.transpose(), origin="lower", cmap=cmap, norm=norm)
+                im = ax.imshow(transposed_data, origin="lower", cmap=cmap, norm=norm)
                 ax.set_xlabel("Pixel X")
                 ax.set_ylabel("Pixel Y")
         else:
             ax = self.figure.add_subplot(111)
-            im = ax.imshow(data.transpose(), origin="lower", cmap=cmap, norm=norm)
+            im = ax.imshow(transposed_data, origin="lower", cmap=cmap, norm=norm)
             ax.set_xlabel("Pixel X")
             ax.set_ylabel("Pixel Y")
 
@@ -832,6 +967,7 @@ class SolarRadioImageTab(QWidget):
         ax.set_title(os.path.basename(self.imagename) if self.imagename else "No Image")
         self.figure.colorbar(im, ax=ax, label="Data")
 
+        # Draw beam if available
         if self.psf and self.show_beam_checkbox.isChecked():
             try:
                 if isinstance(self.psf["major"]["value"], list):
@@ -849,7 +985,6 @@ class SolarRadioImageTab(QWidget):
                 else:
                     pa_deg = float(self.psf["positionangle"]["value"]) - 90
 
-                ny, nx = data.shape
                 if self.current_wcs:
                     cdelt = self.current_wcs.increment()["numeric"][0:2]
                     if isinstance(cdelt, list):
@@ -892,6 +1027,7 @@ class SolarRadioImageTab(QWidget):
             except Exception as e:
                 print(f"Error drawing beam: {e}")
 
+        # Draw solar disk if enabled
         if (
             hasattr(self, "show_solar_disk_checkbox")
             and self.show_solar_disk_checkbox.isChecked()
@@ -943,6 +1079,7 @@ class SolarRadioImageTab(QWidget):
             except Exception as e:
                 print(f"Error drawing solar disk: {e}")
 
+        # Draw contours if enabled
         if (
             hasattr(self, "show_contours_checkbox")
             and self.show_contours_checkbox.isChecked()
@@ -950,7 +1087,9 @@ class SolarRadioImageTab(QWidget):
             self.draw_contours(ax)
 
         self.init_region_editor(ax)
-        self.canvas.draw()
+
+        # Instead of immediate draw, use draw_idle to coalesce multiple calls
+        self.canvas.draw_idle()
 
     def _update_beam_position(self, ax):
         if not hasattr(self, "beam_properties") or not self.beam_properties:
@@ -1029,7 +1168,8 @@ class SolarRadioImageTab(QWidget):
             except (ValueError, AttributeError):
                 gamma = 1.0
 
-            self.plot_image(dmin, dmax, stretch, cmap, gamma)
+            # self.plot_image(dmin, dmax, stretch, cmap, gamma)
+            self.schedule_plot()
 
             if main_window and hasattr(main_window, "statusBar"):
                 main_window.statusBar().showMessage(
@@ -1061,7 +1201,8 @@ class SolarRadioImageTab(QWidget):
             self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
         )
 
-        self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+        # self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+        self.schedule_plot()
 
     def add_text_annotation(self, x, y, text):
         ax = self.figure.gca()
@@ -1122,7 +1263,8 @@ class SolarRadioImageTab(QWidget):
         if dialog.exec_() == QDialog.Accepted:
             self.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
             self.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
-            self.plot_image()
+            # self.plot_image()
+            self.schedule_plot()
 
     def zoom_in(self):
         if self.current_image_data is None:

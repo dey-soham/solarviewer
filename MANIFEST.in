@@ -1,0 +1,2 @@
+recursive-include solar_radio_image_viewer/assets *.png
+
