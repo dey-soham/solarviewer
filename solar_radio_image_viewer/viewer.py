@@ -156,18 +156,34 @@ class SolarRadioImageTab(QWidget):
         main_layout.addWidget(stats_panel)
 
     def create_file_controls(self, parent_layout):
-        from PyQt5.QtWidgets import QGroupBox, QFormLayout
-
         group = QGroupBox("Image Selection")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
+
+        # Add radio buttons for selection type
+        selection_type_layout = QHBoxLayout()
+        self.selection_type_group = QButtonGroup(self)
+
+        self.radio_casa_image = QRadioButton("CASA Image")
+        self.radio_fits_file = QRadioButton("FITS File")
+        self.radio_casa_image.setChecked(True)  # Default to CASA image
+
+        self.selection_type_group.addButton(self.radio_casa_image)
+        self.selection_type_group.addButton(self.radio_fits_file)
+
+        selection_type_layout.addWidget(self.radio_casa_image)
+        selection_type_layout.addWidget(self.radio_fits_file)
+        selection_type_layout.addStretch()
+
+        layout.addLayout(selection_type_layout)
+
         file_layout = QHBoxLayout()
         file_layout.setSpacing(8)
         self.dir_entry = QLineEdit()
-        self.dir_entry.setPlaceholderText("Select image directory...")
+        self.dir_entry.setPlaceholderText("Select image directory or FITS file...")
         browse_btn = QPushButton("Browse")
         browse_btn.setIcon(QIcon.fromTheme("document-open"))
-        browse_btn.clicked.connect(self.select_directory)
+        browse_btn.clicked.connect(self.select_file_or_directory)
         file_layout.addWidget(self.dir_entry, 1)
         file_layout.addWidget(browse_btn)
         layout.addLayout(file_layout)
@@ -187,8 +203,6 @@ class SolarRadioImageTab(QWidget):
         parent_layout.addWidget(group)
 
     def create_display_controls(self, parent_layout):
-        from PyQt5.QtWidgets import QGroupBox, QFormLayout
-
         group = QGroupBox("Display Settings")
         layout = QFormLayout(group)
         radio_colormaps = [
@@ -238,8 +252,6 @@ class SolarRadioImageTab(QWidget):
         parent_layout.addWidget(group)
 
     def create_range_controls(self, parent_layout):
-        from PyQt5.QtWidgets import QGroupBox
-
         group = QGroupBox("Intensity Range")
         layout = QVBoxLayout(group)
         range_layout = QHBoxLayout()
@@ -278,8 +290,6 @@ class SolarRadioImageTab(QWidget):
         parent_layout.addWidget(group)
 
     def create_nav_controls(self, parent_layout):
-        from PyQt5.QtWidgets import QGroupBox
-
         group = QGroupBox("Navigation")
         layout = QVBoxLayout(group)
         zoom_layout = QHBoxLayout()
@@ -316,8 +326,6 @@ class SolarRadioImageTab(QWidget):
         parent_layout.addWidget(group)
 
     def setup_figure_toolbar(self, parent_layout):
-        from PyQt5.QtWidgets import QToolBar, QActionGroup
-
         toolbar = QToolBar()
         toolbar.setIconSize(QSize(20, 20))
         action_group = QActionGroup(self)
@@ -351,8 +359,6 @@ class SolarRadioImageTab(QWidget):
         parent_layout.addWidget(toolbar)
 
     def create_stats_table(self, parent_layout):
-        from PyQt5.QtWidgets import QGroupBox, QHeaderView
-
         group = QGroupBox("Region Statistics")
         layout = QVBoxLayout(group)
         self.info_label = QLabel("No selection")
@@ -380,8 +386,6 @@ class SolarRadioImageTab(QWidget):
         parent_layout.addWidget(group)
 
     def create_coord_display(self, parent_layout):
-        from PyQt5.QtWidgets import QGroupBox
-
         group = QGroupBox("Cursor Position")
         layout = QVBoxLayout(group)
         self.coord_label = QLabel("RA: −\nDEC: −")
@@ -391,17 +395,27 @@ class SolarRadioImageTab(QWidget):
         layout.addWidget(self.coord_label)
         parent_layout.addWidget(group)
 
-    def select_directory(self):
-        from PyQt5.QtWidgets import QFileDialog
-
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select a CASA Image Directory"
-        )
-        if directory:
-            self.imagename = directory
-            self.dir_entry.setText(directory)
-            self.on_visualization_changed()
-            self.auto_minmax()
+    def select_file_or_directory(self):
+        if self.radio_casa_image.isChecked():
+            # Select CASA image directory
+            directory = QFileDialog.getExistingDirectory(
+                self, "Select a CASA Image Directory"
+            )
+            if directory:
+                self.imagename = directory
+                self.dir_entry.setText(directory)
+                self.on_visualization_changed()
+                self.auto_minmax()
+        else:
+            # Select FITS file
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
+            )
+            if file_path:
+                self.imagename = file_path
+                self.dir_entry.setText(file_path)
+                self.on_visualization_changed()
+                self.auto_minmax()
 
     def plot_data(self):
         self.on_visualization_changed()
@@ -1599,6 +1613,12 @@ class SolarRadioImageViewerApp(QMainWindow):
         open_act.triggered.connect(self.select_directory)
         file_menu.addAction(open_act)
 
+        open_fits_act = QAction("Open FITS File...", self)
+        open_fits_act.setShortcut("Ctrl+Shift+O")
+        open_fits_act.setStatusTip("Open a FITS file")
+        open_fits_act.triggered.connect(self.select_fits_file)
+        file_menu.addAction(open_fits_act)
+
         export_act = QAction("Export Figure", self)
         export_act.setShortcut("Ctrl+E")
         export_act.setStatusTip("Export current figure as image file")
@@ -1747,9 +1767,22 @@ class SolarRadioImageViewerApp(QMainWindow):
             del self.tabs[current_idx]
 
     def select_directory(self):
+        """Select a CASA image directory from the menu"""
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
-            current_tab.select_directory()
+            # Set the radio button to CASA image
+            current_tab.radio_casa_image.setChecked(True)
+            # Call the select_file_or_directory method
+            current_tab.select_file_or_directory()
+
+    def select_fits_file(self):
+        """Select a FITS file from the menu"""
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab:
+            # Set the radio button to FITS file
+            current_tab.radio_fits_file.setChecked(True)
+            # Call the select_file_or_directory method
+            current_tab.select_file_or_directory()
 
     def auto_minmax(self):
         current_tab = self.tab_widget.currentWidget()
@@ -2225,3 +2258,13 @@ class SolarRadioImageViewerApp(QMainWindow):
         except:
             pass
         super().closeEvent(event)
+
+    def select_directory(self):
+        """Legacy method for backward compatibility"""
+        self.radio_casa_image.setChecked(True)
+        self.select_file_or_directory()
+
+    def select_file(self):
+        """Legacy method for backward compatibility"""
+        self.radio_fits_file.setChecked(True)
+        self.select_file_or_directory()

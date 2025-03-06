@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt
 from .viewer import SolarRadioImageViewerApp
 from .styles import DARK_PALETTE, STYLESHEET
 
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -30,6 +31,6 @@ def main():
     window.show()
     sys.exit(app.exec_())
 
+
 if __name__ == "__main__":
     main()
-
