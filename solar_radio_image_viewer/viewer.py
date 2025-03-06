@@ -361,10 +361,24 @@ class SolarRadioImageTab(QWidget):
         self.zoom_out_button.setToolTip("Zoom Out")
         self.zoom_out_button.setFixedSize(32, 32)
         self.zoom_out_button.clicked.connect(self.zoom_out)
+        self.reset_view_button = QPushButton()
+        self.reset_view_button.setObjectName("IconOnlyButton")
+        self.reset_view_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/reset.png"
+                )
+            )
+        )
+        self.reset_view_button.setIconSize(QSize(24, 24))
+        self.reset_view_button.setToolTip("Reset View")
+        self.reset_view_button.setFixedSize(32, 32)
+        self.reset_view_button.clicked.connect(self.reset_view)
         self.zoom_60arcmin_button = QPushButton("1°×1°")
         self.zoom_60arcmin_button.clicked.connect(self.zoom_60arcmin)
         zoom_layout.addWidget(self.zoom_in_button)
         zoom_layout.addWidget(self.zoom_out_button)
+        zoom_layout.addWidget(self.reset_view_button)
         zoom_layout.addWidget(self.zoom_60arcmin_button)
         layout.addLayout(zoom_layout)
         self.plot_button = QPushButton("Update Display")
@@ -429,8 +443,24 @@ class SolarRadioImageTab(QWidget):
         )
         self.zoom_out_action.setToolTip("Zoom Out")
         self.zoom_out_action.triggered.connect(self.zoom_out)
+        self.reset_view_action = QAction(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/reset.png"
+                )
+            ),
+            "",
+            self,
+        )
+        self.reset_view_action.setToolTip("Reset View")
+        self.reset_view_action.triggered.connect(self.reset_view)
         toolbar.addActions(
-            [self.rect_action, self.zoom_in_action, self.zoom_out_action]
+            [
+                self.rect_action,
+                self.zoom_in_action,
+                self.zoom_out_action,
+                self.reset_view_action,
+            ]
         )
         toolbar.addSeparator()
         solar_group = QWidget()
@@ -1722,6 +1752,20 @@ class SolarRadioImageTab(QWidget):
     def closeEvent(self, event):
         super().closeEvent(event)
 
+    def reset_view(self):
+        """Reset the view to show the full image with original limits"""
+        if self.current_image_data is None:
+            return
+
+        ax = self.figure.axes[0]
+
+        # Reset to show the full image
+        ax.set_xlim(0, self.current_image_data.shape[0])
+        ax.set_ylim(0, self.current_image_data.shape[1])
+
+        self._update_beam_position(ax)
+        self.canvas.draw()
+
 
 class SolarRadioImageViewerApp(QMainWindow):
     def __init__(self, imagename=None):
@@ -2374,6 +2418,10 @@ class SolarRadioImageViewerApp(QMainWindow):
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
                 current_tab.auto_median_rms()
+        elif event.key() == Qt.Key_R:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.reset_view()
         elif event.key() == Qt.Key_Left:
             current_idx = self.tab_widget.currentIndex()
             if current_idx > 0:
