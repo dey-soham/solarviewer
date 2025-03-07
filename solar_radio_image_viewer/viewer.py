@@ -130,6 +130,12 @@ class SolarRadioImageTab(QWidget):
 
         self.setup_ui()
 
+    def show_status_message(self, message):
+        """Helper method to show messages in the status bar"""
+        main_window = self.window()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(message)
+
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
@@ -689,28 +695,39 @@ class SolarRadioImageTab(QWidget):
                     pass  # Not found in tabs list
 
     def select_file_or_directory(self):
+        import time
+
         if self.radio_casa_image.isChecked():
             # Select CASA image directory
             directory = QFileDialog.getExistingDirectory(
                 self, "Select a CASA Image Directory"
             )
             if directory:
+                start_time = time.time()
                 self.imagename = directory
                 self.dir_entry.setText(directory)
-                self.on_visualization_changed()
-                self.auto_minmax()
+                self.reset_view(show_status_message=False)
+                self.on_visualization_changed(dir_load=True)
+                # self.auto_minmax()
                 self.update_tab_name_from_path(directory)  # Update tab name
+                self.show_status_message(
+                    f"Loaded {directory} in {time.time() - start_time:.2f} seconds"
+                )
         else:
             # Select FITS file
             file_path, _ = QFileDialog.getOpenFileName(
                 self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
             )
             if file_path:
+                start_time = time.time()
                 self.imagename = file_path
                 self.dir_entry.setText(file_path)
-                self.on_visualization_changed()
-                self.auto_minmax()
+                self.on_visualization_changed(dir_load=True)
+                # self.auto_minmax()
                 self.update_tab_name_from_path(file_path)  # Update tab name
+                self.show_status_message(
+                    f"Loaded {file_path} in {time.time() - start_time:.2f} seconds"
+                )
 
     def schedule_plot(self):
         # If a timer already exists and is active, stop it.
@@ -734,7 +751,7 @@ class SolarRadioImageTab(QWidget):
     def plot_data(self):
         self.on_visualization_changed()
 
-    def on_visualization_changed(self, colormap_name=None):
+    def on_visualization_changed(self, colormap_name=None, dir_load=False):
         if not hasattr(self, "imagename") or not self.imagename:
             QMessageBox.warning(
                 self, "No Image", "Please select a CASA image directory first!"
@@ -793,8 +810,13 @@ class SolarRadioImageTab(QWidget):
                         self.cmap_combo.setCurrentText("viridis")
 
             self.load_data(self.imagename, stokes, threshold)
-
-            if vmin_val is None or vmax_val is None:
+            if dir_load:
+                vmin_val = self.current_image_data.min()
+                vmax_val = self.current_image_data.max()
+                self.set_range(vmin_val, vmax_val)
+                self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+                print(f"Plotting image with vmin={vmin_val}, vmax={vmax_val}")
+            elif vmin_val is None or vmax_val is None:
                 self.auto_minmax()
             else:
                 self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
@@ -1030,6 +1052,9 @@ class SolarRadioImageTab(QWidget):
         self.plot_image()
 
     def load_data(self, imagename, stokes, threshold):
+        import time
+
+        start_time = time.time()
         self.imagename = imagename
         pix, csys, psf = get_pixel_values_from_image(imagename, stokes, threshold)
         self.current_image_data = pix
@@ -1046,11 +1071,15 @@ class SolarRadioImageTab(QWidget):
             self.show_beam_checkbox.setEnabled(True)
 
         # self.plot_image()
-        self.schedule_plot()
+        # self.schedule_plot()
+        print(f"Time taken to load data: {time.time() - start_time:.2f} seconds")
 
     def plot_image(
         self, vmin_val=None, vmax_val=None, stretch="linear", cmap="viridis", gamma=1.0
     ):
+        import time
+
+        start_time = time.time()
         if self.current_image_data is None:
             return
 
@@ -1076,12 +1105,10 @@ class SolarRadioImageTab(QWidget):
         self.figure.clear()
 
         # Determine vmin/vmax
-        dmin = data.min()
-        dmax = data.max()
         if vmin_val is None:
-            vmin_val = dmin
+            vmin_val = data.min()
         if vmax_val is None:
-            vmax_val = dmax
+            vmax_val = data.max()
         if vmax_val <= vmin_val:
             vmax_val = vmin_val + 1e-6
 
@@ -1289,6 +1316,7 @@ class SolarRadioImageTab(QWidget):
 
         # Instead of immediate draw, use draw_idle to coalesce multiple calls
         self.canvas.draw_idle()
+        print(f"Time taken to plot image: {time.time() - start_time:.2f} seconds")
 
     def _update_beam_position(self, ax):
         if not hasattr(self, "beam_properties") or not self.beam_properties:
@@ -1400,7 +1428,25 @@ class SolarRadioImageTab(QWidget):
             self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
         )
 
-        # self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+        # Determine which checkbox was changed
+        sender = self.sender()
+        if sender == self.show_beam_checkbox:
+            status = "enabled" if self.show_beam_checkbox.isChecked() else "disabled"
+            self.show_status_message(f"Beam display {status}")
+        elif sender == self.show_grid_checkbox:
+            status = "enabled" if self.show_grid_checkbox.isChecked() else "disabled"
+            self.show_status_message(f"Grid display {status}")
+        elif sender == self.show_solar_disk_checkbox:
+            status = (
+                "enabled" if self.show_solar_disk_checkbox.isChecked() else "disabled"
+            )
+            self.show_status_message(f"Solar disk display {status}")
+        elif sender == self.show_contours_checkbox:
+            status = (
+                "enabled" if self.show_contours_checkbox.isChecked() else "disabled"
+            )
+            self.show_status_message(f"Contours display {status}")
+
         self.schedule_plot()
 
     def add_text_annotation(self, x, y, text):
@@ -1573,6 +1619,7 @@ class SolarRadioImageTab(QWidget):
             self.solar_disk_style["show_center"] = show_center_checkbox.isChecked()
 
             self.schedule_plot()
+            self.show_status_message("Solar disk settings updated")
 
     def zoom_in(self):
         if self.current_image_data is None:
@@ -1593,6 +1640,7 @@ class SolarRadioImageTab(QWidget):
 
         self._update_beam_position(ax)
         self.canvas.draw()
+        self.show_status_message("Zoomed in")
 
     def zoom_out(self):
         if self.current_image_data is None:
@@ -1613,6 +1661,7 @@ class SolarRadioImageTab(QWidget):
 
         self._update_beam_position(ax)
         self.canvas.draw()
+        self.show_status_message("Zoomed out")
 
     def zoom_60arcmin(self):
         if self.current_image_data is None or self.current_wcs is None:
@@ -1638,8 +1687,10 @@ class SolarRadioImageTab(QWidget):
 
             self._update_beam_position(ax)
             self.canvas.draw()
+            self.show_status_message("Zoomed to 1°×1°")
         except Exception as e:
             print(f"Error in zoom_60arcmin: {e}")
+            self.show_status_message(f"Error in zoom_60arcmin: {e}")
 
     def init_region_editor(self, ax):
         if self.roi_selector:
@@ -2030,7 +2081,7 @@ class SolarRadioImageTab(QWidget):
     def closeEvent(self, event):
         super().closeEvent(event)
 
-    def reset_view(self):
+    def reset_view(self, show_status_message=True):
         """Reset the view to show the full image with original limits"""
         if self.current_image_data is None:
             return
@@ -2043,6 +2094,8 @@ class SolarRadioImageTab(QWidget):
 
         self._update_beam_position(ax)
         self.canvas.draw()
+        if show_status_message:
+            self.show_status_message("Reseted plot to full image")
 
 
 class CustomTabBar(QTabBar):
@@ -2320,8 +2373,8 @@ class SolarRadioImageViewerApp(QMainWindow):
         if imagename and os.path.exists(imagename):
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
-            first_tab.on_visualization_changed()
-            first_tab.auto_minmax()
+            first_tab.on_visualization_changed(dir_load=True)
+            # first_tab.auto_minmax()
 
         # Ensure add button is visible after initialization
         QTimer.singleShot(200, self.ensureAddButtonVisible)
@@ -3002,7 +3055,7 @@ class SolarRadioImageViewerApp(QMainWindow):
                     <tr><td><code>1</code></td><td>1°×1° Zoom</td></tr>
                     <tr><td><code>+/=</code></td><td>Zoom In</td></tr>
                     <tr><td><code>-</code></td><td>Zoom Out</td></tr>
-                    <tr><td><code>Space</code></td><td>Rectangle Selection</td></tr>
+                    <tr><td><code>Space/Enter</code></td><td>Update Plot</td></tr>
                 </table>
             </div>
             <div class="section">
@@ -3053,12 +3106,15 @@ class SolarRadioImageViewerApp(QMainWindow):
         dialog.exec_()
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Space:
+        if (
+            event.key() == Qt.Key_Space
+            or event.key() == Qt.Key_Return
+            or event.key() == Qt.Key_Enter
+        ):
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
-                current_tab.radio_rect.setChecked(True)
-                current_tab.set_region_mode(RegionMode.RECTANGLE)
-                self.statusBar().showMessage("Rectangle selection mode")
+                current_tab.schedule_plot()
+                self.statusBar().showMessage("Plot updated")
         elif event.key() == Qt.Key_R:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
