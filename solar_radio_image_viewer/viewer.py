@@ -1878,6 +1878,25 @@ class CustomTabBar(QTabBar):
         # Initialize button position
         QTimer.singleShot(0, self.moveAddButton)
 
+    # Add mouseDoubleClickEvent to handle tab editing
+    def mouseDoubleClickEvent(self, event):
+        """Handle double-click on a tab to edit its text using a dialog"""
+        index = self.tabAt(event.pos())
+        if index >= 0:
+            current_text = self.tabText(index)
+
+            # Use a modal dialog instead of in-place editing to avoid crashes
+            from PyQt5.QtWidgets import QInputDialog
+
+            new_text, ok = QInputDialog.getText(
+                self, "Edit Tab Name", "Enter new tab name:", text=current_text
+            )
+
+            if ok and new_text:
+                self.setTabText(index, new_text)
+
+        super().mouseDoubleClickEvent(event)
+
     def _handle_add_button_hover_enter(self, event):
         self.add_tab_button.setIcon(
             QIcon(
