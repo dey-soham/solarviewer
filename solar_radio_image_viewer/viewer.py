@@ -1312,6 +1312,7 @@ class SolarRadioImageTab(QWidget):
                 ia = IA()
                 ia.open(self.imagename)
                 csys_record = ia.coordsys().torecord()
+                ia.close()
                 if "spectral2" in csys_record:
                     spectral2 = csys_record["spectral2"]
                     wcs = spectral2.get("wcs", {})
@@ -1341,7 +1342,7 @@ class SolarRadioImageTab(QWidget):
                     image_time = None
 
                 if image_time is not None or image_freq is not None:
-                    title = f"Time: {image_time}, Freq: {image_freq}"
+                    title = f"Time: {image_time}   Freq: {image_freq}"
                 else:
                     title = (
                         os.path.basename(self.imagename)
