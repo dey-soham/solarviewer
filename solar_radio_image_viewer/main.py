@@ -28,7 +28,7 @@ def main():
 
     imagename = sys.argv[1] if len(sys.argv) > 1 else None
     window = SolarRadioImageViewerApp(imagename)
-    window.resize(1280, 720)
+    window.resize(1600, 720)
     window.show()
     sys.exit(app.exec_())
 

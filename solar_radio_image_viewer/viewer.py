@@ -136,8 +136,6 @@ class SolarRadioImageTab(QWidget):
         control_layout.setSpacing(15)
         self.create_file_controls(control_layout)
         self.create_display_controls(control_layout)
-        self.create_range_controls(control_layout)
-        self.create_nav_controls(control_layout)
         main_layout.addWidget(control_panel)
 
         # Center Figure Panel
@@ -145,8 +143,8 @@ class SolarRadioImageTab(QWidget):
         figure_layout = QVBoxLayout(figure_panel)
         figure_layout.setContentsMargins(0, 0, 0, 0)
         figure_layout.setSpacing(10)
-        self.setup_figure_toolbar(figure_layout)
         self.setup_canvas(figure_layout)
+        self.setup_figure_toolbar(figure_layout)
         main_layout.addWidget(figure_panel, 1)
 
         # Right Stats Panel
@@ -238,7 +236,10 @@ class SolarRadioImageTab(QWidget):
 
     def create_display_controls(self, parent_layout):
         group = QGroupBox("Display Settings")
-        layout = QFormLayout(group)
+        main_layout = QVBoxLayout(group)
+
+        # Basic display settings
+        form_layout = QFormLayout()
         radio_colormaps = [
             "viridis",
             "plasma",
@@ -257,24 +258,80 @@ class SolarRadioImageTab(QWidget):
         )
         self.cmap_combo.setCurrentText("viridis")
         self.cmap_combo.colormapSelected.connect(self.on_visualization_changed)
-        layout.addRow("Colormap:", self.cmap_combo)
+        form_layout.addRow("Colormap:", self.cmap_combo)
+
         self.stretch_combo = QComboBox()
         self.stretch_combo.addItems(["linear", "sqrt", "log", "arcsinh", "power"])
         self.stretch_combo.setCurrentText("power")
         self.stretch_combo.currentIndexChanged.connect(self.on_stretch_changed)
-        layout.addRow("Stretch:", self.stretch_combo)
-        beam_layout = QHBoxLayout()
+        form_layout.addRow("Stretch:", self.stretch_combo)
+        main_layout.addLayout(form_layout)
+
+        # Overlays subgroup
+        overlays_group = QGroupBox("Overlays")
+        overlays_layout = QVBoxLayout(overlays_group)
+
+        # Grid layout for all overlay controls
+        grid_layout = QGridLayout()
+        grid_layout.setSpacing(10)
+
+        # Basic display options - left side
         self.show_beam_checkbox = QCheckBox("Show Beam")
         self.show_beam_checkbox.setChecked(True)
         self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
+
+        # Basic display options - right side
         self.show_grid_checkbox = QCheckBox("Show Grid")
         self.show_grid_checkbox.setChecked(True)
         self.show_grid_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        beam_layout.addWidget(self.show_beam_checkbox)
-        beam_layout.addWidget(self.show_grid_checkbox)
-        layout.addRow("Overlays:", beam_layout)
-        contour_layout = QHBoxLayout()
-        self.show_contours_checkbox = QCheckBox("Show Contours")
+
+        # Solar disk controls with settings button
+        self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
+        self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        self.solar_disk_center_button = QPushButton()
+        self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
+        self.solar_disk_center_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/settings.png"
+                )
+            )
+        )
+        self.solar_disk_center_button.setIconSize(QSize(24, 24))
+        self.solar_disk_center_button.setToolTip("Set Solar Disk Center")
+        self.solar_disk_center_button.setFixedSize(32, 32)
+        self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
+
+        # Vertical line separator
+        vline_1 = QFrame()
+        vline_1.setFrameShape(QFrame.VLine)
+        vline_1.setFrameShadow(QFrame.Sunken)
+        vline_1.setStyleSheet(
+            """
+            QFrame {
+                color: transparent;
+                border: none;
+                background-color: transparent;
+                width: 2px;
+            }
+        """
+        )
+        vline_2 = QFrame()
+        vline_2.setFrameShape(QFrame.VLine)
+        vline_2.setFrameShadow(QFrame.Sunken)
+        vline_2.setStyleSheet(
+            """
+            QFrame {
+                color: transparent;
+                border: none;
+                background-color: transparent;
+                width: 2px;
+            }
+        """
+        )
+
+        # Contour controls with settings button
+        self.show_contours_checkbox = QCheckBox("Contours")
         self.show_contours_checkbox.setChecked(False)
         self.show_contours_checkbox.stateChanged.connect(self.on_checkbox_changed)
         self.contour_settings_button = QPushButton()
@@ -290,9 +347,95 @@ class SolarRadioImageTab(QWidget):
         self.contour_settings_button.setToolTip("Contour Settings")
         self.contour_settings_button.setFixedSize(32, 32)
         self.contour_settings_button.clicked.connect(self.show_contour_settings)
-        contour_layout.addWidget(self.show_contours_checkbox)
-        contour_layout.addWidget(self.contour_settings_button)
-        layout.addRow("Contours:", contour_layout)
+
+        # Add widgets to grid layout
+        # Row 0: Basic display options
+        grid_layout.addWidget(self.show_beam_checkbox, 0, 0)
+        grid_layout.addWidget(vline_1, 0, 2)
+        grid_layout.addWidget(self.show_grid_checkbox, 0, 3)
+
+        # Row 1: Solar disk and Contours
+        grid_layout.addWidget(self.show_solar_disk_checkbox, 1, 0)
+        grid_layout.addWidget(self.solar_disk_center_button, 1, 1)
+        grid_layout.addWidget(vline_2, 1, 2)  # Same vertical line spans both rows
+        grid_layout.addWidget(self.show_contours_checkbox, 1, 3)
+        grid_layout.addWidget(self.contour_settings_button, 1, 4)
+
+        # Set column stretch to ensure proper spacing
+        grid_layout.setColumnStretch(0, 1)  # Left side checkboxes
+        grid_layout.setColumnStretch(1, 0)  # Left side button
+        grid_layout.setColumnStretch(2, 0)  # Vertical line
+        grid_layout.setColumnStretch(3, 1)  # Right side checkboxes
+        grid_layout.setColumnStretch(4, 0)  # Right side button
+
+        overlays_layout.addLayout(grid_layout)
+        main_layout.addWidget(overlays_group)
+
+        # Intensity Range subgroup
+        intensity_group = QGroupBox("Intensity Range")
+        intensity_layout = QVBoxLayout(intensity_group)
+
+        # Min/Max range
+        range_layout = QHBoxLayout()
+        self.vmin_entry = QLineEdit("0.0")
+        self.vmin_entry.editingFinished.connect(self.on_visualization_changed)
+        self.vmax_entry = QLineEdit("1.0")
+        self.vmax_entry.editingFinished.connect(self.on_visualization_changed)
+        range_layout.addWidget(QLabel("Min:"))
+        range_layout.addWidget(self.vmin_entry)
+        range_layout.addWidget(QLabel("Max:"))
+        range_layout.addWidget(self.vmax_entry)
+        intensity_layout.addLayout(range_layout)
+
+        # Gamma control
+        gamma_layout = QHBoxLayout()
+        self.gamma_slider = QSlider(Qt.Horizontal)
+        self.gamma_slider.setRange(1, 100)
+        self.gamma_slider.setValue(10)
+        self.gamma_slider.valueChanged.connect(self.update_gamma_value)
+        self.gamma_entry = QLineEdit("1.0")
+        self.gamma_entry.setFixedWidth(60)
+        self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
+        gamma_layout.addWidget(QLabel("Gamma:"))
+        gamma_layout.addWidget(self.gamma_slider)
+        gamma_layout.addWidget(self.gamma_entry)
+        intensity_layout.addLayout(gamma_layout)
+
+        # Preset buttons
+        preset_layout = QHBoxLayout()
+        self.auto_minmax_button = QPushButton("Auto")
+        self.auto_minmax_button.clicked.connect(self.auto_minmax)
+        self.auto_percentile_button = QPushButton("5-95%")
+        self.auto_percentile_button.clicked.connect(self.auto_percentile)
+        self.auto_median_button = QPushButton("Med±3σ")
+        self.auto_median_button.clicked.connect(self.auto_median_rms)
+        preset_layout.addWidget(self.auto_minmax_button)
+        preset_layout.addWidget(self.auto_percentile_button)
+        preset_layout.addWidget(self.auto_median_button)
+        intensity_layout.addLayout(preset_layout)
+
+        main_layout.addWidget(intensity_group)
+
+        # Update Display button
+        self.plot_button = QPushButton("Update Display")
+        self.plot_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #3871DE; 
+                color: white; 
+                padding: 5px; 
+                font-weight: bold;
+                border-radius: 3px;
+                min-height: 25px;
+            }
+            QPushButton:hover {
+                background-color: #4A82EF;
+            }
+            """
+        )
+        self.plot_button.clicked.connect(self.on_visualization_changed)
+        main_layout.addWidget(self.plot_button)
+
         parent_layout.addWidget(group)
 
     def create_range_controls(self, parent_layout):
@@ -478,28 +621,6 @@ class SolarRadioImageTab(QWidget):
                 self.zoom_60arcmin_action,
             ]
         )
-        toolbar.addSeparator()
-        solar_group = QWidget()
-        solar_layout = QHBoxLayout(solar_group)
-        solar_layout.setContentsMargins(0, 0, 0, 0)
-        self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
-        self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        self.solar_disk_center_button = QPushButton()
-        self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
-        self.solar_disk_center_button.setIcon(
-            QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/settings.png"
-                )
-            )
-        )
-        self.solar_disk_center_button.setIconSize(QSize(24, 24))
-        self.solar_disk_center_button.setToolTip("Set Solar Disk Center")
-        self.solar_disk_center_button.setFixedSize(32, 32)
-        self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
-        solar_layout.addWidget(self.show_solar_disk_checkbox)
-        solar_layout.addWidget(self.solar_disk_center_button)
-        toolbar.addWidget(solar_group)
         parent_layout.addWidget(toolbar)
 
     def create_stats_table(self, parent_layout):
