@@ -102,6 +102,13 @@ class SolarRadioImageTab(QWidget):
         self.imagename = None
         self.solar_disk_center = None
         self.solar_disk_diameter_arcmin = 32.0
+        # Solar disk style properties
+        self.solar_disk_style = {
+            "color": "yellow",
+            "linestyle": "--",
+            "linewidth": 2.0,
+            "alpha": 0.8,
+        }
 
         self.contour_settings = {
             "source": "same",
@@ -298,7 +305,9 @@ class SolarRadioImageTab(QWidget):
             )
         )
         self.solar_disk_center_button.setIconSize(QSize(24, 24))
-        self.solar_disk_center_button.setToolTip("Set Solar Disk Center")
+        self.solar_disk_center_button.setToolTip(
+            "Customize Solar Disk (center, size, appearance)"
+        )
         self.solar_disk_center_button.setFixedSize(32, 32)
         self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
 
@@ -1242,28 +1251,30 @@ class SolarRadioImageTab(QWidget):
                     (center_x, center_y),
                     radius_pix,
                     fill=False,
-                    edgecolor="yellow",
-                    linestyle="--",
-                    linewidth=2,
-                    alpha=0.8,
+                    edgecolor=self.solar_disk_style["color"],
+                    linestyle=self.solar_disk_style["linestyle"],
+                    linewidth=self.solar_disk_style["linewidth"],
+                    alpha=self.solar_disk_style["alpha"],
                 )
                 ax.add_patch(circle)
 
-                cross_size = radius_pix / 20
-                ax.plot(
-                    [center_x - cross_size, center_x + cross_size],
-                    [center_y, center_y],
-                    color="yellow",
-                    linewidth=1.5,
-                    alpha=0.8,
-                )
-                ax.plot(
-                    [center_x, center_x],
-                    [center_y - cross_size, center_y + cross_size],
-                    color="yellow",
-                    linewidth=1.5,
-                    alpha=0.8,
-                )
+                # Only draw the center marker if show_center is True
+                if self.solar_disk_style.get("show_center", True):
+                    cross_size = radius_pix / 20
+                    ax.plot(
+                        [center_x - cross_size, center_x + cross_size],
+                        [center_y, center_y],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
+                    ax.plot(
+                        [center_x, center_x],
+                        [center_y - cross_size, center_y + cross_size],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
             except Exception as e:
                 print(f"Error drawing solar disk: {e}")
 
@@ -1410,10 +1421,100 @@ class SolarRadioImageTab(QWidget):
         height, width = self.current_image_data.shape
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Set Solar Disk Center")
+        dialog.setWindowTitle("Solar Disk Settings")
+        dialog.setMinimumWidth(400)  # Set minimum width to prevent text cutoff
         layout = QVBoxLayout(dialog)
 
-        form_layout = QHBoxLayout()
+        # Create tab widget for organizing settings
+        tab_widget = QTabWidget()
+
+        # Style tab (formerly Appearance tab)
+        style_tab = QWidget()
+        style_layout = QVBoxLayout(style_tab)
+
+        # Color selection
+        color_group = QGroupBox("Color")
+        color_layout = QHBoxLayout(color_group)
+
+        color_label = QLabel("Disk Color:")
+        color_combo = QComboBox()
+        colors = ["yellow", "white", "red", "green", "blue", "cyan", "magenta", "black"]
+        for color in colors:
+            color_combo.addItem(color)
+        color_combo.setCurrentText(self.solar_disk_style["color"])
+        color_layout.addWidget(color_label)
+        color_layout.addWidget(color_combo)
+        style_layout.addWidget(color_group)
+
+        # Line style
+        line_group = QGroupBox("Line Style")
+        line_layout = QGridLayout(line_group)
+
+        # Line style
+        linestyle_label = QLabel("Line Style:")
+        linestyle_combo = QComboBox()
+        linestyles = [
+            ("-", "Solid"),
+            ("--", "Dashed"),
+            (":", "Dotted"),
+            ("-.", "Dash-dot"),
+        ]
+        for style_code, style_name in linestyles:
+            linestyle_combo.addItem(style_name, style_code)
+
+        # Set current line style
+        current_style = self.solar_disk_style["linestyle"]
+        for i in range(linestyle_combo.count()):
+            if linestyle_combo.itemData(i) == current_style:
+                linestyle_combo.setCurrentIndex(i)
+                break
+
+        line_layout.addWidget(linestyle_label, 0, 0)
+        line_layout.addWidget(linestyle_combo, 0, 1)
+
+        # Line width
+        linewidth_label = QLabel("Line Width:")
+        linewidth_spinbox = QDoubleSpinBox()
+        linewidth_spinbox.setRange(0.5, 5.0)
+        linewidth_spinbox.setSingleStep(0.5)
+        linewidth_spinbox.setValue(self.solar_disk_style["linewidth"])
+        line_layout.addWidget(linewidth_label, 1, 0)
+        line_layout.addWidget(linewidth_spinbox, 1, 1)
+
+        # Alpha/transparency
+        alpha_label = QLabel("Opacity:")
+        alpha_spinbox = QDoubleSpinBox()
+        alpha_spinbox.setRange(0.1, 1.0)
+        alpha_spinbox.setSingleStep(0.1)
+        alpha_spinbox.setValue(self.solar_disk_style["alpha"])
+        line_layout.addWidget(alpha_label, 2, 0)
+        line_layout.addWidget(alpha_spinbox, 2, 1)
+
+        style_layout.addWidget(line_group)
+
+        # Center marker toggle
+        center_marker_group = QGroupBox("Center Marker")
+        center_marker_layout = QVBoxLayout(center_marker_group)
+
+        # Add a checkbox to toggle the center marker
+        show_center_checkbox = QCheckBox("Show center marker (+)")
+        # Initialize checkbox state - if not in the dictionary, default to True
+        if "show_center" not in self.solar_disk_style:
+            self.solar_disk_style["show_center"] = True
+        show_center_checkbox.setChecked(self.solar_disk_style["show_center"])
+        center_marker_layout.addWidget(show_center_checkbox)
+
+        style_layout.addWidget(center_marker_group)
+        style_layout.addStretch()
+
+        # Position tab
+        position_tab = QWidget()
+        position_layout = QVBoxLayout(position_tab)
+
+        # Center coordinates
+        center_group = QGroupBox("Disk Center")
+        center_layout = QHBoxLayout(center_group)
+
         x_label = QLabel("X coordinate:")
         x_spinbox = QSpinBox()
         x_spinbox.setRange(0, width - 1)
@@ -1421,8 +1522,9 @@ class SolarRadioImageTab(QWidget):
             x_spinbox.setValue(self.solar_disk_center[0])
         else:
             x_spinbox.setValue(width // 2)
-        form_layout.addWidget(x_label)
-        form_layout.addWidget(x_spinbox)
+        center_layout.addWidget(x_label)
+        center_layout.addWidget(x_spinbox)
+
         y_label = QLabel("Y coordinate:")
         y_spinbox = QSpinBox()
         y_spinbox.setRange(0, height - 1)
@@ -1430,18 +1532,29 @@ class SolarRadioImageTab(QWidget):
             y_spinbox.setValue(self.solar_disk_center[1])
         else:
             y_spinbox.setValue(height // 2)
-        form_layout.addWidget(y_label)
-        form_layout.addWidget(y_spinbox)
-        layout.addLayout(form_layout)
+        center_layout.addWidget(y_label)
+        center_layout.addWidget(y_spinbox)
 
-        diameter_layout = QHBoxLayout()
+        position_layout.addWidget(center_group)
+
+        # Diameter
+        size_group = QGroupBox("Disk Size")
+        size_layout = QHBoxLayout(size_group)
         diameter_label = QLabel("Diameter (arcmin):")
         diameter_spinbox = QSpinBox()
         diameter_spinbox.setRange(1, 100)
         diameter_spinbox.setValue(int(self.solar_disk_diameter_arcmin))
-        diameter_layout.addWidget(diameter_label)
-        diameter_layout.addWidget(diameter_spinbox)
-        layout.addLayout(diameter_layout)
+        size_layout.addWidget(diameter_label)
+        size_layout.addWidget(diameter_spinbox)
+        position_layout.addWidget(size_group)
+
+        position_layout.addStretch()
+
+        # Add tabs to tab widget - Style first, then Position
+        tab_widget.addTab(style_tab, "Style")
+        tab_widget.addTab(position_tab, "Position && Size")
+
+        layout.addWidget(tab_widget)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(dialog.accept)
@@ -1451,7 +1564,14 @@ class SolarRadioImageTab(QWidget):
         if dialog.exec_() == QDialog.Accepted:
             self.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
             self.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
-            # self.plot_image()
+
+            # Update style properties
+            self.solar_disk_style["color"] = color_combo.currentText()
+            self.solar_disk_style["linestyle"] = linestyle_combo.currentData()
+            self.solar_disk_style["linewidth"] = linewidth_spinbox.value()
+            self.solar_disk_style["alpha"] = alpha_spinbox.value()
+            self.solar_disk_style["show_center"] = show_center_checkbox.isChecked()
+
             self.schedule_plot()
 
     def zoom_in(self):
