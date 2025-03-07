@@ -60,10 +60,10 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QToolButton,
     QTabBar,
+    QStyle,
 )
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
-from PyQt5.QtGui import QIcon, QColor, QPalette
-
+from PyQt5.QtGui import QIcon, QColor, QPalette, QPainter
 
 from .norms import SqrtNorm, AsinhNorm, PowerNorm
 from .utils import (
@@ -1804,20 +1804,17 @@ class CustomTabBar(QTabBar):
                 background-color: transparent;
                 border: none;
                 border-radius: 4px;
-                margin: 2px -2px 2px 2px;
+                margin: 2px 0px 2px 0px;
                 padding: 0px;
             }
-            QToolButton:hover {
+            */QToolButton:hover {
                 background-color: #2D2D2D;
-            }
+            }*/
             QToolButton:pressed {
                 background-color: #3D3D3D;
             }
             """
         )
-
-        # Place the button in the top-left corner
-        self.setCornerWidget(self.add_tab_button, Qt.TopLeftCorner)
 
         # Connect hover events for the add button
         self.add_tab_button.enterEvent = self._handle_add_button_hover_enter
@@ -1827,18 +1824,22 @@ class CustomTabBar(QTabBar):
         self.setStyleSheet(
             """
             QTabBar::tab {
-                padding: 4px 12px;
-                margin: 2px 1px 0px 1px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
+                padding: 4px 12px 4px 8px;  /* Increased left padding for larger close button */
+                margin: 0px 0px 0px 0px;  /* Removed top margin to eliminate white space */
+                border-top-left-radius: 0px;
+                border-top-right-radius: 0px;
+                text-align: left;  /* Align text to the left */
+                border-top: none;  /* Remove top border to prevent any white line */
             }
             QTabBar::tab:selected {
                 background: #383838;
                 border: 1px solid #484848;
+                border-top: none;  /* Remove top border */
             }
             QTabBar::tab:!selected {
                 background: #252525;
                 border: 1px solid #353535;
+                border-top: none;  /* Remove top border */
             }
             QTabBar::tab:hover {
                 background: #404040;
@@ -1849,7 +1850,11 @@ class CustomTabBar(QTabBar):
                 "solar_radio_image_viewer", "assets/close_tab_default.png"
             )
             + """);
-                subcontrol-position: right;
+                subcontrol-position: left;  /* Changed from right to left */
+                subcontrol-origin: margin;  /* Position relative to the margin */
+                margin-left: 4px;  /* Increased margin to the left of the close button */
+                width: 32px;  /* Increase width of close button */
+                height: 32px;  /* Increase height of close button */
             }
             QTabBar::close-button:hover {
                 image: url("""
@@ -1860,6 +1865,18 @@ class CustomTabBar(QTabBar):
             }
             """
         )
+
+        # Enable expanding tabs to fill available space
+        self.setExpanding(True)
+
+        # Make sure the add button is visible and on top
+        self.add_tab_button.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        # self.add_tab_button.setFocusPolicy(Qt.StrongFocus)
+        self.add_tab_button.show()
+        self.add_tab_button.raise_()
+
+        # Initialize button position
+        QTimer.singleShot(0, self.moveAddButton)
 
     def _handle_add_button_hover_enter(self, event):
         self.add_tab_button.setIcon(
@@ -1879,117 +1896,91 @@ class CustomTabBar(QTabBar):
             )
         )
 
-    def sizeHint(self):
-        size = super().sizeHint()
-        if self.count() > 0:
-            size.setWidth(size.width() + 40)  # Add space for the button
-        return size
-
-    def minimumSizeHint(self):
-        size = super().minimumSizeHint()
-        if self.count() > 0:
-            size.setWidth(size.width() + 40)  # Add space for the button
-        return size
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.updateAddButton()
+        self.moveAddButton()
 
     def tabLayoutChange(self):
         super().tabLayoutChange()
-        self.updateAddButton()
+        self.moveAddButton()
 
-    def updateAddButton(self):
-        """Update the position of the add button"""
-        if self.count() > 0:
-            last_rect = self.tabRect(self.count() - 1)
-            button_x = last_rect.right() + 4
-        else:
-            button_x = 4
-
+    def moveAddButton(self):
+        """Position the add button at the extreme right of the tab bar"""
+        button_x = self.width() - self.add_tab_button.width() - 2
         button_y = (self.height() - self.add_tab_button.height()) // 2
         self.add_tab_button.move(button_x, button_y)
-        self.add_tab_button.show()
-        self.add_tab_button.raise_()
+        self.add_tab_button.show()  # Ensure button is visible
+        self.add_tab_button.raise_()  # Ensure button is on top
+
+    def sizeHint(self):
+        """Return a size that accounts for the add button at the right"""
+        size = super().sizeHint()
+        # Add extra space for the add button
+        size.setWidth(
+            size.width() + self.add_tab_button.width() + 720
+        )  # 20px extra padding (increased from 10px)
+        return size
+
+    def tabSizeHint(self, index):
+        """Calculate the size for each tab to distribute space evenly"""
+        width = (
+            self.width() - self.add_tab_button.width() - 40
+        )  # Reserve more space for add button (20px instead of 10px)
+        if self.count() > 0:
+            tab_width = width // self.count()
+            # Ensure minimum tab width with enough space for text
+            return QSize(max(tab_width, 120), super().tabSizeHint(index).height())
+        return super().tabSizeHint(index)
+
+    def setTabText(self, index, text):
+        """Override setTabText to ensure text is properly elided if too long"""
+        # Call the parent implementation
+        super().setTabText(index, text)
+
+        # Get the current tab size
+        tab_rect = self.tabRect(index)
+
+        # Calculate available width for text (accounting for close button and padding)
+        available_width = tab_rect.width() - 10  # 40px for close button and padding
+
+        # If text is too long, elide it
+        if self.fontMetrics().horizontalAdvance(text) > available_width:
+            elided_text = self.fontMetrics().elidedText(
+                text, Qt.ElideRight, available_width
+            )
+            # Call parent implementation again with elided text
+            super().setTabText(index, elided_text)
 
 
 class CustomTabWidget(QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Create the add tab button
-        self.add_tab_button = QToolButton(self)
-        self.add_tab_button.setIcon(
-            QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/add_tab_default.png"
-                )
-            )
-        )
-        self.add_tab_button.setToolTip("Add new tab")
-        self.add_tab_button.setFixedSize(32, 32)
-        self.add_tab_button.setIconSize(QSize(32, 32))
-        self.add_tab_button.setStyleSheet(
-            """
-            QToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 4px;
-                margin: 2px -2px 2px 2px;
-                padding: 0px;
-            }
-            QToolButton:hover {
-                background-color: #2D2D2D;
-            }
-            QToolButton:pressed {
-                background-color: #3D3D3D;
-            }
-            """
-        )
 
-        # Place the button in the top-left corner
-        self.setCornerWidget(self.add_tab_button, Qt.TopLeftCorner)
+        # Use our custom tab bar
+        self.setTabBar(CustomTabBar())
 
-        # Connect hover events for the add button
-        self.add_tab_button.enterEvent = self._handle_add_button_hover_enter
-        self.add_tab_button.leaveEvent = self._handle_add_button_hover_leave
+        # Get reference to the add button from our custom tab bar
+        self.add_tab_button = self.tabBar().add_tab_button
 
-        # Set tab bar properties for better dark theme appearance
+        # Set the tab widget to use the entire available width
+        self.setUsesScrollButtons(False)
+        self.setElideMode(Qt.ElideRight)
+
+        # Ensure the tab bar is visible
+        self.tabBar().setVisible(True)
+
+        # Set tab widget properties for better dark theme appearance
         self.setStyleSheet(
             """
-            QTabBar::tab {
-                padding: 4px 12px;
-                margin: 2px 1px 0px 1px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-            }
-            QTabBar::tab:selected {
-                background: #383838;
+            QTabWidget::pane {
                 border: 1px solid #484848;
-            }
-            QTabBar::tab:!selected {
-                background: #252525;
-                border: 1px solid #353535;
-            }
-            QTabBar::tab:hover {
-                background: #404040;
-            }
-            QTabBar::close-button {
-                image: url("""
-            + pkg_resources.resource_filename(
-                "solar_radio_image_viewer", "assets/close_tab_default.png"
-            )
-            + """);
-                subcontrol-position: right;
-            }
-            QTabBar::close-button:hover {
-                image: url("""
-            + pkg_resources.resource_filename(
-                "solar_radio_image_viewer", "assets/close_tab_hover.png"
-            )
-            + """);
+                background: #2D2D2D;
             }
             """
         )
+
+        # Make sure the add button is properly initialized
+        QTimer.singleShot(100, self.ensureAddButtonVisible)
 
     def _handle_add_button_hover_enter(self, event):
         self.add_tab_button.setIcon(
@@ -2008,6 +1999,20 @@ class CustomTabWidget(QTabWidget):
                 )
             )
         )
+
+    def resizeEvent(self, event):
+        """Handle resize events to ensure tab bar is properly updated"""
+        super().resizeEvent(event)
+        # Force tab bar to update its layout
+        self.tabBar().tabLayoutChange()
+        # Ensure add button is visible after resize
+        self.ensureAddButtonVisible()
+
+    def ensureAddButtonVisible(self):
+        """Make sure the add button is visible and on top"""
+        if hasattr(self, "add_tab_button") and self.add_tab_button:
+            self.add_tab_button.show()
+            self.add_tab_button.raise_()
 
 
 class SolarRadioImageViewerApp(QMainWindow):
@@ -2036,6 +2041,18 @@ class SolarRadioImageViewerApp(QMainWindow):
             first_tab.dir_entry.setText(imagename)
             first_tab.on_visualization_changed()
             first_tab.auto_minmax()
+
+        # Ensure add button is visible after initialization
+        QTimer.singleShot(200, self.ensureAddButtonVisible)
+
+    def ensureAddButtonVisible(self):
+        """Make sure the add button is visible and on top"""
+        if (
+            hasattr(self.tab_widget, "add_tab_button")
+            and self.tab_widget.add_tab_button
+        ):
+            self.tab_widget.add_tab_button.show()
+            self.tab_widget.add_tab_button.raise_()
 
     def close_tab(self, index):
         """Close the tab at the given index"""
@@ -2067,6 +2084,9 @@ class SolarRadioImageViewerApp(QMainWindow):
         tab_count = len(self.tabs) + 1
         tab_name = f"Tab{tab_count}"
         self.add_new_tab(tab_name)
+
+        # Ensure add button is visible after adding a new tab
+        QTimer.singleShot(100, self.ensureAddButtonVisible)
 
     def create_menus(self):
         menubar = self.menuBar()
@@ -2209,6 +2229,10 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.tabs.append(new_tab)
         self.tab_widget.addTab(new_tab, name)
         self.tab_widget.setCurrentWidget(new_tab)
+
+        # Ensure add button is visible after adding a new tab
+        QTimer.singleShot(100, self.ensureAddButtonVisible)
+
         return new_tab
 
     def select_directory(self):
