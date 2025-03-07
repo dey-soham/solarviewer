@@ -167,6 +167,7 @@ class SolarRadioImageTab(QWidget):
         stats_layout.setContentsMargins(0, 0, 0, 0)
         stats_layout.setSpacing(15)
         self.create_stats_table(stats_layout)
+        self.create_image_stats_table(stats_layout)
         self.create_coord_display(stats_layout)
         main_layout.addWidget(stats_panel)
 
@@ -647,15 +648,15 @@ class SolarRadioImageTab(QWidget):
         )
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
-        self.stats_table = QTableWidget(5, 2)
+        self.stats_table = QTableWidget(6, 2)
         self.stats_table.setHorizontalHeaderLabels(["Metric", "Value"])
         self.stats_table.verticalHeader().setVisible(False)
         self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.stats_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for i in range(5):
+        for i in range(6):
             self.stats_table.setRowHeight(i, 30)
         self.stats_table.setColumnWidth(1, 180)
-        headers = ["Min", "Max", "Mean", "Std Dev", "Sum"]
+        headers = ["Min", "Max", "Mean", "Std Dev", "Sum", "RMS"]
         for row, label in enumerate(headers):
             self.stats_table.setItem(row, 0, QTableWidgetItem(label))
             self.stats_table.setItem(row, 1, QTableWidgetItem("−"))
@@ -663,6 +664,39 @@ class SolarRadioImageTab(QWidget):
                 Qt.AlignRight | Qt.AlignVCenter
             )
         layout.addWidget(self.stats_table)
+        parent_layout.addWidget(group)
+
+    def create_image_stats_table(self, parent_layout):
+        group = QGroupBox("Image Statistics")
+        layout = QVBoxLayout(group)
+
+        self.image_info_label = QLabel("Full image statistics")
+        self.image_info_label.setStyleSheet(
+            "color: #BBB; font-style: italic; font-size: 11pt;"
+        )
+        self.image_info_label.setWordWrap(True)
+        layout.addWidget(self.image_info_label)
+
+        self.image_stats_table = QTableWidget(6, 2)
+        self.image_stats_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        self.image_stats_table.verticalHeader().setVisible(False)
+        self.image_stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.image_stats_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.Stretch
+        )
+        for i in range(6):
+            self.image_stats_table.setRowHeight(i, 30)
+        self.image_stats_table.setColumnWidth(1, 180)
+
+        headers = ["Max", "Min", "RMS", "Mean (RMS box)", "Pos. DR", "Neg. DR"]
+        for row, label in enumerate(headers):
+            self.image_stats_table.setItem(row, 0, QTableWidgetItem(label))
+            self.image_stats_table.setItem(row, 1, QTableWidgetItem("−"))
+            self.image_stats_table.item(row, 1).setTextAlignment(
+                Qt.AlignRight | Qt.AlignVCenter
+            )
+
+        layout.addWidget(self.image_stats_table)
         parent_layout.addWidget(group)
 
     def create_coord_display(self, parent_layout):
@@ -1034,18 +1068,49 @@ class SolarRadioImageTab(QWidget):
         rmean = roi.mean()
         rstd = roi.std()
         rsum = roi.sum()
+        rrms = np.sqrt(np.mean(roi**2))
 
         self.info_label.setText(f"ROI Stats: {roi.size} pixels{ra_dec_info}")
 
-        stats_values = [rmin, rmax, rmean, rstd, rsum]
+        stats_values = [rmin, rmax, rmean, rstd, rsum, rrms]
         for i, val in enumerate(stats_values):
             self.stats_table.setItem(i, 1, QTableWidgetItem(f"{val:.6g}"))
 
         main_window = self.parent()
         if main_window and hasattr(main_window, "statusBar"):
             main_window.statusBar().showMessage(
-                f"ROI selected: {roi.size} pixels, Mean={rmean:.4g}, Sum={rsum:.4g}"
+                f"ROI selected: {roi.size} pixels, Mean={rmean:.4g}, Sum={rsum:.4g}, RMS={rrms:.4g}"
             )
+
+    def show_image_stats(self, rms_box=[0, 200, 0, 130]):
+        if self.current_image_data is None:
+            return
+
+        data = self.current_image_data
+        dmax = float(data.max())
+        dmin = float(data.min())
+        drms = np.sqrt(
+            np.mean(data[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]] ** 2)
+        )
+        dmean_rms_box = np.mean(data[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]])
+        positive_DR = dmax / drms
+        negative_DR = dmin / drms
+
+        # Update the image stats table
+        stats_values = [dmax, dmin, drms, dmean_rms_box, positive_DR, negative_DR]
+        for i, val in enumerate(stats_values):
+            self.image_stats_table.setItem(i, 1, QTableWidgetItem(f"{val:.6g}"))
+
+        # Update the RMS box info in the label
+        h, w = data.shape
+        rms_box_percent = (
+            (rms_box[1] - rms_box[0]) * (rms_box[3] - rms_box[2]) / (h * w)
+        ) * 100
+        self.image_info_label.setText(
+            f"Full image ({h}×{w} pixels) - RMS box: {rms_box_percent:.1f}% of image"
+        )
+
+        return dmax, dmin, drms, dmean_rms_box, positive_DR, negative_DR
 
     def set_region_mode(self, mode_id):
         self.region_mode = RegionMode.RECTANGLE
@@ -1063,6 +1128,8 @@ class SolarRadioImageTab(QWidget):
         if pix is not None:
             height, width = pix.shape
             self.solar_disk_center = (width // 2, height // 2)
+            # Update image stats when data is loaded
+            self.show_image_stats()
 
         if not self.psf:
             self.show_beam_checkbox.setChecked(False)
@@ -1091,6 +1158,9 @@ class SolarRadioImageTab(QWidget):
             self._cached_transposed = data.transpose()
             self._cached_data_id = id(data)
         transposed_data = self._cached_transposed
+
+        # Remove the call to show_image_stats here since we only want to show stats when data is loaded
+        # self.show_image_stats()
 
         stored_xlim = None
         stored_ylim = None
