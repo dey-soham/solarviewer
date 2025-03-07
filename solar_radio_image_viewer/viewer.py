@@ -374,8 +374,10 @@ class SolarRadioImageTab(QWidget):
         self.reset_view_button.setToolTip("Reset View")
         self.reset_view_button.setFixedSize(32, 32)
         self.reset_view_button.clicked.connect(self.reset_view)
+        self.reset_view_button.setToolTip("Reset View")
         self.zoom_60arcmin_button = QPushButton("1°×1°")
         self.zoom_60arcmin_button.clicked.connect(self.zoom_60arcmin)
+        self.zoom_60arcmin_button.setToolTip("1°×1° Zoom")
         zoom_layout.addWidget(self.zoom_in_button)
         zoom_layout.addWidget(self.zoom_out_button)
         zoom_layout.addWidget(self.reset_view_button)
@@ -454,12 +456,24 @@ class SolarRadioImageTab(QWidget):
         )
         self.reset_view_action.setToolTip("Reset View")
         self.reset_view_action.triggered.connect(self.reset_view)
+        self.zoom_60arcmin_action = QAction(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/zoom_60arcmin.png"
+                )
+            ),
+            "",
+            self,
+        )
+        self.zoom_60arcmin_action.setToolTip("1°×1° Zoom")
+        self.zoom_60arcmin_action.triggered.connect(self.zoom_60arcmin)
         toolbar.addActions(
             [
                 self.rect_action,
                 self.zoom_in_action,
                 self.zoom_out_action,
                 self.reset_view_action,
+                self.zoom_60arcmin_action,
             ]
         )
         toolbar.addSeparator()
@@ -2362,42 +2376,240 @@ class SolarRadioImageViewerApp(QMainWindow):
         msg_box.setStandardButtons(QMessageBox.Ok)
         msg_box.exec_()
 
-    def show_keyboard_shortcuts(self):
-        shortcuts_text = """
-        <h3>Keyboard Shortcuts</h3>
-        <table>
-            <tr><th>Key</th><th>Action</th></tr>
-            <tr><td>Ctrl+O</td><td>Open CASA Image</td></tr>
-            <tr><td>Ctrl+E</td><td>Export Figure</td></tr>
-            <tr><td>Ctrl+F</td><td>Export as FITS</td></tr>
-            <tr><td>Ctrl+Q</td><td>Exit</td></tr>
-            <tr><td>Ctrl+B</td><td>Batch Processing</td></tr>
-            <tr><td>Ctrl+M</td><td>Image Metadata</td></tr>
-            <tr><td>Ctrl+S</td><td>Export Sub-Image</td></tr>
-            <tr><td>Ctrl+R</td><td>Export ROI as Region</td></tr>
-            <tr><td>Ctrl+G</td><td>Fit 2D Gaussian</td></tr>
-            <tr><td>Ctrl+L</td><td>Fit Elliptical Ring</td></tr>
-            <tr><td>Ctrl+T</td><td>Add Text Annotation</td></tr>
-            <tr><td>Ctrl+A</td><td>Add Arrow Annotation</td></tr>
-            <tr><td>F5</td><td>Auto Min/Max</td></tr>
-            <tr><td>F6</td><td>Auto Percentile</td></tr>
-            <tr><td>F7</td><td>Auto Median±3×RMS</td></tr>
-            <tr><td>Ctrl+N</td><td>Add New Tab</td></tr>
-            <tr><td>Ctrl+W</td><td>Close Current Tab</td></tr>
-            <tr><td>Space</td><td>Cycle Region Selection Mode</td></tr>
-            <tr><td>1</td><td>Auto Min/Max</td></tr>
-            <tr><td>2</td><td>Auto Percentile</td></tr>
-            <tr><td>3</td><td>Auto Median±3×RMS</td></tr>
-            <tr><td>Left Arrow</td><td>Previous Tab</td></tr>
-            <tr><td>Right Arrow</td><td>Next Tab</td></tr>
+    '''def show_keyboard_shortcuts(self):
+        from PyQt5.QtWidgets import QTextBrowser
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Keyboard Shortcuts")
+        dialog.setMinimumWidth(1200)
+
+        layout = QVBoxLayout(dialog)
+
+        # Create a QTextBrowser for the content
+        text_browser = QTextBrowser(dialog)
+        text_browser.setOpenExternalLinks(False)
+        text_browser.setHtml(
+            """
+        <h3 style="text-align: center;">Keyboard Shortcuts</h3>
+        <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+                <td style="width: 25%; vertical-align: top; padding: 10px;">
+                    <h4>File Operations</h4>
+                    <table style="width: 100%;">
+                        <tr><td><code>Ctrl+O</code></td><td>Open CASA Image</td></tr>
+                        <tr><td><code>Ctrl+Shift+O</code></td><td>Open FITS File</td></tr>
+                        <tr><td><code>Ctrl+E</code></td><td>Export Figure</td></tr>
+                        <tr><td><code>Ctrl+F</code></td><td>Export as FITS</td></tr>
+                        <tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>
+                    </table>
+                </td>
+                <td style="width: 25%; vertical-align: top; padding: 10px;">
+                    <h4>Navigation & View</h4>
+                    <table style="width: 100%;">
+                        <tr><td><code>R</code></td><td>Reset View</td></tr>
+                        <tr><td><code>1</code></td><td>1°×1° Zoom</td></tr>
+                        <tr><td><code>+/=</code></td><td>Zoom In</td></tr>
+                        <tr><td><code>-</code></td><td>Zoom Out</td></tr>
+                        <tr><td><code>Space</code></td><td>Rectangle Selection</td></tr>
+                    </table>
+                </td>
+                <td style="width: 25%; vertical-align: top; padding: 10px;">
+                    <h4>Display Presets</h4>
+                    <table style="width: 100%;">
+                        <tr><td><code>F5</code></td><td>Auto Min/Max</td></tr>
+                        <tr><td><code>F6</code></td><td>Auto Percentile</td></tr>
+                        <tr><td><code>F7</code></td><td>Auto Median±3×RMS</td></tr>
+                    </table>
+                    <h4>Tools</h4>
+                    <table style="width: 100%;">
+                        <tr><td><code>Ctrl+B</code></td><td>Batch Processing</td></tr>
+                        <tr><td><code>Ctrl+M</code></td><td>Image Metadata</td></tr>
+                    </table>
+                </td>
+                <td style="width: 25%; vertical-align: top; padding: 10px;">
+                    <h4>Region & Analysis</h4>
+                    <table style="width: 100%;">
+                        <tr><td><code>Ctrl+S</code></td><td>Export Sub-Image</td></tr>
+                        <tr><td><code>Ctrl+R</code></td><td>Export ROI</td></tr>
+                        <tr><td><code>Ctrl+G</code></td><td>Fit 2D Gaussian</td></tr>
+                        <tr><td><code>Ctrl+L</code></td><td>Fit Ring</td></tr>
+                    </table>
+                    <h4>Annotations</h4>
+                    <table style="width: 100%;">
+                        <tr><td><code>Ctrl+T</code></td><td>Add Text</td></tr>
+                        <tr><td><code>Ctrl+A</code></td><td>Add Arrow</td></tr>
+                    </table>
+                </td>
+            </tr>
+            <tr>
+                <td colspan="4" style="padding: 10px;">
+                    <h4>Tab Management</h4>
+                    <table style="width: 100%;">
+                        <tr>
+                            <td style="width: 25%;"><code>Ctrl+N</code> New Tab</td>
+                            <td style="width: 25%;"><code>Ctrl+W</code> Close Tab</td>
+                            <td style="width: 25%;"><code>←</code> Previous Tab</td>
+                            <td style="width: 25%;"><code>→</code> Next Tab</td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
         </table>
         """
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Keyboard Shortcuts")
-        msg_box.setTextFormat(Qt.RichText)
-        msg_box.setText(shortcuts_text)
-        msg_box.setStandardButtons(QMessageBox.Ok)
-        msg_box.exec_()
+        )
+
+        # Set dark theme colors
+        text_browser.setStyleSheet(
+            """
+            QTextBrowser {
+                background-color: #1E1E22;
+                color: #FFFFFF;
+            }
+            QTextBrowser code {
+                background-color: #2A2A2E;
+                padding: 2px 4px;
+                border: 1px solid #505050;
+                border-radius: 3px;
+            }
+            """
+        )
+
+        layout.addWidget(text_browser)
+
+        # Add OK button
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        button_box.accepted.connect(dialog.accept)
+        layout.addWidget(button_box)
+
+        # Set a reasonable size that should fit on most laptop screens
+        dialog.resize(720, 480)
+        dialog.exec_()'''
+
+    def show_keyboard_shortcuts(parent=None):
+        from PyQt5.QtWidgets import QTextBrowser
+
+        dialog = QDialog(parent)
+        dialog.setWindowTitle("Keyboard Shortcuts")
+
+        layout = QVBoxLayout(dialog)
+
+        html_content = """
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <style>
+            body {
+                background-color: #1E1E22;
+                color: #E0E0E0;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                margin: 0;
+                padding: 20px;
+            }
+            h3 {
+                text-align: center;
+                margin-bottom: 20px;
+                font-size: 18pt;
+            }
+            h4 {
+                color: #64B5F6;
+                margin: 10px 0 5px 0;
+                font-size: 14pt;
+                border-bottom: 1px solid #333;
+                padding-bottom: 5px;
+            }
+            .container {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                gap: 20px;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+            td {
+                padding: 8px;
+            }
+            td:first-child {
+                font-weight: bold;
+                color: #BB86FC;
+            }
+            code {
+                background-color: #2A2A2E;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-family: 'Courier New', monospace;
+            }
+        </style>
+        </head>
+        <body>
+        <h3>Keyboard Shortcuts</h3>
+        <div class="container">
+            <div class="section">
+                <h4>File Operations</h4>
+                <table>
+                    <tr><td><code>Ctrl+O</code></td><td>Open CASA Image</td></tr>
+                    <tr><td><code>Ctrl+Shift+O</code></td><td>Open FITS File</td></tr>
+                    <tr><td><code>Ctrl+E</code></td><td>Export Figure</td></tr>
+                    <tr><td><code>Ctrl+F</code></td><td>Export as FITS</td></tr>
+                    <tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>
+                </table>
+            </div>
+            <div class="section">
+                <h4>Navigation &amp; View</h4>
+                <table>
+                    <tr><td><code>R</code></td><td>Reset View</td></tr>
+                    <tr><td><code>1</code></td><td>1°×1° Zoom</td></tr>
+                    <tr><td><code>+/=</code></td><td>Zoom In</td></tr>
+                    <tr><td><code>-</code></td><td>Zoom Out</td></tr>
+                    <tr><td><code>Space</code></td><td>Rectangle Selection</td></tr>
+                </table>
+            </div>
+            <div class="section">
+                <h4>Display Presets &amp; Tools</h4>
+                <table>
+                    <tr><td><code>F5</code></td><td>Auto Min/Max</td></tr>
+                    <tr><td><code>F6</code></td><td>Auto Percentile</td></tr>
+                    <tr><td><code>F7</code></td><td>Auto Median±3×RMS</td></tr>
+                    <tr><td><code>Ctrl+B</code></td><td>Batch Processing</td></tr>
+                    <tr><td><code>Ctrl+M</code></td><td>Image Metadata</td></tr>
+                </table>
+            </div>
+            <div class="section">
+                <h4>Region, Analysis &amp; Annotations</h4>
+                <table>
+                    <tr><td><code>Ctrl+S</code></td><td>Export Sub-Image</td></tr>
+                    <tr><td><code>Ctrl+R</code></td><td>Export ROI</td></tr>
+                    <tr><td><code>Ctrl+G</code></td><td>Fit 2D Gaussian</td></tr>
+                    <tr><td><code>Ctrl+L</code></td><td>Fit Ring</td></tr>
+                    <tr><td><code>Ctrl+T</code></td><td>Add Text</td></tr>
+                    <tr><td><code>Ctrl+A</code></td><td>Add Arrow</td></tr>
+                </table>
+            </div>
+            <div class="section">
+                <h4>Tab Management</h4>
+                <table>
+                    <tr><td><code>Ctrl+N</code></td><td>New Tab</td></tr>
+                    <tr><td><code>Ctrl+W</code></td><td>Close Tab</td></tr>
+                    <tr><td><code>←</code></td><td>Previous Tab</td></tr>
+                    <tr><td><code>→</code></td><td>Next Tab</td></tr>
+                </table>
+            </div>
+        </div>
+        </body>
+        </html>
+        """
+
+        text_browser = QTextBrowser(dialog)
+        text_browser.setOpenExternalLinks(False)
+        text_browser.setHtml(html_content)
+        layout.addWidget(text_browser)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        button_box.accepted.connect(dialog.accept)
+        layout.addWidget(button_box)
+
+        dialog.resize(480, 720)
+        dialog.exec_()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Space:
@@ -2406,22 +2618,34 @@ class SolarRadioImageViewerApp(QMainWindow):
                 current_tab.radio_rect.setChecked(True)
                 current_tab.set_region_mode(RegionMode.RECTANGLE)
                 self.statusBar().showMessage("Rectangle selection mode")
-        elif event.key() == Qt.Key_1:
-            current_tab = self.tab_widget.currentWidget()
-            if current_tab:
-                current_tab.auto_minmax()
-        elif event.key() == Qt.Key_2:
-            current_tab = self.tab_widget.currentWidget()
-            if current_tab:
-                current_tab.auto_percentile()
-        elif event.key() == Qt.Key_3:
-            current_tab = self.tab_widget.currentWidget()
-            if current_tab:
-                current_tab.auto_median_rms()
         elif event.key() == Qt.Key_R:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
                 current_tab.reset_view()
+        elif event.key() == Qt.Key_1:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.zoom_60arcmin()
+        elif event.key() == Qt.Key_Plus or event.key() == Qt.Key_Equal:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.zoom_in()
+        elif event.key() == Qt.Key_Minus:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.zoom_out()
+        elif event.key() == Qt.Key_F5:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.auto_minmax()
+        elif event.key() == Qt.Key_F6:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.auto_percentile()
+        elif event.key() == Qt.Key_F7:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.auto_median_rms()
         elif event.key() == Qt.Key_Left:
             current_idx = self.tab_widget.currentIndex()
             if current_idx > 0:
