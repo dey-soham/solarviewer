@@ -539,6 +539,25 @@ class SolarRadioImageTab(QWidget):
         layout.addWidget(self.coord_label)
         parent_layout.addWidget(group)
 
+    def update_tab_name_from_path(self, path):
+        """Update the tab name to the basename of the given path"""
+        if path:
+            basename = os.path.basename(
+                path.rstrip("/")
+            )  # Remove trailing slash for directories
+
+            # Get the main window
+            main_window = self.window()
+            if isinstance(main_window, SolarRadioImageViewerApp):
+                # Get the tab widget
+                tab_widget = main_window.tab_widget
+                # Find our index in the tabs list
+                try:
+                    index = main_window.tabs.index(self)
+                    tab_widget.setTabText(index, basename)
+                except ValueError:
+                    pass  # Not found in tabs list
+
     def select_file_or_directory(self):
         if self.radio_casa_image.isChecked():
             # Select CASA image directory
@@ -550,6 +569,7 @@ class SolarRadioImageTab(QWidget):
                 self.dir_entry.setText(directory)
                 self.on_visualization_changed()
                 self.auto_minmax()
+                self.update_tab_name_from_path(directory)  # Update tab name
         else:
             # Select FITS file
             file_path, _ = QFileDialog.getOpenFileName(
@@ -560,6 +580,7 @@ class SolarRadioImageTab(QWidget):
                 self.dir_entry.setText(file_path)
                 self.on_visualization_changed()
                 self.auto_minmax()
+                self.update_tab_name_from_path(file_path)  # Update tab name
 
     def schedule_plot(self):
         # If a timer already exists and is active, stop it.
@@ -1877,6 +1898,25 @@ class CustomTabBar(QTabBar):
 
         # Initialize button position
         QTimer.singleShot(0, self.moveAddButton)
+
+    # Add mouseDoubleClickEvent to handle tab editing
+    def mouseDoubleClickEvent(self, event):
+        """Handle double-click on a tab to edit its text using a dialog"""
+        index = self.tabAt(event.pos())
+        if index >= 0:
+            current_text = self.tabText(index)
+
+            # Use a modal dialog instead of in-place editing to avoid crashes
+            from PyQt5.QtWidgets import QInputDialog
+
+            new_text, ok = QInputDialog.getText(
+                self, "Edit Tab Name", "Enter new tab name:", text=current_text
+            )
+
+            if ok and new_text:
+                self.setTabText(index, new_text)
+
+        super().mouseDoubleClickEvent(event)
 
     def _handle_add_button_hover_enter(self, event):
         self.add_tab_button.setIcon(
