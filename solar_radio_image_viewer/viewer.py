@@ -63,7 +63,7 @@ from PyQt5.QtWidgets import (
     QStyle,
 )
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
-from PyQt5.QtGui import QIcon, QColor, QPalette, QPainter
+from PyQt5.QtGui import QIcon, QColor, QPalette, QPainter, QIntValidator
 
 from .norms import SqrtNorm, AsinhNorm, PowerNorm
 from .utils import (
@@ -109,6 +109,9 @@ class SolarRadioImageTab(QWidget):
             "linewidth": 2.0,
             "alpha": 0.8,
         }
+
+        # Initialize RMS box values
+        self.current_rms_box = [0, 200, 0, 130]
 
         self.contour_settings = {
             "source": "same",
@@ -245,6 +248,12 @@ class SolarRadioImageTab(QWidget):
         stokes_layout.addRow("Stokes Parameter:", self.stokes_combo)
         self.threshold_entry = QLineEdit("10")
         stokes_layout.addRow("Threshold (σ):", self.threshold_entry)
+
+        # Add RMS Box Settings button
+        rms_box_btn = QPushButton("RMS Box Settings...")
+        rms_box_btn.clicked.connect(self.show_rms_box_dialog)
+        stokes_layout.addRow("", rms_box_btn)
+
         layout.addLayout(stokes_layout)
         parent_layout.addWidget(group)
 
@@ -1082,9 +1091,13 @@ class SolarRadioImageTab(QWidget):
                 f"ROI selected: {roi.size} pixels, Mean={rmean:.4g}, Sum={rsum:.4g}, RMS={rrms:.4g}"
             )
 
-    def show_image_stats(self, rms_box=[0, 200, 0, 130]):
+    def show_image_stats(self, rms_box=None):
         if self.current_image_data is None:
             return
+
+        # Use the current RMS box if none is provided
+        if rms_box is None:
+            rms_box = self.current_rms_box
 
         data = self.current_image_data
         dmax = float(data.max())
@@ -1128,8 +1141,15 @@ class SolarRadioImageTab(QWidget):
         if pix is not None:
             height, width = pix.shape
             self.solar_disk_center = (width // 2, height // 2)
+
+            # Make sure RMS box is within image bounds
+            if self.current_rms_box[1] > height:
+                self.current_rms_box[1] = height
+            if self.current_rms_box[3] > width:
+                self.current_rms_box[3] = width
+
             # Update image stats when data is loaded
-            self.show_image_stats()
+            self.show_image_stats(rms_box=self.current_rms_box)
 
         if not self.psf:
             self.show_beam_checkbox.setChecked(False)
@@ -2185,6 +2205,197 @@ class SolarRadioImageTab(QWidget):
         self.canvas.draw()
         if show_status_message:
             self.show_status_message("Reseted plot to full image")
+
+    def show_rms_box_dialog(self):
+        """Show a dialog for configuring the RMS box settings"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("RMS Box Settings")
+        dialog.setMinimumWidth(400)
+
+        # Create layout
+        layout = QVBoxLayout(dialog)
+
+        # Add a description label
+        description = QLabel(
+            "Set the region used for RMS calculation. This affects dynamic range calculations and other statistics."
+        )
+        description.setWordWrap(True)
+        description.setStyleSheet("color: #BBB; font-style: italic;")
+        layout.addWidget(description)
+
+        # Create grid layout for RMS box inputs
+        rms_grid = QGridLayout()
+        rms_grid.setVerticalSpacing(10)
+        rms_grid.setHorizontalSpacing(10)
+
+        # Create input fields for RMS box coordinates
+        self.dialog_rms_x1_entry = QLineEdit(str(self.current_rms_box[0]))
+        self.dialog_rms_x2_entry = QLineEdit(str(self.current_rms_box[1]))
+        self.dialog_rms_y1_entry = QLineEdit(str(self.current_rms_box[2]))
+        self.dialog_rms_y2_entry = QLineEdit(str(self.current_rms_box[3]))
+
+        # Add validators to ensure values are numeric
+        max_val = 9999
+        if hasattr(self, "current_image_data") and self.current_image_data is not None:
+            height, width = self.current_image_data.shape
+            self.dialog_rms_x1_entry.setValidator(QIntValidator(0, height - 1))
+            self.dialog_rms_x2_entry.setValidator(QIntValidator(1, height))
+            self.dialog_rms_y1_entry.setValidator(QIntValidator(0, width - 1))
+            self.dialog_rms_y2_entry.setValidator(QIntValidator(1, width))
+        else:
+            self.dialog_rms_x1_entry.setValidator(QIntValidator(0, max_val))
+            self.dialog_rms_x2_entry.setValidator(QIntValidator(1, max_val))
+            self.dialog_rms_y1_entry.setValidator(QIntValidator(0, max_val))
+            self.dialog_rms_y2_entry.setValidator(QIntValidator(1, max_val))
+
+        # Create sliders for RMS box coordinates
+        self.dialog_rms_x1_slider = QSlider(Qt.Horizontal)
+        self.dialog_rms_x2_slider = QSlider(Qt.Horizontal)
+        self.dialog_rms_y1_slider = QSlider(Qt.Horizontal)
+        self.dialog_rms_y2_slider = QSlider(Qt.Horizontal)
+
+        # Configure sliders
+        if hasattr(self, "current_image_data") and self.current_image_data is not None:
+            height, width = self.current_image_data.shape
+            self.dialog_rms_x1_slider.setMaximum(height - 1)
+            self.dialog_rms_x2_slider.setMaximum(height)
+            self.dialog_rms_y1_slider.setMaximum(width - 1)
+            self.dialog_rms_y2_slider.setMaximum(width)
+        else:
+            self.dialog_rms_x1_slider.setMaximum(max_val)
+            self.dialog_rms_x2_slider.setMaximum(max_val)
+            self.dialog_rms_y1_slider.setMaximum(max_val)
+            self.dialog_rms_y2_slider.setMaximum(max_val)
+
+        self.dialog_rms_x1_slider.setMinimum(0)
+        self.dialog_rms_x2_slider.setMinimum(1)
+        self.dialog_rms_y1_slider.setMinimum(0)
+        self.dialog_rms_y2_slider.setMinimum(1)
+
+        self.dialog_rms_x1_slider.setValue(self.current_rms_box[0])
+        self.dialog_rms_x2_slider.setValue(self.current_rms_box[1])
+        self.dialog_rms_y1_slider.setValue(self.current_rms_box[2])
+        self.dialog_rms_y2_slider.setValue(self.current_rms_box[3])
+
+        # Connect slider signals
+        self.dialog_rms_x1_slider.valueChanged.connect(
+            lambda v: self.dialog_rms_x1_entry.setText(str(v))
+        )
+        self.dialog_rms_x2_slider.valueChanged.connect(
+            lambda v: self.dialog_rms_x2_entry.setText(str(v))
+        )
+        self.dialog_rms_y1_slider.valueChanged.connect(
+            lambda v: self.dialog_rms_y1_entry.setText(str(v))
+        )
+        self.dialog_rms_y2_slider.valueChanged.connect(
+            lambda v: self.dialog_rms_y2_entry.setText(str(v))
+        )
+
+        # Connect text entry signals
+        self.dialog_rms_x1_entry.textChanged.connect(self.update_dialog_rms_box)
+        self.dialog_rms_x2_entry.textChanged.connect(self.update_dialog_rms_box)
+        self.dialog_rms_y1_entry.textChanged.connect(self.update_dialog_rms_box)
+        self.dialog_rms_y2_entry.textChanged.connect(self.update_dialog_rms_box)
+
+        # Add widgets to grid layout
+        rms_grid.addWidget(QLabel("X1:"), 0, 0)
+        rms_grid.addWidget(self.dialog_rms_x1_entry, 0, 1)
+        rms_grid.addWidget(self.dialog_rms_x1_slider, 0, 2)
+
+        rms_grid.addWidget(QLabel("X2:"), 1, 0)
+        rms_grid.addWidget(self.dialog_rms_x2_entry, 1, 1)
+        rms_grid.addWidget(self.dialog_rms_x2_slider, 1, 2)
+
+        rms_grid.addWidget(QLabel("Y1:"), 2, 0)
+        rms_grid.addWidget(self.dialog_rms_y1_entry, 2, 1)
+        rms_grid.addWidget(self.dialog_rms_y1_slider, 2, 2)
+
+        rms_grid.addWidget(QLabel("Y2:"), 3, 0)
+        rms_grid.addWidget(self.dialog_rms_y2_entry, 3, 1)
+        rms_grid.addWidget(self.dialog_rms_y2_slider, 3, 2)
+
+        # Set column stretching to make sliders take most of the space
+        rms_grid.setColumnStretch(2, 1)
+
+        layout.addLayout(rms_grid)
+
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(lambda: self.apply_dialog_rms_box(dialog))
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        # Show the dialog
+        dialog.exec_()
+
+    def update_dialog_rms_box(self):
+        """Update RMS box sliders in the dialog when text entries change"""
+        try:
+            x1 = int(self.dialog_rms_x1_entry.text())
+            x2 = int(self.dialog_rms_x2_entry.text())
+            y1 = int(self.dialog_rms_y1_entry.text())
+            y2 = int(self.dialog_rms_y2_entry.text())
+
+            # Update sliders without triggering signals
+            self.dialog_rms_x1_slider.blockSignals(True)
+            self.dialog_rms_x2_slider.blockSignals(True)
+            self.dialog_rms_y1_slider.blockSignals(True)
+            self.dialog_rms_y2_slider.blockSignals(True)
+
+            self.dialog_rms_x1_slider.setValue(x1)
+            self.dialog_rms_x2_slider.setValue(x2)
+            self.dialog_rms_y1_slider.setValue(y1)
+            self.dialog_rms_y2_slider.setValue(y2)
+
+            self.dialog_rms_x1_slider.blockSignals(False)
+            self.dialog_rms_x2_slider.blockSignals(False)
+            self.dialog_rms_y1_slider.blockSignals(False)
+            self.dialog_rms_y2_slider.blockSignals(False)
+        except ValueError:
+            pass  # Ignore invalid input
+
+    def apply_dialog_rms_box(self, dialog):
+        """Apply the RMS box settings from the dialog and close it"""
+        try:
+            x1 = int(self.dialog_rms_x1_entry.text())
+            x2 = int(self.dialog_rms_x2_entry.text())
+            y1 = int(self.dialog_rms_y1_entry.text())
+            y2 = int(self.dialog_rms_y2_entry.text())
+
+            # Ensure x1 < x2 and y1 < y2
+            if x1 >= x2 or y1 >= y2:
+                QMessageBox.warning(
+                    self, "Invalid RMS Box", "Please ensure that X1 < X2 and Y1 < Y2."
+                )
+                return
+
+            # Ensure values are within image bounds
+            if self.current_image_data is not None:
+                height, width = self.current_image_data.shape
+                if x2 > height or y2 > width:
+                    QMessageBox.warning(
+                        self,
+                        "Invalid RMS Box",
+                        f"RMS box exceeds image dimensions ({height}x{width}).",
+                    )
+                    return
+
+            # Store the current RMS box values
+            self.current_rms_box = [x1, x2, y1, y2]
+
+            # Update image stats with new RMS box
+            if self.current_image_data is not None:
+                self.show_image_stats(rms_box=self.current_rms_box)
+                self.show_status_message(f"RMS box updated to [{x1}:{x2}, {y1}:{y2}]")
+
+            # Close the dialog
+            dialog.accept()
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Invalid Input",
+                "Please enter valid integer values for the RMS box coordinates.",
+            )
 
 
 class CustomTabBar(QTabBar):
