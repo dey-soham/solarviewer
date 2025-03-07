@@ -58,6 +58,8 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QActionGroup,
     QDoubleSpinBox,
+    QToolButton,
+    QTabBar,
 )
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
 from PyQt5.QtGui import QIcon, QColor, QPalette
@@ -1781,13 +1783,245 @@ class SolarRadioImageTab(QWidget):
         self.canvas.draw()
 
 
+class CustomTabBar(QTabBar):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Create the add tab button
+        self.add_tab_button = QToolButton(self)
+        self.add_tab_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/add_tab_default.png"
+                )
+            )
+        )
+        self.add_tab_button.setToolTip("Add new tab")
+        self.add_tab_button.setFixedSize(32, 32)
+        self.add_tab_button.setIconSize(QSize(32, 32))
+        self.add_tab_button.setStyleSheet(
+            """
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 4px;
+                margin: 2px -2px 2px 2px;
+                padding: 0px;
+            }
+            QToolButton:hover {
+                background-color: #2D2D2D;
+            }
+            QToolButton:pressed {
+                background-color: #3D3D3D;
+            }
+            """
+        )
+
+        # Place the button in the top-left corner
+        self.setCornerWidget(self.add_tab_button, Qt.TopLeftCorner)
+
+        # Connect hover events for the add button
+        self.add_tab_button.enterEvent = self._handle_add_button_hover_enter
+        self.add_tab_button.leaveEvent = self._handle_add_button_hover_leave
+
+        # Set tab bar properties for better dark theme appearance
+        self.setStyleSheet(
+            """
+            QTabBar::tab {
+                padding: 4px 12px;
+                margin: 2px 1px 0px 1px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background: #383838;
+                border: 1px solid #484848;
+            }
+            QTabBar::tab:!selected {
+                background: #252525;
+                border: 1px solid #353535;
+            }
+            QTabBar::tab:hover {
+                background: #404040;
+            }
+            QTabBar::close-button {
+                image: url("""
+            + pkg_resources.resource_filename(
+                "solar_radio_image_viewer", "assets/close_tab_default.png"
+            )
+            + """);
+                subcontrol-position: right;
+            }
+            QTabBar::close-button:hover {
+                image: url("""
+            + pkg_resources.resource_filename(
+                "solar_radio_image_viewer", "assets/close_tab_hover.png"
+            )
+            + """);
+            }
+            """
+        )
+
+    def _handle_add_button_hover_enter(self, event):
+        self.add_tab_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/add_tab_hover.png"
+                )
+            )
+        )
+
+    def _handle_add_button_hover_leave(self, event):
+        self.add_tab_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/add_tab_default.png"
+                )
+            )
+        )
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        if self.count() > 0:
+            size.setWidth(size.width() + 40)  # Add space for the button
+        return size
+
+    def minimumSizeHint(self):
+        size = super().minimumSizeHint()
+        if self.count() > 0:
+            size.setWidth(size.width() + 40)  # Add space for the button
+        return size
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.updateAddButton()
+
+    def tabLayoutChange(self):
+        super().tabLayoutChange()
+        self.updateAddButton()
+
+    def updateAddButton(self):
+        """Update the position of the add button"""
+        if self.count() > 0:
+            last_rect = self.tabRect(self.count() - 1)
+            button_x = last_rect.right() + 4
+        else:
+            button_x = 4
+
+        button_y = (self.height() - self.add_tab_button.height()) // 2
+        self.add_tab_button.move(button_x, button_y)
+        self.add_tab_button.show()
+        self.add_tab_button.raise_()
+
+
+class CustomTabWidget(QTabWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Create the add tab button
+        self.add_tab_button = QToolButton(self)
+        self.add_tab_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/add_tab_default.png"
+                )
+            )
+        )
+        self.add_tab_button.setToolTip("Add new tab")
+        self.add_tab_button.setFixedSize(32, 32)
+        self.add_tab_button.setIconSize(QSize(32, 32))
+        self.add_tab_button.setStyleSheet(
+            """
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 4px;
+                margin: 2px -2px 2px 2px;
+                padding: 0px;
+            }
+            QToolButton:hover {
+                background-color: #2D2D2D;
+            }
+            QToolButton:pressed {
+                background-color: #3D3D3D;
+            }
+            """
+        )
+
+        # Place the button in the top-left corner
+        self.setCornerWidget(self.add_tab_button, Qt.TopLeftCorner)
+
+        # Connect hover events for the add button
+        self.add_tab_button.enterEvent = self._handle_add_button_hover_enter
+        self.add_tab_button.leaveEvent = self._handle_add_button_hover_leave
+
+        # Set tab bar properties for better dark theme appearance
+        self.setStyleSheet(
+            """
+            QTabBar::tab {
+                padding: 4px 12px;
+                margin: 2px 1px 0px 1px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background: #383838;
+                border: 1px solid #484848;
+            }
+            QTabBar::tab:!selected {
+                background: #252525;
+                border: 1px solid #353535;
+            }
+            QTabBar::tab:hover {
+                background: #404040;
+            }
+            QTabBar::close-button {
+                image: url("""
+            + pkg_resources.resource_filename(
+                "solar_radio_image_viewer", "assets/close_tab_default.png"
+            )
+            + """);
+                subcontrol-position: right;
+            }
+            QTabBar::close-button:hover {
+                image: url("""
+            + pkg_resources.resource_filename(
+                "solar_radio_image_viewer", "assets/close_tab_hover.png"
+            )
+            + """);
+            }
+            """
+        )
+
+    def _handle_add_button_hover_enter(self, event):
+        self.add_tab_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/add_tab_hover.png"
+                )
+            )
+        )
+
+    def _handle_add_button_hover_leave(self, event):
+        self.add_tab_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/add_tab_default.png"
+                )
+            )
+        )
+
+
 class SolarRadioImageViewerApp(QMainWindow):
     def __init__(self, imagename=None):
         super().__init__()
         self.setWindowTitle("Solar Radio Image Viewer")
         self.resize(1400, 800)
 
-        self.tab_widget = QTabWidget()
+        # Use custom tab widget
+        self.tab_widget = CustomTabWidget()
+        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.tab_widget.add_tab_button.clicked.connect(self.handle_add_tab)
+
         self.setCentralWidget(self.tab_widget)
         self.tabs = []
         self.max_tabs = 10
@@ -1802,6 +2036,37 @@ class SolarRadioImageViewerApp(QMainWindow):
             first_tab.dir_entry.setText(imagename)
             first_tab.on_visualization_changed()
             first_tab.auto_minmax()
+
+    def close_tab(self, index):
+        """Close the tab at the given index"""
+        if len(self.tabs) <= 1:
+            QMessageBox.warning(
+                self, "Cannot Close", "At least one tab must remain open."
+            )
+            return
+
+        if index >= 0 and index < len(self.tabs):
+            self.tab_widget.removeTab(index)
+            del self.tabs[index]
+
+    def close_current_tab(self):
+        """Close the currently active tab"""
+        current_idx = self.tab_widget.currentIndex()
+        self.close_tab(current_idx)
+
+    def handle_add_tab(self):
+        """Handle the add tab button click"""
+        if len(self.tabs) >= self.max_tabs:
+            QMessageBox.warning(
+                self,
+                "Maximum Tabs Reached",
+                f"Cannot create more than {self.max_tabs} tabs.",
+            )
+            return
+
+        tab_count = len(self.tabs) + 1
+        tab_name = f"Tab{tab_count}"
+        self.add_new_tab(tab_name)
 
     def create_menus(self):
         menubar = self.menuBar()
@@ -1945,26 +2210,6 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.tab_widget.addTab(new_tab, name)
         self.tab_widget.setCurrentWidget(new_tab)
         return new_tab
-
-    def handle_add_tab(self):
-        tab_count = len(self.tabs) + 1
-        tab_name, ok = QInputDialog.getText(
-            self, "New Tab", "Enter tab name:", text=f"Tab{tab_count}"
-        )
-        if ok and tab_name:
-            self.add_new_tab(tab_name)
-
-    def close_current_tab(self):
-        if len(self.tabs) <= 1:
-            QMessageBox.warning(
-                self, "Cannot Close", "At least one tab must remain open."
-            )
-            return
-
-        current_idx = self.tab_widget.currentIndex()
-        if current_idx >= 0:
-            self.tab_widget.removeTab(current_idx)
-            del self.tabs[current_idx]
 
     def select_directory(self):
         """Select a CASA image directory from the menu"""
@@ -2375,115 +2620,6 @@ class SolarRadioImageViewerApp(QMainWindow):
         msg_box.setText(about_text)
         msg_box.setStandardButtons(QMessageBox.Ok)
         msg_box.exec_()
-
-    '''def show_keyboard_shortcuts(self):
-        from PyQt5.QtWidgets import QTextBrowser
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Keyboard Shortcuts")
-        dialog.setMinimumWidth(1200)
-
-        layout = QVBoxLayout(dialog)
-
-        # Create a QTextBrowser for the content
-        text_browser = QTextBrowser(dialog)
-        text_browser.setOpenExternalLinks(False)
-        text_browser.setHtml(
-            """
-        <h3 style="text-align: center;">Keyboard Shortcuts</h3>
-        <table style="width: 100%; border-collapse: collapse;">
-            <tr>
-                <td style="width: 25%; vertical-align: top; padding: 10px;">
-                    <h4>File Operations</h4>
-                    <table style="width: 100%;">
-                        <tr><td><code>Ctrl+O</code></td><td>Open CASA Image</td></tr>
-                        <tr><td><code>Ctrl+Shift+O</code></td><td>Open FITS File</td></tr>
-                        <tr><td><code>Ctrl+E</code></td><td>Export Figure</td></tr>
-                        <tr><td><code>Ctrl+F</code></td><td>Export as FITS</td></tr>
-                        <tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>
-                    </table>
-                </td>
-                <td style="width: 25%; vertical-align: top; padding: 10px;">
-                    <h4>Navigation & View</h4>
-                    <table style="width: 100%;">
-                        <tr><td><code>R</code></td><td>Reset View</td></tr>
-                        <tr><td><code>1</code></td><td>1°×1° Zoom</td></tr>
-                        <tr><td><code>+/=</code></td><td>Zoom In</td></tr>
-                        <tr><td><code>-</code></td><td>Zoom Out</td></tr>
-                        <tr><td><code>Space</code></td><td>Rectangle Selection</td></tr>
-                    </table>
-                </td>
-                <td style="width: 25%; vertical-align: top; padding: 10px;">
-                    <h4>Display Presets</h4>
-                    <table style="width: 100%;">
-                        <tr><td><code>F5</code></td><td>Auto Min/Max</td></tr>
-                        <tr><td><code>F6</code></td><td>Auto Percentile</td></tr>
-                        <tr><td><code>F7</code></td><td>Auto Median±3×RMS</td></tr>
-                    </table>
-                    <h4>Tools</h4>
-                    <table style="width: 100%;">
-                        <tr><td><code>Ctrl+B</code></td><td>Batch Processing</td></tr>
-                        <tr><td><code>Ctrl+M</code></td><td>Image Metadata</td></tr>
-                    </table>
-                </td>
-                <td style="width: 25%; vertical-align: top; padding: 10px;">
-                    <h4>Region & Analysis</h4>
-                    <table style="width: 100%;">
-                        <tr><td><code>Ctrl+S</code></td><td>Export Sub-Image</td></tr>
-                        <tr><td><code>Ctrl+R</code></td><td>Export ROI</td></tr>
-                        <tr><td><code>Ctrl+G</code></td><td>Fit 2D Gaussian</td></tr>
-                        <tr><td><code>Ctrl+L</code></td><td>Fit Ring</td></tr>
-                    </table>
-                    <h4>Annotations</h4>
-                    <table style="width: 100%;">
-                        <tr><td><code>Ctrl+T</code></td><td>Add Text</td></tr>
-                        <tr><td><code>Ctrl+A</code></td><td>Add Arrow</td></tr>
-                    </table>
-                </td>
-            </tr>
-            <tr>
-                <td colspan="4" style="padding: 10px;">
-                    <h4>Tab Management</h4>
-                    <table style="width: 100%;">
-                        <tr>
-                            <td style="width: 25%;"><code>Ctrl+N</code> New Tab</td>
-                            <td style="width: 25%;"><code>Ctrl+W</code> Close Tab</td>
-                            <td style="width: 25%;"><code>←</code> Previous Tab</td>
-                            <td style="width: 25%;"><code>→</code> Next Tab</td>
-                        </tr>
-                    </table>
-                </td>
-            </tr>
-        </table>
-        """
-        )
-
-        # Set dark theme colors
-        text_browser.setStyleSheet(
-            """
-            QTextBrowser {
-                background-color: #1E1E22;
-                color: #FFFFFF;
-            }
-            QTextBrowser code {
-                background-color: #2A2A2E;
-                padding: 2px 4px;
-                border: 1px solid #505050;
-                border-radius: 3px;
-            }
-            """
-        )
-
-        layout.addWidget(text_browser)
-
-        # Add OK button
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
-        button_box.accepted.connect(dialog.accept)
-        layout.addWidget(button_box)
-
-        # Set a reasonable size that should fit on most laptop screens
-        dialog.resize(720, 480)
-        dialog.exec_()'''
 
     def show_keyboard_shortcuts(parent=None):
         from PyQt5.QtWidgets import QTextBrowser
