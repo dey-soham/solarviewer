@@ -1159,7 +1159,13 @@ class SolarRadioImageTab(QWidget):
         if wcs_obj is not None:
             try:
                 ax = self.figure.add_subplot(111, projection=wcs_obj)
-                im = ax.imshow(transposed_data, origin="lower", cmap=cmap, norm=norm)
+                im = ax.imshow(
+                    transposed_data,
+                    origin="lower",
+                    cmap=cmap,
+                    norm=norm,
+                    interpolation="none",
+                )
                 ax.set_xlabel("Right Ascension (J2000)")
                 ax.set_ylabel("Declination (J2000)")
                 if (
@@ -1175,12 +1181,24 @@ class SolarRadioImageTab(QWidget):
             except Exception as e:
                 print(f"Error setting up WCS axes: {e}")
                 ax = self.figure.add_subplot(111)
-                im = ax.imshow(transposed_data, origin="lower", cmap=cmap, norm=norm)
+                im = ax.imshow(
+                    transposed_data,
+                    origin="lower",
+                    cmap=cmap,
+                    norm=norm,
+                    interpolation="none",
+                )
                 ax.set_xlabel("Pixel X")
                 ax.set_ylabel("Pixel Y")
         else:
             ax = self.figure.add_subplot(111)
-            im = ax.imshow(transposed_data, origin="lower", cmap=cmap, norm=norm)
+            im = ax.imshow(
+                transposed_data,
+                origin="lower",
+                cmap=cmap,
+                norm=norm,
+                interpolation="none",
+            )
             ax.set_xlabel("Pixel X")
             ax.set_ylabel("Pixel Y")
 
@@ -1316,6 +1334,7 @@ class SolarRadioImageTab(QWidget):
 
         # Instead of immediate draw, use draw_idle to coalesce multiple calls
         self.canvas.draw_idle()
+
         print(f"Time taken to plot image: {time.time() - start_time:.2f} seconds")
 
     def _update_beam_position(self, ax):
@@ -1598,7 +1617,7 @@ class SolarRadioImageTab(QWidget):
 
         # Add tabs to tab widget - Style first, then Position
         tab_widget.addTab(style_tab, "Style")
-        tab_widget.addTab(position_tab, "Position && Size")
+        tab_widget.addTab(position_tab, "Configure")
 
         layout.addWidget(tab_widget)
 
