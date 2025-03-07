@@ -77,6 +77,7 @@ from .utils import (
 )
 from .styles import STYLESHEET, DARK_PALETTE
 from .searchable_combobox import ColormapSelector
+from astropy.time import Time
 
 rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
@@ -1134,7 +1135,14 @@ class SolarRadioImageTab(QWidget):
 
         start_time = time.time()
         self.imagename = imagename
-        pix, csys, psf = get_pixel_values_from_image(imagename, stokes, threshold)
+
+        # Use the current RMS box when loading data
+        from .utils import get_pixel_values_from_image
+
+        pix, csys, psf = get_pixel_values_from_image(
+            imagename, stokes, threshold, rms_box=tuple(self.current_rms_box)
+        )
+
         self.current_image_data = pix
         self.current_wcs = csys
         self.psf = psf
@@ -1296,7 +1304,60 @@ class SolarRadioImageTab(QWidget):
             ax.set_xlim(stored_xlim)
             ax.set_ylim(stored_ylim)
 
-        ax.set_title(os.path.basename(self.imagename) if self.imagename else "No Image")
+        # ax.set_title(os.path.basename(self.imagename) if self.imagename else "No Image")
+        # Display the image time in UTC and freq in MHz as a title
+        if self.current_image_data is not None:
+            # Get the image time and frequency
+            try:
+                ia = IA()
+                ia.open(self.imagename)
+                csys_record = ia.coordsys().torecord()
+                if "spectral2" in csys_record:
+                    spectral2 = csys_record["spectral2"]
+                    wcs = spectral2.get("wcs", {})
+                    frequency_ref = wcs.get("crval", None)
+                    frequency_inc = wcs.get("cdelt", None)
+                    frequency_unit = spectral2.get("unit", None)
+                    if frequency_unit == "Hz":
+                        image_freq = f"{frequency_ref * 1e-6:.2f} MHz"
+                    else:
+                        image_freq = f"{frequency_ref:.2f} {frequency_unit}"
+                else:
+                    image_freq = None
+
+                if "obsdate" in csys_record:
+                    obsdate = csys_record["obsdate"]
+                    m0 = obsdate.get("m0", {})
+                    time_value = m0.get("value", None)
+                    time_unit = m0.get("unit", None)
+                    refer = obsdate.get("refer", None)
+                    if refer == "UTC" or time_unit == "d":
+                        t = Time(time_value, format="mjd")
+                        t.precision = 1
+                        image_time = t.iso
+                    else:
+                        image_time = None
+                else:
+                    image_time = None
+
+                if image_time is not None or image_freq is not None:
+                    title = f"Time: {image_time}, Freq: {image_freq}"
+                else:
+                    title = (
+                        os.path.basename(self.imagename)
+                        if self.imagename
+                        else "No Image"
+                    )
+                ax.set_title(title)
+            except Exception as e:
+                print(f"Error getting image time and frequency: {e}")
+                title = (
+                    os.path.basename(self.imagename) if self.imagename else "No Image"
+                )
+                ax.set_title(title)
+
+            # Format the time and frequency as a title
+
         self.figure.colorbar(im, ax=ax, label="Data")
 
         # Draw beam if available
@@ -2217,7 +2278,9 @@ class SolarRadioImageTab(QWidget):
 
         # Add a description label
         description = QLabel(
-            "Set the region used for RMS calculation. This affects dynamic range calculations and other statistics."
+            "Set the region used for RMS calculation. This affects dynamic range calculations, "
+            "thresholding for derived Stokes parameters (Lfrac, Vfrac, Q/I, etc.), and other statistics. "
+            "Changes will be applied to the current image and all future Stokes parameter selections."
         )
         description.setWordWrap(True)
         description.setStyleSheet("color: #BBB; font-style: italic;")
@@ -2383,9 +2446,51 @@ class SolarRadioImageTab(QWidget):
             # Store the current RMS box values
             self.current_rms_box = [x1, x2, y1, y2]
 
+            # Update the contour settings RMS box as well
+            self.contour_settings["rms_box"] = tuple(self.current_rms_box)
+
             # Update image stats with new RMS box
             if self.current_image_data is not None:
                 self.show_image_stats(rms_box=self.current_rms_box)
+
+                # Reload the current image with the new RMS box
+                # This will recalculate RMS for all Stokes parameters
+                if hasattr(self, "imagename") and self.imagename:
+                    current_stokes = self.stokes_combo.currentText()
+                    try:
+                        threshold = float(self.threshold_entry.text())
+                    except (ValueError, AttributeError):
+                        threshold = 10.0
+
+                    # Show a status message
+                    self.show_status_message(
+                        f"Updating RMS box to [{x1}:{x2}, {y1}:{y2}] and recalculating..."
+                    )
+
+                    # Reload the data with the new RMS box
+                    from .utils import get_pixel_values_from_image
+
+                    pix, csys, psf = get_pixel_values_from_image(
+                        self.imagename,
+                        current_stokes,
+                        threshold,
+                        rms_box=tuple(self.current_rms_box),
+                    )
+                    self.current_image_data = pix
+                    self.current_wcs = csys
+                    self.psf = psf
+
+                    # Update the plot
+                    try:
+                        vmin_val = float(self.vmin_entry.text())
+                        vmax_val = float(self.vmax_entry.text())
+                        stretch = self.stretch_combo.currentText()
+                        cmap = self.cmap_combo.currentText()
+                        gamma = float(self.gamma_entry.text())
+                        self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+                    except (ValueError, AttributeError):
+                        self.plot_image()
+
                 self.show_status_message(f"RMS box updated to [{x1}:{x2}, {y1}:{y2}]")
 
             # Close the dialog
