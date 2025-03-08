@@ -105,10 +105,11 @@ class SolarRadioImageTab(QWidget):
         self.solar_disk_diameter_arcmin = 32.0
         # Solar disk style properties
         self.solar_disk_style = {
-            "color": "yellow",
+            "color": "white",
             "linestyle": "--",
-            "linewidth": 2.0,
-            "alpha": 0.8,
+            "linewidth": 1.8,
+            "alpha": 0.6,
+            "show_center": False,
         }
 
         # Initialize RMS box values
@@ -306,7 +307,7 @@ class SolarRadioImageTab(QWidget):
 
         # Basic display options - right side
         self.show_grid_checkbox = QCheckBox("Show Grid")
-        self.show_grid_checkbox.setChecked(True)
+        self.show_grid_checkbox.setChecked(False)
         self.show_grid_checkbox.stateChanged.connect(self.on_checkbox_changed)
 
         # Solar disk controls with settings button
@@ -1317,7 +1318,7 @@ class SolarRadioImageTab(QWidget):
                     spectral2 = csys_record["spectral2"]
                     wcs = spectral2.get("wcs", {})
                     frequency_ref = wcs.get("crval", None)
-                    frequency_inc = wcs.get("cdelt", None)
+                    # frequency_inc = wcs.get("cdelt", None)
                     frequency_unit = spectral2.get("unit", None)
                     if frequency_unit == "Hz":
                         image_freq = f"{frequency_ref * 1e-6:.2f} MHz"
