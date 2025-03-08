@@ -20,115 +20,56 @@ from PyQt5.QtWidgets import (
     QButtonGroup,
     QMessageBox,
     QGroupBox,
+    QLineEdit,
 )
-
-# Try to import CASA tools
-try:
-    from casatools import image as IA
-
-    CASA_AVAILABLE = True
-except ImportError:
-    print(
-        "WARNING: CASA tools not found. This application requires CASA to be installed."
-    )
-    CASA_AVAILABLE = False
-    IA = None
-
-
-def get_pixel_values_from_image(imagename, stokes="I", threshold=5.0):
-
-    if not CASA_AVAILABLE:
-        raise RuntimeError("CASA is not available")
-
-    stokes_map = {"I": 0, "Q": 1, "U": 2, "V": 3}
-
-    try:
-        ia_tool = IA()
-        ia_tool.open(imagename)
-        print("before summary")
-
-        summary = ia_tool.summary()
-        print("after summary")
-        dimension_names = np.array(summary.get("axisnames"))
-        dimension_shapes = summary.get("shape")
-
-        data = ia_tool.getchunk()
-        psf = ia_tool.restoringbeam()
-        csys = ia_tool.coordsys()
-
-        # Check for Stokes axis
-        if "Stokes" in dimension_names:
-            stokes_idx = int(np.where(dimension_names == "Stokes")[0][0])
-            single_stokes = dimension_shapes[stokes_idx] == 1
-        else:
-            stokes_idx = None
-            single_stokes = True
-
-        # Check for Frequency axis
-        if "Frequency" in dimension_names:
-            freq_idx = int(np.where(dimension_names == "Frequency")[0][0])
-        else:
-            freq_idx = None
-
-        # Extract the requested Stokes parameter
-        n_dims = len(data.shape)
-        if stokes in ["I", "Q", "U", "V"]:
-            idx = stokes_map.get(stokes)
-            if idx is None:
-                raise ValueError(f"Unknown Stokes parameter: {stokes}")
-
-            slice_list = [slice(None)] * n_dims
-            if stokes_idx is not None:
-                if single_stokes and stokes != "I":
-                    raise RuntimeError(
-                        "The image is single stokes, but the Stokes parameter is not 'I'."
-                    )
-                slice_list[stokes_idx] = idx
-
-            if freq_idx is not None:
-                slice_list[freq_idx] = 0
-
-            pix = data[tuple(slice_list)]
-        else:
-            raise ValueError(f"Unsupported Stokes parameter: {stokes}")
-
-    except Exception as e:
-        if "ia_tool" in locals():
-            ia_tool.close()
-        raise RuntimeError(f"Error reading image: {e}")
-
-    ia_tool.close()
-    pix = pix.transpose()
-    pix = np.flip(pix, axis=0)
-    return pix, csys, psf
+from PyQt5.QtCore import Qt
+from .utils import get_pixel_values_from_image
 
 
 class NapariViewer(QWidget):
-    def __init__(self):
+    def __init__(self, imagename=None):
         super().__init__()
         self.viewer = None
         self.current_image_data = None
         self.current_wcs = None
         self.psf = None
         self.image_layer = None
+        self.imagename = imagename
 
         self.init_ui()
 
+        # If an image was provided, load it
+        if self.imagename:
+            self.load_data(self.imagename)
+            self.plot_image()
+
     def init_ui(self):
         self.setWindowTitle("Napari Image Viewer")
-        self.setGeometry(100, 100, 1200, 800)
+        self.resize(1200, 800)
 
-        # Create main layout
-        main_layout = (
-            QHBoxLayout()
-        )  # Changed to horizontal layout for side-by-side columns
+        # Main layout
+        main_layout = QHBoxLayout()
+        self.setLayout(main_layout)
 
-        # Left column - File selection controls
+        # Left column for controls
         left_column = QVBoxLayout()
+        main_layout.addLayout(left_column, 1)
+
+        # Right column for napari viewer
+        right_column = QVBoxLayout()
+        main_layout.addLayout(right_column, 3)
 
         # File selection group
         file_group = QGroupBox("File Selection")
         file_layout = QVBoxLayout()
+
+        # Add help button
+        help_layout = QHBoxLayout()
+        help_button = QPushButton("Help")
+        help_button.clicked.connect(self.show_help)
+        help_layout.addStretch()
+        help_layout.addWidget(help_button)
+        left_column.addLayout(help_layout)
 
         # Radio buttons for file type selection
         radio_layout = QVBoxLayout()  # Changed to vertical layout for better spacing
@@ -168,9 +109,6 @@ class NapariViewer(QWidget):
         # Add a spacer at the bottom of the left column
         left_column.addStretch()
 
-        # Right column - Display controls
-        right_column = QVBoxLayout()
-
         # Display controls group
         display_group = QGroupBox("Display Controls")
         display_layout = QVBoxLayout()
@@ -181,10 +119,23 @@ class NapariViewer(QWidget):
         stokes_layout.addWidget(self.stokes_label)
 
         self.stokes_combo = QComboBox()
-        self.stokes_combo.addItems(["I", "Q", "U", "V"])
+        self.stokes_combo.addItems(
+            ["I", "Q", "U", "V", "L", "Lfrac", "Vfrac", "Q/I", "U/I", "U/V"]
+        )
         self.stokes_combo.currentTextChanged.connect(self.on_stokes_changed)
         stokes_layout.addWidget(self.stokes_combo)
         display_layout.addLayout(stokes_layout)
+
+        # Add threshold textbox
+        threshold_layout = QHBoxLayout()
+        self.threshold_label = QLabel("Threshold:")
+        threshold_layout.addWidget(self.threshold_label)
+        self.threshold_textbox = QLineEdit("10.0")
+        threshold_layout.addWidget(self.threshold_textbox)
+        self.threshold_textbox.editingFinished.connect(
+            lambda: self.on_threshold_changed(self.threshold_textbox.text())
+        )
+        display_layout.addLayout(threshold_layout)
 
         # Add a spacer for better layout
         display_layout.addStretch()
@@ -204,13 +155,6 @@ class NapariViewer(QWidget):
 
         # Add a spacer at the bottom of the right column
         right_column.addStretch()
-
-        # Add columns to main layout
-        main_layout.addLayout(left_column, 1)  # 1 is the stretch factor
-        main_layout.addLayout(right_column, 2)  # 2 is the stretch factor (wider)
-
-        # Set the layout
-        self.setLayout(main_layout)
 
         # Initialize napari viewer
         self.init_napari()
@@ -250,13 +194,15 @@ class NapariViewer(QWidget):
                         self, "Error", f"Failed to load FITS file: {str(e)}"
                     )
 
-    def load_data(self, imagename):
+    def load_data(self, imagename, threshold=10):
         """Load data from a FITS file or CASA image directory"""
         stokes = self.stokes_combo.currentText()
-        threshold = 3.0  # Default threshold
 
         try:
             pix, csys, psf = get_pixel_values_from_image(imagename, stokes, threshold)
+            pix = pix.transpose()
+            pix = np.flip(pix, axis=0)
+
             self.current_image_data = pix
             self.current_wcs = csys
             self.psf = psf
@@ -268,7 +214,9 @@ class NapariViewer(QWidget):
             )
 
             # Update window title with filename
-            self.viewer.title = f"Napari Viewer - {os.path.basename(imagename)}"
+            self.viewer.title = (
+                f"Solar Radio Image Viewer (Napari) - {os.path.basename(imagename)}"
+            )
 
         except Exception as e:
             print(f"Error loading data: {e}")
@@ -306,18 +254,19 @@ class NapariViewer(QWidget):
             return
 
         data = self.current_image_data
-        min_val = data.min()
-        max_val = data.max()
-        mean_val = data.mean()
-        median_val = np.median(data)
-        std_val = data.std()
+        min_val = np.nanmin(data)
+        max_val = np.nanmax(data)
+        mean_val = np.nanmean(data)
+        median_val = np.nanmedian(data)
+        std_val = np.nanstd(data)
+        rms_val = np.sqrt(np.nanmean(data**2))
+        positive_DR = max_val / rms_val
+        negative_DR = min_val / rms_val
 
         stats_text = (
-            f"Min: {min_val:.4g}\n"
-            f"Max: {max_val:.4g}\n"
-            f"Mean: {mean_val:.4g}\n"
-            f"Median: {median_val:.4g}\n"
-            f"Std Dev: {std_val:.4g}\n"
+            f"Min: {min_val:.4g}                Max: {max_val:.4g}              Mean: {mean_val:.4g}                Median: {median_val:.4g}\n"
+            f"Std Dev: {std_val:.4g}            RMS: {rms_val:.4g}\n"
+            f"Positive DR: {positive_DR:.4g}    Negative DR: {negative_DR:.4g}\n"
             f"Shape: {data.shape}"
         )
 
@@ -335,12 +284,84 @@ class NapariViewer(QWidget):
                     self, "Error", f"Failed to update Stokes parameter: {str(e)}"
                 )
 
+    def on_threshold_changed(self, text):
+        """Handle changes to the threshold textbox"""
+        try:
+            if text == "":
+                threshold = 10.0
+            elif float(text) < 0:
+                print("Invalid threshold value")
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Invalid threshold value. Please enter a valid number.",
+                )
+                return
+            else:
+                threshold = float(text)
+            self.load_data(self.imagename, threshold=threshold)
+            self.plot_image()
+        except ValueError:
+            print("Invalid threshold value")
+            QMessageBox.critical(
+                self, "Error", "Invalid threshold value. Please enter a valid number."
+            )
 
-def main():
+    def show_help(self):
+        """Display help information about the Napari viewer"""
+        help_text = """
+<h2>Napari Fast Viewer Help</h2>
+
+<h3>Overview</h3>
+<p>The Napari Fast Viewer is a lightweight tool for quickly visualizing solar radio images.</p>
+
+<h3>Features</h3>
+<ul>
+    <li><b>Fast Loading:</b> Quickly loads and displays FITS and CASA images</li>
+    <li><b>Stokes Parameters:</b> View different Stokes parameters (I, Q, U, V, etc.)</li>
+    <li><b>Threshold Control:</b> Adjust threshold for better visualization</li>
+    <li><b>Basic Statistics:</b> View basic image statistics</li>
+</ul>
+
+<h3>Usage</h3>
+<ol>
+    <li>Select a file using the "Select File" button</li>
+    <li>Choose a Stokes parameter from the dropdown</li>
+    <li>Adjust the threshold value if needed</li>
+</ol>
+
+<h3>Command Line Usage</h3>
+<p>You can launch this viewer directly from the command line:</p>
+<pre>
+solarviewer -f [image_file]
+sv --fast [image_file]
+</pre>
+"""
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Napari Viewer Help")
+        msg_box.setTextFormat(Qt.RichText)
+        msg_box.setText(help_text)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.exec_()
+
+
+def main(imagename=None):
     """Main function to run the application"""
-    app = QApplication(sys.argv)
-    viewer = NapariViewer()
-    sys.exit(app.exec_())
+    # Check if QApplication already exists (when called from main app)
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+        standalone = True
+    else:
+        standalone = False
+
+    viewer = NapariViewer(imagename)
+
+    # Only exit if running standalone
+    if standalone:
+        sys.exit(app.exec_())
+    else:
+        app.exec_()
 
 
 if __name__ == "__main__":

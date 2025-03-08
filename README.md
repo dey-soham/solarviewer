@@ -1,69 +1,144 @@
-# Napari Image Viewer
+# Solar Radio Image Viewer
 
-A simple viewer for FITS files and CASA images using napari, a multi-dimensional image viewer for Python.
+A comprehensive tool for visualizing and analyzing solar radio images in FITS and CASA formats.
+
+![Solar Radio Image Viewer](https://github.com/dey-soham/solarviewer/raw/main/docs/images/screenshot.png)
+
+## Developer
+
+- Soham Dey [sohamd943@gmail.com](https://github.com/dey-soham)
 
 ## Features
 
-- View FITS files and CASA image directories with napari's powerful visualization capabilities
-- Select different Stokes parameters (I, Q, U, V)
-- Choose from various colormaps
-- Interactive zooming and panning
-- Image statistics display
-- Contrast adjustment controls
+### Standard Viewer
+- **Multi-tab Interface**: Compare multiple images side by side
+- **Comprehensive Analysis Tools**: Statistical analysis, region selection, and measurements
+- **Coordinate Systems**: Support for multiple coordinate systems including helioprojective
+- **Region Selection**: Rectangle selection tool for detailed analysis of specific regions
+- **Statistical Analysis**: Detailed statistics for the entire image and selected regions
+- **Visualization Controls**: Adjustable color maps, scaling, and display options
+- **Export Options**: Export images, data, and regions in various formats
 
-## Requirements
-
-- Python 3.7+
-- CASA (Common Astronomy Software Applications) for reading FITS files and CASA images
-- Dependencies listed in `requirements.txt`
+### Fast Napari Viewer
+- **Lightweight Interface**: Quick loading and visualization of images
+- **Basic Analysis**: View basic image statistics
+- **Stokes Parameters**: View different Stokes parameters (I, Q, U, V, etc.)
+- **Threshold Control**: Adjust threshold for better visualization
 
 ## Installation
 
-1. Clone this repository:
-   ```
-   git clone <repository-url>
-   cd <repository-directory>
-   ```
+### Prerequisites
+- Python 3.7 or higher
+- pip package manager
 
-2. Install the required dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+### Install from PyPI
+```bash
+pip install solar-image-viewer
+```
 
-3. Make sure CASA is installed and available in your Python environment.
+### Install from Source
+```bash
+git clone https://github.com/yourusername/solarviewer.git
+cd solarviewer
+pip install -e .
+```
 
 ## Usage
 
-Run the napari viewer:
+### Command Line Interface
 
+#### Standard Viewer
+```bash
+# Launch the standard viewer
+solarviewer
+
+# Open a specific image in the standard viewer
+solarviewer path/to/image.fits
 ```
-python napari_viewer.py
+
+#### Fast Napari Viewer
+```bash
+# Launch the fast Napari viewer
+solarviewer -f
+# or
+sv --fast
+
+# Open a specific image in the Napari viewer
+solarviewer -f path/to/image.fits
+# or
+sv --fast path/to/image.fits
 ```
 
-### Controls
+### Help
+```bash
+# Display help information
+solarviewer --help
+```
 
-#### File Selection (Left Panel)
-- **File Type**: Choose between FITS file or CASA image directory
-- **Open Image**: Click to select a file or directory based on your selection
-- **Current File**: Displays information about the currently loaded file
+## User Interface Guide
 
-#### Display Controls (Right Panel)
-- **Stokes**: Select the Stokes parameter to display (I, Q, U, V)
-- **Colormap**: Choose from various colormaps for visualization
-- **Contrast**: Adjust image contrast using Min/Max or Percentile scaling
-- **Image Statistics**: View basic statistics about the current image
+### Standard Viewer
 
-### Napari Controls
+#### File Controls
+- **Open Directory**: Load a directory containing solar radio images
+- **Open FITS File**: Load a specific FITS file
+- **Export Figure**: Export the current figure as an image file
+- **Export Data as FITS**: Export the current data as a FITS file
 
-- **Zoom**: Mouse wheel or +/- keys
-- **Pan**: Click and drag
-- **Reset View**: Home key
-- **Full Screen**: F key
+#### Display Controls
+- **Colormap**: Select from various colormaps for visualization
+- **Stretch**: Choose between linear, log, sqrt, and power-law stretches
+- **Gamma**: Adjust gamma value for power-law stretch
+- **Min/Max**: Set display range manually or use auto-scaling options
 
-## Notes
+#### Region Controls
+- **Rectangle Selection**: Select a rectangular region for detailed analysis
+- **Export Region**: Export the selected region as a CASA region file
+- **Export Sub-Image**: Export the selected region as a new CASA image
 
-This is a basic viewer that demonstrates how to use napari to visualize astronomical images. It uses a simplified version of the data loading functionality from the main solar radio image viewer.
+#### Analysis Tools
+- **Fit 2D Gaussian**: Fit a 2D Gaussian to the selected region
+- **Fit Elliptical Ring**: Fit an elliptical ring to the selected region
+- **Image Statistics**: View detailed statistics for the entire image
+- **Region Statistics**: View statistics for the selected region
+
+### Fast Napari Viewer
+
+#### File Controls
+- **Select File**: Load a FITS or CASA image file
+
+#### Display Controls
+- **Stokes Parameter**: Select the Stokes parameter to display
+- **Threshold**: Set the threshold value for visualization
+
+#### Statistics
+- View basic statistics for the loaded image
+
+## Development
+
+### Project Structure
+```
+solarviewer/
+├── solar_radio_image_viewer/
+│   ├── __init__.py
+│   ├── main.py           # Entry point
+│   ├── viewer.py         # Standard viewer implementation
+│   ├── napari_viewer.py  # Fast Napari viewer implementation
+│   ├── utils.py          # Utility functions
+│   ├── dialogs.py        # Dialog implementations
+│   └── styles.py         # UI styles
+├── setup.py              # Package setup
+└── README.md             # This file
+```
+
+### Contributing
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-[MIT License](LICENSE) 
+## Acknowledgments
+- [Napari](https://napari.org/) for the fast viewer implementation
+- [Astropy](https://www.astropy.org/) for astronomical calculations
+- [CASA](https://casa.nrao.edu/) for radio astronomy tools 
+- [SunPy](https://sunpy.org/) for solar physics tools
