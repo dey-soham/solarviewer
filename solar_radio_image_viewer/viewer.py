@@ -1528,6 +1528,54 @@ class SolarRadioImageTab(QWidget):
         )
         ax.add_patch(ellipse)
 
+    def _update_solar_disk_position(self, ax):
+        if (
+            hasattr(self, "show_solar_disk_checkbox")
+            and self.show_solar_disk_checkbox.isChecked()
+        ):
+            try:
+                center_x, center_y = self.solar_disk_center
+                if self.current_wcs:
+                    radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
+                    cdelt = self.current_wcs.increment()["numeric"][0:2]
+                    if isinstance(cdelt, list):
+                        cdelt = [float(c) for c in cdelt]
+                    cdelt = np.array(cdelt) * 180 / np.pi
+                    dx_deg = abs(cdelt[0])
+                    radius_pix = radius_deg / dx_deg
+                else:
+                    radius_pix = min(self.current_image_data.shape) / 8
+
+                circle = plt.Circle(
+                    (center_x, center_y),
+                    radius_pix,
+                    fill=False,
+                    edgecolor=self.solar_disk_style["color"],
+                    linestyle=self.solar_disk_style["linestyle"],
+                    linewidth=self.solar_disk_style["linewidth"],
+                    alpha=self.solar_disk_style["alpha"],
+                )
+                ax.add_patch(circle)
+
+                if self.solar_disk_style.get("show_center", True):
+                    cross_size = radius_pix / 20
+                    ax.plot(
+                        [center_x - cross_size, center_x + cross_size],
+                        [center_y, center_y],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
+                    ax.plot(
+                        [center_x, center_x],
+                        [center_y - cross_size, center_y + cross_size],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
+            except Exception as e:
+                print(f"Error drawing solar disk: {e}")
+
     def on_stokes_changed(self, stokes):
         if not self.imagename:
             return
@@ -1811,6 +1859,9 @@ class SolarRadioImageTab(QWidget):
         ax.set_ylim(ycenter - height / 2, ycenter + height / 2)
 
         self._update_beam_position(ax)
+        # If solar disk checkbox is checked, draw the solar disk
+        if self.show_solar_disk_checkbox.isChecked():
+            self._update_solar_disk_position(ax)
         self.canvas.draw()
         self.show_status_message("Zoomed in")
 
@@ -1832,6 +1883,9 @@ class SolarRadioImageTab(QWidget):
         ax.set_ylim(ycenter - height / 2, ycenter + height / 2)
 
         self._update_beam_position(ax)
+        # If solar disk checkbox is checked, draw the solar disk
+        if self.show_solar_disk_checkbox.isChecked():
+            self._update_solar_disk_position(ax)
         self.canvas.draw()
         self.show_status_message("Zoomed out")
 
@@ -1858,6 +1912,9 @@ class SolarRadioImageTab(QWidget):
             ax.set_ylim(ycenter - pixels_y / 2, ycenter + pixels_y / 2)
 
             self._update_beam_position(ax)
+            # If solar disk checkbox is checked, draw the solar disk
+            if self.show_solar_disk_checkbox.isChecked():
+                self._update_solar_disk_position(ax)
             self.canvas.draw()
             self.show_status_message("Zoomed to 1°×1°")
         except Exception as e:
@@ -2265,6 +2322,9 @@ class SolarRadioImageTab(QWidget):
         ax.set_ylim(0, self.current_image_data.shape[1])
 
         self._update_beam_position(ax)
+        # If solar disk checkbox is checked, draw the solar disk
+        if self.show_solar_disk_checkbox.isChecked():
+            self._update_solar_disk_position(ax)
         self.canvas.draw()
         if show_status_message:
             self.show_status_message("Reseted plot to full image")
