@@ -63,7 +63,7 @@ from PyQt5.QtWidgets import (
     QStyle,
 )
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
-from PyQt5.QtGui import QIcon, QColor, QPalette, QPainter
+from PyQt5.QtGui import QIcon, QColor, QPalette, QPainter, QIntValidator
 
 from .norms import SqrtNorm, AsinhNorm, PowerNorm
 from .utils import (
@@ -77,6 +77,7 @@ from .utils import (
 )
 from .styles import STYLESHEET, DARK_PALETTE
 from .searchable_combobox import ColormapSelector
+from astropy.time import Time
 
 rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
@@ -102,6 +103,17 @@ class SolarRadioImageTab(QWidget):
         self.imagename = None
         self.solar_disk_center = None
         self.solar_disk_diameter_arcmin = 32.0
+        # Solar disk style properties
+        self.solar_disk_style = {
+            "color": "white",
+            "linestyle": "--",
+            "linewidth": 1.8,
+            "alpha": 0.6,
+            "show_center": False,
+        }
+
+        # Initialize RMS box values
+        self.current_rms_box = [0, 200, 0, 130]
 
         self.contour_settings = {
             "source": "same",
@@ -123,6 +135,12 @@ class SolarRadioImageTab(QWidget):
 
         self.setup_ui()
 
+    def show_status_message(self, message):
+        """Helper method to show messages in the status bar"""
+        main_window = self.window()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(message)
+
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
@@ -136,8 +154,6 @@ class SolarRadioImageTab(QWidget):
         control_layout.setSpacing(15)
         self.create_file_controls(control_layout)
         self.create_display_controls(control_layout)
-        self.create_range_controls(control_layout)
-        self.create_nav_controls(control_layout)
         main_layout.addWidget(control_panel)
 
         # Center Figure Panel
@@ -145,8 +161,8 @@ class SolarRadioImageTab(QWidget):
         figure_layout = QVBoxLayout(figure_panel)
         figure_layout.setContentsMargins(0, 0, 0, 0)
         figure_layout.setSpacing(10)
-        self.setup_figure_toolbar(figure_layout)
         self.setup_canvas(figure_layout)
+        self.setup_figure_toolbar(figure_layout)
         main_layout.addWidget(figure_panel, 1)
 
         # Right Stats Panel
@@ -156,6 +172,7 @@ class SolarRadioImageTab(QWidget):
         stats_layout.setContentsMargins(0, 0, 0, 0)
         stats_layout.setSpacing(15)
         self.create_stats_table(stats_layout)
+        self.create_image_stats_table(stats_layout)
         self.create_coord_display(stats_layout)
         main_layout.addWidget(stats_panel)
 
@@ -233,12 +250,21 @@ class SolarRadioImageTab(QWidget):
         stokes_layout.addRow("Stokes Parameter:", self.stokes_combo)
         self.threshold_entry = QLineEdit("10")
         stokes_layout.addRow("Threshold (σ):", self.threshold_entry)
+
+        # Add RMS Box Settings button
+        rms_box_btn = QPushButton("RMS Box Settings...")
+        rms_box_btn.clicked.connect(self.show_rms_box_dialog)
+        stokes_layout.addRow("", rms_box_btn)
+
         layout.addLayout(stokes_layout)
         parent_layout.addWidget(group)
 
     def create_display_controls(self, parent_layout):
         group = QGroupBox("Display Settings")
-        layout = QFormLayout(group)
+        main_layout = QVBoxLayout(group)
+
+        # Basic display settings
+        form_layout = QFormLayout()
         radio_colormaps = [
             "viridis",
             "plasma",
@@ -257,24 +283,82 @@ class SolarRadioImageTab(QWidget):
         )
         self.cmap_combo.setCurrentText("viridis")
         self.cmap_combo.colormapSelected.connect(self.on_visualization_changed)
-        layout.addRow("Colormap:", self.cmap_combo)
+        form_layout.addRow("Colormap:", self.cmap_combo)
+
         self.stretch_combo = QComboBox()
         self.stretch_combo.addItems(["linear", "sqrt", "log", "arcsinh", "power"])
         self.stretch_combo.setCurrentText("power")
         self.stretch_combo.currentIndexChanged.connect(self.on_stretch_changed)
-        layout.addRow("Stretch:", self.stretch_combo)
-        beam_layout = QHBoxLayout()
+        form_layout.addRow("Stretch:", self.stretch_combo)
+        main_layout.addLayout(form_layout)
+
+        # Overlays subgroup
+        overlays_group = QGroupBox("Overlays")
+        overlays_layout = QVBoxLayout(overlays_group)
+
+        # Grid layout for all overlay controls
+        grid_layout = QGridLayout()
+        grid_layout.setSpacing(10)
+
+        # Basic display options - left side
         self.show_beam_checkbox = QCheckBox("Show Beam")
         self.show_beam_checkbox.setChecked(True)
         self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
+
+        # Basic display options - right side
         self.show_grid_checkbox = QCheckBox("Show Grid")
-        self.show_grid_checkbox.setChecked(True)
+        self.show_grid_checkbox.setChecked(False)
         self.show_grid_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        beam_layout.addWidget(self.show_beam_checkbox)
-        beam_layout.addWidget(self.show_grid_checkbox)
-        layout.addRow("Overlays:", beam_layout)
-        contour_layout = QHBoxLayout()
-        self.show_contours_checkbox = QCheckBox("Show Contours")
+
+        # Solar disk controls with settings button
+        self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
+        self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        self.solar_disk_center_button = QPushButton()
+        self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
+        self.solar_disk_center_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/settings.png"
+                )
+            )
+        )
+        self.solar_disk_center_button.setIconSize(QSize(24, 24))
+        self.solar_disk_center_button.setToolTip(
+            "Customize Solar Disk (center, size, appearance)"
+        )
+        self.solar_disk_center_button.setFixedSize(32, 32)
+        self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
+
+        # Vertical line separator
+        vline_1 = QFrame()
+        vline_1.setFrameShape(QFrame.VLine)
+        vline_1.setFrameShadow(QFrame.Sunken)
+        vline_1.setStyleSheet(
+            """
+            QFrame {
+                color: transparent;
+                border: none;
+                background-color: transparent;
+                width: 2px;
+            }
+        """
+        )
+        vline_2 = QFrame()
+        vline_2.setFrameShape(QFrame.VLine)
+        vline_2.setFrameShadow(QFrame.Sunken)
+        vline_2.setStyleSheet(
+            """
+            QFrame {
+                color: transparent;
+                border: none;
+                background-color: transparent;
+                width: 2px;
+            }
+        """
+        )
+
+        # Contour controls with settings button
+        self.show_contours_checkbox = QCheckBox("Contours")
         self.show_contours_checkbox.setChecked(False)
         self.show_contours_checkbox.stateChanged.connect(self.on_checkbox_changed)
         self.contour_settings_button = QPushButton()
@@ -290,9 +374,95 @@ class SolarRadioImageTab(QWidget):
         self.contour_settings_button.setToolTip("Contour Settings")
         self.contour_settings_button.setFixedSize(32, 32)
         self.contour_settings_button.clicked.connect(self.show_contour_settings)
-        contour_layout.addWidget(self.show_contours_checkbox)
-        contour_layout.addWidget(self.contour_settings_button)
-        layout.addRow("Contours:", contour_layout)
+
+        # Add widgets to grid layout
+        # Row 0: Basic display options
+        grid_layout.addWidget(self.show_beam_checkbox, 0, 0)
+        grid_layout.addWidget(vline_1, 0, 2)
+        grid_layout.addWidget(self.show_grid_checkbox, 0, 3)
+
+        # Row 1: Solar disk and Contours
+        grid_layout.addWidget(self.show_solar_disk_checkbox, 1, 0)
+        grid_layout.addWidget(self.solar_disk_center_button, 1, 1)
+        grid_layout.addWidget(vline_2, 1, 2)  # Same vertical line spans both rows
+        grid_layout.addWidget(self.show_contours_checkbox, 1, 3)
+        grid_layout.addWidget(self.contour_settings_button, 1, 4)
+
+        # Set column stretch to ensure proper spacing
+        grid_layout.setColumnStretch(0, 1)  # Left side checkboxes
+        grid_layout.setColumnStretch(1, 0)  # Left side button
+        grid_layout.setColumnStretch(2, 0)  # Vertical line
+        grid_layout.setColumnStretch(3, 1)  # Right side checkboxes
+        grid_layout.setColumnStretch(4, 0)  # Right side button
+
+        overlays_layout.addLayout(grid_layout)
+        main_layout.addWidget(overlays_group)
+
+        # Intensity Range subgroup
+        intensity_group = QGroupBox("Intensity Range")
+        intensity_layout = QVBoxLayout(intensity_group)
+
+        # Min/Max range
+        range_layout = QHBoxLayout()
+        self.vmin_entry = QLineEdit("0.0")
+        self.vmin_entry.editingFinished.connect(self.on_visualization_changed)
+        self.vmax_entry = QLineEdit("1.0")
+        self.vmax_entry.editingFinished.connect(self.on_visualization_changed)
+        range_layout.addWidget(QLabel("Min:"))
+        range_layout.addWidget(self.vmin_entry)
+        range_layout.addWidget(QLabel("Max:"))
+        range_layout.addWidget(self.vmax_entry)
+        intensity_layout.addLayout(range_layout)
+
+        # Gamma control
+        gamma_layout = QHBoxLayout()
+        self.gamma_slider = QSlider(Qt.Horizontal)
+        self.gamma_slider.setRange(1, 100)
+        self.gamma_slider.setValue(10)
+        self.gamma_slider.valueChanged.connect(self.update_gamma_value)
+        self.gamma_entry = QLineEdit("1.0")
+        self.gamma_entry.setFixedWidth(60)
+        self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
+        gamma_layout.addWidget(QLabel("Gamma:"))
+        gamma_layout.addWidget(self.gamma_slider)
+        gamma_layout.addWidget(self.gamma_entry)
+        intensity_layout.addLayout(gamma_layout)
+
+        # Preset buttons
+        preset_layout = QHBoxLayout()
+        self.auto_minmax_button = QPushButton("Auto")
+        self.auto_minmax_button.clicked.connect(self.auto_minmax)
+        self.auto_percentile_button = QPushButton("5-95%")
+        self.auto_percentile_button.clicked.connect(self.auto_percentile)
+        self.auto_median_button = QPushButton("Med±3σ")
+        self.auto_median_button.clicked.connect(self.auto_median_rms)
+        preset_layout.addWidget(self.auto_minmax_button)
+        preset_layout.addWidget(self.auto_percentile_button)
+        preset_layout.addWidget(self.auto_median_button)
+        intensity_layout.addLayout(preset_layout)
+
+        main_layout.addWidget(intensity_group)
+
+        # Update Display button
+        self.plot_button = QPushButton("Update Display")
+        self.plot_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #3871DE; 
+                color: white; 
+                padding: 5px; 
+                font-weight: bold;
+                border-radius: 3px;
+                min-height: 25px;
+            }
+            QPushButton:hover {
+                background-color: #4A82EF;
+            }
+            """
+        )
+        self.plot_button.clicked.connect(self.on_visualization_changed)
+        main_layout.addWidget(self.plot_button)
+
         parent_layout.addWidget(group)
 
     def create_range_controls(self, parent_layout):
@@ -478,28 +648,6 @@ class SolarRadioImageTab(QWidget):
                 self.zoom_60arcmin_action,
             ]
         )
-        toolbar.addSeparator()
-        solar_group = QWidget()
-        solar_layout = QHBoxLayout(solar_group)
-        solar_layout.setContentsMargins(0, 0, 0, 0)
-        self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
-        self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        self.solar_disk_center_button = QPushButton()
-        self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
-        self.solar_disk_center_button.setIcon(
-            QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/settings.png"
-                )
-            )
-        )
-        self.solar_disk_center_button.setIconSize(QSize(24, 24))
-        self.solar_disk_center_button.setToolTip("Set Solar Disk Center")
-        self.solar_disk_center_button.setFixedSize(32, 32)
-        self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
-        solar_layout.addWidget(self.show_solar_disk_checkbox)
-        solar_layout.addWidget(self.solar_disk_center_button)
-        toolbar.addWidget(solar_group)
         parent_layout.addWidget(toolbar)
 
     def create_stats_table(self, parent_layout):
@@ -511,15 +659,15 @@ class SolarRadioImageTab(QWidget):
         )
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
-        self.stats_table = QTableWidget(5, 2)
+        self.stats_table = QTableWidget(6, 2)
         self.stats_table.setHorizontalHeaderLabels(["Metric", "Value"])
         self.stats_table.verticalHeader().setVisible(False)
         self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.stats_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for i in range(5):
+        for i in range(6):
             self.stats_table.setRowHeight(i, 30)
         self.stats_table.setColumnWidth(1, 180)
-        headers = ["Min", "Max", "Mean", "Std Dev", "Sum"]
+        headers = ["Min", "Max", "Mean", "Std Dev", "Sum", "RMS"]
         for row, label in enumerate(headers):
             self.stats_table.setItem(row, 0, QTableWidgetItem(label))
             self.stats_table.setItem(row, 1, QTableWidgetItem("−"))
@@ -527,6 +675,39 @@ class SolarRadioImageTab(QWidget):
                 Qt.AlignRight | Qt.AlignVCenter
             )
         layout.addWidget(self.stats_table)
+        parent_layout.addWidget(group)
+
+    def create_image_stats_table(self, parent_layout):
+        group = QGroupBox("Image Statistics")
+        layout = QVBoxLayout(group)
+
+        self.image_info_label = QLabel("Full image statistics")
+        self.image_info_label.setStyleSheet(
+            "color: #BBB; font-style: italic; font-size: 11pt;"
+        )
+        self.image_info_label.setWordWrap(True)
+        layout.addWidget(self.image_info_label)
+
+        self.image_stats_table = QTableWidget(6, 2)
+        self.image_stats_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        self.image_stats_table.verticalHeader().setVisible(False)
+        self.image_stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.image_stats_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.Stretch
+        )
+        for i in range(6):
+            self.image_stats_table.setRowHeight(i, 30)
+        self.image_stats_table.setColumnWidth(1, 180)
+
+        headers = ["Max", "Min", "RMS", "Mean (RMS box)", "Pos. DR", "Neg. DR"]
+        for row, label in enumerate(headers):
+            self.image_stats_table.setItem(row, 0, QTableWidgetItem(label))
+            self.image_stats_table.setItem(row, 1, QTableWidgetItem("−"))
+            self.image_stats_table.item(row, 1).setTextAlignment(
+                Qt.AlignRight | Qt.AlignVCenter
+            )
+
+        layout.addWidget(self.image_stats_table)
         parent_layout.addWidget(group)
 
     def create_coord_display(self, parent_layout):
@@ -559,28 +740,39 @@ class SolarRadioImageTab(QWidget):
                     pass  # Not found in tabs list
 
     def select_file_or_directory(self):
+        import time
+
         if self.radio_casa_image.isChecked():
             # Select CASA image directory
             directory = QFileDialog.getExistingDirectory(
                 self, "Select a CASA Image Directory"
             )
             if directory:
+                start_time = time.time()
                 self.imagename = directory
                 self.dir_entry.setText(directory)
-                self.on_visualization_changed()
-                self.auto_minmax()
+                self.reset_view(show_status_message=False)
+                self.on_visualization_changed(dir_load=True)
+                # self.auto_minmax()
                 self.update_tab_name_from_path(directory)  # Update tab name
+                self.show_status_message(
+                    f"Loaded {directory} in {time.time() - start_time:.2f} seconds"
+                )
         else:
             # Select FITS file
             file_path, _ = QFileDialog.getOpenFileName(
                 self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
             )
             if file_path:
+                start_time = time.time()
                 self.imagename = file_path
                 self.dir_entry.setText(file_path)
-                self.on_visualization_changed()
-                self.auto_minmax()
+                self.on_visualization_changed(dir_load=True)
+                # self.auto_minmax()
                 self.update_tab_name_from_path(file_path)  # Update tab name
+                self.show_status_message(
+                    f"Loaded {file_path} in {time.time() - start_time:.2f} seconds"
+                )
 
     def schedule_plot(self):
         # If a timer already exists and is active, stop it.
@@ -604,7 +796,7 @@ class SolarRadioImageTab(QWidget):
     def plot_data(self):
         self.on_visualization_changed()
 
-    def on_visualization_changed(self, colormap_name=None):
+    def on_visualization_changed(self, colormap_name=None, dir_load=False):
         if not hasattr(self, "imagename") or not self.imagename:
             QMessageBox.warning(
                 self, "No Image", "Please select a CASA image directory first!"
@@ -663,8 +855,13 @@ class SolarRadioImageTab(QWidget):
                         self.cmap_combo.setCurrentText("viridis")
 
             self.load_data(self.imagename, stokes, threshold)
-
-            if vmin_val is None or vmax_val is None:
+            if dir_load:
+                vmin_val = self.current_image_data.min()
+                vmax_val = self.current_image_data.max()
+                self.set_range(vmin_val, vmax_val)
+                self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+                print(f"Plotting image with vmin={vmin_val}, vmax={vmax_val}")
+            elif vmin_val is None or vmax_val is None:
                 self.auto_minmax()
             else:
                 self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
@@ -882,32 +1079,86 @@ class SolarRadioImageTab(QWidget):
         rmean = roi.mean()
         rstd = roi.std()
         rsum = roi.sum()
+        rrms = np.sqrt(np.mean(roi**2))
 
         self.info_label.setText(f"ROI Stats: {roi.size} pixels{ra_dec_info}")
 
-        stats_values = [rmin, rmax, rmean, rstd, rsum]
+        stats_values = [rmin, rmax, rmean, rstd, rsum, rrms]
         for i, val in enumerate(stats_values):
             self.stats_table.setItem(i, 1, QTableWidgetItem(f"{val:.6g}"))
 
         main_window = self.parent()
         if main_window and hasattr(main_window, "statusBar"):
             main_window.statusBar().showMessage(
-                f"ROI selected: {roi.size} pixels, Mean={rmean:.4g}, Sum={rsum:.4g}"
+                f"ROI selected: {roi.size} pixels, Mean={rmean:.4g}, Sum={rsum:.4g}, RMS={rrms:.4g}"
             )
+
+    def show_image_stats(self, rms_box=None):
+        if self.current_image_data is None:
+            return
+
+        # Use the current RMS box if none is provided
+        if rms_box is None:
+            rms_box = self.current_rms_box
+
+        data = self.current_image_data
+        dmax = float(data.max())
+        dmin = float(data.min())
+        drms = np.sqrt(
+            np.mean(data[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]] ** 2)
+        )
+        dmean_rms_box = np.mean(data[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]])
+        positive_DR = dmax / drms
+        negative_DR = dmin / drms
+
+        # Update the image stats table
+        stats_values = [dmax, dmin, drms, dmean_rms_box, positive_DR, negative_DR]
+        for i, val in enumerate(stats_values):
+            self.image_stats_table.setItem(i, 1, QTableWidgetItem(f"{val:.6g}"))
+
+        # Update the RMS box info in the label
+        h, w = data.shape
+        rms_box_percent = (
+            (rms_box[1] - rms_box[0]) * (rms_box[3] - rms_box[2]) / (h * w)
+        ) * 100
+        self.image_info_label.setText(
+            f"Full image ({h}×{w} pixels) - RMS box: {rms_box_percent:.1f}% of image"
+        )
+
+        return dmax, dmin, drms, dmean_rms_box, positive_DR, negative_DR
 
     def set_region_mode(self, mode_id):
         self.region_mode = RegionMode.RECTANGLE
         self.plot_image()
 
     def load_data(self, imagename, stokes, threshold):
+        import time
+
+        start_time = time.time()
         self.imagename = imagename
-        pix, csys, psf = get_pixel_values_from_image(imagename, stokes, threshold)
+
+        # Use the current RMS box when loading data
+        from .utils import get_pixel_values_from_image
+
+        pix, csys, psf = get_pixel_values_from_image(
+            imagename, stokes, threshold, rms_box=tuple(self.current_rms_box)
+        )
+
         self.current_image_data = pix
         self.current_wcs = csys
         self.psf = psf
         if pix is not None:
             height, width = pix.shape
             self.solar_disk_center = (width // 2, height // 2)
+
+            # Make sure RMS box is within image bounds
+            if self.current_rms_box[1] > height:
+                self.current_rms_box[1] = height
+            if self.current_rms_box[3] > width:
+                self.current_rms_box[3] = width
+
+            # Update image stats when data is loaded
+            self.show_image_stats(rms_box=self.current_rms_box)
 
         if not self.psf:
             self.show_beam_checkbox.setChecked(False)
@@ -916,11 +1167,15 @@ class SolarRadioImageTab(QWidget):
             self.show_beam_checkbox.setEnabled(True)
 
         # self.plot_image()
-        self.schedule_plot()
+        # self.schedule_plot()
+        print(f"Time taken to load data: {time.time() - start_time:.2f} seconds")
 
     def plot_image(
         self, vmin_val=None, vmax_val=None, stretch="linear", cmap="viridis", gamma=1.0
     ):
+        import time
+
+        start_time = time.time()
         if self.current_image_data is None:
             return
 
@@ -932,6 +1187,9 @@ class SolarRadioImageTab(QWidget):
             self._cached_transposed = data.transpose()
             self._cached_data_id = id(data)
         transposed_data = self._cached_transposed
+
+        # Remove the call to show_image_stats here since we only want to show stats when data is loaded
+        # self.show_image_stats()
 
         stored_xlim = None
         stored_ylim = None
@@ -946,12 +1204,10 @@ class SolarRadioImageTab(QWidget):
         self.figure.clear()
 
         # Determine vmin/vmax
-        dmin = data.min()
-        dmax = data.max()
         if vmin_val is None:
-            vmin_val = dmin
+            vmin_val = data.min()
         if vmax_val is None:
-            vmax_val = dmax
+            vmax_val = data.max()
         if vmax_val <= vmin_val:
             vmax_val = vmin_val + 1e-6
 
@@ -1002,7 +1258,13 @@ class SolarRadioImageTab(QWidget):
         if wcs_obj is not None:
             try:
                 ax = self.figure.add_subplot(111, projection=wcs_obj)
-                im = ax.imshow(transposed_data, origin="lower", cmap=cmap, norm=norm)
+                im = ax.imshow(
+                    transposed_data,
+                    origin="lower",
+                    cmap=cmap,
+                    norm=norm,
+                    interpolation="none",
+                )
                 ax.set_xlabel("Right Ascension (J2000)")
                 ax.set_ylabel("Declination (J2000)")
                 if (
@@ -1018,12 +1280,24 @@ class SolarRadioImageTab(QWidget):
             except Exception as e:
                 print(f"Error setting up WCS axes: {e}")
                 ax = self.figure.add_subplot(111)
-                im = ax.imshow(transposed_data, origin="lower", cmap=cmap, norm=norm)
+                im = ax.imshow(
+                    transposed_data,
+                    origin="lower",
+                    cmap=cmap,
+                    norm=norm,
+                    interpolation="none",
+                )
                 ax.set_xlabel("Pixel X")
                 ax.set_ylabel("Pixel Y")
         else:
             ax = self.figure.add_subplot(111)
-            im = ax.imshow(transposed_data, origin="lower", cmap=cmap, norm=norm)
+            im = ax.imshow(
+                transposed_data,
+                origin="lower",
+                cmap=cmap,
+                norm=norm,
+                interpolation="none",
+            )
             ax.set_xlabel("Pixel X")
             ax.set_ylabel("Pixel Y")
 
@@ -1031,7 +1305,61 @@ class SolarRadioImageTab(QWidget):
             ax.set_xlim(stored_xlim)
             ax.set_ylim(stored_ylim)
 
-        ax.set_title(os.path.basename(self.imagename) if self.imagename else "No Image")
+        # ax.set_title(os.path.basename(self.imagename) if self.imagename else "No Image")
+        # Display the image time in UTC and freq in MHz as a title
+        if self.current_image_data is not None:
+            # Get the image time and frequency
+            try:
+                ia = IA()
+                ia.open(self.imagename)
+                csys_record = ia.coordsys().torecord()
+                ia.close()
+                if "spectral2" in csys_record:
+                    spectral2 = csys_record["spectral2"]
+                    wcs = spectral2.get("wcs", {})
+                    frequency_ref = wcs.get("crval", None)
+                    # frequency_inc = wcs.get("cdelt", None)
+                    frequency_unit = spectral2.get("unit", None)
+                    if frequency_unit == "Hz":
+                        image_freq = f"{frequency_ref * 1e-6:.2f} MHz"
+                    else:
+                        image_freq = f"{frequency_ref:.2f} {frequency_unit}"
+                else:
+                    image_freq = None
+
+                if "obsdate" in csys_record:
+                    obsdate = csys_record["obsdate"]
+                    m0 = obsdate.get("m0", {})
+                    time_value = m0.get("value", None)
+                    time_unit = m0.get("unit", None)
+                    refer = obsdate.get("refer", None)
+                    if refer == "UTC" or time_unit == "d":
+                        t = Time(time_value, format="mjd")
+                        t.precision = 1
+                        image_time = t.iso
+                    else:
+                        image_time = None
+                else:
+                    image_time = None
+
+                if image_time is not None or image_freq is not None:
+                    title = f"Time: {image_time}   Freq: {image_freq}"
+                else:
+                    title = (
+                        os.path.basename(self.imagename)
+                        if self.imagename
+                        else "No Image"
+                    )
+                ax.set_title(title)
+            except Exception as e:
+                print(f"Error getting image time and frequency: {e}")
+                title = (
+                    os.path.basename(self.imagename) if self.imagename else "No Image"
+                )
+                ax.set_title(title)
+
+            # Format the time and frequency as a title
+
         self.figure.colorbar(im, ax=ax, label="Data")
 
         # Draw beam if available
@@ -1121,28 +1449,30 @@ class SolarRadioImageTab(QWidget):
                     (center_x, center_y),
                     radius_pix,
                     fill=False,
-                    edgecolor="yellow",
-                    linestyle="--",
-                    linewidth=2,
-                    alpha=0.8,
+                    edgecolor=self.solar_disk_style["color"],
+                    linestyle=self.solar_disk_style["linestyle"],
+                    linewidth=self.solar_disk_style["linewidth"],
+                    alpha=self.solar_disk_style["alpha"],
                 )
                 ax.add_patch(circle)
 
-                cross_size = radius_pix / 20
-                ax.plot(
-                    [center_x - cross_size, center_x + cross_size],
-                    [center_y, center_y],
-                    color="yellow",
-                    linewidth=1.5,
-                    alpha=0.8,
-                )
-                ax.plot(
-                    [center_x, center_x],
-                    [center_y - cross_size, center_y + cross_size],
-                    color="yellow",
-                    linewidth=1.5,
-                    alpha=0.8,
-                )
+                # Only draw the center marker if show_center is True
+                if self.solar_disk_style.get("show_center", True):
+                    cross_size = radius_pix / 20
+                    ax.plot(
+                        [center_x - cross_size, center_x + cross_size],
+                        [center_y, center_y],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
+                    ax.plot(
+                        [center_x, center_x],
+                        [center_y - cross_size, center_y + cross_size],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
             except Exception as e:
                 print(f"Error drawing solar disk: {e}")
 
@@ -1157,6 +1487,8 @@ class SolarRadioImageTab(QWidget):
 
         # Instead of immediate draw, use draw_idle to coalesce multiple calls
         self.canvas.draw_idle()
+
+        print(f"Time taken to plot image: {time.time() - start_time:.2f} seconds")
 
     def _update_beam_position(self, ax):
         if not hasattr(self, "beam_properties") or not self.beam_properties:
@@ -1195,6 +1527,54 @@ class SolarRadioImageTab(QWidget):
             alpha=0.4,
         )
         ax.add_patch(ellipse)
+
+    def _update_solar_disk_position(self, ax):
+        if (
+            hasattr(self, "show_solar_disk_checkbox")
+            and self.show_solar_disk_checkbox.isChecked()
+        ):
+            try:
+                center_x, center_y = self.solar_disk_center
+                if self.current_wcs:
+                    radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
+                    cdelt = self.current_wcs.increment()["numeric"][0:2]
+                    if isinstance(cdelt, list):
+                        cdelt = [float(c) for c in cdelt]
+                    cdelt = np.array(cdelt) * 180 / np.pi
+                    dx_deg = abs(cdelt[0])
+                    radius_pix = radius_deg / dx_deg
+                else:
+                    radius_pix = min(self.current_image_data.shape) / 8
+
+                circle = plt.Circle(
+                    (center_x, center_y),
+                    radius_pix,
+                    fill=False,
+                    edgecolor=self.solar_disk_style["color"],
+                    linestyle=self.solar_disk_style["linestyle"],
+                    linewidth=self.solar_disk_style["linewidth"],
+                    alpha=self.solar_disk_style["alpha"],
+                )
+                ax.add_patch(circle)
+
+                if self.solar_disk_style.get("show_center", True):
+                    cross_size = radius_pix / 20
+                    ax.plot(
+                        [center_x - cross_size, center_x + cross_size],
+                        [center_y, center_y],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
+                    ax.plot(
+                        [center_x, center_x],
+                        [center_y - cross_size, center_y + cross_size],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
+            except Exception as e:
+                print(f"Error drawing solar disk: {e}")
 
     def on_stokes_changed(self, stokes):
         if not self.imagename:
@@ -1268,7 +1648,25 @@ class SolarRadioImageTab(QWidget):
             self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
         )
 
-        # self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+        # Determine which checkbox was changed
+        sender = self.sender()
+        if sender == self.show_beam_checkbox:
+            status = "enabled" if self.show_beam_checkbox.isChecked() else "disabled"
+            self.show_status_message(f"Beam display {status}")
+        elif sender == self.show_grid_checkbox:
+            status = "enabled" if self.show_grid_checkbox.isChecked() else "disabled"
+            self.show_status_message(f"Grid display {status}")
+        elif sender == self.show_solar_disk_checkbox:
+            status = (
+                "enabled" if self.show_solar_disk_checkbox.isChecked() else "disabled"
+            )
+            self.show_status_message(f"Solar disk display {status}")
+        elif sender == self.show_contours_checkbox:
+            status = (
+                "enabled" if self.show_contours_checkbox.isChecked() else "disabled"
+            )
+            self.show_status_message(f"Contours display {status}")
+
         self.schedule_plot()
 
     def add_text_annotation(self, x, y, text):
@@ -1289,10 +1687,100 @@ class SolarRadioImageTab(QWidget):
         height, width = self.current_image_data.shape
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Set Solar Disk Center")
+        dialog.setWindowTitle("Solar Disk Settings")
+        dialog.setMinimumWidth(400)  # Set minimum width to prevent text cutoff
         layout = QVBoxLayout(dialog)
 
-        form_layout = QHBoxLayout()
+        # Create tab widget for organizing settings
+        tab_widget = QTabWidget()
+
+        # Style tab (formerly Appearance tab)
+        style_tab = QWidget()
+        style_layout = QVBoxLayout(style_tab)
+
+        # Color selection
+        color_group = QGroupBox("Color")
+        color_layout = QHBoxLayout(color_group)
+
+        color_label = QLabel("Disk Color:")
+        color_combo = QComboBox()
+        colors = ["yellow", "white", "red", "green", "blue", "cyan", "magenta", "black"]
+        for color in colors:
+            color_combo.addItem(color)
+        color_combo.setCurrentText(self.solar_disk_style["color"])
+        color_layout.addWidget(color_label)
+        color_layout.addWidget(color_combo)
+        style_layout.addWidget(color_group)
+
+        # Line style
+        line_group = QGroupBox("Line Style")
+        line_layout = QGridLayout(line_group)
+
+        # Line style
+        linestyle_label = QLabel("Line Style:")
+        linestyle_combo = QComboBox()
+        linestyles = [
+            ("-", "Solid"),
+            ("--", "Dashed"),
+            (":", "Dotted"),
+            ("-.", "Dash-dot"),
+        ]
+        for style_code, style_name in linestyles:
+            linestyle_combo.addItem(style_name, style_code)
+
+        # Set current line style
+        current_style = self.solar_disk_style["linestyle"]
+        for i in range(linestyle_combo.count()):
+            if linestyle_combo.itemData(i) == current_style:
+                linestyle_combo.setCurrentIndex(i)
+                break
+
+        line_layout.addWidget(linestyle_label, 0, 0)
+        line_layout.addWidget(linestyle_combo, 0, 1)
+
+        # Line width
+        linewidth_label = QLabel("Line Width:")
+        linewidth_spinbox = QDoubleSpinBox()
+        linewidth_spinbox.setRange(0.5, 5.0)
+        linewidth_spinbox.setSingleStep(0.5)
+        linewidth_spinbox.setValue(self.solar_disk_style["linewidth"])
+        line_layout.addWidget(linewidth_label, 1, 0)
+        line_layout.addWidget(linewidth_spinbox, 1, 1)
+
+        # Alpha/transparency
+        alpha_label = QLabel("Opacity:")
+        alpha_spinbox = QDoubleSpinBox()
+        alpha_spinbox.setRange(0.1, 1.0)
+        alpha_spinbox.setSingleStep(0.1)
+        alpha_spinbox.setValue(self.solar_disk_style["alpha"])
+        line_layout.addWidget(alpha_label, 2, 0)
+        line_layout.addWidget(alpha_spinbox, 2, 1)
+
+        style_layout.addWidget(line_group)
+
+        # Center marker toggle
+        center_marker_group = QGroupBox("Center Marker")
+        center_marker_layout = QVBoxLayout(center_marker_group)
+
+        # Add a checkbox to toggle the center marker
+        show_center_checkbox = QCheckBox("Show center marker (+)")
+        # Initialize checkbox state - if not in the dictionary, default to True
+        if "show_center" not in self.solar_disk_style:
+            self.solar_disk_style["show_center"] = True
+        show_center_checkbox.setChecked(self.solar_disk_style["show_center"])
+        center_marker_layout.addWidget(show_center_checkbox)
+
+        style_layout.addWidget(center_marker_group)
+        style_layout.addStretch()
+
+        # Position tab
+        position_tab = QWidget()
+        position_layout = QVBoxLayout(position_tab)
+
+        # Center coordinates
+        center_group = QGroupBox("Disk Center")
+        center_layout = QHBoxLayout(center_group)
+
         x_label = QLabel("X coordinate:")
         x_spinbox = QSpinBox()
         x_spinbox.setRange(0, width - 1)
@@ -1300,8 +1788,9 @@ class SolarRadioImageTab(QWidget):
             x_spinbox.setValue(self.solar_disk_center[0])
         else:
             x_spinbox.setValue(width // 2)
-        form_layout.addWidget(x_label)
-        form_layout.addWidget(x_spinbox)
+        center_layout.addWidget(x_label)
+        center_layout.addWidget(x_spinbox)
+
         y_label = QLabel("Y coordinate:")
         y_spinbox = QSpinBox()
         y_spinbox.setRange(0, height - 1)
@@ -1309,18 +1798,29 @@ class SolarRadioImageTab(QWidget):
             y_spinbox.setValue(self.solar_disk_center[1])
         else:
             y_spinbox.setValue(height // 2)
-        form_layout.addWidget(y_label)
-        form_layout.addWidget(y_spinbox)
-        layout.addLayout(form_layout)
+        center_layout.addWidget(y_label)
+        center_layout.addWidget(y_spinbox)
 
-        diameter_layout = QHBoxLayout()
+        position_layout.addWidget(center_group)
+
+        # Diameter
+        size_group = QGroupBox("Disk Size")
+        size_layout = QHBoxLayout(size_group)
         diameter_label = QLabel("Diameter (arcmin):")
         diameter_spinbox = QSpinBox()
         diameter_spinbox.setRange(1, 100)
         diameter_spinbox.setValue(int(self.solar_disk_diameter_arcmin))
-        diameter_layout.addWidget(diameter_label)
-        diameter_layout.addWidget(diameter_spinbox)
-        layout.addLayout(diameter_layout)
+        size_layout.addWidget(diameter_label)
+        size_layout.addWidget(diameter_spinbox)
+        position_layout.addWidget(size_group)
+
+        position_layout.addStretch()
+
+        # Add tabs to tab widget - Style first, then Position
+        tab_widget.addTab(style_tab, "Style")
+        tab_widget.addTab(position_tab, "Configure")
+
+        layout.addWidget(tab_widget)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(dialog.accept)
@@ -1330,8 +1830,16 @@ class SolarRadioImageTab(QWidget):
         if dialog.exec_() == QDialog.Accepted:
             self.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
             self.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
-            # self.plot_image()
+
+            # Update style properties
+            self.solar_disk_style["color"] = color_combo.currentText()
+            self.solar_disk_style["linestyle"] = linestyle_combo.currentData()
+            self.solar_disk_style["linewidth"] = linewidth_spinbox.value()
+            self.solar_disk_style["alpha"] = alpha_spinbox.value()
+            self.solar_disk_style["show_center"] = show_center_checkbox.isChecked()
+
             self.schedule_plot()
+            self.show_status_message("Solar disk settings updated")
 
     def zoom_in(self):
         if self.current_image_data is None:
@@ -1351,7 +1859,11 @@ class SolarRadioImageTab(QWidget):
         ax.set_ylim(ycenter - height / 2, ycenter + height / 2)
 
         self._update_beam_position(ax)
+        # If solar disk checkbox is checked, draw the solar disk
+        if self.show_solar_disk_checkbox.isChecked():
+            self._update_solar_disk_position(ax)
         self.canvas.draw()
+        self.show_status_message("Zoomed in")
 
     def zoom_out(self):
         if self.current_image_data is None:
@@ -1371,7 +1883,11 @@ class SolarRadioImageTab(QWidget):
         ax.set_ylim(ycenter - height / 2, ycenter + height / 2)
 
         self._update_beam_position(ax)
+        # If solar disk checkbox is checked, draw the solar disk
+        if self.show_solar_disk_checkbox.isChecked():
+            self._update_solar_disk_position(ax)
         self.canvas.draw()
+        self.show_status_message("Zoomed out")
 
     def zoom_60arcmin(self):
         if self.current_image_data is None or self.current_wcs is None:
@@ -1396,9 +1912,14 @@ class SolarRadioImageTab(QWidget):
             ax.set_ylim(ycenter - pixels_y / 2, ycenter + pixels_y / 2)
 
             self._update_beam_position(ax)
+            # If solar disk checkbox is checked, draw the solar disk
+            if self.show_solar_disk_checkbox.isChecked():
+                self._update_solar_disk_position(ax)
             self.canvas.draw()
+            self.show_status_message("Zoomed to 1°×1°")
         except Exception as e:
             print(f"Error in zoom_60arcmin: {e}")
+            self.show_status_message(f"Error in zoom_60arcmin: {e}")
 
     def init_region_editor(self, ax):
         if self.roi_selector:
@@ -1789,7 +2310,7 @@ class SolarRadioImageTab(QWidget):
     def closeEvent(self, event):
         super().closeEvent(event)
 
-    def reset_view(self):
+    def reset_view(self, show_status_message=True):
         """Reset the view to show the full image with original limits"""
         if self.current_image_data is None:
             return
@@ -1801,7 +2322,247 @@ class SolarRadioImageTab(QWidget):
         ax.set_ylim(0, self.current_image_data.shape[1])
 
         self._update_beam_position(ax)
+        # If solar disk checkbox is checked, draw the solar disk
+        if self.show_solar_disk_checkbox.isChecked():
+            self._update_solar_disk_position(ax)
         self.canvas.draw()
+        if show_status_message:
+            self.show_status_message("Reseted plot to full image")
+
+    def show_rms_box_dialog(self):
+        """Show a dialog for configuring the RMS box settings"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("RMS Box Settings")
+        dialog.setMinimumWidth(400)
+
+        # Create layout
+        layout = QVBoxLayout(dialog)
+
+        # Add a description label
+        description = QLabel(
+            "Set the region used for RMS calculation. This affects dynamic range calculations, "
+            "thresholding for derived Stokes parameters (Lfrac, Vfrac, Q/I, etc.), and other statistics. "
+            "Changes will be applied to the current image and all future Stokes parameter selections."
+        )
+        description.setWordWrap(True)
+        description.setStyleSheet("color: #BBB; font-style: italic;")
+        layout.addWidget(description)
+
+        # Create grid layout for RMS box inputs
+        rms_grid = QGridLayout()
+        rms_grid.setVerticalSpacing(10)
+        rms_grid.setHorizontalSpacing(10)
+
+        # Create input fields for RMS box coordinates
+        self.dialog_rms_x1_entry = QLineEdit(str(self.current_rms_box[0]))
+        self.dialog_rms_x2_entry = QLineEdit(str(self.current_rms_box[1]))
+        self.dialog_rms_y1_entry = QLineEdit(str(self.current_rms_box[2]))
+        self.dialog_rms_y2_entry = QLineEdit(str(self.current_rms_box[3]))
+
+        # Add validators to ensure values are numeric
+        max_val = 9999
+        if hasattr(self, "current_image_data") and self.current_image_data is not None:
+            height, width = self.current_image_data.shape
+            self.dialog_rms_x1_entry.setValidator(QIntValidator(0, height - 1))
+            self.dialog_rms_x2_entry.setValidator(QIntValidator(1, height))
+            self.dialog_rms_y1_entry.setValidator(QIntValidator(0, width - 1))
+            self.dialog_rms_y2_entry.setValidator(QIntValidator(1, width))
+        else:
+            self.dialog_rms_x1_entry.setValidator(QIntValidator(0, max_val))
+            self.dialog_rms_x2_entry.setValidator(QIntValidator(1, max_val))
+            self.dialog_rms_y1_entry.setValidator(QIntValidator(0, max_val))
+            self.dialog_rms_y2_entry.setValidator(QIntValidator(1, max_val))
+
+        # Create sliders for RMS box coordinates
+        self.dialog_rms_x1_slider = QSlider(Qt.Horizontal)
+        self.dialog_rms_x2_slider = QSlider(Qt.Horizontal)
+        self.dialog_rms_y1_slider = QSlider(Qt.Horizontal)
+        self.dialog_rms_y2_slider = QSlider(Qt.Horizontal)
+
+        # Configure sliders
+        if hasattr(self, "current_image_data") and self.current_image_data is not None:
+            height, width = self.current_image_data.shape
+            self.dialog_rms_x1_slider.setMaximum(height - 1)
+            self.dialog_rms_x2_slider.setMaximum(height)
+            self.dialog_rms_y1_slider.setMaximum(width - 1)
+            self.dialog_rms_y2_slider.setMaximum(width)
+        else:
+            self.dialog_rms_x1_slider.setMaximum(max_val)
+            self.dialog_rms_x2_slider.setMaximum(max_val)
+            self.dialog_rms_y1_slider.setMaximum(max_val)
+            self.dialog_rms_y2_slider.setMaximum(max_val)
+
+        self.dialog_rms_x1_slider.setMinimum(0)
+        self.dialog_rms_x2_slider.setMinimum(1)
+        self.dialog_rms_y1_slider.setMinimum(0)
+        self.dialog_rms_y2_slider.setMinimum(1)
+
+        self.dialog_rms_x1_slider.setValue(self.current_rms_box[0])
+        self.dialog_rms_x2_slider.setValue(self.current_rms_box[1])
+        self.dialog_rms_y1_slider.setValue(self.current_rms_box[2])
+        self.dialog_rms_y2_slider.setValue(self.current_rms_box[3])
+
+        # Connect slider signals
+        self.dialog_rms_x1_slider.valueChanged.connect(
+            lambda v: self.dialog_rms_x1_entry.setText(str(v))
+        )
+        self.dialog_rms_x2_slider.valueChanged.connect(
+            lambda v: self.dialog_rms_x2_entry.setText(str(v))
+        )
+        self.dialog_rms_y1_slider.valueChanged.connect(
+            lambda v: self.dialog_rms_y1_entry.setText(str(v))
+        )
+        self.dialog_rms_y2_slider.valueChanged.connect(
+            lambda v: self.dialog_rms_y2_entry.setText(str(v))
+        )
+
+        # Connect text entry signals
+        self.dialog_rms_x1_entry.textChanged.connect(self.update_dialog_rms_box)
+        self.dialog_rms_x2_entry.textChanged.connect(self.update_dialog_rms_box)
+        self.dialog_rms_y1_entry.textChanged.connect(self.update_dialog_rms_box)
+        self.dialog_rms_y2_entry.textChanged.connect(self.update_dialog_rms_box)
+
+        # Add widgets to grid layout
+        rms_grid.addWidget(QLabel("X1:"), 0, 0)
+        rms_grid.addWidget(self.dialog_rms_x1_entry, 0, 1)
+        rms_grid.addWidget(self.dialog_rms_x1_slider, 0, 2)
+
+        rms_grid.addWidget(QLabel("X2:"), 1, 0)
+        rms_grid.addWidget(self.dialog_rms_x2_entry, 1, 1)
+        rms_grid.addWidget(self.dialog_rms_x2_slider, 1, 2)
+
+        rms_grid.addWidget(QLabel("Y1:"), 2, 0)
+        rms_grid.addWidget(self.dialog_rms_y1_entry, 2, 1)
+        rms_grid.addWidget(self.dialog_rms_y1_slider, 2, 2)
+
+        rms_grid.addWidget(QLabel("Y2:"), 3, 0)
+        rms_grid.addWidget(self.dialog_rms_y2_entry, 3, 1)
+        rms_grid.addWidget(self.dialog_rms_y2_slider, 3, 2)
+
+        # Set column stretching to make sliders take most of the space
+        rms_grid.setColumnStretch(2, 1)
+
+        layout.addLayout(rms_grid)
+
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(lambda: self.apply_dialog_rms_box(dialog))
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        # Show the dialog
+        dialog.exec_()
+
+    def update_dialog_rms_box(self):
+        """Update RMS box sliders in the dialog when text entries change"""
+        try:
+            x1 = int(self.dialog_rms_x1_entry.text())
+            x2 = int(self.dialog_rms_x2_entry.text())
+            y1 = int(self.dialog_rms_y1_entry.text())
+            y2 = int(self.dialog_rms_y2_entry.text())
+
+            # Update sliders without triggering signals
+            self.dialog_rms_x1_slider.blockSignals(True)
+            self.dialog_rms_x2_slider.blockSignals(True)
+            self.dialog_rms_y1_slider.blockSignals(True)
+            self.dialog_rms_y2_slider.blockSignals(True)
+
+            self.dialog_rms_x1_slider.setValue(x1)
+            self.dialog_rms_x2_slider.setValue(x2)
+            self.dialog_rms_y1_slider.setValue(y1)
+            self.dialog_rms_y2_slider.setValue(y2)
+
+            self.dialog_rms_x1_slider.blockSignals(False)
+            self.dialog_rms_x2_slider.blockSignals(False)
+            self.dialog_rms_y1_slider.blockSignals(False)
+            self.dialog_rms_y2_slider.blockSignals(False)
+        except ValueError:
+            pass  # Ignore invalid input
+
+    def apply_dialog_rms_box(self, dialog):
+        """Apply the RMS box settings from the dialog and close it"""
+        try:
+            x1 = int(self.dialog_rms_x1_entry.text())
+            x2 = int(self.dialog_rms_x2_entry.text())
+            y1 = int(self.dialog_rms_y1_entry.text())
+            y2 = int(self.dialog_rms_y2_entry.text())
+
+            # Ensure x1 < x2 and y1 < y2
+            if x1 >= x2 or y1 >= y2:
+                QMessageBox.warning(
+                    self, "Invalid RMS Box", "Please ensure that X1 < X2 and Y1 < Y2."
+                )
+                return
+
+            # Ensure values are within image bounds
+            if self.current_image_data is not None:
+                height, width = self.current_image_data.shape
+                if x2 > height or y2 > width:
+                    QMessageBox.warning(
+                        self,
+                        "Invalid RMS Box",
+                        f"RMS box exceeds image dimensions ({height}x{width}).",
+                    )
+                    return
+
+            # Store the current RMS box values
+            self.current_rms_box = [x1, x2, y1, y2]
+
+            # Update the contour settings RMS box as well
+            self.contour_settings["rms_box"] = tuple(self.current_rms_box)
+
+            # Update image stats with new RMS box
+            if self.current_image_data is not None:
+                self.show_image_stats(rms_box=self.current_rms_box)
+
+                # Reload the current image with the new RMS box
+                # This will recalculate RMS for all Stokes parameters
+                if hasattr(self, "imagename") and self.imagename:
+                    current_stokes = self.stokes_combo.currentText()
+                    try:
+                        threshold = float(self.threshold_entry.text())
+                    except (ValueError, AttributeError):
+                        threshold = 10.0
+
+                    # Show a status message
+                    self.show_status_message(
+                        f"Updating RMS box to [{x1}:{x2}, {y1}:{y2}] and recalculating..."
+                    )
+
+                    # Reload the data with the new RMS box
+                    from .utils import get_pixel_values_from_image
+
+                    pix, csys, psf = get_pixel_values_from_image(
+                        self.imagename,
+                        current_stokes,
+                        threshold,
+                        rms_box=tuple(self.current_rms_box),
+                    )
+                    self.current_image_data = pix
+                    self.current_wcs = csys
+                    self.psf = psf
+
+                    # Update the plot
+                    try:
+                        vmin_val = float(self.vmin_entry.text())
+                        vmax_val = float(self.vmax_entry.text())
+                        stretch = self.stretch_combo.currentText()
+                        cmap = self.cmap_combo.currentText()
+                        gamma = float(self.gamma_entry.text())
+                        self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+                    except (ValueError, AttributeError):
+                        self.plot_image()
+
+                self.show_status_message(f"RMS box updated to [{x1}:{x2}, {y1}:{y2}]")
+
+            # Close the dialog
+            dialog.accept()
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Invalid Input",
+                "Please enter valid integer values for the RMS box coordinates.",
+            )
 
 
 class CustomTabBar(QTabBar):
@@ -2079,8 +2840,8 @@ class SolarRadioImageViewerApp(QMainWindow):
         if imagename and os.path.exists(imagename):
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
-            first_tab.on_visualization_changed()
-            first_tab.auto_minmax()
+            first_tab.on_visualization_changed(dir_load=True)
+            # first_tab.auto_minmax()
 
         # Ensure add button is visible after initialization
         QTimer.singleShot(200, self.ensureAddButtonVisible)
@@ -2761,7 +3522,7 @@ class SolarRadioImageViewerApp(QMainWindow):
                     <tr><td><code>1</code></td><td>1°×1° Zoom</td></tr>
                     <tr><td><code>+/=</code></td><td>Zoom In</td></tr>
                     <tr><td><code>-</code></td><td>Zoom Out</td></tr>
-                    <tr><td><code>Space</code></td><td>Rectangle Selection</td></tr>
+                    <tr><td><code>Space/Enter</code></td><td>Update Plot</td></tr>
                 </table>
             </div>
             <div class="section">
@@ -2812,12 +3573,15 @@ class SolarRadioImageViewerApp(QMainWindow):
         dialog.exec_()
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Space:
+        if (
+            event.key() == Qt.Key_Space
+            or event.key() == Qt.Key_Return
+            or event.key() == Qt.Key_Enter
+        ):
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
-                current_tab.radio_rect.setChecked(True)
-                current_tab.set_region_mode(RegionMode.RECTANGLE)
-                self.statusBar().showMessage("Rectangle selection mode")
+                current_tab.schedule_plot()
+                self.statusBar().showMessage("Plot updated")
         elif event.key() == Qt.Key_R:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:

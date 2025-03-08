@@ -392,7 +392,17 @@ def get_image_metadata(imagename):
 
     ia_tool = IA()
     ia_tool.open(imagename)
-    shape = ia_tool.shape()
+    summary = ia_tool.summary(list=False, verbose=True)
+    metadata = ""
+    if "messages" in summary:
+        mds = summary["messages"]
+        for i, md in enumerate(mds, start=1):
+            clean_message = md.strip()
+            metadata += f"\n{clean_message}\n"
+    else:
+        metadata = "No metadata available"
+
+    """shape = ia_tool.shape()
     csys = ia_tool.coordsys()
 
     try:
@@ -430,7 +440,7 @@ def get_image_metadata(imagename):
         f"{beam_info}\n"
         f"{coord_info}\n"
         f"{pixel_scale}\n"
-    )
+    )"""
     return metadata
 
 
