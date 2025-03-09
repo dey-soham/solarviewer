@@ -1186,7 +1186,7 @@ def test_extract_telescope_position():
 
 
 def main():
-    fits_file = "/home/soham/solarviewer/test_data/mwa_solar.fits"
+    """fits_file = "/home/soham/solarviewer/test_data/mwa_solar.fits"
     hpc_map, c1, c2 = convert_to_hpc(
         fits_file,
         lat="52:55:53.90",
@@ -1198,7 +1198,7 @@ def main():
     fig = plt.figure()
     ax = fig.add_subplot(111, projection=hpc_map)
     im = hpc_map.plot(axes=ax, cmap="gray", title=False)
-    plt.savefig("hpc_map.png")
+    plt.savefig("hpc_map.png")"""
 
     # Example 1: Basic usage with default parameters
     """plot_helioprojective_map(fits_file)
@@ -1217,7 +1217,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # main()
     """imagename = "/home/soham/solarviewer/test_data/LOFAR_HBA_noisestorm.fits"
     from casatools import image as IA
 
@@ -1231,7 +1231,7 @@ if __name__ == "__main__":
     print(f"Longitude: {lon}")
     print(f"Height: {height} meters")
     print(f"Observatory: {observatory}")"""
-    """import argparse
+    import argparse
 
     # Create the argument parser
     parser = argparse.ArgumentParser(
@@ -1403,4 +1403,4 @@ if __name__ == "__main__":
                 sys.exit(1)
         else:
             parser.print_help()
-            sys.exit(1)"""
+            sys.exit(1)

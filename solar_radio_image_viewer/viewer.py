@@ -79,6 +79,7 @@ from .utils import (
 from .styles import STYLESHEET, DARK_PALETTE
 from .searchable_combobox import ColormapSelector
 from astropy.time import Time
+from .solar_data_downloader import launch_gui as launch_downloader_gui
 
 rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
@@ -3104,6 +3105,25 @@ class SolarRadioImageViewerApp(QMainWindow):
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
 
+        # Add Data Download menu after File menu
+        download_menu = menubar.addMenu("&Data Download")
+
+        # GUI Downloader action
+        gui_downloader_action = QAction("Solar Data Downloader (GUI)", self)
+        gui_downloader_action.setStatusTip(
+            "Launch the graphical interface for downloading solar data"
+        )
+        gui_downloader_action.triggered.connect(self.launch_data_downloader_gui)
+        download_menu.addAction(gui_downloader_action)
+
+        # CLI Downloader action
+        cli_downloader_action = QAction("Solar Data Downloader (CLI)", self)
+        cli_downloader_action.setStatusTip(
+            "Launch the command-line interface for downloading solar data"
+        )
+        cli_downloader_action.triggered.connect(self.launch_data_downloader_cli)
+        download_menu.addAction(cli_downloader_action)
+
     def add_new_tab(self, name):
         if len(self.tabs) >= self.max_tabs:
             QMessageBox.warning(
@@ -3758,3 +3778,121 @@ class SolarRadioImageViewerApp(QMainWindow):
                 "Error",
                 f"Failed to launch Napari viewer: {str(e)}",
             )
+
+    def launch_data_downloader_gui(self):
+        """Launch the Solar Data Downloader GUI."""
+        try:
+            launch_downloader_gui(self)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to launch Solar Data Downloader GUI: {str(e)}\n\n"
+                "Please make sure all required dependencies are installed.",
+            )
+
+    def launch_data_downloader_cli(self):
+        """Launch the Solar Data Downloader CLI in a new terminal window."""
+        try:
+            import subprocess
+            import sys
+            import os
+
+            # Get the path to the CLI script and its directory
+            cli_script = os.path.join(
+                os.path.dirname(__file__),
+                "solar_data_downloader",
+                "solar_data_downloader_cli.py",
+            )
+            cli_dir = os.path.dirname(cli_script)
+
+            # Make sure the script is executable
+            os.chmod(cli_script, 0o755)
+
+            # Get the current Python interpreter path and virtual environment
+            python_path = sys.executable
+            venv_path = os.path.dirname(os.path.dirname(python_path))
+            activate_script = os.path.join(venv_path, "bin", "activate")
+
+            print(f"Using Python interpreter: {python_path}")
+            print(f"Virtual environment path: {venv_path}")
+            print(f"CLI directory: {cli_dir}")
+            print(f"CLI script path: {cli_script}")
+
+            # Create a shell script to activate venv and run the CLI
+            temp_script = os.path.join(cli_dir, "run_cli.sh")
+            with open(temp_script, "w") as f:
+                f.write(
+                    f"""#!/bin/bash
+source "{activate_script}"
+cd "{cli_dir}"
+python3 "{cli_script}"
+read -p "Press Enter to close..."
+"""
+                )
+            os.chmod(temp_script, 0o755)
+
+            # Determine the terminal command based on the platform
+            if sys.platform.startswith("linux"):
+                # First, let's check which terminals are available
+                available_terminals = []
+                for term in ["gnome-terminal", "konsole", "xfce4-terminal", "xterm"]:
+                    try:
+                        result = subprocess.run(
+                            ["which", term], capture_output=True, text=True
+                        )
+                        if result.returncode == 0:
+                            available_terminals.append(term)
+                    except Exception:
+                        continue
+
+                print(f"Available terminals: {available_terminals}")
+
+                if not available_terminals:
+                    raise Exception(
+                        "No terminal emulators found. Please install gnome-terminal, konsole, xfce4-terminal, or xterm."
+                    )
+
+                # Try to launch using the first available terminal
+                terminal = available_terminals[0]
+                try:
+                    if terminal == "gnome-terminal":
+                        cmd = [terminal, "--", "bash", temp_script]
+                    elif terminal == "konsole":
+                        cmd = [terminal, "--separate", "--", "bash", temp_script]
+                    elif terminal == "xfce4-terminal":
+                        cmd = [terminal, "--command", f"bash {temp_script}"]
+                    else:  # xterm and others
+                        cmd = [terminal, "-e", f"bash {temp_script}"]
+
+                    print(f"Attempting to launch with command: {' '.join(cmd)}")
+                    process = subprocess.Popen(cmd)
+
+                    # Wait a bit to see if the process starts successfully
+                    try:
+                        process.wait(timeout=1)
+                        if process.returncode is not None and process.returncode != 0:
+                            raise Exception(f"Terminal {terminal} failed to start")
+                    except subprocess.TimeoutExpired:
+                        # Process is still running after 1 second, which is good
+                        self.statusBar().showMessage(f"Launched CLI in {terminal}")
+                        print(f"Successfully launched CLI in {terminal}")
+                        return
+
+                except Exception as term_error:
+                    print(f"Error launching {terminal}: {str(term_error)}")
+                    raise Exception(f"Failed to launch {terminal}: {str(term_error)}")
+
+            elif sys.platform == "darwin":  # macOS
+                subprocess.Popen(["open", "-a", "Terminal", temp_script])
+            else:
+                raise Exception(f"Unsupported platform: {sys.platform}")
+
+        except Exception as e:
+            error_msg = (
+                f"Failed to launch Solar Data Downloader CLI: {str(e)}\n\n"
+                "Please try running the CLI directly from a terminal:\n"
+                f"cd {cli_dir} && source {activate_script} && python3 {cli_script}"
+            )
+            print(error_msg)  # Print to console for debugging
+            QMessageBox.critical(self, "Error", error_msg)
