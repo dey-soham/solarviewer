@@ -23,6 +23,10 @@ setup(
 
 from setuptools import setup, find_packages
 
+# Read the content of README.md
+with open("README.md") as f:
+    long_description = f.read()
+
 setup(
     name="Solar-Image-Viewer",
     version="1.0",
@@ -60,11 +64,12 @@ setup(
         "console_scripts": [
             "solarviewer=solar_radio_image_viewer.main:main",
             "sv=solar_radio_image_viewer.main:main",
+            "heliosv=solar_radio_image_viewer.helioprojective_viewer:main",
         ],
     },
     python_requires=">=3.7",
     description="A comprehensive tool for visualizing and analyzing solar radio images",
-    long_description=open("README.md").read(),
+    long_description=long_description,
     long_description_content_type="text/markdown",
     author="Soham Dey",
     author_email="sohamd943@gmail.com",
@@ -80,4 +85,9 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
     ],
+    project_urls={
+        "Documentation": "https://github.com/dey-soham/solarviewer/wiki",
+        "Source": "https://github.com/dey-soham/solarviewer/",
+        "Tracker": "https://github.com/dey-soham/solarviewer/issues",
+    },
 )

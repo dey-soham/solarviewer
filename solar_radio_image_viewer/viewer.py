@@ -61,6 +61,7 @@ from PyQt5.QtWidgets import (
     QToolButton,
     QTabBar,
     QStyle,
+    QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
 from PyQt5.QtGui import QIcon, QColor, QPalette, QPainter, QIntValidator
@@ -576,6 +577,7 @@ class SolarRadioImageTab(QWidget):
         parent_layout.addWidget(group)
 
     def setup_figure_toolbar(self, parent_layout):
+        """Set up the figure toolbar with zoom and other controls"""
         toolbar = QToolBar()
         toolbar.setIconSize(QSize(24, 24))
         action_group = QActionGroup(self)
@@ -649,51 +651,80 @@ class SolarRadioImageTab(QWidget):
             ]
         )
 
-        # Add a spacer to push the coordinate system toggle to the right
-        '''spacer = QWidget()
+        # Add a spacer to push the helioprojective button to the right
+        spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(spacer)
-        self.coord_system_action.setToolTip(
-            "Toggle between RA/DEC and Helioprojective coordinates"
-        )
-        self.coord_system_action.setCheckable(True)
-        self.coord_system_action.setChecked(False)
-        self.coord_system_action.triggered.connect(
-            self.toggle_coordinate_system
-        )  # Enable the connection
-        # Disable the action if helioprojective is not available
-        if not HELIOPROJECTIVE_AVAILABLE:
-            self.coord_system_action.setEnabled(False)
-            self.coord_system_action.setToolTip(
-                "Helioprojective coordinates are not available. Please install sunpy."
-            )
-        # Create a button for the coordinate system toggle
-        coord_system_button = QToolButton()
-        coord_system_button.setDefaultAction(self.coord_system_action)
-        coord_system_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        coord_system_button.setStyleSheet(
+
+        # Add helioprojective viewer button
+        hpc_btn = QPushButton("Helioprojective")
+        hpc_btn.setToolTip("Open in Helioprojective Viewer")
+        hpc_btn.setStyleSheet(
             """
-            QToolButton {
-                background-color: #444444;
+            QPushButton {
+                background-color: #2196F3;
                 color: white;
-                border: 1px solid #666666;
+                border: none;
+                padding: 5px 10px;
                 border-radius: 4px;
-                padding: 4px 8px;
                 min-width: 100px;
-                text-align: center;
             }
-            QToolButton:hover {
-                background-color: #555555;
+            QPushButton:hover {
+                background-color: #1976D2;
             }
-            QToolButton:checked {
-                background-color: #2980b9;
+            QPushButton:pressed {
+                background-color: #0D47A1;
             }
-            """
+            QPushButton:disabled {
+                background-color: #BDBDBD;
+            }
+        """
         )
-        toolbar.addWidget(coord_system_button)
-        self.coord_system_action = QAction("RA/DEC",self)'''
+        hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
+        toolbar.addWidget(hpc_btn)
 
         parent_layout.addWidget(toolbar)
+
+    def launch_helioprojective_viewer(self):
+        """Launch the helioprojective viewer with the current image"""
+        if not hasattr(self, "imagename") or not self.imagename:
+            self.show_status_message("No image loaded")
+            return
+
+        try:
+            # Import the viewer class
+            from .helioprojective_viewer import HelioProjectiveViewer
+            from PyQt5.QtWidgets import QApplication
+
+            # Create and show the viewer
+            viewer = HelioProjectiveViewer(
+                imagename=self.imagename,
+                stokes=(
+                    self.stokes_combo.currentText()
+                    if hasattr(self, "stokes_combo")
+                    else "I"
+                ),
+                threshold=10,  # Default threshold
+                rms_box=(0, 200, 0, 130),  # Default RMS box
+                parent=self,
+            )
+            viewer.show()
+
+            # Keep a reference to prevent garbage collection
+            if not hasattr(self, "_hpc_viewers"):
+                self._hpc_viewers = []
+            self._hpc_viewers.append(viewer)
+
+            self.show_status_message(
+                f"Launched helioprojective viewer for {self.imagename}"
+            )
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            error_msg = f"Error launching helioprojective viewer: {str(e)}"
+            self.show_status_message(error_msg)
+            print(error_msg)
 
     def create_stats_table(self, parent_layout):
         group = QGroupBox("Region Statistics")
@@ -796,8 +827,8 @@ class SolarRadioImageTab(QWidget):
                 start_time = time.time()
                 self.imagename = directory
                 self.dir_entry.setText(directory)
-                self.reset_view(show_status_message=False)
                 self.on_visualization_changed(dir_load=True)
+                self.reset_view(show_status_message=False)
                 # self.auto_minmax()
                 self.update_tab_name_from_path(directory)  # Update tab name
                 self.show_status_message(
@@ -813,6 +844,7 @@ class SolarRadioImageTab(QWidget):
                 self.imagename = file_path
                 self.dir_entry.setText(file_path)
                 self.on_visualization_changed(dir_load=True)
+                self.reset_view(show_status_message=False)
                 # self.auto_minmax()
                 self.update_tab_name_from_path(file_path)  # Update tab name
                 self.show_status_message(

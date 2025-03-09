@@ -313,13 +313,31 @@ def convert_to_hpc(
                 raise RuntimeError("Could not determine frequency from header")
         obstime = Time(header["date-obs"])
         if lat is not None and long is not None and height is not None:
+            print(
+                f"DEBUG: Using observer position from arguments LAT={lat}, LONG={long}, HEIGHT={height}"
+            )
             POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
         else:
-            print("No observer position provided... reading from header")
-            x = header["OBSGEO-X"]
-            y = header["OBSGEO-Y"]
-            z = header["OBSGEO-Z"]
-            POS = EarthLocation.from_geocentric(x, y, z, unit=u.m)
+            try:
+                print(f"No observer position provided... reading from header")
+                x = header["OBSGEO-X"]
+                y = header["OBSGEO-Y"]
+                z = header["OBSGEO-Z"]
+                if abs(x) > 1e6 and abs(y) > 1e6 and abs(z) > 1e6:
+                    POS = EarthLocation.from_geocentric(x, y, z, unit=u.m)
+                else:
+                    print(f"Invalid telescope position in header")
+                    ia_tool = IA()
+                    ia_tool.open(fits_file)
+                    metadata_dict = ia_tool.summary(list=False, verbose=True)
+                    lat, long, height, observatory = extract_telescope_position(
+                        metadata_dict
+                    )
+                    ia_tool.close()
+                    POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
+            except Exception as e:
+                print(f"Error: {str(e)}")
+                POS = None
             print(f"Observer position: {POS}")
 
         gcrs = SkyCoord(POS.get_gcrs(obstime))
@@ -455,11 +473,27 @@ def convert_to_hpc(
         if lat is not None and long is not None and height is not None:
             POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
         else:
-            print("No observer position provided... reading from header")
-            x = header["OBSGEO-X"]
-            y = header["OBSGEO-Y"]
-            z = header["OBSGEO-Z"]
-            POS = EarthLocation.from_geocentric(x, y, z, unit=u.m)
+            try:
+                print("No observer position provided... reading from header")
+                x = header["OBSGEO-X"]
+                y = header["OBSGEO-Y"]
+                z = header["OBSGEO-Z"]
+                if abs(x) > 1e6 and abs(y) > 1e6 and abs(z) > 1e6:
+                    POS = EarthLocation.from_geocentric(x, y, z, unit=u.m)
+                else:
+                    print(f"Invalid telescope position in header")
+                    print(f"Checking if it is a known telescope ....")
+                    ia_tool = IA()
+                    ia_tool.open(fits_file)
+                    metadata_dict = ia_tool.summary(list=False, verbose=True)
+                    lat, long, height, observatory = extract_telescope_position(
+                        metadata_dict
+                    )
+                    ia_tool.close()
+                    POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
+            except Exception as e:
+                print(f"Error: {str(e)}")
+                POS = None
             print(f"Observer position: {POS}")
 
         gcrs = SkyCoord(POS.get_gcrs(obstime))

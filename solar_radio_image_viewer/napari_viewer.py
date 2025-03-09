@@ -258,8 +258,8 @@ class NapariViewer(QWidget):
         max_val = np.nanmax(data)
         mean_val = np.nanmean(data)
         median_val = np.nanmedian(data)
-        std_val = np.nanstd(data)
-        rms_val = np.sqrt(np.nanmean(data**2))
+        std_val = np.nanstd(data[0:200, 0:200])
+        rms_val = np.sqrt(np.nanmean(data[0:200, 0:200] ** 2))
         positive_DR = max_val / rms_val
         negative_DR = min_val / rms_val
 
