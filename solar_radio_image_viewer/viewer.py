@@ -61,7 +61,6 @@ from PyQt5.QtWidgets import (
     QToolButton,
     QTabBar,
     QStyle,
-    QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
 from PyQt5.QtGui import QIcon, QColor, QPalette, QPainter, QIntValidator
@@ -79,16 +78,6 @@ from .utils import (
 from .styles import STYLESHEET, DARK_PALETTE
 from .searchable_combobox import ColormapSelector
 from astropy.time import Time
-
-# Try to import helioprojective module
-try:
-    import sunpy.map
-    import sunpy.coordinates
-    from .helioprojective import convert_to_hpc, convert_casaimage_to_fits
-
-    HELIOPROJECTIVE_AVAILABLE = True
-except ImportError:
-    HELIOPROJECTIVE_AVAILABLE = False
 
 rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
@@ -122,13 +111,6 @@ class SolarRadioImageTab(QWidget):
             "alpha": 0.6,
             "show_center": False,
         }
-
-        # Coordinate system state (RA/DEC or Helioprojective)
-        self.use_helioprojective = False
-        self.helioprojective_map = None
-
-        # Cache for temporary FITS files
-        self.temp_fits_cache = {}  # Format: {(imagename, stokes): temp_fits_path}
 
         # Initialize RMS box values
         self.current_rms_box = [0, 200, 0, 130]
@@ -666,11 +648,11 @@ class SolarRadioImageTab(QWidget):
                 self.zoom_60arcmin_action,
             ]
         )
+
         # Add a spacer to push the coordinate system toggle to the right
-        spacer = QWidget()
+        '''spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(spacer)
-        self.coord_system_action = QAction("RA/DEC", self)
         self.coord_system_action.setToolTip(
             "Toggle between RA/DEC and Helioprojective coordinates"
         )
@@ -709,6 +691,8 @@ class SolarRadioImageTab(QWidget):
             """
         )
         toolbar.addWidget(coord_system_button)
+        self.coord_system_action = QAction("RA/DEC",self)'''
+
         parent_layout.addWidget(toolbar)
 
     def create_stats_table(self, parent_layout):
@@ -801,30 +785,39 @@ class SolarRadioImageTab(QWidget):
                     pass  # Not found in tabs list
 
     def select_file_or_directory(self):
+        import time
+
         if self.radio_casa_image.isChecked():
             # Select CASA image directory
             directory = QFileDialog.getExistingDirectory(
                 self, "Select a CASA Image Directory"
             )
             if directory:
+                start_time = time.time()
                 self.imagename = directory
                 self.dir_entry.setText(directory)
-                self.on_visualization_changed(dir_load=True)
                 self.reset_view(show_status_message=False)
+                self.on_visualization_changed(dir_load=True)
+                # self.auto_minmax()
                 self.update_tab_name_from_path(directory)  # Update tab name
-                self.show_status_message(f"Loaded {directory}")
+                self.show_status_message(
+                    f"Loaded {directory} in {time.time() - start_time:.2f} seconds"
+                )
         else:
             # Select FITS file
             file_path, _ = QFileDialog.getOpenFileName(
                 self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
             )
             if file_path:
+                start_time = time.time()
                 self.imagename = file_path
                 self.dir_entry.setText(file_path)
                 self.on_visualization_changed(dir_load=True)
-                self.reset_view(show_status_message=False)
+                # self.auto_minmax()
                 self.update_tab_name_from_path(file_path)  # Update tab name
-                self.show_status_message(f"Loaded {file_path}")
+                self.show_status_message(
+                    f"Loaded {file_path} in {time.time() - start_time:.2f} seconds"
+                )
 
     def schedule_plot(self):
         # If a timer already exists and is active, stop it.
@@ -854,6 +847,11 @@ class SolarRadioImageTab(QWidget):
                 self, "No Image", "Please select a CASA image directory first!"
             )
             return
+
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage("Loading data...")
+            QApplication.processEvents()
 
         stokes = self.stokes_combo.currentText() if self.stokes_combo else "I"
         try:
@@ -913,7 +911,14 @@ class SolarRadioImageTab(QWidget):
             else:
                 self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
 
+            if main_window and hasattr(main_window, "statusBar"):
+                img_name = os.path.basename(self.imagename)
+                main_window.statusBar().showMessage(
+                    f"Loaded {img_name}, Stokes {stokes}, Threshold {threshold}"
+                )
         except Exception as e:
+            if main_window and hasattr(main_window, "statusBar"):
+                main_window.statusBar().showMessage(f"Error: {str(e)}")
             QMessageBox.critical(self, "Error", f"Failed to load/plot data: {str(e)}")
 
     def auto_minmax(self):
@@ -1177,15 +1182,7 @@ class SolarRadioImageTab(QWidget):
         import time
 
         start_time = time.time()
-
-        # If the image has changed, clear the temporary files cache
-        if self.imagename != imagename:
-            self.cleanup_temp_files()
-
         self.imagename = imagename
-
-        # Reset helioprojective map when loading new data
-        self.helioprojective_map = None
 
         # Use the current RMS box when loading data
         from .utils import get_pixel_values_from_image
@@ -1252,124 +1249,6 @@ class SolarRadioImageTab(QWidget):
                 stored_ylim = None
 
         self.figure.clear()
-
-        # Check if we should use helioprojective coordinates
-        if self.use_helioprojective and HELIOPROJECTIVE_AVAILABLE:
-            try:
-                import astropy.units as u
-
-                # Get the current Stokes parameter
-                stokes = "I"
-                if hasattr(self, "stokes_combo") and self.stokes_combo:
-                    stokes = self.stokes_combo.currentText()
-
-                # If it's a CASA image, check if we have a cached FITS file or create one
-                fits_file = self.imagename
-                cache_key = None
-
-                if (
-                    self.imagename
-                    and os.path.isdir(self.imagename)
-                    and self.imagename.endswith(".image")
-                ):
-                    cache_key = (self.imagename, stokes)
-
-                    # Check if we have a cached FITS file
-                    if cache_key in self.temp_fits_cache and os.path.exists(
-                        self.temp_fits_cache[cache_key]
-                    ):
-                        fits_file = self.temp_fits_cache[cache_key]
-                        print(f"Using cached FITS file: {fits_file}")
-                    else:
-                        # Create a new temporary FITS file
-                        temp_fits_file = os.path.join(
-                            os.path.dirname(self.imagename),
-                            f"temp_helio_{stokes}_{os.path.basename(self.imagename)}.fits",
-                        )
-                        fits_file = convert_casaimage_to_fits(
-                            imagename=self.imagename,
-                            fitsname=temp_fits_file,
-                            overwrite=True,
-                        )
-                        # Cache the temporary FITS file
-                        self.temp_fits_cache[cache_key] = fits_file
-                        print(f"Created and cached new FITS file: {fits_file}")
-
-                # Get observatory information from the image metadata if available
-                observatory = "MWA"  # Default
-                lat = "-26:42:11.95"  # Default MWA latitude
-                long = "116:40:14.93"  # Default MWA longitude
-                height = 377.8  # Default MWA height
-
-                # Convert to helioprojective coordinates
-                self.helioprojective_map, csys, psf = convert_to_hpc(
-                    fits_file,
-                    Stokes=stokes,
-                    thres=10,
-                    lat=lat,
-                    long=long,
-                    height=height,
-                    observatory=observatory,
-                    rms_box=(
-                        tuple(self.current_rms_box)
-                        if hasattr(self, "current_rms_box")
-                        else None
-                    ),
-                )
-
-                if self.helioprojective_map is not None:
-                    # Create a figure with helioprojective projection
-                    ax = self.figure.add_subplot(
-                        111, projection=self.helioprojective_map
-                    )
-
-                    # Plot the map with proper coordinate axes
-                    im = self.helioprojective_map.plot(
-                        axes=ax, cmap=cmap, title=False, norm=None
-                    )
-
-                    # Add grid lines for helioprojective coordinates
-                    ax.grid(color="white", linestyle="--", alpha=0.5)
-
-                    # Set title with observation information
-                    wavelength_str = f"{self.helioprojective_map.wavelength.value:.2f} {self.helioprojective_map.wavelength.unit}"
-                    title = f"Helioprojective Coordinate Map\n{wavelength_str} - {self.helioprojective_map.date.strftime('%Y-%m-%d %H:%M:%S')}"
-                    ax.set_title(title, fontsize=12)
-
-                    # Add coordinate labels
-                    ax.set_xlabel("Helioprojective Longitude (arcsec)", fontsize=10)
-                    ax.set_ylabel("Helioprojective Latitude (arcsec)", fontsize=10)
-
-                    # Draw the beam if available
-                    if hasattr(self, "show_beam") and self.show_beam:
-                        self._update_beam_position(ax)
-
-                    # Draw the solar disk if available
-                    if hasattr(self, "show_solar_disk") and self.show_solar_disk:
-                        self._update_solar_disk_position(ax)
-
-                    # Draw contours if enabled
-                    if hasattr(self, "show_contours") and self.show_contours:
-                        self.draw_contours(ax)
-
-                    # Adjust layout
-                    self.figure.tight_layout()
-                    self.canvas.draw_idle()
-
-                    # Update the coordinate system display
-                    self.update_coordinate_system_display()
-
-                    return
-            except Exception as e:
-                import traceback
-
-                traceback.print_exc()
-                self.show_status_message(
-                    f"Error converting to helioprojective coordinates: {str(e)}"
-                )
-                # Fall back to regular plotting
-                self.use_helioprojective = False
-                self.update_coordinate_system_display()
 
         # Determine vmin/vmax
         if vmin_val is None:
@@ -1659,160 +1538,64 @@ class SolarRadioImageTab(QWidget):
         print(f"Time taken to plot image: {time.time() - start_time:.2f} seconds")
 
     def _update_beam_position(self, ax):
-        if not self.psf or not hasattr(self, "show_beam_checkbox"):
+        if not hasattr(self, "beam_properties") or not self.beam_properties:
             return
 
-        if not self.show_beam_checkbox.isChecked():
-            return
+        for patch in ax.patches:
+            if isinstance(patch, Ellipse):
+                patch.remove()
 
-        data = self.current_image_data
-        if data is None:
-            return
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
 
-        try:
-            # Handle helioprojective coordinates
-            if self.use_helioprojective and self.helioprojective_map is not None:
-                import astropy.units as u
+        major_pix = self.beam_properties["major_pix"]
+        minor_pix = self.beam_properties["minor_pix"]
+        pa_deg = self.beam_properties["pa_deg"]
+        margin = self.beam_properties["margin"]
 
-                # Get beam properties
-                if isinstance(self.psf["major"]["value"], list):
-                    major_deg = float(self.psf["major"]["value"][0])
-                else:
-                    major_deg = float(self.psf["major"]["value"])
+        view_width = xlim[1] - xlim[0]
+        view_height = ylim[1] - ylim[0]
 
-                if isinstance(self.psf["minor"]["value"], list):
-                    minor_deg = float(self.psf["minor"]["value"][0])
-                else:
-                    minor_deg = float(self.psf["minor"]["value"])
+        margin_x = view_width * 0.05
+        margin_y = view_height * 0.05
 
-                if isinstance(self.psf["positionangle"]["value"], list):
-                    pa_deg = float(self.psf["positionangle"]["value"][0]) - 90
-                else:
-                    pa_deg = float(self.psf["positionangle"]["value"]) - 90
+        beam_x = xlim[0] + margin_x + major_pix / 2
+        beam_y = ylim[0] + margin_y + minor_pix / 2
 
-                # Convert beam size to arcseconds
-                major_arcsec = major_deg * 3600
-                minor_arcsec = minor_deg * 3600
-
-                # Get the current axis limits in arcseconds
-                xlim = ax.get_xlim()
-                ylim = ax.get_ylim()
-                view_width = xlim[1] - xlim[0]
-                view_height = ylim[1] - ylim[0]
-                margin_x = view_width * 0.05
-                margin_y = view_height * 0.05
-
-                # Position the beam in the bottom-left corner
-                beam_x = xlim[0] + margin_x + major_arcsec / 2
-                beam_y = ylim[0] + margin_y + minor_arcsec / 2
-
-                # Create the beam ellipse
-                ellipse = Ellipse(
-                    (beam_x, beam_y),
-                    width=major_arcsec,
-                    height=minor_arcsec,
-                    angle=pa_deg,
-                    fill=True,
-                    edgecolor="black",
-                    linewidth=1.5,
-                    facecolor="white",
-                    alpha=0.4,
-                )
-                ax.add_patch(ellipse)
-                self.beam_properties = {
-                    "major_arcsec": major_arcsec,
-                    "minor_arcsec": minor_arcsec,
-                    "pa_deg": pa_deg,
-                    "margin": 0.05,
-                }
-                return
-
-            # Regular RA/DEC coordinates
-            if isinstance(self.psf["major"]["value"], list):
-                major_deg = float(self.psf["major"]["value"][0])
-            else:
-                major_deg = float(self.psf["major"]["value"])
-
-            if isinstance(self.psf["minor"]["value"], list):
-                minor_deg = float(self.psf["minor"]["value"][0])
-            else:
-                minor_deg = float(self.psf["minor"]["value"])
-
-            if isinstance(self.psf["positionangle"]["value"], list):
-                pa_deg = float(self.psf["positionangle"]["value"][0]) - 90
-            else:
-                pa_deg = float(self.psf["positionangle"]["value"]) - 90
-
-            if self.current_wcs:
-                cdelt = self.current_wcs.increment()["numeric"][0:2]
-                if isinstance(cdelt, list):
-                    cdelt = [float(c) for c in cdelt]
-                cdelt = np.array(cdelt) * 180 / np.pi
-                dx_deg = abs(cdelt[0])
-            else:
-                dx_deg = 1.0 / 3600
-
-            major_pix = major_deg / dx_deg
-            minor_pix = minor_deg / dx_deg
-
-            xlim = ax.get_xlim()
-            ylim = ax.get_ylim()
-            view_width = xlim[1] - xlim[0]
-            view_height = ylim[1] - ylim[0]
-            margin_x = view_width * 0.05
-            margin_y = view_height * 0.05
-            beam_x = xlim[0] + margin_x + major_pix / 2
-            beam_y = ylim[0] + margin_y + minor_pix / 2
-
-            ellipse = Ellipse(
-                (beam_x, beam_y),
-                width=major_pix,
-                height=minor_pix,
-                angle=pa_deg,
-                fill=True,
-                edgecolor="black",
-                linewidth=1.5,
-                facecolor="white",
-                alpha=0.4,
-            )
-            ax.add_patch(ellipse)
-            self.beam_properties = {
-                "major_pix": major_pix,
-                "minor_pix": minor_pix,
-                "pa_deg": pa_deg,
-                "margin": 0.05,
-            }
-        except Exception as e:
-            print(f"Error drawing beam: {e}")
+        ellipse = Ellipse(
+            (beam_x, beam_y),
+            width=major_pix,
+            height=minor_pix,
+            angle=pa_deg,
+            fill=True,
+            edgecolor="black",
+            facecolor="white",
+            linewidth=1.5,
+            alpha=0.4,
+        )
+        ax.add_patch(ellipse)
 
     def _update_solar_disk_position(self, ax):
-        if not hasattr(self, "show_solar_disk_checkbox"):
-            return
+        if (
+            hasattr(self, "show_solar_disk_checkbox")
+            and self.show_solar_disk_checkbox.isChecked()
+        ):
+            try:
+                center_x, center_y = self.solar_disk_center
+                if self.current_wcs:
+                    radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
+                    cdelt = self.current_wcs.increment()["numeric"][0:2]
+                    if isinstance(cdelt, list):
+                        cdelt = [float(c) for c in cdelt]
+                    cdelt = np.array(cdelt) * 180 / np.pi
+                    dx_deg = abs(cdelt[0])
+                    radius_pix = radius_deg / dx_deg
+                else:
+                    radius_pix = min(self.current_image_data.shape) / 8
 
-        if not self.show_solar_disk_checkbox.isChecked():
-            return
-
-        data = self.current_image_data
-        if data is None:
-            return
-
-        try:
-            # Handle helioprojective coordinates
-            if self.use_helioprojective and self.helioprojective_map is not None:
-                import astropy.units as u
-                from sunpy.coordinates import frames
-
-                # In helioprojective coordinates, the solar disk is centered at (0,0)
-                center_x = 0
-                center_y = 0
-
-                # The solar radius in arcseconds (approximately 959.63 arcseconds at 1 AU)
-                radius_arcsec = 959.63
-
-                # Create the solar disk circle
                 circle = plt.Circle(
                     (center_x, center_y),
-                    radius_arcsec,
+                    radius_pix,
                     fill=False,
                     edgecolor=self.solar_disk_style["color"],
                     linestyle=self.solar_disk_style["linestyle"],
@@ -1821,77 +1604,24 @@ class SolarRadioImageTab(QWidget):
                 )
                 ax.add_patch(circle)
 
-                # Only draw the center marker if show_center is True
                 if self.solar_disk_style.get("show_center", True):
-                    cross_size = radius_arcsec / 20
+                    cross_size = radius_pix / 20
                     ax.plot(
                         [center_x - cross_size, center_x + cross_size],
                         [center_y, center_y],
                         color=self.solar_disk_style["color"],
-                        linestyle=self.solar_disk_style["linestyle"],
-                        linewidth=self.solar_disk_style["linewidth"],
+                        linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
                     ax.plot(
                         [center_x, center_x],
                         [center_y - cross_size, center_y + cross_size],
                         color=self.solar_disk_style["color"],
-                        linestyle=self.solar_disk_style["linestyle"],
-                        linewidth=self.solar_disk_style["linewidth"],
+                        linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
-                return
-
-            # Regular RA/DEC coordinates
-            if self.solar_disk_center is None:
-                height, width = data.shape
-                self.solar_disk_center = (width // 2, height // 2)
-
-            center_x, center_y = self.solar_disk_center
-
-            if self.current_wcs:
-                radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
-                cdelt = self.current_wcs.increment()["numeric"][0:2]
-                if isinstance(cdelt, list):
-                    cdelt = [float(c) for c in cdelt]
-                cdelt = np.array(cdelt) * 180 / np.pi
-                dx_deg = abs(cdelt[0])
-                radius_pix = radius_deg / dx_deg
-            else:
-                radius_pix = min(data.shape) / 8
-
-            circle = plt.Circle(
-                (center_x, center_y),
-                radius_pix,
-                fill=False,
-                edgecolor=self.solar_disk_style["color"],
-                linestyle=self.solar_disk_style["linestyle"],
-                linewidth=self.solar_disk_style["linewidth"],
-                alpha=self.solar_disk_style["alpha"],
-            )
-            ax.add_patch(circle)
-
-            # Only draw the center marker if show_center is True
-            if self.solar_disk_style.get("show_center", True):
-                cross_size = radius_pix / 20
-                ax.plot(
-                    [center_x - cross_size, center_x + cross_size],
-                    [center_y, center_y],
-                    color=self.solar_disk_style["color"],
-                    linestyle=self.solar_disk_style["linestyle"],
-                    linewidth=self.solar_disk_style["linewidth"],
-                    alpha=self.solar_disk_style["alpha"],
-                )
-                ax.plot(
-                    [center_x, center_x],
-                    [center_y - cross_size, center_y + cross_size],
-                    color=self.solar_disk_style["color"],
-                    linestyle=self.solar_disk_style["linestyle"],
-                    linewidth=self.solar_disk_style["linewidth"],
-                    alpha=self.solar_disk_style["alpha"],
-                )
-        except Exception as e:
-            print(f"Error drawing solar disk: {e}")
+            except Exception as e:
+                print(f"Error drawing solar disk: {e}")
 
     def on_stokes_changed(self, stokes):
         if not self.imagename:
@@ -2326,67 +2056,31 @@ class SolarRadioImageTab(QWidget):
         except (IndexError, TypeError):
             pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
 
-        if self.use_helioprojective and HELIOPROJECTIVE_AVAILABLE:
-            if self.helioprojective_map is not None:
-                try:
-                    # Get helioprojective coordinates
-                    from astropy.coordinates import SkyCoord
-                    import astropy.units as u
-
-                    # Convert pixel coordinates to helioprojective coordinates
-                    coord = self.helioprojective_map.pixel_to_world(
-                        x * u.pix, y * u.pix
-                    )
-
-                    # Format the coordinates
-                    tx_str = coord.Tx.to_string(unit=u.arcsec, precision=2)
-                    ty_str = coord.Ty.to_string(unit=u.arcsec, precision=2)
-
-                    coord_info = (
-                        f"{pixel_info}<br><b>World:</b> Tx={tx_str}, Ty={ty_str}"
-                    )
-                    self.coord_label.setText(coord_info)
-                    return
-                except Exception as e:
-                    self.coord_label.setText(
-                        f"{pixel_info}<br><b>Helioprojective Error:</b> {str(e)}"
-                    )
-                    return
-            else:
-                self.coord_label.setText(
-                    f"{pixel_info}<br><b>Helioprojective:</b> Not available for this image"
-                )
-                return
-
-        # Regular RA/DEC coordinates
         if self.current_wcs:
             try:
-                # Convert pixel coordinates to world coordinates
-                ra, dec = self.current_wcs.toworld([x, y])["numeric"]
-                ra_deg = ra * 180 / np.pi
-                dec_deg = dec * 180 / np.pi
+                from astropy.wcs import WCS
+                from astropy.coordinates import SkyCoord
+                import astropy.units as u
 
-                # Format RA as hours:minutes:seconds
-                ra_hours = ra_deg / 15.0
-                ra_h = int(ra_hours)
-                ra_m = int((ra_hours - ra_h) * 60)
-                ra_s = ((ra_hours - ra_h) * 60 - ra_m) * 60
-                ra_str = f"{ra_h:02d}:{ra_m:02d}:{ra_s:05.2f}"
+                ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
+                ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
+                increment = self.current_wcs.increment()["numeric"][0:2]
 
-                # Format Dec as degrees:minutes:seconds
-                dec_sign = "+" if dec_deg >= 0 else "-"
-                dec_deg = abs(dec_deg)
-                dec_d = int(dec_deg)
-                dec_m = int((dec_deg - dec_d) * 60)
-                dec_s = ((dec_deg - dec_d) * 60 - dec_m) * 60
-                dec_str = f"{dec_sign}{dec_d:02d}:{dec_m:02d}:{dec_s:05.2f}"
+                w = WCS(naxis=2)
+                w.wcs.crpix = ref_pix
+                w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
+                w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
+                w.wcs.ctype = ["RA---SIN", "DEC--SIN"]
+
+                ra, dec = w.wcs_pix2world(x, y, 0)
+                coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
+                ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=2)
+                dec_str = coord.dec.to_string(sep=":", precision=2)
 
                 coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
                 self.coord_label.setText(coord_info)
             except Exception as e:
-                self.coord_label.setText(
-                    f"{pixel_info}<br><b>World:</b> Error: {str(e)}"
-                )
+                self.coord_label.setText(f"{pixel_info}<br><b>WCS Error:</b> {str(e)}")
         else:
             self.coord_label.setText(pixel_info)
 
@@ -2604,45 +2298,14 @@ class SolarRadioImageTab(QWidget):
 
             if pos_levels and len(pos_levels) > 0:
                 try:
-                    # Handle helioprojective coordinates
-                    if (
-                        self.use_helioprojective
-                        and self.helioprojective_map is not None
-                    ):
-                        import astropy.units as u
-                        from astropy.coordinates import SkyCoord
-
-                        # Get the helioprojective map dimensions
-                        ny, nx = contour_data.shape
-
-                        # Create a meshgrid of pixel coordinates
-                        y, x = np.mgrid[0:ny, 0:nx]
-
-                        # Convert pixel coordinates to world coordinates
-                        world_coords = self.helioprojective_map.pixel_to_world(
-                            x * u.pix, y * u.pix
-                        )
-
-                        # Draw contours using the world coordinates
-                        ax.contour(
-                            world_coords.Tx.value,
-                            world_coords.Ty.value,
-                            contour_data,
-                            levels=pos_levels,
-                            colors=self.contour_settings["color"],
-                            linewidths=self.contour_settings["linewidth"],
-                            linestyles=self.contour_settings["pos_linestyle"],
-                        )
-                    else:
-                        # Regular contour plotting
-                        ax.contour(
-                            contour_data.transpose(),
-                            levels=pos_levels,
-                            colors=self.contour_settings["color"],
-                            linewidths=self.contour_settings["linewidth"],
-                            linestyles=self.contour_settings["pos_linestyle"],
-                            origin="lower",
-                        )
+                    ax.contour(
+                        contour_data.transpose(),
+                        levels=pos_levels,
+                        colors=self.contour_settings["color"],
+                        linewidths=self.contour_settings["linewidth"],
+                        linestyles=self.contour_settings["pos_linestyle"],
+                        origin="lower",
+                    )
                 except Exception as e:
                     print(f"Error drawing positive contours: {e}, levels: {pos_levels}")
 
@@ -2674,45 +2337,14 @@ class SolarRadioImageTab(QWidget):
 
             if neg_levels and len(neg_levels) > 0:
                 try:
-                    # Handle helioprojective coordinates
-                    if (
-                        self.use_helioprojective
-                        and self.helioprojective_map is not None
-                    ):
-                        import astropy.units as u
-                        from astropy.coordinates import SkyCoord
-
-                        # Get the helioprojective map dimensions
-                        ny, nx = contour_data.shape
-
-                        # Create a meshgrid of pixel coordinates
-                        y, x = np.mgrid[0:ny, 0:nx]
-
-                        # Convert pixel coordinates to world coordinates
-                        world_coords = self.helioprojective_map.pixel_to_world(
-                            x * u.pix, y * u.pix
-                        )
-
-                        # Draw contours using the world coordinates
-                        ax.contour(
-                            world_coords.Tx.value,
-                            world_coords.Ty.value,
-                            contour_data,
-                            levels=neg_levels,
-                            colors=self.contour_settings["color"],
-                            linewidths=self.contour_settings["linewidth"],
-                            linestyles=self.contour_settings["neg_linestyle"],
-                        )
-                    else:
-                        # Regular contour plotting
-                        ax.contour(
-                            contour_data.transpose(),
-                            levels=neg_levels,
-                            colors=self.contour_settings["color"],
-                            linewidths=self.contour_settings["linewidth"],
-                            linestyles=self.contour_settings["neg_linestyle"],
-                            origin="lower",
-                        )
+                    ax.contour(
+                        contour_data.transpose(),
+                        levels=neg_levels,
+                        colors=self.contour_settings["color"],
+                        linewidths=self.contour_settings["linewidth"],
+                        linestyles=self.contour_settings["neg_linestyle"],
+                        origin="lower",
+                    )
                 except Exception as e:
                     print(f"Error drawing negative contours: {e}, levels: {neg_levels}")
 
@@ -2723,38 +2355,11 @@ class SolarRadioImageTab(QWidget):
                 main_window.statusBar().showMessage(f"Error drawing contours: {str(e)}")
 
     def closeEvent(self, event):
-        # Clean up temporary files
-        self.cleanup_temp_files()
         super().closeEvent(event)
-
-    def cleanup_temp_files(self):
-        """Clean up all temporary FITS files created for helioprojective coordinates."""
-        if hasattr(self, "temp_fits_cache") and self.temp_fits_cache:
-            for key, temp_file in list(self.temp_fits_cache.items()):
-                try:
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                        print(f"Removed temporary file: {temp_file}")
-                except Exception as e:
-                    print(f"Error removing temporary file {temp_file}: {e}")
-            self.temp_fits_cache.clear()
 
     def reset_view(self, show_status_message=True):
         """Reset the view to show the full image with original limits"""
         if self.current_image_data is None:
-            return
-
-        # Reset helioprojective mode
-        if self.use_helioprojective:
-            self.use_helioprojective = False
-            self.helioprojective_map = None
-            # Note: We don't clear the temp_fits_cache here to keep the files for future use
-            self.update_coordinate_system_display()
-            self.schedule_plot()
-            if show_status_message:
-                self.show_status_message(
-                    "Reset to RA/DEC coordinates and full image view"
-                )
             return
 
         ax = self.figure.axes[0]
@@ -2769,7 +2374,7 @@ class SolarRadioImageTab(QWidget):
             self._update_solar_disk_position(ax)
         self.canvas.draw()
         if show_status_message:
-            self.show_status_message("Reset plot to full image")
+            self.show_status_message("Reseted plot to full image")
 
     def show_rms_box_dialog(self):
         """Show a dialog for configuring the RMS box settings"""
@@ -3005,60 +2610,6 @@ class SolarRadioImageTab(QWidget):
                 "Invalid Input",
                 "Please enter valid integer values for the RMS box coordinates.",
             )
-
-    def toggle_coordinate_system(self):
-        """Toggle between RA/DEC and Helioprojective coordinates"""
-        # Check if helioprojective is available
-        if not HELIOPROJECTIVE_AVAILABLE and not self.use_helioprojective:
-            self.show_status_message(
-                "Helioprojective coordinates are not available. Please install sunpy."
-            )
-            return
-
-        # If switching to helioprojective, check if the image can be converted
-        if not self.use_helioprojective and not self.can_convert_to_helioprojective():
-            self.show_status_message(
-                "Current image cannot be converted to Helioprojective coordinates."
-            )
-            return
-
-        self.use_helioprojective = not self.use_helioprojective
-        self.update_coordinate_system_display()
-
-        # Replot the image with the new coordinate system
-        self.schedule_plot()
-
-        # Show a status message
-        if self.use_helioprojective:
-            self.show_status_message(
-                "Switched to Helioprojective coordinates. Converting image..."
-            )
-        else:
-            self.show_status_message("Switched to RA/DEC coordinates")
-
-    def update_coordinate_system_display(self):
-        """Update the coordinate system display based on the current mode"""
-        if self.use_helioprojective:
-            self.coord_system_action.setText("Helioprojective")
-            self.coord_system_action.setChecked(True)
-        else:
-            self.coord_system_action.setText("RA/DEC")
-            self.coord_system_action.setChecked(False)
-
-    def can_convert_to_helioprojective(self):
-        """Check if the current image can be converted to helioprojective coordinates"""
-        if not HELIOPROJECTIVE_AVAILABLE:
-            return False
-
-        if not hasattr(self, "imagename") or not self.imagename:
-            return False
-
-        # Check if the image has the necessary metadata
-        # For now, we'll just check if it's a FITS file or a CASA image
-        if self.imagename.endswith(".fits") or os.path.isdir(self.imagename):
-            return True
-
-        return False
 
 
 class CustomTabBar(QTabBar):
@@ -3360,15 +2911,8 @@ class SolarRadioImageViewerApp(QMainWindow):
             return
 
         if index >= 0 and index < len(self.tabs):
-            tab = self.tab_widget.widget(index)
-            if tab in self.tabs:
-                # Clean up temporary files
-                if hasattr(tab, "cleanup_temp_files"):
-                    tab.cleanup_temp_files()
-                self.tabs.remove(tab)
             self.tab_widget.removeTab(index)
-        if self.tab_widget.count() == 0:
-            self.handle_add_tab()
+            del self.tabs[index]
 
     def close_current_tab(self):
         """Close the currently active tab"""
@@ -4021,8 +3565,8 @@ class SolarRadioImageViewerApp(QMainWindow):
                     <tr><td><code>Ctrl+Shift+O</code></td><td>Open FITS File</td></tr>
                     <tr><td><code>Ctrl+E</code></td><td>Export Figure</td></tr>
                     <tr><td><code>Ctrl+F</code></td><td>Export as FITS</td></tr>
-                    <tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>
                     <tr><td><code>Ctrl+Shift+N</code></td><td>Fast Viewer (Napari)</td></tr>
+                    <tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>
                 </table>
             </div>
             <div class="section">
@@ -4132,11 +3676,6 @@ class SolarRadioImageViewerApp(QMainWindow):
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
-        # Clean up temporary files from all tabs
-        for tab in self.tabs:
-            if hasattr(tab, "cleanup_temp_files"):
-                tab.cleanup_temp_files()
-
         try:
             casa_logs = [
                 f
