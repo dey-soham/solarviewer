@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Solar Data Manager - Interactive tool for downloading solar observatory data.
+Solar Data Downloader - Interactive tool for downloading solar observatory data.
 
 This script provides a user-friendly interface for downloading data from
 various solar observatories using the solar_data_downloader module.
@@ -58,7 +58,7 @@ def print_header():
     """Print the application header."""
     clear_screen()
     print("=" * 80)
-    print("                           SOLAR DATA MANAGER                           ")
+    print("                           SOLAR DATA DOWNLOADER                           ")
     print("=" * 80)
     print("Download and process data from various solar observatories")
     print("=" * 80)
@@ -682,7 +682,7 @@ def main_menu():
         elif choice == "4":
             download_soho_data()
         elif choice == "5":
-            print("\nExiting Solar Data Manager. Goodbye!")
+            print("\nExiting Solar Data Downloader CLI. Goodbye!")
             sys.exit(0)
         else:
             print("\nInvalid choice. Please enter a number between 1 and 5.")
@@ -693,5 +693,5 @@ if __name__ == "__main__":
     try:
         main_menu()
     except KeyboardInterrupt:
-        print("\n\nExiting Solar Data Manager. Goodbye!")
+        print("\n\nExiting Solar Data Downloader CLI. Goodbye!")
         sys.exit(0)

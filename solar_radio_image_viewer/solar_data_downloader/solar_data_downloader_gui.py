@@ -40,11 +40,21 @@ except ImportError:
 
 # Try to import the solar_data_downloader module
 try:
+    # First try relative import (when used as part of package)
     from . import solar_data_downloader as sdd
 except ImportError:
-    print("Error: Could not import solar_data_downloader module.")
-    print("Make sure solar_data_downloader.py is in the same directory as this script.")
-    sys.exit(1)
+    try:
+        # Then try importing from the same directory (when run as script)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if script_dir not in sys.path:
+            sys.path.append(script_dir)
+        import solar_data_downloader as sdd
+    except ImportError:
+        print("Error: Could not import solar_data_downloader module.")
+        print(
+            "Make sure solar_data_downloader.py is in the same directory as this script."
+        )
+        sys.exit(1)
 
 # Check if required packages are installed
 try:
@@ -333,6 +343,7 @@ class SolarDataViewerGUI(QMainWindow):
         self.start_datetime = QDateTimeEdit()
         self.start_datetime.setDateTime(QDateTime.currentDateTime())
         self.start_datetime.setCalendarPopup(True)
+        self.start_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")  # 24-hour format
         start_layout.addWidget(self.start_datetime)
         layout.addLayout(start_layout)
 
@@ -344,6 +355,7 @@ class SolarDataViewerGUI(QMainWindow):
             QDateTime.currentDateTime().addSecs(3600)  # Default to 1 hour later
         )
         self.end_datetime.setCalendarPopup(True)
+        self.end_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")  # 24-hour format
         end_layout.addWidget(self.end_datetime)
         layout.addLayout(end_layout)
 
