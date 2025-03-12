@@ -1020,6 +1020,61 @@ class SolarRadioImageTab(QWidget):
                 f"Set display range to 1-99 percentile: [{p1:.4g}, {p99:.4g}]"
             )
 
+    def auto_percentile_99(self):
+        if self.current_image_data is None:
+            return
+
+        data = self.current_image_data
+        p01 = np.percentile(data, 0.1)
+        p999 = np.percentile(data, 99.9)
+        self.set_range(p01, p999)
+        stretch = (
+            self.stretch_combo.currentText()
+            if hasattr(self, "stretch_combo")
+            else "linear"
+        )
+        cmap = (
+            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+        )
+        try:
+            gamma = float(self.gamma_entry.text())
+        except (ValueError, AttributeError):
+            gamma = 1.0
+
+        self.plot_image(p01, p999, stretch, cmap, gamma)
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(
+                f"Set display range to 0.1st and 99.9th percentiles: [{p01:.4g}, {p999:.4g}]"
+            )
+
+    def auto_percentile_95(self):
+        if self.current_image_data is None:
+            return
+
+        data = self.current_image_data
+        p5 = np.percentile(data, 5)
+        p95 = np.percentile(data, 95)
+        self.set_range(p5, p95)
+        stretch = (
+            self.stretch_combo.currentText()
+            if hasattr(self, "stretch_combo")
+            else "linear"
+        )
+        cmap = (
+            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+        )
+        try:
+            gamma = float(self.gamma_entry.text())
+        except (ValueError, AttributeError):
+            gamma = 1.0
+        self.plot_image(p5, p95, stretch, cmap, gamma)
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(
+                f"Set display range to 5th and 95th percentiles: [{p5:.4g}, {p95:.4g}]"
+            )
+
     def auto_median_rms(self):
         if self.current_image_data is None:
             return
@@ -1525,12 +1580,37 @@ class SolarRadioImageTab(QWidget):
                         image_time = header.get("DATE-OBS")
                         if header["TELESCOP"] == "SOHO":
                             image_time = f"{image_time}T{header['TIME-OBS']}"
+                        # Keep upto one decimal place if image_time seconds have more than one decimal place
+                        print(f"Image time: {image_time}")
+                        if "T" in image_time:
+                            date = image_time.split("T")[0]
+                            time_str = image_time.split("T")[1]
+                            time_parts = time_str.split(":")
+                            seconds = time_parts[-1]
+                            if "." in seconds:
+                                seconds = seconds[:4]
+                            image_time = (
+                                f"{date}T{time_parts[0]}:{time_parts[1]}:{seconds}"
+                            )
                         temp_flag = True
                     except Exception as e:
                         print(f"Error getting image time: {e}")
                         image_time = None
 
-                if "spectral2" in csys_record:
+                    try:
+                        image_freq = header.get("FREQ")
+                        if image_freq is not None:
+                            freq_unit = header.get("FREQUNIT")
+                            if freq_unit == "Hz":
+                                image_freq = f"{image_freq * 1e-6:.2f} MHz"
+                                print(f"Image frequency: {image_freq} MHz")
+                            else:
+                                image_freq = f"{image_freq:.2f} {freq_unit}"
+                    except Exception as e:
+                        print(f"Error getting image frequency: {e}")
+                        image_freq = None
+
+                if "spectral2" in csys_record and image_freq is None:
                     spectral2 = csys_record["spectral2"]
                     wcs = spectral2.get("wcs", {})
                     frequency_ref = wcs.get("crval", None)
@@ -1539,8 +1619,6 @@ class SolarRadioImageTab(QWidget):
                         image_freq = f"{frequency_ref * 1e-6:.2f} MHz"
                     else:
                         image_freq = f"{frequency_ref:.2f} {frequency_unit}"
-                else:
-                    image_freq = None
 
                 if not temp_flag:
                     if "obsdate" in csys_record:
@@ -1574,6 +1652,10 @@ class SolarRadioImageTab(QWidget):
 
                     elif image_time is not None and image_freq is not None:
                         title = f"Time: {image_time} | Freq: {image_freq}"
+                    elif image_time is not None and image_freq is None:
+                        title = f"Time: {image_time}"
+                    elif image_time is None and image_freq is not None:
+                        title = f"Freq: {image_freq}"
 
                 elif image_time is not None and image_freq is None:
                     title = f"Time: {image_time}"
@@ -3474,6 +3556,18 @@ class SolarRadioImageViewerApp(QMainWindow):
         )
         auto_percentile_act.triggered.connect(self.auto_percentile)
         preset_menu.addAction(auto_percentile_act)
+        auto_percentile_act_99 = QAction("Auto Percentile (0.1%,99.9%)", self)
+        auto_percentile_act_99.setStatusTip(
+            "Set display range to 0.1st and 99.9th percentiles"
+        )
+        auto_percentile_act_99.triggered.connect(self.auto_percentile_99)
+        auto_percentile_act_95 = QAction("Auto Percentile (5%,95%)", self)
+        auto_percentile_act_95.setStatusTip(
+            "Set display range to 5th and 95th percentiles"
+        )
+        auto_percentile_act_95.triggered.connect(self.auto_percentile_95)
+        preset_menu.addAction(auto_percentile_act_99)
+        preset_menu.addAction(auto_percentile_act_95)
         auto_median_rms_act = QAction("Auto Median ± 3×RMS", self)
         auto_median_rms_act.setShortcut("F7")
         auto_median_rms_act.setStatusTip("Set display range to median ± 3×RMS")
@@ -3565,6 +3659,16 @@ class SolarRadioImageViewerApp(QMainWindow):
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
             current_tab.auto_percentile()
+
+    def auto_percentile_99(self):
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab:
+            current_tab.auto_percentile_99()
+
+    def auto_percentile_95(self):
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab:
+            current_tab.auto_percentile_95()
 
     def auto_median_rms(self):
         current_tab = self.tab_widget.currentWidget()
