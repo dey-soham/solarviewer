@@ -99,6 +99,7 @@ class SolarRadioImageTab(QWidget):
         self.stokes_combo = None
         self.current_image_data = None
         self.current_wcs = None
+        self.current_contour_wcs = None
         self.psf = None
         self.current_roi = None
         self.roi_selector = None
@@ -434,7 +435,7 @@ class SolarRadioImageTab(QWidget):
         preset_layout = QHBoxLayout()
         self.auto_minmax_button = QPushButton("Auto")
         self.auto_minmax_button.clicked.connect(self.auto_minmax)
-        self.auto_percentile_button = QPushButton("5-95%")
+        self.auto_percentile_button = QPushButton("1-99%")
         self.auto_percentile_button.clicked.connect(self.auto_percentile)
         self.auto_median_button = QPushButton("Med±3σ")
         self.auto_median_button.clicked.connect(self.auto_median_rms)
@@ -493,7 +494,7 @@ class SolarRadioImageTab(QWidget):
         preset_layout = QHBoxLayout()
         self.auto_minmax_button = QPushButton("Auto")
         self.auto_minmax_button.clicked.connect(self.auto_minmax)
-        self.auto_percentile_button = QPushButton("5-95%")
+        self.auto_percentile_button = QPushButton("1-99%")
         self.auto_percentile_button.clicked.connect(self.auto_percentile)
         self.auto_median_button = QPushButton("Med±3σ")
         self.auto_median_button.clicked.connect(self.auto_median_rms)
@@ -822,7 +823,9 @@ class SolarRadioImageTab(QWidget):
         if self.radio_casa_image.isChecked():
             # Select CASA image directory
             directory = QFileDialog.getExistingDirectory(
-                self, "Select a CASA Image Directory"
+                self,
+                caption="Select an image",
+                options=QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
             )
             if directory:
                 start_time = time.time()
@@ -838,7 +841,10 @@ class SolarRadioImageTab(QWidget):
         else:
             # Select FITS file
             file_path, _ = QFileDialog.getOpenFileName(
-                self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
+                self,
+                "Select a FITS file",
+                "",
+                "FITS files (*.fits *.fts);; All files (*)",
             )
             if file_path:
                 start_time = time.time()
@@ -989,9 +995,9 @@ class SolarRadioImageTab(QWidget):
             return
 
         data = self.current_image_data
-        p5 = np.percentile(data, 5)
-        p95 = np.percentile(data, 95)
-        self.set_range(p5, p95)
+        p1 = np.percentile(data, 1)
+        p99 = np.percentile(data, 99)
+        self.set_range(p1, p99)
 
         stretch = (
             self.stretch_combo.currentText()
@@ -1006,12 +1012,12 @@ class SolarRadioImageTab(QWidget):
         except (ValueError, AttributeError):
             gamma = 1.0
 
-        self.plot_image(p5, p95, stretch, cmap, gamma)
+        self.plot_image(p1, p99, stretch, cmap, gamma)
 
         main_window = self.parent()
         if main_window and hasattr(main_window, "statusBar"):
             main_window.statusBar().showMessage(
-                f"Set display range to 5-95 percentile: [{p5:.4g}, {p95:.4g}]"
+                f"Set display range to 1-99 percentile: [{p1:.4g}, {p99:.4g}]"
             )
 
     def auto_median_rms(self):
@@ -1215,7 +1221,6 @@ class SolarRadioImageTab(QWidget):
         import time
 
         start_time = time.time()
-        self.imagename = imagename
 
         # Use the current RMS box when loading data
         from .utils import get_pixel_values_from_image
@@ -1227,6 +1232,7 @@ class SolarRadioImageTab(QWidget):
         self.current_image_data = pix
         self.current_wcs = csys
         self.psf = psf
+
         if pix is not None:
             height, width = pix.shape
             self.solar_disk_center = (width // 2, height // 2)
@@ -1254,6 +1260,25 @@ class SolarRadioImageTab(QWidget):
         self, vmin_val=None, vmax_val=None, stretch="linear", cmap="viridis", gamma=1.0
     ):
         import time
+
+        fits_flag = False
+        if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
+            from astropy.io import fits
+
+            fits_flag = True
+            hdul = fits.open(self.imagename)
+            header = hdul[0].header
+
+        try:
+            ia_tool = IA()
+            ia_tool.open(self.imagename)
+            csys = ia_tool.coordsys()
+            summary = ia_tool.summary()
+            csys_record = ia_tool.coordsys().torecord()
+            ia_tool.close()
+        except Exception as e:
+            print(f"Error getting image metadata: {e}")
+            return
 
         start_time = time.time()
         if self.current_image_data is None:
@@ -1319,15 +1344,73 @@ class SolarRadioImageTab(QWidget):
                     increment = self.current_wcs.increment()["numeric"][0:2]
                     self._cached_wcs_obj = WCS(naxis=2)
                     self._cached_wcs_obj.wcs.crpix = ref_pix
-                    self._cached_wcs_obj.wcs.crval = [
-                        ref_val[0] * 180 / np.pi,
-                        ref_val[1] * 180 / np.pi,
-                    ]
-                    self._cached_wcs_obj.wcs.cdelt = [
-                        increment[0] * 180 / np.pi,
-                        increment[1] * 180 / np.pi,
-                    ]
-                    self._cached_wcs_obj.wcs.ctype = ["RA---SIN", "DEC--SIN"]
+                    temp_flag = False
+                    if fits_flag:
+                        if (
+                            header["CTYPE1"] == "HPLN-TAN"
+                            or header["CTYPE1"] == "RA---SIN"
+                            or header["CTYPE1"] == "RA---TAN"
+                        ):
+                            self._cached_wcs_obj.wcs.crval = [
+                                ref_val[0] * 180 / np.pi,
+                                ref_val[1] * 180 / np.pi,
+                            ]
+                            self._cached_wcs_obj.wcs.cdelt = [
+                                increment[0] * 180 / np.pi,
+                                increment[1] * 180 / np.pi,
+                            ]
+                            temp_flag = True
+                        elif header["CTYPE1"] == "SOLAR-X":
+                            self._cached_wcs_obj.wcs.crval = ref_val
+                            self._cached_wcs_obj.wcs.cdelt = increment
+                            temp_flag = True
+                    if not temp_flag:
+                        if "Right Ascension" in summary["axisnames"]:
+                            self._cached_wcs_obj.wcs.crval = [
+                                ref_val[0] * 180 / np.pi,
+                                ref_val[1] * 180 / np.pi,
+                            ]
+                            self._cached_wcs_obj.wcs.cdelt = [
+                                increment[0] * 180 / np.pi,
+                                increment[1] * 180 / np.pi,
+                            ]
+                        else:
+                            self._cached_wcs_obj.wcs.crval = ref_val
+                            self._cached_wcs_obj.wcs.cdelt = increment
+                    try:
+                        if fits_flag:
+                            try:
+                                self._cached_wcs_obj.wcs.ctype = [
+                                    header["CTYPE1"],
+                                    header["CTYPE2"],
+                                ]
+                            except Exception as e:
+                                print(f"Error getting projection: {e}")
+                                self._cached_wcs_obj = None
+                        elif (csys.projection()["type"] == "SIN") and (
+                            "Right Ascension" in summary["axisnames"]
+                        ):
+                            print("SIN projection")
+                            self._cached_wcs_obj.wcs.ctype = [
+                                "RA---SIN",
+                                "DEC--SIN",
+                            ]
+                        elif (csys.projection()["type"] == "TAN") and (
+                            "Right Ascension" in summary["axisnames"]
+                        ):
+                            print("TAN projection")
+                            self._cached_wcs_obj.wcs.ctype = [
+                                "RA---TAN",
+                                "DEC--TAN",
+                            ]
+
+                        else:
+                            print(f"Error getting projection: {e}")
+                            self._cached_wcs_obj = None
+
+                    except Exception as e:
+                        print(f"Error getting projection: {e}")
+                        self._cached_wcs_obj = None
                     self._cached_wcs_id = id(self.current_wcs)
                 except Exception as e:
                     print(f"Error creating WCS: {e}")
@@ -1345,8 +1428,38 @@ class SolarRadioImageTab(QWidget):
                     norm=norm,
                     interpolation="none",
                 )
-                ax.set_xlabel("Right Ascension (J2000)")
-                ax.set_ylabel("Declination (J2000)")
+                if fits_flag:
+                    if header["CTYPE1"] == "HPLN-TAN":
+                        ax.set_xlabel("Solar X")
+                        ax.set_ylabel("Solar Y")
+                    elif header["CTYPE1"] == "SOLAR-X":
+                        ax.set_xlabel(f"Solar X ({header['CUNIT1']})")
+                        ax.set_ylabel(f"Solar Y ({header['CUNIT2']})")
+                    else:
+                        ax.set_xlabel("Right Ascension (J2000)")
+                        ax.set_ylabel("Declination (J2000)")
+                elif wcs_obj.wcs.ctype[0] == "RA---SIN":
+                    ax.set_xlabel("Right Ascension (J2000)")
+                    ax.set_ylabel("Declination (J2000)")
+                elif wcs_obj.wcs.ctype[0] == "SOLAR-X":
+                    if csys_record["linear0"]["units"][0] == "arcsec":
+                        ax.set_xlabel("Solar X (arcsec)")
+                        ax.set_ylabel("Solar Y (arcsec)")
+                    elif csys_record["linear0"]["units"][0] == "arcmin":
+                        ax.set_xlabel("Solar X (arcmin)")
+                        ax.set_ylabel("Solar Y (arcmin)")
+                    elif csys_record["linear0"]["units"][0] == "deg":
+                        ax.set_xlabel("Solar X (deg)")
+                        ax.set_ylabel("Solar Y (deg)")
+                    else:
+                        ax.set_xlabel("Solar X")
+                        ax.set_ylabel("Solar Y")
+                elif wcs_obj.wcs.ctype[0] == "RA---TAN":
+                    ax.set_xlabel("Right Ascension (J2000)")
+                    ax.set_ylabel("Declination (J2000)")
+                else:
+                    ax.set_xlabel("Right Ascension (J2000)")
+                    ax.set_ylabel("Declination (J2000)")
                 if (
                     hasattr(self, "show_grid_checkbox")
                     and self.show_grid_checkbox.isChecked()
@@ -1354,8 +1467,12 @@ class SolarRadioImageTab(QWidget):
                     ax.coords.grid(True, color="white", alpha=0.5, linestyle="--")
                 else:
                     ax.coords.grid(False)
-                ax.coords[0].set_major_formatter("hh:mm:ss.s")
-                ax.coords[1].set_major_formatter("dd:mm:ss")
+                if (
+                    wcs_obj.wcs.ctype[0] == "RA---SIN"
+                    or wcs_obj.wcs.ctype[0] == "RA---TAN"
+                ):
+                    ax.coords[0].set_major_formatter("hh:mm:ss.s")
+                    ax.coords[1].set_major_formatter("dd:mm:ss")
                 ax.tick_params(axis="both", which="major", labelsize=10)
             except Exception as e:
                 print(f"Error setting up WCS axes: {e}")
@@ -1390,15 +1507,33 @@ class SolarRadioImageTab(QWidget):
         if self.current_image_data is not None:
             # Get the image time and frequency
             try:
-                ia = IA()
-                ia.open(self.imagename)
-                csys_record = ia.coordsys().torecord()
-                ia.close()
+                # ia = IA()
+                # ia.open(self.imagename)
+                # csys_record = ia.coordsys().torecord()
+                # ia.close()
+                # if self.imagename.endswith(".fits"):
+                # from astropy.io import fits
+
+                # with fits.open(self.imagename) as hdul:
+                #    fits_header = hdul[0].header
+                #    image_time = fits_header.get("DATE-OBS", None)
+                temp_flag = False
+                image_time = None
+                image_freq = None
+                if fits_flag:
+                    try:
+                        image_time = header.get("DATE-OBS")
+                        if header["TELESCOP"] == "SOHO":
+                            image_time = f"{image_time}T{header['TIME-OBS']}"
+                        temp_flag = True
+                    except Exception as e:
+                        print(f"Error getting image time: {e}")
+                        image_time = None
+
                 if "spectral2" in csys_record:
                     spectral2 = csys_record["spectral2"]
                     wcs = spectral2.get("wcs", {})
                     frequency_ref = wcs.get("crval", None)
-                    # frequency_inc = wcs.get("cdelt", None)
                     frequency_unit = spectral2.get("unit", None)
                     if frequency_unit == "Hz":
                         image_freq = f"{frequency_ref * 1e-6:.2f} MHz"
@@ -1407,23 +1542,45 @@ class SolarRadioImageTab(QWidget):
                 else:
                     image_freq = None
 
-                if "obsdate" in csys_record:
-                    obsdate = csys_record["obsdate"]
-                    m0 = obsdate.get("m0", {})
-                    time_value = m0.get("value", None)
-                    time_unit = m0.get("unit", None)
-                    refer = obsdate.get("refer", None)
-                    if refer == "UTC" or time_unit == "d":
-                        t = Time(time_value, format="mjd")
-                        t.precision = 1
-                        image_time = t.iso
-                    else:
-                        image_time = None
-                else:
-                    image_time = None
+                if not temp_flag:
+                    if "obsdate" in csys_record:
+                        obsdate = csys_record["obsdate"]
+                        m0 = obsdate.get("m0", {})
+                        time_value = m0.get("value", None)
+                        time_unit = m0.get("unit", None)
+                        refer = obsdate.get("refer", None)
+                        if refer == "UTC" or time_unit == "d":
+                            t = Time(time_value, format="mjd")
+                            t.precision = 1
+                            image_time = t.iso
+                        else:
+                            image_time = None
 
-                if image_time is not None or image_freq is not None:
-                    title = f"Time: {image_time}   Freq: {image_freq}"
+                if fits_flag:
+                    if header["TELESCOP"] == "SOHO" and header["INSTRUME"] == "LASCO":
+                        title = f"{image_time} | {header['TELESCOP']} {header['INSTRUME']} {header['DETECTOR']}"
+                    elif header["TELESCOP"] == "SOHO" and header["INSTRUME"] == "EIT":
+                        title = (
+                            f"{image_time} | {header['TELESCOP']} {header['INSTRUME']}"
+                        )
+                    elif header["TELESCOP"] == "SOHO" and header["INSTRUME"] == "MDI":
+                        title = (
+                            f"{image_time} | {header['TELESCOP']} {header['INSTRUME']}"
+                        )
+                    elif header["TELESCOP"] == "SDO/AIA":
+                        title = f"{image_time} | {header['TELESCOP']} {header['WAVELNTH']} $\\AA$"
+                    elif header["TELESCOP"] == "SDO/HMI":
+                        title = f"{image_time} | {header['TELESCOP']}"
+
+                    elif image_time is not None and image_freq is not None:
+                        title = f"Time: {image_time} | Freq: {image_freq}"
+
+                elif image_time is not None and image_freq is None:
+                    title = f"Time: {image_time}"
+                elif image_time is None and image_freq is not None:
+                    title = f"Freq: {image_freq}"
+                elif image_time is not None and image_freq is not None:
+                    title = f"Time: {image_time} | Freq: {image_freq}"
                 else:
                     title = (
                         os.path.basename(self.imagename)
@@ -1432,7 +1589,7 @@ class SolarRadioImageTab(QWidget):
                     )
                 ax.set_title(title)
             except Exception as e:
-                print(f"Error getting image time and frequency: {e}")
+                print(f"Error getting title: {e}")
                 title = (
                     os.path.basename(self.imagename) if self.imagename else "No Image"
                 )
@@ -2152,22 +2309,23 @@ class SolarRadioImageTab(QWidget):
             if not self.contour_settings.get("use_default_rms_region", True):
                 rms_box = self.contour_settings.get("rms_box", rms_box)
 
+            contour_csys = None
             if self.contour_settings["source"] == "same":
                 if self.imagename:
                     stokes = self.contour_settings["stokes"]
-                    threshold = 3.0
+                    threshold = 5.0
 
                     if stokes in ["I", "Q", "U", "V"]:
-                        pix, _, _ = get_pixel_values_from_image(
+                        pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, stokes, threshold, rms_box
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         numerator_stokes = stokes.split("/")[0]
-                        numerator_pix, _, _ = get_pixel_values_from_image(
+                        numerator_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, numerator_stokes, threshold, rms_box
                         )
-                        denominator_pix, _, _ = get_pixel_values_from_image(
+                        denominator_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "I", threshold, rms_box
                         )
                         mask = denominator_pix != 0
@@ -2175,22 +2333,22 @@ class SolarRadioImageTab(QWidget):
                         ratio[mask] = numerator_pix[mask] / denominator_pix[mask]
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
-                        q_pix, _, _ = get_pixel_values_from_image(
+                        q_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "Q", threshold, rms_box
                         )
-                        u_pix, _, _ = get_pixel_values_from_image(
+                        u_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "U", threshold, rms_box
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
-                        q_pix, _, _ = get_pixel_values_from_image(
+                        q_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "Q", threshold, rms_box
                         )
-                        u_pix, _, _ = get_pixel_values_from_image(
+                        u_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "U", threshold, rms_box
                         )
-                        i_pix, _, _ = get_pixel_values_from_image(
+                        i_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "I", threshold, rms_box
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
@@ -2199,38 +2357,40 @@ class SolarRadioImageTab(QWidget):
                         lfrac[mask] = l_pix[mask] / i_pix[mask]
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
-                        q_pix, _, _ = get_pixel_values_from_image(
+                        q_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "Q", threshold, rms_box
                         )
-                        u_pix, _, _ = get_pixel_values_from_image(
+                        u_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "U", threshold, rms_box
                         )
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
                         self.contour_settings["contour_data"] = pang
                     else:
-                        pix, _, _ = get_pixel_values_from_image(
+                        pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "I", threshold, rms_box
                         )
                         self.contour_settings["contour_data"] = pix
+                    self.current_contour_wcs = contour_csys
                 else:
                     self.contour_settings["contour_data"] = None
+                    self.current_contour_wcs = None
             else:
                 external_image = self.contour_settings["external_image"]
                 if external_image and os.path.exists(external_image):
                     stokes = self.contour_settings["stokes"]
-                    threshold = 3.0
+                    threshold = 5.0
 
                     if stokes in ["I", "Q", "U", "V"]:
-                        pix, _, _ = get_pixel_values_from_image(
+                        pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, stokes, threshold, rms_box
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         numerator_stokes = stokes.split("/")[0]
-                        numerator_pix, _, _ = get_pixel_values_from_image(
+                        numerator_pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, numerator_stokes, threshold, rms_box
                         )
-                        denominator_pix, _, _ = get_pixel_values_from_image(
+                        denominator_pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, "I", threshold, rms_box
                         )
                         mask = denominator_pix != 0
@@ -2238,22 +2398,22 @@ class SolarRadioImageTab(QWidget):
                         ratio[mask] = numerator_pix[mask] / denominator_pix[mask]
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
-                        q_pix, _, _ = get_pixel_values_from_image(
+                        q_pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, "Q", threshold, rms_box
                         )
-                        u_pix, _, _ = get_pixel_values_from_image(
+                        u_pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, "U", threshold, rms_box
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
-                        q_pix, _, _ = get_pixel_values_from_image(
+                        q_pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, "Q", threshold, rms_box
                         )
-                        u_pix, _, _ = get_pixel_values_from_image(
+                        u_pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, "U", threshold, rms_box
                         )
-                        i_pix, _, _ = get_pixel_values_from_image(
+                        i_pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, "I", threshold, rms_box
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
@@ -2262,21 +2422,23 @@ class SolarRadioImageTab(QWidget):
                         lfrac[mask] = l_pix[mask] / i_pix[mask]
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
-                        q_pix, _, _ = get_pixel_values_from_image(
+                        q_pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, "Q", threshold, rms_box
                         )
-                        u_pix, _, _ = get_pixel_values_from_image(
+                        u_pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, "U", threshold, rms_box
                         )
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
                         self.contour_settings["contour_data"] = pang
                     else:
-                        pix, _, _ = get_pixel_values_from_image(
+                        pix, contour_csys, _ = get_pixel_values_from_image(
                             external_image, "I", threshold, rms_box
                         )
                         self.contour_settings["contour_data"] = pix
+                    self.current_contour_wcs = contour_csys
                 else:
                     self.contour_settings["contour_data"] = None
+                    self.current_contour_wcs = None
 
             main_window = self.parent()
             if main_window and hasattr(main_window, "statusBar"):
@@ -2298,16 +2460,125 @@ class SolarRadioImageTab(QWidget):
     def draw_contours(self, ax):
         if self.contour_settings["contour_data"] is None:
             self.load_contour_data()
+            print("Contour data loaded")
 
         if self.contour_settings["contour_data"] is None:
             return
 
+        if self.current_contour_wcs is None:
+            return
+
+        fits_flag = False
+        if self.contour_settings["source"] == "same":
+            contour_imagename = self.imagename
+        else:
+            contour_imagename = self.contour_settings["external_image"]
+
+        if contour_imagename.endswith(".fits") or contour_imagename.endswith(".fts"):
+            from astropy.io import fits
+
+            fits_flag = True
+            hdul = fits.open(contour_imagename)
+            header = hdul[0].header
+
         try:
+            ia_tool = IA()
+            ia_tool.open(contour_imagename)
+            csys = ia_tool.coordsys()
+            summary = ia_tool.summary()
+            ia_tool.close()
+        except Exception as e:
+            print(f"Error getting metadata: {e}")
+            return
+
+        try:
+            # Check if the contour and image projection match
+            print("Drawing contours........")
+            image_wcs_obj = None
+            if hasattr(self, "_cached_wcs_obj"):
+                image_wcs_obj = self._cached_wcs_obj
+
+            different_projections = False
+            different_increments = False
+
+            if self.current_contour_wcs is not None and image_wcs_obj is not None:
+                # Check for different projections
+                from astropy.wcs import WCS
+
+                contour_wcs_obj = WCS(naxis=2)
+
+                # set up contour wcs
+                ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
+                ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
+                increment = self.current_contour_wcs.increment()["numeric"][0:2]
+
+                contour_wcs_obj.wcs.crpix = ref_pix
+
+                if "Right Ascension" in summary["axisnames"]:
+                    contour_wcs_obj.wcs.crval = [
+                        ref_val[0] * 180 / np.pi,
+                        ref_val[1] * 180 / np.pi,
+                    ]
+                    contour_wcs_obj.wcs.cdelt = [
+                        increment[0] * 180 / np.pi,
+                        increment[1] * 180 / np.pi,
+                    ]
+                else:
+                    contour_wcs_obj.wcs.crval = ref_val
+                    contour_wcs_obj.wcs.cdelt = increment
+
+                # Set projection type
+                if fits_flag:
+                    try:
+                        contour_wcs_obj.wcs.ctype = [
+                            header["CTYPE1"],
+                            header["CTYPE2"],
+                        ]
+                    except Exception as e:
+                        print(f"Error getting projection type: {e}")
+
+                elif (csys.projection()["type"] == "SIN") and (
+                    "Right Ascension" in summary["axisnames"]
+                ):
+                    contour_wcs_obj.wcs.ctype = [
+                        "RA---SIN",
+                        "DEC--SIN",
+                    ]
+                elif (csys.projection()["type"] == "TAN") and (
+                    "Right Ascension" in summary["axisnames"]
+                ):
+                    contour_wcs_obj.wcs.ctype = [
+                        "RA---TAN",
+                        "DEC--TAN",
+                    ]
+                else:
+                    print("Warning: Unrecognized projection type")
+                    contour_wcs_obj = None
+
+                if contour_wcs_obj is not None:
+                    if contour_wcs_obj.wcs.ctype[0] != image_wcs_obj.wcs.ctype[0]:
+                        different_projections = True
+                        print("Warning: Different projections for contour and image")
+
+                    # Check for different increments
+                    contour_cdelt = np.abs(contour_wcs_obj.wcs.cdelt)
+                    image_cdelt = np.abs(image_wcs_obj.wcs.cdelt)
+                    scale_ratio_x = contour_cdelt[0] / image_cdelt[0]
+                    scale_ratio_y = contour_cdelt[1] / image_cdelt[1]
+
+                    if (np.abs(scale_ratio_x - 1) > 1e-3) or (
+                        np.abs(scale_ratio_y - 1) > 1e-3
+                    ):
+                        different_increments = True
+                        print("Warning: Different increments for contour and image")
+
+            # Calculate contour levels
             contour_data = self.contour_settings["contour_data"]
             abs_max = np.nanmax(np.abs(contour_data))
 
             if self.contour_settings["level_type"] == "fraction":
                 vmax = np.nanmax(contour_data)
+                vmin = np.nanmin(contour_data)
                 if vmax > 0:
                     pos_levels = sorted(
                         [
@@ -2317,6 +2588,18 @@ class SolarRadioImageTab(QWidget):
                     )
                 else:
                     pos_levels = []
+
+                if vmin < 0:
+                    neg_levels = sorted(
+                        [
+                            level * abs_max
+                            for level in self.contour_settings["neg_levels"]
+                        ]
+                    )
+                    neg_levels = [-level for level in reversed(neg_levels)]
+                else:
+                    neg_levels = []
+
             elif self.contour_settings["level_type"] == "sigma":
                 mean = np.nanmean(contour_data)
                 std = np.nanstd(contour_data)
@@ -2326,8 +2609,137 @@ class SolarRadioImageTab(QWidget):
                         for level in self.contour_settings["pos_levels"]
                     ]
                 )
+                neg_levels = sorted(
+                    [
+                        -(mean - level * std)
+                        for level in reversed(self.contour_settings["neg_levels"])
+                    ]
+                )
             else:
                 pos_levels = sorted(self.contour_settings["pos_levels"])
+                neg_levels = sorted(
+                    [-level for level in reversed(self.contour_settings["neg_levels"])]
+                )
+
+            plot_default = False
+
+            if (
+                different_projections == False
+                and different_increments == True
+                and contour_wcs_obj is not None
+                and fits_flag == True
+            ):
+                try:
+                    import sunpy.map
+                    from sunpy.coordinates import Helioprojective
+                    import astropy.units as u
+                    from astropy.coordinates import SkyCoord
+                    from astropy.time import Time
+                    from astropy.wcs.utils import wcs_to_celestial_frame
+
+                    print("Using SunPy for contour overlay")
+
+                    # Create a SunPy Map for the contour data
+                    contour_header = contour_wcs_obj.to_header()
+
+                    # Add necessary FITS keywords if missing
+                    if "NAXIS1" not in contour_header:
+                        contour_header["NAXIS1"] = contour_data.shape[1]
+                    if "NAXIS2" not in contour_header:
+                        contour_header["NAXIS2"] = contour_data.shape[0]
+
+                    # Add observer information to the header
+                    # This is crucial for fixing the observer error
+                    if "DATE-OBS" not in contour_header:
+                        contour_header["DATE-OBS"] = Time.now().isot
+                    if "RSUN_REF" not in contour_header:
+                        contour_header["RSUN_REF"] = (
+                            695700000.0  # Solar radius in meters
+                        )
+                    if "DSUN_OBS" not in contour_header:
+                        contour_header["DSUN_OBS"] = 1.496e11  # 1 AU in meters
+
+                    # Add coordinate system information if missing
+                    if "HGLT_OBS" not in contour_header:
+                        contour_header["HGLT_OBS"] = (
+                            0.0  # Heliographic latitude of observer
+                        )
+                    if "HGLN_OBS" not in contour_header:
+                        contour_header["HGLN_OBS"] = (
+                            0.0  # Heliographic longitude of observer
+                        )
+
+                    # Create the contour map
+                    contour_map = sunpy.map.Map(contour_data, contour_header)
+
+                    # Create a SunPy Map for the image data
+                    image_header = image_wcs_obj.to_header()
+
+                    if "NAXIS1" not in image_header:
+                        image_header["NAXIS1"] = self.current_image_data.shape[1]
+                    if "NAXIS2" not in image_header:
+                        image_header["NAXIS2"] = self.current_image_data.shape[0]
+
+                    # Add the same observer information to the image header
+                    if "DATE-OBS" not in image_header:
+                        image_header["DATE-OBS"] = contour_header.get(
+                            "DATE-OBS", Time.now().isot
+                        )
+                    if "RSUN_REF" not in image_header:
+                        image_header["RSUN_REF"] = contour_header.get(
+                            "RSUN_REF", 695700000.0
+                        )
+                    if "DSUN_OBS" not in image_header:
+                        image_header["DSUN_OBS"] = contour_header.get(
+                            "DSUN_OBS", 1.496e11
+                        )
+                    if "HGLT_OBS" not in image_header:
+                        image_header["HGLT_OBS"] = contour_header.get("HGLT_OBS", 0.0)
+                    if "HGLN_OBS" not in image_header:
+                        image_header["HGLN_OBS"] = contour_header.get("HGLN_OBS", 0.0)
+
+                    # Create the image map
+                    imagemap = sunpy.map.Map(self.current_image_data, image_header)
+
+                    # Reproject the contour map to match the image map's coordinate system
+                    print("Reprojecting contour map")
+
+                    try:
+                        # Try SunPy's built-in reprojection
+                        reprojected_map = contour_map.reproject_to(
+                            imagemap.wcs,
+                            shape_out=self.current_image_data.shape,
+                        )
+                        contour_data = reprojected_map.data
+                        print("Reprojected contour data using SunPy")
+
+                    except Exception as e:
+                        print(
+                            f"Error reprojecting contour data: {e}\nTrying reproject_interp .... "
+                        )
+                        try:
+                            from reproject import reproject_interp
+
+                            # Reproject the contour data to the image WCS
+                            array, footprint = reproject_interp(
+                                (contour_data, contour_wcs_obj),
+                                image_wcs_obj,
+                                shape_out=self.current_image_data.shape,
+                            )
+
+                            # Replace the NaNs with zeros
+                            array = np.nan_to_num(array, nan=0.0)
+
+                            print("Reprojected contour data")
+                            contour_data = array
+                        except Exception as e:
+                            print(f"Error reprojecting contour data: {e}")
+                            plot_default = True
+
+                    contour_wcs_obj = None
+                except ImportError as e:
+                    print(f"Failed to reproject contour data: {e}")
+                    plot_default = True
 
             if pos_levels and len(pos_levels) > 0:
                 try:
@@ -2341,32 +2753,6 @@ class SolarRadioImageTab(QWidget):
                     )
                 except Exception as e:
                     print(f"Error drawing positive contours: {e}, levels: {pos_levels}")
-
-            if self.contour_settings["level_type"] == "fraction":
-                vmin = np.nanmin(contour_data)
-                if vmin < 0:
-                    neg_levels = sorted(
-                        [
-                            level * abs_max
-                            for level in self.contour_settings["neg_levels"]
-                        ]
-                    )
-                    neg_levels = [-level for level in reversed(neg_levels)]
-                else:
-                    neg_levels = []
-            elif self.contour_settings["level_type"] == "sigma":
-                mean = np.nanmean(contour_data)
-                std = np.nanstd(contour_data)
-                neg_levels = sorted(
-                    [
-                        -(mean - level * std)
-                        for level in reversed(self.contour_settings["neg_levels"])
-                    ]
-                )
-            else:
-                neg_levels = sorted(
-                    [-level for level in reversed(self.contour_settings["neg_levels"])]
-                )
 
             if neg_levels and len(neg_levels) > 0:
                 try:
@@ -2383,6 +2769,9 @@ class SolarRadioImageTab(QWidget):
 
         except Exception as e:
             print(f"Error drawing contours: {e}")
+            import traceback
+
+            traceback.print_exc()
             main_window = self.parent()
             if main_window and hasattr(main_window, "statusBar"):
                 main_window.statusBar().showMessage(f"Error drawing contours: {str(e)}")
@@ -2997,6 +3386,15 @@ class SolarRadioImageViewerApp(QMainWindow):
         export_data_act.triggered.connect(self.export_as_fits)
         file_menu.addAction(export_data_act)
 
+        # Add after the export_data_act action in create_menus method
+        export_hpc_fits_act = QAction("Export as HPC FITS", self)
+        export_hpc_fits_act.setShortcut("Ctrl+H")
+        export_hpc_fits_act.setStatusTip(
+            "Export current image as helioprojective FITS file"
+        )
+        export_hpc_fits_act.triggered.connect(self.export_as_hpc_fits)
+        file_menu.addAction(export_hpc_fits_act)
+
         file_menu.addSeparator()
         exit_act = QAction("Exit", self)
         exit_act.setShortcut("Ctrl+Q")
@@ -3069,10 +3467,10 @@ class SolarRadioImageViewerApp(QMainWindow):
         auto_minmax_act.setStatusTip("Set display range to data min/max")
         auto_minmax_act.triggered.connect(self.auto_minmax)
         preset_menu.addAction(auto_minmax_act)
-        auto_percentile_act = QAction("Auto Percentile (5%,95%)", self)
+        auto_percentile_act = QAction("Auto Percentile (1%,99%)", self)
         auto_percentile_act.setShortcut("F6")
         auto_percentile_act.setStatusTip(
-            "Set display range to 5th and 95th percentiles"
+            "Set display range to 1st and 99th percentiles"
         )
         auto_percentile_act.triggered.connect(self.auto_percentile)
         preset_menu.addAction(auto_percentile_act)
@@ -3094,19 +3492,8 @@ class SolarRadioImageViewerApp(QMainWindow):
         close_tab_act.triggered.connect(self.close_current_tab)
         tabs_menu.addAction(close_tab_act)
 
-        help_menu = menubar.addMenu("&Help")
-        shortcuts_act = QAction("Keyboard Shortcuts", self)
-        shortcuts_act.setShortcut("F1")
-        shortcuts_act.setStatusTip("Show keyboard shortcuts")
-        shortcuts_act.triggered.connect(self.show_keyboard_shortcuts)
-        help_menu.addAction(shortcuts_act)
-        about_act = QAction("About", self)
-        about_act.setStatusTip("Show information about this application")
-        about_act.triggered.connect(self.show_about_dialog)
-        help_menu.addAction(about_act)
-
         # Add Data Download menu after File menu
-        download_menu = menubar.addMenu("&Data Download")
+        download_menu = menubar.addMenu("&Download")
 
         # GUI Downloader action
         gui_downloader_action = QAction("Solar Data Downloader (GUI)", self)
@@ -3123,6 +3510,16 @@ class SolarRadioImageViewerApp(QMainWindow):
         )
         cli_downloader_action.triggered.connect(self.launch_data_downloader_cli)
         download_menu.addAction(cli_downloader_action)
+        help_menu = menubar.addMenu("&Help")
+        shortcuts_act = QAction("Keyboard Shortcuts", self)
+        shortcuts_act.setShortcut("F1")
+        shortcuts_act.setStatusTip("Show keyboard shortcuts")
+        shortcuts_act.triggered.connect(self.show_keyboard_shortcuts)
+        help_menu.addAction(shortcuts_act)
+        about_act = QAction("About", self)
+        about_act.setStatusTip("Show information about this application")
+        about_act.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_act)
 
     def add_new_tab(self, name):
         if len(self.tabs) >= self.max_tabs:
@@ -3743,16 +4140,6 @@ class SolarRadioImageViewerApp(QMainWindow):
             pass
         super().closeEvent(event)
 
-    def select_directory(self):
-        """Legacy method for backward compatibility"""
-        self.radio_casa_image.setChecked(True)
-        self.select_file_or_directory()
-
-    def select_file(self):
-        """Legacy method for backward compatibility"""
-        self.radio_fits_file.setChecked(True)
-        self.select_file_or_directory()
-
     def launch_napari_viewer(self):
         """Launch the Napari-based fast image viewer"""
         try:
@@ -3896,3 +4283,73 @@ read -p "Press Enter to close..."
             )
             print(error_msg)  # Print to console for debugging
             QMessageBox.critical(self, "Error", error_msg)
+
+    def export_as_hpc_fits(self):
+        """Export the current image as a helioprojective FITS file"""
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or not current_tab.imagename:
+            QMessageBox.warning(self, "No Image", "No image loaded to export")
+            return
+
+        try:
+            # Get the output filename from user
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export as Helioprojective FITS",
+                "",
+                "FITS Files (*.fits);;All Files (*)",
+            )
+
+            if path:
+                # Get current Stokes parameter and threshold
+                stokes = (
+                    current_tab.stokes_combo.currentText()
+                    if current_tab.stokes_combo
+                    else "I"
+                )
+                try:
+                    threshold = float(current_tab.threshold_entry.text())
+                except (ValueError, AttributeError):
+                    threshold = 10.0
+
+                # Show progress in status bar
+                self.statusBar().showMessage(
+                    "Converting to helioprojective coordinates..."
+                )
+                QApplication.processEvents()
+
+                # Call convert_and_save_hpc
+                from .helioprojective import convert_and_save_hpc
+
+                success = convert_and_save_hpc(
+                    current_tab.imagename,
+                    path,
+                    Stokes=stokes,
+                    thres=threshold,
+                    overwrite=True,
+                )
+
+                if success:
+                    QMessageBox.information(
+                        self,
+                        "Success",
+                        f"Image exported as helioprojective FITS to:\n{path}",
+                    )
+                    self.statusBar().showMessage(
+                        f"Exported helioprojective FITS to {path}"
+                    )
+                else:
+                    QMessageBox.critical(
+                        self,
+                        "Export Failed",
+                        "Failed to export image as helioprojective FITS",
+                    )
+                    self.statusBar().showMessage("Export failed")
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Error exporting as helioprojective FITS:\n{str(e)}",
+            )
+            self.statusBar().showMessage("Export error")

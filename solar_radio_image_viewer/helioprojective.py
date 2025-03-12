@@ -36,6 +36,62 @@ rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
 
 
+def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observatory=None):
+    hdul = fits.open(fits_file)
+    header = hdul[0].header
+    POS = None
+    if observatory is not None:
+        if observatory.upper() == "LOFAR":
+            lat = "52:55:53.90"
+            long = "06:51:56.95"
+            height = 50.16
+        elif observatory.upper() == "MWA":
+            lat = "-26:42:12.09"
+            long = "116:40:14.84"
+            height = 375.75
+        elif observatory.upper() == "MEERKAT":
+            lat = "-30:42:47.36"
+            long = "21:26:38.09"
+            height = 1050.82
+        elif observatory.upper() == "GMRT" or observatory.upper() == "UGMRT":
+            lat = "19:05:26.21"
+            long = "74:02:59.90"
+            height = 639.68
+        else:
+            print(
+                "WARNING! Observatory parameter could not be understood. Trying from lat and long...."
+            )
+    if lat is not None and long is not None and height is not None:
+        print(
+            f"DEBUG: USING observer position from arguments LAT={lat}, LON={long}, HEIGHT={height}"
+        )
+        POS = EarthLocation.geodetic(lon=long, lat=lat, height=height)
+
+    if lat is None or long is None or height is None:
+        try:
+            print(f"No lat, long input found. Trying to read from header .....")
+            x = header["OBSGEO-X"]
+            y = header["OBSGEO-Y"]
+            z = header["OBSGEO-Z"]
+            if abs(x) > 1e6 and abs(y) > 1e6 and abs(z) > 1e6:
+                POS = EarthLocation.from_geocentric(x, y, z, unit=u.m)
+            else:
+                print(
+                    f"Invalid telescope position in header. Looking for observatory from header..."
+                )
+                ia_tool = IA()
+                ia_tool.open(fits_file)
+                metadata_dict = ia_tool.summary(list=False, verbose=True)
+                lat, long, height, observatory = extract_telescope_position(
+                    metadata_dict
+                )
+                ia_tool.close()
+                POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    return POS
+
+
 def convert_to_hpc(
     fits_file,
     Stokes="I",
@@ -65,6 +121,8 @@ def convert_to_hpc(
     except Exception as e:
         raise RuntimeError(f"Failed to open image {fits_file}: {e}")
 
+    print("************************")
+    print(f"Starting hpc conversion for image {fits_file}")
     # Read the FITS file
     hdu = fits.open(fits_file)
     header = hdu[0].header
@@ -107,7 +165,7 @@ def convert_to_hpc(
             print(f"FITS axes mapping to NumPy positions: {numpy_axis_map}")
             print(f"Spatial axes in FITS (0-indexed): {spatial_axes}")
 
-            # Update the axes to their NumPy positions
+            # Update the axes to their NumPy posittemp_helio_I_solar_2014_11_03_06_12_58.20_116.235MHz.image.fitsions
             if stokes_axis is not None:
                 original_stokes_axis = (
                     stokes_axis + 1
@@ -312,34 +370,7 @@ def convert_to_hpc(
             else:
                 raise RuntimeError("Could not determine frequency from header")
         obstime = Time(header["date-obs"])
-        if lat is not None and long is not None and height is not None:
-            print(
-                f"DEBUG: Using observer position from arguments LAT={lat}, LONG={long}, HEIGHT={height}"
-            )
-            POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
-        else:
-            try:
-                print(f"No observer position provided... reading from header")
-                x = header["OBSGEO-X"]
-                y = header["OBSGEO-Y"]
-                z = header["OBSGEO-Z"]
-                if abs(x) > 1e6 and abs(y) > 1e6 and abs(z) > 1e6:
-                    POS = EarthLocation.from_geocentric(x, y, z, unit=u.m)
-                else:
-                    print(f"Invalid telescope position in header")
-                    ia_tool = IA()
-                    ia_tool.open(fits_file)
-                    metadata_dict = ia_tool.summary(list=False, verbose=True)
-                    lat, long, height, observatory = extract_telescope_position(
-                        metadata_dict
-                    )
-                    ia_tool.close()
-                    POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
-            except Exception as e:
-                print(f"Error: {str(e)}")
-                POS = None
-            print(f"Observer position: {POS}")
-
+        POS = get_Earthlocation(fits_file=fits_file)
         gcrs = SkyCoord(POS.get_gcrs(obstime))
         reference_coord = SkyCoord(
             header["CRVAL1"] * u.Unit(header["CUNIT1"]),
@@ -379,8 +410,8 @@ def convert_to_hpc(
         new_header["ORIGIN"] = "Solar Radio Image Viewer"
 
         # Add frequency information
-        new_header["FREQ"] = (frequency.to(u.Hz).value, "Frequency in Hz")
-        new_header["FREQUNIT"] = ("Hz", "Frequency unit")
+        new_header["FREQ"] = frequency.to(u.Hz).value
+        new_header["FREQUNIT"] = "Hz"
 
         # Add coordinate system information
         new_header["WCSNAME"] = "Helioprojective"
@@ -409,7 +440,7 @@ def convert_to_hpc(
             new_header["HISTORY"] = new_history
 
         # Add information about the Stokes parameter
-        new_header["STOKES"] = (Stokes, "Stokes parameter")
+        new_header["STOKES"] = Stokes
 
         # Add beam information if available
         if psf:
@@ -470,32 +501,7 @@ def convert_to_hpc(
         except Exception as e:
             print(f"Error getting observation time: {e}")
             obstime = None
-        if lat is not None and long is not None and height is not None:
-            POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
-        else:
-            try:
-                print("No observer position provided... reading from header")
-                x = header["OBSGEO-X"]
-                y = header["OBSGEO-Y"]
-                z = header["OBSGEO-Z"]
-                if abs(x) > 1e6 and abs(y) > 1e6 and abs(z) > 1e6:
-                    POS = EarthLocation.from_geocentric(x, y, z, unit=u.m)
-                else:
-                    print(f"Invalid telescope position in header")
-                    print(f"Checking if it is a known telescope ....")
-                    ia_tool = IA()
-                    ia_tool.open(fits_file)
-                    metadata_dict = ia_tool.summary(list=False, verbose=True)
-                    lat, long, height, observatory = extract_telescope_position(
-                        metadata_dict
-                    )
-                    ia_tool.close()
-                    POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
-            except Exception as e:
-                print(f"Error: {str(e)}")
-                POS = None
-            print(f"Observer position: {POS}")
-
+        POS = get_Earthlocation(fits_file=fits_file)
         gcrs = SkyCoord(POS.get_gcrs(obstime))
         reference_coord = SkyCoord(
             header["CRVAL1"] * u.Unit(header["CUNIT1"]),
@@ -527,8 +533,8 @@ def convert_to_hpc(
         new_header["OBJECT"] = "Sun"
         new_header["ORIGIN"] = "Solar Radio Image Viewer"
         try:
-            new_header["FREQ"] = (freq.to(u.Hz).value, "Frequency in Hz")
-            new_header["FREQUNIT"] = ("Hz", "Frequency unit")
+            new_header["FREQ"] = freq.to(u.Hz).value
+            new_header["FREQUNIT"] = "Hz"
         except Exception as e:
             print(f"Error adding frequency information: {e}")
         new_header["WCSNAME"] = "Helioprojective"
@@ -536,7 +542,7 @@ def convert_to_hpc(
         new_header["CTYPE2"] = "HPLT-TAN"
         new_header["CUNIT1"] = "arcsec"
         new_header["CUNIT2"] = "arcsec"
-        new_header["STOKES"] = (Stokes, "Stokes parameter")
+        new_header["STOKES"] = Stokes
         if psf:
             new_header["BMAJ"] = header["BMAJ"]
             new_header["BMIN"] = header["BMIN"]
@@ -700,10 +706,10 @@ def convert_and_save_hpc(
     output_fits_file,
     Stokes="I",
     thres=10,
-    lat="-26:42:11.95",
-    long="116:40:14.93",
-    height=377.8,
-    observatory="MWA",
+    lat=None,
+    long=None,
+    height=None,
+    observatory=None,
     overwrite=True,
 ):
     """
@@ -712,7 +718,7 @@ def convert_and_save_hpc(
     Parameters
     ----------
     input_fits_file : str
-        Path to the input FITS file.
+        Path to the input FITS file/Casa Image.
     output_fits_file : str
         Path to save the output FITS file.
     Stokes : str, optional
@@ -740,6 +746,13 @@ def convert_and_save_hpc(
         return False
 
     try:
+        not_fits_flag = False
+        if not input_fits_file.endswith(".fits") or not input_fits_file.endswith(
+            ".fts"
+        ):
+            input_fits_file = convert_casaimage_to_fits(input_fits_file)
+            print(f"Converted casaimage {input_fits_file} to a temporary fits file ...")
+            not_fits_flag = True
         # Convert to helioprojective coordinates
         map_obj, cdelta_1, cdelta_2 = convert_to_hpc(
             input_fits_file,
@@ -750,6 +763,8 @@ def convert_and_save_hpc(
             height=height,
             observatory=observatory,
         )
+        if not_fits_flag:
+            os.system("rm temp.fits")
 
         if map_obj is None:
             print("Failed to convert to helioprojective coordinates")
@@ -1255,19 +1270,19 @@ if __name__ == "__main__":
     )
     convert_parser.add_argument(
         "--lat",
-        default="-26:42:11.95",
-        help="Observer latitude (default: -26:42:11.95, MWA)",
+        default=None,
+        help="Observer latitude (default: None (Example: -26:42:11.95, MWA))",
     )
     convert_parser.add_argument(
         "--long",
-        default="116:40:14.93",
-        help="Observer longitude (default: 116:40:14.93, MWA)",
+        default=None,
+        help="Observer longitude (default: None (Example: 116:40:14.93, MWA))",
     )
     convert_parser.add_argument(
         "--height",
         type=float,
-        default=377.8,
-        help="Observer height in meters (default: 377.8, MWA)",
+        default=None,
+        help="Observer height in meters (default: None (Example: 377.8, MWA))",
     )
     convert_parser.add_argument(
         "--observatory", default="MWA", help="Observatory name (default: MWA)"

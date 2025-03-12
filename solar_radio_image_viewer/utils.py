@@ -156,34 +156,61 @@ def get_pixel_values_from_image(
         # Ensure we can index; convert to numpy array if needed
         dimension_names = np.array(dimension_names)
 
-        try:
-            ra_idx = int(np.where(dimension_names == "Right Ascension")[0][0])
-        except IndexError:
-            raise ValueError("Right Ascension axis not found in image summary.")
+        if "Right Ascension" in dimension_names:
+            try:
+                ra_idx = int(np.where(dimension_names == "Right Ascension")[0][0])
+            except IndexError:
+                raise ValueError("Right Ascension axis not found in image summary.")
 
-        try:
-            dec_idx = int(np.where(dimension_names == "Declination")[0][0])
-        except IndexError:
-            raise ValueError("Declination axis not found in image summary.")
+            try:
+                dec_idx = int(np.where(dimension_names == "Declination")[0][0])
+            except IndexError:
+                raise ValueError("Declination axis not found in image summary.")
 
-        if "Stokes" in dimension_names:
-            stokes_idx = int(np.where(dimension_names == "Stokes")[0][0])
-            if dimension_shapes[stokes_idx] == 1:
+            if "Stokes" in dimension_names:
+                stokes_idx = int(np.where(dimension_names == "Stokes")[0][0])
+                if dimension_shapes[stokes_idx] == 1:
+                    single_stokes_flag = True
+            else:
+                # Assume single stokes; set index to 0
+                stokes_idx = None
                 single_stokes_flag = True
-        else:
-            # Assume single stokes; set index to 0
-            stokes_idx = None
-            single_stokes_flag = True
 
-        if "Frequency" in dimension_names:
-            freq_idx = int(np.where(dimension_names == "Frequency")[0][0])
-        else:
-            # If Frequency axis is missing, assume index 0
-            freq_idx = None
+            if "Frequency" in dimension_names:
+                freq_idx = int(np.where(dimension_names == "Frequency")[0][0])
+            else:
+                # If Frequency axis is missing, assume index 0
+                freq_idx = None
 
-        data = ia_tool.getchunk()
-        psf = ia_tool.restoringbeam()
-        csys = ia_tool.coordsys()
+            data = ia_tool.getchunk()
+            psf = ia_tool.restoringbeam()
+            csys = ia_tool.coordsys()
+        if "SOLAR-X" in dimension_names:
+            try:
+                ra_idx = int(np.where(dimension_names == "SOLAR-X")[0][0])
+            except IndexError:
+                raise ValueError("SOLAR-X axis not found in image summary.")
+            try:
+                dec_idx = int(np.where(dimension_names == "SOLAR-Y")[0][0])
+            except IndexError:
+                raise ValueError("SOLAR-Y axis not found in image summary.")
+
+            if "Stokes" in dimension_names:
+                stokes_idx = int(np.where(dimension_names == "Stokes")[0][0])
+                if dimension_shapes[stokes_idx] == 1:
+                    single_stokes_flag = True
+            else:
+                # Assume single stokes; set index to 0
+                stokes_idx = None
+            if "Frequency" in dimension_names:
+                freq_idx = int(np.where(dimension_names == "Frequency")[0][0])
+            else:
+                # If Frequency axis is missing, assume index 0
+                freq_idx = None
+            data = ia_tool.getchunk()
+            psf = ia_tool.restoringbeam()
+            csys = ia_tool.coordsys()
+
     except Exception as e:
         ia_tool.close()
         raise RuntimeError(f"Error reading image metadata: {e}")
