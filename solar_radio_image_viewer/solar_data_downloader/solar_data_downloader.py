@@ -762,6 +762,16 @@ def download_hmi(
 
                 downloaded_files.append(output_file)
 
+    if not skip_calibration:
+        for file_path in downloaded_files:
+            lvl1_map = Map(file_path)
+            print(f"Processing {os.path.basename(file_path)} to Level 1.5...")
+            lvl1_5_map = update_hmi_pointing(lvl1_map)
+            lvl1_5_map_output_file = os.path.join(
+                output_dir, f"{os.path.basename(file_path)}_lvl1.5.fits"
+            )
+            lvl1_5_map.save(lvl1_5_map_output_file, filetype="fits")
+            print(f"Successfully processed {os.path.basename(file_path)} to Level 1.5")
     # Clean up temp directory
     if os.path.exists(temp_dir):
         for file in glob.glob(os.path.join(temp_dir, "*")):
@@ -852,9 +862,45 @@ def download_hmi_with_fido(
         return []
 
     downloaded_files = [str(file_path) for file_path in downloaded]
-
+    if not skip_calibration:
+        for file_path in downloaded_files:
+            lvl1_map = Map(file_path)
+            print(f"Processing {os.path.basename(file_path)} to Level 1.5...")
+            lvl1_5_map = update_hmi_pointing(lvl1_map)
+            lvl1_5_map_output_file = os.path.join(
+                output_dir, f"{os.path.basename(file_path)}_lvl1.5.fits"
+            )
+            lvl1_5_map.save(lvl1_5_map_output_file, filetype="fits")
+            print(f"Successfully processed {os.path.basename(file_path)} to Level 1.5")
     print(f"Successfully downloaded {len(downloaded_files)} HMI files.")
     return downloaded_files
+
+
+def update_hmi_pointing(hmi_map):
+    """
+    Update the pointing of a Level-1 HMI map.
+
+    For HMI Level-1 data the basic calibrations (e.g. dark subtraction, flat-fielding,
+    BSCALE/BZERO corrections) have already been applied. To reach Level-1.5, one must
+    refine the pointing information—typically by correcting for instrument roll.
+
+    This function reads the CROTA2 keyword (which gives the rotation angle of the image)
+    and rotates the image so that solar north is at the top.
+
+    Parameters:
+      hmi_map (sunpy.map.Map): Input Level-1 HMI map.
+
+    Returns:
+      sunpy.map.Map: A new map with updated pointing (i.e. solar north up).
+    """
+    # Get the current rotation angle (CROTA2) from the header; default to 0 if missing
+    current_crota = float(hmi_map.meta.get("CROTA2", 0.0))
+
+    # To correct the roll, rotate the map by the negative of the current CROTA2 angle.
+    # The rotate method updates the WCS (CROTA2, CRVAL, etc.) accordingly.
+    rotated_map = hmi_map.rotate(angle=-current_crota * u.deg, clip=True)
+
+    return rotated_map
 
 
 def download_iris(

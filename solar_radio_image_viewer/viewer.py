@@ -66,7 +66,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
 from PyQt5.QtGui import QIcon, QColor, QPalette, QPainter, QIntValidator
 
-from .norms import SqrtNorm, AsinhNorm, PowerNorm
+from .norms import SqrtNorm, AsinhNorm, PowerNorm, ZScaleNorm, HistEqNorm
 from .utils import (
     estimate_rms_near_Sun,
     remove_pixels_away_from_sun,
@@ -288,10 +288,27 @@ class SolarRadioImageTab(QWidget):
         self.cmap_combo.colormapSelected.connect(self.on_visualization_changed)
         form_layout.addRow("Colormap:", self.cmap_combo)
 
+        # Stretch function
         self.stretch_combo = QComboBox()
-        self.stretch_combo.addItems(["linear", "sqrt", "log", "arcsinh", "power"])
+        self.stretch_combo.addItems(
+            ["linear", "sqrt", "log", "arcsinh", "power", "zscale", "histeq"]
+        )
         self.stretch_combo.setCurrentText("power")
         self.stretch_combo.currentIndexChanged.connect(self.on_stretch_changed)
+
+        # Add tooltips for each stretch
+        stretch_tooltips = {
+            0: "Linear stretch - no transformation",
+            1: "Square root stretch - enhances faint features",
+            2: "Logarithmic stretch - enhances very faint features",
+            3: "Arcsinh stretch - similar to log but handles negative values",
+            4: "Power law stretch - adjustable using gamma",
+            5: "ZScale stretch - automatic contrast based on image statistics",
+            6: "Histogram equalization - enhances contrast by redistributing intensities",
+        }
+        for idx, tooltip in stretch_tooltips.items():
+            self.stretch_combo.setItemData(idx, tooltip, Qt.ToolTipRole)
+
         form_layout.addRow("Stretch:", self.stretch_combo)
         main_layout.addLayout(form_layout)
 
@@ -1276,17 +1293,26 @@ class SolarRadioImageTab(QWidget):
         import time
 
         start_time = time.time()
+        try:
+            # Use the current RMS box when loading data
+            from .utils import get_pixel_values_from_image
 
-        # Use the current RMS box when loading data
-        from .utils import get_pixel_values_from_image
+            pix, csys, psf = get_pixel_values_from_image(
+                imagename, stokes, threshold, rms_box=tuple(self.current_rms_box)
+            )
 
-        pix, csys, psf = get_pixel_values_from_image(
-            imagename, stokes, threshold, rms_box=tuple(self.current_rms_box)
-        )
+            self.current_image_data = pix
+            self.current_wcs = csys
+            self.psf = psf
+        except Exception as e:
+            from astropy.io import fits
 
-        self.current_image_data = pix
-        self.current_wcs = csys
-        self.psf = psf
+            hdul = fits.open(imagename)
+            header = hdul[1].header
+            pix = hdul[1].data
+            # csys = header.get("CROTA2", 0)
+            csys = None
+            psf = None
 
         if pix is not None:
             height, width = pix.shape
@@ -1382,6 +1408,12 @@ class SolarRadioImageTab(QWidget):
             norm = AsinhNorm(vmin=vmin_val, vmax=vmax_val)
         elif stretch == "power":
             norm = PowerNorm(vmin=vmin_val, vmax=vmax_val, gamma=gamma)
+        elif stretch == "zscale":
+            norm = ZScaleNorm(
+                vmin=vmin_val, vmax=vmax_val, contrast=0.25, num_samples=600
+            )
+        elif stretch == "histeq":
+            norm = HistEqNorm(vmin=vmin_val, vmax=vmax_val, n_bins=256)
         else:
             norm = Normalize(vmin=vmin_val, vmax=vmax_val)
 
@@ -2929,7 +2961,6 @@ class SolarRadioImageTab(QWidget):
         self.dialog_rms_x2_slider = QSlider(Qt.Horizontal)
         self.dialog_rms_y1_slider = QSlider(Qt.Horizontal)
         self.dialog_rms_y2_slider = QSlider(Qt.Horizontal)
-
         # Configure sliders
         if hasattr(self, "current_image_data") and self.current_image_data is not None:
             height, width = self.current_image_data.shape

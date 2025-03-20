@@ -514,7 +514,7 @@ def convert_to_hpc(
         )
         cdelta_1 = (np.abs(header["CDELT1"]) * u.deg).to(u.arcsec)
         cdelta_2 = (np.abs(header["CDELT2"]) * u.deg).to(u.arcsec)
-        P_angle = P(obstime)
+        P_angle = P(obstime) * -1
         print(f"Rotating by {P_angle}")
         new_header = sunpy.map.make_fitswcs_header(
             data,
