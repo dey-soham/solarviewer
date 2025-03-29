@@ -1401,9 +1401,18 @@ class SolarRadioImageTab(QWidget):
         except Exception as e:
             from astropy.io import fits
 
-            hdul = fits.open(imagename)
-            header = hdul[1].header
-            pix = hdul[1].data
+            # hdul = fits.open(imagename)
+            # try:
+            #    header = hdul[1].header
+            # except Exception as e:
+            #    print(f"Error getting header: {e}")
+            #    header = None
+            try:
+                pix = fits.getdata(imagename)
+                self.current_image_data = pix
+            except Exception as e:
+                print(f"Error getting data: {e}")
+                pix = None
             # csys = header.get("CROTA2", 0)
             csys = None
             psf = None
@@ -1419,8 +1428,10 @@ class SolarRadioImageTab(QWidget):
                 self.current_rms_box[3] = width
 
             # Update image stats when data is loaded
-            self.show_image_stats(rms_box=self.current_rms_box)
-
+            try:
+                self.show_image_stats(rms_box=self.current_rms_box)
+            except Exception as e:
+                print(f"Error showing image stats: {e}")
         if not self.psf:
             self.show_beam_checkbox.setChecked(False)
             self.show_beam_checkbox.setEnabled(False)
@@ -1440,10 +1451,16 @@ class SolarRadioImageTab(QWidget):
         if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
             from astropy.io import fits
 
-            fits_flag = True
-            hdul = fits.open(self.imagename)
-            header = hdul[0].header
-
+            try:
+                fits_flag = True
+                hdul = fits.open(self.imagename)
+                header = hdul[0].header
+            except Exception as e:
+                try:
+                    header = fits.getheader(self.imagename)
+                except Exception as e:
+                    print(f"Error getting header: {e}")
+                    fits_flag = False
         try:
             ia_tool = IA()
             ia_tool.open(self.imagename)
@@ -1453,7 +1470,7 @@ class SolarRadioImageTab(QWidget):
             ia_tool.close()
         except Exception as e:
             print(f"Error getting image metadata: {e}")
-            return
+            # return
 
         start_time = time.time()
         if self.current_image_data is None:
