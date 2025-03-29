@@ -1124,6 +1124,100 @@ class SolarRadioImageTab(QWidget):
                 f"Set display range to median±3×RMS: [{low:.4g}, {high:.4g}]"
             )
 
+    def aia_presets(self, wavelength=171):
+        """
+        Apply AIA preset for the specified wavelength.
+
+        Args:
+            wavelength (int): AIA wavelength in Angstroms (94, 131, 171, 193, 211, 304, 335, 1600, 1700, 4500)
+        """
+        if self.current_image_data is None:
+            return
+
+        # Convert wavelength to string and ensure it's a supported value
+        wavelength = str(wavelength)
+        supported_wavelengths = [
+            "94",
+            "131",
+            "171",
+            "193",
+            "211",
+            "304",
+            "335",
+            "1600",
+            "1700",
+            "4500",
+        ]
+        if wavelength not in supported_wavelengths:
+            wavelength = "171"  # Default to 171 if unsupported wavelength
+
+        data = self.current_image_data
+        dmin = 0.0
+        dmax = float(np.nanmax(data))
+        self.set_range(dmin, dmax)
+        stretch = "arcsinh"
+        # check if cmap available
+        if f"sdoaia{wavelength}" in plt.colormaps():
+            cmap = f"sdoaia{wavelength}"
+        else:
+            cmap = self.cmap_combo.currentText()
+            print(f"Warning: {cmap} colormap not available, using default")
+
+        try:
+            gamma = float(self.gamma_entry.text())
+        except (ValueError, AttributeError):
+            gamma = 1.0
+
+        self.stretch_combo.setCurrentText(stretch)
+        self.cmap_combo.setCurrentText(cmap)
+        self.gamma_entry.setText(f"{gamma:.1f}")
+        self.update_gamma_slider()
+        self.vmin_entry.setText(f"{dmin:.3f}")
+        self.vmax_entry.setText(f"{dmax:.3f}")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma)
+
+        main_window = self.parent()
+        if main_window and hasattr(main_window, "statusBar"):
+            main_window.statusBar().showMessage(
+                f"Set display range to 0.0 and {dmax:.4g}, stretch to arcsinh, colormap to {cmap}"
+            )
+
+    def aia_presets_94(self):
+        """AIA 94 Angstrom preset with specific colormap"""
+        self.aia_presets(94)
+
+    def aia_presets_131(self):
+        """AIA 131 Angstrom preset with specific colormap"""
+        self.aia_presets(131)
+
+    def aia_presets_171(self):
+        """AIA 171 Angstrom preset with specific colormap"""
+        self.aia_presets(171)
+
+    def aia_presets_193(self):
+        """AIA 193 Angstrom preset with specific colormap"""
+        self.aia_presets(193)
+
+    def aia_presets_211(self):
+        """AIA 211 Angstrom preset with specific colormap"""
+        self.aia_presets(211)
+
+    def aia_presets_304(self):
+        """AIA 304 Angstrom preset with specific colormap"""
+        self.aia_presets(304)
+
+    def aia_presets_335(self):
+        """AIA 335 Angstrom preset with specific colormap"""
+        self.aia_presets(335)
+
+    def aia_presets_1600(self):
+        """AIA 1600 Angstrom preset with specific colormap"""
+        self.aia_presets(1600)
+
+    def aia_presets_1700(self):
+        """AIA 1700 Angstrom preset with specific colormap"""
+        self.aia_presets(1700)
+
     def set_range(self, vmin_val, vmax_val):
         if self.current_image_data is None:
             return
@@ -3605,6 +3699,67 @@ class SolarRadioImageViewerApp(QMainWindow):
         auto_median_rms_act.triggered.connect(self.auto_median_rms)
         preset_menu.addAction(auto_median_rms_act)
 
+        # aia_presets_act = QAction("AIA Presets", self)
+        # aia_presets_act.setShortcut("F8")
+        # aia_presets_act.setStatusTip("Set display range to AIA presets")
+        # Create submenu for AIA presets
+        aia_presets_submenu = QMenu("AIA Presets", self)
+
+        # Create actions for each AIA wavelength
+        aia_94_act = QAction("94 Å", self)
+        aia_94_act.setStatusTip("Set display range and colormap for AIA 94 Å")
+        aia_94_act.triggered.connect(self.aia_presets_94)
+        aia_presets_submenu.addAction(aia_94_act)
+
+        aia_131_act = QAction("131 Å", self)
+        aia_131_act.setStatusTip("Set display range and colormap for AIA 131 Å")
+        aia_131_act.triggered.connect(self.aia_presets_131)
+        aia_presets_submenu.addAction(aia_131_act)
+
+        aia_171_act = QAction("171 Å", self)
+        aia_171_act.setStatusTip("Set display range and colormap for AIA 171 Å")
+        aia_171_act.triggered.connect(self.aia_presets_171)
+        aia_171_act.setShortcut("F8")
+        aia_presets_submenu.addAction(aia_171_act)
+
+        aia_193_act = QAction("193 Å", self)
+        aia_193_act.setStatusTip("Set display range and colormap for AIA 193 Å")
+        aia_193_act.triggered.connect(self.aia_presets_193)
+        aia_presets_submenu.addAction(aia_193_act)
+
+        aia_211_act = QAction("211 Å", self)
+        aia_211_act.setStatusTip("Set display range and colormap for AIA 211 Å")
+        aia_211_act.triggered.connect(self.aia_presets_211)
+        aia_presets_submenu.addAction(aia_211_act)
+
+        aia_304_act = QAction("304 Å", self)
+        aia_304_act.setStatusTip("Set display range and colormap for AIA 304 Å")
+        aia_304_act.triggered.connect(self.aia_presets_304)
+        aia_presets_submenu.addAction(aia_304_act)
+
+        aia_335_act = QAction("335 Å", self)
+        aia_335_act.setStatusTip("Set display range and colormap for AIA 335 Å")
+        aia_335_act.triggered.connect(self.aia_presets_335)
+        aia_presets_submenu.addAction(aia_335_act)
+
+        aia_1600_act = QAction("1600 Å", self)
+        aia_1600_act.setStatusTip("Set display range and colormap for AIA 1600 Å")
+        aia_1600_act.triggered.connect(self.aia_presets_1600)
+        aia_presets_submenu.addAction(aia_1600_act)
+
+        aia_1700_act = QAction("1700 Å", self)
+        aia_1700_act.setStatusTip("Set display range and colormap for AIA 1700 Å")
+        aia_1700_act.triggered.connect(self.aia_presets_1700)
+        aia_presets_submenu.addAction(aia_1700_act)
+
+        aia_4500_act = QAction("4500 Å", self)
+        aia_4500_act.setStatusTip("Set display range and colormap for AIA 4500 Å")
+        aia_4500_act.triggered.connect(self.aia_presets_4500)
+        aia_presets_submenu.addAction(aia_4500_act)
+
+        # Add the submenu to the presets menu
+        preset_menu.addMenu(aia_presets_submenu)
+
         tabs_menu = menubar.addMenu("&Tabs")
         new_tab_act = QAction("Add New Tab", self)
         new_tab_act.setShortcut("Ctrl+N")
@@ -3705,6 +3860,17 @@ class SolarRadioImageViewerApp(QMainWindow):
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
             current_tab.auto_median_rms()
+
+    def aia_presets(self, wavelength=171):
+        """
+        Apply AIA preset for the specified wavelength.
+
+        Args:
+            wavelength (int): AIA wavelength in Angstroms (94, 131, 171, 193, 211, 304, 335, 1600, 1700, 4500)
+        """
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab:
+            current_tab.aia_presets(wavelength)
 
     def export_data(self):
         current_tab = self.tab_widget.currentWidget()
@@ -4169,6 +4335,7 @@ class SolarRadioImageViewerApp(QMainWindow):
                     <tr><td><code>F5</code></td><td>Auto Min/Max</td></tr>
                     <tr><td><code>F6</code></td><td>Auto Percentile</td></tr>
                     <tr><td><code>F7</code></td><td>Auto Median±3×RMS</td></tr>
+                    <tr><td><code>F8</code></td><td>AIA Presets</td></tr>
                     <tr><td><code>Ctrl+B</code></td><td>Batch Processing</td></tr>
                     <tr><td><code>Ctrl+M</code></td><td>Image Metadata</td></tr>
                 </table>
@@ -4488,3 +4655,43 @@ read -p "Press Enter to close..."
                 f"Error exporting as helioprojective FITS:\n{str(e)}",
             )
             self.statusBar().showMessage("Export error")
+
+    def aia_presets_94(self):
+        """AIA 94 Angstrom preset with specific colormap"""
+        self.aia_presets(94)
+
+    def aia_presets_131(self):
+        """AIA 131 Angstrom preset with specific colormap"""
+        self.aia_presets(131)
+
+    def aia_presets_171(self):
+        """AIA 171 Angstrom preset with specific colormap"""
+        self.aia_presets(171)
+
+    def aia_presets_193(self):
+        """AIA 193 Angstrom preset with specific colormap"""
+        self.aia_presets(193)
+
+    def aia_presets_211(self):
+        """AIA 211 Angstrom preset with specific colormap"""
+        self.aia_presets(211)
+
+    def aia_presets_304(self):
+        """AIA 304 Angstrom preset with specific colormap"""
+        self.aia_presets(304)
+
+    def aia_presets_335(self):
+        """AIA 335 Angstrom preset with specific colormap"""
+        self.aia_presets(335)
+
+    def aia_presets_1600(self):
+        """AIA 1600 Angstrom preset with specific colormap"""
+        self.aia_presets(1600)
+
+    def aia_presets_1700(self):
+        """AIA 1700 Angstrom preset with specific colormap"""
+        self.aia_presets(1700)
+
+    def aia_presets_4500(self):
+        """AIA 4500 Angstrom preset with specific colormap"""
+        self.aia_presets(4500)
