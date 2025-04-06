@@ -19,6 +19,7 @@ import threading
 import time
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import concurrent.futures  # Add this import for as_completed
 from astropy.visualization import (
     ImageNormalize,
     LinearStretch,
@@ -582,6 +583,30 @@ def calculate_global_stats(files, options):
     return None
 
 
+def process_image_wrapper(args):
+    """
+    Wrapper function for process_image to use with multiprocessing.
+    Takes a tuple of (file_path, index) and returns (index, processed_frame)
+    """
+    # Configure matplotlib for non-interactive backend to avoid thread safety issues
+    import matplotlib
+
+    matplotlib.use("Agg")  # Use non-interactive backend
+
+    file_path, idx, options, global_stats = args
+    try:
+        # Update current frame index in options
+        options_copy = options.copy()  # Make a copy to avoid thread safety issues
+        options_copy["current_frame"] = idx
+
+        # Process the frame
+        result = process_image(file_path, options_copy, global_stats)
+        return idx, result
+    except Exception as e:
+        logger.error(f"Error processing frame {idx} ({file_path}): {e}")
+        return idx, None
+
+
 def create_video(files, output_file, options, progress_callback=None):
     """
     Create a video from a list of FITS files.
@@ -608,6 +633,8 @@ def create_video(files, output_file, options, progress_callback=None):
         - quality : Video quality (0-10)
         - width, height : Output frame size (0 for original size)
         - colorbar : Whether to show a colorbar
+        - use_multiprocessing : Whether to use multiprocessing for frame generation
+        - cpu_count : Number of CPU cores to use (default: number of cores - 1)
     progress_callback : callable, optional
         Callback function for progress updates. Takes two parameters:
         - current_frame : int, Current frame number
@@ -620,6 +647,7 @@ def create_video(files, output_file, options, progress_callback=None):
     output_file : str
         Path to the created video file.
     """
+    start_time = time.time()
     try:
         # Call progress callback once at the beginning to indicate initialization
         if progress_callback:
@@ -759,32 +787,137 @@ def create_video(files, output_file, options, progress_callback=None):
         # Calculate global stats if needed
         global_stats = calculate_global_stats(files, options)
 
-        # Create video writer
-        with imageio.get_writer(output_file, **writer_kwargs) as writer:
-            # Process each frame
-            for i, file_path in enumerate(files):
-                # Call progress callback if provided
-                if progress_callback:
-                    continue_processing = progress_callback(i, total_frames)
-                    if not continue_processing:
-                        logger.info("Video creation cancelled by user")
-                        break
+        # Determine whether to use multiprocessing
+        use_multiprocessing = options.get("use_multiprocessing", False)
+        num_cores = options.get("cpu_count", max(1, cpu_count() - 1))
+        # Use a larger chunk size for fewer, larger batches
+        chunk_size = options.get(
+            "chunk_size", max(1, min(50, len(files) // (num_cores * 2)))
+        )
 
-                # Update current frame index in options
-                options["current_frame"] = i
+        if use_multiprocessing and num_cores > 1 and len(files) > num_cores:
+            logger.info(
+                f"Using multiprocessing with {num_cores} cores and chunk size {chunk_size}"
+            )
+            print(
+                f"Multiprocessing enabled: {num_cores} cores, {chunk_size} frames per batch"
+            )
 
-                # Process the image
-                frame = process_image(file_path, options, global_stats)
+            # Process frames in parallel
+            processed_frames = [None] * len(files)
+            processed_count = 0
+            failed_count = 0
 
-                if frame is not None:
-                    # Ensure image has even dimensions
-                    frame = ensure_even_dimensions(frame)
-                    # Add the frame to the video
-                    writer.append_data(frame)
-                else:
-                    logger.warning(f"Could not process frame {i} ({file_path})")
+            # Prepare arguments for each frame
+            process_args = [
+                (file_path, i, options, global_stats)
+                for i, file_path in enumerate(files)
+            ]
 
-        logger.info(f"Video created successfully: {output_file}")
+            # Use ProcessPoolExecutor for parallel processing in batches
+            with ProcessPoolExecutor(max_workers=num_cores) as executor:
+                # Process in chunks to reduce overhead
+                batch_start_time = time.time()
+                results = list(
+                    tqdm(
+                        executor.map(
+                            process_image_wrapper, process_args, chunksize=chunk_size
+                        ),
+                        total=len(files),
+                        desc="Processing frames",
+                        unit="frame",
+                    )
+                )
+                batch_end_time = time.time()
+                batch_duration = batch_end_time - batch_start_time
+                frames_per_second = (
+                    len(files) / batch_duration if batch_duration > 0 else 0
+                )
+
+                logger.info(
+                    f"Parallel processing complete: {len(results)} frames in {batch_duration:.2f}s ({frames_per_second:.2f} frames/sec)"
+                )
+                print(
+                    f"Processed {len(results)} frames in {batch_duration:.2f}s ({frames_per_second:.2f} frames/sec)"
+                )
+
+                # Store results in the processed_frames list
+                for idx, frame in results:
+                    processed_frames[idx] = frame
+                    if frame is not None:
+                        processed_count += 1
+                    else:
+                        failed_count += 1
+
+                    # Call progress callback
+                    if (
+                        progress_callback and idx % 5 == 0
+                    ):  # Update every 5 frames to reduce overhead
+                        continue_processing = progress_callback(idx + 1, len(files))
+                        if not continue_processing:
+                            logger.info("Video creation cancelled by user")
+                            return None
+
+            logger.info(f"Processed {processed_count} frames ({failed_count} failed)")
+
+            # Create video writer
+            with imageio.get_writer(output_file, **writer_kwargs) as writer:
+                # Add frames to video in order
+                for i, frame in enumerate(processed_frames):
+                    if frame is not None:
+                        # Ensure image has even dimensions
+                        frame = ensure_even_dimensions(frame)
+                        # Add the frame to the video
+                        writer.append_data(frame)
+                    else:
+                        logger.warning(f"Could not process frame {i}")
+
+        else:
+            if use_multiprocessing:
+                if num_cores <= 1:
+                    logger.info("Multiprocessing disabled: only 1 core available")
+                elif len(files) <= num_cores:
+                    logger.info(
+                        "Multiprocessing disabled: too few files for parallel processing"
+                    )
+                print("Using sequential processing")
+
+            # Sequential processing (original method)
+            seq_start_time = time.time()
+            # Create video writer
+            with imageio.get_writer(output_file, **writer_kwargs) as writer:
+                # Process each frame
+                for i, file_path in enumerate(files):
+                    # Call progress callback if provided
+                    if progress_callback:
+                        continue_processing = progress_callback(i, total_frames)
+                        if not continue_processing:
+                            logger.info("Video creation cancelled by user")
+                            break
+
+                    # Update current frame index in options
+                    options["current_frame"] = i
+
+                    # Process the image
+                    frame = process_image(file_path, options, global_stats)
+
+                    if frame is not None:
+                        # Ensure image has even dimensions
+                        frame = ensure_even_dimensions(frame)
+                        # Add the frame to the video
+                        writer.append_data(frame)
+                    else:
+                        logger.warning(f"Could not process frame {i} ({file_path})")
+
+            seq_end_time = time.time()
+            seq_duration = seq_end_time - seq_start_time
+            frames_per_second = len(files) / seq_duration if seq_duration > 0 else 0
+            logger.info(
+                f"Sequential processing complete: {len(files)} frames in {seq_duration:.2f}s ({frames_per_second:.2f} frames/sec)"
+            )
+
+        total_time = time.time() - start_time
+        logger.info(f"Video created successfully: {output_file} in {total_time:.2f}s")
         return output_file
 
     except Exception as e:

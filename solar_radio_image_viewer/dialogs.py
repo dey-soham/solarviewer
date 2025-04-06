@@ -17,9 +17,12 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QButtonGroup,
     QWidget,
+    QProgressDialog,
+    QFrame,
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QSize
@@ -28,6 +31,7 @@ import numpy as np
 import os
 import multiprocessing
 import glob
+from PyQt5.QtWidgets import QApplication
 
 
 class ContourSettingsDialog(QDialog):
@@ -1254,3 +1258,514 @@ class PhaseShiftDialog(QDialog):
                 + self.parent().rect().center()
                 - self.rect().center()
             )
+
+
+class HPCBatchConversionDialog(QDialog):
+    """Dialog for batch conversion of images to helioprojective coordinates."""
+
+    def __init__(self, parent=None, current_file=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch Conversion to Helioprojective Coordinates")
+        self.setMinimumSize(900, 600)
+        self.parent = parent
+        self.current_file = current_file
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Set up the dialog UI with a two-column layout."""
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+
+        # Add a description at the top
+        description = QLabel(
+            "This tool converts multiple images to helioprojective coordinates in batch. "
+            "Select a pattern of files to convert and specify the output pattern."
+        )
+        description.setWordWrap(True)
+        description.setStyleSheet("color: #BBB; font-style: italic;")
+        main_layout.addWidget(description)
+
+        # Create two-column layout
+        columns_layout = QHBoxLayout()
+        columns_layout.setSpacing(15)
+
+        # ===== LEFT COLUMN =====
+        left_column = QVBoxLayout()
+        left_column.setSpacing(10)
+
+        # Input section
+        input_group = QGroupBox("Input Settings")
+        input_layout = QVBoxLayout(input_group)
+        input_layout.setSpacing(10)
+        input_layout.setContentsMargins(10, 15, 10, 10)
+
+        # Directory selection
+        dir_layout = QHBoxLayout()
+        self.dir_label = QLabel("Input Directory:")
+        self.dir_edit = QLineEdit()
+        if self.current_file:
+            self.dir_edit.setText(os.path.dirname(self.current_file))
+        self.dir_browse_btn = QPushButton("Browse...")
+        self.dir_browse_btn.clicked.connect(self.browse_directory)
+        dir_layout.addWidget(self.dir_label)
+        dir_layout.addWidget(self.dir_edit, 1)
+        dir_layout.addWidget(self.dir_browse_btn)
+        input_layout.addLayout(dir_layout)
+
+        # File pattern
+        pattern_layout = QHBoxLayout()
+        self.pattern_label = QLabel("File Pattern:")
+        self.pattern_edit = QLineEdit()
+        if self.current_file:
+            file_ext = os.path.splitext(self.current_file)[1]
+            self.pattern_edit.setText(f"*{file_ext}")
+        else:
+            self.pattern_edit.setText("*.fits")
+        self.pattern_edit.setPlaceholderText("e.g., *.fits")
+        pattern_layout.addWidget(self.pattern_label)
+        pattern_layout.addWidget(self.pattern_edit, 1)
+        input_layout.addLayout(pattern_layout)
+
+        # Preview button
+        preview_btn = QPushButton("Preview Files")
+        preview_btn.clicked.connect(self.preview_files)
+        input_layout.addWidget(preview_btn)
+
+        # Files list
+        self.files_label = QLabel("Files to be processed:")
+        input_layout.addWidget(self.files_label)
+
+        self.files_list = QListWidget()
+        self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.files_list.setMinimumHeight(150)
+        input_layout.addWidget(self.files_list)
+
+        left_column.addWidget(input_group)
+
+        # Stokes and Processing Settings group (combined for better space usage)
+        options_group = QGroupBox("Processing Options")
+        options_layout = QVBoxLayout(options_group)
+        options_layout.setSpacing(10)
+        options_layout.setContentsMargins(10, 15, 10, 10)
+
+        # Stokes parameter selection
+        stokes_form = QFormLayout()
+        stokes_form.setVerticalSpacing(10)
+        stokes_form.setHorizontalSpacing(15)
+
+        # Mode selection layout
+        stokes_mode_layout = QHBoxLayout()
+        self.single_stokes_radio = QRadioButton("Single Stokes")
+        self.full_stokes_radio = QRadioButton("Full Stokes")
+        self.single_stokes_radio.setChecked(True)
+        stokes_mode_layout.addWidget(self.single_stokes_radio)
+        stokes_mode_layout.addWidget(self.full_stokes_radio)
+        stokes_mode_layout.addStretch(1)
+        stokes_form.addRow("Mode:", stokes_mode_layout)
+
+        # Stokes combo
+        self.stokes_combo = QComboBox()
+        self.stokes_combo.addItems(["I", "Q", "U", "V"])
+        stokes_form.addRow("Parameter:", self.stokes_combo)
+
+        # Connect stokes mode radios to update UI
+        self.single_stokes_radio.toggled.connect(self.update_stokes_mode)
+        self.full_stokes_radio.toggled.connect(self.update_stokes_mode)
+
+        options_layout.addLayout(stokes_form)
+
+        # Add a separator line
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        options_layout.addWidget(line)
+
+        # Multiprocessing options
+        self.multiprocessing_check = QCheckBox("Use multiprocessing (faster)")
+        self.multiprocessing_check.setChecked(True)
+        options_layout.addWidget(self.multiprocessing_check)
+
+        # CPU cores selection
+        cores_layout = QHBoxLayout()
+        cores_layout.addWidget(QLabel("CPU cores:"))
+        self.cores_spinbox = QSpinBox()
+        self.cores_spinbox.setRange(1, multiprocessing.cpu_count())
+        self.cores_spinbox.setValue(max(1, multiprocessing.cpu_count() - 1))
+        cores_layout.addWidget(self.cores_spinbox)
+        cores_layout.addStretch()
+        options_layout.addLayout(cores_layout)
+
+        # Connect multiprocessing checkbox to enable/disable cores spinbox
+        self.multiprocessing_check.toggled.connect(self.cores_spinbox.setEnabled)
+
+        left_column.addWidget(options_group)
+
+        # ===== RIGHT COLUMN =====
+        right_column = QVBoxLayout()
+        right_column.setSpacing(10)
+
+        # Output section
+        output_group = QGroupBox("Output Settings")
+        output_layout = QVBoxLayout(output_group)
+        output_layout.setSpacing(10)
+        output_layout.setContentsMargins(10, 15, 10, 10)
+
+        # Output directory and pattern
+        output_dir_layout = QHBoxLayout()
+        self.output_dir_label = QLabel("Output Directory:")
+        self.output_dir_edit = QLineEdit()
+        if self.current_file:
+            self.output_dir_edit.setText(os.path.dirname(self.current_file))
+        self.output_dir_btn = QPushButton("Browse...")
+        self.output_dir_btn.clicked.connect(self.browse_output_directory)
+        output_dir_layout.addWidget(self.output_dir_label)
+        output_dir_layout.addWidget(self.output_dir_edit, 1)
+        output_dir_layout.addWidget(self.output_dir_btn)
+        output_layout.addLayout(output_dir_layout)
+
+        output_pattern_layout = QHBoxLayout()
+        self.output_pattern_label = QLabel("Output Pattern:")
+        self.output_pattern_edit = QLineEdit("hpc_*.fits")
+        self.output_pattern_edit.setPlaceholderText("e.g., hpc_*.fits")
+        output_pattern_layout.addWidget(self.output_pattern_label)
+        output_pattern_layout.addWidget(self.output_pattern_edit, 1)
+        output_layout.addLayout(output_pattern_layout)
+
+        # Add a help text for pattern
+        pattern_help = QLabel(
+            "Use * in the pattern as a placeholder for the original filename."
+        )
+        pattern_help.setStyleSheet("color: #BBB; font-style: italic;")
+        output_layout.addWidget(pattern_help)
+
+        # Add example section
+        example_group = QVBoxLayout()
+        example_title = QLabel("Example:")
+        example_title.setStyleSheet("font-weight: bold;")
+        example_label = QLabel("Input: myimage.fits → Output: hpc_myimage.fits")
+        example_label.setStyleSheet("color: #AAA; font-style: italic;")
+        example_group.addWidget(example_title)
+        example_group.addWidget(example_label)
+        output_layout.addLayout(example_group)
+
+        right_column.addWidget(output_group)
+
+        # Status text area
+        status_group = QGroupBox("Status / Results")
+        status_layout = QVBoxLayout(status_group)
+        status_layout.setContentsMargins(10, 15, 10, 10)
+
+        self.status_text = QPlainTextEdit()
+        self.status_text.setReadOnly(True)
+        self.status_text.setPlaceholderText("Status and results will appear here")
+        self.status_text.setMinimumHeight(250)  # Increased height for better visibility
+        status_layout.addWidget(self.status_text)
+
+        right_column.addWidget(status_group)
+
+        # Add columns to the layout
+        columns_layout.addLayout(left_column, 1)  # 1 is the stretch factor
+        columns_layout.addLayout(right_column, 1)  # 1 is the stretch factor
+
+        main_layout.addLayout(columns_layout)
+
+        # Dialog buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.ok_button = button_box.button(QDialogButtonBox.Ok)
+        self.ok_button.setText("Convert")
+        button_box.accepted.connect(self.convert_files)
+        button_box.rejected.connect(self.reject)
+        main_layout.addWidget(button_box)
+
+        # Apply consistent styling to the dialog
+        self.setStyleSheet(
+            """
+            QGroupBox {
+                border: 1px solid #555555;
+                border-radius: 3px;
+                margin-top: 0.5em;
+                padding-top: 0.5em;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px 0 3px;
+            }
+            QLabel {
+                margin-top: 2px;
+                margin-bottom: 2px;
+            }
+            QRadioButton, QCheckBox {
+                min-height: 20px;
+            }
+            """
+        )
+
+    def browse_directory(self):
+        """Browse for input directory"""
+        current_dir = self.dir_edit.text()
+        if not current_dir and self.current_file:
+            current_dir = os.path.dirname(self.current_file)
+        if not current_dir:
+            current_dir = os.path.expanduser("~")
+
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Input Directory", current_dir
+        )
+
+        if directory:
+            self.dir_edit.setText(directory)
+
+            # Set output directory to match if not already set
+            if not self.output_dir_edit.text():
+                self.output_dir_edit.setText(directory)
+
+            # Preview files if pattern is already set
+            self.preview_files()
+
+    def browse_output_directory(self):
+        """Browse for output directory"""
+        current_dir = self.output_dir_edit.text()
+        if not current_dir:
+            current_dir = self.dir_edit.text()
+        if not current_dir and self.current_file:
+            current_dir = os.path.dirname(self.current_file)
+        if not current_dir:
+            current_dir = os.path.expanduser("~")
+
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Output Directory", current_dir
+        )
+
+        if directory:
+            self.output_dir_edit.setText(directory)
+
+    def update_stokes_mode(self):
+        """Update UI based on selected Stokes mode"""
+        single_stokes = self.single_stokes_radio.isChecked()
+        self.stokes_combo.setEnabled(single_stokes)
+
+    def preview_files(self):
+        """Show files that match the pattern in the list widget"""
+        self.files_list.clear()
+
+        input_dir = self.dir_edit.text()
+        pattern = self.pattern_edit.text()
+
+        if not input_dir:
+            self.status_text.setPlainText("Please select an input directory.")
+            return
+
+        try:
+            # Get matching files
+            input_pattern = os.path.join(input_dir, pattern)
+            matching_files = glob.glob(input_pattern)
+
+            if not matching_files:
+                self.status_text.setPlainText(
+                    f"No files found matching pattern: {input_pattern}"
+                )
+                return
+
+            # Add files to list, showing only basenames but storing full paths as item data
+            for file_path in sorted(matching_files):
+                basename = os.path.basename(file_path)
+                item = QListWidgetItem(basename)
+                item.setToolTip(file_path)  # Show full path on hover
+                item.setData(Qt.UserRole, file_path)  # Store full path as data
+                self.files_list.addItem(item)
+
+            self.status_text.setPlainText(
+                f"Found {len(matching_files)} files matching the pattern."
+            )
+        except Exception as e:
+            self.status_text.setPlainText(f"Error previewing files: {str(e)}")
+            # Print the full error to console for debugging
+            import traceback
+
+            traceback.print_exc()
+
+    def convert_files(self):
+        """Convert the selected files to helioprojective coordinates"""
+        # Get input files
+        if self.files_list.count() == 0:
+            QMessageBox.warning(
+                self,
+                "No Files Found",
+                "No files match the pattern. Please check your input settings.",
+            )
+            return
+
+        # Get selected files or use all if none selected
+        selected_items = self.files_list.selectedItems()
+        if selected_items:
+            # Get full paths from item data
+            files_to_process = [item.data(Qt.UserRole) for item in selected_items]
+            self.status_text.appendPlainText(
+                f"Processing {len(files_to_process)} selected files."
+            )
+        else:
+            # Get full paths from item data for all items
+            files_to_process = [
+                self.files_list.item(i).data(Qt.UserRole)
+                for i in range(self.files_list.count())
+            ]
+            self.status_text.appendPlainText(
+                f"Processing all {len(files_to_process)} files."
+            )
+
+        # Get output directory and pattern
+        output_dir = self.output_dir_edit.text()
+        output_pattern = self.output_pattern_edit.text()
+
+        if not output_dir:
+            QMessageBox.warning(
+                self,
+                "Output Directory Missing",
+                "Please specify an output directory.",
+            )
+            return
+
+        # Get processing options
+        use_multiprocessing = self.multiprocessing_check.isChecked()
+        max_cores = self.cores_spinbox.value() if use_multiprocessing else 1
+        full_stokes = self.full_stokes_radio.isChecked()
+        stokes_param = self.stokes_combo.currentText() if not full_stokes else None
+
+        # Prepare progress dialog
+        progress_dialog = QProgressDialog(
+            "Converting files to helioprojective coordinates...",
+            "Cancel",
+            0,
+            len(files_to_process),
+            self,
+        )
+        progress_dialog.setWindowTitle("Batch Conversion")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.show()
+
+        # Use a worker thread or process for conversion
+        try:
+            self.status_text.appendPlainText("Starting batch conversion...")
+            self.ok_button.setEnabled(False)
+            QApplication.processEvents()
+
+            # Process files
+            success_count = 0
+            error_count = 0
+
+            from .helioprojective import convert_and_save_hpc
+
+            for i, input_file in enumerate(files_to_process):
+                # Check if canceled
+                if progress_dialog.wasCanceled():
+                    self.status_text.appendPlainText("Operation canceled by user.")
+                    break
+
+                # Get output filename
+                base_filename = os.path.basename(input_file)
+                if "*" in output_pattern:
+                    output_filename = output_pattern.replace(
+                        "*", os.path.splitext(base_filename)[0]
+                    )
+                else:
+                    output_filename = (
+                        f"{os.path.splitext(base_filename)[0]}_{output_pattern}"
+                    )
+
+                output_path = os.path.join(output_dir, output_filename)
+
+                # Update progress dialog
+                progress_dialog.setValue(i)
+                progress_dialog.setLabelText(f"Converting: {base_filename}")
+                QApplication.processEvents()
+
+                self.status_text.appendPlainText(
+                    f"Processing {i+1}/{len(files_to_process)}: {base_filename}"
+                )
+
+                # Process in single or full stokes mode
+                if full_stokes:
+                    stokes_list = ["I", "Q", "U", "V"]
+                    stokes_success = 0
+
+                    for stokes in stokes_list:
+                        # Create stokes-specific output filename
+                        stokes_output = output_path.replace(".fits", f"_{stokes}.fits")
+
+                        try:
+                            # Convert file
+                            success = convert_and_save_hpc(
+                                input_file,
+                                stokes_output,
+                                Stokes=stokes,
+                                overwrite=True,
+                            )
+
+                            if success:
+                                stokes_success += 1
+                                self.status_text.appendPlainText(
+                                    f"  - Stokes {stokes}: Converted successfully"
+                                )
+                            else:
+                                self.status_text.appendPlainText(
+                                    f"  - Stokes {stokes}: Conversion failed"
+                                )
+
+                        except Exception as e:
+                            self.status_text.appendPlainText(
+                                f"  - Stokes {stokes}: Error: {str(e)}"
+                            )
+
+                    if stokes_success == len(stokes_list):
+                        success_count += 1
+                    elif stokes_success > 0:
+                        success_count += 0.5  # Partial success
+                        error_count += 0.5
+                    else:
+                        error_count += 1
+                else:
+                    # Single stokes mode
+                    try:
+                        # Convert file
+                        success = convert_and_save_hpc(
+                            input_file,
+                            output_path,
+                            Stokes=stokes_param,
+                            overwrite=True,
+                        )
+
+                        if success:
+                            success_count += 1
+                            self.status_text.appendPlainText(
+                                "  - Converted successfully"
+                            )
+                        else:
+                            error_count += 1
+                            self.status_text.appendPlainText("  - Conversion failed")
+
+                    except Exception as e:
+                        error_count += 1
+                        self.status_text.appendPlainText(f"  - Error: {str(e)}")
+
+            # Complete the progress
+            progress_dialog.setValue(len(files_to_process))
+
+            # Show completion message
+            summary = (
+                f"Batch conversion completed:\n"
+                f"Total files: {len(files_to_process)}\n"
+                f"Successfully converted: {success_count}\n"
+                f"Failed: {error_count}"
+            )
+
+            self.status_text.appendPlainText("\n" + summary)
+            QMessageBox.information(self, "Conversion Complete", summary)
+
+        except Exception as e:
+            self.status_text.appendPlainText(f"Error in batch processing: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Error in batch processing: {str(e)}")
+        finally:
+            progress_dialog.close()
+            self.ok_button.setEnabled(True)

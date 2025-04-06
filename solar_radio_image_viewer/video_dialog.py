@@ -1543,6 +1543,11 @@ class VideoWorker(QThread):
         # Fix for progress display - multiply progress values by 10
         self.progress_scale_factor = 10  # Factor to scale progress values
 
+        # Add multiprocessing options to the options dictionary
+        self.options["use_multiprocessing"] = True
+        self.options["cpu_count"] = cpu_count
+        print(f"Enabling multiprocessing with {cpu_count} cores")
+
         # Connect signals
         self.progress.connect(self.progress_dialog.setValue)
         print("Connected progress signal to progress_dialog.setValue")
@@ -1609,9 +1614,9 @@ class VideoWorker(QThread):
                         (elapsed % 3) / 3
                     )  # 3-second cycle from 5-20%
                     scaled_progress = int(pulsing_progress * self.progress_scale_factor)
-                    print(
-                        f"Pulsing progress: {pulsing_progress}% - Scaled: {scaled_progress}"
-                    )
+                    # print(
+                    #     f"Pulsing progress: {pulsing_progress}% - Scaled: {scaled_progress}"
+                    # )
                     self.progress.emit(scaled_progress)
 
             # Sleep for a short time to avoid consuming too much CPU
@@ -1642,19 +1647,18 @@ class VideoWorker(QThread):
                     return False
 
                 # DIRECT FIX: Set progress directly based on frame count
-                # This is a more straightforward approach than trying to calculate times
                 progress_percent = min(99, int(100 * current_frame / total_frames))
                 scaled_progress = (
                     progress_percent * 10
                 )  # Scale to match our progress dialog range (0-1000)
 
                 # Add debugging output
-                if (
-                    current_frame % 20 == 0 or current_frame == total_frames - 1
-                ):  # Print every 20 frames or last frame
-                    print(
-                        f"Frame {current_frame}/{total_frames} - Progress: {progress_percent}% - Scaled: {scaled_progress}"
-                    )
+                # if (
+                #     current_frame % 20 == 0 or current_frame == total_frames - 1
+                # ):  # Print every 20 frames or last frame
+                # print(
+                #     f"Frame {current_frame}/{total_frames} - Progress: {progress_percent}% - Scaled: {scaled_progress}"
+                # )
 
                 self.progress.emit(scaled_progress)
 
@@ -1666,7 +1670,7 @@ class VideoWorker(QThread):
 
             # Create the video
             self.status_update.emit("Creating video...")
-            print("Starting video creation process")
+            print(f"Starting video creation process with {self.cpu_count} cores")
             create_video_function(
                 self.files,
                 self.output_file,

@@ -3951,6 +3951,16 @@ class SolarRadioImageViewerApp(QMainWindow):
         # create_video_action.triggered.connect(self.show_create_video_dialog)
         # tools_menu.addAction(create_video_action)
 
+        # Add Batch HPC Conversion option
+        from .dialogs import HPCBatchConversionDialog
+
+        batch_hpc_act = QAction("Batch HPC Conversion", self)
+        batch_hpc_act.setStatusTip(
+            "Convert multiple files to helioprojective coordinates"
+        )
+        batch_hpc_act.triggered.connect(self.show_batch_hpc_dialog)
+        tools_menu.addAction(batch_hpc_act)
+
     def add_new_tab(self, name):
         if len(self.tabs) >= self.max_tabs:
             QMessageBox.warning(
@@ -4881,26 +4891,13 @@ read -p "Press Enter to close..."
             current_tab.on_visualization_changed()
 
     def show_create_video_dialog(self):
-        """Show dialog to create video from FITS files"""
+        """Show the dialog for creating videos from FITS files"""
         try:
-            # Get current tab using the tab_widget's current index
-            current_idx = self.tab_widget.currentIndex()
-            if current_idx >= 0 and current_idx < len(self.tabs):
-                current_tab = self.tabs[current_idx]
-            else:
-                current_tab = None
+            # Get current image name if available
+            current_tab = self.tab_widget.currentWidget()
+            current_file = current_tab.imagename if current_tab else None
 
-            current_file = None
-
-            # Get current file if available
-            if (
-                current_tab
-                and hasattr(current_tab, "image_name")
-                and current_tab.image_name
-            ):
-                current_file = current_tab.image_name
-
-            # Import the dialog here to avoid circular imports
+            # Import and show dialog
             from .video_dialog import VideoCreationDialog
 
             dialog = VideoCreationDialog(self, current_file)
@@ -4910,5 +4907,23 @@ read -p "Press Enter to close..."
             from PyQt5.QtWidgets import QMessageBox
 
             error_message = f"Error opening video creation dialog: {str(e)}"
+            print(error_message)  # Log to console
+            QMessageBox.critical(self, "Error", error_message)
+
+    def show_batch_hpc_dialog(self):
+        """Show the dialog for batch conversion to helioprojective coordinates"""
+        try:
+            # Get current image name if available
+            current_tab = self.tab_widget.currentWidget()
+            current_file = current_tab.imagename if current_tab else None
+
+            # Import and show dialog
+            from .dialogs import HPCBatchConversionDialog
+
+            dialog = HPCBatchConversionDialog(self, current_file)
+            dialog.exec_()
+        except Exception as e:
+            # Show error message with details
+            error_message = f"Error opening batch HPC conversion dialog: {str(e)}"
             print(error_message)  # Log to console
             QMessageBox.critical(self, "Error", error_message)
