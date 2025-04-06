@@ -129,7 +129,7 @@ class HelioProjectiveViewer(QMainWindow):
     ):
         super().__init__(parent)
         self.setWindowTitle("Helioprojective Viewer")
-        self.resize(1000, 800)
+        self.resize(1280, 720)
 
         # Store parameters
         self.imagename = imagename
@@ -170,7 +170,7 @@ class HelioProjectiveViewer(QMainWindow):
         # Create left panel for controls
         self.left_panel = QWidget()
         self.left_layout = QVBoxLayout(self.left_panel)
-        self.left_panel.setMaximumWidth(300)
+        self.left_panel.setMaximumWidth(400)
 
         # Create right panel for figure
         self.right_panel = QWidget()

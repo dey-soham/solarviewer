@@ -65,7 +65,7 @@ def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observator
         print(
             f"DEBUG: USING observer position from arguments LAT={lat}, LON={long}, HEIGHT={height}"
         )
-        POS = EarthLocation.geodetic(lon=long, lat=lat, height=height)
+        POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
 
     if lat is None or long is None or height is None:
         try:
@@ -370,7 +370,22 @@ def convert_to_hpc(
             else:
                 raise RuntimeError("Could not determine frequency from header")
         obstime = Time(header["date-obs"])
-        POS = get_Earthlocation(fits_file=fits_file)
+        ia_tool = IA()
+        ia_tool.open(fits_file)
+        metadata_dict = ia_tool.summary(list=False, verbose=True)
+        lat, long, height, observatory = extract_telescope_position(metadata_dict)
+        ia_tool.close()
+        if (
+            observatory.upper() == "LOFAR"
+            or observatory.upper() == "MWA"
+            or observatory.upper() == "MEERKAT"
+            or observatory.upper() == "GMRT"
+            or observatory.upper() == "UGMRT"
+        ):
+            print(f"Observatory: {observatory}")
+        else:
+            observatory = None
+        POS = get_Earthlocation(fits_file=fits_file, observatory=observatory)
         gcrs = SkyCoord(POS.get_gcrs(obstime))
         reference_coord = SkyCoord(
             header["CRVAL1"] * u.Unit(header["CUNIT1"]),
@@ -386,7 +401,7 @@ def convert_to_hpc(
         )
         cdelta_1 = (np.abs(header["CDELT1"]) * u.deg).to(u.arcsec)
         cdelta_2 = (np.abs(header["CDELT2"]) * u.deg).to(u.arcsec)
-        P_angle = P(obstime)
+        P_angle = P(obstime) * -1
         print(f"Rotating by {P_angle}")
 
         # Ensure frequency unit is properly formatted for the FITS header
@@ -501,7 +516,22 @@ def convert_to_hpc(
         except Exception as e:
             print(f"Error getting observation time: {e}")
             obstime = None
-        POS = get_Earthlocation(fits_file=fits_file)
+        ia_tool = IA()
+        ia_tool.open(fits_file)
+        metadata_dict = ia_tool.summary(list=False, verbose=True)
+        lat, long, height, observatory = extract_telescope_position(metadata_dict)
+        ia_tool.close()
+        if (
+            observatory.upper() == "LOFAR"
+            or observatory.upper() == "MWA"
+            or observatory.upper() == "MEERKAT"
+            or observatory.upper() == "GMRT"
+            or observatory.upper() == "UGMRT"
+        ):
+            print(f"Observatory: {observatory}")
+        else:
+            observatory = None
+        POS = get_Earthlocation(fits_file=fits_file, observatory=observatory)
         gcrs = SkyCoord(POS.get_gcrs(obstime))
         reference_coord = SkyCoord(
             header["CRVAL1"] * u.Unit(header["CUNIT1"]),

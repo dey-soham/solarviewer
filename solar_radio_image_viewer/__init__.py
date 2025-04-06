@@ -5,4 +5,3 @@ from .norms import *
 from .styles import *
 from .dialogs import *
 from .searchable_combobox import *
-

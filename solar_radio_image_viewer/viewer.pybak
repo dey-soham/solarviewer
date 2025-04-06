@@ -904,11 +904,6 @@ class SolarRadioImageTab(QWidget):
             )
             return
 
-        if dir_load:
-            tight_layout = True
-        else:
-            tight_layout = False
-
         main_window = self.parent()
         if main_window and hasattr(main_window, "statusBar"):
             main_window.statusBar().showMessage("Loading data...")
@@ -991,16 +986,12 @@ class SolarRadioImageTab(QWidget):
                     vmin_val = float(np.nanmin(self.current_image_data))
                     vmax_val = float(np.nanmax(self.current_image_data))
                     self.set_range(vmin_val, vmax_val)
-                self.plot_image(
-                    vmin_val, vmax_val, stretch, cmap, gamma, tight_layout=tight_layout
-                )
+                self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
                 print(f"Plotting image with vmin={vmin_val}, vmax={vmax_val}")
             elif vmin_val is None or vmax_val is None:
                 self.auto_minmax()
             else:
-                self.plot_image(
-                    vmin_val, vmax_val, stretch, cmap, gamma, tight_layout=tight_layout
-                )
+                self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
 
             if main_window and hasattr(main_window, "statusBar"):
                 img_name = os.path.basename(self.imagename)
@@ -1451,7 +1442,7 @@ class SolarRadioImageTab(QWidget):
 
     def set_region_mode(self, mode_id):
         self.region_mode = RegionMode.RECTANGLE
-        # self.plot_image()
+        self.plot_image()
 
     def load_data(self, imagename, stokes, threshold):
         import time
@@ -1520,7 +1511,6 @@ class SolarRadioImageTab(QWidget):
         cmap="viridis",
         gamma=1.0,
         interpolation="none",
-        tight_layout=False,
     ):
         import time
 
@@ -1702,7 +1692,6 @@ class SolarRadioImageTab(QWidget):
                     cmap=cmap,
                     norm=norm,
                     interpolation=interpolation,
-                    # aspect="auto",
                 )
                 if fits_flag:
                     if header["CTYPE1"] == "HPLN-TAN":
@@ -1759,7 +1748,6 @@ class SolarRadioImageTab(QWidget):
                     cmap=cmap,
                     norm=norm,
                     interpolation=interpolation,
-                    aspect="auto",
                 )
                 ax.set_xlabel("Pixel X")
                 ax.set_ylabel("Pixel Y")
@@ -1771,7 +1759,6 @@ class SolarRadioImageTab(QWidget):
                 cmap=cmap,
                 norm=norm,
                 interpolation=interpolation,
-                aspect="auto",
             )
             ax.set_xlabel("Pixel X")
             ax.set_ylabel("Pixel Y")
@@ -1901,19 +1888,8 @@ class SolarRadioImageTab(QWidget):
                 ax.set_title(title)
 
             # Format the time and frequency as a title
-        if stretch == "power" or stretch == "histeq":
-            cb = self.figure.colorbar(
-                im,
-                ax=ax,
-                aspect=30,
-            )
-            cb.ax.set_yticks(cb.ax.get_yticks()[1:-1])
-        else:
-            self.figure.colorbar(
-                im,
-                ax=ax,
-                aspect=30,
-            )
+
+        self.figure.colorbar(im, ax=ax, label="Data")
 
         # Draw beam if available
         if self.psf and self.show_beam_checkbox.isChecked():
@@ -2037,10 +2013,6 @@ class SolarRadioImageTab(QWidget):
             self.draw_contours(ax)
 
         self.init_region_editor(ax)
-
-        # Apply tight_layout for better spacing and to avoid elements being cut off
-        if tight_layout:
-            self.figure.tight_layout()
 
         # Instead of immediate draw, use draw_idle to coalesce multiple calls
         self.canvas.draw_idle()
@@ -3114,9 +3086,6 @@ class SolarRadioImageTab(QWidget):
         # If solar disk checkbox is checked, draw the solar disk
         if self.show_solar_disk_checkbox.isChecked():
             self._update_solar_disk_position(ax)
-
-        # Apply tight_layout for better spacing
-        self.figure.tight_layout()
         self.canvas.draw()
         if show_status_message:
             self.show_status_message("Reseted plot to full image")
@@ -3631,12 +3600,7 @@ class SolarRadioImageViewerApp(QMainWindow):
         if imagename and os.path.exists(imagename):
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
-            # Delay to setup the tab before calling on_visualization_changed
-            QTimer.singleShot(
-                20, lambda: first_tab.on_visualization_changed(dir_load=True)
-            )
-
-            # first_tab.on_visualization_changed(dir_load=True)
+            first_tab.on_visualization_changed(dir_load=True)
             first_tab.update_tab_name_from_path(imagename)
             # first_tab.auto_minmax()
 
@@ -3714,6 +3678,7 @@ class SolarRadioImageViewerApp(QMainWindow):
         export_data_act.triggered.connect(self.export_as_fits)
         file_menu.addAction(export_data_act)
 
+        # Add after the export_data_act action in create_menus method
         export_hpc_fits_act = QAction("Export as HPC FITS", self)
         export_hpc_fits_act.setShortcut("Ctrl+H")
         export_hpc_fits_act.setStatusTip(
@@ -3732,26 +3697,17 @@ class SolarRadioImageViewerApp(QMainWindow):
         tools_menu = menubar.addMenu("&Tools")
         from .dialogs import BatchProcessDialog, ImageInfoDialog
 
-        # batch_act = QAction("Batch Processing", self)
-        # batch_act.setShortcut("Ctrl+B")
-        # batch_act.setStatusTip("Process multiple images in batch mode")
-        # batch_act.triggered.connect(self.show_batch_dialog)
-        # tools_menu.addAction(batch_act)
+        batch_act = QAction("Batch Processing", self)
+        batch_act.setShortcut("Ctrl+B")
+        batch_act.setStatusTip("Process multiple images in batch mode")
+        batch_act.triggered.connect(self.show_batch_dialog)
+        tools_menu.addAction(batch_act)
 
         metadata_act = QAction("Image Metadata", self)
         metadata_act.setShortcut("Ctrl+M")
         metadata_act.setStatusTip("View detailed metadata for the current image")
         metadata_act.triggered.connect(self.show_metadata)
         tools_menu.addAction(metadata_act)
-
-        # Add Solar Phase Shift option
-        from .dialogs import PhaseShiftDialog
-
-        phase_shift_act = QAction("Solar Phase Center Shift", self)
-        phase_shift_act.setShortcut("Ctrl+P")
-        phase_shift_act.setStatusTip("Shift solar center to phase center")
-        phase_shift_act.triggered.connect(self.show_phase_shift_dialog)
-        tools_menu.addAction(phase_shift_act)
 
         napari_act = QAction("Fast Viewer (Napari)", self)
         napari_act.setShortcut("Ctrl+Shift+N")
@@ -4216,12 +4172,7 @@ class SolarRadioImageViewerApp(QMainWindow):
                 ax1.set_title("Original Data")
 
                 ax2 = fig.add_subplot(122)
-                ax2.imshow(
-                    fitted_data.transpose(),
-                    origin="lower",
-                    cmap="viridis",
-                    # aspect="auto",
-                )
+                ax2.imshow(fitted_data.transpose(), origin="lower", cmap="viridis")
                 ax2.set_title("Gaussian Fit")
 
                 fig.tight_layout()
@@ -4483,7 +4434,7 @@ class SolarRadioImageViewerApp(QMainWindow):
                     <tr><td><code>F7</code></td><td>Auto Median±3×RMS</td></tr>
                     <tr><td><code>F8</code></td><td>AIA Presets</td></tr>
                     <tr><td><code>F9</code></td><td>HMI Presets</td></tr>
-                    <tr><td><code>Ctrl+P</code></td><td>Phase Center Shift</td></tr>
+                    <tr><td><code>Ctrl+B</code></td><td>Batch Processing</td></tr>
                     <tr><td><code>Ctrl+M</code></td><td>Image Metadata</td></tr>
                 </table>
             </div>
@@ -4841,26 +4792,3 @@ read -p "Press Enter to close..."
     def aia_presets_4500(self):
         """AIA 4500 Angstrom preset with specific colormap"""
         self.aia_presets(4500)
-
-    def show_phase_shift_dialog(self):
-        """Show the dialog for shifting solar center to phase center"""
-        current_tab = self.tab_widget.currentWidget()
-
-        # Get current image name if available
-        imagename = None
-        if current_tab and hasattr(current_tab, "imagename") and current_tab.imagename:
-            imagename = current_tab.imagename
-
-        # Import and show the dialog
-        from .dialogs import PhaseShiftDialog
-
-        dialog = PhaseShiftDialog(self, imagename)
-        dialog.exec_()
-
-        # If a new image was created and current tab has image loaded, refresh
-        if (
-            dialog.result() == QDialog.Accepted
-            and current_tab
-            and current_tab.imagename
-        ):
-            current_tab.on_visualization_changed()

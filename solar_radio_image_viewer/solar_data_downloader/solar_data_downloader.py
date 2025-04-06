@@ -581,10 +581,12 @@ def download_aia_with_fido(
         file_path = str(file_path)
         # Determine output file names
         base_name = os.path.basename(file_path)
+        # level1_5_file = os.path.join(
+        #    output_dir, f"{os.path.splitext(base_name)[0]}_lev1.5.fits"
+        # )
         level1_5_file = os.path.join(
-            output_dir, f"{os.path.splitext(base_name)[0]}_lev1.5.fits"
+            output_dir, f"{base_name.replace('lev1','lev1_5')}"
         )
-
         output_file = level1_5_file if can_calibrate else file_path
 
         if can_calibrate and not os.path.isfile(level1_5_file):
@@ -600,6 +602,8 @@ def download_aia_with_fido(
 
                 print(f"Downloaded and processed: {os.path.basename(level1_5_file)}")
                 output_file = level1_5_file
+                print(f"Deleting {file_path}")
+                os.remove(file_path)
             except Exception as e:
                 print(f"Error during Level 1.5 calibration: {str(e)}")
                 print(f"Using Level 1.0 file instead: {base_name}")
@@ -772,6 +776,8 @@ def download_hmi(
             )
             lvl1_5_map.save(lvl1_5_map_output_file, filetype="fits")
             print(f"Successfully processed {os.path.basename(file_path)} to Level 1.5")
+            print(f"Deleting {file_path}")
+            os.remove(file_path)
     # Clean up temp directory
     if os.path.exists(temp_dir):
         for file in glob.glob(os.path.join(temp_dir, "*")):
@@ -872,6 +878,8 @@ def download_hmi_with_fido(
             )
             lvl1_5_map.save(lvl1_5_map_output_file, filetype="fits")
             print(f"Successfully processed {os.path.basename(file_path)} to Level 1.5")
+            print(f"Deleting {file_path}")
+            os.remove(file_path)
     print(f"Successfully downloaded {len(downloaded_files)} HMI files.")
     return downloaded_files
 
