@@ -3759,6 +3759,12 @@ class SolarRadioImageViewerApp(QMainWindow):
         napari_act.triggered.connect(self.launch_napari_viewer)
         tools_menu.addAction(napari_act)
 
+        # Add Create Video action
+        create_video_act = QAction("Create &Video", self)
+        create_video_act.setStatusTip("Create video from sequence of FITS files")
+        create_video_act.triggered.connect(self.show_create_video_dialog)
+        tools_menu.addAction(create_video_act)
+
         region_menu = menubar.addMenu("&Region")
         subimg_act = QAction("Export Sub-Image (ROI)", self)
         subimg_act.setShortcut("Ctrl+S")
@@ -3935,6 +3941,15 @@ class SolarRadioImageViewerApp(QMainWindow):
         about_act.setStatusTip("Show information about this application")
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
+
+        # Tools menu
+        # tools_menu = self.menuBar().addMenu("&Tools")
+
+        # Add Create Video option to Tools menu
+        # create_video_action = QAction("Create &Video", self)
+        # create_video_action.setStatusTip("Create video from sequence of FITS files")
+        # create_video_action.triggered.connect(self.show_create_video_dialog)
+        # tools_menu.addAction(create_video_action)
 
     def add_new_tab(self, name):
         if len(self.tabs) >= self.max_tabs:
@@ -4864,3 +4879,36 @@ read -p "Press Enter to close..."
             and current_tab.imagename
         ):
             current_tab.on_visualization_changed()
+
+    def show_create_video_dialog(self):
+        """Show dialog to create video from FITS files"""
+        try:
+            # Get current tab using the tab_widget's current index
+            current_idx = self.tab_widget.currentIndex()
+            if current_idx >= 0 and current_idx < len(self.tabs):
+                current_tab = self.tabs[current_idx]
+            else:
+                current_tab = None
+
+            current_file = None
+
+            # Get current file if available
+            if (
+                current_tab
+                and hasattr(current_tab, "image_name")
+                and current_tab.image_name
+            ):
+                current_file = current_tab.image_name
+
+            # Import the dialog here to avoid circular imports
+            from .video_dialog import VideoCreationDialog
+
+            dialog = VideoCreationDialog(self, current_file)
+            dialog.exec_()
+        except Exception as e:
+            # Show error message with details
+            from PyQt5.QtWidgets import QMessageBox
+
+            error_message = f"Error opening video creation dialog: {str(e)}"
+            print(error_message)  # Log to console
+            QMessageBox.critical(self, "Error", error_message)
