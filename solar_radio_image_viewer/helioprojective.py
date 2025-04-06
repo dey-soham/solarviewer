@@ -741,6 +741,7 @@ def convert_and_save_hpc(
     height=None,
     observatory=None,
     overwrite=True,
+    temp_suffix="",
 ):
     """
     Convert a FITS file to helioprojective coordinates and save it as a new FITS file.
@@ -765,6 +766,8 @@ def convert_and_save_hpc(
         Observatory name. Default is "MWA".
     overwrite : bool, optional
         Whether to overwrite the output file if it exists. Default is True.
+    temp_suffix : str, optional
+        Suffix to add to temporary files to avoid conflicts. Default is "".
 
     Returns
     -------
@@ -780,7 +783,11 @@ def convert_and_save_hpc(
         if not input_fits_file.endswith(".fits") or not input_fits_file.endswith(
             ".fts"
         ):
-            input_fits_file = convert_casaimage_to_fits(input_fits_file)
+            # Create unique temp filename with provided suffix
+            temp_filename = f"temp{temp_suffix}.fits"
+            input_fits_file = convert_casaimage_to_fits(
+                imagename=input_fits_file, fitsname=temp_filename
+            )
             print(f"Converted casaimage {input_fits_file} to a temporary fits file ...")
             not_fits_flag = True
         # Convert to helioprojective coordinates
@@ -794,7 +801,9 @@ def convert_and_save_hpc(
             observatory=observatory,
         )
         if not_fits_flag:
-            os.system("rm temp.fits")
+            # Remove the unique temp file
+            temp_filename = f"temp{temp_suffix}.fits"
+            os.system(f"rm {temp_filename}")
 
         if map_obj is None:
             print("Failed to convert to helioprojective coordinates")

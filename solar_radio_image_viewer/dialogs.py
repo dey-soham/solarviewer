@@ -32,6 +32,57 @@ import os
 import multiprocessing
 import glob
 from PyQt5.QtWidgets import QApplication
+import uuid
+import traceback
+import time
+
+
+# Standalone function for multiprocessing
+def process_single_file_hpc(args):
+    """Process a single file for HPC conversion - standalone function for multiprocessing
+
+    Parameters:
+    -----------
+    args : tuple
+        Tuple containing (input_file, output_path, stokes, process_id)
+
+    Returns:
+    --------
+    dict
+        Result dictionary with processing outcome
+    """
+    input_file, output_path, stokes, process_id = args
+
+    try:
+        result = {
+            "input_file": input_file,
+            "output_path": output_path,
+            "stokes": stokes,
+            "success": False,
+            "error": None,
+        }
+
+        # Import the function here to ensure we have it in the subprocess
+        from .helioprojective import convert_and_save_hpc
+
+        # Generate a unique file suffix for this process to avoid conflicts
+        temp_suffix = f"_proc_{process_id}_{uuid.uuid4().hex[:8]}"
+
+        # Convert file with unique temp file handling
+        success = convert_and_save_hpc(
+            input_file,
+            output_path,
+            Stokes=stokes,
+            overwrite=True,
+            temp_suffix=temp_suffix,
+        )
+
+        result["success"] = success
+        return result
+    except Exception as e:
+        result["error"] = str(e)
+        result["traceback"] = traceback.format_exc()
+        return result
 
 
 class ContourSettingsDialog(QDialog):
@@ -1499,7 +1550,7 @@ class HPCBatchConversionDialog(QDialog):
             QRadioButton, QCheckBox {
                 min-height: 20px;
             }
-            """
+        """
         )
 
     def browse_directory(self):
@@ -1582,8 +1633,6 @@ class HPCBatchConversionDialog(QDialog):
         except Exception as e:
             self.status_text.setPlainText(f"Error previewing files: {str(e)}")
             # Print the full error to console for debugging
-            import traceback
-
             traceback.print_exc()
 
     def convert_files(self):
@@ -1645,112 +1694,337 @@ class HPCBatchConversionDialog(QDialog):
         progress_dialog.setWindowModality(Qt.WindowModal)
         progress_dialog.show()
 
+        # Import modules needed for processing
+        import multiprocessing
+        import time
+        from .helioprojective import convert_and_save_hpc
+
         # Use a worker thread or process for conversion
         try:
             self.status_text.appendPlainText("Starting batch conversion...")
             self.ok_button.setEnabled(False)
             QApplication.processEvents()
 
-            # Process files
+            # Initialize counters
             success_count = 0
             error_count = 0
+            completed_count = 0
+            pool = None
+            results = []
 
-            from .helioprojective import convert_and_save_hpc
+            # Multi-stokes requires different handling
+            if full_stokes:
+                stokes_list = ["I", "Q", "U", "V"]
 
-            for i, input_file in enumerate(files_to_process):
-                # Check if canceled
-                if progress_dialog.wasCanceled():
-                    self.status_text.appendPlainText("Operation canceled by user.")
-                    break
-
-                # Get output filename
-                base_filename = os.path.basename(input_file)
-                if "*" in output_pattern:
-                    output_filename = output_pattern.replace(
-                        "*", os.path.splitext(base_filename)[0]
-                    )
-                else:
-                    output_filename = (
-                        f"{os.path.splitext(base_filename)[0]}_{output_pattern}"
+                if use_multiprocessing and len(files_to_process) > 1:
+                    # Prepare arguments for multiprocessing
+                    self.status_text.appendPlainText(
+                        f"Using multiprocessing with {max_cores} cores"
                     )
 
-                output_path = os.path.join(output_dir, output_filename)
+                    # Create task list - each task is (input_file, output_path, stokes, process_id)
+                    tasks = []
+                    for i, input_file in enumerate(files_to_process):
+                        base_filename = os.path.basename(input_file)
+                        process_id = i  # Use file index as part of process ID
 
-                # Update progress dialog
-                progress_dialog.setValue(i)
-                progress_dialog.setLabelText(f"Converting: {base_filename}")
-                QApplication.processEvents()
-
-                self.status_text.appendPlainText(
-                    f"Processing {i+1}/{len(files_to_process)}: {base_filename}"
-                )
-
-                # Process in single or full stokes mode
-                if full_stokes:
-                    stokes_list = ["I", "Q", "U", "V"]
-                    stokes_success = 0
-
-                    for stokes in stokes_list:
-                        # Create stokes-specific output filename
-                        stokes_output = output_path.replace(".fits", f"_{stokes}.fits")
-
-                        try:
-                            # Convert file
-                            success = convert_and_save_hpc(
-                                input_file,
-                                stokes_output,
-                                Stokes=stokes,
-                                overwrite=True,
+                        if "*" in output_pattern:
+                            output_filename = output_pattern.replace(
+                                "*", os.path.splitext(base_filename)[0]
+                            )
+                        else:
+                            output_filename = (
+                                f"{os.path.splitext(base_filename)[0]}_{output_pattern}"
                             )
 
-                            if success:
-                                stokes_success += 1
+                        output_path = os.path.join(output_dir, output_filename)
+
+                        # Create tasks for each stokes parameter
+                        for stokes in stokes_list:
+                            stokes_output = output_path.replace(
+                                ".fits", f"_{stokes}.fits"
+                            )
+                            task = (
+                                input_file,
+                                stokes_output,
+                                stokes,
+                                f"{process_id}_{stokes}",
+                            )
+                            tasks.append(task)
+
+                    # Set up progress tracking
+                    total_tasks = len(tasks)
+                    progress_dialog.setMaximum(total_tasks)
+
+                    # Create process pool and start processing
+                    pool = multiprocessing.Pool(processes=max_cores)
+
+                    # Start asynchronous processing with our standalone function
+                    result_objects = pool.map_async(process_single_file_hpc, tasks)
+                    pool.close()  # No more tasks will be submitted
+
+                    # Monitor progress while processing
+                    while not result_objects.ready():
+                        if progress_dialog.wasCanceled():
+                            pool.terminate()
+                            self.status_text.appendPlainText(
+                                "Operation canceled by user."
+                            )
+                            break
+                        time.sleep(0.1)  # Short sleep to prevent UI blocking
+                        QApplication.processEvents()
+
+                    # Get results if not canceled
+                    if not progress_dialog.wasCanceled():
+                        results = result_objects.get()
+
+                        # Process results
+                        file_results = {}  # Group results by input file
+
+                        for result in results:
+                            input_file = result["input_file"]
+                            basename = os.path.basename(input_file)
+
+                            if basename not in file_results:
+                                file_results[basename] = {"success": 0, "errors": []}
+
+                            if result["success"]:
+                                file_results[basename]["success"] += 1
                                 self.status_text.appendPlainText(
-                                    f"  - Stokes {stokes}: Converted successfully"
+                                    f"  - Stokes {result['stokes']}: Converted successfully"
                                 )
                             else:
+                                error_msg = result["error"] or "Unknown error"
+                                file_results[basename]["errors"].append(
+                                    f"Stokes {result['stokes']}: {error_msg}"
+                                )
                                 self.status_text.appendPlainText(
-                                    f"  - Stokes {stokes}: Conversion failed"
+                                    f"  - Stokes {result['stokes']}: Error: {error_msg}"
+                                )
+
+                        # Count overall successes
+                        for basename, res in file_results.items():
+                            if res["success"] == len(stokes_list):
+                                success_count += 1
+                            elif res["success"] > 0:
+                                success_count += 0.5  # Partial success
+                                error_count += 0.5
+                            else:
+                                error_count += 1
+
+                            # Log each file's summary
+                            self.status_text.appendPlainText(
+                                f"File {basename}: {res['success']}/{len(stokes_list)} stokes parameters processed successfully"
+                            )
+                            if res["errors"]:
+                                for err in res["errors"]:
+                                    self.status_text.appendPlainText(
+                                        f"  - Error: {err}"
+                                    )
+
+                        # Update progress to completion
+                        progress_dialog.setValue(total_tasks)
+                else:
+                    # Sequential processing for multi-stokes
+                    for i, input_file in enumerate(files_to_process):
+                        # Check if canceled
+                        if progress_dialog.wasCanceled():
+                            self.status_text.appendPlainText(
+                                "Operation canceled by user."
+                            )
+                            break
+
+                        # Get output filename
+                        base_filename = os.path.basename(input_file)
+                        if "*" in output_pattern:
+                            output_filename = output_pattern.replace(
+                                "*", os.path.splitext(base_filename)[0]
+                            )
+                        else:
+                            output_filename = (
+                                f"{os.path.splitext(base_filename)[0]}_{output_pattern}"
+                            )
+
+                        output_path = os.path.join(output_dir, output_filename)
+
+                        # Update progress dialog
+                        progress_dialog.setValue(i)
+                        progress_dialog.setLabelText(f"Converting: {base_filename}")
+                        QApplication.processEvents()
+
+                        self.status_text.appendPlainText(
+                            f"Processing {i+1}/{len(files_to_process)}: {base_filename}"
+                        )
+
+                        stokes_success = 0
+                        for stokes in stokes_list:
+                            # Create stokes-specific output filename
+                            stokes_output = output_path.replace(
+                                ".fits", f"_{stokes}.fits"
+                            )
+
+                            try:
+                                # Convert file with a unique temp suffix
+                                temp_suffix = f"_seq_{i}_{stokes}"
+                                result = process_single_file_hpc(
+                                    (
+                                        input_file,
+                                        stokes_output,
+                                        stokes,
+                                        f"_seq_{i}_{stokes}",
+                                    )
+                                )
+                                success = result["success"]
+
+                                if success:
+                                    stokes_success += 1
+                                    self.status_text.appendPlainText(
+                                        f"  - Stokes {stokes}: Converted successfully"
+                                    )
+                                else:
+                                    self.status_text.appendPlainText(
+                                        f"  - Stokes {stokes}: Conversion failed"
+                                    )
+
+                            except Exception as e:
+                                self.status_text.appendPlainText(
+                                    f"  - Stokes {stokes}: Error: {str(e)}"
+                                )
+
+                        if stokes_success == len(stokes_list):
+                            success_count += 1
+                        elif stokes_success > 0:
+                            success_count += 0.5  # Partial success
+                            error_count += 0.5
+                        else:
+                            error_count += 1
+            else:
+                # Single stokes processing
+                if use_multiprocessing and len(files_to_process) > 1:
+                    # Prepare arguments for multiprocessing
+                    self.status_text.appendPlainText(
+                        f"Using multiprocessing with {max_cores} cores"
+                    )
+
+                    # Create task list - each task is (input_file, output_path, stokes, process_id)
+                    tasks = []
+                    for i, input_file in enumerate(files_to_process):
+                        base_filename = os.path.basename(input_file)
+
+                        if "*" in output_pattern:
+                            output_filename = output_pattern.replace(
+                                "*", os.path.splitext(base_filename)[0]
+                            )
+                        else:
+                            output_filename = (
+                                f"{os.path.splitext(base_filename)[0]}_{output_pattern}"
+                            )
+
+                        output_path = os.path.join(output_dir, output_filename)
+                        task = (input_file, output_path, stokes_param, i)
+                        tasks.append(task)
+
+                    # Set up progress tracking
+                    total_tasks = len(tasks)
+                    progress_dialog.setMaximum(total_tasks)
+
+                    # Create process pool
+                    pool = multiprocessing.Pool(processes=max_cores)
+
+                    # Start asynchronous processing
+                    result_objects = pool.map_async(process_single_file_hpc, tasks)
+                    pool.close()  # No more tasks will be submitted
+
+                    # Monitor progress while processing
+                    while not result_objects.ready():
+                        if progress_dialog.wasCanceled():
+                            pool.terminate()
+                            self.status_text.appendPlainText(
+                                "Operation canceled by user."
+                            )
+                            break
+                        time.sleep(0.1)  # Short sleep to prevent UI blocking
+                        QApplication.processEvents()
+
+                    # Process results if not canceled
+                    if not progress_dialog.wasCanceled():
+                        results = result_objects.get()
+
+                        # Process results
+                        for result in results:
+                            basename = os.path.basename(result["input_file"])
+
+                            if result["success"]:
+                                success_count += 1
+                                self.status_text.appendPlainText(
+                                    f"  - {basename}: Converted successfully"
+                                )
+                            else:
+                                error_count += 1
+                                error_msg = result["error"] or "Unknown error"
+                                self.status_text.appendPlainText(
+                                    f"  - {basename}: Error: {error_msg}"
+                                )
+
+                        # Update progress to completion
+                        progress_dialog.setValue(total_tasks)
+                else:
+                    # Sequential processing for single stokes
+                    for i, input_file in enumerate(files_to_process):
+                        # Check if canceled
+                        if progress_dialog.wasCanceled():
+                            self.status_text.appendPlainText(
+                                "Operation canceled by user."
+                            )
+                            break
+
+                        # Get output filename
+                        base_filename = os.path.basename(input_file)
+                        if "*" in output_pattern:
+                            output_filename = output_pattern.replace(
+                                "*", os.path.splitext(base_filename)[0]
+                            )
+                        else:
+                            output_filename = (
+                                f"{os.path.splitext(base_filename)[0]}_{output_pattern}"
+                            )
+
+                        output_path = os.path.join(output_dir, output_filename)
+
+                        # Update progress dialog
+                        progress_dialog.setValue(i)
+                        progress_dialog.setLabelText(f"Converting: {base_filename}")
+                        QApplication.processEvents()
+
+                        self.status_text.appendPlainText(
+                            f"Processing {i+1}/{len(files_to_process)}: {base_filename}"
+                        )
+
+                        try:
+                            # Convert file with a unique temp suffix
+                            temp_suffix = f"_seq_{i}"
+                            result = process_single_file_hpc(
+                                (input_file, output_path, stokes_param, f"_seq_{i}")
+                            )
+                            success = result["success"]
+
+                            if success:
+                                success_count += 1
+                                self.status_text.appendPlainText(
+                                    "  - Converted successfully"
+                                )
+                            else:
+                                error_count += 1
+                                self.status_text.appendPlainText(
+                                    "  - Conversion failed"
                                 )
 
                         except Exception as e:
-                            self.status_text.appendPlainText(
-                                f"  - Stokes {stokes}: Error: {str(e)}"
-                            )
-
-                    if stokes_success == len(stokes_list):
-                        success_count += 1
-                    elif stokes_success > 0:
-                        success_count += 0.5  # Partial success
-                        error_count += 0.5
-                    else:
-                        error_count += 1
-                else:
-                    # Single stokes mode
-                    try:
-                        # Convert file
-                        success = convert_and_save_hpc(
-                            input_file,
-                            output_path,
-                            Stokes=stokes_param,
-                            overwrite=True,
-                        )
-
-                        if success:
-                            success_count += 1
-                            self.status_text.appendPlainText(
-                                "  - Converted successfully"
-                            )
-                        else:
                             error_count += 1
-                            self.status_text.appendPlainText("  - Conversion failed")
-
-                    except Exception as e:
-                        error_count += 1
-                        self.status_text.appendPlainText(f"  - Error: {str(e)}")
+                            self.status_text.appendPlainText(f"  - Error: {str(e)}")
 
             # Complete the progress
-            progress_dialog.setValue(len(files_to_process))
+            progress_dialog.setValue(progress_dialog.maximum())
 
             # Show completion message
             summary = (
@@ -1765,7 +2039,14 @@ class HPCBatchConversionDialog(QDialog):
 
         except Exception as e:
             self.status_text.appendPlainText(f"Error in batch processing: {str(e)}")
+            self.status_text.appendPlainText(traceback.format_exc())
             QMessageBox.critical(self, "Error", f"Error in batch processing: {str(e)}")
         finally:
+            # Clean up multiprocessing pool if it exists
+            if pool is not None:
+                pool.terminate()
+                pool.join()
+
+            # Close progress dialog and re-enable button
             progress_dialog.close()
             self.ok_button.setEnabled(True)
