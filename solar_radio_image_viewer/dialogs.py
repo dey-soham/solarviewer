@@ -27,6 +27,7 @@ import pkg_resources
 import numpy as np
 import os
 import multiprocessing
+import glob
 
 
 class ContourSettingsDialog(QDialog):
@@ -630,6 +631,19 @@ class PhaseShiftDialog(QDialog):
         batch_file_layout.setContentsMargins(0, 0, 0, 0)
         batch_file_layout.setVerticalSpacing(8)
 
+        # Reference image selection for batch mode
+        reference_image_layout = QHBoxLayout()
+        self.reference_image_edit = QLineEdit("")
+        self.reference_image_edit.setReadOnly(True)
+        self.reference_image_edit.setPlaceholderText(
+            "Select reference image for phase center calculation"
+        )
+        self.reference_browse_button = QPushButton("Browse...")
+        self.reference_browse_button.clicked.connect(self.browse_reference_image)
+        reference_image_layout.addWidget(self.reference_image_edit, 1)
+        reference_image_layout.addWidget(self.reference_browse_button)
+        batch_file_layout.addRow("Reference Image:", reference_image_layout)
+
         # Input pattern selection
         input_pattern_layout = QHBoxLayout()
         self.input_pattern_edit = QLineEdit("")
@@ -638,7 +652,7 @@ class PhaseShiftDialog(QDialog):
         self.input_pattern_button.clicked.connect(self.browse_input_pattern)
         input_pattern_layout.addWidget(self.input_pattern_edit, 1)
         input_pattern_layout.addWidget(self.input_pattern_button)
-        batch_file_layout.addRow("Input Pattern:", input_pattern_layout)
+        batch_file_layout.addRow("Apply To Pattern:", input_pattern_layout)
 
         # MS File selection (optional) - common for both modes
         ms_layout = QHBoxLayout()
@@ -910,6 +924,19 @@ class PhaseShiftDialog(QDialog):
         if file_path:
             self.output_path_edit.setText(file_path)
 
+    def browse_reference_image(self):
+        """Browse for reference image file for batch processing"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Reference Image", "", "FITS Files (*.fits);;CASA Images (*)"
+        )
+        if file_path:
+            self.reference_image_edit.setText(file_path)
+
+            # Set default input pattern in the same directory
+            if not self.input_pattern_edit.text():
+                file_dir = os.path.dirname(file_path)
+                self.input_pattern_edit.setText(os.path.join(file_dir, "*.fits"))
+
     def apply_phase_shift(self):
         """Apply the phase shift to the image(s)"""
         import os
@@ -923,9 +950,16 @@ class PhaseShiftDialog(QDialog):
 
         # Validate inputs
         if batch_mode:
+            if not self.reference_image_edit.text():
+                QMessageBox.warning(
+                    self,
+                    "Input Error",
+                    "Please select a reference image for phase center calculation",
+                )
+                return
             if not self.input_pattern_edit.text():
                 QMessageBox.warning(
-                    self, "Input Error", "Please specify an input pattern"
+                    self, "Input Error", "Please specify a pattern for files to process"
                 )
                 return
         else:
@@ -954,6 +988,7 @@ class PhaseShiftDialog(QDialog):
 
             if batch_mode:
                 # Batch processing mode
+                reference_image = self.reference_image_edit.text()
                 input_pattern = self.input_pattern_edit.text()
                 output_pattern = (
                     self.output_pattern_edit.text()
@@ -961,6 +996,9 @@ class PhaseShiftDialog(QDialog):
                     else None
                 )
 
+                self.status_text.appendPlainText(
+                    f"Using reference image: {reference_image}"
+                )
                 self.status_text.appendPlainText(
                     f"Processing files matching pattern: {input_pattern}"
                 )
@@ -973,11 +1011,13 @@ class PhaseShiftDialog(QDialog):
                         f"Will modify input files in-place"
                     )
 
-                # First calculate phase shift from the first matching file (if available)
-                import glob
+                # First calculate phase shift from the reference image
+                self.status_text.appendPlainText(
+                    f"Calculating solar center position using reference image: {reference_image}"
+                )
 
+                # Check if any files match the pattern
                 matching_files = glob.glob(input_pattern)
-
                 if not matching_files:
                     QMessageBox.warning(
                         self,
@@ -990,14 +1030,9 @@ class PhaseShiftDialog(QDialog):
                     f"Found {len(matching_files)} files matching the pattern"
                 )
 
-                # Calculate phase shift based on first file
-                first_file = matching_files[0]
-                self.status_text.appendPlainText(
-                    f"Calculating solar center position using reference file: {first_file}"
-                )
-
+                # Calculate phase shift based on the reference image
                 ra, dec, needs_shift = spc.cal_solar_phaseshift(
-                    imagename=first_file,
+                    imagename=reference_image,
                     fit_gaussian=self.fit_gaussian_check.isChecked(),
                     sigma=self.sigma_spinbox.value(),
                 )

@@ -12,6 +12,7 @@ import multiprocessing
 from multiprocessing import Pool
 from functools import partial
 import shutil
+import hashlib
 
 
 class SolarPhaseCenter:
@@ -59,28 +60,63 @@ class SolarPhaseCenter:
         cellsize : float
             Cell size in arcsec
         """
-        self.rms_box = f"50,50,{imsize-50},{int(imsize/4)}"
+        # Ensure parameters are valid
+        if imsize <= 0 or cellsize <= 0:
+            print("Warning: Invalid image size or cell size. Using default RMS boxes.")
+            self.rms_box = "50,50,100,75"
+            self.rms_box_nearsun = "40,40,80,60"
+            return
 
-        # Calculate box center, ensuring it stays within valid range
-        boxcenter_y = max(0, int(imsize / 2) - int(3 * 3600 / cellsize))
-        ywidth = min(
-            int(3600 / cellsize), int(imsize / 4)
-        )  # Limit width to 1/4 of image
-        boxcenter_x = int(imsize / 2)
+        # General RMS box - set to a reasonable size relative to the image
+        rms_width = min(int(imsize / 4), imsize - 50)
+        self.rms_box = f"50,50,{min(imsize-10, 100)},{min(rms_width, 100)}"
 
-        # Calculate box bounds, ensuring they're all within valid range
-        x_min = max(0, boxcenter_x - int(imsize / 5))
-        y_min = max(0, boxcenter_y - 2 * ywidth)
-        x_max = min(imsize - 1, boxcenter_x + int(imsize / 5))
-        y_max = min(imsize - 1, boxcenter_y + ywidth)
+        try:
+            # Calculate reasonable values for boxcenter_y and ywidth
+            # Using a safer approach to avoid negative values
+            center_y = int(imsize / 2)
 
-        # Ensure the box has some size (at least 10x10 pixels)
-        if x_max - x_min < 10:
-            x_max = min(imsize - 1, x_min + 10)
-        if y_max - y_min < 10:
-            y_max = min(imsize - 1, y_min + 10)
+            # Calculate offsets based on solar diameter, but ensure they're reasonable
+            y_offset = min(int(3 * 3600 / max(1, cellsize)), int(imsize / 4))
+            boxcenter_y = max(y_offset + 10, center_y - y_offset)
 
-        self.rms_box_nearsun = f"{x_min},{y_min},{x_max},{y_max}"
+            # Limit ywidth to prevent box from going outside image
+            ywidth = min(int(3600 / max(1, cellsize)), int(imsize / 6))
+
+            # Reference center of the image for x coordinate
+            boxcenter_x = center_y
+
+            # Calculate safe box bounds (ensure at least 10 pixels from each edge)
+            safe_margin = 10
+            x_min = safe_margin
+            y_min = safe_margin
+            x_max = imsize - safe_margin
+            y_max = imsize - safe_margin
+
+            # Ensure the box is inside the image and has reasonable size
+            box_width = min(int(imsize / 5), (x_max - x_min) / 2)
+            box_height = min(ywidth, (y_max - y_min) / 2)
+
+            # Define box coordinates ensuring they're within image bounds
+            x1 = max(x_min, boxcenter_x - box_width)
+            y1 = max(y_min, boxcenter_y - box_height)
+            x2 = min(x_max, boxcenter_x + box_width)
+            y2 = min(y_max, boxcenter_y + box_height)
+
+            # Ensure the box has minimum dimensions
+            if x2 - x1 < 20:
+                x2 = min(x_max, x1 + 20)
+            if y2 - y1 < 20:
+                y2 = min(y_max, y1 + 20)
+
+            self.rms_box_nearsun = f"{int(x1)},{int(y1)},{int(x2)},{int(y2)}"
+            print(f"RMS box near sun: {self.rms_box_nearsun}")
+        except Exception as e:
+            print(f"Error setting up RMS boxes: {e}")
+            # Fallback to a very conservative box that should work for any image
+            self.rms_box_nearsun = (
+                f"{safe_margin},{safe_margin},{imsize-safe_margin},{imsize-safe_margin}"
+            )
 
     def get_phasecenter(self):
         """
@@ -388,7 +424,38 @@ class SolarPhaseCenter:
         )
 
         # Calculate RMS for thresholding
-        rms = imstat(imagename=imagename, box=self.rms_box_nearsun)["rms"][0]
+        try:
+            rms = imstat(imagename=imagename, box=self.rms_box_nearsun)["rms"][0]
+        except Exception as e:
+            print(f"Error using rms_box_nearsun: {e}")
+            print("Trying with a safer box...")
+            # Try with the general RMS box instead
+            try:
+                rms = imstat(imagename=imagename, box=self.rms_box)["rms"][0]
+            except Exception as e2:
+                print(f"Error using rms_box: {e2}")
+                print("Using a very safe default box")
+                # Use a very safe default that should work for any image
+                imsize = self.imsize if self.imsize else 512
+                safe_box = f"10,10,{imsize-10},{imsize-10}"
+                try:
+                    rms = imstat(imagename=imagename, box=safe_box)["rms"][0]
+                except Exception as e3:
+                    print(f"Error using safe box: {e3}")
+                    # Last resort: just calculate RMS from the entire image
+                    ia = image()
+                    ia.open(imagename)
+                    data = ia.getchunk()
+                    ia.close()
+                    if data.size > 0:
+                        # Mask NaN values
+                        valid_data = data[~np.isnan(data)]
+                        if valid_data.size > 0:
+                            rms = np.sqrt(np.mean(valid_data**2))
+                        else:
+                            rms = 1.0  # Default if all values are NaN
+                    else:
+                        rms = 1.0  # Default if empty data
 
         # Load FITS data
         f = fits.open(f"{temp_prefix}.fits")
@@ -444,7 +511,7 @@ class SolarPhaseCenter:
         else:
             return ra, dec, True
 
-    def shift_phasecenter(self, imagename, ra, dec, stokes="I"):
+    def shift_phasecenter(self, imagename, ra, dec, stokes="I", process_id=None):
         """
         Function to shift solar center to phase center of the measurement set
 
@@ -458,6 +525,8 @@ class SolarPhaseCenter:
             Solar center DEC in degrees
         stokes : str
             Stokes parameter to use
+        process_id : int, optional
+            Process ID for multiprocessing (creates unique temp files)
 
         Returns
         -------
@@ -482,8 +551,14 @@ class SolarPhaseCenter:
                 radeg, decdeg = ra, dec  # Just use the calculated center
 
             image_path = os.path.dirname(os.path.abspath(imagename))
-            temp_image = f"{image_path}/I.model"
-            temp_fits = f"{image_path}/wcs_model.fits"
+
+            # Create unique temporary filenames for multiprocessing
+            if process_id is not None:
+                temp_image = f"{image_path}/I_model_{process_id}_{os.getpid()}"
+                temp_fits = f"{image_path}/wcs_model_{process_id}_{os.getpid()}.fits"
+            else:
+                temp_image = f"{image_path}/I.model"
+                temp_fits = f"{image_path}/wcs_model.fits"
 
             # Clean up previous files
             if os.path.isfile(temp_fits):
@@ -734,6 +809,14 @@ class SolarPhaseCenter:
             List of [success_count, total_count]
         """
         try:
+            # Clean up any leftover temporary files first
+            input_dir = os.path.dirname(input_pattern)
+            if input_dir and os.path.exists(input_dir):
+                print(f"Cleaning up any leftover temporary files in {input_dir}")
+                os.system(
+                    f"rm -rf {input_dir}/I_model_* {input_dir}/wcs_model_*.fits {input_dir}/I.model {input_dir}/wcs_model.fits"
+                )
+
             # Get list of files matching the pattern
             files = glob.glob(input_pattern)
             if not files:
@@ -810,6 +893,13 @@ class SolarPhaseCenter:
                                 )
 
                 print(f"Successfully processed {success_count}/{total_count} files")
+
+                # Clean up any temporary files
+                if input_dir and os.path.exists(input_dir):
+                    os.system(
+                        f"rm -rf {input_dir}/I_model_* {input_dir}/wcs_model_*.fits {input_dir}/I.model {input_dir}/wcs_model.fits"
+                    )
+
                 return [success_count, total_count]
 
             # Use multiprocessing for batch processing
@@ -843,10 +933,26 @@ class SolarPhaseCenter:
                         print(f"{file}: {message}")
 
                 print(f"Successfully processed {success_count}/{total_count} files")
+
+                # Final cleanup to ensure all temporary files are removed
+                if input_dir and os.path.exists(input_dir):
+                    print(f"Final cleanup of temporary files in {input_dir}")
+                    os.system(
+                        f"rm -rf {input_dir}/I_model_* {input_dir}/wcs_model_*.fits {input_dir}/I.model {input_dir}/wcs_model.fits"
+                    )
+
                 return [success_count, total_count]
 
         except Exception as e:
             print(f"Error in applying shift to multiple files: {e}")
+
+            # Cleanup even if an error occurred
+            if "input_dir" in locals() and input_dir and os.path.exists(input_dir):
+                print(f"Cleaning up temporary files after error in {input_dir}")
+                os.system(
+                    f"rm -rf {input_dir}/I_model_* {input_dir}/wcs_model_*.fits {input_dir}/I.model {input_dir}/wcs_model.fits"
+                )
+
             try:
                 return [0, total_count]
             except:
@@ -869,6 +975,9 @@ class SolarPhaseCenter:
         file, ra, dec, stokes, output_pattern, visual_center = file_info
 
         try:
+            # Use process ID and file identifier to create a unique identifier for this task
+            process_id = int(hashlib.md5(file.encode()).hexdigest(), 16) % 10000
+
             # Determine output file
             if output_pattern:
                 file_basename = os.path.basename(file)
@@ -890,9 +999,9 @@ class SolarPhaseCenter:
             else:
                 target = file
 
-            # Apply the phase shift
+            # Apply the phase shift with the process_id
             result = self.shift_phasecenter(
-                imagename=target, ra=ra, dec=dec, stokes=stokes
+                imagename=target, ra=ra, dec=dec, stokes=stokes, process_id=process_id
             )
 
             if result == 0:
