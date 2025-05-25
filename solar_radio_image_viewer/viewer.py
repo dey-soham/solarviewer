@@ -1468,6 +1468,25 @@ class SolarRadioImageTab(QWidget):
             self.current_image_data = pix
             self.current_wcs = csys
             self.psf = psf
+
+            if pix is not None:
+                height, width = pix.shape
+                # Auto adjust RMS box dimensions
+                x1 = int(0.05 * width)
+                x2 = int(0.95 * width)
+                y1 = int(0.02 * height)
+                y2 = int(0.20 * height)
+                self.current_rms_box = [x1, x2, y1, y2]
+
+                # Update contour settings RMS box
+                self.contour_settings["rms_box"] = tuple(self.current_rms_box)
+
+                # Update image stats when data is loaded
+                try:
+                    self.show_image_stats(rms_box=self.current_rms_box)
+                except Exception as e:
+                    print(f"Error showing image stats: {e}")
+
         except Exception as e:
             from astropy.io import fits
 
