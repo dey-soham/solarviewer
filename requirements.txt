@@ -15,9 +15,11 @@ napari-svg>=0.1.6
 vispy>=0.11.0
 dask>=2022.1.0
 zarr>=2.11.0
+drms
 
 # Optional dependencies for better performance
 pyqt5-sip>=12.9.0
 qtpy>=2.0.0
 imageio>=2.16.0
 tifffile>=2022.2.2 
+aiapy
