@@ -35,6 +35,7 @@ setup(
     package_data={
         # This tells setuptools to include all .png files in the assets folder inside the package
         "solar_radio_image_viewer": ["assets/*.png"],
+        "solar_radio_image_viewer": ["assets/*.fits"],
     },
     install_requires=[
         "PyQt5>=5.15.0",

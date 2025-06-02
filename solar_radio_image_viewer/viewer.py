@@ -1,4 +1,4 @@
-import sys
+# import sys
 import os
 import numpy as np
 import pkg_resources
@@ -36,40 +36,42 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QTabWidget,
     QFrame,
-    QInputDialog,
-    QMenuBar,
+    # QInputDialog,
+    # QMenuBar,
     QMenu,
     QRadioButton,
     QButtonGroup,
     QDialog,
     QDialogButtonBox,
-    QPlainTextEdit,
-    QListWidget,
+    # QPlainTextEdit,
+    # QListWidget,
     QSpinBox,
     QCheckBox,
     QGridLayout,
-    QStatusBar,
+    # QStatusBar,
     QGroupBox,
     QToolBar,
     QHeaderView,
     QFormLayout,
-    QSplitter,
-    QListWidget,
-    QListWidgetItem,
+    # QSplitter,
+    # QListWidget,
+    # QListWidgetItem,
     QActionGroup,
     QDoubleSpinBox,
     QToolButton,
     QTabBar,
-    QStyle,
+    # QStyle,
     QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
-from PyQt5.QtGui import QIcon, QColor, QPalette, QPainter, QIntValidator
+from PyQt5.QtGui import QIcon, QIntValidator
+
+# from PyQt5.QtGui import QColor, QPalette, QPainter
 
 from .norms import SqrtNorm, AsinhNorm, PowerNorm, ZScaleNorm, HistEqNorm
 from .utils import (
-    estimate_rms_near_Sun,
-    remove_pixels_away_from_sun,
+    # estimate_rms_near_Sun,
+    # remove_pixels_away_from_sun,
     get_pixel_values_from_image,
     get_image_metadata,
     twoD_gaussian,
@@ -81,8 +83,43 @@ from .searchable_combobox import ColormapSelector
 from astropy.time import Time
 from .solar_data_downloader import launch_gui as launch_downloader_gui
 
+"""palette = {
+    "window": "#2A2A2E",
+    "base": "#1E1E22",
+    "text": "#FFFFFF",
+    "highlight": "#3871DE",
+    "button": "#404040",
+    "border": "#505050",
+    "disabled": "#606060",
+}"""
+
+palette = DARK_PALETTE
+
+
 rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
+
+rcParams.update(
+    {
+        "figure.facecolor": palette["window"],
+        "axes.facecolor": palette["base"],
+        "axes.edgecolor": palette["text"],
+        "axes.labelcolor": palette["text"],
+        "xtick.color": palette["text"],
+        "ytick.color": palette["text"],
+        "grid.color": palette["border"],
+        "text.color": palette["text"],
+        "legend.facecolor": palette["base"],
+        "legend.edgecolor": palette["border"],
+    }
+)
+# rcParams["figure.facecolor"] = "#2A2A2E"
+# rcParams["axes.facecolor"] = "#1E1E22"
+# rcParams["axes.edgecolor"] = "#FFFFFF"
+# rcParams["xtick.color"] = "#FFFFFF"
+# rcParams["ytick.color"] = "#FFFFFF"
+# rcParams["axes.labelcolor"]="#FFFFFF"
+# rcParams["text.color"]="#FFFFFF"
 
 
 # For region selection modes
@@ -946,6 +983,7 @@ class SolarRadioImageTab(QWidget):
             cmap = "viridis"
             if colormap_name and colormap_name in plt.colormaps():
                 cmap = colormap_name
+                self.cmap_combo.setCurrentText(cmap)
             elif hasattr(self, "cmap_combo"):
                 cmap_text = self.cmap_combo.currentText()
                 if cmap_text in plt.colormaps():
@@ -958,6 +996,9 @@ class SolarRadioImageTab(QWidget):
                         cmap = matches[0]
                         self.cmap_combo.setCurrentText(cmap)
                     else:
+                        print(
+                            f"Warning: {cmap_text} colormap not available, using default"
+                        )
                         self.cmap_combo.setCurrentText("viridis")
 
             self.load_data(self.imagename, stokes, threshold)
@@ -3658,6 +3699,16 @@ class SolarRadioImageViewerApp(QMainWindow):
             # first_tab.on_visualization_changed(dir_load=True)
             first_tab.update_tab_name_from_path(imagename)
             # first_tab.auto_minmax()
+        else:
+            first_tab.imagename = pkg_resources.resource_filename(
+                "solar_radio_image_viewer", "assets/splash.fits"
+            )
+            QTimer.singleShot(
+                20,
+                lambda: first_tab.on_visualization_changed(
+                    dir_load=True, colormap_name="inferno"
+                ),
+            )
 
         # Ensure add button is visible after initialization
         QTimer.singleShot(200, self.ensureAddButtonVisible)
@@ -4249,7 +4300,6 @@ class SolarRadioImageViewerApp(QMainWindow):
                 )
                 == QMessageBox.Yes
             ):
-
                 fitted_data = twoD_gaussian(coords, *popt).reshape(data.shape)
 
                 fig = Figure(figsize=(10, 5))
