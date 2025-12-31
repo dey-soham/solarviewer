@@ -5,6 +5,5 @@ build/
 __pycache__
 casa*.log
 test_data/
-RELEASE*.md
 unused_codes/
 
