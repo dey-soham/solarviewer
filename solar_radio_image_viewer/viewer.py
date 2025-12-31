@@ -6042,16 +6042,30 @@ class SolarRadioImageTab(QWidget):
         self.canvas.draw()
 
     def set_solar_disk_center(self):
+        """Show non-modal solar disk settings dialog."""
         if self.current_image_data is None:
             QMessageBox.warning(self, "No Image", "Please load an image first.")
             return
+
+        # If dialog already exists and is visible, just raise it
+        if hasattr(self, '_solar_disk_dialog') and self._solar_disk_dialog is not None:
+            try:
+                if self._solar_disk_dialog.isVisible():
+                    self._solar_disk_dialog.raise_()
+                    self._solar_disk_dialog.activateWindow()
+                    return
+            except RuntimeError:
+                self._solar_disk_dialog = None
 
         height, width = self.current_image_data.shape
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Solar Disk Settings")
-        dialog.setMinimumWidth(400)  # Set minimum width to prevent text cutoff
+        dialog.setMinimumWidth(400)
         layout = QVBoxLayout(dialog)
+        
+        # Store reference to prevent garbage collection
+        self._solar_disk_dialog = dialog
 
         # Create tab widget for organizing settings
         tab_widget = QTabWidget()
@@ -6184,24 +6198,55 @@ class SolarRadioImageTab(QWidget):
 
         layout.addWidget(tab_widget)
 
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
+        # Store reference to viewer for callbacks
+        viewer = self
+
+        def on_apply():
+            """Apply settings without closing dialog."""
+            try:
+                if not viewer or viewer.current_image_data is None:
+                    dialog.close()
+                    return
+                
+                viewer.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
+                viewer.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
+
+                # Update style properties
+                viewer.solar_disk_style["color"] = color_combo.currentText()
+                viewer.solar_disk_style["linestyle"] = linestyle_combo.currentData()
+                viewer.solar_disk_style["linewidth"] = linewidth_spinbox.value()
+                viewer.solar_disk_style["alpha"] = alpha_spinbox.value()
+                viewer.solar_disk_style["show_center"] = show_center_checkbox.isChecked()
+
+                viewer.schedule_plot()
+                viewer.show_status_message("Solar disk settings applied")
+            except RuntimeError:
+                dialog.close()
+            except Exception as e:
+                try:
+                    viewer.show_status_message(f"Error applying settings: {e}")
+                except:
+                    pass
+
+        def on_close():
+            dialog.close()
+
+        def on_dialog_destroyed():
+            if hasattr(viewer, '_solar_disk_dialog'):
+                viewer._solar_disk_dialog = None
+
+        # Create button box with Apply and Close
+        button_box = QDialogButtonBox()
+        apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
+        close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
+        apply_btn.clicked.connect(on_apply)
+        close_btn.clicked.connect(on_close)
         layout.addWidget(button_box)
 
-        if dialog.exec_() == QDialog.Accepted:
-            self.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
-            self.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
-
-            # Update style properties
-            self.solar_disk_style["color"] = color_combo.currentText()
-            self.solar_disk_style["linestyle"] = linestyle_combo.currentData()
-            self.solar_disk_style["linewidth"] = linewidth_spinbox.value()
-            self.solar_disk_style["alpha"] = alpha_spinbox.value()
-            self.solar_disk_style["show_center"] = show_center_checkbox.isChecked()
-
-            self.schedule_plot()
-            self.show_status_message("Solar disk settings updated")
+        # Set up for non-modal behavior
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(on_dialog_destroyed)
+        dialog.show()
 
     def zoom_in(self):
         if self.current_image_data is None:
@@ -6510,33 +6555,126 @@ class SolarRadioImageTab(QWidget):
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
 
     def show_contour_settings(self):
+        """Show non-modal contour settings dialog."""
         from .dialogs import ContourSettingsDialog
 
+        # If dialog already exists and is visible, just raise it
+        if hasattr(self, '_contour_settings_dialog') and self._contour_settings_dialog is not None:
+            try:
+                if self._contour_settings_dialog.isVisible():
+                    self._contour_settings_dialog.raise_()
+                    self._contour_settings_dialog.activateWindow()
+                    return
+            except RuntimeError:
+                self._contour_settings_dialog = None
+
         dialog = ContourSettingsDialog(self, self.contour_settings)
-        if dialog.exec_() == QDialog.Accepted:
-            self.contour_settings = dialog.get_settings()
-            if self.show_contours_checkbox.isChecked():
-                self.load_contour_data()
-                self.on_visualization_changed()
+        self._contour_settings_dialog = dialog
+        
+        # Store reference to viewer
+        viewer = self
+
+        def on_apply():
+            """Apply settings without closing dialog."""
+            try:
+                if not viewer:
+                    dialog.close()
+                    return
+                viewer.contour_settings = dialog.get_settings()
+                if viewer.show_contours_checkbox.isChecked():
+                    viewer.load_contour_data()
+                    viewer.on_visualization_changed()
+                viewer.show_status_message("Contour settings applied")
+            except RuntimeError:
+                dialog.close()
+            except Exception as e:
+                viewer.show_status_message(f"Error applying settings: {e}")
+
+        def on_close():
+            dialog.close()
+
+        def on_dialog_destroyed():
+            if hasattr(viewer, '_contour_settings_dialog'):
+                viewer._contour_settings_dialog = None
+
+        # Replace the standard button box with Apply/Close
+        # The dialog already has a button box, so we need to modify it
+        button_box = dialog.findChild(QDialogButtonBox)
+        if button_box:
+            button_box.clear()
+            apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
+            close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
+            apply_btn.clicked.connect(on_apply)
+            close_btn.clicked.connect(on_close)
+        
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(on_dialog_destroyed)
+        dialog.show()
+
 
     def show_plot_customization_dialog(self):
-        """Open the plot customization dialog."""
+        """Open a non-modal plot customization dialog."""
         from .dialogs import PlotCustomizationDialog
 
+        # If dialog already exists and is visible, just raise it
+        if hasattr(self, '_plot_customization_dialog') and self._plot_customization_dialog is not None:
+            try:
+                if self._plot_customization_dialog.isVisible():
+                    self._plot_customization_dialog.raise_()
+                    self._plot_customization_dialog.activateWindow()
+                    return
+            except RuntimeError:
+                self._plot_customization_dialog = None
+
         dialog = PlotCustomizationDialog(self, self.plot_settings)
-        if dialog.exec_() == QDialog.Accepted:
-            self.plot_settings = dialog.get_settings()
-            # Refresh the plot with new settings
-            if self.current_image_data is not None:
-                try:
-                    vmin_val = float(self.vmin_entry.text())
-                    vmax_val = float(self.vmax_entry.text())
-                    stretch = self.stretch_combo.currentText()
-                    cmap = self.cmap_combo.currentText()
-                    gamma = float(self.gamma_entry.text())
-                    self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
-                except (ValueError, AttributeError):
-                    self.plot_image()
+        self._plot_customization_dialog = dialog
+        
+        # Store reference to viewer
+        viewer = self
+
+        def on_apply():
+            """Apply settings without closing dialog."""
+            try:
+                if not viewer:
+                    dialog.close()
+                    return
+                viewer.plot_settings = dialog.get_settings()
+                # Refresh the plot with new settings
+                if viewer.current_image_data is not None:
+                    try:
+                        vmin_val = float(viewer.vmin_entry.text())
+                        vmax_val = float(viewer.vmax_entry.text())
+                        stretch = viewer.stretch_combo.currentText()
+                        cmap = viewer.cmap_combo.currentText()
+                        gamma = float(viewer.gamma_entry.text())
+                        viewer.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+                    except (ValueError, AttributeError):
+                        viewer.plot_image()
+                viewer.show_status_message("Plot settings applied")
+            except RuntimeError:
+                dialog.close()
+            except Exception as e:
+                viewer.show_status_message(f"Error applying settings: {e}")
+
+        def on_close():
+            dialog.close()
+
+        def on_dialog_destroyed():
+            if hasattr(viewer, '_plot_customization_dialog'):
+                viewer._plot_customization_dialog = None
+
+        # Replace the standard button box with Apply/Close
+        button_box = dialog.findChild(QDialogButtonBox)
+        if button_box:
+            button_box.clear()
+            apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
+            close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
+            apply_btn.clicked.connect(on_apply)
+            close_btn.clicked.connect(on_close)
+        
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(on_dialog_destroyed)
+        dialog.show()
 
     def load_contour_data(self):
         try:
