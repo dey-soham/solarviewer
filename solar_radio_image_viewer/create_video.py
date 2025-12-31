@@ -101,6 +101,57 @@ def ensure_even_dimensions(image):
     return image
 
 
+def create_error_frame(options, error_msg="Error loading frame", frame_idx=0, filename=""):
+    """
+    Create a blank frame with axis and error message when data loading fails.
+    
+    This ensures the video continues with consistent frame count instead of
+    showing weird plots or skipping frames entirely.
+    """
+    dpi = 100
+    
+    # Use specified dimensions or default
+    if options.get("width", 0) > 0 and options.get("height", 0) > 0:
+        figsize = (options["width"] / dpi, options["height"] / dpi)
+    else:
+        figsize = (10, 10)
+    
+    fig = Figure(figsize=figsize, dpi=dpi)
+    canvas = FigureCanvas(fig)
+    ax = fig.add_subplot(111)
+    
+    # Create a blank image (gray background)
+    blank_data = np.zeros((100, 100))
+    ax.imshow(blank_data, cmap='gray', vmin=0, vmax=1)
+    
+    # Add error message in the center
+    ax.text(0.5, 0.5, error_msg, transform=ax.transAxes, 
+            ha='center', va='center', fontsize=12, color='red',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # Add frame info
+    if filename:
+        ax.set_title(f"Frame {frame_idx}: {filename}", fontsize=10)
+    else:
+        ax.set_title(f"Frame {frame_idx}", fontsize=10)
+    
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    
+    # Render to image
+    fig.tight_layout()
+    canvas.draw()
+    
+    # Convert to numpy array
+    width, height = fig.canvas.get_width_height()
+    image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    image = image.reshape(height, width, 3)
+    
+    plt.close(fig)
+    
+    return image
+
+
 def natural_sort_key(s):
     """
     Sort strings containing numbers naturally (e.g., 'file1', 'file2', 'file10')
@@ -330,7 +381,12 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
 
         if data is None:
             logger.warning(f"Could not load data from {file_path}")
-            return None
+            return create_error_frame(options, "Could not load data", frame_idx, os.path.basename(file_path))
+        
+        # Check for blank/all-NaN data
+        if np.all(np.isnan(data)) or np.nanmax(data) == np.nanmin(data):
+            logger.warning(f"Blank or constant data in {file_path}")
+            return create_error_frame(options, "Blank/constant data", frame_idx, os.path.basename(file_path))
 
         # Apply region selection if enabled
         if options.get("region_enabled", False):
@@ -698,7 +754,7 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
 
     except Exception as e:
         logger.error(f"Error processing image {file_path}: {e}")
-        return None
+        return create_error_frame(options, f"Error: {str(e)[:30]}", frame_idx, os.path.basename(file_path))
 
 
 def calculate_global_stats(files, options):

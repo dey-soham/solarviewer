@@ -161,13 +161,17 @@ class VideoCreationDialog(QDialog):
         # Initialize with current file if provided
         if current_file:
             dir_path = os.path.dirname(current_file)
+            # If file has no directory (just filename), use CWD
+            if not dir_path:
+                dir_path = os.getcwd()
             self.input_directory_edit.setText(dir_path)
             file_ext = os.path.splitext(current_file)[1]
             self.input_pattern_edit.setText(f"*{file_ext}")
 
-            # Set reference image to current file
-            self.reference_image = current_file
-            self.reference_image_edit.setText(current_file)
+            # Set reference image to current file (use absolute path)
+            abs_file = os.path.join(dir_path, os.path.basename(current_file)) if not os.path.isabs(current_file) else current_file
+            self.reference_image = abs_file
+            self.reference_image_edit.setText(abs_file)
 
             # Set default output file
             self.output_file_edit.setText(os.path.join(dir_path, "output_video.mp4"))
@@ -194,6 +198,18 @@ class VideoCreationDialog(QDialog):
 
             # Auto-scan for files
             self.preview_input_files()
+        else:
+            # No file provided - use CWD as default
+            cwd = os.getcwd()
+            if os.path.isdir(cwd):
+                self.input_directory_edit.setText(cwd)
+                self.output_file_edit.setText(os.path.join(cwd, "output_video.mp4"))
+                # Check if CWD has any FITS files to set pattern
+                fits_in_cwd = glob.glob(os.path.join(cwd, "*.fits")) + glob.glob(os.path.join(cwd, "*.fts"))
+                if fits_in_cwd:
+                    self.input_pattern_edit.setText("*.fits")
+                    # Auto-scan for files
+                    self.preview_input_files()
 
         # Update preview if we have a valid reference image
         if self.reference_image:
@@ -217,8 +233,8 @@ class VideoCreationDialog(QDialog):
         """Set up the UI elements"""
         self.setSizeGripEnabled(True)
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(12)
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -272,8 +288,8 @@ class VideoCreationDialog(QDialog):
         input_scroll.setWidgetResizable(True)
         input_scroll_content = QWidget()
         input_layout = QVBoxLayout(input_scroll_content)
-        input_layout.setContentsMargins(8, 8, 8, 8)
-        input_layout.setSpacing(10)
+        input_layout.setContentsMargins(12, 12, 12, 12)
+        input_layout.setSpacing(12)
         input_scroll.setWidget(input_scroll_content)
 
         # Input pattern section
@@ -339,8 +355,8 @@ class VideoCreationDialog(QDialog):
         display_scroll.setWidgetResizable(True)
         display_scroll_content = QWidget()
         display_layout = QVBoxLayout(display_scroll_content)
-        display_layout.setContentsMargins(8, 8, 8, 8)
-        display_layout.setSpacing(10)
+        display_layout.setContentsMargins(12, 12, 12, 12)
+        display_layout.setSpacing(12)
         display_scroll.setWidget(display_scroll_content)
 
         # Reference image for display settings
@@ -549,8 +565,8 @@ class VideoCreationDialog(QDialog):
         region_scroll.setWidgetResizable(True)
         region_scroll_content = QWidget()
         region_layout = QVBoxLayout(region_scroll_content)
-        region_layout.setContentsMargins(8, 8, 8, 8)
-        region_layout.setSpacing(10)
+        region_layout.setContentsMargins(12, 12, 12, 12)
+        region_layout.setSpacing(12)
         region_scroll.setWidget(region_scroll_content)
 
         region_group = QGroupBox("Region Selection")
@@ -660,8 +676,8 @@ class VideoCreationDialog(QDialog):
         overlay_scroll.setWidgetResizable(True)
         overlay_scroll_content = QWidget()
         overlay_layout = QVBoxLayout(overlay_scroll_content)
-        overlay_layout.setContentsMargins(8, 8, 8, 8)
-        overlay_layout.setSpacing(10)
+        overlay_layout.setContentsMargins(12, 12, 12, 12)
+        overlay_layout.setSpacing(12)
         overlay_scroll.setWidget(overlay_scroll_content)
 
         # Overlay settings section
@@ -757,8 +773,8 @@ class VideoCreationDialog(QDialog):
         output_scroll.setWidgetResizable(True)
         output_scroll_content = QWidget()
         output_layout = QVBoxLayout(output_scroll_content)
-        output_layout.setContentsMargins(8, 8, 8, 8)
-        output_layout.setSpacing(10)
+        output_layout.setContentsMargins(12, 12, 12, 12)
+        output_layout.setSpacing(12)
         output_scroll.setWidget(output_scroll_content)
 
         # File output section
@@ -845,8 +861,8 @@ class VideoCreationDialog(QDialog):
         contours_scroll.setWidgetResizable(True)
         contours_scroll_content = QWidget()
         contours_layout = QVBoxLayout(contours_scroll_content)
-        contours_layout.setContentsMargins(8, 8, 8, 8)
-        contours_layout.setSpacing(10)
+        contours_layout.setContentsMargins(12, 12, 12, 12)
+        contours_layout.setSpacing(12)
         contours_scroll.setWidget(contours_scroll_content)
 
         # Enable contours
@@ -1087,14 +1103,45 @@ class VideoCreationDialog(QDialog):
         # Update preview with new settings
         self.update_preview()
 
+    def get_smart_start_directory(self, *extra_paths):
+        """
+        Get a smart starting directory for file/directory dialogs.
+        
+        Checks multiple sources in priority order:
+        1. Any extra paths passed as arguments (e.g., current field value)
+        2. Contour base file directory (if set)
+        3. Reference image directory
+        4. Input directory from Input tab
+        5. Current file from main viewer
+        6. Current working directory (CWD)
+        7. Fall back to home directory
+        
+        Returns the first valid directory found.
+        """
+        candidates = list(extra_paths) + [
+            self.contour_base_file_edit.text().strip() if hasattr(self, 'contour_base_file_edit') else None,
+            self.reference_image,
+            self.input_directory_edit.text().strip() if hasattr(self, 'input_directory_edit') else None,
+            self.current_file,
+            os.getcwd(),  # CWD as fallback before home
+        ]
+        
+        for path in candidates:
+            if path:
+                # If it's a file, get its directory
+                if os.path.isfile(path):
+                    dir_path = os.path.dirname(path)
+                else:
+                    dir_path = path
+                
+                if dir_path and os.path.isdir(dir_path):
+                    return dir_path
+        
+        return os.path.expanduser("~")
+
     def browse_input_directory(self):
         """Browse for input directory"""
-        if self.input_directory_edit.text():
-            start_dir = self.input_directory_edit.text()
-        elif self.current_file:
-            start_dir = os.path.dirname(self.current_file)
-        else:
-            start_dir = os.path.expanduser("~")
+        start_dir = self.get_smart_start_directory(self.input_directory_edit.text())
 
         directory = QFileDialog.getExistingDirectory(
             self, "Select Input Directory", start_dir
@@ -2258,7 +2305,7 @@ class VideoCreationDialog(QDialog):
 
     def browse_contour_base_file(self):
         """Browse for base image file"""
-        start_dir = self.input_directory_edit.text() or os.path.expanduser("~")
+        start_dir = self.get_smart_start_directory(self.contour_base_file_edit.text().strip())
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Base Image File", start_dir,
             "FITS Files (*.fits *.fts);;All Files (*)"
@@ -2268,7 +2315,7 @@ class VideoCreationDialog(QDialog):
 
     def browse_contour_directory(self):
         """Browse for contour files directory"""
-        start_dir = self.input_directory_edit.text() or os.path.expanduser("~")
+        start_dir = self.get_smart_start_directory(self.contour_dir_edit.text().strip())
         directory = QFileDialog.getExistingDirectory(
             self, "Select Contour Files Directory", start_dir
         )
@@ -2277,7 +2324,7 @@ class VideoCreationDialog(QDialog):
 
     def browse_contour_fixed_file(self):
         """Browse for fixed contour file"""
-        start_dir = self.input_directory_edit.text() or os.path.expanduser("~")
+        start_dir = self.get_smart_start_directory(self.contour_fixed_file_edit.text().strip())
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Fixed Contour File", start_dir,
             "FITS Files (*.fits *.fts);;All Files (*)"
@@ -2287,7 +2334,7 @@ class VideoCreationDialog(QDialog):
 
     def browse_contour_colormap_directory(self):
         """Browse for colormap files directory"""
-        start_dir = self.input_directory_edit.text() or os.path.expanduser("~")
+        start_dir = self.get_smart_start_directory(self.contour_colormap_dir_edit.text().strip())
         directory = QFileDialog.getExistingDirectory(
             self, "Select Colormap Files Directory", start_dir
         )
