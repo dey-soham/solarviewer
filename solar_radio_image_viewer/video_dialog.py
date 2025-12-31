@@ -913,8 +913,8 @@ class VideoCreationDialog(QDialog):
         contour_files_layout.addRow("Contour Directory:", contour_dir_widget)
 
         # Contour file pattern
-        contour_pattern_widget = QWidget()
-        contour_pattern_layout = QHBoxLayout(contour_pattern_widget)
+        self.contour_pattern_widget = QWidget()
+        contour_pattern_layout = QHBoxLayout(self.contour_pattern_widget)
         contour_pattern_layout.setContentsMargins(0, 0, 0, 0)
         contour_pattern_layout.setSpacing(8)
         self.contour_dir_pattern_edit = QLineEdit("*.fits")
@@ -923,7 +923,7 @@ class VideoCreationDialog(QDialog):
         self.contour_files_count_label = QLabel("")
         self.contour_files_count_label.setObjectName("StatusLabel")
         contour_pattern_layout.addWidget(self.contour_files_count_label)
-        contour_files_layout.addRow("Contour Pattern:", contour_pattern_widget)
+        contour_files_layout.addRow("Contour Pattern:", self.contour_pattern_widget)
 
         # Fixed contour file (for mode B)
         fixed_contour_widget = QWidget()
@@ -955,8 +955,8 @@ class VideoCreationDialog(QDialog):
         contour_files_layout.addRow("Colormap Directory:", colormap_dir_widget)
 
         # Colormap file pattern
-        colormap_pattern_widget = QWidget()
-        colormap_pattern_layout = QHBoxLayout(colormap_pattern_widget)
+        self.colormap_pattern_widget = QWidget()
+        colormap_pattern_layout = QHBoxLayout(self.colormap_pattern_widget)
         colormap_pattern_layout.setContentsMargins(0, 0, 0, 0)
         colormap_pattern_layout.setSpacing(8)
         self.contour_colormap_pattern_edit = QLineEdit("*.fits")
@@ -965,7 +965,7 @@ class VideoCreationDialog(QDialog):
         self.colormap_files_count_label = QLabel("")
         self.colormap_files_count_label.setObjectName("StatusLabel")
         colormap_pattern_layout.addWidget(self.colormap_files_count_label)
-        contour_files_layout.addRow("Colormap Pattern:", colormap_pattern_widget)
+        contour_files_layout.addRow("Colormap Pattern:", self.colormap_pattern_widget)
 
         contours_layout.addWidget(self.contour_files_group)
 
@@ -1026,7 +1026,7 @@ class VideoCreationDialog(QDialog):
 
         # Add tabs to tab widget (Contours is second when in Contour Mode)
         self.tab_widget.addTab(input_scroll, "Input")
-        self.tab_widget.addTab(contours_scroll, "Contours")
+        self.tab_widget.addTab(contours_scroll, "Input")
         self.tab_widget.addTab(display_scroll, "Display")
         self.tab_widget.addTab(region_scroll, "Region")
         self.tab_widget.addTab(overlay_scroll, "Overlays")
@@ -1035,8 +1035,8 @@ class VideoCreationDialog(QDialog):
         # Add the tab widget to the main layout (after the preview)
         main_layout.addWidget(self.tab_widget)
         
-        # Disable Contours tab by default (enabled when Contour Mode checkbox is checked)
-        self.tab_widget.setTabEnabled(1, False)
+        # Hide Contours tab by default (shown when Contour Mode checkbox is checked)
+        self.tab_widget.setTabVisible(1, False)
 
         # Buttons at the bottom
         button_layout = QHBoxLayout()
@@ -2154,10 +2154,10 @@ class VideoCreationDialog(QDialog):
         self.update_region_preview()
 
     def toggle_contour_mode(self, enabled):
-        """Toggle Contour Mode - enables/disables Input and Contours tabs"""
+        """Toggle Contour Mode - shows/hides Input and Contours tabs"""
         # Input tab is at index 0, Contours tab is at index 1
-        self.tab_widget.setTabEnabled(0, not enabled)  # Disable Input when contour mode is ON
-        self.tab_widget.setTabEnabled(1, enabled)      # Enable Contours only when contour mode is ON
+        self.tab_widget.setTabVisible(0, not enabled)
+        self.tab_widget.setTabVisible(1, enabled)
         
         # Also toggle the contour video controls
         self.toggle_contour_video_controls(enabled)
@@ -2168,6 +2168,8 @@ class VideoCreationDialog(QDialog):
         # If enabling contour mode, switch to Contours tab
         if enabled:
             self.tab_widget.setCurrentIndex(1)
+        else:
+            self.tab_widget.setCurrentIndex(0)
 
     def update_create_button_state(self):
         """Update Create Video button state based on current mode and inputs"""
@@ -2207,9 +2209,9 @@ class VideoCreationDialog(QDialog):
 
     def update_contour_mode_ui(self, index):
         """Update visibility of contour file inputs based on mode"""
-        # Mode A: Base image + contour directory
-        # Mode B: Fixed contour + colormap directory
-        # Mode C: Contour directory + colormap directory
+        # Mode A: Base image + contour directory + contour pattern
+        # Mode B: Fixed contour + colormap directory + colormap pattern
+        # Mode C: Contour directory + contour pattern + colormap directory + colormap pattern
         
         # Get parent widgets for each row
         base_file_row = self.contour_base_file_edit.parent()
@@ -2217,21 +2219,27 @@ class VideoCreationDialog(QDialog):
         fixed_contour_row = self.contour_fixed_file_edit.parent()
         colormap_dir_row = self.contour_colormap_dir_edit.parent()
         
-        if index == 0:  # Mode A
+        if index == 0:  # Mode A: Fixed base + evolving contours
             base_file_row.setVisible(True)
             contour_dir_row.setVisible(True)
+            self.contour_pattern_widget.setVisible(True)
             fixed_contour_row.setVisible(False)
             colormap_dir_row.setVisible(False)
-        elif index == 1:  # Mode B
+            self.colormap_pattern_widget.setVisible(False)
+        elif index == 1:  # Mode B: Fixed contours + evolving colormap
             base_file_row.setVisible(False)
             contour_dir_row.setVisible(False)
+            self.contour_pattern_widget.setVisible(False)
             fixed_contour_row.setVisible(True)
             colormap_dir_row.setVisible(True)
-        else:  # Mode C
+            self.colormap_pattern_widget.setVisible(True)
+        else:  # Mode C: Both evolve
             base_file_row.setVisible(False)
             contour_dir_row.setVisible(True)
+            self.contour_pattern_widget.setVisible(True)
             fixed_contour_row.setVisible(False)
             colormap_dir_row.setVisible(True)
+            self.colormap_pattern_widget.setVisible(True)
 
     def browse_contour_base_file(self):
         """Browse for base image file"""
