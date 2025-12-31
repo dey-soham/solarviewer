@@ -1924,6 +1924,46 @@ class SolarRadioImageTab(QWidget):
                             self.show_status_message(f"Failed to parse {key}={date_str}: {e}")
                             continue
 
+            # Fallback: Try the simpler parsing method used by solar activity button
+            # This handles some edge cases with fractional seconds that fail in some Python versions
+            if not obs_datetime and hasattr(self, "imagename") and self.imagename:
+                lower_name = self.imagename.lower()
+                if lower_name.endswith(".fits") or lower_name.endswith(".fts") or lower_name.endswith(".fit"):
+                    try:
+                        from astropy.io import fits as fits_fallback
+                        
+                        header = fits_fallback.getheader(self.imagename)
+                        image_time = (
+                            header.get("DATE-OBS")
+                            or header.get("DATE_OBS")
+                            or header.get("STARTOBS")
+                        )
+                        
+                        # Special handling for SOHO (DATE-OBS + TIME-OBS)
+                        if header.get("TELESCOP") == "SOHO" and header.get("TIME-OBS") and image_time:
+                            image_time = f"{image_time}T{header['TIME-OBS']}"
+                        
+                        if image_time:
+                            image_time = str(image_time)
+                            if "T" in image_time:
+                                # More aggressive cleaning: remove Z, timezone, and fractional seconds
+                                clean_str = image_time.replace("Z", "").split("+")[0].split(".")[0]
+                                # Handle case where there's a negative offset timezone
+                                if "-" in clean_str[11:]:
+                                    clean_str = clean_str[:19]
+                                try:
+                                    obs_datetime = datetime.fromisoformat(clean_str)
+                                except ValueError:
+                                    # Last resort: just extract date part
+                                    date_part = clean_str.split("T")[0]
+                                    if len(date_part) >= 10:
+                                        obs_datetime = datetime.strptime(date_part[:10], "%Y-%m-%d")
+                            elif "-" in image_time and len(image_time) >= 10:
+                                obs_datetime = datetime.strptime(image_time[:10], "%Y-%m-%d")
+                    except Exception as fallback_err:
+                        print(f"[WARNING] Fallback time parsing also failed: {fallback_err}")
+                        self.show_status_message(f"Fallback time parsing failed: {fallback_err}")
+
             # Try CASA image metadata (using IA tool coordsys like the rest of viewer.py)
             if not obs_datetime and hasattr(self, "imagename") and self.imagename:
                 if not (
