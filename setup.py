@@ -97,6 +97,7 @@ setup(
             "viewds=solar_radio_image_viewer.from_simpl.view_dynamic_spectra_GUI:main",
             "viewlogs=solar_radio_image_viewer.from_simpl.pipeline_logger_gui:main",
             "viewsolaractivity=solar_radio_image_viewer.noaa_events.noaa_events_gui:main",
+            "heliobrowser=solar_radio_image_viewer.helioviewer_browser:main",
         ],
     },
     python_requires=">=3.7",

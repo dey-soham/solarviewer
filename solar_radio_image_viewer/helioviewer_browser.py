@@ -1485,3 +1485,14 @@ class HelioviewerBrowser(QMainWindow):
         self.frame_loaders.clear()
         self.pause_animation()
         event.accept()
+
+
+def main():
+    import sys
+    app = QApplication(sys.argv)
+    window = HelioviewerBrowser()
+    window.show()
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()

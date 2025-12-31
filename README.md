@@ -152,9 +152,14 @@ solarviewer -f path/to/image.fits
 viewcaltable       # Calibration table visualizer
 viewds             # Dynamic spectra viewer
 viewlogs           # Pipeline log viewer
-viewsolaractivity  # Solar events browser
 ```
 
+### Other Tools
+
+```bash
+viewsolaractivity  # Solar events browser
+heliobrowser       # Helioviewer browser
+```
 ---
 
 ## 💻 Command Line Interface
@@ -276,12 +281,8 @@ This project builds on the excellent work of the solar physics and radio astrono
 - [**JSOC**](http://jsoc.stanford.edu/) — Joint Science Operations Center for SDO data
 - [**VSO**](https://sdac.virtualsolar.org/) — Virtual Solar Observatory
 
-### Radio Astronomy
-- [**LOFAR**](https://www.lofar.org/) — Low-Frequency Array
-- [**python-casacore**](https://github.com/casacore/python-casacore) — Python bindings for casacore
-
 ### Community
-- The solar physics and heliophysics research community for feedback and testing
+- The solar physics group at the National Centre for Radio Astrophysics for feedback and testing
 
 ---
 
