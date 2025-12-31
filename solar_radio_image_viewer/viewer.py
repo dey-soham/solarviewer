@@ -7277,7 +7277,7 @@ class SolarRadioImageTab(QWidget):
                 )
 
     def _show_playlist_dialog(self):
-        """Show a dialog listing all files in the current file list"""
+        """Show a non-modal dialog listing all files in the current file list"""
         from PyQt5.QtWidgets import (
             QDialog,
             QVBoxLayout,
@@ -7287,15 +7287,32 @@ class SolarRadioImageTab(QWidget):
             QLabel,
         )
 
+        # Check if file list exists
         if not self._file_list:
             self.show_status_message("No files found. Load an image first.")
             return
 
+        # If dialog already exists and is visible, just raise it
+        if hasattr(self, '_playlist_dialog') and self._playlist_dialog is not None:
+            try:
+                if self._playlist_dialog.isVisible():
+                    self._playlist_dialog.raise_()
+                    self._playlist_dialog.activateWindow()
+                    return
+            except RuntimeError:
+                # Dialog was deleted, create a new one
+                self._playlist_dialog = None
+
         dialog = QDialog(self)
         dialog.setWindowTitle("File List")
         dialog.setMinimumSize(500, 400)
+        
+        # Store reference to prevent garbage collection
+        self._playlist_dialog = dialog
 
         layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
         # Info label
         info_label = QLabel(
@@ -7321,44 +7338,88 @@ class SolarRadioImageTab(QWidget):
 
         open_btn = QPushButton("Open")
         open_btn.setDefault(True)
-        cancel_btn = QPushButton("Cancel")
+        close_btn = QPushButton("Close")
 
+        # Store references for use in callbacks
+        viewer = self
+        
         def on_open():
-            selected_idx = file_list_widget.currentRow()
-            if selected_idx >= 0 and selected_idx < len(self._file_list):
-                new_path = self._file_list[selected_idx]
-                self._file_list_index = selected_idx
+            """Handle opening a selected file with proper error handling"""
+            try:
+                # Check if viewer is still valid
+                if not viewer or not hasattr(viewer, '_file_list'):
+                    dialog.close()
+                    return
+                    
+                selected_idx = file_list_widget.currentRow()
+                if selected_idx < 0 or selected_idx >= len(viewer._file_list):
+                    viewer.show_status_message("Please select a file first.")
+                    return
+                    
+                new_path = viewer._file_list[selected_idx]
+                
+                # Check if file still exists
+                if not os.path.exists(new_path):
+                    viewer.show_status_message(f"File no longer exists: {os.path.basename(new_path)}")
+                    return
+                
+                viewer._file_list_index = selected_idx
 
                 # Reset HPC state
-                self._reset_hpc_state()
+                viewer._reset_hpc_state()
 
                 # Load the file
-                self.imagename = new_path
-                self.dir_entry.setText(new_path)
-                self.contour_settings["contour_data"] = None
-                self.current_contour_wcs = None
+                viewer.imagename = new_path
+                viewer.dir_entry.setText(new_path)
+                viewer.contour_settings["contour_data"] = None
+                viewer.current_contour_wcs = None
                 # Clear figure to prevent restoring old view limits
-                self.figure.clear()
-                self.on_visualization_changed(dir_load=True)
-                self.update_tab_name_from_path(new_path)
+                viewer.figure.clear()
+                viewer.on_visualization_changed(dir_load=True)
+                viewer.update_tab_name_from_path(new_path)
 
-                self._update_nav_buttons()
-                self.show_status_message(f"Loaded {os.path.basename(new_path)}")
-                dialog.accept()
+                viewer._update_nav_buttons()
+                viewer.show_status_message(f"Loaded {os.path.basename(new_path)}")
+                
+                # Update the selection in the list to show current file
+                file_list_widget.setCurrentRow(selected_idx)
+                
+            except RuntimeError as e:
+                # Viewer was deleted
+                dialog.close()
+            except Exception as e:
+                try:
+                    viewer.show_status_message(f"Error loading file: {str(e)}")
+                except:
+                    pass
 
         def on_double_click(item):
             on_open()
 
+        def on_close():
+            dialog.close()
+            
+        def on_dialog_destroyed():
+            """Clean up reference when dialog is destroyed"""
+            if hasattr(viewer, '_playlist_dialog'):
+                viewer._playlist_dialog = None
+
         open_btn.clicked.connect(on_open)
-        cancel_btn.clicked.connect(dialog.reject)
+        close_btn.clicked.connect(on_close)
         file_list_widget.itemDoubleClicked.connect(on_double_click)
 
         btn_layout.addStretch()
         btn_layout.addWidget(open_btn)
-        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(close_btn)
 
         layout.addLayout(btn_layout)
-        dialog.exec_()
+        
+        # Set up dialog for non-modal behavior
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(on_dialog_destroyed)
+        
+        # Show as non-modal
+        dialog.show()
 
     def closeEvent(self, event):
         # Clean up HPC temp file if exists
