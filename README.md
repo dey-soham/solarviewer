@@ -85,14 +85,7 @@
 ### Install from PyPI
 
 ```bash
-# Base installation
 pip install solarviewer
-
-# With LOFAR tools support (viewcaltable, viewds, viewlogs)
-pip install solarviewer[lofar]
-
-# Full installation with all optional dependencies (recommended)
-pip install solarviewer[full]
 ```
 
 ### Install from Source
@@ -100,12 +93,7 @@ pip install solarviewer[full]
 ```bash
 git clone https://github.com/dey-soham/solarviewer.git
 cd solarviewer
-
-# Full installation (editable mode) with all optional dependencies (recommended)
-pip install -e ".[full]"
-
-# With LOFAR tools
-pip install -e ".[lofar]"
+pip install -e .
 ```
 
 ### Dependencies

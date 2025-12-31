@@ -65,28 +65,18 @@ setup(
         "vispy>=0.11.0",
         "sunpy[image,map,net,timeseries,visualization]>=5.0.0",
         "pillow",
+        "python-casacore",
+        "seaborn",
+        "opencv-python-headless",
+        "dask>=2022.1.0",
+        "zarr>=2.11.0",
+        "pyqt5-sip>=12.9.0",
+        "qtpy>=2.0.0",
+        "imageio>=2.16.0",
+        "tifffile>=2022.2.2",
+        "aiapy>=0.1.0",
+        "imageio[ffmpeg]",
     ],
-    extras_require={
-        # LOFAR/SIMPL tools - install with: pip install solarviewer[lofar]
-        "lofar": [
-            "python-casacore",
-            "seaborn",
-            "opencv-python-headless",
-        ],
-        "full": [
-            "python-casacore",
-            "seaborn",
-            "opencv-python-headless",
-            "dask>=2022.1.0",
-            "zarr>=2.11.0",
-            "pyqt5-sip>=12.9.0",
-            "qtpy>=2.0.0",
-            "imageio>=2.16.0",
-            "tifffile>=2022.2.2",
-            "aiapy>=0.1.0",
-            "imageio[ffmpeg]",
-        ]
-    },
     entry_points={
         "console_scripts": [
             "solarviewer=solar_radio_image_viewer.main:main",
