@@ -9853,7 +9853,9 @@ class SolarRadioImageViewerApp(QMainWindow):
     def launch_data_downloader_gui(self):
         """Launch the Solar Data Downloader GUI."""
         try:
-            launch_downloader_gui(self)
+            # Try to extract datetime from current tab
+            initial_datetime = self._get_current_tab_datetime()
+            launch_downloader_gui(self, initial_datetime=initial_datetime)
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -9865,7 +9867,9 @@ class SolarRadioImageViewerApp(QMainWindow):
     def launch_radio_data_downloader_gui(self):
         """Launch the Radio Solar Data Downloader GUI."""
         try:
-            launch_radio_downloader_gui(self)
+            # Try to extract datetime from current tab
+            initial_datetime = self._get_current_tab_datetime()
+            launch_radio_downloader_gui(self, initial_datetime=initial_datetime)
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -9873,6 +9877,66 @@ class SolarRadioImageViewerApp(QMainWindow):
                 f"Failed to launch Radio Data Downloader GUI: {str(e)}\n\n"
                 "Please make sure all required dependencies are installed.",
             )
+
+    def _get_current_tab_datetime(self):
+        """Extract observation datetime from the current tab's image, if available."""
+        from datetime import datetime
+        
+        try:
+            # Get the current tab
+            current_tab = self.tab_widget.currentWidget()
+            if not current_tab:
+                return None
+            
+            obs_datetime = None
+            
+            # Method 1: Try FITS header
+            if hasattr(current_tab, 'current_header') and current_tab.current_header:
+                header = current_tab.current_header
+                for key in ["DATE-OBS", "DATE_OBS", "DATE", "STARTOBS", "T_OBS"]:
+                    if key in header:
+                        date_str = str(header[key]).strip()
+                        try:
+                            if "T" in date_str:
+                                # Clean the string: remove Z, timezone, and fractional seconds
+                                clean_str = date_str.replace("Z", "").split("+")[0].split(".")[0]
+                                if "-" in clean_str[11:]:
+                                    clean_str = clean_str[:19]
+                                obs_datetime = datetime.fromisoformat(clean_str)
+                                break
+                            elif "-" in date_str and len(date_str) >= 10:
+                                obs_datetime = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                                break
+                        except (ValueError, TypeError):
+                            continue
+            
+            # Method 2: Try CASA image metadata (if no FITS datetime found)
+            if not obs_datetime and hasattr(current_tab, 'imagename') and current_tab.imagename:
+                imagename = current_tab.imagename
+                # Check if it's a CASA image (directory or non-FITS file)
+                if not (imagename.lower().endswith(".fits") or imagename.lower().endswith(".fts")):
+                    try:
+                        from casatools import image as IA
+                        from astropy.time import Time
+                        
+                        ia_tool = IA()
+                        ia_tool.open(imagename)
+                        csys_record = ia_tool.coordsys().torecord()
+                        ia_tool.close()
+                        
+                        if "obsdate" in csys_record:
+                            obsdate = csys_record["obsdate"]
+                            m0 = obsdate.get("m0", {})
+                            mjd_value = m0.get("value", None)
+                            if mjd_value is not None:
+                                t = Time(mjd_value, format="mjd")
+                                obs_datetime = t.datetime
+                    except Exception:
+                        pass  # CASA not available or failed
+            
+            return obs_datetime
+        except Exception:
+            return None
 
     def launch_data_downloader_cli(self):
         """Launch the Solar Data Downloader CLI in a new terminal window."""
