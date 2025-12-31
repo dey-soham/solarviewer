@@ -272,8 +272,8 @@ class SolarRadioImageTab(QWidget):
         last_shortcut.activated.connect(self._on_last_file)
 
         # F11 for fullscreen toggle
-        fullscreen_shortcut = QShortcut(QKeySequence("F11"), self)
-        fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
+        # fullscreen_shortcut = QShortcut(QKeySequence("F11"), self)
+        # fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
 
     def show_status_message(self, message):
         """Helper method to show messages in the status bar"""
@@ -7063,7 +7063,7 @@ class SolarRadioImageTab(QWidget):
         self._update_nav_buttons()
         self.show_status_message(f"Loaded last file: {os.path.basename(new_path)}")
 
-    def _toggle_fullscreen(self):
+    '''def _toggle_fullscreen(self):
         """Toggle fullscreen mode for the main window"""
         main_window = self.window()
         if main_window:
@@ -7071,6 +7071,7 @@ class SolarRadioImageTab(QWidget):
                 main_window.showNormal()
             else:
                 main_window.showFullScreen()
+    '''
 
     def _show_filter_dialog(self):
         """Show a dialog to set the file filter pattern"""
@@ -7808,7 +7809,7 @@ class CustomTabWidget(QTabWidget):
 class SolarRadioImageViewerApp(QMainWindow):
     def __init__(self, imagename=None):
         super().__init__()
-        self.setWindowTitle("Solar Radio Image Viewer")
+        self.setWindowTitle("SolarViewer")
         self.resize(1920, 1080)
 
         # Use custom tab widget

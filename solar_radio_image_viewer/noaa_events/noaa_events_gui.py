@@ -1453,19 +1453,70 @@ class NOAAEventsViewer(QMainWindow):
             if not ts_list: return
             
             import matplotlib.pyplot as plt
+            import numpy as np
             from pandas.plotting import register_matplotlib_converters
             register_matplotlib_converters()
             
-            # Plot using SunPy
             # Create figure
-            fig = plt.figure(figsize=(10, 6))
-            ax = fig.add_subplot(111)
+            fig, ax = plt.subplots(figsize=(12, 6))
             
-            for t in ts_list:
-                t.plot(axes=ax)
+            # Try native SunPy TimeSeries.plot() first, fallback to manual plotting if it fails
+            # (e.g., due to xarray multi-dimensional indexing deprecation in newer versions)
+            try:
+                for t in ts_list:
+                    t.plot(axes=ax)
+            except (IndexError, TypeError, ValueError) as plot_err:
+                # Fallback: manual plotting with proper GOES styling
+                plt.close(fig)  # Close the failed figure
+                fig, ax = plt.subplots(figsize=(12, 6))
                 
+                # Color scheme for GOES channels
+                colors = {'xrsa': '#1f77b4', 'xrsb': '#d62728'}  # Blue for short, Red for long
+                labels = {'xrsa': 'GOES 0.5-4 Å', 'xrsb': 'GOES 1-8 Å'}
+                
+                for t in ts_list:
+                    # Convert to DataFrame to avoid xarray multi-dimensional indexing deprecation
+                    df = t.to_dataframe()
+                    
+                    # Only plot the actual flux columns (xrsa and xrsb), not quality flags
+                    for col in ['xrsa', 'xrsb']:
+                        if col in df.columns:
+                            data = df[col].values
+                            # Filter out invalid values (zeros, negatives, NaN)
+                            valid_mask = (data > 0) & np.isfinite(data)
+                            times = df.index[valid_mask]
+                            values = data[valid_mask]
+                            ax.plot(times, values, 
+                                   color=colors.get(col, 'gray'),
+                                   label=labels.get(col, col),
+                                   linewidth=1.0)
+                
+                # Set logarithmic scale for Y-axis (essential for GOES plots)
+                ax.set_yscale('log')
+                
+                # Set Y-axis limits and flare classification levels
+                ax.set_ylim(1e-9, 1e-3)
+                
+                # Add flare classification horizontal lines and labels
+                flare_levels = {
+                    'A': 1e-8,
+                    'B': 1e-7,
+                    'C': 1e-6,
+                    'M': 1e-5,
+                    'X': 1e-4,
+                }
+                for flare_class, level in flare_levels.items():
+                    ax.axhline(y=level, color='gray', linestyle='--', alpha=0.5, linewidth=0.8)
+                    ax.text(ax.get_xlim()[1], level, f' {flare_class}', 
+                           va='center', ha='left', fontsize=10, color='gray')
+                
+                # Labels and formatting
+                ax.set_xlabel('Time (UTC)')
+                ax.set_ylabel('Flux (W/m²)')
+                ax.legend(loc='upper right')
+                ax.grid(True, alpha=0.3, which='both')
+            
             ax.set_title(f"GOES X-ray Flux - {self.date_edit.date().toString('yyyy-MM-dd')}")
-            ax.legend()
             
             plt.tight_layout()
             plt.show(block=False) 

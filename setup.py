@@ -5,32 +5,32 @@ import subprocess
 import sys
 
 
-class PostInstallCommand(install):
-    """Post-installation: fix opencv-python conflict."""
-    def run(self):
-        install.run(self)
-        self._fix_opencv()
-    
-    def _fix_opencv(self):
-        """Uninstall opencv-python and ensure opencv-python-headless is installed."""
-        print("\n=== Fixing OpenCV installation ===")
-        # Uninstall opencv-python (may not exist, that's OK)
-        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python"], 
-                      capture_output=True)
-        # Uninstall opencv-python-headless (to ensure clean install)
-        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python-headless"], 
-                      capture_output=True)
-        # Install opencv-python-headless
-        subprocess.run([sys.executable, "-m", "pip", "install", "opencv-python-headless"], 
-                      check=True)
-        print("=== OpenCV headless installed successfully ===\n")
-
-
-class PostDevelopCommand(develop):
-    """Post-develop: fix opencv-python conflict for editable installs."""
-    def run(self):
-        develop.run(self)
-        PostInstallCommand._fix_opencv(self)
+# class PostInstallCommand(install):
+#     """Post-installation: fix opencv-python conflict."""
+#     def run(self):
+#         install.run(self)
+#         self._fix_opencv()
+#     
+#     def _fix_opencv(self):
+#         """Uninstall opencv-python and ensure opencv-python-headless is installed."""
+#         print("\n=== Fixing OpenCV installation ===")
+#         # Uninstall opencv-python (may not exist, that's OK)
+#         subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python"], 
+#                       capture_output=True)
+#         # Uninstall opencv-python-headless (to ensure clean install)
+#         subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python-headless"], 
+#                       capture_output=True)
+#         # Install opencv-python-headless
+#         subprocess.run([sys.executable, "-m", "pip", "install", "opencv-python-headless"], 
+#                       check=True)
+#         print("=== OpenCV headless installed successfully ===\n")
+# 
+# 
+# class PostDevelopCommand(develop):
+#     """Post-develop: fix opencv-python conflict for editable installs."""
+#     def run(self):
+#         develop.run(self)
+#         PostInstallCommand._fix_opencv(self)
 
 
 # Read the content of README.md
@@ -41,10 +41,10 @@ setup(
     name="solarviewer",
     version="1.0",
     packages=find_packages(),
-    cmdclass={
-        'install': PostInstallCommand,
-        'develop': PostDevelopCommand,
-    },
+    # cmdclass={
+    #     'install': PostInstallCommand,
+    #     'develop': PostDevelopCommand,
+    # },
     include_package_data=True,
     package_data={
         "solar_radio_image_viewer": ["assets/*.png", "assets/*.fits"],
