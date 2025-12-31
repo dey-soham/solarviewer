@@ -785,8 +785,43 @@ def process_image_wrapper(args):
         options_copy = options.copy()  # Make a copy to avoid thread safety issues
         options_copy["current_frame"] = idx
 
-        # Process the frame
-        result = process_image(file_path, options_copy, global_stats)
+        # Reconstruct ContourVideoProcessor if contour mode is enabled
+        # (ContourVideoProcessor objects can't be pickled for multiprocessing)
+        contour_processor = None
+        if options_copy.get("contour_video_enabled", False):
+            mode_map = {0: 'A', 1: 'B', 2: 'C'}
+            mode = mode_map.get(options_copy.get("contour_mode", 0), 'A')
+            
+            contour_settings = {
+                'level_type': options_copy.get('level_type', 'fraction'),
+                'pos_levels': options_copy.get('pos_levels', [0.1, 0.3, 0.5, 0.7, 0.9]),
+                'neg_levels': options_copy.get('neg_levels', [0.1, 0.3, 0.5, 0.7, 0.9]),
+                'pos_color': options_copy.get('pos_color', 'white'),
+                'neg_color': options_copy.get('neg_color', 'cyan'),
+                'linewidth': options_copy.get('linewidth', 1.0),
+                'pos_linestyle': '-',
+                'neg_linestyle': '--',
+            }
+            
+            contour_processor = ContourVideoProcessor(mode=mode, contour_settings=contour_settings)
+            
+            # Setup based on mode
+            if mode == 'A':
+                base_file = options_copy.get("base_file", "")
+                if base_file and os.path.exists(base_file):
+                    contour_processor.load_base_image(base_file, 
+                                                      stokes=options_copy.get("stokes", "I"),
+                                                      load_func=load_fits_data)
+            elif mode == 'B':
+                fixed_contour_file = options_copy.get("fixed_contour_file", "")
+                if fixed_contour_file and os.path.exists(fixed_contour_file):
+                    contour_processor.load_fixed_contour(fixed_contour_file,
+                                                         stokes=options_copy.get("stokes", "I"),
+                                                         load_func=load_fits_data)
+
+        # Process the frame with contour processor
+        result = process_image(file_path, options_copy, global_stats, 
+                               contour_processor=contour_processor, frame_idx=idx)
         return idx, result
     except Exception as e:
         logger.error(f"Error processing frame {idx} ({file_path}): {e}")

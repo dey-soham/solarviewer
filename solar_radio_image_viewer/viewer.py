@@ -9452,7 +9452,7 @@ class SolarRadioImageViewerApp(QMainWindow):
         layout.addWidget(title)
 
         # Version
-        version = QLabel("Version 1.0")
+        version = QLabel("Version 1.0.1")
         version.setStyleSheet("font-size: 12pt;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
