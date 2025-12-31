@@ -1575,7 +1575,7 @@ class VideoCreationDialog(QDialog):
                 "frame_number": self.frame_number_check.isChecked(),
                 "filename": self.filename_check.isChecked(),
                 "minmax_timeline_enabled": self.minmax_timeline_check.isChecked(),
-                "timeline_position": self.timeline_position_combo.currentIndex(),
+                "timeline_position": 0,  # Position selector removed - using default bottom dock
                 "timeline_source": self.timeline_source_combo.currentIndex(),  # 0=Colormap, 1=Contours
                 "timeline_log_scale": self.timeline_log_scale_check.isChecked(),
             }

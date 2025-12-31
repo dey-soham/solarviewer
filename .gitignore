@@ -6,5 +6,4 @@ __pycache__
 casa*.log
 test_data/
 unused_codes/
-.gitignore
 

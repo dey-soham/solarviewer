@@ -291,12 +291,13 @@ class MinMaxTimeline:
         
         # Current frame marker - vertical line and points
         if current_frame_idx < len(self.min_values):
-            ax.axvline(current_frame_idx, color='white', linestyle='-', 
-                      linewidth=1.5, alpha=0.9)
+            # Use gray for current frame line to work on both light/dark backgrounds
+            ax.axvline(current_frame_idx, color='gray', linestyle='-', 
+                      linewidth=1.5, alpha=0.7)
             ax.plot(current_frame_idx, self.min_values[current_frame_idx], 
-                   'o', color='#29B6F6', markersize=6, markeredgecolor='white', markeredgewidth=1)
+                   'o', color='#29B6F6', markersize=6, markeredgecolor='gray', markeredgewidth=1)
             ax.plot(current_frame_idx, self.max_values[current_frame_idx], 
-                   'o', color='#FF7043', markersize=6, markeredgecolor='white', markeredgewidth=1)
+                   'o', color='#FF7043', markersize=6, markeredgecolor='gray', markeredgewidth=1)
         
         # Set x limits to show full range
         if self.total_frames > 1:
@@ -310,21 +311,21 @@ class MinMaxTimeline:
             margin = (ymax - ymin) * 0.15 if ymax != ymin else abs(ymax) * 0.1
             ax.set_ylim(ymin - margin, ymax + margin)
         
-        # Style for dock panel (dark theme)
-        ax.set_facecolor('#1a1a2e')
-        ax.tick_params(colors='white', labelsize=9, direction='in', length=3)
+        # Style for dock panel (dynamic theme)
+        # ax.set_facecolor('#1a1a2e') # Let theme decide facecolor
+        ax.tick_params(labelsize=10, direction='in', length=3)
         
-        # Show only left and bottom spines
-        ax.spines['bottom'].set_color('#555555')
-        ax.spines['left'].set_color('#555555')
+        # Show only left and bottom spines (let theme decide color)
+        # ax.spines['bottom'].set_color('#555555')
+        # ax.spines['left'].set_color('#555555')
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         
         # X-axis: show frame numbers
-        ax.set_xlabel('Frame', fontsize=10, color='white', labelpad=2)
+        ax.set_xlabel('Frame', fontsize=11, labelpad=2)
         
         # Y-axis: show value range with scientific notation if needed
-        ax.set_ylabel('Value', fontsize=10, color='white', labelpad=2)
+        ax.set_ylabel('Value', fontsize=11, labelpad=2)
         
         # Apply log scale if enabled
         if self.log_scale:
@@ -338,7 +339,7 @@ class MinMaxTimeline:
         formatter.set_scientific(True)
         formatter.set_powerlimits((-2, 3))
         ax.yaxis.set_major_formatter(formatter)
-        ax.yaxis.get_offset_text().set_color('white')
+        # ax.yaxis.get_offset_text().set_color('white')
         ax.yaxis.get_offset_text().set_fontsize(8)
         
         # Add current values annotation
@@ -346,8 +347,8 @@ class MinMaxTimeline:
             curr_min = self.min_values[current_frame_idx]
             curr_max = self.max_values[current_frame_idx]
             info_text = f"Frame {current_frame_idx + 1}/{self.total_frames}"
-            ax.text(0.98, 0.92, info_text, transform=ax.transAxes, fontsize=9,
-                   color='white', ha='right', va='top', alpha=0.9)
+            ax.text(0.98, 0.92, info_text, transform=ax.transAxes, fontsize=10,
+                   ha='right', va='top', alpha=0.9)
         
         return ax
 

@@ -404,17 +404,17 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
         timeline_ax = None
         
         if timeline_enabled:
-            # Use GridSpec for bottom dock panel layout: 92% image, 8% timeline
-            gs = GridSpec(2, 1, height_ratios=[92, 8], hspace=0.05, figure=fig)
+            # Use GridSpec for bottom dock panel layout: 88% image, 12% timeline
+            gs = GridSpec(2, 1, height_ratios=[88, 12], hspace=0.25, figure=fig)
             
             if wcs_enabled and coord_info and coord_info.get("wcs"):
                 ax = fig.add_subplot(gs[0], projection=coord_info["wcs"])
             else:
                 ax = fig.add_subplot(gs[0])
             
-            # Create timeline axes with dark background
+            # Create timeline axes
             timeline_ax = fig.add_subplot(gs[1])
-            timeline_ax.set_facecolor('#1a1a2e')
+            # timeline_ax.set_facecolor('#1a1a2e')  # Removed to support dynamic themes
         else:
             # No timeline - use full figure for image
             if wcs_enabled and coord_info and coord_info.get("wcs"):
@@ -653,16 +653,22 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
 
         # Add colorbar if requested
         if options.get("colorbar", False):
-            cbar = fig.colorbar(img, ax=ax, pad=0.01, fraction=0.05)
             import matplotlib.ticker as mticker
-
+            
+            # Create colorbar with proper sizing that works with GridSpec
+            cbar = fig.colorbar(img, ax=ax, shrink=0.9, aspect=30, pad=0.05)
+            
+            # Format the colorbar nicely
+            cbar.ax.tick_params(labelsize=12)
             formatter = mticker.ScalarFormatter(useMathText=True)
             formatter.set_scientific(True)
-            formatter.set_powerlimits((-1, 1))
-            # cbar.ax.tick_params(labelsize=12)
+            formatter.set_powerlimits((-2, 3))
             cbar.ax.yaxis.set_major_formatter(formatter)
-            # if header and "BUNIT" in header:
-            #    cbar.set_label(header["BUNIT"])
+            cbar.ax.yaxis.get_offset_text().set_fontsize(12)
+            
+            # Add units if available
+            if header and "BUNIT" in header:
+                cbar.set_label(header["BUNIT"], fontsize=12)
 
         # Draw min/max timeline if enabled (using the pre-created timeline_ax from GridSpec)
         timeline = options.get("minmax_timeline", None)
