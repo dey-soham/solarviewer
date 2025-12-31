@@ -1,5 +1,37 @@
-numpy>=1.20.0
-napari>=0.4.16
+# Core dependencies
+setuptools<81
 PyQt5>=5.15.0
-scikit-image>=0.19.0
-matplotlib>=3.5.0 
+matplotlib>=3.5.0
+numpy>=1.20.0
+astropy>=5.0.0
+scipy>=1.7.0
+casatools>=6.4.0
+casatasks>=6.4.0
+sunpy[image,map,net,timeseries,visualization]>=5.0.0
+reproject>=0.10.0
+
+# Napari viewer dependencies
+napari>=0.4.16
+napari-console>=0.0.8
+napari-svg>=0.1.6
+vispy>=0.11.0
+dask>=2022.1.0
+zarr>=2.11.0
+drms
+
+# Optional dependencies for better performance
+pyqt5-sip>=12.9.0
+qtpy>=2.0.0
+imageio>=2.16.0
+tifffile>=2022.2.2 
+aiapy
+pillow
+
+# LOFAR/SIMPL tools dependencies
+python-casacore
+seaborn
+opencv-python-headless
+
+# Video creation dependencies
+imageio[ffmpeg]
+

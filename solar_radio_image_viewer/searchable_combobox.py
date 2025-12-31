@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QIcon
 import pkg_resources
+from .styles import get_icon_path, theme_manager
 
 
 class SearchDialog(QDialog):
@@ -146,20 +147,32 @@ class ColormapSelector(QWidget):
         self.search_button.setToolTip("Search all colormaps")
         self.search_button.setMaximumWidth(32)
         self.search_button.setFixedSize(32, 32)
-        self.search_button.setIcon(
-            QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/search.png"
-                )
-            )
-        )
+        self._update_search_icon()  # Use theme-aware icon
         self.search_button.setIconSize(QSize(24, 24))
         self.search_button.clicked.connect(self.show_search_dialog)
         self.main_layout.addWidget(self.search_button)
+        
+        # Register callback for theme changes
+        theme_manager.register_callback(self._on_theme_changed)
 
         if self.preferred_items:
             self.combo.setCurrentText(self.preferred_items[0])
             self.current_colormap = self.preferred_items[0]
+    
+    def _update_search_icon(self):
+        """Update the search icon based on the current theme."""
+        icon_filename = get_icon_path("search.png")
+        self.search_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", f"assets/{icon_filename}"
+                )
+            )
+        )
+    
+    def _on_theme_changed(self, theme):
+        """Handle theme change by updating the search icon."""
+        self._update_search_icon()
 
     def on_combo_changed(self, text):
         if text in self.all_items:

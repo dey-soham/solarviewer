@@ -3,8 +3,24 @@ import numpy as np
 
 # Try to import CASA tools & tasks
 try:
+    # Suppress CASA logging warnings before importing casatools
+    import os as _os
+    _os.environ['CASA_LOGLEVEL'] = 'ERROR'
+    _os.environ['CASARC'] = '/dev/null'
+    
     from casatools import image as IA
     from casatasks import immath
+    
+    # Configure CASA logging to suppress warnings
+    try:
+        from casatools import logsink
+        _casalog = logsink()
+        _casalog.setlogfile('/dev/null')  # Redirect CASA logs to null
+        _casalog.setglobal(True)
+        # Filter out WARN and INFO level messages
+        _casalog.filter('ERROR')
+    except Exception:
+        pass
 
     CASA_AVAILABLE = True
 except ImportError:
@@ -156,34 +172,61 @@ def get_pixel_values_from_image(
         # Ensure we can index; convert to numpy array if needed
         dimension_names = np.array(dimension_names)
 
-        try:
-            ra_idx = int(np.where(dimension_names == "Right Ascension")[0][0])
-        except IndexError:
-            raise ValueError("Right Ascension axis not found in image summary.")
+        if "Right Ascension" in dimension_names:
+            try:
+                ra_idx = int(np.where(dimension_names == "Right Ascension")[0][0])
+            except IndexError:
+                raise ValueError("Right Ascension axis not found in image summary.")
 
-        try:
-            dec_idx = int(np.where(dimension_names == "Declination")[0][0])
-        except IndexError:
-            raise ValueError("Declination axis not found in image summary.")
+            try:
+                dec_idx = int(np.where(dimension_names == "Declination")[0][0])
+            except IndexError:
+                raise ValueError("Declination axis not found in image summary.")
 
-        if "Stokes" in dimension_names:
-            stokes_idx = int(np.where(dimension_names == "Stokes")[0][0])
-            if dimension_shapes[stokes_idx] == 1:
+            if "Stokes" in dimension_names:
+                stokes_idx = int(np.where(dimension_names == "Stokes")[0][0])
+                if dimension_shapes[stokes_idx] == 1:
+                    single_stokes_flag = True
+            else:
+                # Assume single stokes; set index to 0
+                stokes_idx = None
                 single_stokes_flag = True
-        else:
-            # Assume single stokes; set index to 0
-            stokes_idx = None
-            single_stokes_flag = True
 
-        if "Frequency" in dimension_names:
-            freq_idx = int(np.where(dimension_names == "Frequency")[0][0])
-        else:
-            # If Frequency axis is missing, assume index 0
-            freq_idx = None
+            if "Frequency" in dimension_names:
+                freq_idx = int(np.where(dimension_names == "Frequency")[0][0])
+            else:
+                # If Frequency axis is missing, assume index 0
+                freq_idx = None
 
-        data = ia_tool.getchunk()
-        psf = ia_tool.restoringbeam()
-        csys = ia_tool.coordsys()
+            data = ia_tool.getchunk()
+            psf = ia_tool.restoringbeam()
+            csys = ia_tool.coordsys()
+        if "SOLAR-X" in dimension_names:
+            try:
+                ra_idx = int(np.where(dimension_names == "SOLAR-X")[0][0])
+            except IndexError:
+                raise ValueError("SOLAR-X axis not found in image summary.")
+            try:
+                dec_idx = int(np.where(dimension_names == "SOLAR-Y")[0][0])
+            except IndexError:
+                raise ValueError("SOLAR-Y axis not found in image summary.")
+
+            if "Stokes" in dimension_names:
+                stokes_idx = int(np.where(dimension_names == "Stokes")[0][0])
+                if dimension_shapes[stokes_idx] == 1:
+                    single_stokes_flag = True
+            else:
+                # Assume single stokes; set index to 0
+                stokes_idx = None
+            if "Frequency" in dimension_names:
+                freq_idx = int(np.where(dimension_names == "Frequency")[0][0])
+            else:
+                # If Frequency axis is missing, assume index 0
+                freq_idx = None
+            data = ia_tool.getchunk()
+            psf = ia_tool.restoringbeam()
+            csys = ia_tool.coordsys()
+
     except Exception as e:
         ia_tool.close()
         raise RuntimeError(f"Error reading image metadata: {e}")
@@ -275,8 +318,9 @@ def get_pixel_values_from_image(
         slice_list_I = [slice(None)] * n_dims
         slice_list_V[stokes_idx] = 3
         slice_list_I[stokes_idx] = 0
-        slice_list_V[freq_idx] = 0
-        slice_list_I[freq_idx] = 0
+        if freq_idx is not None:
+            slice_list_V[freq_idx] = 0
+            slice_list_I[freq_idx] = 0
         pix_V = data[tuple(slice_list_V)]
         pix_I = data[tuple(slice_list_I)]
         v_rms = estimate_rms_near_Sun(imagename, "V", rms_box)
@@ -296,8 +340,9 @@ def get_pixel_values_from_image(
         slice_list_I = [slice(None)] * n_dims
         slice_list_Q[stokes_idx] = 1
         slice_list_I[stokes_idx] = 0
-        slice_list_Q[freq_idx] = 0
-        slice_list_I[freq_idx] = 0
+        if freq_idx is not None:
+            slice_list_Q[freq_idx] = 0
+            slice_list_I[freq_idx] = 0
         pix_Q = data[tuple(slice_list_Q)]
         mask = np.abs(pix_Q) < (thres * q_rms)
         pix_Q[mask] = 0
@@ -316,8 +361,9 @@ def get_pixel_values_from_image(
         slice_list_I = [slice(None)] * n_dims
         slice_list_U[stokes_idx] = 2
         slice_list_I[stokes_idx] = 0
-        slice_list_U[freq_idx] = 0
-        slice_list_I[freq_idx] = 0
+        if freq_idx is not None:
+            slice_list_U[freq_idx] = 0
+            slice_list_I[freq_idx] = 0
         pix_U = data[tuple(slice_list_U)]
         mask = np.abs(pix_U) < (thres * u_rms)
         pix_U[mask] = 0
@@ -336,8 +382,9 @@ def get_pixel_values_from_image(
         slice_list_V = [slice(None)] * n_dims
         slice_list_U[stokes_idx] = 2
         slice_list_V[stokes_idx] = 3
-        slice_list_U[freq_idx] = 0
-        slice_list_V[freq_idx] = 0
+        if freq_idx is not None:
+            slice_list_U[freq_idx] = 0
+            slice_list_V[freq_idx] = 0
         pix_U = data[tuple(slice_list_U)]
         pix_V = data[tuple(slice_list_V)]
         mask = np.abs(pix_U) < (thres * u_rms)
@@ -351,6 +398,7 @@ def get_pixel_values_from_image(
             raise RuntimeError(
                 "The image is single stokes, but the Stokes parameter is not 'I'."
             )
+        # Get Q and U data
         slice_list_Q = [slice(None)] * n_dims
         slice_list_U = [slice(None)] * n_dims
         slice_list_Q[stokes_idx] = 1
@@ -359,7 +407,29 @@ def get_pixel_values_from_image(
         slice_list_U[freq_idx] = 0
         pix_Q = data[tuple(slice_list_Q)]
         pix_U = data[tuple(slice_list_U)]
+        
+        # Calculate polarized intensity for thresholding
+        p_intensity = np.sqrt(pix_Q**2 + pix_U**2)
+        
+        # Estimate RMS for polarized intensity using L (linear polarization) estimation
+        # We use Q RMS as an approximation since we can't directly estimate L RMS
+        q_rms = estimate_rms_near_Sun(imagename, "Q", rms_box)
+        u_rms = estimate_rms_near_Sun(imagename, "U", rms_box)
+        p_rms = np.sqrt(q_rms**2 + u_rms**2)
+        
+        # Calculate polarization angle: 0.5 * arctan2(U, Q) in degrees
         pix = 0.5 * np.arctan2(pix_U, pix_Q) * 180 / np.pi
+        
+        # Apply threshold mask - only show where polarized intensity is significant
+        mask = p_intensity < (thres * p_rms)
+        pix[mask] = np.nan
+        
+        # Handle any infinite values by setting them to NaN
+        pix = np.where(np.isinf(pix), np.nan, pix)
+        
+        # Remove pixels away from the Sun
+        pix = remove_pixels_away_from_sun(pix, csys, 55)
+
     else:
         slice_list_I = [slice(None)] * n_dims
         slice_list_I[stokes_idx] = 0
@@ -470,3 +540,413 @@ def twoD_elliptical_ring(coords, amplitude, xo, yo, inner_r, outer_r, offset):
     ring_mask = (dist2 >= inner2) & (dist2 <= outer2)
     vals[ring_mask] = offset + amplitude
     return vals.ravel()
+
+
+def generate_tb_map(imagename, outfile=None, flux_data=None):
+    """
+    Generate brightness temperature map from flux-calibrated image.
+    
+    Formula: TB = 1.222e6 * flux / freq^2 / (major * minor)
+    Where: freq in GHz, major/minor in arcsec
+    
+    Parameters
+    ----------
+    imagename : str
+        Path to the input image (FITS or CASA format)
+    outfile : str, optional
+        Path for output FITS file. If None, returns data without saving.
+    flux_data : numpy.ndarray, optional
+        Pre-loaded flux data. If None, loads from imagename.
+    
+    Returns
+    -------
+    tuple
+        (tb_data, header_info) where header_info contains beam and freq info
+        Returns (None, error_message) on failure
+    """
+    try:
+        from astropy.io import fits
+        
+        is_fits = imagename.endswith('.fits') or imagename.endswith('.fts')
+        
+        header_info = {}
+        
+        if is_fits:
+            # FITS file
+            with fits.open(imagename) as hdul:
+                header = hdul[0].header
+                if flux_data is None:
+                    flux_data = hdul[0].data
+                
+                # Get beam major/minor (degrees -> arcsec)
+                if 'BMAJ' in header and 'BMIN' in header:
+                    major = header['BMAJ'] * 3600
+                    minor = header['BMIN'] * 3600
+                else:
+                    return None, "Beam parameters (BMAJ/BMIN) not found in header"
+                
+                # Get frequency (Hz -> GHz)
+                freq_hz = None
+                for key in ['CRVAL3', 'CRVAL4', 'FREQ', 'RESTFRQ']:
+                    if key in header and header[key] is not None:
+                        try:
+                            val = float(header[key])
+                            if val > 1e6:  # Must be Hz
+                                freq_hz = val
+                                break
+                        except:
+                            pass
+                
+                if freq_hz is None:
+                    return None, "Frequency not found in header"
+                
+                freq_ghz = freq_hz / 1e9
+                
+                header_info = {
+                    'major': major,
+                    'minor': minor,
+                    'freq_ghz': freq_ghz,
+                    'original_header': header.copy()
+                }
+        else:
+            # CASA image
+            if not CASA_AVAILABLE:
+                return None, "CASA tools not available for CASA image"
+            
+            ia = IA()
+            ia.open(imagename)
+            
+            if flux_data is None:
+                flux_data = ia.getchunk()
+                # Squeeze to 2D for display (keep original for full Stokes save)
+                if flux_data.ndim == 4:
+                    flux_data = flux_data[:, :, 0, 0]  # Take first Stokes and freq
+                elif flux_data.ndim == 3:
+                    flux_data = flux_data[:, :, 0]  # Take first plane
+            
+            # Get beam info
+            beam = ia.restoringbeam()
+            if beam and 'major' in beam:
+                major = beam['major']['value']
+                minor = beam['minor']['value']
+                if beam['major']['unit'] == 'arcsec':
+                    pass  # already in arcsec
+                elif beam['major']['unit'] == 'deg':
+                    major *= 3600
+                    minor *= 3600
+            else:
+                ia.close()
+                return None, "Beam parameters not found in CASA image"
+            
+            # Get frequency
+            csys = ia.coordsys()
+            units = csys.units()
+            refval = csys.referencevalue()['numeric']
+            
+            freq_hz = None
+            for i, unit in enumerate(units):
+                if unit == 'Hz':
+                    freq_hz = refval[i]
+                    break
+            
+            ia.close()
+            
+            if freq_hz is None:
+                return None, "Frequency not found in CASA image"
+            
+            freq_ghz = freq_hz / 1e9
+            
+            header_info = {
+                'major': major,
+                'minor': minor,
+                'freq_ghz': freq_ghz
+            }
+        
+        # Calculate brightness temperature
+        # print(f"[TB] Beam: {header_info['major']:.2f}\" x {header_info['minor']:.2f}\", Freq: {header_info['freq_ghz']:.4f} GHz")
+        tb_data = 1.222e6 * flux_data / (freq_ghz**2) / (major * minor)
+        
+        # print(f"[TB] Temperature range: {np.nanmin(tb_data):.2e} to {np.nanmax(tb_data):.2e} K")
+        
+        # Save to file if outfile specified
+        if outfile is not None:
+            if is_fits:
+                new_header = header_info['original_header'].copy()
+                new_header['BUNIT'] = 'K'
+                new_header['HISTORY'] = 'Converted to brightness temperature by SolarViewer'
+                
+                # Ensure RESTFRQ is present (needed for downstream HPC conversion)
+                if 'RESTFRQ' not in new_header:
+                    freq_hz = header_info['freq_ghz'] * 1e9
+                    new_header['RESTFRQ'] = freq_hz
+                
+                # Get original data to check for full Stokes
+                original_data = fits.getdata(imagename)
+                
+                # Check if original is multi-Stokes (3D or 4D with Stokes axis)
+                if original_data.ndim >= 3:
+                    # Find number of Stokes planes
+                    stokes_idx = None
+                    for i in range(1, header_info['original_header'].get('NAXIS', 0) + 1):
+                        if header_info['original_header'].get(f'CTYPE{i}', '').upper() == 'STOKES':
+                            stokes_idx = i - 1  # 0-indexed for numpy
+                            break
+                    
+                    if stokes_idx is not None:
+                        # Full Stokes - convert all planes
+                        # print(f"[TB] Converting full Stokes data (shape: {original_data.shape})")
+                        tb_data_save = 1.222e6 * original_data / (freq_ghz**2) / (major * minor)
+                    else:
+                        # 3D but not Stokes - transpose as needed
+                        if original_data.shape != tb_data.shape:
+                            tb_data_save = tb_data.T
+                        else:
+                            tb_data_save = tb_data
+                else:
+                    # 2D data
+                    if original_data.shape != tb_data.shape:
+                        tb_data_save = tb_data.T
+                    else:
+                        tb_data_save = tb_data
+                
+                new_hdu = fits.PrimaryHDU(data=tb_data_save, header=new_header)
+                new_hdu.writeto(outfile, overwrite=True)
+            else:
+                # For CASA, need to export first
+                temp_export = outfile + '.temp_export.fits'
+                ia = IA()
+                ia.open(imagename)
+                ia.tofits(temp_export, overwrite=True, stokeslast=False)
+                ia.close()
+                
+                with fits.open(temp_export) as hdul:
+                    original_data = hdul[0].data
+                    new_header = hdul[0].header.copy()
+                    new_header['BUNIT'] = 'K'
+                    new_header['HISTORY'] = 'Converted to brightness temperature by SolarViewer'
+                    
+                    # Check for multi-Stokes
+                    if original_data.ndim >= 3:
+                        # Full Stokes - convert all planes
+                        # print(f"[TB] Converting full Stokes CASA data (shape: {original_data.shape})")
+                        tb_data_save = 1.222e6 * original_data / (freq_ghz**2) / (major * minor)
+                    else:
+                        if original_data.shape != tb_data.shape:
+                            tb_data_save = tb_data.T
+                        else:
+                            tb_data_save = tb_data
+                    new_hdu = fits.PrimaryHDU(data=tb_data_save, header=new_header)
+                    new_hdu.writeto(outfile, overwrite=True)
+                
+                if os.path.exists(temp_export):
+                    os.remove(temp_export)
+            
+            # print(f"[TB] Saved TB map to: {outfile}")
+        
+        return tb_data, header_info
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, str(e)
+
+
+def generate_flux_map(imagename, outfile=None, tb_data=None):
+    """
+    Generate flux map from brightness temperature image.
+    
+    Reverse formula: flux = TB * freq^2 * (major * minor) / 1.222e6
+    Where: freq in GHz, major/minor in arcsec
+    
+    Parameters
+    ----------
+    imagename : str
+        Path to the input TB image (FITS or CASA format)
+    outfile : str, optional
+        Path for output FITS file. If None, returns data without saving.
+    tb_data : numpy.ndarray, optional
+        Pre-loaded TB data. If None, loads from imagename.
+    
+    Returns
+    -------
+    tuple
+        (flux_data, header_info) where header_info contains beam and freq info
+        Returns (None, error_message) on failure
+    """
+    try:
+        from astropy.io import fits
+        
+        is_fits = imagename.endswith('.fits') or imagename.endswith('.fts')
+        
+        header_info = {}
+        
+        if is_fits:
+            # FITS file
+            with fits.open(imagename) as hdul:
+                header = hdul[0].header
+                if tb_data is None:
+                    tb_data = hdul[0].data
+                
+                # Get beam major/minor (degrees -> arcsec)
+                if 'BMAJ' in header and 'BMIN' in header:
+                    major = header['BMAJ'] * 3600
+                    minor = header['BMIN'] * 3600
+                else:
+                    return None, "Beam parameters (BMAJ/BMIN) not found in header"
+                
+                # Get frequency (Hz -> GHz)
+                freq_hz = None
+                for key in ['CRVAL3', 'CRVAL4', 'FREQ', 'RESTFRQ']:
+                    if key in header and header[key] is not None:
+                        try:
+                            val = float(header[key])
+                            if val > 1e6:  # Must be Hz
+                                freq_hz = val
+                                break
+                        except:
+                            pass
+                
+                if freq_hz is None:
+                    return None, "Frequency not found in header"
+                
+                freq_ghz = freq_hz / 1e9
+                
+                header_info = {
+                    'major': major,
+                    'minor': minor,
+                    'freq_ghz': freq_ghz,
+                    'original_header': header.copy()
+                }
+        else:
+            # CASA image
+            if not CASA_AVAILABLE:
+                return None, "CASA tools not available for CASA image"
+            
+            ia = IA()
+            ia.open(imagename)
+            
+            if tb_data is None:
+                tb_data = ia.getchunk()
+                while tb_data.ndim > 2:
+                    tb_data = tb_data[:, :, 0] if tb_data.shape[2] == 1 else tb_data[:, :, 0, 0]
+            
+            # Get beam info
+            beam = ia.restoringbeam()
+            if beam and 'major' in beam:
+                major = beam['major']['value']
+                minor = beam['minor']['value']
+                if beam['major']['unit'] == 'arcsec':
+                    pass
+                elif beam['major']['unit'] == 'deg':
+                    major *= 3600
+                    minor *= 3600
+            else:
+                ia.close()
+                return None, "Beam parameters not found in CASA image"
+            
+            # Get frequency
+            csys = ia.coordsys()
+            units = csys.units()
+            refval = csys.referencevalue()['numeric']
+            
+            freq_hz = None
+            for i, unit in enumerate(units):
+                if unit == 'Hz':
+                    freq_hz = refval[i]
+                    break
+            
+            ia.close()
+            
+            if freq_hz is None:
+                return None, "Frequency not found in CASA image"
+            
+            freq_ghz = freq_hz / 1e9
+            
+            header_info = {
+                'major': major,
+                'minor': minor,
+                'freq_ghz': freq_ghz
+            }
+        
+        # Calculate flux: flux = TB * freq^2 * (major * minor) / 1.222e6
+        # print(f"[Flux] Beam: {header_info['major']:.2f}\" x {header_info['minor']:.2f}\", Freq: {header_info['freq_ghz']:.4f} GHz")
+        flux_data = tb_data * (freq_ghz**2) * (major * minor) / 1.222e6
+        
+        # print(f"[Flux] Flux range: {np.nanmin(flux_data):.2e} to {np.nanmax(flux_data):.2e} Jy/beam")
+        
+        # Save to file if outfile specified
+        if outfile is not None:
+            if is_fits:
+                new_header = header_info['original_header'].copy()
+                new_header['BUNIT'] = 'Jy/beam'
+                new_header['HISTORY'] = 'Converted from brightness temperature by SolarViewer'
+                
+                # Ensure RESTFRQ is present (needed for downstream HPC conversion)
+                if 'RESTFRQ' not in new_header:
+                    freq_hz = header_info['freq_ghz'] * 1e9
+                    new_header['RESTFRQ'] = freq_hz
+                
+                # Get original data to check shape
+                original_data = fits.getdata(imagename)
+                
+                # Handle multi-Stokes
+                if original_data.ndim >= 3:
+                    stokes_idx = None
+                    for i in range(1, header_info['original_header'].get('NAXIS', 0) + 1):
+                        if header_info['original_header'].get(f'CTYPE{i}', '').upper() == 'STOKES':
+                            stokes_idx = i - 1
+                            break
+                    
+                    if stokes_idx is not None:
+                        # print(f"[Flux] Converting full Stokes data (shape: {original_data.shape})")
+                        flux_data_save = original_data * (freq_ghz**2) * (major * minor) / 1.222e6
+                    else:
+                        if original_data.shape != flux_data.shape:
+                            flux_data_save = flux_data.T
+                        else:
+                            flux_data_save = flux_data
+                else:
+                    if original_data.shape != flux_data.shape:
+                        flux_data_save = flux_data.T
+                    else:
+                        flux_data_save = flux_data
+                
+                new_hdu = fits.PrimaryHDU(data=flux_data_save, header=new_header)
+                new_hdu.writeto(outfile, overwrite=True)
+            else:
+                # For CASA, need to export first
+                temp_export = outfile + '.temp_export.fits'
+                ia = IA()
+                ia.open(imagename)
+                ia.tofits(temp_export, overwrite=True, stokeslast=False)
+                ia.close()
+                
+                with fits.open(temp_export) as hdul:
+                    original_data = hdul[0].data
+                    new_header = hdul[0].header.copy()
+                    new_header['BUNIT'] = 'Jy/beam'
+                    new_header['HISTORY'] = 'Converted from brightness temperature by SolarViewer'
+                    
+                    if original_data.ndim >= 3:
+                        # print(f"[Flux] Converting full Stokes CASA data (shape: {original_data.shape})")
+                        flux_data_save = original_data * (freq_ghz**2) * (major * minor) / 1.222e6
+                    else:
+                        if original_data.shape != flux_data.shape:
+                            flux_data_save = flux_data.T
+                        else:
+                            flux_data_save = flux_data
+                    
+                    new_hdu = fits.PrimaryHDU(data=flux_data_save, header=new_header)
+                    new_hdu.writeto(outfile, overwrite=True)
+                
+                if os.path.exists(temp_export):
+                    os.remove(temp_export)
+            
+            # print(f"[Flux] Saved flux map to: {outfile}")
+        
+        return flux_data, header_info
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, str(e)
