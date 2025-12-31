@@ -128,6 +128,11 @@ def get_stylesheet(palette, is_dark=True):
     QPushButton#PrimaryButton:hover {{
         background-color: {palette['highlight_hover']};
     }}
+    
+    QPushButton#PrimaryButton:disabled {{
+        background-color: {palette['disabled']};
+        color: {palette['border']};
+    }}
 
     QPushButton#IconOnlyButton {{
         min-width: 30px;

@@ -2177,28 +2177,43 @@ class VideoCreationDialog(QDialog):
             # In contour mode, check if required contour files are specified
             mode = self.contour_mode_combo.currentIndex()
             has_valid_input = False
+            missing_fields = []
             
             if mode == 0:  # Mode A: Fixed base + evolving contours
                 base_file = self.contour_base_file_edit.text().strip()
                 contour_dir = self.contour_dir_edit.text().strip()
-                has_valid_input = bool(base_file and os.path.exists(base_file) and contour_dir)
+                if not base_file or not os.path.exists(base_file):
+                    missing_fields.append("Base Image")
+                if not contour_dir or not os.path.isdir(contour_dir):
+                    missing_fields.append("Contour Directory")
+                has_valid_input = len(missing_fields) == 0
+                    
             elif mode == 1:  # Mode B: Fixed contour + evolving colormap
                 fixed_contour = self.contour_fixed_file_edit.text().strip()
                 colormap_dir = self.contour_colormap_dir_edit.text().strip()
-                has_valid_input = bool(fixed_contour and os.path.exists(fixed_contour) and colormap_dir)
+                if not fixed_contour or not os.path.exists(fixed_contour):
+                    missing_fields.append("Fixed Contour File")
+                if not colormap_dir or not os.path.isdir(colormap_dir):
+                    missing_fields.append("Colormap Directory")
+                has_valid_input = len(missing_fields) == 0
+                    
             elif mode == 2:  # Mode C: Both evolve
                 contour_dir = self.contour_dir_edit.text().strip()
                 colormap_dir = self.contour_colormap_dir_edit.text().strip()
-                has_valid_input = bool(contour_dir and colormap_dir)
+                if not contour_dir or not os.path.isdir(contour_dir):
+                    missing_fields.append("Contour Directory")
+                if not colormap_dir or not os.path.isdir(colormap_dir):
+                    missing_fields.append("Colormap Directory")
+                has_valid_input = len(missing_fields) == 0
             
             self.create_btn.setEnabled(has_valid_input)
             if not has_valid_input:
-                self.create_btn.setToolTip("Please fill in required contour mode inputs")
+                self.create_btn.setToolTip(f"Missing: {', '.join(missing_fields)}")
             else:
                 self.create_btn.setToolTip("")
         else:
-            # Normal mode - use existing validation
-            pass
+            # Normal mode - enable button (existing validation on create)
+            self.create_btn.setToolTip("")
 
     def toggle_contour_video_controls(self, enabled):
         """Enable or disable contour video controls"""
