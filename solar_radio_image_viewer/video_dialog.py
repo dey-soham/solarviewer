@@ -221,7 +221,7 @@ class VideoCreationDialog(QDialog):
         main_layout.setSpacing(10)
 
         # Create tab widget
-        tab_widget = QTabWidget()
+        self.tab_widget = QTabWidget()
 
         # Create tabs
         input_tab = QWidget()
@@ -244,18 +244,24 @@ class VideoCreationDialog(QDialog):
         preview_controls_layout.setSpacing(12)
 
         # Add "Show Preview Window" button
-        show_preview_btn = QPushButton("Show Preview Window")
+        show_preview_btn = QPushButton("Show Preview")
         show_preview_btn.setMinimumWidth(140)
         show_preview_btn.clicked.connect(self.show_preview_window)
         preview_controls_layout.addWidget(show_preview_btn)
 
         # Add "Update Preview" button
-        update_preview_btn = QPushButton("Update Preview")
+        update_preview_btn = QPushButton("Update")
         update_preview_btn.setMinimumWidth(140)
         update_preview_btn.clicked.connect(self.update_preview_from_reference)
         preview_controls_layout.addWidget(update_preview_btn)
         
         preview_controls_layout.addStretch()
+        
+        # Add "Contour Mode" checkbox
+        self.contour_video_enabled = QCheckBox("Contour Mode")
+        self.contour_video_enabled.setChecked(False)
+        self.contour_video_enabled.stateChanged.connect(self.toggle_contour_mode)
+        preview_controls_layout.addWidget(self.contour_video_enabled)
 
         # Add preview controls to the main layout first
         main_layout.addWidget(preview_controls_group)
@@ -426,11 +432,11 @@ class VideoCreationDialog(QDialog):
         range_form.addRow("Mode:", self.range_mode_combo)
 
         # Add explanatory label
-        self.range_explanation_label = QLabel(
+        '''self.range_explanation_label = QLabel(
             "Auto Per Frame: Min/max calculated independently for each frame"
         )
         self.range_explanation_label.setObjectName("SecondaryText")
-        range_form.addRow("", self.range_explanation_label)
+        range_form.addRow("", self.range_explanation_label)'''
 
         # Min/Max values in a horizontal layout
         minmax_widget = QWidget()
@@ -496,7 +502,7 @@ class VideoCreationDialog(QDialog):
         wcs_form.setVerticalSpacing(8)
 
         self.wcs_coords_check = QCheckBox("Show WCS Coordinates in Video")
-        self.wcs_coords_check.setChecked(False)
+        self.wcs_coords_check.setChecked(True)
         self.wcs_coords_check.setToolTip(
             "Display RA/Dec or Solar-X/Solar-Y coordinates instead of pixels"
         )
@@ -521,18 +527,18 @@ class VideoCreationDialog(QDialog):
         auto_percentile_btn.clicked.connect(self.apply_auto_percentile)
         presets_layout.addWidget(auto_percentile_btn, 0, 1)
 
-        auto_median_btn = QPushButton("Auto Median±3×RMS")
+        '''auto_median_btn = QPushButton("Auto Median±3×RMS")
         auto_median_btn.clicked.connect(self.apply_auto_median_rms)
-        presets_layout.addWidget(auto_median_btn, 1, 0)
+        presets_layout.addWidget(auto_median_btn, 1, 0)'''
 
         # AIA/HMI Presets
         aia_preset_btn = QPushButton("AIA 171Å Preset")
         aia_preset_btn.clicked.connect(self.apply_aia_preset)
-        presets_layout.addWidget(aia_preset_btn, 1, 1)
+        presets_layout.addWidget(aia_preset_btn, 1, 0)
 
         hmi_preset_btn = QPushButton("HMI Preset")
         hmi_preset_btn.clicked.connect(self.apply_hmi_preset)
-        presets_layout.addWidget(hmi_preset_btn, 2, 0)
+        presets_layout.addWidget(hmi_preset_btn, 1, 1)
 
         display_layout.addWidget(presets_group)
         display_layout.addStretch()
@@ -700,7 +706,7 @@ class VideoCreationDialog(QDialog):
         timeline_layout.addWidget(self.minmax_timeline_check)
 
         # Position selector
-        position_widget = QWidget()
+        '''position_widget = QWidget()
         position_layout = QHBoxLayout(position_widget)
         position_layout.setContentsMargins(0, 0, 0, 0)
         position_layout.setSpacing(10)
@@ -713,10 +719,30 @@ class VideoCreationDialog(QDialog):
         self.timeline_position_combo.setCurrentIndex(0)
         position_layout.addWidget(self.timeline_position_combo)
         position_layout.addStretch()
+        timeline_layout.addWidget(position_widget)'''
 
-        timeline_layout.addWidget(position_widget)
+        # Data source selector (for contour mode)
+        source_widget = QWidget()
+        source_layout = QHBoxLayout(source_widget)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.setSpacing(10)
+        
+        source_layout.addWidget(QLabel("Data Source:"))
+        self.timeline_source_combo = QComboBox()
+        self.timeline_source_combo.addItems(["Colormap", "Contours"])
+        self.timeline_source_combo.setCurrentIndex(0)
+        self.timeline_source_combo.setToolTip("Select which data to plot (applies in contour mode)")
+        source_layout.addWidget(self.timeline_source_combo)
+        source_layout.addStretch()
+        timeline_layout.addWidget(source_widget)
+        
+        # Log scale option
+        self.timeline_log_scale_check = QCheckBox("Use Log Scale")
+        self.timeline_log_scale_check.setChecked(False)
+        self.timeline_log_scale_check.setToolTip("Plot values on logarithmic scale")
+        timeline_layout.addWidget(self.timeline_log_scale_check)
 
-        timeline_info = QLabel("Plots min (blue) and max (red) pixel values over time")
+        timeline_info = QLabel("Plots min (blue) and max (orange) pixel values over time")
         timeline_info.setObjectName("SecondaryText")
         timeline_layout.addWidget(timeline_info)
 
@@ -829,11 +855,6 @@ class VideoCreationDialog(QDialog):
         contours_enable_layout.setContentsMargins(12, 16, 12, 12)
         contours_enable_layout.setSpacing(8)
 
-        self.contour_video_enabled = QCheckBox("Enable Contour Video Mode")
-        self.contour_video_enabled.setChecked(False)
-        self.contour_video_enabled.stateChanged.connect(self.toggle_contour_video_controls)
-        contours_enable_layout.addWidget(self.contour_video_enabled)
-
         # Mode selector
         mode_widget = QWidget()
         mode_layout = QHBoxLayout(mode_widget)
@@ -848,6 +869,7 @@ class VideoCreationDialog(QDialog):
             "C: Both evolve"
         ])
         self.contour_mode_combo.currentIndexChanged.connect(self.update_contour_mode_ui)
+        self.contour_mode_combo.currentIndexChanged.connect(self.update_create_button_state)
         mode_layout.addWidget(self.contour_mode_combo)
         mode_layout.addStretch()
 
@@ -868,6 +890,7 @@ class VideoCreationDialog(QDialog):
         base_file_layout.setSpacing(8)
         self.contour_base_file_edit = QLineEdit()
         self.contour_base_file_edit.setPlaceholderText("Select base image file...")
+        self.contour_base_file_edit.textChanged.connect(self.update_create_button_state)
         base_file_layout.addWidget(self.contour_base_file_edit)
         self.contour_base_file_btn = QPushButton("Browse")
         self.contour_base_file_btn.clicked.connect(self.browse_contour_base_file)
@@ -882,6 +905,7 @@ class VideoCreationDialog(QDialog):
         self.contour_dir_edit = QLineEdit()
         self.contour_dir_edit.setPlaceholderText("Select contour files directory...")
         self.contour_dir_edit.textChanged.connect(self.scan_contour_files)
+        self.contour_dir_edit.textChanged.connect(self.update_create_button_state)
         contour_dir_layout.addWidget(self.contour_dir_edit)
         self.contour_dir_btn = QPushButton("Browse")
         self.contour_dir_btn.clicked.connect(self.browse_contour_directory)
@@ -908,6 +932,7 @@ class VideoCreationDialog(QDialog):
         fixed_contour_layout.setSpacing(8)
         self.contour_fixed_file_edit = QLineEdit()
         self.contour_fixed_file_edit.setPlaceholderText("Select fixed contour file...")
+        self.contour_fixed_file_edit.textChanged.connect(self.update_create_button_state)
         fixed_contour_layout.addWidget(self.contour_fixed_file_edit)
         self.contour_fixed_file_btn = QPushButton("Browse")
         self.contour_fixed_file_btn.clicked.connect(self.browse_contour_fixed_file)
@@ -922,6 +947,7 @@ class VideoCreationDialog(QDialog):
         self.contour_colormap_dir_edit = QLineEdit()
         self.contour_colormap_dir_edit.setPlaceholderText("Select colormap files directory...")
         self.contour_colormap_dir_edit.textChanged.connect(self.scan_colormap_files)
+        self.contour_colormap_dir_edit.textChanged.connect(self.update_create_button_state)
         colormap_dir_layout.addWidget(self.contour_colormap_dir_edit)
         self.contour_colormap_dir_btn = QPushButton("Browse")
         self.contour_colormap_dir_btn.clicked.connect(self.browse_contour_colormap_directory)
@@ -998,16 +1024,19 @@ class VideoCreationDialog(QDialog):
         self.toggle_contour_video_controls(False)
         self.update_contour_mode_ui(0)
 
-        # Add tabs to tab widget
-        tab_widget.addTab(input_scroll, "Input")
-        tab_widget.addTab(display_scroll, "Display")
-        tab_widget.addTab(region_scroll, "Region")
-        tab_widget.addTab(overlay_scroll, "Overlays")
-        tab_widget.addTab(contours_scroll, "Contours")
-        tab_widget.addTab(output_scroll, "Output")
+        # Add tabs to tab widget (Contours is second when in Contour Mode)
+        self.tab_widget.addTab(input_scroll, "Input")
+        self.tab_widget.addTab(contours_scroll, "Contours")
+        self.tab_widget.addTab(display_scroll, "Display")
+        self.tab_widget.addTab(region_scroll, "Region")
+        self.tab_widget.addTab(overlay_scroll, "Overlays")
+        self.tab_widget.addTab(output_scroll, "Output")
 
         # Add the tab widget to the main layout (after the preview)
-        main_layout.addWidget(tab_widget)
+        main_layout.addWidget(self.tab_widget)
+        
+        # Disable Contours tab by default (enabled when Contour Mode checkbox is checked)
+        self.tab_widget.setTabEnabled(1, False)
 
         # Buttons at the bottom
         button_layout = QHBoxLayout()
@@ -1032,25 +1061,25 @@ class VideoCreationDialog(QDialog):
         """Enable/disable controls based on the range mode selection"""
         # Update the explanation label
         if index == 0:  # Fixed Range
-            self.range_explanation_label.setText(
+            '''self.range_explanation_label.setText(
                 "Fixed Range: Same min/max values used for all frames"
-            )
+            )'''
             # Enable min/max spinboxes
             self.vmin_spinbox.setEnabled(True)
             self.vmax_spinbox.setEnabled(True)
 
         elif index == 1:  # Auto Per Frame
-            self.range_explanation_label.setText(
+            '''self.range_explanation_label.setText(
                 "Auto Per Frame: Min/max calculated independently for each frame"
-            )
+            )'''
             # Disable min/max spinboxes (they'll be updated for reference only)
             self.vmin_spinbox.setEnabled(False)
             self.vmax_spinbox.setEnabled(False)
 
         else:  # Global Auto
-            self.range_explanation_label.setText(
+            '''self.range_explanation_label.setText(
                 "Global Auto: Min/max calculated once from all frames"
-            )
+            )'''
             # Disable min/max spinboxes
             self.vmin_spinbox.setEnabled(False)
             self.vmax_spinbox.setEnabled(False)
@@ -1419,55 +1448,60 @@ class VideoCreationDialog(QDialog):
     def create_video(self):
         """Create a video from the selected files"""
         try:
-            # Get input files
-            input_dir = self.input_directory_edit.text()
-            if not input_dir or not os.path.isdir(input_dir):
-                QMessageBox.warning(
-                    self,
-                    "Invalid Directory",
-                    "The specified input directory does not exist.",
-                )
-                return
-
-            input_pattern = self.input_pattern_edit.text()
-            input_path = os.path.join(input_dir, input_pattern)
-
-            # Verify files exist
-            matching_files = glob.glob(input_path)
-            if not matching_files:
-                QMessageBox.warning(
-                    self,
-                    "No Files Found",
-                    f"No files match the pattern: {input_path}",
-                )
-                return
-
-            # Validate extensions
-            invalid_extensions = []
-            for f in matching_files:
-                ext = os.path.splitext(f)[1].lower()
-                if ext not in [".fits", ".fts"]:
-                    invalid_extensions.append(os.path.basename(f))
+            # Initialize matching_files - will be set differently for contour mode
+            matching_files = []
             
-            if invalid_extensions:
-                # Show first few invalid files
-                msg = f"Found {len(invalid_extensions)} files with invalid extensions.\nOnly .fits and .fts files are supported."
-                if len(invalid_extensions) > 5:
-                    msg += f"\n\nExamples:\n" + "\n".join(invalid_extensions[:5]) + "\n..."
-                else:
-                    msg += f"\n\nFiles:\n" + "\n".join(invalid_extensions)
-                
-                QMessageBox.warning(self, "Invalid File Extensions", msg)
-                return
+            # Check if we're in contour mode - skip Input tab validation
+            if not self.contour_video_enabled.isChecked():
+                # Get input files from Input tab
+                input_dir = self.input_directory_edit.text()
+                if not input_dir or not os.path.isdir(input_dir):
+                    QMessageBox.warning(
+                        self,
+                        "Invalid Directory",
+                        "The specified input directory does not exist.",
+                    )
+                    return
 
-            # Sort the files based on selected method
-            sort_method = self.sort_combo.currentText().lower()
-            if sort_method == "filename":
-                matching_files.sort()
-            elif sort_method == "date/time":
-                matching_files.sort(key=os.path.getmtime)
-            elif sort_method == "extension":
-                matching_files.sort(key=lambda x: os.path.splitext(x)[1])
+                input_pattern = self.input_pattern_edit.text()
+                input_path = os.path.join(input_dir, input_pattern)
+
+                # Verify files exist
+                matching_files = glob.glob(input_path)
+                if not matching_files:
+                    QMessageBox.warning(
+                        self,
+                        "No Files Found",
+                        f"No files match the pattern: {input_path}",
+                    )
+                    return
+
+                # Validate extensions
+                invalid_extensions = []
+                for f in matching_files:
+                    ext = os.path.splitext(f)[1].lower()
+                    if ext not in [".fits", ".fts"]:
+                        invalid_extensions.append(os.path.basename(f))
+                
+                if invalid_extensions:
+                    # Show first few invalid files
+                    msg = f"Found {len(invalid_extensions)} files with invalid extensions.\nOnly .fits and .fts files are supported."
+                    if len(invalid_extensions) > 5:
+                        msg += f"\n\nExamples:\n" + "\n".join(invalid_extensions[:5]) + "\n..."
+                    else:
+                        msg += f"\n\nFiles:\n" + "\n".join(invalid_extensions)
+                    
+                    QMessageBox.warning(self, "Invalid File Extensions", msg)
+                    return
+
+                # Sort the files based on selected method
+                sort_method = self.sort_combo.currentText().lower()
+                if sort_method == "filename":
+                    matching_files.sort()
+                elif sort_method == "date/time":
+                    matching_files.sort(key=os.path.getmtime)
+                elif sort_method == "extension":
+                    matching_files.sort(key=lambda x: os.path.splitext(x)[1])
 
             # Get output file
             output_file = self.output_file_edit.text().strip()
@@ -1542,6 +1576,8 @@ class VideoCreationDialog(QDialog):
                 "filename": self.filename_check.isChecked(),
                 "minmax_timeline_enabled": self.minmax_timeline_check.isChecked(),
                 "timeline_position": self.timeline_position_combo.currentIndex(),
+                "timeline_source": self.timeline_source_combo.currentIndex(),  # 0=Colormap, 1=Contours
+                "timeline_log_scale": self.timeline_log_scale_check.isChecked(),
             }
 
             # Get region selection options
@@ -1672,9 +1708,64 @@ class VideoCreationDialog(QDialog):
                 create_video as create_video_function,
             )
 
+            # Determine which files to use based on contour mode
+            video_files = matching_files  # Default: use Input tab files
+            
+            if options.get("contour_video_enabled", False):
+                contour_mode = options.get("contour_mode", 0)
+                base_file = options.get("base_file", "")
+                contour_files = options.get("contour_files", [])
+                colormap_files = options.get("colormap_files", [])
+                fixed_contour = options.get("fixed_contour_file", "")
+                
+                if contour_mode == 0:  # Mode A: Fixed base + evolving contours
+                    # The base image is displayed repeatedly, contours evolve
+                    if not base_file or not os.path.exists(base_file):
+                        QMessageBox.warning(self, "Error", "Contour Mode A requires a base image file")
+                        return
+                    if not contour_files:
+                        QMessageBox.warning(self, "Error", "Contour Mode A requires a contour directory")
+                        return
+                    # Create list of base_file repeated for each contour frame
+                    video_files = [base_file] * len(contour_files)
+                    print(f"Mode A: {len(contour_files)} contour frames, base image: {os.path.basename(base_file)}")
+                        
+                elif contour_mode == 1:  # Mode B: Fixed contours + evolving colormap
+                    # Colormap images evolve, fixed contour overlaid on each
+                    if not fixed_contour or not os.path.exists(fixed_contour):
+                        QMessageBox.warning(self, "Error", "Contour Mode B requires a fixed contour file")
+                        return
+                    if not colormap_files:
+                        QMessageBox.warning(self, "Error", "Contour Mode B requires a colormap directory")
+                        return
+                    video_files = colormap_files
+                    print(f"Mode B: {len(colormap_files)} colormap frames, fixed contour: {os.path.basename(fixed_contour)}")
+                        
+                elif contour_mode == 2:  # Mode C: Both evolve
+                    # Both colormap and contours evolve frame by frame
+                    if not colormap_files:
+                        QMessageBox.warning(self, "Error", "Contour Mode C requires a colormap directory")
+                        return
+                    if not contour_files:
+                        QMessageBox.warning(self, "Error", "Contour Mode C requires a contour directory")
+                        return
+                    # Match file counts
+                    if len(colormap_files) != len(contour_files):
+                        QMessageBox.warning(
+                            self, "Warning", 
+                            f"Colormap ({len(colormap_files)}) and contour ({len(contour_files)}) file counts don't match. Using minimum."
+                        )
+                        min_count = min(len(colormap_files), len(contour_files))
+                        colormap_files = colormap_files[:min_count]
+                        options["contour_files"] = contour_files[:min_count]
+                    video_files = colormap_files
+                    print(f"Mode C: {len(colormap_files)} colormap frames, {len(contour_files)} contour frames")
+                
+                print(f"Contour Mode {contour_mode}: Using {len(video_files)} files for video")
+
             # Use a worker thread for video creation
             self.worker = VideoWorker(
-                matching_files,
+                video_files,
                 output_file,
                 options,
                 progress_dialog,
@@ -2061,6 +2152,51 @@ class VideoCreationDialog(QDialog):
         self.y_min_spinbox.setEnabled(enabled)
         self.y_max_spinbox.setEnabled(enabled)
         self.update_region_preview()
+
+    def toggle_contour_mode(self, enabled):
+        """Toggle Contour Mode - enables/disables Input and Contours tabs"""
+        # Input tab is at index 0, Contours tab is at index 1
+        self.tab_widget.setTabEnabled(0, not enabled)  # Disable Input when contour mode is ON
+        self.tab_widget.setTabEnabled(1, enabled)      # Enable Contours only when contour mode is ON
+        
+        # Also toggle the contour video controls
+        self.toggle_contour_video_controls(enabled)
+        
+        # Update create button state based on contour mode files
+        self.update_create_button_state()
+        
+        # If enabling contour mode, switch to Contours tab
+        if enabled:
+            self.tab_widget.setCurrentIndex(1)
+
+    def update_create_button_state(self):
+        """Update Create Video button state based on current mode and inputs"""
+        if self.contour_video_enabled.isChecked():
+            # In contour mode, check if required contour files are specified
+            mode = self.contour_mode_combo.currentIndex()
+            has_valid_input = False
+            
+            if mode == 0:  # Mode A: Fixed base + evolving contours
+                base_file = self.contour_base_file_edit.text().strip()
+                contour_dir = self.contour_dir_edit.text().strip()
+                has_valid_input = bool(base_file and os.path.exists(base_file) and contour_dir)
+            elif mode == 1:  # Mode B: Fixed contour + evolving colormap
+                fixed_contour = self.contour_fixed_file_edit.text().strip()
+                colormap_dir = self.contour_colormap_dir_edit.text().strip()
+                has_valid_input = bool(fixed_contour and os.path.exists(fixed_contour) and colormap_dir)
+            elif mode == 2:  # Mode C: Both evolve
+                contour_dir = self.contour_dir_edit.text().strip()
+                colormap_dir = self.contour_colormap_dir_edit.text().strip()
+                has_valid_input = bool(contour_dir and colormap_dir)
+            
+            self.create_btn.setEnabled(has_valid_input)
+            if not has_valid_input:
+                self.create_btn.setToolTip("Please fill in required contour mode inputs")
+            else:
+                self.create_btn.setToolTip("")
+        else:
+            # Normal mode - use existing validation
+            pass
 
     def toggle_contour_video_controls(self, enabled):
         """Enable or disable contour video controls"""
