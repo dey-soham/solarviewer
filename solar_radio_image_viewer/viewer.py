@@ -194,6 +194,9 @@ class SolarRadioImageTab(QWidget):
             None  # Original HPC file before RA/Dec conversion
         )
         self._radec_temp_file = None  # Path to RA/Dec temp file (from HPC->RA/Dec)
+        
+        # Track non-modal dialogs to prevent garbage collection
+        self._open_dialogs = []
 
         # Unique ID for temp file naming (prevents collisions in multi-tab)
         import uuid
@@ -6246,6 +6249,11 @@ class SolarRadioImageTab(QWidget):
         # Set up for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
+        
+        # Track dialog for garbage collection
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        
         dialog.show()
 
     def zoom_in(self):
@@ -6609,6 +6617,11 @@ class SolarRadioImageTab(QWidget):
         
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
+        
+        # Track dialog for garbage collection
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        
         dialog.show()
 
 
@@ -6674,6 +6687,11 @@ class SolarRadioImageTab(QWidget):
         
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
+        
+        # Track dialog for garbage collection
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        
         dialog.show()
 
     def load_contour_data(self):
@@ -7595,6 +7613,10 @@ class SolarRadioImageTab(QWidget):
         # Set up dialog for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
+        
+        # Track dialog for garbage collection
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
         
         # Show as non-modal
         dialog.show()
