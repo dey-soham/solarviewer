@@ -3195,7 +3195,8 @@ class SolarRadioImageTab(QWidget):
         # Initial plot
         update_histogram()
 
-        dialog.exec_()
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
 
     def _toggle_ruler_mode(self, checked):
         """Toggle ruler mode for distance measurement"""
@@ -3314,6 +3315,8 @@ class SolarRadioImageTab(QWidget):
         """Calculate angular distance between two pixel coordinates using WCS"""
         # Pixel distance
         pixel_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        dx_px = abs(x2 - x1)
+        dy_px = abs(y2 - y1)
 
         if self.current_wcs:
             try:
@@ -3324,11 +3327,44 @@ class SolarRadioImageTab(QWidget):
                 scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
 
                 # Calculate angular distance
-                dx_arcsec = abs(x2 - x1) * scale_x
-                dy_arcsec = abs(y2 - y1) * scale_y
+                dx_arcsec = dx_px * scale_x
+                dy_arcsec = dy_px * scale_y
                 angular_dist = np.sqrt(dx_arcsec**2 + dy_arcsec**2)
+                
+                # Get world coordinates for both points
+                world1 = self.current_wcs.toworld([x1, y1, 0, 0])["numeric"]
+                world2 = self.current_wcs.toworld([x2, y2, 0, 0])["numeric"]
+                ra1_deg = world1[0] * 180 / np.pi if world1[0] else None
+                dec1_deg = world1[1] * 180 / np.pi if world1[1] else None
+                ra2_deg = world2[0] * 180 / np.pi if world2[0] else None
+                dec2_deg = world2[1] * 180 / np.pi if world2[1] else None
+                
+                # Professional terminal output
+                print("\n" + "=" * 60)
+                print("              LINE DISTANCE MEASUREMENT")
+                print("=" * 60)
+                print(f"  Coordinate System: WCS (scale: {scale_x:.4f}\"/px)")
+                print("-" * 60)
+                print(f"  {'Point':<12} {'X (px)':<12} {'Y (px)':<12} {'RA (deg)':<15} {'Dec (deg)':<15}")
+                print("-" * 60)
+                if ra1_deg is not None and dec1_deg is not None:
+                    print(f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {ra1_deg:<15.6f} {dec1_deg:<15.6f}")
+                else:
+                    print(f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {'N/A':<15} {'N/A':<15}")
+                if ra2_deg is not None and dec2_deg is not None:
+                    print(f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {ra2_deg:<15.6f} {dec2_deg:<15.6f}")
+                else:
+                    print(f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {'N/A':<15} {'N/A':<15}")
+                print("-" * 60)
+                print(f"  {'ΔX':<20} {dx_px:>12.2f} px    {dx_arcsec:>12.2f} arcsec")
+                print(f"  {'ΔY':<20} {dy_px:>12.2f} px    {dy_arcsec:>12.2f} arcsec")
+                print("-" * 60)
+                print(f"  {'Total Distance':<20} {pixel_dist:>12.2f} px    {angular_dist:>12.2f} arcsec")
+                if angular_dist >= 60:
+                    print(f"  {'':<20} {'':<12}       {angular_dist/60:>12.2f} arcmin")
+                print("=" * 60 + "\n")
 
-                # Format output
+                # Format output for display
                 if angular_dist >= 60:
                     return f"{angular_dist / 60:.2f}' ({pixel_dist:.1f} px)"
                 else:
@@ -3338,6 +3374,23 @@ class SolarRadioImageTab(QWidget):
                 self.show_status_message(f"[Ruler] WCS error: {e}")
                 return f"{pixel_dist:.1f} px (WCS error)"
         else:
+            # Professional terminal output (pixel-only)
+            print("\n" + "=" * 60)
+            print("              LINE DISTANCE MEASUREMENT")
+            print("=" * 60)
+            print("  Coordinate System: Pixel")
+            print("-" * 60)
+            print(f"  {'Point':<12} {'X (px)':<15} {'Y (px)':<15}")
+            print("-" * 60)
+            print(f"  {'Start':<12} {x1:<15.2f} {y1:<15.2f}")
+            print(f"  {'End':<12} {x2:<15.2f} {y2:<15.2f}")
+            print("-" * 60)
+            print(f"  {'ΔX':<20} {dx_px:>15.2f} px")
+            print(f"  {'ΔY':<20} {dy_px:>15.2f} px")
+            print("-" * 60)
+            print(f"  {'Total Distance':<20} {pixel_dist:>15.2f} px")
+            print("=" * 60 + "\n")
+            
             return f"{pixel_dist:.1f} px"
 
     def _on_theme_change(self, theme):
@@ -3724,7 +3777,8 @@ class SolarRadioImageTab(QWidget):
         cancel_btn.clicked.connect(on_cancel)
         dialog.rejected.connect(on_cancel)
 
-        dialog.exec_()
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
 
     def _activate_profile_mode(self):
         """Activate profile mode with selected method"""
@@ -3960,7 +4014,8 @@ class SolarRadioImageTab(QWidget):
         # Reset for next measurement
         self._profile_start = None
 
-        dialog.exec_()
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
 
     def _show_radial_profile_dialog(self, cx, cy):
         """Show dialog for radial profile - set angle and length from center"""
@@ -4174,7 +4229,8 @@ class SolarRadioImageTab(QWidget):
 
         dialog.rejected.connect(on_reject)
 
-        dialog.exec_()
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
 
     def _extract_and_show_profile(self, x1, y1, x2, y2, is_radial=False):
         """Extract flux profile along line and show dialog
@@ -4284,6 +4340,116 @@ class SolarRadioImageTab(QWidget):
         ax.set_title(f"Profile from ({x1:.1f}, {y1:.1f}) to ({x2:.1f}, {y2:.1f})")
         ax.grid(True, alpha=0.3)
 
+        # Calculate FWHM (only for suitable single-peak profiles)
+        fwhm_value = None
+        fwhm_left = None
+        fwhm_right = None
+        show_fwhm = False
+        
+        try:
+            # Find max and baseline
+            max_val = np.nanmax(profile)
+            min_val = np.nanmin(profile)
+            half_max = (max_val + min_val) / 2
+            max_idx = np.nanargmax(profile)
+            
+            # Validation: Check if profile is suitable for FWHM
+            # 1. Peak must be prominent (at least 20% above min)
+            prominence = (max_val - min_val) / (abs(min_val) + 1e-10)
+            if prominence < 0.2:
+                raise ValueError("Peak not prominent enough")
+            
+            # 2. Peak should not be at the edges
+            if max_idx < len(profile) * 0.05 or max_idx > len(profile) * 0.95:
+                raise ValueError("Peak too close to edge")
+            
+            # 3. Count number of crossings through half-max (should be exactly 2 for FWHM)
+            above_half = profile > half_max
+            crossings = np.sum(np.diff(above_half.astype(int)) != 0)
+            if crossings != 2:
+                raise ValueError(f"Multiple peaks detected ({crossings} crossings)")
+            
+            # 4. Check monotonic decrease from peak to half-max on both sides
+            # Left side: profile should generally decrease from max to left crossing
+            left_half = profile[:max_idx]
+            if len(left_half) > 3:
+                # Check if left side is mostly increasing toward peak
+                left_diffs = np.diff(left_half)
+                if np.sum(left_diffs < 0) > len(left_diffs) * 0.5:
+                    raise ValueError("Non-monotonic left side")
+            
+            # Right side: profile should generally decrease from max to right crossing  
+            right_half = profile[max_idx:]
+            if len(right_half) > 3:
+                # Check if right side is mostly decreasing from peak
+                right_diffs = np.diff(right_half)
+                if np.sum(right_diffs > 0) > len(right_diffs) * 0.5:
+                    raise ValueError("Non-monotonic right side")
+            
+            # Find left crossing point (from max going left)
+            left_indices = np.where(profile[:max_idx] <= half_max)[0]
+            if len(left_indices) > 0:
+                left_idx = left_indices[-1]
+                # Linear interpolation for better accuracy
+                if left_idx + 1 < len(profile):
+                    denom = profile[left_idx + 1] - profile[left_idx]
+                    if abs(denom) > 1e-10:
+                        frac = (half_max - profile[left_idx]) / denom
+                        fwhm_left = distances[left_idx] + frac * (distances[left_idx + 1] - distances[left_idx])
+                    else:
+                        fwhm_left = distances[left_idx]
+                else:
+                    fwhm_left = distances[left_idx]
+            
+            # Find right crossing point (from max going right)
+            right_indices = np.where(profile[max_idx:] <= half_max)[0]
+            if len(right_indices) > 0:
+                right_idx = max_idx + right_indices[0]
+                # Linear interpolation for better accuracy
+                if right_idx > 0:
+                    denom = profile[right_idx] - profile[right_idx - 1]
+                    if abs(denom) > 1e-10:
+                        frac = (half_max - profile[right_idx - 1]) / denom
+                        fwhm_right = distances[right_idx - 1] + frac * (distances[right_idx] - distances[right_idx - 1])
+                    else:
+                        fwhm_right = distances[right_idx]
+                else:
+                    fwhm_right = distances[right_idx]
+            
+            # Calculate FWHM if both crossing points found
+            if fwhm_left is not None and fwhm_right is not None:
+                fwhm_value = abs(fwhm_right - fwhm_left)
+                show_fwhm = True
+                
+                # Draw FWHM visualization
+                ax.axhline(y=half_max, color='red', linestyle='--', alpha=0.7, label=f'Half Max = {half_max:.4g}')
+                ax.plot([fwhm_left, fwhm_right], [half_max, half_max], 'r-', linewidth=2.5, label=f'FWHM = {fwhm_value:.3f} {dist_unit}')
+                ax.plot([fwhm_left, fwhm_right], [half_max, half_max], 'ro', markersize=8)
+                
+                # Add vertical lines at FWHM boundaries
+                ax.axvline(x=fwhm_left, color='red', linestyle=':', alpha=0.5)
+                ax.axvline(x=fwhm_right, color='red', linestyle=':', alpha=0.5)
+                
+                ax.legend(loc='best', fontsize=9)
+                
+                # Print to terminal professionally
+                print("\n" + "=" * 50)
+                print("         FLUX PROFILE FWHM MEASUREMENT")
+                print("=" * 50)
+                print(f"  {'Max Value':<20} {max_val:>15.6g}")
+                print(f"  {'Min Value':<20} {min_val:>15.6g}")
+                print(f"  {'Half Maximum':<20} {half_max:>15.6g}")
+                print(f"  {'Left Position':<20} {fwhm_left:>15.3f} {dist_unit}")
+                print(f"  {'Right Position':<20} {fwhm_right:>15.3f} {dist_unit}")
+                print(f"  {'FWHM':<20} {fwhm_value:>15.3f} {dist_unit}")
+                print("=" * 50 + "\n")
+        except ValueError:
+            # Profile not suitable for FWHM - silently skip
+            pass
+        except Exception:
+            # Other errors - silently skip
+            pass
+
         # Add secondary x-axis at top with WCS coordinates
         if wcs_available and world_coords is not None:
             ax2 = ax.twiny()  # Create twin axis sharing y-axis
@@ -4305,11 +4471,12 @@ class SolarRadioImageTab(QWidget):
 
         fig.tight_layout()
 
-        # Statistics
+        # Statistics with FWHM
+        fwhm_str = f"FWHM: {fwhm_value:.3f} {dist_unit}" if fwhm_value else "FWHM: N/A"
         stats_text = (
             f"Min: {np.nanmin(profile):.6g}  |  Max: {np.nanmax(profile):.6g}  |  "
             f"Mean: {np.nanmean(profile):.6g}  |  Std: {np.nanstd(profile):.6g}  |  "
-            f"Points: {len(profile)}"
+            f"{fwhm_str}  |  Points: {len(profile)}"
         )
         stats_label = QLabel(stats_text)
         stats_label.setStyleSheet("font-family: monospace; padding: 5px;")
@@ -4349,7 +4516,8 @@ class SolarRadioImageTab(QWidget):
 
         layout.addLayout(btn_layout)
 
-        dialog.exec_()
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
 
     def show_image_stats(self, rms_box=None):
         if self.current_image_data is None:
@@ -5812,14 +5980,25 @@ class SolarRadioImageTab(QWidget):
 
         self.schedule_plot()
 
-    def add_text_annotation(self, x, y, text):
+    def add_text_annotation(self, x, y, text, color="yellow", fontsize=12, fontweight="normal", 
+                             fontstyle="normal", background=None, alpha=1.0):
+        """Add text annotation to the plot with customizable styling."""
         ax = self.figure.gca()
-        ax.text(x, y, text, color="yellow", fontsize=10)
+        bbox_props = None
+        if background:
+            bbox_props = dict(boxstyle="round,pad=0.3", facecolor=background, alpha=0.7)
+        ax.text(x, y, text, color=color, fontsize=fontsize, fontweight=fontweight,
+                fontstyle=fontstyle, bbox=bbox_props, alpha=alpha)
         self.canvas.draw()
 
-    def add_arrow_annotation(self, x1, y1, x2, y2):
+    def add_arrow_annotation(self, x1, y1, x2, y2, color="red", linewidth=2.0, 
+                             head_width=8, head_length=10, alpha=1.0):
+        """Add arrow annotation to the plot with customizable styling."""
         ax = self.figure.gca()
-        ax.arrow(x1, y1, x2 - x1, y2 - y1, color="red", width=0.3)
+        ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
+                    arrowprops=dict(arrowstyle="-|>", color=color, lw=linewidth,
+                                   mutation_scale=head_width),
+                    alpha=alpha)
         self.canvas.draw()
 
     def set_solar_disk_center(self):
@@ -7345,12 +7524,21 @@ class SolarRadioImageTab(QWidget):
 
         # Add buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(lambda: self.apply_dialog_rms_box(dialog))
-        button_box.rejected.connect(dialog.reject)
+        
+        def on_apply():
+            try:
+                self.apply_dialog_rms_box(dialog)
+            except RuntimeError:
+                QMessageBox.warning(dialog, "Error", "The target tab is no longer available.")
+                dialog.close()
+        
+        button_box.accepted.connect(on_apply)
+        button_box.rejected.connect(dialog.close)
         layout.addWidget(button_box)
 
-        # Show the dialog
-        dialog.exec_()
+        # Show the dialog as non-modal
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
 
     def update_dialog_rms_box(self):
         """Update RMS box sliders in the dialog when text entries change"""
@@ -7821,7 +8009,8 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.setCentralWidget(self.tab_widget)
         self.tabs = []
         self.max_tabs = 10
-        self.settings = QSettings("SolarRadioImageViewer", "ImageViewer")
+        self.settings = QSettings("SolarViewer", "SolarViewer")
+        self._open_dialogs = []  # Track non-modal dialogs to prevent garbage collection
 
         self.statusBar().showMessage("Ready")
         self.create_menus()
@@ -7943,7 +8132,6 @@ class SolarRadioImageViewerApp(QMainWindow):
         file_menu.addAction(export_data_act)
 
         export_tb_act = QAction("Export TB Map as FITS", self)
-        export_tb_act.setShortcut("Ctrl+T")
         export_tb_act.setStatusTip(
             "Convert and save brightness temperature map as FITS file"
         )
@@ -8661,7 +8849,10 @@ class SolarRadioImageViewerApp(QMainWindow):
         from .dialogs import BatchProcessDialog
 
         dialog = BatchProcessDialog(self)
-        dialog.exec_()
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        dialog.show()
 
     def show_metadata(self):
         current_tab = self.tab_widget.currentWidget()
@@ -8674,7 +8865,10 @@ class SolarRadioImageViewerApp(QMainWindow):
             from .dialogs import ImageInfoDialog
 
             dialog = ImageInfoDialog(self, metadata)
-            dialog.exec_()
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+            self._open_dialogs.append(dialog)
+            dialog.show()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to get metadata: {str(e)}")
 
@@ -8768,10 +8962,12 @@ class SolarRadioImageViewerApp(QMainWindow):
             return
 
         data = current_tab.current_image_data
+        roi_offset = (0, 0)  # Offset for ROI coordinates
 
         if current_tab.current_roi and isinstance(current_tab.current_roi, tuple):
             xlow, xhigh, ylow, yhigh = current_tab.current_roi
             data = data[xlow:xhigh, ylow:yhigh]
+            roi_offset = (ylow, xlow)  # Store offset for coordinate conversion
             if data.size == 0:
                 QMessageBox.warning(self, "Invalid ROI", "ROI contains no data")
                 return
@@ -8789,13 +8985,93 @@ class SolarRadioImageViewerApp(QMainWindow):
             popt, pcov = curve_fit(twoD_gaussian, coords, data_flat, p0=guess)
             perr = np.sqrt(np.diag(pcov))
 
-            msg = (
-                f"2D Gaussian Fit:\n"
-                f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
-                f"X0={popt[1]:.2f}±{perr[1]:.2f}, Y0={popt[2]:.2f}±{perr[2]:.2f}\n"
-                f"SigmaX={popt[3]:.2f}±{perr[3]:.2f}, SigmaY={popt[4]:.2f}±{perr[4]:.2f}\n"
-                f"Theta={popt[5]:.2f}±{perr[5]:.2f}, Offset={popt[6]:.4g}±{perr[6]:.4g}"
-            )
+            # Get absolute pixel coordinates (accounting for ROI offset)
+            x0_px = popt[1] + roi_offset[0]
+            y0_px = popt[2] + roi_offset[1]
+            sigma_x_px = abs(popt[3])
+            sigma_y_px = abs(popt[4])
+
+            # Try WCS conversion
+            use_wcs = False
+            wcs_info = ""
+            if current_tab.current_wcs:
+                try:
+                    # Get pixel scale from WCS (radians -> arcsec)
+                    increment = current_tab.current_wcs.increment()["numeric"][0:2]
+                    scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
+                    scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
+                    
+                    # Convert to world coordinates
+                    world = current_tab.current_wcs.toworld([x0_px, y0_px, 0, 0])["numeric"]
+                    ra_deg = world[0] * 180 / np.pi if world[0] else None
+                    dec_deg = world[1] * 180 / np.pi if world[1] else None
+                    
+                    # Convert sigma to arcsec (FWHM = 2.355 * sigma)
+                    sigma_x_arcsec = sigma_x_px * scale_x
+                    sigma_y_arcsec = sigma_y_px * scale_y
+                    fwhm_x_arcsec = 2.355 * sigma_x_arcsec
+                    fwhm_y_arcsec = 2.355 * sigma_y_arcsec
+                    
+                    use_wcs = True
+                    wcs_info = f"WCS (scale: {scale_x:.4f}\"/px)"
+                except Exception as wcs_err:
+                    print(f"[INFO] WCS conversion failed, using pixel coordinates: {wcs_err}")
+
+            # Professional terminal output
+            print("\n" + "=" * 60)
+            print("              2D GAUSSIAN FIT RESULTS")
+            print("=" * 60)
+            if use_wcs:
+                print(f"  Coordinate System: {wcs_info}")
+                print("-" * 60)
+                print(f"  {'Parameter':<20} {'Value':>15} {'Error':>15}")
+                print("-" * 60)
+                print(f"  {'Amplitude':<20} {popt[0]:>15.4g} {perr[0]:>15.4g}")
+                if ra_deg is not None:
+                    print(f"  {'RA (deg)':<20} {ra_deg:>15.6f}")
+                if dec_deg is not None:
+                    print(f"  {'Dec (deg)':<20} {dec_deg:>15.6f}")
+                print(f"  {'X0 (pixel)':<20} {x0_px:>15.2f} {perr[1]:>15.2f}")
+                print(f"  {'Y0 (pixel)':<20} {y0_px:>15.2f} {perr[2]:>15.2f}")
+                print(f"  {'Sigma X (arcsec)':<20} {sigma_x_arcsec:>15.3f}")
+                print(f"  {'Sigma Y (arcsec)':<20} {sigma_y_arcsec:>15.3f}")
+                print(f"  {'FWHM X (arcsec)':<20} {fwhm_x_arcsec:>15.3f}")
+                print(f"  {'FWHM Y (arcsec)':<20} {fwhm_y_arcsec:>15.3f}")
+                print(f"  {'Theta (rad)':<20} {popt[5]:>15.4f} {perr[5]:>15.4f}")
+                print(f"  {'Offset':<20} {popt[6]:>15.4g} {perr[6]:>15.4g}")
+            else:
+                print("  Coordinate System: Pixel")
+                print("-" * 60)
+                print(f"  {'Parameter':<20} {'Value':>15} {'Error':>15}")
+                print("-" * 60)
+                print(f"  {'Amplitude':<20} {popt[0]:>15.4g} {perr[0]:>15.4g}")
+                print(f"  {'X0 (pixel)':<20} {x0_px:>15.2f} {perr[1]:>15.2f}")
+                print(f"  {'Y0 (pixel)':<20} {y0_px:>15.2f} {perr[2]:>15.2f}")
+                print(f"  {'Sigma X (pixel)':<20} {sigma_x_px:>15.2f} {perr[3]:>15.2f}")
+                print(f"  {'Sigma Y (pixel)':<20} {sigma_y_px:>15.2f} {perr[4]:>15.2f}")
+                print(f"  {'FWHM X (pixel)':<20} {2.355 * sigma_x_px:>15.2f}")
+                print(f"  {'FWHM Y (pixel)':<20} {2.355 * sigma_y_px:>15.2f}")
+                print(f"  {'Theta (rad)':<20} {popt[5]:>15.4f} {perr[5]:>15.4f}")
+                print(f"  {'Offset':<20} {popt[6]:>15.4g} {perr[6]:>15.4g}")
+            print("=" * 60 + "\n")
+
+            # GUI message (compact version)
+            if use_wcs:
+                msg = (
+                    f"2D Gaussian Fit (WCS):\n"
+                    f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
+                    f"Position: ({x0_px:.1f}, {y0_px:.1f}) px\n"
+                    f"FWHM: {fwhm_x_arcsec:.2f}\" × {fwhm_y_arcsec:.2f}\"\n"
+                    f"Theta={popt[5]:.3f} rad"
+                )
+            else:
+                msg = (
+                    f"2D Gaussian Fit (Pixel):\n"
+                    f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
+                    f"X0={x0_px:.2f}±{perr[1]:.2f}, Y0={y0_px:.2f}±{perr[2]:.2f}\n"
+                    f"σX={sigma_x_px:.2f}±{perr[3]:.2f}, σY={sigma_y_px:.2f}±{perr[4]:.2f}\n"
+                    f"Theta={popt[5]:.2f}±{perr[5]:.2f}"
+                )
 
             QMessageBox.information(self, "Fit Result", msg)
 
@@ -8822,7 +9098,6 @@ class SolarRadioImageViewerApp(QMainWindow):
                     fitted_data.transpose(),
                     origin="lower",
                     cmap="viridis",
-                    # aspect="auto",
                 )
                 ax2.set_title("Gaussian Fit")
 
@@ -8838,7 +9113,10 @@ class SolarRadioImageViewerApp(QMainWindow):
                 layout.addWidget(buttons)
 
                 dialog.setLayout(layout)
-                dialog.exec_()
+                dialog.setAttribute(Qt.WA_DeleteOnClose)
+                dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+                self._open_dialogs.append(dialog)
+                dialog.show()
 
         except Exception as e:
             QMessageBox.warning(self, "Fit Error", f"Gaussian fit failed: {str(e)}")
@@ -8850,10 +9128,12 @@ class SolarRadioImageViewerApp(QMainWindow):
             return
 
         data = current_tab.current_image_data
+        roi_offset = (0, 0)  # Offset for ROI coordinates
 
         if current_tab.current_roi and isinstance(current_tab.current_roi, tuple):
             xlow, xhigh, ylow, yhigh = current_tab.current_roi
             data = data[xlow:xhigh, ylow:yhigh]
+            roi_offset = (ylow, xlow)  # Store offset for coordinate conversion
             if data.size == 0:
                 QMessageBox.warning(self, "Invalid ROI", "ROI contains no data")
                 return
@@ -8871,13 +9151,90 @@ class SolarRadioImageViewerApp(QMainWindow):
             popt, pcov = curve_fit(twoD_elliptical_ring, coords, data_flat, p0=guess)
             perr = np.sqrt(np.diag(pcov))
 
-            msg = (
-                f"2D Elliptical Ring Fit:\n"
-                f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
-                f"X0={popt[1]:.2f}±{perr[1]:.2f}, Y0={popt[2]:.2f}±{perr[2]:.2f}\n"
-                f"Inner R={popt[3]:.2f}±{perr[3]:.2f}, Outer R={popt[4]:.2f}±{perr[4]:.2f}\n"
-                f"Offset={popt[5]:.4g}±{perr[5]:.4g}"
-            )
+            # Get absolute pixel coordinates (accounting for ROI offset)
+            x0_px = popt[1] + roi_offset[0]
+            y0_px = popt[2] + roi_offset[1]
+            inner_r_px = abs(popt[3])
+            outer_r_px = abs(popt[4])
+
+            # Try WCS conversion
+            use_wcs = False
+            wcs_info = ""
+            if current_tab.current_wcs:
+                try:
+                    # Get pixel scale from WCS (radians -> arcsec)
+                    increment = current_tab.current_wcs.increment()["numeric"][0:2]
+                    scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
+                    scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
+                    avg_scale = (scale_x + scale_y) / 2
+                    
+                    # Convert to world coordinates
+                    world = current_tab.current_wcs.toworld([x0_px, y0_px, 0, 0])["numeric"]
+                    ra_deg = world[0] * 180 / np.pi if world[0] else None
+                    dec_deg = world[1] * 180 / np.pi if world[1] else None
+                    
+                    # Convert radii to arcsec
+                    inner_r_arcsec = inner_r_px * avg_scale
+                    outer_r_arcsec = outer_r_px * avg_scale
+                    width_arcsec = outer_r_arcsec - inner_r_arcsec
+                    
+                    use_wcs = True
+                    wcs_info = f"WCS (scale: {avg_scale:.4f}\"/px)"
+                except Exception as wcs_err:
+                    print(f"[INFO] WCS conversion failed, using pixel coordinates: {wcs_err}")
+
+            # Professional terminal output
+            print("\n" + "=" * 60)
+            print("           2D ELLIPTICAL RING FIT RESULTS")
+            print("=" * 60)
+            if use_wcs:
+                print(f"  Coordinate System: {wcs_info}")
+                print("-" * 60)
+                print(f"  {'Parameter':<20} {'Value':>15} {'Error':>15}")
+                print("-" * 60)
+                print(f"  {'Amplitude':<20} {popt[0]:>15.4g} {perr[0]:>15.4g}")
+                if ra_deg is not None:
+                    print(f"  {'RA (deg)':<20} {ra_deg:>15.6f}")
+                if dec_deg is not None:
+                    print(f"  {'Dec (deg)':<20} {dec_deg:>15.6f}")
+                print(f"  {'X0 (pixel)':<20} {x0_px:>15.2f} {perr[1]:>15.2f}")
+                print(f"  {'Y0 (pixel)':<20} {y0_px:>15.2f} {perr[2]:>15.2f}")
+                print(f"  {'Inner R (arcsec)':<20} {inner_r_arcsec:>15.3f}")
+                print(f"  {'Outer R (arcsec)':<20} {outer_r_arcsec:>15.3f}")
+                print(f"  {'Ring Width (arcsec)':<20} {width_arcsec:>15.3f}")
+                print(f"  {'Inner R (pixel)':<20} {inner_r_px:>15.2f} {perr[3]:>15.2f}")
+                print(f"  {'Outer R (pixel)':<20} {outer_r_px:>15.2f} {perr[4]:>15.2f}")
+                print(f"  {'Offset':<20} {popt[5]:>15.4g} {perr[5]:>15.4g}")
+            else:
+                print("  Coordinate System: Pixel")
+                print("-" * 60)
+                print(f"  {'Parameter':<20} {'Value':>15} {'Error':>15}")
+                print("-" * 60)
+                print(f"  {'Amplitude':<20} {popt[0]:>15.4g} {perr[0]:>15.4g}")
+                print(f"  {'X0 (pixel)':<20} {x0_px:>15.2f} {perr[1]:>15.2f}")
+                print(f"  {'Y0 (pixel)':<20} {y0_px:>15.2f} {perr[2]:>15.2f}")
+                print(f"  {'Inner R (pixel)':<20} {inner_r_px:>15.2f} {perr[3]:>15.2f}")
+                print(f"  {'Outer R (pixel)':<20} {outer_r_px:>15.2f} {perr[4]:>15.2f}")
+                print(f"  {'Ring Width (pixel)':<20} {outer_r_px - inner_r_px:>15.2f}")
+                print(f"  {'Offset':<20} {popt[5]:>15.4g} {perr[5]:>15.4g}")
+            print("=" * 60 + "\n")
+
+            # GUI message (compact version)
+            if use_wcs:
+                msg = (
+                    f"2D Ring Fit (WCS):\n"
+                    f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
+                    f"Center: ({x0_px:.1f}, {y0_px:.1f}) px\n"
+                    f"Inner R={inner_r_arcsec:.2f}\", Outer R={outer_r_arcsec:.2f}\"\n"
+                    f"Ring Width={width_arcsec:.2f}\""
+                )
+            else:
+                msg = (
+                    f"2D Ring Fit (Pixel):\n"
+                    f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
+                    f"X0={x0_px:.2f}±{perr[1]:.2f}, Y0={y0_px:.2f}±{perr[2]:.2f}\n"
+                    f"Inner R={inner_r_px:.2f}±{perr[3]:.2f}, Outer R={outer_r_px:.2f}±{perr[4]:.2f}"
+                )
 
             QMessageBox.information(self, "Fit Result", msg)
 
@@ -8892,35 +9249,100 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Add Text Annotation")
+        dialog.setMinimumWidth(350)
         layout = QVBoxLayout(dialog)
 
-        form_layout = QGridLayout()
-        form_layout.addWidget(QLabel("X Position:"), 0, 0)
+        # Position group
+        pos_group = QGroupBox("Position")
+        pos_layout = QGridLayout(pos_group)
+        pos_layout.addWidget(QLabel("X:"), 0, 0)
         x_pos = QLineEdit("100")
-        form_layout.addWidget(x_pos, 0, 1)
-        form_layout.addWidget(QLabel("Y Position:"), 1, 0)
+        pos_layout.addWidget(x_pos, 0, 1)
+        pos_layout.addWidget(QLabel("Y:"), 0, 2)
         y_pos = QLineEdit("100")
-        form_layout.addWidget(y_pos, 1, 1)
-        form_layout.addWidget(QLabel("Text:"), 2, 0)
+        pos_layout.addWidget(y_pos, 0, 3)
+        layout.addWidget(pos_group)
+
+        # Text group
+        text_group = QGroupBox("Text")
+        text_layout = QVBoxLayout(text_group)
         text_input = QLineEdit("Annotation")
-        form_layout.addWidget(text_input, 2, 1)
-        layout.addLayout(form_layout)
+        text_layout.addWidget(text_input)
+        layout.addWidget(text_group)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
+        # Style group
+        style_group = QGroupBox("Style")
+        style_layout = QGridLayout(style_group)
+        
+        # Color
+        style_layout.addWidget(QLabel("Color:"), 0, 0)
+        color_combo = QComboBox()
+        color_combo.addItems(["yellow", "white", "red", "cyan", "lime", "magenta", "orange", "blue", "black"])
+        style_layout.addWidget(color_combo, 0, 1)
+        
+        # Font size
+        style_layout.addWidget(QLabel("Font Size:"), 0, 2)
+        fontsize_spin = QSpinBox()
+        fontsize_spin.setRange(6, 48)
+        fontsize_spin.setValue(12)
+        style_layout.addWidget(fontsize_spin, 0, 3)
+        
+        # Font weight
+        style_layout.addWidget(QLabel("Weight:"), 1, 0)
+        weight_combo = QComboBox()
+        weight_combo.addItems(["normal", "bold"])
+        style_layout.addWidget(weight_combo, 1, 1)
+        
+        # Font style
+        style_layout.addWidget(QLabel("Style:"), 1, 2)
+        fontstyle_combo = QComboBox()
+        fontstyle_combo.addItems(["normal", "italic"])
+        style_layout.addWidget(fontstyle_combo, 1, 3)
+        
+        # Background
+        style_layout.addWidget(QLabel("Background:"), 2, 0)
+        bg_combo = QComboBox()
+        bg_combo.addItems(["None", "black", "white", "gray", "yellow", "red", "blue"])
+        style_layout.addWidget(bg_combo, 2, 1)
+        
+        layout.addWidget(style_group)
 
-        if dialog.exec_() == QDialog.Accepted:
+        # Store tab reference for callback
+        tab_ref = current_tab
+
+        def on_accept():
             try:
+                # Check if tab still exists
+                if tab_ref not in [self.tab_widget.widget(i) for i in range(self.tab_widget.count())]:
+                    QMessageBox.warning(self, "Error", "The target tab has been closed.")
+                    dialog.close()
+                    return
                 x = int(x_pos.text())
                 y = int(y_pos.text())
                 text = text_input.text()
-                current_tab.add_text_annotation(x, y, text)
+                color = color_combo.currentText()
+                fontsize = fontsize_spin.value()
+                fontweight = weight_combo.currentText()
+                fontstyle = fontstyle_combo.currentText()
+                background = bg_combo.currentText() if bg_combo.currentText() != "None" else None
+                tab_ref.add_text_annotation(x, y, text, color=color, fontsize=fontsize, 
+                                           fontweight=fontweight, fontstyle=fontstyle, background=background)
+                dialog.close()
             except ValueError:
-                QMessageBox.warning(
-                    self, "Invalid Input", "Please enter valid numeric coordinates"
-                )
+                QMessageBox.warning(self, "Invalid Input", "Please enter valid numeric coordinates")
+            except RuntimeError:
+                QMessageBox.warning(self, "Error", "The target tab is no longer available.")
+                dialog.close()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(on_accept)
+        buttons.rejected.connect(dialog.close)
+        layout.addWidget(buttons)
+
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        dialog.show()
 
     def add_arrow_annotation(self):
         current_tab = self.tab_widget.currentWidget()
@@ -8930,39 +9352,87 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Add Arrow Annotation")
+        dialog.setMinimumWidth(350)
         layout = QVBoxLayout(dialog)
 
-        form_layout = QGridLayout()
-        form_layout.addWidget(QLabel("Start X:"), 0, 0)
+        # Position group
+        pos_group = QGroupBox("Position")
+        pos_layout = QGridLayout(pos_group)
+        pos_layout.addWidget(QLabel("Start X:"), 0, 0)
         x1_pos = QLineEdit("100")
-        form_layout.addWidget(x1_pos, 0, 1)
-        form_layout.addWidget(QLabel("Start Y:"), 1, 0)
+        pos_layout.addWidget(x1_pos, 0, 1)
+        pos_layout.addWidget(QLabel("Start Y:"), 0, 2)
         y1_pos = QLineEdit("100")
-        form_layout.addWidget(y1_pos, 1, 1)
-        form_layout.addWidget(QLabel("End X:"), 2, 0)
+        pos_layout.addWidget(y1_pos, 0, 3)
+        pos_layout.addWidget(QLabel("End X:"), 1, 0)
         x2_pos = QLineEdit("150")
-        form_layout.addWidget(x2_pos, 2, 1)
-        form_layout.addWidget(QLabel("End Y:"), 3, 0)
+        pos_layout.addWidget(x2_pos, 1, 1)
+        pos_layout.addWidget(QLabel("End Y:"), 1, 2)
         y2_pos = QLineEdit("150")
-        form_layout.addWidget(y2_pos, 3, 1)
-        layout.addLayout(form_layout)
+        pos_layout.addWidget(y2_pos, 1, 3)
+        layout.addWidget(pos_group)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
+        # Style group
+        style_group = QGroupBox("Style")
+        style_layout = QGridLayout(style_group)
+        
+        # Color
+        style_layout.addWidget(QLabel("Color:"), 0, 0)
+        color_combo = QComboBox()
+        color_combo.addItems(["red", "yellow", "white", "cyan", "lime", "magenta", "orange", "blue", "black"])
+        style_layout.addWidget(color_combo, 0, 1)
+        
+        # Line width
+        style_layout.addWidget(QLabel("Line Width:"), 0, 2)
+        linewidth_spin = QDoubleSpinBox()
+        linewidth_spin.setRange(0.5, 10.0)
+        linewidth_spin.setValue(2.0)
+        linewidth_spin.setSingleStep(0.5)
+        style_layout.addWidget(linewidth_spin, 0, 3)
+        
+        # Head size
+        style_layout.addWidget(QLabel("Head Size:"), 1, 0)
+        headsize_spin = QSpinBox()
+        headsize_spin.setRange(4, 30)
+        headsize_spin.setValue(10)
+        style_layout.addWidget(headsize_spin, 1, 1)
+        
+        layout.addWidget(style_group)
 
-        if dialog.exec_() == QDialog.Accepted:
+        # Store tab reference for callback
+        tab_ref = current_tab
+
+        def on_accept():
             try:
+                # Check if tab still exists
+                if tab_ref not in [self.tab_widget.widget(i) for i in range(self.tab_widget.count())]:
+                    QMessageBox.warning(self, "Error", "The target tab has been closed.")
+                    dialog.close()
+                    return
                 x1 = int(x1_pos.text())
                 y1 = int(y1_pos.text())
                 x2 = int(x2_pos.text())
                 y2 = int(y2_pos.text())
-                current_tab.add_arrow_annotation(x1, y1, x2, y2)
+                color = color_combo.currentText()
+                linewidth = linewidth_spin.value()
+                head_width = headsize_spin.value()
+                tab_ref.add_arrow_annotation(x1, y1, x2, y2, color=color, linewidth=linewidth, head_width=head_width)
+                dialog.close()
             except ValueError:
-                QMessageBox.warning(
-                    self, "Invalid Input", "Please enter valid numeric coordinates"
-                )
+                QMessageBox.warning(self, "Invalid Input", "Please enter valid numeric coordinates")
+            except RuntimeError:
+                QMessageBox.warning(self, "Error", "The target tab is no longer available.")
+                dialog.close()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(on_accept)
+        buttons.rejected.connect(dialog.close)
+        layout.addWidget(buttons)
+
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        dialog.show()
 
     def show_about_dialog(self):
         """Show a professional, minimal about dialog."""
@@ -9041,7 +9511,10 @@ class SolarRadioImageViewerApp(QMainWindow):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
-        dialog.exec_()
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        dialog.show()
 
     def show_keyboard_shortcuts(parent=None):
         """Show keyboard shortcuts dialog using native Qt widgets in a grid layout."""
@@ -9190,7 +9663,8 @@ class SolarRadioImageViewerApp(QMainWindow):
         btn_layout.addStretch()
         main_layout.addLayout(btn_layout)
 
-        dialog.exec_()
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
 
     def keyPressEvent(self, event):
         if (
@@ -9525,15 +9999,25 @@ read -p "Press Enter to close..."
         from .dialogs import PhaseShiftDialog
 
         dialog = PhaseShiftDialog(self, imagename)
-        dialog.exec_()
-
-        # If a new image was created and current tab has image loaded, refresh
-        if (
-            dialog.result() == QDialog.Accepted
-            and current_tab
-            and current_tab.imagename
-        ):
-            current_tab.on_visualization_changed()
+        
+        # Store tab reference for callback
+        tab_ref = current_tab
+        
+        def on_finished(result):
+            try:
+                # Check if tab still exists and refresh if accepted
+                if result == QDialog.Accepted and tab_ref:
+                    if tab_ref in [self.tab_widget.widget(i) for i in range(self.tab_widget.count())]:
+                        if tab_ref.imagename:
+                            tab_ref.on_visualization_changed()
+            except RuntimeError:
+                pass  # Tab was deleted, ignore
+        
+        dialog.finished.connect(on_finished)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        dialog.show()
 
     def show_create_video_dialog(self):
         """Show the dialog for creating videos from FITS files"""
@@ -9774,7 +10258,10 @@ read -p "Press Enter to close..."
             from .dialogs import HPCBatchConversionDialog
 
             dialog = HPCBatchConversionDialog(self, current_file)
-            dialog.exec_()
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+            self._open_dialogs.append(dialog)
+            dialog.show()
         except Exception as e:
             # Show error message with details
             error_message = f"Error opening batch HPC conversion dialog: {str(e)}"
