@@ -17,6 +17,10 @@ import requests
 from typing import List, Dict, Optional, Tuple
 import os
 
+# Global list to keep threads alive if window is closed while they are running
+# This prevents "QThread: Destroyed while thread is still running"
+_active_threads = []
+
 # Known instrument cadences (in seconds) - Based on official mission documentation
 INSTRUMENT_CADENCES = {
     # SDO/AIA - 12s for EUV, 24s for UV, 3600s for visible
@@ -1478,10 +1482,22 @@ class HelioviewerBrowser(QMainWindow):
                 loader.stop()
         
         # Wait for all threads to finish with a timeout
+        remaining_threads = []
         for loader in self.frame_loaders:
             if loader.isRunning():
-                loader.wait(5000)  # Wait up to 5 seconds per thread
+                # Wait up to 1 second per thread (fast cleanup)
+                if not loader.wait(1000):
+                    print(f"[WARNING] Thread {loader} did not stop in time, moving to background")
+                    remaining_threads.append(loader)
         
+        # Move stuck threads to global list to prevent GC crash
+        if remaining_threads:
+            global _active_threads
+            _active_threads.extend(remaining_threads)
+            
+            # Clean up global list of finished threads
+            _active_threads = [t for t in _active_threads if t.isRunning()]
+            
         self.frame_loaders.clear()
         self.pause_animation()
         event.accept()

@@ -1718,7 +1718,7 @@ class SolarRadioImageTab(QWidget):
         group = QGroupBox("Region Statistics")
         layout = QVBoxLayout(group)
         self.info_label = QLabel("No selection")
-        self.info_label.setStyleSheet("font-style: italic; font-size: 10pt;")
+        self.info_label.setStyleSheet("font-style: italic; font-size: 11pt;")
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
         self.stats_table = QTableWidget(6, 2)
@@ -1751,7 +1751,7 @@ class SolarRadioImageTab(QWidget):
         layout = QVBoxLayout(group)
 
         self.image_info_label = QLabel("Full image statistics")
-        self.image_info_label.setStyleSheet("font-style: italic; font-size: 10pt;")
+        self.image_info_label.setStyleSheet("font-style: italic; font-size: 11pt;")
         self.image_info_label.setWordWrap(True)
         layout.addWidget(self.image_info_label)
 
@@ -1783,7 +1783,8 @@ class SolarRadioImageTab(QWidget):
         buttons_layout = QHBoxLayout()
 
         # Solar Activity button (smaller, no icon)
-        self.noaa_events_btn = QPushButton("☀️")
+        #self.noaa_events_btn = QPushButton("☀️")
+        self.noaa_events_btn = QPushButton("☀️ Activity")
         self.noaa_events_btn.setToolTip(
             "View Solar Activity (Events, Active Regions, Conditions, CMEs)"
         )
@@ -1812,8 +1813,8 @@ class SolarRadioImageTab(QWidget):
         self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
         buttons_layout.addWidget(self.noaa_events_btn)
 
-        # Helioviewer Browser button (smaller, no icon)
-        self.helioviewer_btn = QPushButton("🌐")
+        #self.helioviewer_btn = QPushButton("🌐")
+        self.helioviewer_btn = QPushButton("🌐 Helioviewer")
         self.helioviewer_btn.setToolTip(
             "Browse Helioviewer images around current observation time"
         )
@@ -1832,8 +1833,10 @@ class SolarRadioImageTab(QWidget):
                 background-color: #4169e1;
             }
             QPushButton:disabled {
-                background-color: #555;
-                color: #888;
+                /* background-color: #555; */
+                background-color: #BDBDBD;
+                /* color: #888; */
+                color: #757575;
             }
         """)
         self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
@@ -2910,7 +2913,8 @@ class SolarRadioImageTab(QWidget):
         rsum = np.nansum(roi)
         rrms = np.sqrt(np.nanmean(roi**2))
 
-        self.info_label.setText(f"ROI Stats: {roi.size} pixels{ra_dec_info}")
+        # self.info_label.setText(f"ROI Stats: {roi.size} pixels{ra_dec_info}")
+        self.info_label.setText(f"{ra_dec_info}")
 
         stats_values = [rmin, rmax, rmean, rstd, rsum, rrms]
         for i, val in enumerate(stats_values):
@@ -6137,7 +6141,7 @@ class SolarRadioImageTab(QWidget):
                 height = abs(dec2 - dec1) * u.degree
 
                 ra_dec_info = (
-                    f"\nRegion Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
+                    f"Region Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
                     f"Dec={center_coord.dec.to_string(sep=':', precision=2)}"
                     f"\nAngular Size: {width.to(u.arcsec):.2f} × {height.to(u.arcsec):.2f}"
                     # f"\nCorners: "
