@@ -100,7 +100,7 @@ Examples:
     app.setStyle("Fusion")
     
     # Load saved theme preference BEFORE importing viewer
-    settings = QSettings("SolarRadioImageViewer", "ImageViewer")
+    settings = QSettings("SolarViewer", "SolarViewer")
     saved_theme = settings.value("theme", ThemeManager.DARK)
     
     # Command line --light flag overrides saved preference
