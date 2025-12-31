@@ -32,13 +32,36 @@ from functools import partial
 import logging
 
 # Import custom norms
-from .norms import (
-    SqrtNorm,
-    AsinhNorm,
-    PowerNorm as CustomPowerNorm,
-    ZScaleNorm,
-    HistEqNorm,
-)
+try:
+    from .norms import (
+        SqrtNorm,
+        AsinhNorm,
+        PowerNorm as CustomPowerNorm,
+        ZScaleNorm,
+        HistEqNorm,
+    )
+    from .video_utils import (
+        detect_coordinate_system,
+        get_wcs_axis_labels,
+        create_wcs_axes,
+        MinMaxTimeline,
+        ContourVideoProcessor,
+    )
+except ImportError:
+    from norms import (
+        SqrtNorm,
+        AsinhNorm,
+        PowerNorm as CustomPowerNorm,
+        ZScaleNorm,
+        HistEqNorm,
+    )
+    from video_utils import (
+        detect_coordinate_system,
+        get_wcs_axis_labels,
+        create_wcs_axes,
+        MinMaxTimeline,
+        ContourVideoProcessor,
+    )
 
 # Configure logging
 logging.basicConfig(
@@ -367,7 +390,15 @@ def process_image(file_path, options, global_stats=None):
 
         fig = Figure(figsize=figsize, dpi=dpi)
         canvas = FigureCanvas(fig)
-        ax = fig.add_subplot(111)
+        
+        # Create axes - use WCS projection if enabled
+        wcs_enabled = options.get("wcs_enabled", False)
+        coord_info = options.get("coord_info", None)
+        
+        if wcs_enabled and coord_info and coord_info.get("wcs"):
+            ax = create_wcs_axes(fig, coord_info["wcs"])
+        else:
+            ax = fig.add_subplot(111)
 
         # Determine min/max values based on range_mode
         range_mode = options.get("range_mode", 1)  # Default to Auto Per Frame
@@ -412,9 +443,17 @@ def process_image(file_path, options, global_stats=None):
             # aspect="auto",
         )
 
-        # Turn off axis labels and ticks
-        ax.set_xticks([])
-        ax.set_yticks([])
+        # Handle axis labels based on WCS mode
+        if wcs_enabled and coord_info:
+            xlabel, ylabel = get_wcs_axis_labels(coord_info)
+            ax.set_xlabel(xlabel, fontsize=8)
+            ax.set_ylabel(ylabel, fontsize=8)
+            ax.tick_params(labelsize=7)
+        else:
+            # Turn off axis labels and ticks for pixel mode
+            ax.set_xticks([])
+            ax.set_yticks([])
+
 
         # Add overlays if requested
         overlay_text = []
@@ -491,6 +530,12 @@ def process_image(file_path, options, global_stats=None):
             # if header and "BUNIT" in header:
             #    cbar.set_label(header["BUNIT"])
 
+        # Draw min/max timeline if enabled
+        timeline = options.get("minmax_timeline", None)
+        if timeline and options.get("minmax_timeline_enabled", False):
+            current_frame = options.get("current_frame", 0)
+            timeline.draw_timeline(fig, current_frame)
+
         # Adjust layout and render
         # fig.tight_layout(pad=0.01)
         canvas.draw()
@@ -529,7 +574,8 @@ def calculate_global_stats(files, options):
     all_maxs = []
 
     # Sample frames to calculate global stats (using every 10th frame or at least 10 frames)
-    sample_step = max(1, len(files) // 10)
+    # sample_step = max(1, len(files) // 10)
+    sample_step = 1  # Sample every frame
     sample_files = files[::sample_step]
 
     # Ensure we have at least some files
@@ -783,6 +829,30 @@ def create_video(files, output_file, options, progress_callback=None):
                 )
             else:
                 logger.warning("Could not determine region dimensions from first file")
+
+        # Initialize WCS coordinate detection if enabled
+        if options.get("wcs_enabled", False):
+            logger.info("Detecting coordinate system from first file...")
+            coord_info = detect_coordinate_system(files[0])
+            options["coord_info"] = coord_info
+            logger.info(f"Coordinate system: {coord_info.get('type', 'unknown')}")
+
+        # Initialize MinMax timeline if enabled
+        if options.get("minmax_timeline_enabled", False):
+            logger.info("Precomputing min/max statistics for timeline...")
+            position_map = {
+                0: "bottom-left",
+                1: "bottom-right", 
+                2: "top-left",
+                3: "top-right"
+            }
+            position = position_map.get(
+                options.get("timeline_position", 0), "bottom-left"
+            )
+            timeline = MinMaxTimeline(total_frames=len(files), position=position)
+            timeline.precompute_stats(files, options, load_fits_data)
+            options["minmax_timeline"] = timeline
+            logger.info("Timeline statistics computed")
 
         # Calculate global stats if needed
         global_stats = calculate_global_stats(files, options)

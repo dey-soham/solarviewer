@@ -102,16 +102,25 @@ def convert_casaimage_to_fits(
 # Import the helioprojective conversion functions
 try:
     from .helioprojective import convert_to_hpc
+    from .styles import theme_manager, get_stylesheet
 except ImportError:
     try:
         # For direct script execution
         from helioprojective import convert_to_hpc
+        from styles import theme_manager, get_stylesheet
     except ImportError:
         print("Error: Could not import helioprojective conversion functions")
         sys.exit(1)
 
+
+def update_hpc_matplotlib_theme():
+    """Update matplotlib rcParams based on current theme."""
+    rcParams.update(theme_manager.matplotlib_params)
+
+
 rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
+update_hpc_matplotlib_theme()
 
 
 class HelioProjectiveViewer(QMainWindow):
@@ -151,6 +160,12 @@ class HelioProjectiveViewer(QMainWindow):
         self.show_limb = True
         self.show_beam = True
         self.show_colorbar = True
+
+        # Apply current theme stylesheet
+        self.setStyleSheet(get_stylesheet(theme_manager.palette, theme_manager.is_dark))
+        
+        # Register for theme changes
+        theme_manager.register_callback(self._on_theme_changed)
 
         # Set up the UI
         self.setup_ui()
@@ -662,8 +677,45 @@ class HelioProjectiveViewer(QMainWindow):
         self.statusbar.showMessage(message)
         print(message)
 
+    def _on_theme_changed(self, new_theme):
+        """Handle theme change events."""
+        # Update matplotlib rcParams
+        update_hpc_matplotlib_theme()
+        
+        # Update window stylesheet
+        self.setStyleSheet(get_stylesheet(theme_manager.palette, theme_manager.is_dark))
+        
+        # Refresh the plot with new theme colors
+        if hasattr(self, 'figure') and self.figure and self.helioprojective_map:
+            palette = theme_manager.palette
+            is_dark = theme_manager.is_dark
+            
+            # Use plot-specific colors for light mode
+            if is_dark:
+                fig_bg = palette["window"]
+                axes_bg = palette["base"]
+                text_color = palette["text"]
+            else:
+                fig_bg = palette.get("plot_bg", "#ffffff")
+                axes_bg = palette.get("plot_bg", "#ffffff")
+                text_color = palette.get("plot_text", "#1a1a1a")
+            
+            self.figure.set_facecolor(fig_bg)
+            for ax in self.figure.get_axes():
+                ax.set_facecolor(axes_bg)
+                ax.tick_params(colors=text_color)
+                ax.xaxis.label.set_color(text_color)
+                ax.yaxis.label.set_color(text_color)
+                ax.title.set_color(text_color)
+                for spine in ax.spines.values():
+                    spine.set_color(text_color)
+            self.canvas.draw_idle()
+
     def closeEvent(self, event):
         """Handle window close event"""
+        # Unregister theme callback
+        theme_manager.unregister_callback(self._on_theme_changed)
+        
         # Clean up temporary files
         if self.temp_fits_file and os.path.exists(self.temp_fits_file):
             try:

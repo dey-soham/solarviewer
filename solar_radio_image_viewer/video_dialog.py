@@ -5,6 +5,7 @@ import os
 import sys
 from PyQt5.QtWidgets import (
     QDialog,
+    QMainWindow,
     QVBoxLayout,
     QHBoxLayout,
     QGridLayout,
@@ -39,22 +40,91 @@ import glob
 import time
 import threading
 import multiprocessing
+import psutil
+import shutil
+from contextlib import contextmanager
 
-from .create_video import (
-    create_video,
-    VideoProgress,
-    load_fits_data,
-    apply_visualization,
-    format_timestamp,
-    get_norm,
-)
-from .norms import (
-    SqrtNorm,
-    AsinhNorm,
-    PowerNorm,
-    ZScaleNorm,
-    HistEqNorm,
-)
+import matplotlib.style as mplstyle
+mplstyle.use('fast')
+
+@contextmanager
+def wait_cursor():
+    """Context manager to show a wait cursor"""
+    QApplication.setOverrideCursor(Qt.WaitCursor)
+    try:
+        yield
+    finally:
+        QApplication.restoreOverrideCursor()
+
+try:
+    from .create_video import (
+        create_video,
+        VideoProgress,
+        load_fits_data,
+        apply_visualization,
+        format_timestamp,
+        get_norm,
+    )
+    from .norms import (
+        SqrtNorm,
+        AsinhNorm,
+        PowerNorm,
+        ZScaleNorm,
+        HistEqNorm,
+    )
+except ImportError:
+    from create_video import (
+        create_video,
+        VideoProgress,
+        load_fits_data,
+        apply_visualization,
+        format_timestamp,
+        get_norm,
+    )
+    from norms import (
+        SqrtNorm,
+        AsinhNorm,
+        PowerNorm,
+        ZScaleNorm,
+        HistEqNorm,
+    )
+
+
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+
+class PreviewWindow(QMainWindow):
+    """
+    Separate window for previewing images
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Preview")
+        self.resize(600, 500)
+        
+        # Central widget and layout
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        
+        # Matplotlib figure
+        self.figure = Figure(figsize=(5, 4), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        
+        # Toolbar
+        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas)
+        
+        # Ensure cleanup on close? 
+        # Actually we want to keep it alive via the parent reference but just hide/show
+        # self.setAttribute(Qt.WA_DeleteOnClose) # Don't delete, just hide
+        
+    def closeEvent(self, event):
+        # Just hide instead of closing/destroying to keep state
+        # user can re-open via button
+        self.hide()
+        event.ignore()
 
 
 class VideoCreationDialog(QDialog):
@@ -64,6 +134,8 @@ class VideoCreationDialog(QDialog):
 
     def __init__(self, parent=None, current_file=None):
         super().__init__(parent)
+        # Force window behavior to ensure maximize button works
+        self.setWindowFlags(Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
         self.parent = parent
         self.current_file = current_file
         self.progress_tracker = None
@@ -71,13 +143,20 @@ class VideoCreationDialog(QDialog):
         self.reference_image = None
 
         self.setWindowTitle("Create Video")
-        self.resize(900, 1200)
+        self.resize(650, 700)
 
         # Set up the UI
         self.setup_ui()
 
+        # Initialize the separate preview window FIRST (before any methods that access figure)
+        self._preview_window = PreviewWindow(self)
+        self._preview_window.show()
+
         # Initialize stretch controls
         self.update_gamma_controls()
+
+        # Initialize range mode controls (for default "Auto per Frame")
+        self.toggle_range_mode(self.range_mode_combo.currentIndex())
 
         # Initialize with current file if provided
         if current_file:
@@ -113,13 +192,33 @@ class VideoCreationDialog(QDialog):
             if hasattr(parent, "vmax") and parent.vmax:
                 self.vmax_spinbox.setValue(parent.vmax)
 
+            # Auto-scan for files
+            self.preview_input_files()
+
         # Update preview if we have a valid reference image
         if self.reference_image:
             self.update_preview(self.reference_image)
 
+    @property
+    def figure(self):
+        return self._preview_window.figure
+    
+    @property
+    def canvas(self):
+        return self._preview_window.canvas
+
+    def show_preview_window(self):
+        """Show the preview window if it's hidden or raise it"""
+        self._preview_window.show()
+        self._preview_window.raise_()
+        self._preview_window.activateWindow()
+
     def setup_ui(self):
         """Set up the UI elements"""
+        self.setSizeGripEnabled(True)
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
 
         # Create tab widget
         tab_widget = QTabWidget()
@@ -138,23 +237,28 @@ class VideoCreationDialog(QDialog):
         region_layout = QVBoxLayout(region_tab)  # Layout for the new region tab
         output_layout = QVBoxLayout(output_tab)
 
-        # Create the preview section first so it's available to all tabs
-        preview_group = QGroupBox("Preview")
-        preview_layout = QVBoxLayout(preview_group)
+        # Create the preview control section
+        preview_controls_group = QGroupBox("Preview Controls")
+        preview_controls_layout = QHBoxLayout(preview_controls_group)
+        preview_controls_layout.setContentsMargins(10, 8, 10, 8)
+        preview_controls_layout.setSpacing(12)
 
-        # Matplotlib figure for preview
-        self.figure = Figure(figsize=(5, 4), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-        self.canvas.setMinimumHeight(150)
-        preview_layout.addWidget(self.canvas)
+        # Add "Show Preview Window" button
+        show_preview_btn = QPushButton("Show Preview Window")
+        show_preview_btn.setMinimumWidth(140)
+        show_preview_btn.clicked.connect(self.show_preview_window)
+        preview_controls_layout.addWidget(show_preview_btn)
 
-        # Add "Update Preview" button under the preview
+        # Add "Update Preview" button
         update_preview_btn = QPushButton("Update Preview")
+        update_preview_btn.setMinimumWidth(140)
         update_preview_btn.clicked.connect(self.update_preview_from_reference)
-        preview_layout.addWidget(update_preview_btn)
+        preview_controls_layout.addWidget(update_preview_btn)
+        
+        preview_controls_layout.addStretch()
 
-        # Add preview to the main layout first, so it's always visible
-        main_layout.addWidget(preview_group)
+        # Add preview controls to the main layout first
+        main_layout.addWidget(preview_controls_group)
 
         # ------ Input Tab ------
         # Create a scroll area for the input tab
@@ -162,11 +266,16 @@ class VideoCreationDialog(QDialog):
         input_scroll.setWidgetResizable(True)
         input_scroll_content = QWidget()
         input_layout = QVBoxLayout(input_scroll_content)
+        input_layout.setContentsMargins(8, 8, 8, 8)
+        input_layout.setSpacing(10)
         input_scroll.setWidget(input_scroll_content)
 
         # Input pattern section
         input_group = QGroupBox("Input Files")
         input_group_layout = QGridLayout(input_group)
+        input_group_layout.setContentsMargins(12, 16, 12, 12)
+        input_group_layout.setHorizontalSpacing(10)
+        input_group_layout.setVerticalSpacing(8)
 
         # 1. Directory field
         input_group_layout.addWidget(QLabel("Input Directory:"), 0, 0)
@@ -192,10 +301,10 @@ class VideoCreationDialog(QDialog):
         self.input_pattern_edit.setPlaceholderText("e.g., *.fits or *_171*.fits")
         input_group_layout.addWidget(self.input_pattern_edit, 1, 1)
 
-        # Preview input pattern button
-        preview_pattern_btn = QPushButton("Preview Files")
-        preview_pattern_btn.clicked.connect(self.preview_input_files)
-        input_group_layout.addWidget(preview_pattern_btn, 1, 2)
+        # Scan button
+        scan_btn = QPushButton("Scan")
+        scan_btn.clicked.connect(self.preview_input_files)
+        input_group_layout.addWidget(scan_btn, 1, 2)
 
         # File sorting
         input_group_layout.addWidget(QLabel("Sort Files By:"), 2, 0)
@@ -210,11 +319,13 @@ class VideoCreationDialog(QDialog):
         self.stokes_combo.currentIndexChanged.connect(self.update_preview_settings)
         input_group_layout.addWidget(self.stokes_combo, 3, 1)
 
-        # Files found label
-        self.files_found_label = QLabel("No files found yet")
-        input_group_layout.addWidget(self.files_found_label, 4, 0, 1, 3)
-
         input_layout.addWidget(input_group)
+
+        # Files found status (separate from the group) - use theme-compatible styling
+        self.files_found_label = QLabel("No files found yet")
+        self.files_found_label.setObjectName("StatusLabel")
+        input_layout.addWidget(self.files_found_label)
+        input_layout.addStretch()
 
         # ------ Display Tab ------
         # Create a scroll area for the display tab
@@ -222,11 +333,16 @@ class VideoCreationDialog(QDialog):
         display_scroll.setWidgetResizable(True)
         display_scroll_content = QWidget()
         display_layout = QVBoxLayout(display_scroll_content)
+        display_layout.setContentsMargins(8, 8, 8, 8)
+        display_layout.setSpacing(10)
         display_scroll.setWidget(display_scroll_content)
 
         # Reference image for display settings
         reference_group = QGroupBox("Reference Image")
         reference_layout = QGridLayout(reference_group)
+        reference_layout.setContentsMargins(12, 16, 12, 12)
+        reference_layout.setHorizontalSpacing(10)
+        reference_layout.setVerticalSpacing(8)
 
         reference_layout.addWidget(QLabel("Reference Image:"), 0, 0)
         self.reference_image_edit = QLineEdit()
@@ -239,15 +355,12 @@ class VideoCreationDialog(QDialog):
 
         display_layout.addWidget(reference_group)
 
-        # Display settings section
-        display_group = QGroupBox("Display Settings")
-        # Create a horizontal layout to hold two columns
-        display_main_layout = QHBoxLayout(display_group)
-
-        # Create left column (for color/stretch controls)
-        left_column = QVBoxLayout()
-        left_form_layout = QFormLayout()
-        left_form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        # Visualization settings section
+        viz_group = QGroupBox("Visualization")
+        viz_form = QFormLayout(viz_group)
+        viz_form.setContentsMargins(12, 16, 12, 12)
+        viz_form.setVerticalSpacing(8)
+        viz_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         # Colormap
         self.colormap_combo = QComboBox()
@@ -255,56 +368,27 @@ class VideoCreationDialog(QDialog):
             [cmap for cmap in plt.colormaps() if not cmap.endswith("_r")]
         )
         self.colormap_combo.addItems(colormaps)
-        # Set default to viridis
         idx = self.colormap_combo.findText("viridis")
         if idx >= 0:
             self.colormap_combo.setCurrentIndex(idx)
         self.colormap_combo.currentIndexChanged.connect(self.update_preview_settings)
-        left_form_layout.addRow("Colormap:", self.colormap_combo)
+        viz_form.addRow("Colormap:", self.colormap_combo)
 
         # Stretch
         self.stretch_combo = QComboBox()
-        self.stretch_combo.addItems(
-            [
-                "Linear",
-                "Log",
-                "Sqrt",
-                "Power",
-                "Arcsinh",
-                "ZScale",
-                "Histogram Equalization",
-            ]
-        )
-        self.stretch_combo.setItemData(
-            0, "Linear stretch - no transformation", Qt.ToolTipRole
-        )
-        self.stretch_combo.setItemData(
-            1, "Logarithmic stretch - enhances very faint features", Qt.ToolTipRole
-        )
-        self.stretch_combo.setItemData(
-            2, "Square root stretch - enhances faint features", Qt.ToolTipRole
-        )
-        self.stretch_combo.setItemData(
-            3, "Power law stretch - adjustable using gamma", Qt.ToolTipRole
-        )
-        self.stretch_combo.setItemData(
-            4,
-            "Arcsinh stretch - similar to log but handles negative values",
-            Qt.ToolTipRole,
-        )
-        self.stretch_combo.setItemData(
-            5,
-            "ZScale stretch - automatic contrast based on image statistics",
-            Qt.ToolTipRole,
-        )
-        self.stretch_combo.setItemData(
-            6,
-            "Histogram equalization - enhances contrast by redistributing intensities",
-            Qt.ToolTipRole,
-        )
+        self.stretch_combo.addItems([
+            "Linear", "Log", "Sqrt", "Power", "Arcsinh", "ZScale", "Histogram Equalization"
+        ])
+        self.stretch_combo.setItemData(0, "Linear stretch - no transformation", Qt.ToolTipRole)
+        self.stretch_combo.setItemData(1, "Logarithmic stretch - enhances very faint features", Qt.ToolTipRole)
+        self.stretch_combo.setItemData(2, "Square root stretch - enhances faint features", Qt.ToolTipRole)
+        self.stretch_combo.setItemData(3, "Power law stretch - adjustable using gamma", Qt.ToolTipRole)
+        self.stretch_combo.setItemData(4, "Arcsinh stretch - similar to log but handles negative values", Qt.ToolTipRole)
+        self.stretch_combo.setItemData(5, "ZScale stretch - automatic contrast based on image statistics", Qt.ToolTipRole)
+        self.stretch_combo.setItemData(6, "Histogram equalization - enhances contrast by redistributing intensities", Qt.ToolTipRole)
         self.stretch_combo.currentIndexChanged.connect(self.update_preview_settings)
         self.stretch_combo.currentIndexChanged.connect(self.update_gamma_controls)
-        left_form_layout.addRow("Stretch:", self.stretch_combo)
+        viz_form.addRow("Stretch:", self.stretch_combo)
 
         # Gamma (for power stretch)
         self.gamma_spinbox = QDoubleSpinBox()
@@ -312,77 +396,117 @@ class VideoCreationDialog(QDialog):
         self.gamma_spinbox.setSingleStep(0.1)
         self.gamma_spinbox.setValue(1.0)
         self.gamma_spinbox.valueChanged.connect(self.update_preview_settings)
-        left_form_layout.addRow("Gamma:", self.gamma_spinbox)
+        viz_form.addRow("Gamma:", self.gamma_spinbox)
+
+        # Colorbar option
+        self.colorbar_check = QCheckBox("Show Colorbar")
+        self.colorbar_check.setChecked(True)
+        self.colorbar_check.stateChanged.connect(self.update_preview_settings)
+        viz_form.addRow("", self.colorbar_check)
+
+        display_layout.addWidget(viz_group)
+
+        # Range settings section  
+        range_group = QGroupBox("Range Scaling")
+        range_form = QFormLayout(range_group)
+        range_form.setContentsMargins(12, 16, 12, 12)
+        range_form.setVerticalSpacing(8)
+        range_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         # Range mode selection
         self.range_mode_combo = QComboBox()
         self.range_mode_combo.addItems(["Fixed Range", "Auto per Frame", "Global Auto"])
+        self.range_mode_combo.setCurrentIndex(1)  # Default to "Auto per Frame"
         self.range_mode_combo.setToolTip(
             "Fixed Range: Use the min/max values specified below for all frames\n"
             "Auto per Frame: Calculate min/max independently for each frame based on percentiles\n"
             "Global Auto: Calculate min/max once from all frames based on percentiles"
         )
         self.range_mode_combo.currentIndexChanged.connect(self.toggle_range_mode)
-        left_form_layout.addRow("Range Scaling:", self.range_mode_combo)
+        range_form.addRow("Mode:", self.range_mode_combo)
 
         # Add explanatory label
         self.range_explanation_label = QLabel(
-            "Fixed Range: Same min/max values used for all frames"
+            "Auto Per Frame: Min/max calculated independently for each frame"
         )
-        self.range_explanation_label.setStyleSheet("color: gray; font-style: italic;")
-        left_form_layout.addRow("", self.range_explanation_label)
+        self.range_explanation_label.setObjectName("SecondaryText")
+        range_form.addRow("", self.range_explanation_label)
 
-        # Min/Max values
+        # Min/Max values in a horizontal layout
+        minmax_widget = QWidget()
+        minmax_layout = QHBoxLayout(minmax_widget)
+        minmax_layout.setContentsMargins(0, 0, 0, 0)
+        minmax_layout.setSpacing(10)
+        
+        minmax_layout.addWidget(QLabel("Min:"))
         self.vmin_spinbox = QDoubleSpinBox()
         self.vmin_spinbox.setRange(-1e10, 1e10)
         self.vmin_spinbox.setDecimals(2)
         self.vmin_spinbox.setValue(0)
         self.vmin_spinbox.valueChanged.connect(self.update_preview_settings)
-        left_form_layout.addRow("Min Value:", self.vmin_spinbox)
-
+        minmax_layout.addWidget(self.vmin_spinbox)
+        
+        minmax_layout.addWidget(QLabel("Max:"))
         self.vmax_spinbox = QDoubleSpinBox()
         self.vmax_spinbox.setRange(-1e10, 1e10)
         self.vmax_spinbox.setDecimals(2)
         self.vmax_spinbox.setValue(3000)
         self.vmax_spinbox.valueChanged.connect(self.update_preview_settings)
-        left_form_layout.addRow("Max Value:", self.vmax_spinbox)
+        minmax_layout.addWidget(self.vmax_spinbox)
+        
+        range_form.addRow("Values:", minmax_widget)
 
-        # Add the form layout to the left column
-        left_column.addLayout(left_form_layout)
+        display_layout.addWidget(range_group)
 
-        # Create right column (for frame size and other controls)
-        right_column = QVBoxLayout()
-        right_form_layout = QFormLayout()
-        right_form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        # Frame settings section
+        frame_group = QGroupBox("Frame Settings")
+        frame_form = QFormLayout(frame_group)
+        frame_form.setContentsMargins(12, 16, 12, 12)
+        frame_form.setVerticalSpacing(8)
+        frame_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        # Frame resize
+        # Frame resize in a horizontal layout
+        size_widget = QWidget()
+        size_layout = QHBoxLayout(size_widget)
+        size_layout.setContentsMargins(0, 0, 0, 0)
+        size_layout.setSpacing(10)
+
+        size_layout.addWidget(QLabel("Width:"))
         self.width_spinbox = QSpinBox()
-        self.width_spinbox.setRange(0, 7680)  # Up to 8K resolution
+        self.width_spinbox.setRange(0, 7680)
         self.width_spinbox.setValue(0)
         self.width_spinbox.setSpecialValueText("Original")
-        right_form_layout.addRow("Frame Width:", self.width_spinbox)
+        size_layout.addWidget(self.width_spinbox)
 
+        size_layout.addWidget(QLabel("Height:"))
         self.height_spinbox = QSpinBox()
-        self.height_spinbox.setRange(0, 4320)  # Up to 8K resolution
+        self.height_spinbox.setRange(0, 4320)
         self.height_spinbox.setValue(0)
         self.height_spinbox.setSpecialValueText("Original")
-        right_form_layout.addRow("Frame Height:", self.height_spinbox)
+        size_layout.addWidget(self.height_spinbox)
 
-        # Colorbar options
-        self.colorbar_check = QCheckBox("Show Colorbar")
-        self.colorbar_check.setChecked(True)
-        self.colorbar_check.stateChanged.connect(self.update_preview_settings)
-        right_form_layout.addRow("", self.colorbar_check)
+        frame_form.addRow("Size:", size_widget)
 
-        # Add the form layout to the right column
-        right_column.addLayout(right_form_layout)
-        right_column.addStretch()  # Add stretch to align with left column
+        display_layout.addWidget(frame_group)
 
-        # Add both columns to the main layout
-        display_main_layout.addLayout(left_column, 2)  # Give left column more space
-        display_main_layout.addLayout(right_column, 1)
+        # WCS Coordinates section
+        wcs_group = QGroupBox("Coordinate System")
+        wcs_form = QFormLayout(wcs_group)
+        wcs_form.setContentsMargins(12, 16, 12, 12)
+        wcs_form.setVerticalSpacing(8)
 
-        display_layout.addWidget(display_group)
+        self.wcs_coords_check = QCheckBox("Show WCS Coordinates in Video")
+        self.wcs_coords_check.setChecked(False)
+        self.wcs_coords_check.setToolTip(
+            "Display RA/Dec or Solar-X/Solar-Y coordinates instead of pixels"
+        )
+        wcs_form.addRow("", self.wcs_coords_check)
+
+        self.wcs_info_label = QLabel("Coordinates will be detected from FITS header")
+        self.wcs_info_label.setObjectName("SecondaryText")
+        wcs_form.addRow("", self.wcs_info_label)
+
+        display_layout.addWidget(wcs_group)
 
         # Add preset buttons similar to main application
         presets_group = QGroupBox("Display Presets")
@@ -411,6 +535,7 @@ class VideoCreationDialog(QDialog):
         presets_layout.addWidget(hmi_preset_btn, 2, 0)
 
         display_layout.addWidget(presets_group)
+        display_layout.addStretch()
 
         # ------ Region Tab ------
         # Create a scroll area for the region tab
@@ -418,10 +543,14 @@ class VideoCreationDialog(QDialog):
         region_scroll.setWidgetResizable(True)
         region_scroll_content = QWidget()
         region_layout = QVBoxLayout(region_scroll_content)
+        region_layout.setContentsMargins(8, 8, 8, 8)
+        region_layout.setSpacing(10)
         region_scroll.setWidget(region_scroll_content)
 
-        region_group = QGroupBox("Region Selection (Zoomed Video)")
+        region_group = QGroupBox("Region Selection")
         region_main_layout = QVBoxLayout(region_group)
+        region_main_layout.setContentsMargins(12, 16, 12, 12)
+        region_main_layout.setSpacing(12)
 
         # Enable region selection
         self.region_enabled = QCheckBox("Enable Region Selection (Zoomed Video)")
@@ -429,94 +558,94 @@ class VideoCreationDialog(QDialog):
         self.region_enabled.stateChanged.connect(self.toggle_region_controls)
         region_main_layout.addWidget(self.region_enabled)
 
-        # Coordinate inputs in two columns
-        coord_layout = QHBoxLayout()
+        # Coordinate inputs using form layout
+        coord_form = QFormLayout()
+        coord_form.setVerticalSpacing(8)
+        coord_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         # X range
-        x_layout = QFormLayout()
         x_range_widget = QWidget()
         x_range_layout = QHBoxLayout(x_range_widget)
         x_range_layout.setContentsMargins(0, 0, 0, 0)
+        x_range_layout.setSpacing(8)
 
         self.x_min_spinbox = QSpinBox()
         self.x_min_spinbox.setRange(0, 10000)
         self.x_min_spinbox.setValue(0)
         self.x_min_spinbox.valueChanged.connect(self.update_region_preview)
         x_range_layout.addWidget(self.x_min_spinbox)
-
         x_range_layout.addWidget(QLabel("to"))
-
         self.x_max_spinbox = QSpinBox()
         self.x_max_spinbox.setRange(0, 10000)
-        self.x_max_spinbox.setValue(100)
+        self.x_max_spinbox.setValue(1000)
         self.x_max_spinbox.valueChanged.connect(self.update_region_preview)
         x_range_layout.addWidget(self.x_max_spinbox)
-
-        x_layout.addRow("X Range (pixels):", x_range_widget)
+        x_range_layout.addWidget(QLabel("px"))
+        x_range_layout.addStretch()
+        coord_form.addRow("X Range:", x_range_widget)
 
         # Y range
-        y_layout = QFormLayout()
         y_range_widget = QWidget()
         y_range_layout = QHBoxLayout(y_range_widget)
         y_range_layout.setContentsMargins(0, 0, 0, 0)
+        y_range_layout.setSpacing(8)
 
         self.y_min_spinbox = QSpinBox()
         self.y_min_spinbox.setRange(0, 10000)
         self.y_min_spinbox.setValue(0)
         self.y_min_spinbox.valueChanged.connect(self.update_region_preview)
         y_range_layout.addWidget(self.y_min_spinbox)
-
         y_range_layout.addWidget(QLabel("to"))
-
         self.y_max_spinbox = QSpinBox()
         self.y_max_spinbox.setRange(0, 10000)
-        self.y_max_spinbox.setValue(100)
+        self.y_max_spinbox.setValue(1000)
         self.y_max_spinbox.valueChanged.connect(self.update_region_preview)
         y_range_layout.addWidget(self.y_max_spinbox)
+        y_range_layout.addWidget(QLabel("px"))
+        y_range_layout.addStretch()
+        coord_form.addRow("Y Range:", y_range_widget)
 
-        y_layout.addRow("Y Range (pixels):", y_range_widget)
+        region_main_layout.addLayout(coord_form)
 
-        coord_layout.addLayout(x_layout)
-        coord_layout.addLayout(y_layout)
+        # Interactive selection button
+        select_from_preview_btn = QPushButton("Select Region from Preview...")
+        select_from_preview_btn.clicked.connect(self.select_region_from_preview)
+        region_main_layout.addWidget(select_from_preview_btn)
 
-        region_main_layout.addLayout(coord_layout)
+        region_layout.addWidget(region_group)
 
-        # Region Presets in a horizontal layout
-        preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("Region Presets:"))
+        # Presets group
+        presets_group = QGroupBox("Quick Presets")
+        presets_layout = QHBoxLayout(presets_group)
+        presets_layout.setContentsMargins(12, 16, 12, 12)
+        presets_layout.setSpacing(10)
 
-        # Add region preset buttons
         center_25_btn = QPushButton("Center 25%")
         center_25_btn.clicked.connect(lambda: self.set_region_preset(0.25))
-        preset_layout.addWidget(center_25_btn)
+        presets_layout.addWidget(center_25_btn)
 
         center_50_btn = QPushButton("Center 50%")
         center_50_btn.clicked.connect(lambda: self.set_region_preset(0.5))
-        preset_layout.addWidget(center_50_btn)
+        presets_layout.addWidget(center_50_btn)
 
         center_75_btn = QPushButton("Center 75%")
         center_75_btn.clicked.connect(lambda: self.set_region_preset(0.75))
-        preset_layout.addWidget(center_75_btn)
+        presets_layout.addWidget(center_75_btn)
 
-        region_main_layout.addLayout(preset_layout)
+        region_layout.addWidget(presets_group)
 
-        # Help text
+        # Help text at the bottom
         help_label = QLabel(
-            "This feature allows you to create a video focused on a specific region of interest. "
+            "Create a video focused on a specific region of interest. "
             "The selected region will be shown with a red rectangle in the preview."
         )
         help_label.setWordWrap(True)
-        region_main_layout.addWidget(help_label)
-
-        # Select from preview button
-        select_from_preview_btn = QPushButton("Select Region from Preview")
-        select_from_preview_btn.clicked.connect(self.select_region_from_preview)
-        region_main_layout.addWidget(select_from_preview_btn)
+        help_label.setObjectName("SecondaryText")
+        region_layout.addWidget(help_label)
 
         # Initially disable the region controls
         self.toggle_region_controls(False)
 
-        region_layout.addWidget(region_group)
         region_layout.addStretch()
 
         # ------ Overlay Tab ------
@@ -525,11 +654,14 @@ class VideoCreationDialog(QDialog):
         overlay_scroll.setWidgetResizable(True)
         overlay_scroll_content = QWidget()
         overlay_layout = QVBoxLayout(overlay_scroll_content)
+        overlay_layout.setContentsMargins(8, 8, 8, 8)
+        overlay_layout.setSpacing(10)
         overlay_scroll.setWidget(overlay_scroll_content)
 
         # Overlay settings section
         overlay_group = QGroupBox("Overlay Settings")
         overlay_main_layout = QHBoxLayout(overlay_group)
+        overlay_main_layout.setContentsMargins(12, 16, 12, 12)
 
         # Use a form layout for cleaner organization
         overlay_form = QFormLayout()
@@ -554,6 +686,42 @@ class VideoCreationDialog(QDialog):
         overlay_main_layout.addLayout(overlay_form)
         overlay_layout.addWidget(overlay_group)
 
+        # Min/Max Timeline section
+        timeline_group = QGroupBox("Min/Max Timeline")
+        timeline_layout = QVBoxLayout(timeline_group)
+        timeline_layout.setContentsMargins(12, 16, 12, 12)
+        timeline_layout.setSpacing(8)
+
+        self.minmax_timeline_check = QCheckBox("Show Min/Max Timeline Plot")
+        self.minmax_timeline_check.setChecked(False)
+        self.minmax_timeline_check.setToolTip(
+            "Display a continuous line plot showing min/max values for all frames"
+        )
+        timeline_layout.addWidget(self.minmax_timeline_check)
+
+        # Position selector
+        position_widget = QWidget()
+        position_layout = QHBoxLayout(position_widget)
+        position_layout.setContentsMargins(0, 0, 0, 0)
+        position_layout.setSpacing(10)
+
+        position_layout.addWidget(QLabel("Position:"))
+        self.timeline_position_combo = QComboBox()
+        self.timeline_position_combo.addItems([
+            "Bottom Left", "Bottom Right", "Top Left", "Top Right"
+        ])
+        self.timeline_position_combo.setCurrentIndex(0)
+        position_layout.addWidget(self.timeline_position_combo)
+        position_layout.addStretch()
+
+        timeline_layout.addWidget(position_widget)
+
+        timeline_info = QLabel("Plots min (blue) and max (red) pixel values over time")
+        timeline_info.setObjectName("SecondaryText")
+        timeline_layout.addWidget(timeline_info)
+
+        overlay_layout.addWidget(timeline_group)
+
         # Add spacer to push controls to the top
         overlay_layout.addStretch()
 
@@ -563,90 +731,279 @@ class VideoCreationDialog(QDialog):
         output_scroll.setWidgetResizable(True)
         output_scroll_content = QWidget()
         output_layout = QVBoxLayout(output_scroll_content)
+        output_layout.setContentsMargins(8, 8, 8, 8)
+        output_layout.setSpacing(10)
         output_scroll.setWidget(output_scroll_content)
 
-        # Output file section
-        output_group = QGroupBox("Output Settings")
-        output_main_layout = QHBoxLayout(output_group)
+        # File output section
+        file_group = QGroupBox("Output File")
+        file_form = QFormLayout(file_group)
+        file_form.setContentsMargins(12, 16, 12, 12)
+        file_form.setVerticalSpacing(8)
+        file_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        # Left column for filename
-        left_output_layout = QVBoxLayout()
-        file_layout = QHBoxLayout()
-
-        file_layout.addWidget(QLabel("Output File:"))
+        file_widget = QWidget()
+        file_layout = QHBoxLayout(file_widget)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        file_layout.setSpacing(8)
+        
         self.output_file_edit = QLineEdit()
         file_layout.addWidget(self.output_file_edit)
-
+        
         browse_output_btn = QPushButton("Browse")
         browse_output_btn.clicked.connect(self.browse_output_file)
         file_layout.addWidget(browse_output_btn)
+        
+        file_form.addRow("Path:", file_widget)
+        output_layout.addWidget(file_group)
 
-        left_output_layout.addLayout(file_layout)
+        # Video settings section
+        video_group = QGroupBox("Video Settings")
+        video_form = QFormLayout(video_group)
+        video_form.setContentsMargins(12, 16, 12, 12)
+        video_form.setVerticalSpacing(8)
+        video_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        # Create two columns for the rest of the controls
-        left_column = QFormLayout()
-        right_column = QFormLayout()
-
-        # Left column controls
-        # FPS
         self.fps_spinbox = QSpinBox()
         self.fps_spinbox.setRange(1, 60)
         self.fps_spinbox.setValue(10)
-        left_column.addRow("Frames Per Second:", self.fps_spinbox)
+        video_form.addRow("Frames Per Second:", self.fps_spinbox)
 
-        # Video Quality
+        quality_widget = QWidget()
+        quality_layout = QHBoxLayout(quality_widget)
+        quality_layout.setContentsMargins(0, 0, 0, 0)
+        quality_layout.setSpacing(10)
+        
         self.quality_spinbox = QSpinBox()
         self.quality_spinbox.setRange(1, 10)
         self.quality_spinbox.setValue(10)
-        self.quality_spinbox.setToolTip(
-            "Higher values mean better quality but larger file size (1-10)"
-        )
-        left_column.addRow("Video Quality:", self.quality_spinbox)
+        self.quality_spinbox.setToolTip("Higher values mean better quality but larger file size")
+        quality_layout.addWidget(self.quality_spinbox)
+        
+        quality_label = QLabel("(1=low, 10=high)")
+        quality_label.setObjectName("SecondaryText")
+        quality_layout.addWidget(quality_label)
+        quality_layout.addStretch()
+        
+        video_form.addRow("Quality:", quality_widget)
+        output_layout.addWidget(video_group)
 
-        # Add quality explanation as tooltip
-        quality_explanation = QLabel("1 = lowest quality, 10 = highest quality")
-        quality_explanation.setStyleSheet("color: gray; font-style: italic;")
-        left_column.addRow("", quality_explanation)
+        # Performance section
+        perf_group = QGroupBox("Performance")
+        perf_form = QFormLayout(perf_group)
+        perf_form.setContentsMargins(12, 16, 12, 12)
+        perf_form.setVerticalSpacing(8)
+        perf_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        # Right column controls
-        # Multiprocessing
         self.multiprocessing_check = QCheckBox("Use Multiprocessing")
         self.multiprocessing_check.setChecked(True)
-        right_column.addRow("", self.multiprocessing_check)
+        perf_form.addRow("", self.multiprocessing_check)
 
-        # CPU cores
         max_cores = multiprocessing.cpu_count()
         self.cores_spinbox = QSpinBox()
         self.cores_spinbox.setRange(1, max_cores)
-        self.cores_spinbox.setValue(
-            max(1, max_cores - 1)
-        )  # Default to all but one core
+        self.cores_spinbox.setValue(max(1, max_cores - 1))
         self.cores_spinbox.setEnabled(self.multiprocessing_check.isChecked())
-        right_column.addRow("CPU Cores:", self.cores_spinbox)
+        perf_form.addRow("CPU Cores:", self.cores_spinbox)
 
-        # Connect multiprocessing checkbox to cores spinbox
         self.multiprocessing_check.stateChanged.connect(
             lambda state: self.cores_spinbox.setEnabled(state == Qt.Checked)
         )
 
-        # Add both form layouts to a horizontal layout
-        settings_layout = QHBoxLayout()
-        settings_layout.addLayout(left_column)
-        settings_layout.addLayout(right_column)
+        output_layout.addWidget(perf_group)
+        output_layout.addStretch()
 
-        # Add the file layout and settings layout to the left column
-        left_output_layout.addLayout(settings_layout)
+        # ------ Contours Tab ------
+        # Create a scroll area for the contours tab
+        contours_scroll = QScrollArea()
+        contours_scroll.setWidgetResizable(True)
+        contours_scroll_content = QWidget()
+        contours_layout = QVBoxLayout(contours_scroll_content)
+        contours_layout.setContentsMargins(8, 8, 8, 8)
+        contours_layout.setSpacing(10)
+        contours_scroll.setWidget(contours_scroll_content)
 
-        # Add the left column to the main layout
-        output_main_layout.addLayout(left_output_layout)
+        # Enable contours
+        contours_enable_group = QGroupBox("Contour Video")
+        contours_enable_layout = QVBoxLayout(contours_enable_group)
+        contours_enable_layout.setContentsMargins(12, 16, 12, 12)
+        contours_enable_layout.setSpacing(8)
 
-        output_layout.addWidget(output_group)
+        self.contour_video_enabled = QCheckBox("Enable Contour Video Mode")
+        self.contour_video_enabled.setChecked(False)
+        self.contour_video_enabled.stateChanged.connect(self.toggle_contour_video_controls)
+        contours_enable_layout.addWidget(self.contour_video_enabled)
+
+        # Mode selector
+        mode_widget = QWidget()
+        mode_layout = QHBoxLayout(mode_widget)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(10)
+
+        mode_layout.addWidget(QLabel("Mode:"))
+        self.contour_mode_combo = QComboBox()
+        self.contour_mode_combo.addItems([
+            "A: Fixed base, evolving contours",
+            "B: Fixed contours, evolving colormap",
+            "C: Both evolve"
+        ])
+        self.contour_mode_combo.currentIndexChanged.connect(self.update_contour_mode_ui)
+        mode_layout.addWidget(self.contour_mode_combo)
+        mode_layout.addStretch()
+
+        contours_enable_layout.addWidget(mode_widget)
+        contours_layout.addWidget(contours_enable_group)
+
+        # File inputs group (changes based on mode)
+        self.contour_files_group = QGroupBox("File Selection")
+        contour_files_layout = QFormLayout(self.contour_files_group)
+        contour_files_layout.setContentsMargins(12, 16, 12, 12)
+        contour_files_layout.setVerticalSpacing(8)
+        contour_files_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        # Base image file (for mode A)
+        base_file_widget = QWidget()
+        base_file_layout = QHBoxLayout(base_file_widget)
+        base_file_layout.setContentsMargins(0, 0, 0, 0)
+        base_file_layout.setSpacing(8)
+        self.contour_base_file_edit = QLineEdit()
+        self.contour_base_file_edit.setPlaceholderText("Select base image file...")
+        base_file_layout.addWidget(self.contour_base_file_edit)
+        self.contour_base_file_btn = QPushButton("Browse")
+        self.contour_base_file_btn.clicked.connect(self.browse_contour_base_file)
+        base_file_layout.addWidget(self.contour_base_file_btn)
+        contour_files_layout.addRow("Base Image:", base_file_widget)
+
+        # Contour directory (for modes A and C)
+        contour_dir_widget = QWidget()
+        contour_dir_layout = QHBoxLayout(contour_dir_widget)
+        contour_dir_layout.setContentsMargins(0, 0, 0, 0)
+        contour_dir_layout.setSpacing(8)
+        self.contour_dir_edit = QLineEdit()
+        self.contour_dir_edit.setPlaceholderText("Select contour files directory...")
+        self.contour_dir_edit.textChanged.connect(self.scan_contour_files)
+        contour_dir_layout.addWidget(self.contour_dir_edit)
+        self.contour_dir_btn = QPushButton("Browse")
+        self.contour_dir_btn.clicked.connect(self.browse_contour_directory)
+        contour_dir_layout.addWidget(self.contour_dir_btn)
+        contour_files_layout.addRow("Contour Directory:", contour_dir_widget)
+
+        # Contour file pattern
+        contour_pattern_widget = QWidget()
+        contour_pattern_layout = QHBoxLayout(contour_pattern_widget)
+        contour_pattern_layout.setContentsMargins(0, 0, 0, 0)
+        contour_pattern_layout.setSpacing(8)
+        self.contour_dir_pattern_edit = QLineEdit("*.fits")
+        self.contour_dir_pattern_edit.textChanged.connect(self.scan_contour_files)
+        contour_pattern_layout.addWidget(self.contour_dir_pattern_edit)
+        self.contour_files_count_label = QLabel("")
+        self.contour_files_count_label.setObjectName("StatusLabel")
+        contour_pattern_layout.addWidget(self.contour_files_count_label)
+        contour_files_layout.addRow("Contour Pattern:", contour_pattern_widget)
+
+        # Fixed contour file (for mode B)
+        fixed_contour_widget = QWidget()
+        fixed_contour_layout = QHBoxLayout(fixed_contour_widget)
+        fixed_contour_layout.setContentsMargins(0, 0, 0, 0)
+        fixed_contour_layout.setSpacing(8)
+        self.contour_fixed_file_edit = QLineEdit()
+        self.contour_fixed_file_edit.setPlaceholderText("Select fixed contour file...")
+        fixed_contour_layout.addWidget(self.contour_fixed_file_edit)
+        self.contour_fixed_file_btn = QPushButton("Browse")
+        self.contour_fixed_file_btn.clicked.connect(self.browse_contour_fixed_file)
+        fixed_contour_layout.addWidget(self.contour_fixed_file_btn)
+        contour_files_layout.addRow("Fixed Contour:", fixed_contour_widget)
+
+        # Colormap directory (for modes B and C)
+        colormap_dir_widget = QWidget()
+        colormap_dir_layout = QHBoxLayout(colormap_dir_widget)
+        colormap_dir_layout.setContentsMargins(0, 0, 0, 0)
+        colormap_dir_layout.setSpacing(8)
+        self.contour_colormap_dir_edit = QLineEdit()
+        self.contour_colormap_dir_edit.setPlaceholderText("Select colormap files directory...")
+        self.contour_colormap_dir_edit.textChanged.connect(self.scan_colormap_files)
+        colormap_dir_layout.addWidget(self.contour_colormap_dir_edit)
+        self.contour_colormap_dir_btn = QPushButton("Browse")
+        self.contour_colormap_dir_btn.clicked.connect(self.browse_contour_colormap_directory)
+        colormap_dir_layout.addWidget(self.contour_colormap_dir_btn)
+        contour_files_layout.addRow("Colormap Directory:", colormap_dir_widget)
+
+        # Colormap file pattern
+        colormap_pattern_widget = QWidget()
+        colormap_pattern_layout = QHBoxLayout(colormap_pattern_widget)
+        colormap_pattern_layout.setContentsMargins(0, 0, 0, 0)
+        colormap_pattern_layout.setSpacing(8)
+        self.contour_colormap_pattern_edit = QLineEdit("*.fits")
+        self.contour_colormap_pattern_edit.textChanged.connect(self.scan_colormap_files)
+        colormap_pattern_layout.addWidget(self.contour_colormap_pattern_edit)
+        self.colormap_files_count_label = QLabel("")
+        self.colormap_files_count_label.setObjectName("StatusLabel")
+        colormap_pattern_layout.addWidget(self.colormap_files_count_label)
+        contour_files_layout.addRow("Colormap Pattern:", colormap_pattern_widget)
+
+        contours_layout.addWidget(self.contour_files_group)
+
+        # Contour settings group
+        contour_settings_group = QGroupBox("Contour Settings")
+        contour_settings_layout = QFormLayout(contour_settings_group)
+        contour_settings_layout.setContentsMargins(12, 16, 12, 12)
+        contour_settings_layout.setVerticalSpacing(8)
+        contour_settings_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        # Level type
+        self.contour_level_type_combo = QComboBox()
+        self.contour_level_type_combo.addItems(["Fraction of Max", "Sigma (RMS)", "Absolute"])
+        contour_settings_layout.addRow("Level Type:", self.contour_level_type_combo)
+
+        # Positive levels
+        self.contour_pos_levels_edit = QLineEdit("0.1, 0.3, 0.5, 0.7, 0.9")
+        self.contour_pos_levels_edit.setToolTip("Comma-separated list of positive contour levels")
+        contour_settings_layout.addRow("Positive Levels:", self.contour_pos_levels_edit)
+
+        # Negative levels
+        self.contour_neg_levels_edit = QLineEdit("0.1, 0.3, 0.5, 0.7, 0.9")
+        self.contour_neg_levels_edit.setToolTip("Comma-separated list of negative contour levels")
+        contour_settings_layout.addRow("Negative Levels:", self.contour_neg_levels_edit)
+
+        # Colors
+        color_widget = QWidget()
+        color_layout = QHBoxLayout(color_widget)
+        color_layout.setContentsMargins(0, 0, 0, 0)
+        color_layout.setSpacing(10)
+
+        color_layout.addWidget(QLabel("Pos:"))
+        self.contour_pos_color_combo = QComboBox()
+        self.contour_pos_color_combo.addItems(["white", "red", "yellow", "green", "cyan", "blue", "magenta"])
+        color_layout.addWidget(self.contour_pos_color_combo)
+
+        color_layout.addWidget(QLabel("Neg:"))
+        self.contour_neg_color_combo = QComboBox()
+        self.contour_neg_color_combo.addItems(["cyan", "blue", "red", "yellow", "green", "white", "magenta"])
+        color_layout.addWidget(self.contour_neg_color_combo)
+        color_layout.addStretch()
+
+        contour_settings_layout.addRow("Colors:", color_widget)
+
+        # Line width
+        self.contour_linewidth_spin = QDoubleSpinBox()
+        self.contour_linewidth_spin.setRange(0.1, 5.0)
+        self.contour_linewidth_spin.setValue(1.0)
+        self.contour_linewidth_spin.setSingleStep(0.1)
+        contour_settings_layout.addRow("Line Width:", self.contour_linewidth_spin)
+
+        contours_layout.addWidget(contour_settings_group)
+        contours_layout.addStretch()
+
+        # Initially disable contour controls
+        self.toggle_contour_video_controls(False)
+        self.update_contour_mode_ui(0)
 
         # Add tabs to tab widget
         tab_widget.addTab(input_scroll, "Input")
         tab_widget.addTab(display_scroll, "Display")
         tab_widget.addTab(region_scroll, "Region")
         tab_widget.addTab(overlay_scroll, "Overlays")
+        tab_widget.addTab(contours_scroll, "Contours")
         tab_widget.addTab(output_scroll, "Output")
 
         # Add the tab widget to the main layout (after the preview)
@@ -654,14 +1011,20 @@ class VideoCreationDialog(QDialog):
 
         # Buttons at the bottom
         button_layout = QHBoxLayout()
-
-        self.create_btn = QPushButton("Create Video")
-        self.create_btn.clicked.connect(self.create_video)
-        button_layout.addWidget(self.create_btn)
+        button_layout.setSpacing(12)
+        button_layout.addStretch()
 
         self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setMinimumWidth(100)
         self.cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(self.cancel_btn)
+
+        self.create_btn = QPushButton("Create Video")
+        self.create_btn.setMinimumWidth(120)
+        self.create_btn.setObjectName("PrimaryButton")
+        self.create_btn.clicked.connect(self.create_video)
+        self.create_btn.setEnabled(False)
+        button_layout.addWidget(self.create_btn)
 
         main_layout.addLayout(button_layout)
 
@@ -676,10 +1039,6 @@ class VideoCreationDialog(QDialog):
             self.vmin_spinbox.setEnabled(True)
             self.vmax_spinbox.setEnabled(True)
 
-            # Update visual style to indicate active controls
-            self.vmin_spinbox.setStyleSheet("background-color: #f0f0f0;")
-            self.vmax_spinbox.setStyleSheet("background-color: #f0f0f0;")
-
         elif index == 1:  # Auto Per Frame
             self.range_explanation_label.setText(
                 "Auto Per Frame: Min/max calculated independently for each frame"
@@ -688,10 +1047,6 @@ class VideoCreationDialog(QDialog):
             self.vmin_spinbox.setEnabled(False)
             self.vmax_spinbox.setEnabled(False)
 
-            # Update visual style
-            self.vmin_spinbox.setStyleSheet("")
-            self.vmax_spinbox.setStyleSheet("")
-
         else:  # Global Auto
             self.range_explanation_label.setText(
                 "Global Auto: Min/max calculated once from all frames"
@@ -699,10 +1054,6 @@ class VideoCreationDialog(QDialog):
             # Disable min/max spinboxes
             self.vmin_spinbox.setEnabled(False)
             self.vmax_spinbox.setEnabled(False)
-
-            # Update visual style
-            self.vmin_spinbox.setStyleSheet("")
-            self.vmax_spinbox.setStyleSheet("")
 
         # Update preview with new settings
         self.update_preview()
@@ -735,34 +1086,64 @@ class VideoCreationDialog(QDialog):
 
     def preview_input_files(self):
         """Preview the files matching the input pattern"""
-        directory = self.input_directory_edit.text()
-        pattern = self.input_pattern_edit.text()
+        with wait_cursor():
+            directory = self.input_directory_edit.text()
+            pattern = self.input_pattern_edit.text()
 
-        if not directory or not pattern:
-            QMessageBox.warning(
-                self, "Incomplete Input", "Please specify both directory and pattern."
-            )
-            return
+            if not directory or not pattern:
+                QMessageBox.warning(
+                    self, "Incomplete Input", "Please specify both directory and pattern."
+                )
+                return
 
-        full_pattern = os.path.join(directory, pattern)
+            full_pattern = os.path.join(directory, pattern)
 
-        # Find matching files
-        files = glob.glob(full_pattern)
+            # Find matching files
+            files = glob.glob(full_pattern)
 
-        if not files:
-            self.files_found_label.setText("No files found matching the pattern")
-            QMessageBox.warning(
-                self, "No Files Found", f"No files match the pattern: {full_pattern}"
-            )
-            return
+            if not files:
+                self.files_found_label.setText("No files found matching the pattern")
+                self.create_btn.setEnabled(False)
+                self.create_btn.setToolTip("No files found matching the pattern")
+                QMessageBox.warning(
+                    self, "No Files Found", f"No files match the pattern: {full_pattern}"
+                )
+                return
 
-        # Update label with file count
-        self.files_found_label.setText(f"Found {len(files)} files matching the pattern")
+            # Validate extensions
+            invalid_extensions = []
+            for f in files:
+                ext = os.path.splitext(f)[1].lower()
+                if ext not in [".fits", ".fts"]:
+                    invalid_extensions.append(os.path.basename(f))
+            
+            if invalid_extensions:
+                self.files_found_label.setText(f"Found {len(files)} files, but {len(invalid_extensions)} have invalid extensions")
+                self.create_btn.setEnabled(False)
+                self.create_btn.setToolTip("Invalid file extensions found")
+                
+                # Show first few invalid files
+                msg = f"Found {len(invalid_extensions)} files with invalid extensions.\nOnly .fits and .fts files are supported."
+                if len(invalid_extensions) > 5:
+                    msg += f"\n\nExamples:\n" + "\n".join(invalid_extensions[:5]) + "\n..."
+                else:
+                    msg += f"\n\nFiles:\n" + "\n".join(invalid_extensions)
+                
+                QMessageBox.warning(self, "Invalid File Extensions", msg)
+                return
 
-        # Set first file as reference if no reference is set
-        if not self.reference_image:
-            self.reference_image = files[0]
-            self.reference_image_edit.setText(self.reference_image)
+            # Update label with file count
+            self.files_found_label.setText(f"Found {len(files)} files matching the pattern")
+            self.create_btn.setEnabled(True)
+            self.create_btn.setToolTip("")
+
+            # Always update the reference list and force a preview refresh
+            # Use first file as reference if no reference is set, or if we want to refresh
+            if not self.reference_image or self.reference_image not in files:
+                 self.reference_image = files[0]
+                 self.reference_image_edit.setText(self.reference_image)
+            
+            # Explicitly update preview to satisfy user request "Refresh the figure, each time user presses 'preview files'"
             self.update_preview(self.reference_image)
 
     def browse_reference_image(self):
@@ -822,6 +1203,7 @@ class VideoCreationDialog(QDialog):
         """Update the preview with new settings"""
         self.update_preview()
 
+    @wait_cursor()
     def update_preview(self, preview_file=None):
         """Update the preview image"""
         try:
@@ -921,7 +1303,8 @@ class VideoCreationDialog(QDialog):
                         ax.set_yticks([])
 
                         # Add a second axes to show full image with region overlay
-                        overlay_ax = self.figure.add_axes([0.65, 0.65, 0.3, 0.3])
+                        #overlay_ax = self.figure.add_axes([0.65, 0.65, 0.3, 0.3])
+                        overlay_ax = self.figure.add_axes([0.05, 0.05, 0.3, 0.3])
                         overlay_ax.imshow(
                             original_data,
                             cmap=cmap,
@@ -989,26 +1372,63 @@ class VideoCreationDialog(QDialog):
             # Refresh the canvas
             self.canvas.draw()
 
+        except RuntimeError as re:
+            # Handle specific Qt/Matplotlib runtime errors (deleted objects)
+            print(f"RuntimeError updating preview: {re}")
+            try:
+                # If the figure/canvas is corrupted, try to recreate the figure content cleanly
+                # Don't try self.figure.clear() if it caused the error
+                
+                # We interpret "wrapped C/C++ object of type QAction has been deleted" 
+                # as a sign that the toolbar or canvas state is invalid.
+                # Simplest recovery is to just show an error text on a fresh axes if possible,
+                # or just log it and return to avoid crashing.
+                
+                # Check if we can access the figure at all
+                if hasattr(self, 'figure'):
+                    # Try to reset the figure completely 
+                    self.figure = Figure(figsize=(5, 4), dpi=100)
+                    self.canvas.figure = self.figure
+                    self.canvas.draw()
+                    
+                    # Try to show error on new figure
+                    ax = self.figure.add_subplot(111)
+                    ax.text(0.5, 0.5, "Preview Error (Recovered)", ha="center", va="center")
+                    self.canvas.draw()
+            except Exception as e2:
+                print(f"Could not recover from preview error: {e2}")
+
         except Exception as e:
             print(f"Error updating preview: {e}")
-            # Clear the figure
-            self.figure.clear()
-            ax = self.figure.add_subplot(111)
-            ax.text(
-                0.5,
-                0.5,
-                f"Error loading preview: {str(e)}",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-            )
-            self.canvas.draw()
+            try:
+                # Clear the figure
+                self.figure.clear()
+                ax = self.figure.add_subplot(111)
+                ax.text(
+                    0.5,
+                    0.5,
+                    f"Error loading preview: {str(e)}",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+                self.canvas.draw()
+            except Exception as e2:
+                 print(f"Error in exception handler: {e2}")
 
     def create_video(self):
         """Create a video from the selected files"""
         try:
             # Get input files
             input_dir = self.input_directory_edit.text()
+            if not input_dir or not os.path.isdir(input_dir):
+                QMessageBox.warning(
+                    self,
+                    "Invalid Directory",
+                    "The specified input directory does not exist.",
+                )
+                return
+
             input_pattern = self.input_pattern_edit.text()
             input_path = os.path.join(input_dir, input_pattern)
 
@@ -1022,6 +1442,24 @@ class VideoCreationDialog(QDialog):
                 )
                 return
 
+            # Validate extensions
+            invalid_extensions = []
+            for f in matching_files:
+                ext = os.path.splitext(f)[1].lower()
+                if ext not in [".fits", ".fts"]:
+                    invalid_extensions.append(os.path.basename(f))
+            
+            if invalid_extensions:
+                # Show first few invalid files
+                msg = f"Found {len(invalid_extensions)} files with invalid extensions.\nOnly .fits and .fts files are supported."
+                if len(invalid_extensions) > 5:
+                    msg += f"\n\nExamples:\n" + "\n".join(invalid_extensions[:5]) + "\n..."
+                else:
+                    msg += f"\n\nFiles:\n" + "\n".join(invalid_extensions)
+                
+                QMessageBox.warning(self, "Invalid File Extensions", msg)
+                return
+
             # Sort the files based on selected method
             sort_method = self.sort_combo.currentText().lower()
             if sort_method == "filename":
@@ -1032,7 +1470,7 @@ class VideoCreationDialog(QDialog):
                 matching_files.sort(key=lambda x: os.path.splitext(x)[1])
 
             # Get output file
-            output_file = self.output_file_edit.text()
+            output_file = self.output_file_edit.text().strip()
             if not output_file:
                 QMessageBox.warning(
                     self,
@@ -1040,6 +1478,46 @@ class VideoCreationDialog(QDialog):
                     "Please specify an output file for the video.",
                 )
                 return
+            
+            # Normalize path (handle ~ and make absolute)
+            output_file = os.path.abspath(os.path.expanduser(output_file))
+            self.output_file_edit.setText(output_file)
+
+            # Check if output directory is writable
+            output_dir = os.path.dirname(output_file)
+            if not output_dir:
+                 output_dir = os.getcwd()
+            
+            if not os.path.isdir(output_dir):
+                try:
+                    os.makedirs(output_dir)
+                except OSError:
+                     QMessageBox.critical(
+                        self,
+                        "Error",
+                        f"Could not create output directory: {output_dir}",
+                    )
+                     return
+
+            if not os.access(output_dir, os.W_OK):
+                QMessageBox.critical(
+                    self,
+                    "Permission Denied",
+                    f"Output directory is not writable: {output_dir}",
+                )
+                return
+
+            # Confirm overwrite if file exists
+            if os.path.exists(output_file):
+                reply = QMessageBox.question(
+                    self,
+                    "Confirm Overwrite",
+                    f"File already exists:\n{output_file}\n\nDo you want to overwrite it?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply == QMessageBox.No:
+                    return
 
             # Get display options
             display_options = {
@@ -1053,13 +1531,17 @@ class VideoCreationDialog(QDialog):
                 "colorbar": self.colorbar_check.isChecked(),
                 "width": self.width_spinbox.value(),
                 "height": self.height_spinbox.value(),
+                "wcs_enabled": self.wcs_coords_check.isChecked(),
             }
+
 
             # Get overlay options
             overlay_options = {
                 "timestamp": self.timestamp_check.isChecked(),
                 "frame_number": self.frame_number_check.isChecked(),
                 "filename": self.filename_check.isChecked(),
+                "minmax_timeline_enabled": self.minmax_timeline_check.isChecked(),
+                "timeline_position": self.timeline_position_combo.currentIndex(),
             }
 
             # Get region selection options
@@ -1080,11 +1562,87 @@ class VideoCreationDialog(QDialog):
                     region_options["y_min"], region_options["y_max"]
                 ), max(region_options["y_min"], region_options["y_max"])
 
+            # Get contour video options
+            contour_options = {
+                "contour_video_enabled": self.contour_video_enabled.isChecked(),
+                "contour_mode": self.contour_mode_combo.currentIndex(),  # 0=A, 1=B, 2=C
+                "base_file": self.contour_base_file_edit.text().strip(),
+                "contour_files": getattr(self, "_cached_contour_files", []),
+                "fixed_contour_file": self.contour_fixed_file_edit.text().strip(),
+                "colormap_files": getattr(self, "_cached_colormap_files", []),
+                "level_type": ["fraction", "sigma", "absolute"][self.contour_level_type_combo.currentIndex()],
+                "pos_levels": self._parse_levels(self.contour_pos_levels_edit.text()),
+                "neg_levels": self._parse_levels(self.contour_neg_levels_edit.text()),
+                "pos_color": self.contour_pos_color_combo.currentText(),
+                "neg_color": self.contour_neg_color_combo.currentText(),
+                "linewidth": self.contour_linewidth_spin.value(),
+            }
+
+
+            # Check system resources
+            # 1. Disk Space
+            try:
+                total, used, free = shutil.disk_usage(output_dir)
+                if free < 500 * 1024 * 1024:  # Less than 500MB
+                    reply = QMessageBox.warning(
+                        self,
+                        "Low Disk Space",
+                        f"Free disk space on {output_dir} is low ({free / (1024*1024):.1f} MB).\nVideo creation might fail or produce incomplete files.\n\nDo you want to continue?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if reply == QMessageBox.No:
+                        return
+            except Exception as e:
+                print(f"Warning: Could not check disk space: {e}")
+
+            # 2. Memory
+            try:
+                vm = psutil.virtual_memory()
+                # Estimate memory needed: ~100MB per core overhead + frame size
+                # Very rough estimate, but good for catching extreme cases
+                estimated_needed = 1024 * 1024 * 1024  # 1GB base
+                if self.multiprocessing_check.isChecked():
+                    estimated_needed += self.cores_spinbox.value() * 200 * 1024 * 1024 # 200MB per core
+                
+                if vm.available < estimated_needed:
+                    reply = QMessageBox.warning(
+                        self,
+                        "Low Memory",
+                        f"System memory is low ({vm.available / (1024*1024*1024):.1f} GB available).\nUsing {self.cores_spinbox.value()} cores might cause system instability.\n\nDo you want to continue?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if reply == QMessageBox.No:
+                        return
+            except Exception as e:
+                print(f"Warning: Could not check memory: {e}")
+
             # Get video options
             video_options = {
                 "fps": self.fps_spinbox.value(),
                 "quality": self.quality_spinbox.value(),
             }
+            
+            # Additional validation for dimensions
+            width = self.width_spinbox.value()
+            height = self.height_spinbox.value()
+            
+            if width > 0 and width % 2 != 0:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Width",
+                    "Video width must be an even number.",
+                )
+                return
+                
+            if height > 0 and height % 2 != 0:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Height",
+                    "Video height must be an even number.",
+                )
+                return
 
             # Create progress dialog
             progress_dialog = QProgressDialog(
@@ -1105,6 +1663,7 @@ class VideoCreationDialog(QDialog):
                 **display_options,
                 **overlay_options,
                 **region_options,
+                **contour_options,
                 **video_options,
             }
 
@@ -1163,7 +1722,7 @@ class VideoCreationDialog(QDialog):
             "Video Created",
             f"Video successfully created: {output_file}",
         )
-        self.accept()
+        # self.accept()  # Keep dialog open after creation
 
     def on_video_creation_error(self, error_message):
         """Handle error in video creation"""
@@ -1177,9 +1736,10 @@ class VideoCreationDialog(QDialog):
             f"Error creating video: {error_message}",
         )
 
-    def select_region_from_preview(self):
+    @wait_cursor()
+    def select_region_from_preview(self, *args):
         """Let the user select a region from the preview image"""
-        if not self.reference_image or not hasattr(self, "figure"):
+        if not self.reference_image:
             QMessageBox.warning(
                 self, "No Preview", "Please load a reference image first."
             )
@@ -1189,9 +1749,13 @@ class VideoCreationDialog(QDialog):
             # Enable region selection
             self.region_enabled.setChecked(True)
 
-            # Clear the figure
-            self.figure.clear()
-            ax = self.figure.add_subplot(111)
+            # Create a separate figure/canvas for selection to avoid parenting issues
+            from matplotlib.figure import Figure as MplFigure
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as MplCanvas
+            
+            selection_figure = MplFigure(figsize=(5, 4), dpi=100)
+            selection_canvas = MplCanvas(selection_figure)
+            ax = selection_figure.add_subplot(111)
 
             # Load data
             data, _ = load_fits_data(
@@ -1230,20 +1794,26 @@ class VideoCreationDialog(QDialog):
             def onselect(eclick, erelease):
                 """Handle region selection event"""
                 # Get coordinates in data space
-                x1, y1 = int(min(eclick.xdata, erelease.xdata))
-                x2, y2 = int(max(eclick.xdata, erelease.xdata))
-                y1, y2 = int(min(eclick.ydata, erelease.ydata)), int(
-                    max(eclick.ydata, erelease.ydata)
-                )
+                x1, y1 = eclick.xdata, eclick.ydata
+                x2, y2 = erelease.xdata, erelease.ydata
+                
+                # Check for None (outside axes)
+                if None in (x1, y1, x2, y2):
+                    return
+
+                # Ensure proper min/max
+                x_min, x_max = int(min(x1, x2)), int(max(x1, x2))
+                y_min, y_max = int(min(y1, y2)), int(max(y1, y2))
 
                 # Update spinboxes with selected region
-                self.x_min_spinbox.setValue(max(0, x1))
-                self.x_max_spinbox.setValue(min(data.shape[1] - 1, x2))
-                self.y_min_spinbox.setValue(max(0, y1))
-                self.y_max_spinbox.setValue(min(data.shape[0] - 1, y2))
+                self.x_min_spinbox.setValue(max(0, x_min))
+                self.x_max_spinbox.setValue(min(data.shape[1] - 1, x_max))
+                self.y_min_spinbox.setValue(max(0, y_min))
+                self.y_max_spinbox.setValue(min(data.shape[0] - 1, y_max))
 
-                # Update preview
-                self.update_preview()
+                # We don't update the main preview here to keep things fast/safe
+                # The main preview will update when the dialog closes via the changed spinboxes if needed
+                # or we can update it explicitly at the end
 
             # Draw rectangle selector
             rect_selector = RectangleSelector(
@@ -1262,7 +1832,7 @@ class VideoCreationDialog(QDialog):
             self._rect_selector = rect_selector
 
             # Show message
-            status_text = ax.text(
+            '''status_text = ax.text(
                 0.5,
                 0.02,
                 "Click and drag to select region, then close this window",
@@ -1270,10 +1840,10 @@ class VideoCreationDialog(QDialog):
                 ha="center",
                 va="bottom",
                 bbox=dict(boxstyle="round", fc="white", alpha=0.8),
-            )
+            )'''
 
             # Refresh canvas
-            self.canvas.draw()
+            selection_canvas.draw()
 
             # Create a modal dialog to use for selection
             selector_dialog = QDialog(self)
@@ -1283,9 +1853,9 @@ class VideoCreationDialog(QDialog):
             # Add the canvas to the dialog
             from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 
-            toolbar = NavigationToolbar2QT(self.canvas, selector_dialog)
+            toolbar = NavigationToolbar2QT(selection_canvas, selector_dialog)
             selector_layout.addWidget(toolbar)
-            selector_layout.addWidget(self.canvas)
+            selector_layout.addWidget(selection_canvas)
 
             # Add instructions
             instructions = QLabel(
@@ -1305,7 +1875,10 @@ class VideoCreationDialog(QDialog):
 
             # Execute dialog
             selector_dialog.exec_()
-
+            
+            # Clean up selector to break circular references
+            self._rect_selector = None
+            
             # Update the preview after dialog closes
             self.update_preview()
 
@@ -1489,6 +2062,121 @@ class VideoCreationDialog(QDialog):
         self.y_max_spinbox.setEnabled(enabled)
         self.update_region_preview()
 
+    def toggle_contour_video_controls(self, enabled):
+        """Enable or disable contour video controls"""
+        self.contour_mode_combo.setEnabled(enabled)
+        self.contour_files_group.setEnabled(enabled)
+        if enabled:
+            self.update_contour_mode_ui(self.contour_mode_combo.currentIndex())
+
+    def update_contour_mode_ui(self, index):
+        """Update visibility of contour file inputs based on mode"""
+        # Mode A: Base image + contour directory
+        # Mode B: Fixed contour + colormap directory
+        # Mode C: Contour directory + colormap directory
+        
+        # Get parent widgets for each row
+        base_file_row = self.contour_base_file_edit.parent()
+        contour_dir_row = self.contour_dir_edit.parent()
+        fixed_contour_row = self.contour_fixed_file_edit.parent()
+        colormap_dir_row = self.contour_colormap_dir_edit.parent()
+        
+        if index == 0:  # Mode A
+            base_file_row.setVisible(True)
+            contour_dir_row.setVisible(True)
+            fixed_contour_row.setVisible(False)
+            colormap_dir_row.setVisible(False)
+        elif index == 1:  # Mode B
+            base_file_row.setVisible(False)
+            contour_dir_row.setVisible(False)
+            fixed_contour_row.setVisible(True)
+            colormap_dir_row.setVisible(True)
+        else:  # Mode C
+            base_file_row.setVisible(False)
+            contour_dir_row.setVisible(True)
+            fixed_contour_row.setVisible(False)
+            colormap_dir_row.setVisible(True)
+
+    def browse_contour_base_file(self):
+        """Browse for base image file"""
+        start_dir = self.input_directory_edit.text() or os.path.expanduser("~")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Base Image File", start_dir,
+            "FITS Files (*.fits *.fts);;All Files (*)"
+        )
+        if file_path:
+            self.contour_base_file_edit.setText(file_path)
+
+    def browse_contour_directory(self):
+        """Browse for contour files directory"""
+        start_dir = self.input_directory_edit.text() or os.path.expanduser("~")
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Contour Files Directory", start_dir
+        )
+        if directory:
+            self.contour_dir_edit.setText(directory)
+
+    def browse_contour_fixed_file(self):
+        """Browse for fixed contour file"""
+        start_dir = self.input_directory_edit.text() or os.path.expanduser("~")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Fixed Contour File", start_dir,
+            "FITS Files (*.fits *.fts);;All Files (*)"
+        )
+        if file_path:
+            self.contour_fixed_file_edit.setText(file_path)
+
+    def browse_contour_colormap_directory(self):
+        """Browse for colormap files directory"""
+        start_dir = self.input_directory_edit.text() or os.path.expanduser("~")
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Colormap Files Directory", start_dir
+        )
+        if directory:
+            self.contour_colormap_dir_edit.setText(directory)
+
+    def scan_contour_files(self):
+        """Scan contour directory and update file count label"""
+        directory = self.contour_dir_edit.text().strip()
+        pattern = self.contour_dir_pattern_edit.text().strip() or "*.fits"
+        
+        if not directory or not os.path.isdir(directory):
+            self.contour_files_count_label.setText("")
+            self._cached_contour_files = []
+            return
+        
+        full_pattern = os.path.join(directory, pattern)
+        files = sorted(glob.glob(full_pattern))
+        self._cached_contour_files = files
+        
+        if files:
+            self.contour_files_count_label.setText(f"✓ {len(files)} files")
+            self.contour_files_count_label.setStyleSheet("color: green;")
+        else:
+            self.contour_files_count_label.setText("No files found")
+            self.contour_files_count_label.setStyleSheet("color: red;")
+
+    def scan_colormap_files(self):
+        """Scan colormap directory and update file count label"""
+        directory = self.contour_colormap_dir_edit.text().strip()
+        pattern = self.contour_colormap_pattern_edit.text().strip() or "*.fits"
+        
+        if not directory or not os.path.isdir(directory):
+            self.colormap_files_count_label.setText("")
+            self._cached_colormap_files = []
+            return
+        
+        full_pattern = os.path.join(directory, pattern)
+        files = sorted(glob.glob(full_pattern))
+        self._cached_colormap_files = files
+        
+        if files:
+            self.colormap_files_count_label.setText(f"✓ {len(files)} files")
+            self.colormap_files_count_label.setStyleSheet("color: green;")
+        else:
+            self.colormap_files_count_label.setText("No files found")
+            self.colormap_files_count_label.setStyleSheet("color: red;")
+
     def update_region_preview(self):
         """Update the preview when region controls change"""
         if self.region_enabled.isChecked():
@@ -1517,10 +2205,18 @@ class VideoCreationDialog(QDialog):
 
         self.gamma_spinbox.setEnabled(enable_gamma)
 
-        if enable_gamma:
-            self.gamma_spinbox.setStyleSheet("")
-        else:
-            self.gamma_spinbox.setStyleSheet("background-color: #e0e0e0;")
+    def _parse_levels(self, text):
+        """Parse comma-separated level values from text"""
+        try:
+            levels = []
+            for part in text.split(","):
+                part = part.strip()
+                if part:
+                    levels.append(float(part))
+            return levels
+        except ValueError:
+            return [0.1, 0.3, 0.5, 0.7, 0.9]  # Default levels
+
 
 
 # Worker thread for video creation

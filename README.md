@@ -1,208 +1,296 @@
-# Solar Radio Image Viewer
+<p align="center">
+  <img src="https://github.com/dey-soham/solarviewer/raw/main/docs/images/screenshot.png" alt="SolarViewer" width="700">
+</p>
 
-A comprehensive tool for visualizing and analyzing solar radio images in FITS and CASA formats, with specialized support for helioprojective coordinate visualization.
+<h1 align="center">🌞 SolarViewer</h1>
 
-![Solar Radio Image Viewer](https://github.com/dey-soham/solarviewer/raw/main/docs/images/screenshot.png)
+<p align="center">
+  <strong>A comprehensive Python toolkit for visualizing and analyzing solar radio images</strong>
+</p>
 
-## Developer
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.7%2B-blue?logo=python&logoColor=white" alt="Python 3.7+"></a>
+  <a href="https://pypi.org/project/solarviewer/"><img src="https://img.shields.io/pypi/v/solarviewer?color=blue&logo=pypi&logoColor=white" alt="PyPI version"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="https://github.com/dey-soham/solarviewer"><img src="https://img.shields.io/github/stars/dey-soham/solarviewer?style=social" alt="GitHub stars"></a>
+</p>
 
-- Soham Dey [sohamd943@gmail.com](https://github.com/dey-soham)
+<p align="center">
+  <a href="#-features">Features</a> •
+  <a href="#-installation">Installation</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-command-line-interface">CLI</a> •
+  <a href="#-documentation">Documentation</a> •
+  <a href="#-contributing">Contributing</a>
+</p>
 
-## Features
+---
 
-### Standard Viewer
-- **Multi-tab Interface**: Compare multiple images side by side
-- **Comprehensive Analysis Tools**: Statistical analysis, region selection, and measurements
-- **Coordinate Systems**: Support for multiple coordinate systems including helioprojective
-- **Region Selection**: Rectangle selection tool for detailed analysis of specific regions
-- **Statistical Analysis**: Detailed statistics for the entire image and selected regions
-- **Visualization Controls**: Adjustable color maps, scaling, and display options
-- **Export Options**: Export images, data, and regions in various formats
+## ✨ Features
 
-### Helioprojective Viewer
-- **Dedicated Interface**: Specialized window for helioprojective coordinate visualization
-- **Solar Features**: Display solar limb and coordinate grid
-- **Flexible Input**: Support for both FITS files and CASA images
-- **Interactive Controls**: Adjustable display settings and overlays
-- **Auto-scaling**: Multiple options for automatic display range adjustment
-- **Stokes Parameters**: Support for various Stokes parameters and polarization calculations
+**SolarViewer** is a feature-rich desktop application designed for solar physics research. It supports FITS and CASA image formats with specialized tools for radio astronomy.
 
-### Fast Napari Viewer
-- **Lightweight Interface**: Quick loading and visualization of images
-- **Basic Analysis**: View basic image statistics
-- **Stokes Parameters**: View different Stokes parameters (I, Q, U, V, etc.)
-- **Threshold Control**: Adjust threshold for better visualization
+### 🔭 Multiple Viewer Modes
 
-## Installation
+| Viewer | Description |
+|--------|-------------|
+| **Standard Viewer** | Full-featured multi-tab interface with comprehensive analysis tools, including helioprojective coordinate support |
+| **Napari Viewer** | Lightweight, fast viewer for quick visualization |
+
+### 📊 Analysis & Visualization
+
+- **Statistical Analysis** — Detailed statistics for images and selected regions
+- **2D Gaussian Fitting** — Fit Gaussian profiles to radio sources
+- **Elliptical Ring Fitting** — Model ring-shaped emission features
+- **Region Selection** — Rectangle and ellipse tools for region-of-interest analysis
+- **Multiple Colormaps** — Choose from scientific colormaps with linear, log, sqrt, and custom stretches
+- **Stokes Parameters** — Full polarization support (I, Q, U, V, L, Lfrac, Vfrac, PANG)
+
+### 🌐 Data Access & Downloads
+
+- **Helioviewer Browser** — Browse and download images from NASA's Helioviewer API with time-series playback
+- **Solar Data Downloader** — Download data from SDO/AIA, IRIS, SOHO, GOES SUVI, STEREO, and GONG
+- **Radio Data Downloader** — Access solar radio observation archives
+- **Solar Activity Viewer** — Browse solar events (flares, CMEs, active regions) with real-time data
+
+### 🎬 Video Creation
+
+- **Time-lapse Videos** — Create MP4 videos from image sequences
+- **Contour Overlays** — Overlay radio contours on EUV/optical base images
+- **Custom Annotations** — Add timestamps, colorbars, and min/max plots
+- **Preview Mode** — Real-time preview before rendering
+
+### 🔧 Advanced Tools
+
+- **LOFAR/SIMPL Support** — Calibration table visualizer, dynamic spectra viewer, pipeline log viewer
+- **Coordinate Transformations** — Convert between RA/Dec and helioprojective coordinates
+- **Phase Center Tool** — Shift image phase centers for radio interferometry data
+- **Export Options** — Export to FITS, CASA image, PNG, and region files
+
+---
+
+## 📦 Installation
 
 ### Prerequisites
+
 - Python 3.7 or higher
 - pip package manager
+- **CASA data directory**: The `~/.casa/data` folder must exist for CASA to work properly. Create it with:
+  ```bash
+  mkdir -p ~/.casa/data
+  ```
 
-### Required Dependencies
-- PyQt5 >= 5.15.0
-- matplotlib >= 3.5.0
-- numpy >= 1.20.0
-- astropy >= 5.0.0
-- scipy >= 1.7.0
-- casatools >= 6.4.0
-- casatasks >= 6.4.0
-- sunpy >= 5.0.0
-- napari >= 0.4.16
+> **Note**: No other manual installation is required — all dependencies are installed automatically via pip.
 
 ### Install from PyPI
+
 ```bash
-pip install solar-image-viewer
+# Base installation
+pip install solarviewer
+
+# With LOFAR tools support (viewcaltable, viewds, viewlogs)
+pip install solarviewer[lofar]
+
+# Full installation with all optional dependencies (recommended)
+pip install solarviewer[full]
 ```
 
 ### Install from Source
+
 ```bash
 git clone https://github.com/dey-soham/solarviewer.git
 cd solarviewer
-pip install -e .
+
+# Full installation (editable mode) with all optional dependencies (recommended)
+pip install -e ".[full]"
+
+# With LOFAR tools
+pip install -e ".[lofar]"
 ```
 
-## Usage
+### Dependencies
 
-### Command Line Interface
+<details>
+<summary>View core dependencies</summary>
 
-#### Standard Viewer
+| Package | Version | Purpose |
+|---------|---------|---------|
+| PyQt5 | ≥5.15.0 | GUI framework |
+| matplotlib | ≥3.5.0 | Plotting and visualization |
+| numpy | ≥1.20.0 | Numerical operations |
+| astropy | ≥5.0.0 | FITS handling, coordinates |
+| scipy | ≥1.7.0 | Scientific computing |
+| sunpy | ≥5.0.0 | Solar physics tools |
+| casatools | ≥6.4.0 | CASA image support |
+| casatasks | ≥6.4.0 | CASA tasks |
+| napari | ≥0.4.16 | Fast image viewer |
+
+</details>
+
+---
+
+## 🚀 Quick Start
+
+### Launch the Viewer
+
 ```bash
-# Launch the standard viewer
+# Standard viewer
 solarviewer
 # or
 sv
 
-# Open a specific image in the standard viewer
+# Open a specific file
 solarviewer path/to/image.fits
-```
 
-#### Helioprojective Viewer
-```bash
-# Launch the helioprojective viewer with a specific image
-heliosv path/to/image.fits
-
-# Specify Stokes parameter and threshold
-heliosv path/to/image.fits --stokes I --threshold 5
-
-# Define custom RMS box coordinates
-heliosv path/to/image.fits --rms-box 0 200 0 130
-```
-
-Available Stokes parameters:
-- I: Total intensity
-- Q, U: Linear polarization
-- V: Circular polarization
-- L: Linear polarization intensity
-- Lfrac: Linear polarization fraction
-- Vfrac: Circular polarization fraction
-- Q/I, U/I, U/V: Polarization ratios
-- PANG: Polarization angle
-
-#### Fast Napari Viewer
-```bash
-# Launch the fast Napari viewer
-solarviewer -f
-# or
-sv --fast
-
-# Open a specific image in the Napari viewer
+# Fast Napari viewer
 solarviewer -f path/to/image.fits
 ```
 
-### Help
-```bash
-# Display help information for standard viewer
-solarviewer --help
+### LOFAR Tools
 
-# Display help information for helioprojective viewer
-heliosv --help
+```bash
+viewcaltable       # Calibration table visualizer
+viewds             # Dynamic spectra viewer
+viewlogs           # Pipeline log viewer
+viewsolaractivity  # Solar events browser
 ```
 
-## User Interface Guide
+---
 
-### Standard Viewer
+## 💻 Command Line Interface
+
+### Standard Viewer (`solarviewer` / `sv`)
+
+```bash
+solarviewer [OPTIONS] [IMAGEFILE]
+
+Options:
+  -f, --fast    Launch fast Napari viewer
+  --light       Start with light theme
+  -v, --version Show version and exit
+  -h, --help    Show help message
+```
+
+---
+
+## 📚 Documentation
+
+### User Interface Overview
+
+<details>
+<summary><b>Standard Viewer Controls</b></summary>
 
 #### File Controls
-- **Open Directory**: Load a directory containing solar radio images
-- **Open FITS File**: Load a specific FITS file
-- **Export Figure**: Export the current figure as an image file
-- **Export Data as FITS**: Export the current data as a FITS file
+- **Open Directory** — Load a folder of solar radio images
+- **Open FITS File** — Load a single FITS file
+- **Export Figure** — Save current view as image
+- **Export as FITS** — Export data as FITS file
 
 #### Display Controls
-- **Colormap**: Select from various colormaps for visualization
-- **Stretch**: Choose between linear, log, sqrt, and power-law stretches
-- **Gamma**: Adjust gamma value for power-law stretch
-- **Min/Max**: Set display range manually or use auto-scaling options
+- **Colormap** — Choose visualization colormap
+- **Stretch** — Linear, log, sqrt, power-law options
+- **Gamma** — Adjust power-law exponent
+- **Min/Max** — Manual or auto display range
 
-#### Region Controls
-- **Rectangle Selection**: Select a rectangular region for detailed analysis
-- **Export Region**: Export the selected region as a CASA region file
-- **Export Sub-Image**: Export the selected region as a new CASA image
+#### Region Tools
+- **Rectangle/Ellipse Selection** — Select regions for analysis
+- **Export Region** — Save as CASA region file
+- **Export Sub-image** — Extract region as new image
 
 #### Analysis Tools
-- **Fit 2D Gaussian**: Fit a 2D Gaussian to the selected region
-- **Fit Elliptical Ring**: Fit an elliptical ring to the selected region
-- **Image Statistics**: View detailed statistics for the entire image
-- **Region Statistics**: View statistics for the selected region
+- **Fit 2D Gaussian** — Gaussian source fitting
+- **Fit Elliptical Ring** — Ring model fitting
+- **Image Statistics** — Full image statistics
+- **Region Statistics** — Selected region statistics
 
-### Helioprojective Viewer
+</details>
 
-#### Display Controls
-- **Colormap**: Select from various colormaps for visualization
-- **Stretch**: Choose between linear, log, sqrt, and power-law stretches
-- **Gamma**: Adjust gamma value for power-law stretch
-- **Min/Max**: Set display range manually or use auto-scaling options
+---
 
-#### Overlay Controls
-- **Grid**: Toggle coordinate grid display
-- **Solar Limb**: Toggle solar limb display
-- **Beam**: Toggle beam display
-- **Colorbar**: Toggle colorbar display
+## 🏗️ Project Structure
 
-#### Auto-scaling Options
-- **Percentile**: Scale to 0.5-99.5 percentile range
-- **Median±5σ**: Scale to median ± 5 times standard deviation
-
-### Fast Napari Viewer
-
-#### File Controls
-- **Select File**: Load a FITS or CASA image file
-
-#### Display Controls
-- **Stokes Parameter**: Select the Stokes parameter to display
-- **Threshold**: Set the threshold value for visualization
-
-#### Statistics
-- View basic statistics for the loaded image
-
-## Development
-
-### Project Structure
 ```
 solarviewer/
 ├── solar_radio_image_viewer/
-│   ├── __init__.py
-│   ├── main.py              # Entry point
-│   ├── viewer.py            # Standard viewer implementation
-│   ├── helioprojective.py   # Helioprojective coordinate conversion
-│   ├── helioprojective_viewer.py  # Helioprojective viewer
-│   ├── napari_viewer.py     # Fast Napari viewer implementation
-│   ├── utils.py             # Utility functions
-│   ├── dialogs.py          # Dialog implementations
-│   └── styles.py           # UI styles
-├── setup.py                # Package setup
-└── README.md              # This file
+│   ├── main.py                 # Entry point
+│   ├── viewer.py               # Standard viewer
+│   ├── helioprojective.py      # Coordinate conversions
+│   ├── helioprojective_viewer.py
+│   ├── helioviewer_browser.py  # Helioviewer API browser
+│   ├── napari_viewer.py        # Fast viewer
+│   ├── video_dialog.py         # Video creation UI
+│   ├── create_video.py         # Video rendering
+│   ├── noaa_events/            # Solar events browser
+│   ├── solar_data_downloader/  # SDO/AIA, IRIS, etc.
+│   ├── radio_data_downloader/  # Radio data archives
+│   ├── solar_context/          # Real-time solar data
+│   ├── from_simpl/             # LOFAR/SIMPL tools
+│   ├── utils.py                # Utility functions
+│   └── styles.py               # UI themes (light/dark)
+├── setup.py
+├── requirements.txt
+└── README.md
 ```
 
-### Contributing
-Contributions are welcome! Please feel free to submit a Pull Request.
+---
 
-## License
-This project is licensed under the MIT License - see the LICENSE file for details.
+## 🤝 Contributing
 
-## Acknowledgments
-- [SunPy](https://sunpy.org/) for solar physics tools and helioprojective coordinates
-- [Napari](https://napari.org/) for the fast viewer implementation
-- [Astropy](https://www.astropy.org/) for astronomical calculations
-- [CASA](https://casa.nrao.edu/) for radio astronomy tools
+Contributions are welcome! Whether you're fixing bugs, adding features, or improving documentation, we appreciate your help.
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🙏 Acknowledgments
+
+This project builds on the excellent work of the solar physics and radio astronomy communities:
+
+### Core Libraries
+- [**SunPy**](https://sunpy.org/) — Solar physics data analysis in Python
+- [**Astropy**](https://www.astropy.org/) — Core astronomy library for FITS, coordinates, and units
+- [**CASA**](https://casa.nrao.edu/) — Common Astronomy Software Applications for radio astronomy
+- [**Napari**](https://napari.org/) — Fast n-dimensional image viewer
+
+### GUI & Visualization
+- [**PyQt5**](https://www.riverbankcomputing.com/software/pyqt/) — Python bindings for Qt GUI framework
+- [**Matplotlib**](https://matplotlib.org/) — Publication-quality plotting
+- [**NumPy**](https://numpy.org/) — Fundamental package for scientific computing
+- [**SciPy**](https://scipy.org/) — Scientific algorithms and mathematics
+
+### Data Sources & APIs
+- [**Helioviewer**](https://helioviewer.org/) — NASA/ESA solar image browser and API
+- [**SolarMonitor**](https://solarmonitor.org/) — Real-time solar activity monitoring
+- [**NOAA SWPC**](https://www.swpc.noaa.gov/) — Space Weather Prediction Center solar event data
+- [**SDO/AIA**](https://sdo.gsfc.nasa.gov/) — Solar Dynamics Observatory
+- [**JSOC**](http://jsoc.stanford.edu/) — Joint Science Operations Center for SDO data
+- [**VSO**](https://sdac.virtualsolar.org/) — Virtual Solar Observatory
+
+### Radio Astronomy
+- [**LOFAR**](https://www.lofar.org/) — Low-Frequency Array
+- [**python-casacore**](https://github.com/casacore/python-casacore) — Python bindings for casacore
+
+### Community
+- The solar physics and heliophysics research community for feedback and testing
+
+---
+
+## 👨‍💻 Author
+
+**Soham Dey** — [sohamd943@gmail.com](mailto:sohamd943@gmail.com) — [@dey-soham](https://github.com/dey-soham)
+
+---
+
+<p align="center">
+  <sub>Built with ❤️ for solar physics research</sub>
+</p>

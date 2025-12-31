@@ -1,4 +1,7 @@
 # __init__.py
+# Suppress CASA warnings (C++ level) before any imports
+import os as _os
+_os.environ.setdefault('CASA_LOGLEVEL', 'ERROR')
 from .viewer import SolarRadioImageViewerApp, SolarRadioImageTab
 from .utils import *
 from .norms import *
