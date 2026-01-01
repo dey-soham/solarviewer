@@ -86,6 +86,20 @@ class FullImageViewer(QDialog):
         self.resolver = ImageUrlResolver(self.page_url)
         self.resolver.found.connect(self.on_url_found)
         self.resolver.start()
+    
+    def closeEvent(self, event):
+        """Clean up threads when dialog is closed."""
+        # Stop resolver thread if running
+        if hasattr(self, 'resolver') and self.resolver is not None:
+            if self.resolver.isRunning():
+                self.resolver.quit()
+                self.resolver.wait(1000)
+        # Stop downloader thread if running
+        if hasattr(self, 'downloader') and self.downloader is not None:
+            if self.downloader.isRunning():
+                self.downloader.quit()
+                self.downloader.wait(1000)
+        super().closeEvent(event)
         
     def on_url_found(self, full_url):
         try:
@@ -100,10 +114,18 @@ class FullImageViewer(QDialog):
             # Download
             self.downloader = ImageLoader(full_url)
             self.downloader.loaded.connect(self.on_image_loaded)
-            self.downloader.error.connect(lambda e: self.img_label.setText(f"Error: {e}") if self.isVisible() else None)
+            self.downloader.error.connect(self.on_image_error)
             self.downloader.start()
         except RuntimeError:
             pass
+    
+    def on_image_error(self, error_msg):
+        """Handle image download error safely."""
+        try:
+            if self.isVisible():
+                self.img_label.setText(f"Error: {error_msg}")
+        except RuntimeError:
+            pass  # Widget was deleted
         
     def on_image_loaded(self, data):
         try:
@@ -487,6 +509,20 @@ class NOAAEventsViewer(QMainWindow):
             # Default to yesterday
             yesterday = QDate.currentDate().addDays(-1)
             self.date_edit.setDate(yesterday)
+    
+    def closeEvent(self, event):
+        """Clean up worker threads when window is closed."""
+        # Stop fetch worker if running
+        if hasattr(self, 'worker') and self.worker is not None:
+            if self.worker.isRunning():
+                self.worker.quit()
+                self.worker.wait(2000)
+        # Stop GOES plot worker if running
+        if hasattr(self, 'goes_worker') and self.goes_worker is not None:
+            if self.goes_worker.isRunning():
+                self.goes_worker.quit()
+                self.goes_worker.wait(2000)
+        super().closeEvent(event)
     
     def init_ui(self):
         """Initialize the user interface."""

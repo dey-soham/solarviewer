@@ -21,7 +21,8 @@ DARK_PALETTE = {
 
 LIGHT_PALETTE = {
     #"window": "#e8e8e8",      # Light grey background - proper light theme
-    "window": "#A59D84",
+    #"window": "#A59D84",
+    "window": "#D7D3BF",
     #"base": "#ffffff",        # White for inputs
     "base": "#ECEBDE",
     "text": "#1a1a1a",        # Dark text for readability on light backgrounds

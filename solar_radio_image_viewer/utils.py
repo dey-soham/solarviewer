@@ -440,78 +440,391 @@ def get_pixel_values_from_image(
 
 
 def get_image_metadata(imagename):
-    if not CASA_AVAILABLE:
-        if ASTROPY_AVAILABLE:
-            from astropy.coordinates import SkyCoord
-
-            ref_coord = SkyCoord(ra=180.0 * u.degree, dec=45.0 * u.degree)
-            ra_str = ref_coord.ra.to_string(unit=u.hour, sep=":", precision=2)
-            dec_str = ref_coord.dec.to_string(sep=":", precision=2)
-            ref_info = f"Reference: RA={ra_str}, Dec={dec_str}"
+    """
+    Extract structured metadata from a FITS or CASA image file.
+    
+    Returns a dictionary with organized metadata categories:
+    - observation: Date, telescope, observer, object
+    - spectral: Frequency, bandwidth, spectral system
+    - beam: Major/minor axis, position angle
+    - image: Dimensions, pixel scale, reference position, units
+    - processing: Origin software, version, weighting, history
+    
+    Also returns a formatted text representation for display.
+    """
+    metadata = {
+        'observation': {},
+        'spectral': {},
+        'beam': {},
+        'image': {},
+        'processing': {},
+        'raw_header': {}
+    }
+    
+    def format_frequency(freq_hz):
+        """Format frequency in appropriate units."""
+        if freq_hz is None:
+            return None
+        freq_hz = float(freq_hz)
+        if freq_hz >= 1e9:
+            return f"{freq_hz / 1e9:.4f} GHz"
+        elif freq_hz >= 1e6:
+            return f"{freq_hz / 1e6:.3f} MHz"
+        elif freq_hz >= 1e3:
+            return f"{freq_hz / 1e3:.2f} kHz"
         else:
-            ref_info = f"Reference: RA=180.000000°, Dec=45.000000°"
-        metadata = (
-            f"Image: {os.path.basename(imagename) if imagename else 'Demo Image'}\n"
-            f"Shape: (512, 512, 1, 1)\n"
-            f"Beam: 10.00 × 8.00 arcsec @ 45.0°\n"
-            f"{ref_info}\n"
-            f"Pixel scale: 3.600 × 3.600 arcsec\n"
-            f"Demo Mode: This is simulated data\n"
-        )
-        return metadata
-
-    ia_tool = IA()
-    ia_tool.open(imagename)
-    summary = ia_tool.summary(list=False, verbose=True)
-    metadata = ""
-    if "messages" in summary:
-        mds = summary["messages"]
-        for i, md in enumerate(mds, start=1):
-            clean_message = md.strip()
-            metadata += f"\n{clean_message}\n"
-    else:
-        metadata = "No metadata available"
-
-    """shape = ia_tool.shape()
-    csys = ia_tool.coordsys()
-
-    try:
-        beam = ia_tool.restoringbeam()
-        beam_info = (
-            f"Beam: {beam['major']['value']:.2f} × "
-            f"{beam['minor']['value']:.2f} arcsec @ "
-            f"{beam['positionangle']['value']:.1f}°"
-        )
-    except:
-        beam_info = "No beam information"
-    try:
-        ra_ref = csys.referencevalue()["numeric"][0] * 180 / np.pi
-        dec_ref = csys.referencevalue()["numeric"][1] * 180 / np.pi
-        if ASTROPY_AVAILABLE:
-            from astropy.coordinates import SkyCoord
-
-            ref_coord = SkyCoord(ra=ra_ref * u.degree, dec=dec_ref * u.degree)
-            ra_str = ref_coord.ra.to_string(unit=u.hour, sep=":", precision=2)
-            dec_str = ref_coord.dec.to_string(sep=":", precision=2)
-            coord_info = f"Reference: RA={ra_str}, Dec={dec_str}"
+            return f"{freq_hz:.2f} Hz"
+    
+    def format_angle_arcsec(angle_deg):
+        """Format angle from degrees to arcsec/arcmin as appropriate."""
+        if angle_deg is None:
+            return None
+        angle_arcsec = abs(float(angle_deg)) * 3600
+        if angle_arcsec >= 60:
+            return f"{angle_arcsec / 60:.3f} arcmin"
         else:
-            coord_info = f"Reference: RA={ra_ref:.6f}°, Dec={dec_ref:.6f}°"
-    except:
-        coord_info = "No coordinate reference information"
+            return f"{angle_arcsec:.3f} arcsec"
+    
+    def format_ra_hms(ra_deg):
+        """Format RA in hours:minutes:seconds."""
+        if ra_deg is None:
+            return None
+        try:
+            if ASTROPY_AVAILABLE:
+                from astropy.coordinates import SkyCoord
+                coord = SkyCoord(ra=float(ra_deg) * u.degree, dec=0 * u.degree)
+                return coord.ra.to_string(unit=u.hour, sep=':', precision=2)
+            else:
+                # Manual conversion
+                ra_hours = float(ra_deg) / 15.0
+                h = int(ra_hours)
+                m = int((ra_hours - h) * 60)
+                s = ((ra_hours - h) * 60 - m) * 60
+                return f"{h:02d}:{m:02d}:{s:05.2f}"
+        except:
+            return f"{ra_deg:.6f}°"
+    
+    def format_dec_dms(dec_deg):
+        """Format Dec in degrees:arcmin:arcsec."""
+        if dec_deg is None:
+            return None
+        try:
+            if ASTROPY_AVAILABLE:
+                from astropy.coordinates import SkyCoord
+                coord = SkyCoord(ra=0 * u.degree, dec=float(dec_deg) * u.degree)
+                return coord.dec.to_string(sep=':', precision=2)
+            else:
+                # Manual conversion
+                sign = '+' if dec_deg >= 0 else '-'
+                dec_deg = abs(float(dec_deg))
+                d = int(dec_deg)
+                m = int((dec_deg - d) * 60)
+                s = ((dec_deg - d) * 60 - m) * 60
+                return f"{sign}{d:02d}:{m:02d}:{s:05.2f}"
+        except:
+            return f"{dec_deg:.6f}°"
+    
+    def format_datetime(date_str):
+        """Format observation date/time nicely."""
+        if not date_str:
+            return None
+        try:
+            from datetime import datetime
+            # Handle various date formats
+            date_str = str(date_str).strip()
+            # Try ISO format with fractional seconds
+            if '.' in date_str:
+                # Handle fractional seconds by truncating
+                base, frac = date_str.rsplit('.', 1)
+                # Limit fractional seconds to 6 digits for microseconds
+                frac = frac[:6].ljust(6, '0')
+                date_str = f"{base}.{frac}"
+                dt = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%f")
+            else:
+                dt = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S")
+            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except:
+            return str(date_str)
+    
+    is_fits = imagename.endswith('.fits') or imagename.endswith('.fts')
+    
     try:
-        cdelt = csys.increment()["numeric"][0:2] * 180 / np.pi * 3600
-        pixel_scale = f"Pixel scale: {abs(cdelt[0]):.3f} × {abs(cdelt[1]):.3f} arcsec"
-    except:
-        pixel_scale = "No pixel scale information"
-    ia_tool.close()
-    metadata = (
-        f"Image: {os.path.basename(imagename)}\n"
-        f"Shape: {shape}\n"
-        f"{beam_info}\n"
-        f"{coord_info}\n"
-        f"{pixel_scale}\n"
-    )"""
+        if is_fits and ASTROPY_AVAILABLE:
+            # Use astropy for FITS files
+            from astropy.io import fits
+            with fits.open(imagename) as hdul:
+                header = hdul[0].header
+                
+                # Store raw header for reference
+                for key in header.keys():
+                    if key and key not in ('', 'COMMENT', 'HISTORY'):
+                        try:
+                            metadata['raw_header'][key] = str(header[key])
+                        except:
+                            pass
+                
+                # Observation info
+                metadata['observation']['Date/Time'] = format_datetime(header.get('DATE-OBS'))
+                metadata['observation']['Telescope'] = header.get('TELESCOP', header.get('INSTRUME'))
+                metadata['observation']['Observer'] = header.get('OBSERVER')
+                metadata['observation']['Object'] = header.get('OBJECT')
+                metadata['observation']['Origin'] = header.get('ORIGIN')
+                
+                # Spectral info
+                freq_hz = None
+                for key in ['CRVAL3', 'CRVAL4', 'RESTFRQ', 'FREQ']:
+                    if key in header:
+                        try:
+                            val = float(header[key])
+                            if val > 1e6:  # Likely Hz
+                                freq_hz = val
+                                break
+                        except:
+                            pass
+                if freq_hz:
+                    metadata['spectral']['Frequency'] = format_frequency(freq_hz)
+                    metadata['spectral']['Frequency (Hz)'] = f"{freq_hz:.0f}"
+                    # Wavelength
+                    c = 299792458  # m/s
+                    wavelength_m = c / freq_hz
+                    if wavelength_m >= 1:
+                        metadata['spectral']['Wavelength'] = f"{wavelength_m:.2f} m"
+                    elif wavelength_m >= 0.01:
+                        metadata['spectral']['Wavelength'] = f"{wavelength_m * 100:.2f} cm"
+                    else:
+                        metadata['spectral']['Wavelength'] = f"{wavelength_m * 1000:.3f} mm"
+                
+                metadata['spectral']['Spectral System'] = header.get('SPECSYS')
+                
+                # Beam info
+                if 'BMAJ' in header and 'BMIN' in header:
+                    bmaj_arcsec = float(header['BMAJ']) * 3600
+                    bmin_arcsec = float(header['BMIN']) * 3600
+                    
+                    # Smart beam axis formatting
+                    def smart_beam_format(arcsec_val):
+                        if arcsec_val >= 60:
+                            return f"{arcsec_val / 60:.2f}'"
+                        else:
+                            return f"{arcsec_val:.2f}\""
+                    
+                    metadata['beam']['Major Axis'] = smart_beam_format(bmaj_arcsec)
+                    metadata['beam']['Minor Axis'] = smart_beam_format(bmin_arcsec)
+                    metadata['beam']['Beam Area'] = f"{np.pi * bmaj_arcsec * bmin_arcsec / (4 * np.log(2)):.2f} arcsec²"
+                    if 'BPA' in header:
+                        metadata['beam']['Position Angle'] = f"{float(header['BPA']):.1f}°"
+                
+                # Image properties
+                naxis1 = header.get('NAXIS1', 0)
+                naxis2 = header.get('NAXIS2', 0)
+                metadata['image']['Dimensions'] = f"{naxis1} × {naxis2} pixels"
+                
+                if 'CDELT1' in header and 'CDELT2' in header:
+                    cdelt1_arcsec = abs(float(header['CDELT1'])) * 3600
+                    cdelt2_arcsec = abs(float(header['CDELT2'])) * 3600
+                    
+                    # Smart pixel scale formatting
+                    def smart_angle_format(arcsec_val):
+                        """Format angle in appropriate units."""
+                        if arcsec_val >= 3600:
+                            return f"{arcsec_val / 3600:.3f}°"
+                        elif arcsec_val >= 60:
+                            return f"{arcsec_val / 60:.3f}'"
+                        else:
+                            return f"{arcsec_val:.3f}\""
+                    
+                    ps1 = smart_angle_format(cdelt1_arcsec)
+                    ps2 = smart_angle_format(cdelt2_arcsec)
+                    metadata['image']['Pixel Scale'] = f"{ps1} × {ps2} /pixel"
+                    
+                    # Smart FOV formatting
+                    fov1_arcsec = cdelt1_arcsec * naxis1
+                    fov2_arcsec = cdelt2_arcsec * naxis2
+                    fov1 = smart_angle_format(fov1_arcsec)
+                    fov2 = smart_angle_format(fov2_arcsec)
+                    metadata['image']['Field of View'] = f"{fov1} × {fov2}"
+                
+                metadata['image']['Coordinate Type'] = f"{header.get('CTYPE1', 'N/A')}, {header.get('CTYPE2', 'N/A')}"
+                
+                if 'CRVAL1' in header and 'CRVAL2' in header:
+                    ra_deg = float(header['CRVAL1'])
+                    dec_deg = float(header['CRVAL2'])
+                    metadata['image']['Reference RA'] = format_ra_hms(ra_deg)
+                    metadata['image']['Reference Dec'] = format_dec_dms(dec_deg)
+                
+                metadata['image']['Units'] = header.get('BUNIT')
+                metadata['image']['Data Type'] = f"BITPIX={header.get('BITPIX', 'N/A')}"
+                metadata['image']['Equinox'] = header.get('EQUINOX')
+                
+                # Processing info
+                if header.get('ORIGIN'):
+                    metadata['processing']['Software'] = header.get('ORIGIN')
+                
+                # WSClean specific
+                if 'WSCVERSI' in header:
+                    metadata['processing']['WSClean Version'] = header.get('WSCVERSI')
+                if 'WSCWEIGH' in header:
+                    metadata['processing']['Weighting'] = header.get('WSCWEIGH')
+                # if 'WSCNITER' in header:
+                #    metadata['processing']['Iterations'] = f"{int(float(header['WSCNITER']))}"
+                #if 'WSCGAIN' in header:
+                #    metadata['processing']['Gain'] = f"{float(header['WSCGAIN']):.3f}"
+                
+                # History
+                history_cards = [str(h) for h in header.get('HISTORY', [])]
+                if history_cards:
+                    # Combine and summarize history
+                    history_text = ' '.join(history_cards)
+                    if len(history_text) > 500:
+                        history_text = history_text[:500] + '...'
+                    metadata['processing']['History'] = history_text
+        
+        elif CASA_AVAILABLE:
+            # Use CASA tools for CASA images or FITS without astropy
+            ia_tool = IA()
+            ia_tool.open(imagename)
+            
+            try:
+                summary = ia_tool.summary(list=False, verbose=True)
+                shape = ia_tool.shape()
+                csys = ia_tool.coordsys()
+                
+                # Get messages from summary for raw info
+                if 'messages' in summary:
+                    for msg in summary['messages']:
+                        msg = msg.strip()
+                        if ':' in msg:
+                            key, _, value = msg.partition(':')
+                            metadata['raw_header'][key.strip()] = value.strip()
+                
+                # Image dimensions
+                if len(shape) >= 2:
+                    metadata['image']['Dimensions'] = f"{shape[0]} × {shape[1]} pixels"
+                
+                # Coordinate info
+                try:
+                    refval = csys.referencevalue()['numeric']
+                    if len(refval) >= 2:
+                        ra_deg = refval[0] * 180 / np.pi
+                        dec_deg = refval[1] * 180 / np.pi
+                        metadata['image']['Reference RA'] = format_ra_hms(ra_deg)
+                        metadata['image']['Reference Dec'] = format_dec_dms(dec_deg)
+                except:
+                    pass
+                
+                # Pixel scale
+                try:
+                    increment = csys.increment()['numeric']
+                    if len(increment) >= 2:
+                        cdelt1_arcsec = abs(increment[0]) * 180 / np.pi * 3600
+                        cdelt2_arcsec = abs(increment[1]) * 180 / np.pi * 3600
+                        metadata['image']['Pixel Scale'] = f"{cdelt1_arcsec:.3f} × {cdelt2_arcsec:.3f} arcsec/pixel"
+                except:
+                    pass
+                
+                # Frequency
+                try:
+                    units = csys.units()
+                    refval = csys.referencevalue()['numeric']
+                    for i, unit in enumerate(units):
+                        if unit == 'Hz' and i < len(refval):
+                            freq_hz = refval[i]
+                            metadata['spectral']['Frequency'] = format_frequency(freq_hz)
+                            break
+                except:
+                    pass
+                
+                # Beam info
+                try:
+                    beam = ia_tool.restoringbeam()
+                    if beam and 'major' in beam:
+                        major = beam['major']['value']
+                        minor = beam['minor']['value']
+                        if beam['major']['unit'] == 'deg':
+                            major *= 3600
+                            minor *= 3600
+                        metadata['beam']['Major Axis'] = f"{major:.2f} arcsec"
+                        metadata['beam']['Minor Axis'] = f"{minor:.2f} arcsec"
+                        if 'positionangle' in beam:
+                            metadata['beam']['Position Angle'] = f"{beam['positionangle']['value']:.1f}°"
+                except:
+                    pass
+                
+                # Get BUNIT
+                try:
+                    bunit = ia_tool.brightnessunit()
+                    if bunit:
+                        metadata['image']['Units'] = bunit
+                except:
+                    pass
+                
+                # Telescope from miscinfo
+                try:
+                    miscinfo = ia_tool.miscinfo()
+                    if 'TELESCOP' in miscinfo:
+                        metadata['observation']['Telescope'] = miscinfo['TELESCOP']
+                    if 'DATE-OBS' in miscinfo:
+                        metadata['observation']['Date/Time'] = format_datetime(miscinfo['DATE-OBS'])
+                    if 'OBSERVER' in miscinfo:
+                        metadata['observation']['Observer'] = miscinfo['OBSERVER']
+                    if 'OBJECT' in miscinfo:
+                        metadata['observation']['Object'] = miscinfo['OBJECT']
+                except:
+                    pass
+                    
+            finally:
+                ia_tool.close()
+        else:
+            metadata['observation']['Error'] = "No FITS/CASA tools available"
+    
+    except Exception as e:
+        metadata['observation']['Error'] = f"Failed to read metadata: {str(e)}"
+    
+    # Clean up None values and empty sections
+    for section in list(metadata.keys()):
+        if section == 'raw_header':
+            continue
+        metadata[section] = {k: v for k, v in metadata[section].items() if v is not None}
+        if not metadata[section]:
+            del metadata[section]
+    
     return metadata
+
+
+def format_metadata_text(metadata):
+    """
+    Format metadata dictionary as readable text.
+    
+    Parameters:
+        metadata: Dictionary from get_image_metadata()
+    
+    Returns:
+        Formatted text string
+    """
+    lines = []
+    
+    section_titles = {
+        'observation': '📅 Observation',
+        'spectral': '📡 Spectral Properties',
+        'beam': '🎯 Beam Properties',
+        'image': '🖼️ Image Properties',
+        'processing': '⚙️ Processing',
+    }
+    
+    for section, title in section_titles.items():
+        if section in metadata and metadata[section]:
+            lines.append(f"\n{title}")
+            lines.append("─" * 40)
+            for key, value in metadata[section].items():
+                # Handle long values
+                if len(str(value)) > 60:
+                    lines.append(f"  {key}:")
+                    lines.append(f"    {value}")
+                else:
+                    lines.append(f"  {key}: {value}")
+    
+    return '\n'.join(lines)
+
 
 
 def twoD_gaussian(coords, amplitude, xo, yo, sigma_x, sigma_y, theta, offset):
