@@ -7,7 +7,8 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QLabel, QPushButton, QDateTimeEdit, QSpinBox, QListWidget,
     QScrollArea, QFrame, QProgressBar, QComboBox, QFileDialog,
-    QMessageBox, QDialog, QListWidgetItem, QApplication, QGroupBox
+    QMessageBox, QDialog, QListWidgetItem, QApplication, QGroupBox,
+    QTreeWidget, QTreeWidgetItem, QHeaderView
 )
 from PyQt5.QtCore import Qt, QDateTime, QThread, pyqtSignal, QTimer, QSize
 from PyQt5.QtGui import QPixmap, QImage, QIcon
@@ -542,73 +543,187 @@ class HelioviewerBrowser(QMainWindow):
         parent_layout.addWidget(group)
     
     def create_instrument_panel(self, parent_splitter):
-        """Create left panel with instrument filter (single selection)."""
+        """Create left panel with instrument filter (tree view grouped by observatory)."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(5, 5, 5, 5)
         
-        label = QLabel("<b>Select Instrument</b>")
-        layout.addWidget(label)
+        # Header with icon
+        header = QLabel("Select Instrument 🛰️")
+        header.setStyleSheet("padding: 5px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
         
         # Load all instruments button
-        refresh_btn = QPushButton("🔄 Refresh Instruments")
+        '''refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setToolTip("Reload available instruments from Helioviewer API")
         refresh_btn.clicked.connect(self.load_all_instruments)
-        layout.addWidget(refresh_btn)
+        layout.addWidget(refresh_btn)'''
         
-        # Instrument list - single selection
-        self.instrument_list = QListWidget()
-        self.instrument_list.setSelectionMode(QListWidget.SingleSelection)
+        # Instrument tree - grouped by observatory
+        self.instrument_tree = QTreeWidget()
+        self.instrument_tree.setHeaderLabels(["Instrument", "⏱️"])
+        self.instrument_tree.setColumnCount(2)
+        self.instrument_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.instrument_tree.header().setStretchLastSection(False)
+        self.instrument_tree.setColumnWidth(1, 45)  # Narrow cadence column
+        self.instrument_tree.header().setDefaultAlignment(Qt.AlignCenter)
+        self.instrument_tree.setAlternatingRowColors(True)
+        self.instrument_tree.setRootIsDecorated(True)
+        self.instrument_tree.setAnimated(True)
+        self.instrument_tree.setIndentation(20)
+        
+        # Style the tree
+        self.instrument_tree.setStyleSheet("""
+            QTreeWidget {
+                border: 1px solid #555;
+                border-radius: 4px;
+            }
+            QTreeWidget::item {
+                padding: 4px 2px;
+            }
+            QTreeWidget::item:selected {
+                background: #1976D2;
+                color: white;
+            }
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {
+                border-image: none;
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHBhdGggZD0iTTYgNGw0IDQtNCA0IiBzdHJva2U9IiM4ODgiIGZpbGw9Im5vbmUiLz48L3N2Zz4=);
+            }
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {
+                border-image: none;
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHBhdGggZD0iTTQgNmw0IDQgNC00IiBzdHJva2U9IiM4ODgiIGZpbGw9Im5vbmUiLz48L3N2Zz4=);
+            }
+        """)
         
         # Load instruments
         self.load_all_instruments()
         
         # Connect selection change
-        self.instrument_list.itemSelectionChanged.connect(self.on_instrument_selected)
-        layout.addWidget(self.instrument_list)
+        self.instrument_tree.itemSelectionChanged.connect(self.on_instrument_selected)
+        layout.addWidget(self.instrument_tree)
         
         # Image size control
         layout.addSpacing(10)
-        size_label = QLabel("<b>Image Size (px)</b>")
-        layout.addWidget(size_label)
-        
-        size_layout = QHBoxLayout()
-        size_layout.addWidget(QLabel("Size:"))
+        size_group = QGroupBox("📐 Image Size")
+        size_layout = QHBoxLayout(size_group)
+        size_layout.setContentsMargins(8, 8, 8, 8)
         self.image_size_spin = QSpinBox()
         self.image_size_spin.setRange(100, 4000)
         self.image_size_spin.setValue(800)
         self.image_size_spin.setSuffix(" px")
-        self.image_size_spin.setToolTip("Size for both width and height (100-4000 pixels)")
+        self.image_size_spin.setToolTip("Image dimensions (100-4000 pixels)")
         size_layout.addWidget(self.image_size_spin)
-        layout.addLayout(size_layout)
-        
-        #size_info = QLabel("Note: Higher values take longer to download")
-        #size_info.setStyleSheet("color: #888;")
-        #size_info.setWordWrap(True)
-        #layout.addWidget(size_info)
+        layout.addWidget(size_group)
         
         parent_splitter.addWidget(panel)
+        
+        # Keep reference for compatibility
+        self.instrument_list = self.instrument_tree
     
     def load_all_instruments(self):
-        """Load all available instruments from Helioviewer."""
-        self.instrument_list.clear()
+        """Load all available instruments from Helioviewer, grouped by observatory."""
+        self.instrument_tree.clear()
         self.all_instruments = fetch_all_instruments()
         
-        for nickname, layer_path, observatory, cadence in self.all_instruments:
-            # Format cadence for display
-            if cadence < 60:
-                cad_str = f"{cadence}s"
-            elif cadence < 3600:
-                cad_str = f"{cadence//60}min"
-            else:
-                cad_str = f"{cadence//3600}hr"
-            
-            item = QListWidgetItem(f"{nickname} ({observatory}) [{cad_str}]")
-            item.setData(Qt.UserRole, (nickname, layer_path, observatory, cadence))
-            self.instrument_list.addItem(item)
+        # Observatory info with icons
+        observatory_info = {
+            'SDO': ('🌟', 'Solar Dynamics Observatory'),
+            'SOHO': ('☀️', 'Solar and Heliospheric Observatory'),
+            'STEREO_A': ('🅰️', 'STEREO Ahead'),
+            'STEREO_B': ('🅱️', 'STEREO Behind'),
+            'GOES-16': ('🛸', 'GOES-16 Satellite'),
+            'GOES-17': ('🛸', 'GOES-17 Satellite'),
+            'GOES-18': ('🛸', 'GOES-18 Satellite'),
+        }
         
-        # Select first item by default
-        #if self.instrument_list.count() > 0:
-        #    self.instrument_list.setCurrentRow(0)
-        #    self.update_interval_for_instrument()
+        # Wavelength descriptions
+        wavelength_descriptions = {
+            '94': 'Fe XVIII - 6.3 MK',
+            '131': 'Fe VIII/XXI - 0.4/10 MK',
+            '171': 'Fe IX - 0.6 MK',
+            '193': 'Fe XII/XXIV - 1.2/20 MK',
+            '195': 'Fe XII - 1.2 MK',
+            '211': 'Fe XIV - 2.0 MK',
+            '284': 'Fe XV - 2.0 MK',
+            '304': 'He II - 0.05 MK',
+            '335': 'Fe XVI - 2.5 MK',
+            '1600': 'C IV + cont - 0.1 MK',
+            '1700': 'Continuum - 5000 K',
+            '4500': 'Continuum - 5000 K',
+            'magnetogram': 'Magnetic Field',
+            'continuum': 'White Light',
+            'white-light': 'Coronagraph',
+        }
+        
+        # Group instruments by observatory
+        obs_groups = {}
+        for nickname, layer_path, observatory, cadence in self.all_instruments:
+            if observatory not in obs_groups:
+                obs_groups[observatory] = []
+            obs_groups[observatory].append((nickname, layer_path, cadence))
+        
+        # Create tree items
+        for observatory in sorted(obs_groups.keys()):
+            icon, full_name = observatory_info.get(observatory, ('🔭', observatory))
+            
+            # Create observatory node
+            obs_item = QTreeWidgetItem()
+            obs_item.setText(0, f"{icon} {observatory}")
+            obs_item.setToolTip(0, full_name)
+            obs_item.setFirstColumnSpanned(True)
+            
+            # Make it bold
+            font = obs_item.font(0)
+            font.setBold(True)
+            obs_item.setFont(0, font)
+            
+            # Add instruments under this observatory
+            for nickname, layer_path, cadence in sorted(obs_groups[observatory]):
+                # Format cadence
+                if cadence < 60:
+                    cad_str = f"{cadence}s"
+                elif cadence < 3600:
+                    cad_str = f"{cadence//60}m"
+                else:
+                    cad_str = f"{cadence//3600}h"
+                
+                # Get wavelength description
+                desc = ""
+                for wave, wave_desc in wavelength_descriptions.items():
+                    if wave in nickname.lower() or wave in nickname:
+                        desc = wave_desc
+                        break
+                
+                # Create instrument item
+                inst_item = QTreeWidgetItem()
+                display_name = nickname
+                if desc:
+                    display_name = f"{nickname}  •  {desc}"
+                inst_item.setText(0, display_name)
+                inst_item.setText(1, cad_str)
+                inst_item.setTextAlignment(1, Qt.AlignCenter)
+                inst_item.setData(0, Qt.UserRole, (nickname, layer_path, observatory, cadence))
+                inst_item.setToolTip(0, f"{nickname}\nCadence: {cad_str}\n{desc}" if desc else f"{nickname}\nCadence: {cad_str}")
+                
+                obs_item.addChild(inst_item)
+            
+            self.instrument_tree.addTopLevelItem(obs_item)
+        
+        # Expand all by default
+        self.instrument_tree.expandAll()
+    
+    def get_selected_instruments(self):
+        """Get currently selected instrument (single selection from tree)."""
+        selected_items = self.instrument_tree.selectedItems()
+        instruments = []
+        for item in selected_items:
+            data = item.data(0, Qt.UserRole)
+            if data:  # Only instrument items have data, not observatory headers
+                instruments.append(data)
+        return instruments
     
     def set_all_instruments(self, checked):
         """Not used in single-selection mode."""
@@ -794,13 +909,6 @@ class HelioviewerBrowser(QMainWindow):
             self._process_frame_download_queue()
         else:
             self.on_loading_finished()
-    
-    def get_selected_instruments(self):
-        """Get currently selected instrument (single selection)."""
-        selected_items = self.instrument_list.selectedItems()
-        if selected_items:
-            return [selected_items[0].data(Qt.UserRole)]
-        return []
     
     def load_frame_sync(self, frame_idx, instruments):
         """Load a frame synchronously (for first frame)."""
