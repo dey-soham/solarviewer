@@ -9125,7 +9125,7 @@ class SolarRadioImageViewerApp(QMainWindow):
             metadata = get_image_metadata(current_tab.imagename)
             from .dialogs import ImageInfoDialog
 
-            dialog = ImageInfoDialog(self, metadata)
+            dialog = ImageInfoDialog(self, metadata=metadata)
             dialog.setAttribute(Qt.WA_DeleteOnClose)
             dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
             self._open_dialogs.append(dialog)

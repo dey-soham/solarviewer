@@ -23,6 +23,10 @@ from PyQt5.QtWidgets import (
     QWidget,
     QProgressDialog,
     QFrame,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QSize
@@ -602,19 +606,207 @@ class BatchProcessDialog(QDialog):
 
 
 class ImageInfoDialog(QDialog):
-    def __init__(self, parent=None, info_text=""):
+    """Professional metadata display dialog with organized sections."""
+    
+    def __init__(self, parent=None, info_text="", metadata=None):
         super().__init__(parent)
-        self.setWindowTitle("Image Metadata / Info")
-        self.setMinimumSize(500, 400)
+        self.setWindowTitle("Image Metadata")
+        self.setMinimumSize(700, 500)
+        self.metadata = metadata
+        self.info_text = info_text
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
         layout = QVBoxLayout(self)
-        self.text_area = QPlainTextEdit()
-        self.text_area.setReadOnly(True)
-        self.text_area.setPlainText(info_text)
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
-        button_box.accepted.connect(self.accept)
-        layout.addWidget(self.text_area)
-        layout.addWidget(button_box)
-        self.setLayout(layout)
+        layout.setSpacing(10)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # Check if we have structured metadata (dict) or plain text
+        if isinstance(self.metadata, dict) and self.metadata:
+            self._create_structured_view(layout)
+        elif self.info_text:
+            # Handle legacy plain text or formatted text
+            if isinstance(self.info_text, dict):
+                self.metadata = self.info_text
+                self._create_structured_view(layout)
+            else:
+                self._create_text_view(layout, self.info_text)
+        else:
+            self._create_text_view(layout, "No metadata available")
+        
+        # Button row
+        button_layout = QHBoxLayout()
+        
+        # Copy button
+        copy_btn = QPushButton("📋 Copy to Clipboard")
+        copy_btn.clicked.connect(self._copy_to_clipboard)
+        button_layout.addWidget(copy_btn)
+        
+        button_layout.addStretch()
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        close_btn.setDefault(True)
+        button_layout.addWidget(close_btn)
+        
+        layout.addLayout(button_layout)
+    
+    def _create_structured_view(self, parent_layout):
+        """Create tabbed view for structured metadata."""
+        tab_widget = QTabWidget()
+        
+        section_info = [
+            ('observation', '📅 Observation', 'Observation details'),
+            ('spectral', '📡 Spectral', 'Frequency and wavelength information'),
+            ('beam', '🎯 Beam', 'Synthesized beam properties'),
+            ('image', '🖼️ Image', 'Image dimensions and coordinates'),
+            ('processing', '⚙️ Processing', 'Data processing information'),
+        ]
+        
+        for section_key, title, tooltip in section_info:
+            if section_key in self.metadata and self.metadata[section_key]:
+                tab = self._create_section_table(self.metadata[section_key])
+                tab_widget.addTab(tab, title)
+                tab_widget.setTabToolTip(tab_widget.count() - 1, tooltip)
+        
+        # Add raw header tab if available
+        if 'raw_header' in self.metadata and self.metadata['raw_header']:
+            raw_tab = self._create_raw_header_view(self.metadata['raw_header'])
+            tab_widget.addTab(raw_tab, "📄 All Headers")
+            tab_widget.setTabToolTip(tab_widget.count() - 1, "Complete FITS header information")
+        
+        parent_layout.addWidget(tab_widget)
+    
+    def _create_section_table(self, section_data):
+        """Create a styled table for a metadata section."""
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Property", "Value"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setAlternatingRowColors(True)
+        
+        # Populate table
+        table.setRowCount(len(section_data))
+        for row, (key, value) in enumerate(section_data.items()):
+            key_item = QTableWidgetItem(str(key))
+            value_item = QTableWidgetItem(str(value))
+            
+            # Make key bold
+            font = key_item.font()
+            font.setBold(True)
+            key_item.setFont(font)
+            
+            table.setItem(row, 0, key_item)
+            table.setItem(row, 1, value_item)
+        
+        # Adjust row heights
+        table.resizeRowsToContents()
+        
+        return table
+    
+    def _create_raw_header_view(self, raw_header):
+        """Create a searchable view for raw header data."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Search box
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("🔍 Search:"))
+        search_edit = QLineEdit()
+        search_edit.setPlaceholderText("Filter headers...")
+        search_layout.addWidget(search_edit)
+        layout.addLayout(search_layout)
+        
+        # Table
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Keyword", "Value"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setAlternatingRowColors(True)
+        
+        # Store data for filtering
+        self._raw_header_data = list(raw_header.items())
+        self._raw_table = table
+        
+        # Populate table
+        self._populate_raw_table("")
+        
+        # Connect search
+        search_edit.textChanged.connect(self._filter_raw_header)
+        
+        layout.addWidget(table)
+        return widget
+    
+    def _populate_raw_table(self, filter_text):
+        """Populate raw header table with optional filtering."""
+        filter_text = filter_text.lower()
+        filtered_data = [
+            (k, v) for k, v in self._raw_header_data
+            if filter_text in k.lower() or filter_text in str(v).lower()
+        ]
+        
+        self._raw_table.setRowCount(len(filtered_data))
+        for row, (key, value) in enumerate(filtered_data):
+            key_item = QTableWidgetItem(str(key))
+            value_item = QTableWidgetItem(str(value))
+            
+            font = key_item.font()
+            font.setFamily("monospace")
+            key_item.setFont(font)
+            value_item.setFont(font)
+            
+            self._raw_table.setItem(row, 0, key_item)
+            self._raw_table.setItem(row, 1, value_item)
+        
+        self._raw_table.resizeRowsToContents()
+    
+    def _filter_raw_header(self, text):
+        """Filter raw header table based on search text."""
+        self._populate_raw_table(text)
+    
+    def _create_text_view(self, parent_layout, text):
+        """Create simple text view for plain text metadata."""
+        text_area = QPlainTextEdit()
+        text_area.setReadOnly(True)
+        text_area.setPlainText(text)
+        
+        # Use monospace font for better alignment
+        font = text_area.font()
+        font.setFamily("monospace")
+        text_area.setFont(font)
+        
+        parent_layout.addWidget(text_area)
+    
+    def _copy_to_clipboard(self):
+        """Copy metadata to clipboard as text."""
+        from PyQt5.QtWidgets import QApplication
+        
+        clipboard = QApplication.clipboard()
+        
+        if self.metadata:
+            # Format structured metadata as text
+            from .utils import format_metadata_text
+            text = format_metadata_text(self.metadata)
+        else:
+            text = self.info_text
+        
+        clipboard.setText(text)
+        
+        # Show confirmation (brief)
+        if hasattr(self, 'parentWidget') and self.parentWidget():
+            pass  # Could show status message
+
 
 
 class PhaseShiftDialog(QDialog):
@@ -622,7 +814,7 @@ class PhaseShiftDialog(QDialog):
 
     def __init__(self, parent=None, imagename=None):
         super().__init__(parent)
-        self.setWindowTitle("Solar Phase Center Shifting")
+        self.setWindowTitle("Solar Phase Center Shift")
         self.setMinimumSize(1000, 800)
         self.imagename = imagename
 
@@ -651,7 +843,8 @@ class PhaseShiftDialog(QDialog):
             "This is useful for properly aligning solar observations in heliographic coordinates."
         )
         description.setWordWrap(True)
-        description.setStyleSheet("color: #BBB; font-style: italic;")
+        #description.setStyleSheet("color: #BBB; font-style: italic;")
+        description.setStyleSheet("font-style: italic;")
         main_layout.addWidget(description)
 
         # Mode selection: Single file or batch processing
@@ -1389,7 +1582,8 @@ class HPCBatchConversionDialog(QDialog):
             "Select a pattern of files to convert and specify the output pattern."
         )
         description.setWordWrap(True)
-        description.setStyleSheet("color: #BBB; font-style: italic;")
+        #description.setStyleSheet("color: #BBB; font-style: italic;")
+        description.setStyleSheet("font-style: italic;")
         main_layout.addWidget(description)
 
         # Create two-column layout
