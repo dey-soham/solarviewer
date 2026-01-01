@@ -923,12 +923,12 @@ class DynamicSpectrumCanvas(FigureCanvas):
             if self._extent is not None:
                 x0, x1, y0, y1 = self._extent
                 frac_x = (event.xdata - x0) / (x1 - x0)
-                time_idx = int(frac_x * (nt - 1))
+                time_idx = round(frac_x * (nt - 1))
                 frac_y = (event.ydata - y0) / (y1 - y0)
-                freq_idx = int(frac_y * (nf - 1))
+                freq_idx = round(frac_y * (nf - 1))
             else:
-                time_idx = int(event.xdata)
-                freq_idx = int(event.ydata)
+                time_idx = round(event.xdata)
+                freq_idx = round(event.ydata)
 
             time_idx = max(0, min(time_idx, nt - 1))
             freq_idx = max(0, min(freq_idx, nf - 1))

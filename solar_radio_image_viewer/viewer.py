@@ -6507,7 +6507,7 @@ class SolarRadioImageTab(QWidget):
         if not event.inaxes or self.current_image_data is None:
             return
 
-        x, y = int(event.xdata), int(event.ydata)
+        x, y = round(event.xdata), round(event.ydata)
 
         try:
             value = self.current_image_data[x, y]
@@ -6515,7 +6515,22 @@ class SolarRadioImageTab(QWidget):
         except (IndexError, TypeError):
             pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
 
-        if self.current_wcs:
+        wcs_obj = getattr(self, '_cached_wcs_obj', None)
+        if wcs_obj is not None:
+            try:
+                from astropy.coordinates import SkyCoord
+                import astropy.units as u
+
+                ra, dec = wcs_obj.wcs_pix2world(event.xdata, event.ydata, 0)
+                coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
+                ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
+                dec_str = coord.dec.to_string(sep=":", precision=1)
+
+                coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
+                self.coord_label.setText(coord_info)
+            except Exception as e:
+                self.coord_label.setText(f"{pixel_info}<br><b>WCS Error:</b> {str(e)}")
+        elif self.current_wcs:
             try:
                 from astropy.wcs import WCS
                 from astropy.coordinates import SkyCoord
@@ -6531,10 +6546,10 @@ class SolarRadioImageTab(QWidget):
                 w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
                 w.wcs.ctype = ["RA---SIN", "DEC--SIN"]
 
-                ra, dec = w.wcs_pix2world(x, y, 0)
+                ra, dec = w.wcs_pix2world(event.xdata, event.ydata, 0)
                 coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
-                ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=2)
-                dec_str = coord.dec.to_string(sep=":", precision=2)
+                ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
+                dec_str = coord.dec.to_string(sep=":", precision=1)
 
                 coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
                 self.coord_label.setText(coord_info)
