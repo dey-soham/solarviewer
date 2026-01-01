@@ -118,11 +118,14 @@ class DownloadWorker(QThread):
 class RadioDataDownloaderGUI(QMainWindow):
     """Main window for the Radio Data Downloader GUI."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, initial_datetime=None):
         super().__init__(parent)
         self.setWindowTitle("Radio Solar Data Downloader")
         self.setMinimumWidth(600)
         self.setMinimumHeight(800)
+        
+        # Store initial datetime for time selection
+        self.initial_datetime = initial_datetime
 
         # Main widget and layout
         self.main_widget = QWidget()
@@ -198,8 +201,14 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.date_only_edit = QDateTimeEdit()
         self.date_only_edit.setCalendarPopup(True)
         self.date_only_edit.setDisplayFormat("yyyy.MM.dd")
-        yesterday = QDateTime.currentDateTime().addDays(-1)
-        self.date_only_edit.setDateTime(yesterday)
+        
+        # Use initial_datetime if provided, otherwise yesterday
+        if self.initial_datetime:
+            initial_qdt = QDateTime(self.initial_datetime)
+            self.date_only_edit.setDateTime(initial_qdt)
+        else:
+            yesterday = QDateTime.currentDateTime().addDays(-1)
+            self.date_only_edit.setDateTime(yesterday)
         date_layout.addWidget(self.date_only_edit)
         layout.addWidget(self.date_layout_widget)
 
@@ -211,10 +220,17 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.start_datetime = QDateTimeEdit()
         self.start_datetime.setCalendarPopup(True)
         self.start_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
-        yesterday = QDateTime.currentDateTime().addDays(-1)
-        yesterday.setTime(yesterday.time().fromString("00:00:00", "HH:mm:ss"))
-        self.start_datetime.setDateTime(yesterday)
+        
+        # Use initial_datetime if provided, otherwise yesterday 00:00:00
+        if self.initial_datetime:
+            initial_qdt = QDateTime(self.initial_datetime)
+            self.start_datetime.setDateTime(initial_qdt)
+        else:
+            yesterday = QDateTime.currentDateTime().addDays(-1)
+            yesterday.setTime(yesterday.time().fromString("00:00:00", "HH:mm:ss"))
+            self.start_datetime.setDateTime(yesterday)
         self.start_datetime.dateChanged.connect(self.on_start_date_changed)
+        self.start_datetime.dateTimeChanged.connect(self.on_start_time_changed)
         start_layout.addWidget(self.start_datetime)
         layout.addWidget(self.start_layout_widget)
 
@@ -226,9 +242,16 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.end_datetime = QDateTimeEdit()
         self.end_datetime.setCalendarPopup(True)
         self.end_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
-        end_time = QDateTime.currentDateTime().addDays(-1)
-        end_time.setTime(end_time.time().fromString("23:59:59", "HH:mm:ss"))
-        self.end_datetime.setDateTime(end_time)
+        
+        # Use initial_datetime + 1 hour if provided, otherwise yesterday 23:59:59
+        if self.initial_datetime:
+            from datetime import timedelta
+            end_dt = self.initial_datetime + timedelta(hours=1)
+            self.end_datetime.setDateTime(QDateTime(end_dt))
+        else:
+            end_time = QDateTime.currentDateTime().addDays(-1)
+            end_time.setTime(end_time.time().fromString("23:59:59", "HH:mm:ss"))
+            self.end_datetime.setDateTime(end_time)
         end_layout.addWidget(self.end_datetime)
         layout.addWidget(self.end_layout_widget)
 
@@ -264,7 +287,15 @@ class RadioDataDownloaderGUI(QMainWindow):
     def on_start_date_changed(self, new_date):
         """Sync end date when start date is changed."""
         from PyQt5.QtCore import QTime
-        end_dt = QDateTime(new_date, QTime(23, 59, 59))
+        # Keep the current end time but change the date
+        current_end_time = self.end_datetime.time()
+        end_dt = QDateTime(new_date, current_end_time)
+        self.end_datetime.setDateTime(end_dt)
+
+    def on_start_time_changed(self, new_datetime):
+        """Sync end time when start time is changed (keep 1 hour difference)."""
+        # Set end time to start time + 1 hour
+        end_dt = new_datetime.addSecs(3600)
         self.end_datetime.setDateTime(end_dt)
 
     def create_output_selection(self):
@@ -468,12 +499,13 @@ class RadioDataDownloaderGUI(QMainWindow):
         )
 
 
-def launch_gui(parent=None) -> RadioDataDownloaderGUI:
+def launch_gui(parent=None, initial_datetime=None) -> RadioDataDownloaderGUI:
     """
     Launch the Radio Data Downloader GUI.
 
     Args:
         parent: Optional parent widget for integration with other PyQt applications
+        initial_datetime: Optional datetime to initialize the time selectors
 
     Returns:
         RadioDataDownloaderGUI: The main window instance
@@ -483,7 +515,7 @@ def launch_gui(parent=None) -> RadioDataDownloaderGUI:
     else:
         app = QApplication.instance()
 
-    window = RadioDataDownloaderGUI(parent)
+    window = RadioDataDownloaderGUI(parent, initial_datetime=initial_datetime)
     window.show()
 
     if parent is None:

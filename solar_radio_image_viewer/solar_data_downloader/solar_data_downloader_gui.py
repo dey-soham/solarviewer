@@ -380,11 +380,14 @@ class DownloadWorker(QThread):
 class SolarDataViewerGUI(QMainWindow):
     """Main window for the Solar Data Viewer GUI application."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, initial_datetime=None):
         super().__init__(parent)
         self.setWindowTitle("Solar Data Downloader")
         self.setMinimumWidth(600)
         self.setMinimumHeight(800)
+        
+        # Store initial datetime for time selection
+        self.initial_datetime = initial_datetime
 
         # Initialize the main widget and layout
         self.main_widget = QWidget()
@@ -667,9 +670,18 @@ class SolarDataViewerGUI(QMainWindow):
         start_layout = QHBoxLayout()
         start_layout.addWidget(QLabel("Start:"))
         self.start_datetime = QDateTimeEdit()
-        self.start_datetime.setDateTime(QDateTime.currentDateTime())
         self.start_datetime.setCalendarPopup(True)
         self.start_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
+        
+        # Use initial_datetime if provided, otherwise current time
+        if self.initial_datetime:
+            from PyQt5.QtCore import QDateTime
+            self.start_datetime.setDateTime(QDateTime(self.initial_datetime))
+        else:
+            self.start_datetime.setDateTime(QDateTime.currentDateTime())
+        
+        # Connect to sync end time when start time changes
+        self.start_datetime.dateTimeChanged.connect(self.on_start_datetime_changed)
         start_layout.addWidget(self.start_datetime)
         layout.addLayout(start_layout)
 
@@ -677,11 +689,19 @@ class SolarDataViewerGUI(QMainWindow):
         end_layout = QHBoxLayout()
         end_layout.addWidget(QLabel("End:"))
         self.end_datetime = QDateTimeEdit()
-        self.end_datetime.setDateTime(
-            QDateTime.currentDateTime().addSecs(3600)  # Default to 1 hour later
-        )
         self.end_datetime.setCalendarPopup(True)
         self.end_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
+        
+        # Use initial_datetime + 1 hour if provided, otherwise current time + 1 hour
+        if self.initial_datetime:
+            from datetime import timedelta
+            from PyQt5.QtCore import QDateTime
+            end_dt = self.initial_datetime + timedelta(hours=1)
+            self.end_datetime.setDateTime(QDateTime(end_dt))
+        else:
+            self.end_datetime.setDateTime(
+                QDateTime.currentDateTime().addSecs(3600)  # Default to 1 hour later
+            )
         end_layout.addWidget(self.end_datetime)
         layout.addLayout(end_layout)
 
@@ -694,6 +714,12 @@ class SolarDataViewerGUI(QMainWindow):
 
         group.setLayout(layout)
         self.layout.addWidget(group)
+
+    def on_start_datetime_changed(self, new_datetime):
+        """Sync end time when start time is changed (keep 1 hour difference)."""
+        # Set end time to start time + 1 hour
+        end_dt = new_datetime.addSecs(3600)
+        self.end_datetime.setDateTime(end_dt)
 
     def create_output_selection(self):
         """Create the output directory selection section."""
@@ -1155,12 +1181,13 @@ class SolarDataViewerGUI(QMainWindow):
         QMessageBox.critical(self, "Error", f"Download failed: {error_message}")
 
 
-def launch_gui(parent=None) -> SolarDataViewerGUI:
+def launch_gui(parent=None, initial_datetime=None) -> SolarDataViewerGUI:
     """
     Launch the Solar Data Viewer GUI.
 
     Args:
         parent: Optional parent widget for integration with other PyQt applications
+        initial_datetime: Optional datetime to initialize the time selectors
 
     Returns:
         SolarDataViewerGUI: The main window instance
@@ -1170,7 +1197,7 @@ def launch_gui(parent=None) -> SolarDataViewerGUI:
     else:
         app = QApplication.instance()
 
-    window = SolarDataViewerGUI(parent)
+    window = SolarDataViewerGUI(parent, initial_datetime=initial_datetime)
     window.show()
 
     if parent is None:

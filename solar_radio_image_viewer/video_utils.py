@@ -453,7 +453,12 @@ class ContourVideoProcessor:
             pos = sorted([level * abs_max for level in pos_levels])
             neg = sorted([-level * abs_max for level in neg_levels])
         elif level_type == 'sigma':
-            rms = np.nanstd(data)
+            # Use bottom 10% of image (full width, bottom 10% height) for RMS calculation
+            # This avoids including the sun in the noise estimate
+            height = data.shape[0]
+            bottom_10_pct = max(1, int(height * 0.1))  # At least 1 row
+            noise_region = data[:bottom_10_pct, :]  # Bottom rows (low y indices)
+            rms = np.nanstd(noise_region)
             pos = sorted([level * rms for level in pos_levels])
             neg = sorted([-level * rms for level in neg_levels])
         else:  # absolute
