@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="https://github.com/dey-soham/solarviewer/raw/main/docs/images/screenshot.png" alt="SolarViewer" width="700">
-</p>
-
 <h1 align="center">🌞 SolarViewer</h1>
 
 <p align="center">
