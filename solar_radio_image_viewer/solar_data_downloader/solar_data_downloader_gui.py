@@ -675,7 +675,6 @@ class SolarDataViewerGUI(QMainWindow):
         
         # Use initial_datetime if provided, otherwise current time
         if self.initial_datetime:
-            from PyQt5.QtCore import QDateTime
             self.start_datetime.setDateTime(QDateTime(self.initial_datetime))
         else:
             self.start_datetime.setDateTime(QDateTime.currentDateTime())
@@ -695,7 +694,6 @@ class SolarDataViewerGUI(QMainWindow):
         # Use initial_datetime + 1 hour if provided, otherwise current time + 1 hour
         if self.initial_datetime:
             from datetime import timedelta
-            from PyQt5.QtCore import QDateTime
             end_dt = self.initial_datetime + timedelta(hours=1)
             self.end_datetime.setDateTime(QDateTime(end_dt))
         else:
