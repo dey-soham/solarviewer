@@ -408,6 +408,15 @@ class SolarDataViewerGUI(QMainWindow):
         # Initial update for method visibility
         self.on_instrument_changed(0)
 
+    def closeEvent(self, event):
+        """Clean up download worker thread when window is closed."""
+        if hasattr(self, 'download_worker') and self.download_worker is not None:
+            if self.download_worker.isRunning():
+                self.download_worker.cancel()
+                self.download_worker.quit()
+                self.download_worker.wait(2000)
+        super().closeEvent(event)
+
     def create_instrument_selection(self):
         """Create the instrument selection section."""
         group = QGroupBox("Select Instrument")
