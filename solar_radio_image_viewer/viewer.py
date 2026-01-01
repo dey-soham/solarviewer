@@ -10103,7 +10103,8 @@ except Exception as e:
         layout.addWidget(title)
 
         # Version
-        version = QLabel("Version 1.0.3")
+        from . import __version__
+        version = QLabel(f"Version {__version__}")
         version.setStyleSheet("font-size: 12pt;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
