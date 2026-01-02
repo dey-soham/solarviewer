@@ -8401,11 +8401,16 @@ class SolarRadioImageViewerApp(QMainWindow):
         export_act.triggered.connect(self.export_data)
         file_menu.addAction(export_act)
 
-        export_data_act = QAction("Export Data as FITS", self)
+        export_data_act = QAction("Export as FITS", self)
         export_data_act.setShortcut("Ctrl+F")
         export_data_act.setStatusTip("Export current data as FITS file")
         export_data_act.triggered.connect(self.export_as_fits)
         file_menu.addAction(export_data_act)
+
+        export_casa_act = QAction("Export as CASA Image", self)
+        export_casa_act.setStatusTip("Export/convert current data to CASA image format")
+        export_casa_act.triggered.connect(self.export_as_casa_image)
+        file_menu.addAction(export_casa_act)
 
         export_tb_act = QAction("Export TB Map as FITS", self)
         export_tb_act.setStatusTip(
@@ -9024,28 +9029,279 @@ class SolarRadioImageViewerApp(QMainWindow):
             QMessageBox.information(self, "Exported", f"Figure saved to {path}")
 
     def export_as_fits(self):
+        """Export current image data as FITS file with all metadata preserved."""
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
             QMessageBox.warning(self, "No Data", "No image data to export")
             return
 
         try:
+            import os
             from astropy.io import fits
 
             path, _ = QFileDialog.getSaveFileName(
                 self, "Export as FITS", "", "FITS Files (*.fits);;All Files (*)"
             )
-            if path:
+            if not path:
+                return
+            
+            # Check if source is a CASA image (directory)
+            if hasattr(current_tab, 'imagename') and current_tab.imagename:
+                source_image = current_tab.imagename
+            else:
+                source_image = None
+            
+            # If source is a CASA image directory, use casatask exportfits
+            if source_image and os.path.isdir(source_image):
+                try:
+                    import subprocess
+                    import sys
+                    
+                    # Run exportfits in subprocess with stokes='all'
+                    script = f'''
+import sys
+from casatasks import exportfits
+try:
+    exportfits(imagename="{source_image}", fitsimage="{path}", overwrite=True, stokeslast=True)
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+                    result = subprocess.run(
+                        [sys.executable, "-c", script],
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if result.returncode != 0:
+                        raise RuntimeError(f"exportfits failed: {result.stderr}")
+                    
+                    QMessageBox.information(self, "Exported", f"CASA image exported to {path}")
+                    return
+                except Exception as e:
+                    QMessageBox.critical(self, "Export Error", f"Failed to export CASA image: {str(e)}")
+                    return
+            
+            # For FITS files, copy the original with all data and metadata
+            if source_image and (source_image.endswith('.fits') or source_image.endswith('.fts')):
+                try:
+                    import shutil
+                    # If saving to a different location, copy the original file
+                    if os.path.abspath(source_image) != os.path.abspath(path):
+                        shutil.copy2(source_image, path)
+                        QMessageBox.information(self, "Exported", f"FITS file exported to {path}")
+                    else:
+                        QMessageBox.warning(self, "Same File", "Source and destination are the same file.")
+                    return
+                except Exception as e:
+                    # Fall back to creating from current data if copy fails
+                    pass
+            
+            # Fallback: create FITS from current_image_data with header
+            # Get the original header if available
+            original_header = None
+            if hasattr(current_tab, 'current_header') and current_tab.current_header:
+                original_header = current_tab.current_header
+            
+            # Create HDU with data
+            if original_header:
+                # Convert dict to FITS Header if needed
+                if isinstance(original_header, dict):
+                    header = fits.Header()
+                    for key, value in original_header.items():
+                        # Skip problematic keys and ensure valid FITS keywords
+                        if key in ['SIMPLE', 'BITPIX', 'NAXIS', 'EXTEND', '']:
+                            continue
+                        if key.startswith('NAXIS'):
+                            continue
+                        try:
+                            # Handle COMMENT and HISTORY specially
+                            if key in ['COMMENT', 'HISTORY']:
+                                if isinstance(value, list):
+                                    for v in value:
+                                        header[key] = str(v)
+                                else:
+                                    header[key] = str(value)
+                            else:
+                                header[key] = value
+                        except (ValueError, KeyError):
+                            # Skip keys that can't be added
+                            pass
+                    hdu = fits.PrimaryHDU(current_tab.current_image_data, header=header)
+                else:
+                    # Already a FITS header
+                    hdu = fits.PrimaryHDU(current_tab.current_image_data, header=original_header)
+            else:
+                # No header available, create basic HDU
                 hdu = fits.PrimaryHDU(current_tab.current_image_data)
-                hdul = fits.HDUList([hdu])
-                hdul.writeto(path, overwrite=True)
-                QMessageBox.information(self, "Exported", f"Data saved to {path}")
+            
+            hdul = fits.HDUList([hdu])
+            hdul.writeto(path, overwrite=True)
+            QMessageBox.information(self, "Exported", f"Data saved to {path}")
         except ImportError:
             QMessageBox.warning(
                 self,
                 "Missing Dependency",
                 "Astropy is required for FITS export. Please install it.",
             )
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
+
+    def export_as_casa_image(self):
+        """Export/convert current image to CASA image format."""
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or current_tab.current_image_data is None:
+            QMessageBox.warning(self, "No Data", "No image data to export")
+            return
+
+        try:
+            import os
+            import subprocess
+            import sys
+
+            # Get source image path
+            if hasattr(current_tab, 'imagename') and current_tab.imagename:
+                source_image = current_tab.imagename
+            else:
+                QMessageBox.warning(self, "No Source", "No source image file available")
+                return
+            
+            # Suggest a default output name based on source
+            default_name = os.path.splitext(os.path.basename(source_image))[0] + ".image"
+            
+            # Ask user for output path and name
+            output_image, _ = QFileDialog.getSaveFileName(
+                self, "Export as CASA Image", default_name, 
+                "CASA Image (*.image);;All Files (*)"
+            )
+            if not output_image:
+                return
+            
+            # Ensure it has .image extension
+            if not output_image.endswith('.image'):
+                output_image += '.image'
+            
+            # Check if output already exists
+            if os.path.exists(output_image):
+                reply = QMessageBox.question(
+                    self, "Overwrite?",
+                    f"'{output_image}' already exists. Do you want to overwrite it?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.No:
+                    return
+                import shutil
+                shutil.rmtree(output_image)
+            
+            # If source is already a CASA image, copy it
+            if os.path.isdir(source_image):
+                import shutil
+                shutil.copytree(source_image, output_image)
+                QMessageBox.information(self, "Exported", f"CASA image exported to {output_image}")
+                return
+            
+            # If source is a FITS file, use importfits via subprocess
+            if source_image.endswith('.fits') or source_image.endswith('.fts'):
+                # Check coordinate system
+                import tempfile
+                fits_to_import = source_image
+                is_hpc_converted = False
+                
+                try:
+                    from astropy.io import fits as afits
+                    with afits.open(source_image) as hdul:
+                        header = hdul[0].header
+                        ctype1 = header.get('CTYPE1', '').upper()
+                        ctype2 = header.get('CTYPE2', '').upper()
+                        
+                        # Check for helioprojective coordinates
+                        if 'HPLN' in ctype1 or 'HPLN' in ctype2 or 'HPLT' in ctype1 or 'HPLT' in ctype2:
+                            # Convert HPC to RA/Dec first
+                            from .helioprojective import convert_hpc_to_radec
+                            
+                            temp_radec_file = os.path.join(
+                                tempfile.gettempdir(),
+                                f"solarviewer_radec_export_{os.getpid()}.fits"
+                            )
+                            
+                            QApplication.setOverrideCursor(Qt.WaitCursor)
+                            success = convert_hpc_to_radec(source_image, temp_radec_file, overwrite=True)
+                            QApplication.restoreOverrideCursor()
+                            
+                            if not success:
+                                QMessageBox.warning(
+                                    self, "Conversion Failed",
+                                    "Failed to convert helioprojective coordinates to RA/Dec."
+                                )
+                                return
+                            
+                            fits_to_import = temp_radec_file
+                            is_hpc_converted = True
+                        
+                        # Check for other unsupported coordinate systems
+                        elif not ('RA' in ctype1 or 'DEC' in ctype2 or 'GLON' not in ctype1):
+                            # Block galactic, ecliptic, and other non-celestial coordinates
+                            unsupported_types = []
+                            if 'GLON' in ctype1 or 'GLAT' in ctype2:
+                                unsupported_types.append("Galactic")
+                            elif 'ELON' in ctype1 or 'ELAT' in ctype2:
+                                unsupported_types.append("Ecliptic")
+                            elif 'SLON' in ctype1 or 'SLAT' in ctype2:
+                                unsupported_types.append("Supergalactic")
+                            else:
+                                unsupported_types.append(f"{ctype1}/{ctype2}")
+                            
+                            if unsupported_types:
+                                QMessageBox.warning(
+                                    self, "Unsupported Coordinates",
+                                    f"This FITS file uses {', '.join(unsupported_types)} coordinates.\n\n"
+                                    "Only RA/Dec (celestial) and helioprojective (Solar-X/Y) "
+                                    "coordinate systems are supported for CASA export."
+                                )
+                                return
+                except Exception as e:
+                    pass  # If we can't check, proceed anyway
+                
+                # Run importfits
+                script = f'''
+import sys
+from casatasks import importfits
+try:
+    importfits(fitsimage="{fits_to_import}", imagename="{output_image}", overwrite=True)
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+                result = subprocess.run(
+                    [sys.executable, "-c", script],
+                    capture_output=True,
+                    text=True
+                )
+                
+                # Clean up temp file if we created one
+                if is_hpc_converted and os.path.exists(fits_to_import):
+                    try:
+                        os.remove(fits_to_import)
+                    except:
+                        pass
+                
+                if result.returncode != 0:
+                    raise RuntimeError(f"importfits failed: {result.stderr}")
+                
+                if is_hpc_converted:
+                    QMessageBox.information(
+                        self, "Exported",
+                        f"CASA image exported to:\n{output_image}\n\n"
+                        "Note: Helioprojective coordinates were converted to RA/Dec."
+                    )
+                else:
+                    QMessageBox.information(self, "Exported", f"FITS converted to CASA image: {output_image}")
+                return
+            
+            QMessageBox.warning(self, "Unsupported", "Source must be a FITS file or CASA image")
+            
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
 
