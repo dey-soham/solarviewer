@@ -31,6 +31,31 @@ except ImportError:
     IA = None
     immath = None
 
+
+def run_immath_subprocess(imagename, outfile, mode="lpoli"):
+    """Run immath in a subprocess to avoid memory issues with casatasks."""
+    import subprocess
+    import sys
+    
+    script = f'''
+import sys
+from casatasks import immath
+try:
+    immath(imagename="{imagename}", outfile="{outfile}", mode="{mode}")
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"immath failed: {result.stderr}")
+    return True
+
 # Try to import scipy
 try:
     from scipy.optimize import curve_fit
@@ -284,7 +309,7 @@ def get_pixel_values_from_image(
             )
         outfile = "temp_p_map.im"
         try:
-            immath(imagename=imagename, outfile=outfile, mode="lpoli")
+            run_immath_subprocess(imagename=imagename, outfile=outfile, mode="lpoli")
             p_rms = estimate_rms_near_Sun(outfile, "I", rms_box)
         except Exception as e:
             raise RuntimeError(f"Error generating polarization map: {e}")

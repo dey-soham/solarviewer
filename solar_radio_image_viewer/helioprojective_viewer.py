@@ -68,7 +68,7 @@ except ImportError:
 def convert_casaimage_to_fits(
     imagename=None, fitsname=None, dropdeg=False, overwrite=True
 ):
-    """Convert a CASA image to a FITS file."""
+    """Convert a CASA image to a FITS file using subprocess to avoid crashes."""
     if not CASA_AVAILABLE:
         print("Error: CASA tools are not available")
         return None
@@ -81,13 +81,30 @@ def convert_casaimage_to_fits(
         if fitsname is None:
             fitsname = "temp_" + os.path.basename(imagename) + ".fits"
 
-        # Use exportfits task
-        exportfits(
-            imagename=imagename,
-            fitsimage=fitsname,
-            dropdeg=dropdeg,
-            overwrite=overwrite,
+        import subprocess
+        import sys
+        
+        # Run exportfits in a separate process to avoid segfault
+        script = f'''
+import sys
+from casatasks import exportfits
+try:
+    exportfits(imagename="{imagename}", fitsimage="{fitsname}", dropdeg={dropdeg}, overwrite={overwrite})
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+        
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True
         )
+        
+        if result.returncode != 0:
+            print(f"Error in exportfits: {result.stderr}")
+            return None
 
         if os.path.exists(fitsname):
             return fitsname

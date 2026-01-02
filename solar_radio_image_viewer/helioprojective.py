@@ -14,8 +14,32 @@ from astropy.io import fits
 from datetime import timedelta
 from matplotlib import rcParams
 from casatools import image as IA
-from casatasks import immath, exportfits
+# casatasks (immath, exportfits) are now run via subprocess to avoid memory issues
 import math
+import subprocess
+import sys
+
+
+def run_immath_subprocess(imagename, outfile, mode="lpoli"):
+    """Run immath in a subprocess to avoid memory issues with casatasks."""
+    script = f'''
+import sys
+from casatasks import immath
+try:
+    immath(imagename="{imagename}", outfile="{outfile}", mode="{mode}")
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"immath failed: {result.stderr}")
+    return True
 
 try:
     from sunpy.net import Fido, attrs as a
@@ -228,7 +252,7 @@ def convert_to_hpc(
                         "The image is single stokes, but the Stokes parameter is not 'I'."
                     )
                 try:
-                    immath(imagename=fits_file, outfile="temp_p_map.im", mode="lpoli")
+                    run_immath_subprocess(imagename=fits_file, outfile="temp_p_map.im", mode="lpoli")
                     p_rms = estimate_rms_near_Sun("temp_p_map.im", "I", rms_box)
                 except Exception as e:
                     raise RuntimeError(f"Error generating polarization map: {e}")
