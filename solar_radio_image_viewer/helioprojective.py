@@ -626,12 +626,35 @@ def convert_casaimage_to_fits(
 ):
     """
     Convert a CASA image to a FITS file.
+    Runs exportfits in a subprocess to avoid memory issues with casatasks.
     """
     if imagename is None:
         raise ValueError("imagename is required")
-    from casatasks import exportfits
-
-    exportfits(imagename=imagename, fitsimage=fitsname, overwrite=True, dropdeg=dropdeg)
+    
+    import subprocess
+    import sys
+    
+    # Run exportfits in a separate process to avoid segfault
+    script = f'''
+import sys
+from casatasks import exportfits
+try:
+    exportfits(imagename="{imagename}", fitsimage="{fitsname}", overwrite={overwrite}, dropdeg={dropdeg})
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+    
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode != 0:
+        raise RuntimeError(f"exportfits failed: {result.stderr}")
+    
     return fitsname
 
 
@@ -920,7 +943,6 @@ def convert_and_save_hpc_all_stokes(
             input_fits_file = convert_casaimage_to_fits(
                 imagename=input_fits_file, fitsname=temp_filename
             )
-            #print(f"Converted casaimage {original_input} to a temporary fits file ...")
             not_fits_flag = True
 
         # Check how many Stokes parameters are available

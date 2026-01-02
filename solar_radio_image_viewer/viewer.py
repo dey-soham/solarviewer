@@ -880,7 +880,7 @@ class SolarRadioImageTab(QWidget):
             "",
             self,
         )
-        self.ruler_action.setToolTip("Measure Angular Distance (click and drag)")
+        self.ruler_action.setToolTip("Measure Angular Distance (Select two points on the map)")
         self.ruler_action.setCheckable(True)
         self.ruler_action.setChecked(False)
         self.ruler_action.toggled.connect(
