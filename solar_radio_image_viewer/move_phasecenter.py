@@ -3,7 +3,9 @@ import numpy as np
 import sys
 import glob
 from casatools import msmetadata, table, measures, quanta, image
-from casatasks import *
+# casatasks are now run via subprocess to avoid memory issues
+import subprocess
+import json
 from astropy.io import fits
 from astropy.wcs import WCS
 import scipy.ndimage as ndi
@@ -13,6 +15,114 @@ from multiprocessing import Pool
 from functools import partial
 import shutil
 import hashlib
+
+
+# Subprocess wrappers for casatasks to avoid segfaults
+def run_casatask_subprocess(task_name, **kwargs):
+    """Generic wrapper to run any casatask in a subprocess."""
+    # Convert kwargs to a JSON-safe format
+    kwargs_str = json.dumps(kwargs)
+    
+    script = f'''
+import sys
+import json
+from casatasks import {task_name}
+
+kwargs = json.loads('{kwargs_str}')
+try:
+    result = {task_name}(**kwargs)
+    # Output result as JSON if it's serializable
+    try:
+        print(json.dumps({{"success": True, "result": result}}))
+    except (TypeError, ValueError):
+        print(json.dumps({{"success": True, "result": "completed"}}))
+except Exception as e:
+    print(json.dumps({{"success": False, "error": str(e)}}), file=sys.stderr)
+    sys.exit(1)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"{task_name} failed: {result.stderr}")
+    
+    try:
+        output = json.loads(result.stdout.strip())
+        return output.get("result")
+    except json.JSONDecodeError:
+        return None
+
+
+def imhead_subprocess(imagename, mode="list", hdkey=None, hdvalue=None):
+    """Run imhead in a subprocess."""
+    kwargs = {"imagename": imagename, "mode": mode}
+    if hdkey is not None:
+        kwargs["hdkey"] = hdkey
+    if hdvalue is not None:
+        kwargs["hdvalue"] = hdvalue
+    return run_casatask_subprocess("imhead", **kwargs)
+
+
+def imsmooth_subprocess(imagename, targetres, major, minor, pa, outfile):
+    """Run imsmooth in a subprocess."""
+    return run_casatask_subprocess(
+        "imsmooth",
+        imagename=imagename,
+        targetres=targetres,
+        major=major,
+        minor=minor,
+        pa=pa,
+        outfile=outfile
+    )
+
+
+def imstat_subprocess(imagename, box=None):
+    """Run imstat in a subprocess."""
+    kwargs = {"imagename": imagename}
+    if box is not None:
+        kwargs["box"] = box
+    return run_casatask_subprocess("imstat", **kwargs)
+
+
+def imfit_subprocess(imagename, box=None):
+    """Run imfit in a subprocess."""
+    kwargs = {"imagename": imagename}
+    if box is not None:
+        kwargs["box"] = box
+    return run_casatask_subprocess("imfit", **kwargs)
+
+
+def exportfits_subprocess(imagename, fitsimage, dropdeg=False, dropstokes=False, overwrite=True):
+    """Run exportfits in a subprocess."""
+    return run_casatask_subprocess(
+        "exportfits",
+        imagename=imagename,
+        fitsimage=fitsimage,
+        dropdeg=dropdeg,
+        dropstokes=dropstokes,
+        overwrite=overwrite
+    )
+
+
+def imsubimage_subprocess(imagename, outfile, stokes=None, dropdeg=False):
+    """Run imsubimage in a subprocess."""
+    kwargs = {"imagename": imagename, "outfile": outfile, "dropdeg": dropdeg}
+    if stokes is not None:
+        kwargs["stokes"] = stokes
+    return run_casatask_subprocess("imsubimage", **kwargs)
+
+
+def fixvis_subprocess(vis, outputvis, phasecenter, datacolumn="all"):
+    """Run fixvis in a subprocess."""
+    return run_casatask_subprocess(
+        "fixvis",
+        vis=vis,
+        outputvis=outputvis,
+        phasecenter=phasecenter,
+        datacolumn=datacolumn
+    )
 
 
 class SolarPhaseCenter:
@@ -342,7 +452,7 @@ class SolarPhaseCenter:
         # Extract cell size and imsize from image if not provided
         if self.cellsize is None or self.imsize is None:
             try:
-                header = imhead(imagename=imagename, mode="list")
+                header = imhead_subprocess(imagename=imagename, mode="list")
                 self.cellsize = np.abs(
                     np.rad2deg(header["cdelt1"]) * 3600.0
                 )  # Convert to arcsec
@@ -363,7 +473,7 @@ class SolarPhaseCenter:
                 os.system(f"rm -rf {unresolved_image}")
 
             # Smooth the image to sun size
-            imsmooth(
+            imsmooth_subprocess(
                 imagename=imagename,
                 targetres=True,
                 major=f"{sun_dia}arcmin",
@@ -372,11 +482,11 @@ class SolarPhaseCenter:
                 outfile=unresolved_image,
             )
 
-            maxpos = imstat(imagename=imagename)["maxpos"]
+            maxpos = imstat_subprocess(imagename=imagename)["maxpos"]
             fit_box = self.negative_box(maxpos, box_width=3)
 
             # Fit gaussian to smoothed image
-            fitted_params = imfit(imagename=unresolved_image, box=fit_box)
+            fitted_params = imfit_subprocess(imagename=unresolved_image, box=fit_box)
 
             try:
                 # Extract RA/DEC from fit
@@ -416,7 +526,7 @@ class SolarPhaseCenter:
             os.system(f"rm -rf {temp_prefix}.fits")
 
         # Export to FITS for easier manipulation
-        exportfits(
+        exportfits_subprocess(
             imagename=imagename,
             fitsimage=f"{temp_prefix}.fits",
             dropdeg=True,
@@ -425,13 +535,13 @@ class SolarPhaseCenter:
 
         # Calculate RMS for thresholding
         try:
-            rms = imstat(imagename=imagename, box=self.rms_box_nearsun)["rms"][0]
+            rms = imstat_subprocess(imagename=imagename, box=self.rms_box_nearsun)["rms"][0]
         except Exception as e:
             print(f"Error using rms_box_nearsun: {e}")
             print("Trying with a safer box...")
             # Try with the general RMS box instead
             try:
-                rms = imstat(imagename=imagename, box=self.rms_box)["rms"][0]
+                rms = imstat_subprocess(imagename=imagename, box=self.rms_box)["rms"][0]
             except Exception as e2:
                 print(f"Error using rms_box: {e2}")
                 print("Using a very safe default box")
@@ -439,7 +549,7 @@ class SolarPhaseCenter:
                 imsize = self.imsize if self.imsize else 512
                 safe_box = f"10,10,{imsize-10},{imsize-10}"
                 try:
-                    rms = imstat(imagename=imagename, box=safe_box)["rms"][0]
+                    rms = imstat_subprocess(imagename=imagename, box=safe_box)["rms"][0]
                 except Exception as e3:
                     print(f"Error using safe box: {e3}")
                     # Last resort: just calculate RMS from the entire image
@@ -571,10 +681,10 @@ class SolarPhaseCenter:
                 imagename = imagename[:-1]
 
             # Extract stokes plane for coordinate calculation
-            imsubimage(
+            imsubimage_subprocess(
                 imagename=imagename, outfile=temp_image, stokes=stokes, dropdeg=False
             )
-            exportfits(
+            exportfits_subprocess(
                 imagename=temp_image, fitsimage=temp_fits, dropdeg=True, dropstokes=True
             )
 
@@ -589,10 +699,10 @@ class SolarPhaseCenter:
             # Apply the shift
             if imagetype == "casa":
                 # Update CRPIX values in CASA image
-                imhead(
+                imhead_subprocess(
                     imagename=imagename, mode="put", hdkey="CRPIX1", hdvalue=str(ra_pix)
                 )
-                imhead(
+                imhead_subprocess(
                     imagename=imagename,
                     mode="put",
                     hdkey="CRPIX2",
@@ -757,7 +867,7 @@ class SolarPhaseCenter:
             t.close()
 
             # Update UVW coordinates to match the new phase center
-            fixvis(
+            fixvis_subprocess(
                 vis=msname,
                 outputvis="",
                 phasecenter=f"J2000 {ra_hms} {dec_dms}",

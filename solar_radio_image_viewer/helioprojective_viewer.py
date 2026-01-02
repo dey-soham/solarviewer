@@ -52,10 +52,10 @@ except ImportError:
         "Warning: sunpy is not available. Please install sunpy for helioprojective coordinates."
     )
 
-# Try to import CASA tools
+# Try to import CASA tools (casatasks run via subprocess)
 try:
     from casatools import image as IA
-    from casatasks import exportfits
+    # Note: casatasks (exportfits) is now run via subprocess - see convert_casaimage_to_fits()
 
     CASA_AVAILABLE = True
 except ImportError:

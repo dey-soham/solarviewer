@@ -1,7 +1,7 @@
 import os
 import numpy as np
 
-# Try to import CASA tools & tasks
+# Try to import CASA tools (casatasks now run via subprocess)
 try:
     # Suppress CASA logging warnings before importing casatools
     import os as _os
@@ -9,7 +9,7 @@ try:
     _os.environ['CASARC'] = '/dev/null'
     
     from casatools import image as IA
-    from casatasks import immath
+    # Note: casatasks (immath) is now run via subprocess - see run_immath_subprocess()
     
     # Configure CASA logging to suppress warnings
     try:
@@ -29,7 +29,6 @@ except ImportError:
     )
     CASA_AVAILABLE = False
     IA = None
-    immath = None
 
 
 def run_immath_subprocess(imagename, outfile, mode="lpoli"):
