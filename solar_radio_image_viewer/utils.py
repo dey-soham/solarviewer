@@ -1010,7 +1010,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
             if is_fits:
                 new_header = header_info['original_header'].copy()
                 new_header['BUNIT'] = 'K'
-                new_header['HISTORY'] = 'Converted to brightness temperature by SolarViewer'
+                new_header['HISTORY'] = 'Converted to brightness temperature with SolarViewer'
                 
                 # Ensure RESTFRQ is present (needed for downstream HPC conversion)
                 if 'RESTFRQ' not in new_header:
@@ -1047,6 +1047,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                         tb_data_save = tb_data
                 
                 new_hdu = fits.PrimaryHDU(data=tb_data_save, header=new_header)
+                new_hdu.header.add_history('Brightness temperature map generated with SolarViewer')
                 new_hdu.writeto(outfile, overwrite=True)
             else:
                 # For CASA, need to export first
@@ -1060,7 +1061,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                     original_data = hdul[0].data
                     new_header = hdul[0].header.copy()
                     new_header['BUNIT'] = 'K'
-                    new_header['HISTORY'] = 'Converted to brightness temperature by SolarViewer'
+                    new_header['HISTORY'] = 'Converted to brightness temperature with SolarViewer'
                     
                     # Check for multi-Stokes
                     if original_data.ndim >= 3:
@@ -1073,6 +1074,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                         else:
                             tb_data_save = tb_data
                     new_hdu = fits.PrimaryHDU(data=tb_data_save, header=new_header)
+                    new_hdu.header.add_history('Brightness temperature map generated with SolarViewer')
                     new_hdu.writeto(outfile, overwrite=True)
                 
                 if os.path.exists(temp_export):
@@ -1216,7 +1218,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
             if is_fits:
                 new_header = header_info['original_header'].copy()
                 new_header['BUNIT'] = 'Jy/beam'
-                new_header['HISTORY'] = 'Converted from brightness temperature by SolarViewer'
+                new_header['HISTORY'] = 'Converted from brightness temperature with SolarViewer'
                 
                 # Ensure RESTFRQ is present (needed for downstream HPC conversion)
                 if 'RESTFRQ' not in new_header:
@@ -1249,6 +1251,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                         flux_data_save = flux_data
                 
                 new_hdu = fits.PrimaryHDU(data=flux_data_save, header=new_header)
+                new_hdu.header.add_history('Flux density map generated with SolarViewer')
                 new_hdu.writeto(outfile, overwrite=True)
             else:
                 # For CASA, need to export first
@@ -1262,7 +1265,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                     original_data = hdul[0].data
                     new_header = hdul[0].header.copy()
                     new_header['BUNIT'] = 'Jy/beam'
-                    new_header['HISTORY'] = 'Converted from brightness temperature by SolarViewer'
+                    new_header['HISTORY'] = 'Converted from brightness temperature with SolarViewer'
                     
                     if original_data.ndim >= 3:
                         # print(f"[Flux] Converting full Stokes CASA data (shape: {original_data.shape})")
@@ -1274,6 +1277,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                             flux_data_save = flux_data
                     
                     new_hdu = fits.PrimaryHDU(data=flux_data_save, header=new_header)
+                    new_hdu.header.add_history('Flux density map generated with SolarViewer')
                     new_hdu.writeto(outfile, overwrite=True)
                 
                 if os.path.exists(temp_export):

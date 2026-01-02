@@ -1162,6 +1162,7 @@ def download_iris(
                             
                             # Save as 2D FITS
                             hdu_out = fits.PrimaryHDU(data_2d, header=header)
+                            hdu_out.header.add_history('IRIS frame extracted by SolarViewer')
                             hdu_out.writeto(output_file, overwrite=True)
                             
                             processed_files.append(output_file)
@@ -1177,6 +1178,7 @@ def download_iris(
                             out_name = base_name.replace('.gz', '')
                             output_file = os.path.join(output_dir, out_name)
                             hdu_out = fits.PrimaryHDU(data, header=header_orig)
+                            hdu_out.header.add_history('Decompressed by SolarViewer')
                             hdu_out.writeto(output_file, overwrite=True)
                             os.remove(file_path)
                             processed_files.append(output_file)

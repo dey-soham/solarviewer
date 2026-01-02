@@ -1101,6 +1101,7 @@ def convert_and_save_hpc_all_stokes(
 
         # Write the combined FITS file
         hdu_out = afits.PrimaryHDU(stokes_data, header=new_header)
+        hdu_out.header.add_history('Converted to Helioprojective coordinates with SolarViewer')
         hdu_out.writeto(output_fits_file, overwrite=overwrite)
         #print(f"Helioprojective map with {len(stokes_maps)} Stokes saved to {output_fits_file}")
 
@@ -1192,10 +1193,16 @@ def convert_hpc_to_radec(
         if hpc_data.ndim == 2:
             rotated_data = rotate(hpc_data, -p_angle, reshape=False, order=1, mode='constant', cval=np.nan)
         elif hpc_data.ndim == 3:
-            # Rotate each Stokes plane separately
+            # Rotate each plane separately (could be Stokes or frequency)
             rotated_data = np.zeros_like(hpc_data)
             for i in range(hpc_data.shape[0]):
                 rotated_data[i] = rotate(hpc_data[i], -p_angle, reshape=False, order=1, mode='constant', cval=np.nan)
+        elif hpc_data.ndim == 4:
+            # 4D data: typically (Stokes, Freq, Dec, RA) or (Freq, Stokes, Dec, RA)
+            rotated_data = np.zeros_like(hpc_data)
+            for i in range(hpc_data.shape[0]):
+                for j in range(hpc_data.shape[1]):
+                    rotated_data[i, j] = rotate(hpc_data[i, j], -p_angle, reshape=False, order=1, mode='constant', cval=np.nan)
         else:
             print(f"[ERROR] Unexpected data dimensions: {hpc_data.ndim}")
             return False
@@ -1203,11 +1210,17 @@ def convert_hpc_to_radec(
         # Crop to non-NaN bounding box to remove NaN borders
         if rotated_data.ndim == 2:
             valid_mask = ~np.isnan(rotated_data)
-        else:  # 3D
+        elif rotated_data.ndim == 3:
             # Use union of all planes for the mask
             valid_mask = ~np.isnan(rotated_data[0])
             for i in range(1, rotated_data.shape[0]):
                 valid_mask |= ~np.isnan(rotated_data[i])
+        else:  # 4D
+            # Use union of all 2D slices
+            valid_mask = ~np.isnan(rotated_data[0, 0])
+            for i in range(rotated_data.shape[0]):
+                for j in range(rotated_data.shape[1]):
+                    valid_mask |= ~np.isnan(rotated_data[i, j])
         
         # Find bounding box of valid data
         rows = np.any(valid_mask, axis=1)
@@ -1226,17 +1239,24 @@ def convert_hpc_to_radec(
             rmax = min(rotated_data.shape[0] - 1, rmax + padding)
             cmin = max(0, cmin - padding)
             cmax = min(rotated_data.shape[1] - 1, cmax + padding)
-        else:  # 3D
+        elif rotated_data.ndim == 3:
             rmin = max(0, rmin - padding)
             rmax = min(rotated_data.shape[1] - 1, rmax + padding)
             cmin = max(0, cmin - padding)
             cmax = min(rotated_data.shape[2] - 1, cmax + padding)
+        else:  # 4D
+            rmin = max(0, rmin - padding)
+            rmax = min(rotated_data.shape[2] - 1, rmax + padding)
+            cmin = max(0, cmin - padding)
+            cmax = min(rotated_data.shape[3] - 1, cmax + padding)
         
         # Crop the data
         if rotated_data.ndim == 2:
             rotated_data = rotated_data[rmin:rmax+1, cmin:cmax+1]
-        else:
+        elif rotated_data.ndim == 3:
             rotated_data = rotated_data[:, rmin:rmax+1, cmin:cmax+1]
+        else:  # 4D
+            rotated_data = rotated_data[:, :, rmin:rmax+1, cmin:cmax+1]
         
         # Adjust CRPIX for the crop
         crpix1 = crpix1 - cmin
@@ -1272,21 +1292,46 @@ def convert_hpc_to_radec(
             if key in hpc_header:
                 new_header[key] = hpc_header[key]
         
-        # Handle Stokes axis
+        # Handle Stokes and frequency axes based on data dimensions
         if hpc_data.ndim == 3:
-            # Save frequency before CRVAL3 is overwritten for Stokes
+            # 3D: could be Stokes or frequency - preserve original axis info
+            orig_ctype3 = hpc_header.get('CTYPE3', 'STOKES').upper()
             orig_freq = hpc_header.get('CRVAL3') or hpc_header.get('RESTFRQ') or hpc_header.get('FREQ')
             
             new_header['NAXIS'] = 3
-            new_header['NAXIS3'] = hpc_data.shape[0]
-            new_header['CTYPE3'] = 'STOKES'
-            new_header['CRVAL3'] = 1.0
-            new_header['CDELT3'] = 1.0
-            new_header['CRPIX3'] = 1.0
+            new_header['NAXIS3'] = rotated_data.shape[0]
+            new_header['CTYPE3'] = hpc_header.get('CTYPE3', 'STOKES')
+            new_header['CRVAL3'] = hpc_header.get('CRVAL3', 1.0)
+            new_header['CDELT3'] = hpc_header.get('CDELT3', 1.0)
+            new_header['CRPIX3'] = hpc_header.get('CRPIX3', 1.0)
+            if hpc_header.get('CUNIT3'):
+                new_header['CUNIT3'] = hpc_header['CUNIT3']
             
-            # Preserve frequency in RESTFRQ if it was in CRVAL3
+            # Preserve frequency in RESTFRQ if available
             if orig_freq and 'RESTFRQ' not in new_header:
                 new_header['RESTFRQ'] = float(orig_freq)
+        
+        elif hpc_data.ndim == 4:
+            # 4D: Stokes + frequency - preserve both axes
+            new_header['NAXIS'] = 4
+            new_header['NAXIS3'] = rotated_data.shape[1]  # Inner axis (usually freq)
+            new_header['NAXIS4'] = rotated_data.shape[0]  # Outer axis (usually Stokes)
+            
+            # Copy axis 3 info (usually frequency)
+            new_header['CTYPE3'] = hpc_header.get('CTYPE3', 'FREQ')
+            new_header['CRVAL3'] = hpc_header.get('CRVAL3', 1.0)
+            new_header['CDELT3'] = hpc_header.get('CDELT3', 1.0)
+            new_header['CRPIX3'] = hpc_header.get('CRPIX3', 1.0)
+            if hpc_header.get('CUNIT3'):
+                new_header['CUNIT3'] = hpc_header['CUNIT3']
+            
+            # Copy axis 4 info (usually Stokes)
+            new_header['CTYPE4'] = hpc_header.get('CTYPE4', 'STOKES')
+            new_header['CRVAL4'] = hpc_header.get('CRVAL4', 1.0)
+            new_header['CDELT4'] = hpc_header.get('CDELT4', 1.0)
+            new_header['CRPIX4'] = hpc_header.get('CRPIX4', 1.0)
+            if hpc_header.get('CUNIT4'):
+                new_header['CUNIT4'] = hpc_header['CUNIT4']
         
         # Set RA/Dec coordinate system (SIN projection for radio)
         new_header['CTYPE1'] = 'RA---SIN'
@@ -1309,7 +1354,13 @@ def convert_hpc_to_radec(
         new_header['RADESYS'] = 'ICRS'
         new_header['EQUINOX'] = 2000.0
         
-        new_header['HISTORY'] = f'Converted from Helioprojective to RA/Dec by SolarViewer (rotated {-p_angle:.2f} deg)'
+        # Copy existing HISTORY entries from original header
+        if 'HISTORY' in hpc_header:
+            for hist in hpc_header['HISTORY']:
+                new_header.add_history(str(hist))
+        
+        # Add conversion history
+        new_header.add_history(f'Converted from Helioprojective to RA/Dec with SolarViewer (rotated {-p_angle:.2f} deg)')
         
         # Write output file
         hdu = afits.PrimaryHDU(data=rotated_data, header=new_header)

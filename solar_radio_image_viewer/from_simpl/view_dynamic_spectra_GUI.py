@@ -1660,6 +1660,7 @@ class MainWindow(QMainWindow):
                 t["FREQ_MHz"] = self._freq_axis
                 freq_hdu = fits.BinTableHDU(t, name="FREQ_AXIS")
                 hdul.append(freq_hdu)
+            hdu.header.add_history('Cleaned/processed with SolarViewer Dynamic Spectrum Viewer')
             hdul.writeto(fileName, overwrite=True)
             self.statusBar.showMessage(f"Saved cleaned data to {fileName}", 5000)
         except Exception as e:

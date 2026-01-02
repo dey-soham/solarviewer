@@ -9136,6 +9136,9 @@ except Exception as e:
                 # No header available, create basic HDU
                 hdu = fits.PrimaryHDU(current_tab.current_image_data)
             
+            # Add HISTORY entry
+            hdu.header.add_history('Exported with SolarViewer')
+            
             hdul = fits.HDUList([hdu])
             hdul.writeto(path, overwrite=True)
             QMessageBox.information(self, "Exported", f"Data saved to {path}")

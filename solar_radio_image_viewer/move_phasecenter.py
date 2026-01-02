@@ -714,6 +714,11 @@ class SolarPhaseCenter:
                 header = fits.getheader(imagename)
                 header["CRPIX1"] = float(ra_pix)
                 header["CRPIX2"] = float(dec_pix)
+                # Add HISTORY
+                if 'HISTORY' not in header:
+                    header['HISTORY'] = 'Phase center shifted with SolarViewer'
+                else:
+                    header.add_history('Phase center shifted with SolarViewer')
                 fits.writeto(imagename, data=data, header=header, overwrite=True)
             else:
                 print("Image is not either fits or CASA format.")
@@ -802,6 +807,7 @@ class SolarPhaseCenter:
 
             # Save the centered image
             hdul[0].data = new_data
+            hdul[0].header.add_history('Visually centered with SolarViewer')
             hdul.writeto(output_file, overwrite=True)
             hdul.close()
 
