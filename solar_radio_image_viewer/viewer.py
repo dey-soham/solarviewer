@@ -64,7 +64,7 @@ from PyQt5.QtWidgets import (
     # QStyle,
     QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
+from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, pyqtSignal
 from PyQt5.QtGui import QIcon, QIntValidator
 
 # from PyQt5.QtGui import QColor, QPalette, QPainter
@@ -125,6 +125,138 @@ mplstyle.use("fast")
 class RegionMode:
     RECTANGLE = 0
     ELLIPSE = 1
+
+
+class SegmentedControl(QWidget):
+    """A modern segmented control widget."""
+    
+    selectionChanged = pyqtSignal(int)  # Emits index of selected segment
+    
+    def __init__(self, options, parent=None):
+        super().__init__(parent)
+        self.options = options
+        self._selected_index = 0
+        self._buttons = []
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Create container for the pill shape
+        self._container = QWidget()
+        container_layout = QHBoxLayout(self._container)
+        container_layout.setContentsMargins(3, 3, 3, 3)
+        container_layout.setSpacing(2)
+        
+        for i, option in enumerate(options):
+            btn = QPushButton(option)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda checked, idx=i: self._on_button_clicked(idx))
+            self._buttons.append(btn)
+            container_layout.addWidget(btn)
+        
+        # Select first by default
+        if self._buttons:
+            self._buttons[0].setChecked(True)
+        
+        layout.addWidget(self._container)
+        self._apply_styles()
+        
+        # Register for theme changes
+        theme_manager.register_callback(self._on_theme_changed)
+    
+    def _on_theme_changed(self, theme):
+        """Update styling when theme changes."""
+        self._apply_styles()
+    
+    def _apply_styles(self):
+        """Apply button-style toggle styling matching app palette."""
+        from .styles import theme_manager
+        palette = theme_manager.palette
+        is_dark = theme_manager.is_dark
+        
+        # Container styling - subtle pill background
+        if is_dark:
+            surface = palette.get('surface', '#16162a')
+            border_style = "none"
+            hover_bg = palette.get('button_hover', '#32325d')
+        else:
+            surface = "rgba(0, 0, 0, 0.03)"
+            border_color = palette.get('border', '#d1d5db')
+            border_style = f"1px solid {border_color}"
+            hover_bg = "rgba(0, 0, 0, 0.06)"
+        
+        self._container.setStyleSheet(f"""
+            QWidget {{
+                background-color: {surface};
+                border: {border_style};
+                border-radius: 8px;
+            }}
+        """)
+        
+        # Button styling - matches app button palette
+        text_color = palette.get('text', '#f0f0f5')
+        text_secondary = palette.get('text_secondary', '#a0a0b0')
+        highlight = palette.get('highlight', '#6366f1')
+        highlight_hover = palette.get('highlight_hover', '#818cf8')
+        
+        for btn in self._buttons:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {text_secondary};
+                    border: none;
+                    border-radius: 6px;
+                    padding: 6px 14px;
+                    font-weight: 500;
+                    font-size: 10pt;
+                    min-width: 75px;
+                }}
+                QPushButton:hover {{
+                    color: {text_color};
+                    background-color: {hover_bg};
+                }}
+                QPushButton:checked {{
+                    background-color: {highlight};
+                    color: #ffffff;
+                    font-weight: 600;
+                }}
+                QPushButton:checked:hover {{
+                    background-color: {highlight_hover};
+                }}
+            """)
+    
+    def _on_button_clicked(self, index):
+        """Handle button click - ensure only one is selected."""
+        if index == self._selected_index:
+            # Re-check if clicking already selected (don't allow deselect)
+            self._buttons[index].setChecked(True)
+            return
+        
+        # Uncheck all others
+        for i, btn in enumerate(self._buttons):
+            btn.setChecked(i == index)
+        
+        self._selected_index = index
+        self.selectionChanged.emit(index)
+    
+    def selectedIndex(self):
+        """Return the currently selected index."""
+        return self._selected_index
+    
+    def setSelectedIndex(self, index):
+        """Set the selected index programmatically."""
+        if 0 <= index < len(self._buttons):
+            self._on_button_clicked(index)
+    
+    def selectedText(self):
+        """Return the text of the selected option."""
+        return self.options[self._selected_index]
+    
+    def updateTheme(self):
+        """Update styling when theme changes."""
+        self._apply_styles()
 
 
 class SolarRadioImageTab(QWidget):
@@ -203,6 +335,15 @@ class SolarRadioImageTab(QWidget):
 
         self._temp_file_id = uuid.uuid4().hex[:8]
 
+        # Image metadata cache for lazy WCS/colorbar computation
+        # These are expensive to compute and only need to refresh when imagename changes
+        self._cached_imagename = None  # Track which image is cached
+        self._cached_fits_header = None  # FITS header cache
+        self._cached_fits_flag = False  # Whether current image is FITS
+        self._cached_csys = None  # CASA coordsys cache
+        self._cached_summary = None  # CASA summary cache
+        self._cached_csys_record = None  # CASA csys record cache
+
         self.contour_settings = {
             "source": "same",
             "external_image": "",
@@ -254,6 +395,7 @@ class SolarRadioImageTab(QWidget):
 
         self.setup_ui()
         self._setup_file_navigation_shortcuts()
+        self._set_button_cursors()
 
     def _setup_file_navigation_shortcuts(self):
         """Setup keyboard shortcuts for file navigation within this tab"""
@@ -277,6 +419,18 @@ class SolarRadioImageTab(QWidget):
         # F11 for fullscreen toggle
         # fullscreen_shortcut = QShortcut(QKeySequence("F11"), self)
         # fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
+
+    def _set_button_cursors(self):
+        """Set pointing hand cursor on all buttons for better UX"""
+        from PyQt5.QtGui import QCursor
+        
+        # Find all QPushButton widgets and set cursor
+        for button in self.findChildren(QPushButton):
+            button.setCursor(Qt.PointingHandCursor)
+        
+        # Also set cursor for QToolButton (toolbar icons)
+        for button in self.findChildren(QToolButton):
+            button.setCursor(Qt.PointingHandCursor)
 
     def show_status_message(self, message):
         """Helper method to show messages in the status bar"""
@@ -306,6 +460,7 @@ class SolarRadioImageTab(QWidget):
         control_layout.setContentsMargins(0, 0, 10, 0)
         control_layout.setSpacing(15)
         self.create_file_controls(control_layout)
+        control_layout.addStretch()
         self.create_display_controls(control_layout)
         splitter.addWidget(control_panel)
 
@@ -340,24 +495,34 @@ class SolarRadioImageTab(QWidget):
     def create_file_controls(self, parent_layout):
         group = QGroupBox("Image Selection")
         layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
-        # Add radio buttons for selection type
-        selection_type_layout = QHBoxLayout()
+        # Modern segmented control for file type selection
+        toggle_layout = QHBoxLayout()
+        self.file_type_toggle = SegmentedControl(["CASA Image", "FITS File"])
+        toggle_layout.addWidget(self.file_type_toggle)
+        toggle_layout.addStretch()
+        layout.addLayout(toggle_layout)
+
+        # For backward compatibility with radio button checks
+        # Create hidden radio buttons that stay in sync with segmented control
         self.selection_type_group = QButtonGroup(self)
-
-        self.radio_casa_image = QRadioButton("CASA Image")
-        self.radio_fits_file = QRadioButton("FITS File")
-        self.radio_casa_image.setChecked(True)  # Default to CASA image
-
+        self.radio_casa_image = QRadioButton()
+        self.radio_fits_file = QRadioButton()
+        self.radio_casa_image.setChecked(True)
+        self.radio_casa_image.hide()
+        self.radio_fits_file.hide()
         self.selection_type_group.addButton(self.radio_casa_image)
         self.selection_type_group.addButton(self.radio_fits_file)
-
-        selection_type_layout.addWidget(self.radio_casa_image)
-        selection_type_layout.addWidget(self.radio_fits_file)
-        selection_type_layout.addStretch()
-
-        layout.addLayout(selection_type_layout)
+        
+        # Sync segmented control with hidden radio buttons
+        def sync_selection(index):
+            if index == 0:
+                self.radio_casa_image.setChecked(True)
+            else:
+                self.radio_fits_file.setChecked(True)
+        
+        self.file_type_toggle.selectionChanged.connect(sync_selection)
 
         file_layout = QHBoxLayout()
         file_layout.setSpacing(8)
@@ -387,12 +552,13 @@ class SolarRadioImageTab(QWidget):
             padding-top: 22px;
             padding-bottom: 18px;
             margin-top: -4px;
+            border-radius: 8px;
         }
         QPushButton:hover {
-            background-color: #484848;
+            background-color: rgba(99, 102, 241, 0.2);
         }
         QPushButton:pressed {
-            background-color: #303030;
+            background-color: rgba(99, 102, 241, 0.35);
         }
         """
         )
@@ -626,15 +792,23 @@ class SolarRadioImageTab(QWidget):
         self.plot_button.setStyleSheet(
             """
             QPushButton {
-                background-color: #3871DE; 
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                    stop:0 #4f46e5, stop:1 #6366f1);
                 color: white; 
-                padding: 5px; 
-                font-weight: bold;
-                border-radius: 3px;
-                min-height: 25px;
+                padding: 10px 20px; 
+                font-weight: 600;
+                font-size: 11pt;
+                letter-spacing: 0.5px;
+                border-radius: 8px;
+                border: none;
+                min-height: 36px;
             }
             QPushButton:hover {
-                background-color: #4A82EF;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                    stop:0 #6366f1, stop:1 #818cf8);
+            }
+            QPushButton:pressed {
+                background: #3730a3;
             }
             """
         )
@@ -950,59 +1124,14 @@ class SolarRadioImageTab(QWidget):
         self.tb_btn.setEnabled(
             False
         )  # Disabled by default, enabled when units are Jy/beam
-        self.tb_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #FF9800;
-                color: white;
-                border: none;
-                padding: 2px 10px;
-                border-radius: 4px;
-                min-width: 20px;
-                min-height: 16px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #F57C00;
-            }
-            QPushButton:pressed, QPushButton:checked {
-                background-color: #E65100;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-                color: #757575;
-            }
-        """
-        )
+        # Style will be applied by _update_special_button_styles()
         self.tb_btn.clicked.connect(self._toggle_tb_mode)
         toolbar.addWidget(self.tb_btn)
 
         # Add helioprojective viewer button
         self.hpc_btn = QPushButton("HPC")
         self.hpc_btn.setToolTip("Convert to Helioprojective view")
-        self.hpc_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                padding: 2px 10px;
-                border-radius: 4px;
-                min-width: 30px;
-                min-height: 16px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-            QPushButton:pressed {
-                background-color: #0D47A1;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-            }
-        """
-        )
+        # Style will be applied by _update_special_button_styles()
         self.hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
         toolbar.addWidget(self.hpc_btn)
 
@@ -1143,7 +1272,7 @@ class SolarRadioImageTab(QWidget):
                 color: {btn_text};
                 border: none;
                 padding: 2px 8px;
-                border-radius: 4px;
+                border-radius: 6px;
                 min-width: 16px;
                 min-height: 14px;
                 font-weight: bold;
@@ -1156,7 +1285,7 @@ class SolarRadioImageTab(QWidget):
                 background-color: {btn_pressed};
             }}
             QPushButton:disabled {{
-                #background-color: {btn_disabled_bg};
+                background-color: transparent;
                 color: {btn_disabled_text};
             }}
         """
@@ -1182,6 +1311,134 @@ class SolarRadioImageTab(QWidget):
         if not hasattr(self, "_nav_theme_callback_registered"):
             theme_manager.register_callback(lambda t: self._update_nav_button_styles())
             self._nav_theme_callback_registered = True
+
+    def _update_special_button_styles(self):
+        """Update styles for TB, HPC, NOAA, and Helioviewer buttons based on current theme.
+        
+        These buttons have gradient backgrounds and need theme-aware disabled states.
+        """
+        # Determine disabled colors based on theme
+        if theme_manager.is_dark:
+            disabled_bg = "#4a4a6a"
+            disabled_text = "#6b7280"
+        else:
+            disabled_bg = "#C5C5C5"
+            disabled_text = "#8E8E8E"
+
+        
+        # TB Button (orange gradient)
+        if hasattr(self, "tb_btn"):
+            self.tb_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #f59e0b, stop:1 #fbbf24);
+                    color: #1f2937;
+                    border: none;
+                    padding: 4px 12px;
+                    border-radius: 6px;
+                    min-width: 28px;
+                    min-height: 22px;
+                    font-size: 11pt;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #fbbf24, stop:1 #fcd34d);
+                }}
+                QPushButton:pressed, QPushButton:checked {{
+                    background: #d97706;
+                    color: white;
+                }}
+                QPushButton:disabled {{
+                    background: {disabled_bg};
+                    color: {disabled_text};
+                }}
+            """)
+        
+        # HPC Button (blue gradient)
+        if hasattr(self, "hpc_btn"):
+            self.hpc_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #3b82f6, stop:1 #60a5fa);
+                    color: white;
+                    border: none;
+                    padding: 4px 12px;
+                    border-radius: 6px;
+                    min-width: 36px;
+                    min-height: 22px;
+                    font-size: 11pt;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #60a5fa, stop:1 #93c5fd);
+                }}
+                QPushButton:pressed {{
+                    background: #1d4ed8;
+                }}
+                QPushButton:disabled {{
+                    background: {disabled_bg};
+                    color: {disabled_text};
+                }}
+            """)
+        
+        # NOAA Events Button (purple gradient)
+        if hasattr(self, "noaa_events_btn"):
+            self.noaa_events_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #7c3aed, stop:1 #a78bfa);
+                    color: white;
+                    border: none;
+                    padding: 10px 16px;
+                    border-radius: 8px;
+                    font-weight: 600;
+                    font-size: 10pt;
+                }}
+                QPushButton:hover {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #a78bfa, stop:1 #c4b5fd);
+                }}
+                QPushButton:pressed {{
+                    background: #5b21b6;
+                }}
+                QPushButton:disabled {{
+                    background: {disabled_bg};
+                    color: {disabled_text};
+                }}
+            """)
+        
+        # Helioviewer Button (cyan gradient)
+        if hasattr(self, "helioviewer_btn"):
+            self.helioviewer_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #0ea5e9, stop:1 #38bdf8);
+                    color: white;
+                    border: none;
+                    padding: 10px 16px;
+                    border-radius: 8px;
+                    font-weight: 600;
+                    font-size: 10pt;
+                }}
+                QPushButton:hover {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #38bdf8, stop:1 #7dd3fc);
+                }}
+                QPushButton:pressed {{
+                    background: #0369a1;
+                }}
+                QPushButton:disabled {{
+                    background: {disabled_bg};
+                    color: {disabled_text};
+                }}
+            """)
+        
+        # Register theme callback if not already done
+        if not hasattr(self, "_special_btn_theme_callback_registered"):
+            theme_manager.register_callback(lambda t: self._update_special_button_styles())
+            self._special_btn_theme_callback_registered = True
 
     def show_noaa_events_for_current_image(self):
         """Show NOAA Solar Events for the current image date and auto-fetch events."""
@@ -1680,7 +1937,7 @@ class SolarRadioImageTab(QWidget):
 
         # Reset TB button
         if hasattr(self, "tb_btn"):
-            self.tb_btn.setText("Tb")
+            self.tb_btn.setText("TB")
             self.tb_btn.setToolTip("Convert to Brightness Temperature (K)")
             self.tb_btn.setChecked(False)
 
@@ -1793,26 +2050,7 @@ class SolarRadioImageTab(QWidget):
         )
         self.noaa_events_btn.setEnabled(False)  # Disabled by default
         self.noaa_events_btn.setMinimumWidth(80)
-        self.noaa_events_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #7B1FA2;
-                color: white;
-                border: none;
-                padding: 8px 12px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #9C27B0;
-            }
-            QPushButton:pressed {
-                background-color: #6A1B9A;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-                color: #757575;
-            }
-        """)
+        # Style will be applied by _update_special_button_styles()
         self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
         buttons_layout.addWidget(self.noaa_events_btn)
 
@@ -1823,30 +2061,15 @@ class SolarRadioImageTab(QWidget):
         )
         self.helioviewer_btn.setEnabled(False)  # Disabled by default
         self.helioviewer_btn.setMinimumWidth(80)
-        self.helioviewer_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1e90ff;
-                color: white;
-                border: none;
-                padding: 8px 12px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #4169e1;
-            }
-            QPushButton:disabled {
-                /* background-color: #555; */
-                background-color: #BDBDBD;
-                /* color: #888; */
-                color: #757575;
-            }
-        """)
+        # Style will be applied by _update_special_button_styles()
         self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
         buttons_layout.addWidget(self.helioviewer_btn)
 
         # Add horizontal layout to parent
         parent_layout.addLayout(buttons_layout)
+        
+        # Apply theme-aware styles to special buttons (calls this after all 4 buttons exist)
+        self._update_special_button_styles()
 
     def create_coord_display(self, parent_layout):
         group = QGroupBox("Cursor Position")
@@ -2484,7 +2707,7 @@ class SolarRadioImageTab(QWidget):
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
         # self.update_gamma_slider()
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2556,7 +2779,7 @@ class SolarRadioImageTab(QWidget):
         # self.update_gamma_slider()
         self.vmin_entry.setText(f"{dmin:.3f}")
         self.vmax_entry.setText(f"{dmax:.3f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2639,7 +2862,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2671,7 +2894,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2716,7 +2939,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2754,7 +2977,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2779,7 +3002,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2835,7 +3058,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2865,21 +3088,38 @@ class SolarRadioImageTab(QWidget):
         self.vmax_entry.setText(f"{vmax_val:.3f}")
 
     def update_gamma_value(self):
+        """Update gamma from slider - debounced for responsiveness."""
         gamma = self.gamma_slider.value() / 10.0
         self.gamma_entry.setText(f"{gamma:.1f}")
 
+        # Only update plot if using power stretch
         if (
             self.current_image_data is not None
             and self.stretch_combo.currentText() == "power"
         ):
-            try:
-                vmin_val = float(self.vmin_entry.text())
-                vmax_val = float(self.vmax_entry.text())
-                stretch = self.stretch_combo.currentText()
-                cmap = self.cmap_combo.currentText()
-                self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
-            except ValueError:
-                pass
+            # Use debouncing to avoid multiple redraws while dragging
+            if not hasattr(self, "_gamma_debounce_timer"):
+                from PyQt5.QtCore import QTimer
+                self._gamma_debounce_timer = QTimer()
+                self._gamma_debounce_timer.setSingleShot(True)
+                self._gamma_debounce_timer.timeout.connect(self._apply_gamma_change)
+            
+            # Restart the timer (150ms delay)
+            self._gamma_debounce_timer.start(150)
+    
+    def _apply_gamma_change(self):
+        """Actually apply the gamma change after debounce delay."""
+        if self.current_image_data is None:
+            return
+        try:
+            gamma = float(self.gamma_entry.text())
+            vmin_val = float(self.vmin_entry.text())
+            vmax_val = float(self.vmax_entry.text())
+            stretch = self.stretch_combo.currentText()
+            cmap = self.cmap_combo.currentText()
+            self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+        except ValueError:
+            pass
 
     def update_gamma_slider(self):
         try:
@@ -3588,12 +3828,12 @@ class SolarRadioImageTab(QWidget):
                 self.on_visualization_changed(dir_load=True)
 
                 # Update button
-                self.tb_btn.setText("Tb")
+                self.tb_btn.setText("TB")
                 self.tb_btn.setToolTip("Revert to Brightness Temperature (K) view")
                 self.tb_btn.setChecked(True)
 
                 QApplication.restoreOverrideCursor()
-                self.show_status_message("Showing flux (Jy/beam) - click Tb to revert")
+                self.show_status_message("Showing flux (Jy/beam) - click TB to revert")
 
             else:
                 # Jy/beam -> K (TB conversion)
@@ -3635,13 +3875,13 @@ class SolarRadioImageTab(QWidget):
                 self.on_visualization_changed(dir_load=True)
 
                 # Update button
-                self.tb_btn.setText("Flux")
+                self.tb_btn.setText("FLUX")
                 self.tb_btn.setToolTip("Revert to Flux (Jy/beam) view")
                 self.tb_btn.setChecked(True)
 
                 QApplication.restoreOverrideCursor()
                 self.show_status_message(
-                    "Showing brightness temperature (K) - click Flux to revert"
+                    "Showing brightness temperature (K) - click FLUX to revert"
                 )
 
         except Exception as e:
@@ -3704,11 +3944,11 @@ class SolarRadioImageTab(QWidget):
 
         # Update button based on original unit
         if original_unit == "K":
-            self.tb_btn.setText("Flux")
+            self.tb_btn.setText("FLUX")
             self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
             self.show_status_message("Showing brightness temperature (K)")
         else:
-            self.tb_btn.setText("Tb")
+            self.tb_btn.setText("TB")
             self.tb_btn.setToolTip("Convert to Brightness Temperature (K)")
             self.show_status_message("Showing flux (Jy/beam)")
 
@@ -4909,17 +5149,17 @@ class SolarRadioImageTab(QWidget):
                         self.tb_btn.setEnabled(is_jy_beam or is_kelvin)
 
                         if is_kelvin:
-                            self.tb_btn.setText("Flux")
+                            self.tb_btn.setText("FLUX")
                             self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
                         elif is_jy_beam:
-                            self.tb_btn.setText("Tb")
+                            self.tb_btn.setText("TB")
                             self.tb_btn.setToolTip(
                                 "Convert to Brightness Temperature (K)"
                             )
                         else:
-                            self.tb_btn.setText("Tb")
+                            self.tb_btn.setText("FLUX")
                             self.tb_btn.setToolTip(
-                                "Convert to Brightness Temperature (K)"
+                                "Convert to Flux (Jy/beam) view"
                             )
 
                         # Reset TB mode when loading new image (not when loading TB temp)
@@ -4998,15 +5238,15 @@ class SolarRadioImageTab(QWidget):
                         self.tb_btn.setEnabled(is_jy_beam or is_kelvin)
 
                         if is_kelvin:
-                            self.tb_btn.setText("Flux")
+                            self.tb_btn.setText("FLUX")
                             self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
                         elif is_jy_beam:
-                            self.tb_btn.setText("Tb")
+                            self.tb_btn.setText("TB")
                             self.tb_btn.setToolTip(
                                 "Convert to Brightness Temperature (K)"
                             )
                         else:
-                            self.tb_btn.setText("Tb")
+                            self.tb_btn.setText("TB")
                             self.tb_btn.setToolTip(
                                 "Convert to Brightness Temperature (K)"
                             )
@@ -5070,7 +5310,7 @@ class SolarRadioImageTab(QWidget):
         stretch="linear",
         cmap="viridis",
         gamma=1.0,
-        interpolation="none",
+        interpolation="nearest",
         tight_layout=False,
         preserve_view=True,
     ):
@@ -5079,35 +5319,60 @@ class SolarRadioImageTab(QWidget):
         # Show wait cursor during plotting
         QApplication.setOverrideCursor(Qt.WaitCursor)
 
-        fits_flag = False
-        if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
-            from astropy.io import fits
+        # Lazy load image metadata - only refresh when imagename changes
+        if self._cached_imagename != self.imagename:
+            # Cache miss - need to reload metadata
+            self._cached_fits_flag = False
+            self._cached_fits_header = None
+            self._cached_csys = None
+            self._cached_summary = None
+            self._cached_csys_record = None
+            
+            if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
+                from astropy.io import fits
 
-            try:
-                fits_flag = True
-                hdul = fits.open(self.imagename)
-                header = hdul[0].header
-            except Exception as e:
                 try:
-                    header = fits.getheader(self.imagename)
+                    self._cached_fits_flag = True
+                    with fits.open(self.imagename, memmap=True) as hdul:
+                        # Make a copy of header so we don't hold the file open
+                        self._cached_fits_header = dict(hdul[0].header)
                 except Exception as e:
-                    print(f"[ERROR] Error getting header: {e}")
-                    self.show_status_message(f"Error getting header: {e}")
-                    fits_flag = False
-        try:
-            ia_tool = IA()
-            ia_tool.open(self.imagename)
-            csys = ia_tool.coordsys()
-            summary = ia_tool.summary()
-            csys_record = ia_tool.coordsys().torecord()
-            ia_tool.close()
-        except Exception as e:
-            print(f"[ERROR] Error getting image metadata: {e}")
-            self.show_status_message(f"Error getting image metadata: {e}")
-            # return
+                    try:
+                        self._cached_fits_header = dict(fits.getheader(self.imagename))
+                    except Exception as e2:
+                        print(f"[ERROR] Error getting header: {e2}")
+                        self.show_status_message(f"Error getting header: {e2}")
+                        self._cached_fits_flag = False
+            
+            try:
+                ia_tool = IA()
+                ia_tool.open(self.imagename)
+                self._cached_csys = ia_tool.coordsys()
+                self._cached_summary = ia_tool.summary()
+                self._cached_csys_record = ia_tool.coordsys().torecord()
+                ia_tool.close()
+            except Exception as e:
+                print(f"[ERROR] Error getting image metadata: {e}")
+                self.show_status_message(f"Error getting image metadata: {e}")
+            
+            self._cached_imagename = self.imagename
+        
+        # Use cached values
+        fits_flag = self._cached_fits_flag
+        header = self._cached_fits_header
+        csys = self._cached_csys
+        summary = self._cached_summary
+        csys_record = self._cached_csys_record
+        
+        # Null-safe fallbacks for header and csys_record
+        if header is None:
+            header = {}
+        if csys_record is None:
+            csys_record = {}
 
         start_time = time.time()
         if self.current_image_data is None:
+            QApplication.restoreOverrideCursor()
             return
 
         data = self.current_image_data
@@ -6875,29 +7140,48 @@ class SolarRadioImageTab(QWidget):
         if self.current_contour_wcs is None:
             return
 
+        # OPTIMIZATION: Fast path for same-image contours
+        # When contour source is the current image, skip expensive metadata loading
+        # and reprojection since the data is already aligned
+        is_same_image = self.contour_settings["source"] == "same"
+        
         fits_flag = False
-        if self.contour_settings["source"] == "same":
+        header = None
+        csys = None
+        summary = None
+        
+        if is_same_image:
+            # Use cached metadata from plot_image - no need to reload
+            fits_flag = self._cached_fits_flag
+            header = self._cached_fits_header or {}
+            csys = self._cached_csys
+            summary = self._cached_summary
             contour_imagename = self.imagename
         else:
+            # External image - need to load metadata
             contour_imagename = self.contour_settings["external_image"]
+            
+            if contour_imagename.endswith(".fits") or contour_imagename.endswith(".fts"):
+                from astropy.io import fits
 
-        if contour_imagename.endswith(".fits") or contour_imagename.endswith(".fts"):
-            from astropy.io import fits
+                fits_flag = True
+                try:
+                    with fits.open(contour_imagename, memmap=True) as hdul:
+                        header = dict(hdul[0].header)
+                except Exception as e:
+                    print(f"[ERROR] Error getting contour FITS header: {e}")
+                    header = {}
 
-            fits_flag = True
-            hdul = fits.open(contour_imagename)
-            header = hdul[0].header
-
-        try:
-            ia_tool = IA()
-            ia_tool.open(contour_imagename)
-            csys = ia_tool.coordsys()
-            summary = ia_tool.summary()
-            ia_tool.close()
-        except Exception as e:
-            print(f"[ERROR] Error getting metadata: {e}")
-            self.show_status_message(f"Error getting metadata: {e}")
-            return
+            try:
+                ia_tool = IA()
+                ia_tool.open(contour_imagename)
+                csys = ia_tool.coordsys()
+                summary = ia_tool.summary()
+                ia_tool.close()
+            except Exception as e:
+                print(f"[ERROR] Error getting metadata: {e}")
+                self.show_status_message(f"Error getting metadata: {e}")
+                return
 
         try:
             # Check if the contour and image projection match
@@ -6974,8 +7258,9 @@ class SolarRadioImageTab(QWidget):
             contour_wcs_obj = None  # Initialize before the condition block
 
             # Check if reprojection is needed (WCS differs between contour and image)
+            # OPTIMIZATION: Skip reprojection check for same-image contours - they're already aligned
             needs_reprojection = False
-            if self.current_contour_wcs is not None and image_wcs_obj is not None:
+            if not is_same_image and self.current_contour_wcs is not None and image_wcs_obj is not None:
                 # Build the contour WCS object
                 from astropy.wcs import WCS
 
@@ -8273,6 +8558,10 @@ class CustomTabWidget(QTabWidget):
 class SolarRadioImageViewerApp(QMainWindow):
     def __init__(self, imagename=None):
         super().__init__()
+        
+        # Initialize bundled fonts before any widgets are created
+        theme_manager.initialize_fonts()
+        
         self.setWindowTitle("SolarViewer")
         self.resize(1920, 1080)
 
