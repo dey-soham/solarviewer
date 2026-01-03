@@ -344,6 +344,9 @@ class SolarRadioImageTab(QWidget):
         self._cached_summary = None  # CASA summary cache
         self._cached_csys_record = None  # CASA csys record cache
 
+        # Debounce timers for UI responsiveness
+        self._gamma_debounce_timer = None
+
         self.contour_settings = {
             "source": "same",
             "external_image": "",
@@ -565,25 +568,116 @@ class SolarRadioImageTab(QWidget):
         file_layout.addWidget(self.dir_entry, 1)
         file_layout.addWidget(self.browse_btn)
         layout.addLayout(file_layout)
-        stokes_layout = QFormLayout()
-        stokes_layout.setSpacing(10)
-        stokes_layout.setVerticalSpacing(10)
-        stokes_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        
+        # Parameters - matching Display Settings style
+        form_layout = QFormLayout()
+        form_layout.setSpacing(10)
+        form_layout.setVerticalSpacing(10)
+        form_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        
+        # Stokes dropdown
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(
             ["I", "Q", "U", "V", "L", "Lfrac", "Vfrac", "Q/I", "U/I", "U/V", "PANG"]
         )
         self.stokes_combo.currentTextChanged.connect(self.on_stokes_changed)
-        stokes_layout.addRow("Stokes Parameter:", self.stokes_combo)
+        form_layout.addRow("Stokes:", self.stokes_combo)
+        
+        # Threshold (sigma)
         self.threshold_entry = QLineEdit("10")
-        stokes_layout.addRow("Threshold (σ):", self.threshold_entry)
-
-        # Add RMS Box Settings button
-        rms_box_btn = QPushButton("RMS Box")
+        form_layout.addRow("Threshold (σ):", self.threshold_entry)
+        
+        # RMS Box button on its own row
+        rms_box_btn = QPushButton("RMS Box Settings")
+        rms_box_btn.setToolTip("Configure RMS box region for noise estimation")
         rms_box_btn.clicked.connect(self.show_rms_box_dialog)
-        stokes_layout.addRow("", rms_box_btn)
-
-        layout.addLayout(stokes_layout)
+        form_layout.addRow("", rms_box_btn)
+        
+        layout.addLayout(form_layout)
+        
+        # Fast Load toggle - clean inline design
+        fast_load_layout = QHBoxLayout()
+        fast_load_layout.setContentsMargins(0, 4, 0, 4)
+        fast_load_layout.setSpacing(12)
+        
+        # Toggle switch
+        self.downsample_toggle = QCheckBox()
+        self.downsample_toggle.setObjectName("FastLoadToggle")
+        self.downsample_toggle.setToolTip(
+            "Enable fast preview mode for quick image browsing.\n"
+            "Images are loaded at reduced resolution for faster display."
+        )
+        self.downsample_toggle.setStyleSheet("""
+            QCheckBox#FastLoadToggle {
+                spacing: 0px;
+            }
+            QCheckBox#FastLoadToggle::indicator {
+                width: 36px;
+                height: 20px;
+                border-radius: 10px;
+                background-color: #3a3d4d;
+                border: 1px solid #4a4d5d;
+            }
+            QCheckBox#FastLoadToggle::indicator:hover {
+                background-color: #4a4d5d;
+            }
+            QCheckBox#FastLoadToggle::indicator:checked {
+                background-color: #6366f1;
+                border-color: #818cf8;
+            }
+            QCheckBox#FastLoadToggle::indicator:checked:hover {
+                background-color: #7c7ff5;
+            }
+        """)
+        
+        # Icon and label
+        fast_icon = QLabel("⚡")
+        
+        fast_label = QLabel("Fast Load")
+        fast_label.setStyleSheet("""
+            QLabel {
+                color: #a5a8b8;
+                font-weight: 500;
+            }
+        """)
+        
+        # Status badge
+        self.downsample_status = QLabel("")
+        self.downsample_status.setStyleSheet("""
+            QLabel {
+                background-color: transparent;
+                color: #6b7280;
+                padding: 2px 6px;
+                border-radius: 3px;
+            }
+        """)
+        
+        def update_fast_load_status(checked):
+            if checked:
+                self.downsample_status.setText("Preview")
+                self.downsample_status.setStyleSheet("""
+                    QLabel {
+                        background-color: rgba(16, 185, 129, 0.15);
+                        color: #10b981;
+                        font-weight: 600;
+                        padding: 2px 8px;
+                        border-radius: 3px;
+                    }
+                """)
+            else:
+                self.downsample_status.setText("")
+                self.downsample_status.setStyleSheet("background-color: transparent;")
+        
+        self.downsample_toggle.stateChanged.connect(update_fast_load_status)
+        
+        fast_load_layout.addWidget(self.downsample_toggle)
+        fast_load_layout.addWidget(fast_icon)
+        fast_load_layout.addWidget(fast_label)
+        fast_load_layout.addWidget(self.downsample_status)
+        fast_load_layout.addStretch()
+        
+        layout.addLayout(fast_load_layout)
+        
         parent_layout.addWidget(group)
 
     def create_display_controls(self, parent_layout):
@@ -3120,7 +3214,7 @@ class SolarRadioImageTab(QWidget):
             self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
         except ValueError:
             pass
-
+    
     def update_gamma_slider(self):
         try:
             gamma = float(self.gamma_entry.text())
@@ -4878,7 +4972,7 @@ class SolarRadioImageTab(QWidget):
         """
         from astropy.io import fits
 
-        hdul = fits.open(imagename)
+        hdul = fits.open(imagename, memmap=True)
         data = hdul[0].data
         header = hdul[0].header
         hdul.close()
@@ -5058,9 +5152,15 @@ class SolarRadioImageTab(QWidget):
         try:
             # Use the current RMS box when loading data
             from .utils import get_pixel_values_from_image
+            
+            # Calculate target size for fast load mode
+            target_size = 0  # 0 = no downsampling
+            if hasattr(self, 'downsample_toggle') and self.downsample_toggle.isChecked():
+                target_size = 800  # Smart downsampling to ~800px max dimension
 
             pix, csys, psf = get_pixel_values_from_image(
-                imagename, stokes, threshold, rms_box=tuple(self.current_rms_box)
+                imagename, stokes, threshold, rms_box=tuple(self.current_rms_box),
+                target_size=target_size
             )
 
             self.current_image_data = pix
@@ -6980,6 +7080,11 @@ class SolarRadioImageTab(QWidget):
             if not self.contour_settings.get("use_default_rms_region", True):
                 rms_box = self.contour_settings.get("rms_box", rms_box)
 
+            # Calculate target size for fast load mode (must match load_data)
+            target_size = 0  # 0 = no downsampling
+            if hasattr(self, 'downsample_toggle') and self.downsample_toggle.isChecked():
+                target_size = 800  # Smart downsampling to ~800px max dimension
+
             contour_csys = None
             if self.contour_settings["source"] == "same":
                 if self.imagename:
@@ -6988,16 +7093,19 @@ class SolarRadioImageTab(QWidget):
 
                     if stokes in ["I", "Q", "U", "V"]:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, stokes, threshold, rms_box
+                            self.imagename, stokes, threshold, rms_box,
+                            target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, numerator_stokes, threshold, rms_box
+                            self.imagename, numerator_stokes, threshold, rms_box,
+                            target_size=target_size
                         )
                         denominator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "I", threshold, rms_box
+                            self.imagename, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         mask = denominator_pix != 0
                         ratio = np.zeros_like(numerator_pix)
@@ -7005,22 +7113,27 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "Q", threshold, rms_box
+                            self.imagename, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "U", threshold, rms_box
+                            self.imagename, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "Q", threshold, rms_box
+                            self.imagename, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "U", threshold, rms_box
+                            self.imagename, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         i_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "I", threshold, rms_box
+                            self.imagename, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         mask = i_pix != 0
@@ -7029,16 +7142,19 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "Q", threshold, rms_box
+                            self.imagename, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "U", threshold, rms_box
+                            self.imagename, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
                         self.contour_settings["contour_data"] = pang
                     else:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "I", threshold, rms_box
+                            self.imagename, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
                     self.current_contour_wcs = contour_csys
@@ -7053,16 +7169,19 @@ class SolarRadioImageTab(QWidget):
 
                     if stokes in ["I", "Q", "U", "V"]:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, stokes, threshold, rms_box
+                            external_image, stokes, threshold, rms_box,
+                            target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, numerator_stokes, threshold, rms_box
+                            external_image, numerator_stokes, threshold, rms_box,
+                            target_size=target_size
                         )
                         denominator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "I", threshold, rms_box
+                            external_image, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         mask = denominator_pix != 0
                         ratio = np.zeros_like(numerator_pix)
@@ -7070,22 +7189,27 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "Q", threshold, rms_box
+                            external_image, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "U", threshold, rms_box
+                            external_image, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "Q", threshold, rms_box
+                            external_image, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "U", threshold, rms_box
+                            external_image, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         i_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "I", threshold, rms_box
+                            external_image, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         mask = i_pix != 0
@@ -7094,16 +7218,19 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "Q", threshold, rms_box
+                            external_image, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "U", threshold, rms_box
+                            external_image, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
                         self.contour_settings["contour_data"] = pang
                     else:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "I", threshold, rms_box
+                            external_image, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
                     self.current_contour_wcs = contour_csys
@@ -7260,6 +7387,11 @@ class SolarRadioImageTab(QWidget):
             # Check if reprojection is needed (WCS differs between contour and image)
             # OPTIMIZATION: Skip reprojection check for same-image contours - they're already aligned
             needs_reprojection = False
+
+            # TODO: Need to address this later, made it false right now, so that toggle between fast
+            # and slow loading while contour is active works smoothly.
+            is_same_image = False
+
             if not is_same_image and self.current_contour_wcs is not None and image_wcs_obj is not None:
                 # Build the contour WCS object
                 from astropy.wcs import WCS

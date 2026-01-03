@@ -149,6 +149,8 @@ def get_pixel_values_from_image(
     thres,
     rms_box=(0, 200, 0, 130),
     stokes_map={"I": 0, "Q": 1, "U": 2, "V": 3},
+    downsample=1,
+    target_size=0,
 ):
     """
     Retrieve pixel values from a CASA image with proper error handling and dimension checks.
@@ -164,6 +166,12 @@ def get_pixel_values_from_image(
          Region coordinates (x1, x2, y1, y2) for RMS estimation.
       stokes_map : dict, optional
          Mapping of standard stokes parameters to their corresponding axis indices.
+      downsample : int, optional
+         Fixed factor by which to downsample. Default is 1 (no downsampling).
+         If target_size is set, this is ignored.
+      target_size : int, optional
+         Target maximum dimension in pixels. If > 0, downsample factor is calculated
+         automatically to achieve approximately this size. Default is 0 (disabled).
 
     Returns:
       pix : numpy.ndarray
@@ -195,6 +203,15 @@ def get_pixel_values_from_image(
             raise ValueError("Image summary does not contain 'axisnames'")
         # Ensure we can index; convert to numpy array if needed
         dimension_names = np.array(dimension_names)
+        
+        # Calculate smart downsample factor based on image dimensions
+        if target_size > 0 and len(dimension_shapes) >= 2:
+            # Get spatial dimensions (first two axes are typically RA/Dec or X/Y)
+            max_spatial_dim = max(dimension_shapes[0], dimension_shapes[1])
+            if max_spatial_dim > target_size:
+                # Calculate factor to achieve target size
+                downsample = max(1, int(np.ceil(max_spatial_dim / target_size)))
+
 
         if "Right Ascension" in dimension_names:
             try:
@@ -222,9 +239,29 @@ def get_pixel_values_from_image(
                 # If Frequency axis is missing, assume index 0
                 freq_idx = None
 
-            data = ia_tool.getchunk()
+            # Use strided reading for fast downsampling (reads every Nth pixel from disk)
+            if downsample > 1:
+                inc = [downsample] * len(dimension_shapes)
+                data = ia_tool.getchunk(inc=inc)
+            else:
+                data = ia_tool.getchunk()
             psf = ia_tool.restoringbeam()
             csys = ia_tool.coordsys()
+            
+            # Adjust coordinate system for downsampled data
+            if downsample > 1:
+                # Get current increment and reference pixel
+                current_inc = csys.increment()
+                current_refpix = csys.referencepixel()
+                
+                # Scale increment (pixel size) by downsample factor
+                new_inc_vals = [v * downsample for v in current_inc['numeric']]
+                csys.setincrement(value=new_inc_vals)
+                
+                # Adjust reference pixel position (divide by downsample factor)
+                new_refpix_vals = [(v / downsample) for v in current_refpix['numeric']]
+                csys.setreferencepixel(value=new_refpix_vals)
+                
         if "SOLAR-X" in dimension_names:
             try:
                 ra_idx = int(np.where(dimension_names == "SOLAR-X")[0][0])
@@ -247,9 +284,28 @@ def get_pixel_values_from_image(
             else:
                 # If Frequency axis is missing, assume index 0
                 freq_idx = None
-            data = ia_tool.getchunk()
+            # Use strided reading for fast downsampling (reads every Nth pixel from disk)
+            if downsample > 1:
+                inc = [downsample] * len(dimension_shapes)
+                data = ia_tool.getchunk(inc=inc)
+            else:
+                data = ia_tool.getchunk()
             psf = ia_tool.restoringbeam()
             csys = ia_tool.coordsys()
+            
+            # Adjust coordinate system for downsampled data
+            if downsample > 1:
+                # Get current increment and reference pixel
+                current_inc = csys.increment()
+                current_refpix = csys.referencepixel()
+                
+                # Scale increment (pixel size) by downsample factor
+                new_inc_vals = [v * downsample for v in current_inc['numeric']]
+                csys.setincrement(value=new_inc_vals)
+                
+                # Adjust reference pixel position (divide by downsample factor)
+                new_refpix_vals = [(v / downsample) for v in current_refpix['numeric']]
+                csys.setreferencepixel(value=new_refpix_vals)
 
     except Exception as e:
         ia_tool.close()

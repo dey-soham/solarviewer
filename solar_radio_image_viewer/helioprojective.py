@@ -60,7 +60,7 @@ rcParams["font.size"] = 12
 
 
 def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observatory=None):
-    hdul = fits.open(fits_file)
+    hdul = fits.open(fits_file, memmap=True)
     header = hdul[0].header
     POS = None
     if observatory is not None:
@@ -147,7 +147,7 @@ def convert_to_hpc(
     #print("************************")
     #print(f"[INFO] Starting hpc conversion for image {fits_file}")
     # Read the FITS file
-    hdu = fits.open(fits_file)
+    hdu = fits.open(fits_file, memmap=True)
     header = hdu[0].header
     if header["SIMPLE"] == False:
         print("[ERROR] FITS file is not a valid image")
