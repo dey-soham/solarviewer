@@ -1,5 +1,20 @@
 # SolarViewer Release Notes
 
+## Version 1.1.0
+
+### User Interface & Experience
+*   **UI Modernization**: Implemented a comprehensive visual overhaul with updated color schemes and styling.
+*   **Visual Feedback**: Enhanced the Stokes parameter selector to provide clear visual indicators for disabled options.
+
+### Data Handling & Performance
+*   **FITS Compatibility**: Added robust support for single-Stokes image processing.
+*   **Downsampling Mode**: Introduced a high-performance downsampling mode for rapid previewing of large-scale FITS and CASA datasets.
+
+### Bug Fixes & Stability
+*   **Metadata Parsing**: Improved date parsing reliability for FITS headers.
+*   **General Stability**: Implemented various stability improvements and performance optimizations.
+*   **General**: Other quality of life improvements.
+
 ## Version 1.0.3
 *   **Cursor Position**: Fixed cursor position mismatch between displayed coordinates and matplotlib toolbar
 *   **World Coordinates**: World coordinates now match exactly with matplotlib's axis display

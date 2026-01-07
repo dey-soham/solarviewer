@@ -1011,10 +1011,10 @@ class SolarRadioImageTab(QWidget):
         # Common compact style for preset buttons
         preset_btn_style = """
             QPushButton {
-                padding: 2px 6px;
+                padding: 3px 8px;
                 font-size: 9pt;
                 min-width: 45px;
-                min-height: 20px;
+                min-height: 22px;
             }
         """
         
