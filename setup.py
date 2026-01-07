@@ -39,7 +39,7 @@ with open("README.md") as f:
 
 setup(
     name="solarviewer",
-    version="1.0.3",
+    version="1.1.0",
     packages=find_packages(),
     # cmdclass={
     #     'install': PostInstallCommand,

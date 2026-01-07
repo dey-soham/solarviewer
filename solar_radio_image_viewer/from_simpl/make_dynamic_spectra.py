@@ -219,6 +219,7 @@ def write_fits(all_times, dynamic_spectra, subband_freqs, outfits):
     freq_hdu.name = "FREQ_AXIS"
     
     hdul = fits.HDUList([hdu, time_hdu, freq_hdu])
+    hdu.header.add_history('Dynamic spectrum created with SolarViewer')
     hdul.writeto(outfits, overwrite=True)
     print(f"Dynamic spectra saved to {outfits}")
 

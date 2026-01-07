@@ -985,42 +985,42 @@ class MainWindow(QMainWindow):
         # Theme palettes matching solarviewer's styles.py for consistency
         self.themes = {
             "light": {
-                # Solarviewer LIGHT_PALETTE colors
-                "main_bg": "#A59D84",        # window
-                "panel_bg": "#ECEBDE",       # base/surface
-                "panel_border": "#b0b0b0",   # border
-                "text_color": "#1a1a1a",     # text
-                "button_bg": "#f0f0f0",      # button
-                "button_hover": "#e0e0e0",   # button_hover
-                "button_pressed": "#d0d0d0", # button_pressed
-                "menubar_bg": "#D7D3BF",     # toolbar_bg
-                "statusbar_bg": "#ECEBDE",   # surface
-                "groupbox_bg": "#ECEBDE",    # surface
-                "input_bg": "#ECEBDE",       # base
-                "input_border": "#b0b0b0",   # border
-                "highlight": "#0066cc",      # highlight
-                "plot_bg": "#ECEBDE",        # plot_bg
-                "plot_text": "#1a1a1a",      # plot_text
-                "plot_grid": "#d0d0d0"       # plot_grid
+                # Solarviewer LIGHT_PALETTE colors (updated to match viewer)
+                "main_bg": "#f5f3eb",        # window
+                "panel_bg": "#fafaf8",       # surface
+                "panel_border": "#d1d5db",   # border
+                "text_color": "#1f2937",     # text
+                "button_bg": "#e5e5e5",      # button
+                "button_hover": "#d4d4d4",   # button_hover
+                "button_pressed": "#c4c4c4", # button_pressed
+                "menubar_bg": "#ebebdf",     # toolbar_bg
+                "statusbar_bg": "#fafaf8",   # surface
+                "groupbox_bg": "#fafaf8",    # surface
+                "input_bg": "#ffffff",       # base
+                "input_border": "#d1d5db",   # border
+                "highlight": "#4f46e5",      # highlight (indigo)
+                "plot_bg": "#ffffff",        # plot_bg
+                "plot_text": "#1f2937",      # plot_text
+                "plot_grid": "#e5e7eb"       # plot_grid
             },
             "dark": {
-                # Solarviewer DARK_PALETTE colors
-                "main_bg": "#1a1a2e",        # window
-                "panel_bg": "#1f2940",       # surface
-                "panel_border": "#2a3f5f",   # border
-                "text_color": "#eeeeee",     # text
-                "button_bg": "#0f3460",      # button
-                "button_hover": "#1a4a7a",   # button_hover
-                "button_pressed": "#0a2540", # button_pressed
-                "menubar_bg": "#1a1a2e",     # window
-                "statusbar_bg": "#1f2940",   # surface
-                "groupbox_bg": "#1f2940",    # surface
-                "input_bg": "#16213e",       # base
-                "input_border": "#2a3f5f",   # border
-                "highlight": "#e94560",      # highlight
-                "plot_bg": "#16213e",        # base
-                "plot_text": "#eeeeee",      # text
-                "plot_grid": "#2a3f5f"       # border
+                # Solarviewer DARK_PALETTE colors (updated to match viewer)
+                "main_bg": "#0f0f1a",        # window
+                "panel_bg": "#16162a",       # surface
+                "panel_border": "#2d2d4a",   # border
+                "text_color": "#f0f0f5",     # text
+                "button_bg": "#252542",      # button
+                "button_hover": "#32325d",   # button_hover
+                "button_pressed": "#1a1a35", # button_pressed
+                "menubar_bg": "#0f0f1a",     # window
+                "statusbar_bg": "#16162a",   # surface
+                "groupbox_bg": "#16162a",    # surface
+                "input_bg": "#1a1a2e",       # base
+                "input_border": "#2d2d4a",   # border
+                "highlight": "#6366f1",      # highlight (indigo)
+                "plot_bg": "#1a1a2e",        # base
+                "plot_text": "#f0f0f5",      # text
+                "plot_grid": "#2d2d4a"       # border
             }
         }
 
@@ -1660,6 +1660,7 @@ class MainWindow(QMainWindow):
                 t["FREQ_MHz"] = self._freq_axis
                 freq_hdu = fits.BinTableHDU(t, name="FREQ_AXIS")
                 hdul.append(freq_hdu)
+            hdu.header.add_history('Cleaned/processed with SolarViewer Dynamic Spectrum Viewer')
             hdul.writeto(fileName, overwrite=True)
             self.statusBar.showMessage(f"Saved cleaned data to {fileName}", 5000)
         except Exception as e:

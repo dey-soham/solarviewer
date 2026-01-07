@@ -12,6 +12,7 @@ from PyQt5.QtCore import Qt, QSettings
 
 # Import theme manager FIRST, before viewer
 from .styles import theme_manager, ThemeManager
+from . import __version__
 
 
 def apply_theme(app, theme_mgr):
@@ -83,7 +84,7 @@ Examples:
         "-v",
         "--version",
         action="version",
-        version="Solar Radio Image Viewer 1.0",
+        version=f"SolarViewer {__version__}",
         help="Show the application version and exit",
     )
 
@@ -138,7 +139,8 @@ Examples:
     else:
         # Launch the standard viewer
         window = SolarRadioImageViewerApp(args.imagename)
-        window.resize(1920, 1080)
+        # Note: Window sizing is handled in SolarRadioImageViewerApp.__init__
+        # using screen-aware sizing (90% of available screen, capped at 1920x1080)
         window.show()
         sys.exit(app.exec_())
 

@@ -1,51 +1,110 @@
 # Theme palettes for the Solar Radio Image Viewer
 # Supports both dark and light modes with modern, premium styling
 
+import pkg_resources
+from PyQt5.QtGui import QFontDatabase, QFont
+from PyQt5.QtWidgets import QApplication
+
+# Global flag to track if fonts are loaded
+_fonts_loaded = False
+_inter_font_family = "Inter"
+
+def load_bundled_fonts():
+    """Load bundled Inter font from assets folder for consistent appearance."""
+    global _fonts_loaded, _inter_font_family
+    
+    if _fonts_loaded:
+        return _inter_font_family
+    
+    font_files = [
+        "Inter-Regular.ttf",
+        "Inter-Medium.ttf", 
+        "Inter-SemiBold.ttf",
+        "Inter-Bold.ttf",
+    ]
+    
+    font_db = QFontDatabase()
+    loaded_any = False
+    
+    for font_file in font_files:
+        try:
+            font_path = pkg_resources.resource_filename(
+                "solar_radio_image_viewer", f"assets/{font_file}"
+            )
+            font_id = font_db.addApplicationFont(font_path)
+            if font_id != -1:
+                families = font_db.applicationFontFamilies(font_id)
+                if families:
+                    _inter_font_family = families[0]
+                    loaded_any = True
+        except Exception as e:
+            print(f"Could not load font {font_file}: {e}")
+    
+    _fonts_loaded = True
+    
+    if loaded_any:
+        # Set Inter as the default application font
+        app = QApplication.instance()
+        if app:
+            font = QFont(_inter_font_family, 10)
+            app.setFont(font)
+    
+    return _inter_font_family
+
+
 DARK_PALETTE = {
-    "window": "#1a1a2e",      # Deep rich dark blue
-    "base": "#16213e",        # Navy undertone for inputs
-    "text": "#eeeeee",         # Soft white for readability
-    "highlight": "#e94560",   # Vibrant accent for primary actions
-    "highlight_hover": "#ff6b6b",
-    "button": "#0f3460",      # Subtle blue-gray buttons
-    "button_hover": "#1a4a7a",
-    "button_pressed": "#0a2540",
-    "border": "#2a3f5f",      # Subtle border color
+    "window": "#0f0f1a",           # Deep space black with blue undertone
+    "base": "#1a1a2e",             # Rich dark navy for inputs
+    "text": "#f0f0f5",             # Soft bright white for readability
+    "text_secondary": "#a0a0b0",   # Muted text for secondary info
+    "highlight": "#6366f1",        # Modern indigo accent (primary)
+    "highlight_hover": "#818cf8",  # Lighter indigo for hover
+    "highlight_glow": "rgba(99, 102, 241, 0.3)",  # Glow effect
+    "button": "#252542",           # Elevated button background
+    "button_hover": "#32325d",     # Button hover state
+    "button_pressed": "#1a1a35",   # Button pressed state
+    "button_gradient_start": "#3730a3",  # Gradient button start
+    "button_gradient_end": "#4f46e5",    # Gradient button end
+    "border": "#2d2d4a",           # Subtle visible border
+    "border_light": "#3d3d5c",     # Lighter border for separators
     "disabled": "#4a4a6a",
-    "success": "#2ecc71",
-    "warning": "#f39c12",
-    "error": "#e74c3c",
-    "secondary": "#533483",   # Secondary accent
-    "surface": "#1f2940",     # Elevated surfaces
+    "success": "#22c55e",          # Modern green
+    "warning": "#f59e0b",          # Warm amber
+    "error": "#ef4444",            # Bright red
+    "secondary": "#8b5cf6",        # Purple accent
+    "surface": "#16162a",          # Elevated surfaces (cards, groups)
+    "surface_elevated": "#1e1e3a", # More elevated surfaces
+    "shadow": "rgba(0, 0, 0, 0.4)", # Shadow color
 }
 
 LIGHT_PALETTE = {
-    #"window": "#e8e8e8",      # Light grey background - proper light theme
-    #"window": "#A59D84",
-    "window": "#D7D3BF",
-    #"base": "#ffffff",        # White for inputs
-    "base": "#ECEBDE",
-    "text": "#1a1a1a",        # Dark text for readability on light backgrounds
-    "input_text": "#1a1a1a",  # Dark text for inputs (same as text in light mode)
-    "highlight": "#0066cc",   # Professional blue
-    "highlight_hover": "#0052a3",
-    "button": "#f0f0f0",      # Light grey buttons
-    "button_hover": "#e0e0e0",
-    "button_pressed": "#d0d0d0",
-    "border": "#b0b0b0",      # Visible border
-    "disabled": "#999999",
-    "success": "#28a745",
-    "warning": "#ffc107",
-    "error": "#dc3545",
-    "secondary": "#6c5ce7",   
-    #"surface": "#f5f5f5",     # Light grey surfaces
-    "surface": "#ECEBDE",
-    #"toolbar_bg": "#404040",  # Dark toolbar for white icons
-    "toolbar_bg": "#D7D3BF",
-    #"plot_bg": "#ffffff",     
-    "plot_bg": "#ECEBDE",
-    "plot_text": "#1a1a1a",
-    "plot_grid": "#d0d0d0",
+    "window": "#f5f3eb",           # Warm off-white background
+    "base": "#ffffff",             # Pure white for inputs
+    "text": "#1f2937",             # Rich dark gray for readability
+    "text_secondary": "#6b7280",   # Muted gray for secondary text
+    "input_text": "#1f2937",       # Dark text for inputs
+    "highlight": "#4f46e5",        # Modern indigo (matches dark theme)
+    "highlight_hover": "#6366f1",  # Hover state
+    "highlight_glow": "rgba(79, 70, 229, 0.2)",  # Glow effect
+    "button": "#e5e5e5",           # Subtle gray buttons
+    "button_hover": "#d4d4d4",     # Button hover
+    "button_pressed": "#c4c4c4",   # Button pressed
+    "button_gradient_start": "#4f46e5",  # Gradient button start
+    "button_gradient_end": "#6366f1",    # Gradient button end
+    "border": "#d1d5db",           # Soft gray border
+    "border_light": "#e5e7eb",     # Lighter border for separators
+    "disabled": "#9ca3af",
+    "success": "#16a34a",          # Forest green
+    "warning": "#d97706",          # Rich amber
+    "error": "#dc2626",            # Alert red
+    "secondary": "#7c3aed",        # Purple accent
+    "surface": "#fafaf8",          # Slightly elevated surface
+    "surface_elevated": "#ffffff", # Most elevated (cards)
+    "toolbar_bg": "#ebebdf",       # Warm toolbar
+    "plot_bg": "#ffffff",     
+    "plot_text": "#1f2937",
+    "plot_grid": "#e5e7eb",
+    "shadow": "rgba(0, 0, 0, 0.08)", # Subtle shadow for light theme
 }
 
 
@@ -58,11 +117,15 @@ def get_stylesheet(palette, is_dark=True):
     group_border = palette["border"]
     tab_selected_bg = palette["highlight"]
     hover_text = "#ffffff" if is_dark else palette["text"]
+    surface_elevated = palette.get("surface_elevated", palette["surface"])
+    shadow = palette.get("shadow", "rgba(0,0,0,0.2)")
+    text_secondary = palette.get("text_secondary", palette["disabled"])
+    border_light = palette.get("border_light", palette["border"])
     
     return f"""
     /* ===== GLOBAL STYLES ===== */
     QWidget {{
-        font-family: 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
+        font-family: 'Inter', 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
         font-size: 11pt;
         color: {palette['text']};
     }}
@@ -75,19 +138,23 @@ def get_stylesheet(palette, is_dark=True):
     QGroupBox {{
         background-color: {palette['surface']};
         border: 1px solid {group_border};
-        border-radius: 8px;
-        margin-top: 16px;
-        padding: 12px 8px 8px 8px;
+        border-radius: 10px;
+        margin-top: 10px;
+        padding: 12px 12px 12px 12px;
         font-weight: 600;
     }}
     
     QGroupBox::title {{
         subcontrol-origin: margin;
-        left: 14px;
-        padding: 0 6px;
-        color: {palette['text']};
-        font-weight: bold;
-        font-size: 11pt;
+        left: 16px;
+        padding: 2px 10px;
+        color: {palette['highlight']};
+        background-color: {palette['surface']};
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 10pt;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
     }}
     
     /* ===== BUTTONS ===== */
@@ -96,10 +163,10 @@ def get_stylesheet(palette, is_dark=True):
         color: {palette['text']};
         border: 1px solid {palette['border']};
         border-radius: 6px;
-        padding: 6px 14px;
-        min-width: 80px;
-        min-height: 28px;
-        font-size: 11pt;
+        padding: 4px 12px;
+        min-width: 60px;
+        min-height: 26px;
+        font-size: 10pt;
         font-weight: 500;
     }}
     
@@ -116,14 +183,18 @@ def get_stylesheet(palette, is_dark=True):
         color: {palette['disabled']};
         background-color: {palette['button']};
         border-color: {palette['border']};
+        opacity: 0.6;
     }}
     
     /* Primary action button style */
     QPushButton#PrimaryButton {{
-        background-color: {palette['highlight']};
+        background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+            stop:0 {palette.get('button_gradient_start', palette['highlight'])}, 
+            stop:1 {palette.get('button_gradient_end', palette['highlight_hover'])});
         color: #ffffff;
         border: none;
         font-weight: 600;
+        letter-spacing: 0.3px;
     }}
     
     QPushButton#PrimaryButton:hover {{
@@ -132,15 +203,22 @@ def get_stylesheet(palette, is_dark=True):
     
     QPushButton#PrimaryButton:disabled {{
         background-color: {palette['disabled']};
-        color: {palette['border']};
+        color: {border_light};
     }}
 
     QPushButton#IconOnlyButton {{
-        min-width: 30px;
-        max-width: 30px;
-        max-height: 30px;
-        padding: 4px;
-        border-radius: 6px;
+        min-width: 32px;
+        max-width: 32px;
+        min-height: 32px;
+        max-height: 32px;
+        padding: 6px;
+        border-radius: 8px;
+        border: 1px solid {border_light};
+    }}
+    
+    QPushButton#IconOnlyButton:hover {{
+        background-color: {palette['highlight']};
+        border-color: {palette['highlight']};
     }}
 
     QPushButton#IconOnlyNBGButton {{
@@ -150,7 +228,7 @@ def get_stylesheet(palette, is_dark=True):
         margin: 0px;
         min-width: 0px;
         min-height: 0px;
-        border-radius: 6px;
+        border-radius: 8px;
     }}
 
     QPushButton#IconOnlyNBGButton:hover {{
@@ -166,40 +244,55 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {input_bg};
         color: {input_text};
         border: 1px solid {palette['border']};
-        border-radius: 6px;
-        padding: 6px 10px;
-        min-height: 28px;
-        font-size: 11pt;
+        border-radius: 5px;
+        padding: 2px 6px;
+        min-height: 20px;
+        font-size: 10pt;
         selection-background-color: {palette['highlight']};
     }}
     
     QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
         border-color: {palette['highlight']};
         border-width: 2px;
+        background-color: {surface_elevated};
     }}
     
     QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
         background-color: {palette['surface']};
         color: {palette['disabled']};
+        opacity: 0.7;
+    }}
+    
+    QLineEdit::placeholder {{
+        color: {text_secondary};
+        font-style: italic;
     }}
     
     QComboBox {{
         background-color: {input_bg};
         color: {input_text};
         border: 1px solid {palette['border']};
-        border-radius: 6px;
-        padding: 6px 10px;
-        min-height: 28px;
-        font-size: 11pt;
+        border-radius: 5px;
+        padding: 2px 6px;
+        min-height: 20px;
+        font-size: 10pt;
     }}
     
     QComboBox:hover {{
         border-color: {palette['highlight']};
     }}
     
+    QComboBox:focus {{
+        border-color: {palette['highlight']};
+        border-width: 2px;
+    }}
+    
     QComboBox::drop-down {{
         border: none;
-        width: 24px;
+        width: 28px;
+        border-left: 1px solid {border_light};
+        border-top-right-radius: 8px;
+        border-bottom-right-radius: 8px;
     }}
     
     QComboBox::down-arrow {{
@@ -208,10 +301,11 @@ def get_stylesheet(palette, is_dark=True):
     }}
     
     QComboBox QAbstractItemView {{
-        background-color: {palette['surface']};
+        background-color: {surface_elevated};
         color: {palette['text']};
         border: 1px solid {palette['border']};
-        border-radius: 6px;
+        border-radius: 8px;
+        padding: 4px;
         selection-background-color: {palette['highlight']};
         selection-color: #ffffff;
     }}
@@ -219,57 +313,76 @@ def get_stylesheet(palette, is_dark=True):
     /* ===== TAB WIDGET ===== */
     QTabWidget::pane {{
         border: 1px solid {palette['border']};
-        border-radius: 8px;
+        border-radius: 10px;
         background-color: {palette['surface']};
+        padding: 4px;
     }}
     
     QTabBar::tab {{
         background: {palette['button']};
         color: {palette['text']};
-        padding: 10px 20px;
-        border-top-left-radius: 8px;
-        border-top-right-radius: 8px;
-        margin-right: 2px;
-        font-size: 11pt;
+        padding: 10px 24px;
+        border-top-left-radius: 10px;
+        border-top-right-radius: 10px;
+        margin-right: 3px;
+        font-size: 10pt;
         font-weight: 500;
+        border: 1px solid {palette['border']};
+        border-bottom: none;
     }}
     
     QTabBar::tab:selected {{
-        background: {tab_selected_bg};
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 {palette['highlight']}, stop:1 {palette.get('button_gradient_start', palette['highlight'])});
         color: #ffffff;
+        font-weight: 600;
+        border-color: {palette['highlight']};
     }}
     
     QTabBar::tab:hover:!selected {{
         background: {palette['button_hover']};
+        border-color: {palette['highlight']};
     }}
     
     /* ===== TABLE WIDGET ===== */
     QTableWidget {{
-        font-size: 11pt;
+        font-size: 10pt;
         background-color: {palette['base']};
         alternate-background-color: {palette['surface']};
-        gridline-color: {palette['border']};
+        gridline-color: {border_light};
         border: 1px solid {palette['border']};
-        border-radius: 6px;
+        border-radius: 10px;
+        selection-background-color: {palette['highlight']};
     }}
     
     QTableWidget QHeaderView::section {{
         background-color: {palette['button']};
         color: {palette['text']};
-        font-size: 11pt;
-        font-weight: bold;
-        padding: 8px;
+        font-size: 9pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        padding: 10px 8px;
         border: none;
-        border-bottom: 1px solid {palette['border']};
+        border-bottom: 2px solid {palette['highlight']};
+    }}
+    
+    QTableWidget QHeaderView::section:hover {{
+        background-color: {palette['button_hover']};
     }}
     
     QTableWidget::item {{
-        padding: 6px;
+        padding: 8px 6px;
+        border-bottom: 1px solid {border_light};
     }}
     
     QTableWidget::item:selected {{
         background-color: {palette['highlight']};
         color: #ffffff;
+    }}
+    
+    QTableWidget::item:hover {{
+        background-color: {palette['button_hover']};
     }}
     
     /* ===== LABELS ===== */
@@ -563,6 +676,13 @@ class ThemeManager:
     def __init__(self):
         self._current_theme = self.DARK
         self._callbacks = []
+        self._fonts_initialized = False
+    
+    def initialize_fonts(self):
+        """Initialize bundled fonts. Call after QApplication is created."""
+        if not self._fonts_initialized:
+            load_bundled_fonts()
+            self._fonts_initialized = True
     
     @property
     def current_theme(self):

@@ -64,8 +64,9 @@ from PyQt5.QtWidgets import (
     # QStyle,
     QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QSettings, QSize, QTimer
-from PyQt5.QtGui import QIcon, QIntValidator
+from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, pyqtSignal
+from PyQt5.QtGui import QIcon, QIntValidator, QColor, QPalette
+from PyQt5.QtWidgets import QStyledItemDelegate
 
 # from PyQt5.QtGui import QColor, QPalette, QPainter
 
@@ -91,6 +92,24 @@ from .searchable_combobox import ColormapSelector
 from astropy.time import Time
 from .solar_data_downloader import launch_gui as launch_downloader_gui
 from .radio_data_downloader import launch_gui as launch_radio_downloader_gui
+
+class DisabledItemDelegate(QStyledItemDelegate):
+    """Custom delegate that properly renders disabled items with grayed text."""
+    
+    def paint(self, painter, option, index):
+        # Check if item is disabled
+        if not (index.flags() & Qt.ItemIsEnabled):
+            # Get disabled color from theme
+            try:
+                disabled_color = QColor(theme_manager.palette.get('disabled', '#cccccc'))
+            except:
+                disabled_color = QColor('#cccccc')
+            
+            # Modify the palette to use disabled color for text
+            option.palette.setColor(QPalette.Text, disabled_color)
+            option.palette.setColor(QPalette.HighlightedText, disabled_color)
+        
+        super().paint(painter, option, index)
 
 
 def update_matplotlib_theme():
@@ -125,6 +144,139 @@ mplstyle.use("fast")
 class RegionMode:
     RECTANGLE = 0
     ELLIPSE = 1
+
+
+class SegmentedControl(QWidget):
+    """A modern segmented control widget."""
+    
+    selectionChanged = pyqtSignal(int)  # Emits index of selected segment
+    
+    def __init__(self, options, parent=None):
+        super().__init__(parent)
+        self.options = options
+        self._selected_index = 0
+        self._buttons = []
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Create container for the pill shape
+        self._container = QWidget()
+        container_layout = QHBoxLayout(self._container)
+        container_layout.setContentsMargins(2, 2, 2, 2)
+        container_layout.setSpacing(1)
+        
+        for i, option in enumerate(options):
+            btn = QPushButton(option)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda checked, idx=i: self._on_button_clicked(idx))
+            self._buttons.append(btn)
+            container_layout.addWidget(btn)
+        
+        # Select first by default
+        if self._buttons:
+            self._buttons[0].setChecked(True)
+        
+        layout.addWidget(self._container)
+        self._apply_styles()
+        
+        # Register for theme changes
+        theme_manager.register_callback(self._on_theme_changed)
+    
+    def _on_theme_changed(self, theme):
+        """Update styling when theme changes."""
+        self._apply_styles()
+    
+    def _apply_styles(self):
+        """Apply button-style toggle styling matching app palette."""
+        from .styles import theme_manager
+        palette = theme_manager.palette
+        is_dark = theme_manager.is_dark
+        
+        # Container styling - subtle pill background
+        if is_dark:
+            surface = palette.get('surface', '#16162a')
+            border_style = "none"
+            hover_bg = palette.get('button_hover', '#32325d')
+        else:
+            surface = "rgba(0, 0, 0, 0.03)"
+            border_color = palette.get('border', '#d1d5db')
+            border_style = f"1px solid {border_color}"
+            hover_bg = "rgba(0, 0, 0, 0.06)"
+        
+        self._container.setStyleSheet(f"""
+            QWidget {{
+                background-color: {surface};
+                border: {border_style};
+                border-radius: 8px;
+            }}
+        """)
+        
+        # Button styling - matches app button palette
+        text_color = palette.get('text', '#f0f0f5')
+        text_secondary = palette.get('text_secondary', '#a0a0b0')
+        highlight = palette.get('highlight', '#6366f1')
+        highlight_hover = palette.get('highlight_hover', '#818cf8')
+        
+        for btn in self._buttons:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {text_secondary};
+                    border: none;
+                    border-radius: 5px;
+                    padding: 4px 10px;
+                    font-weight: 500;
+                    font-size: 9pt;
+                    min-width: 65px;
+                    min-height: 22px;
+                }}
+                QPushButton:hover {{
+                    color: {text_color};
+                    background-color: {hover_bg};
+                }}
+                QPushButton:checked {{
+                    background-color: {highlight};
+                    color: #ffffff;
+                    font-weight: 600;
+                }}
+                QPushButton:checked:hover {{
+                    background-color: {highlight_hover};
+                }}
+            """)
+    
+    def _on_button_clicked(self, index):
+        """Handle button click - ensure only one is selected."""
+        if index == self._selected_index:
+            # Re-check if clicking already selected (don't allow deselect)
+            self._buttons[index].setChecked(True)
+            return
+        
+        # Uncheck all others
+        for i, btn in enumerate(self._buttons):
+            btn.setChecked(i == index)
+        
+        self._selected_index = index
+        self.selectionChanged.emit(index)
+    
+    def selectedIndex(self):
+        """Return the currently selected index."""
+        return self._selected_index
+    
+    def setSelectedIndex(self, index):
+        """Set the selected index programmatically."""
+        if 0 <= index < len(self._buttons):
+            self._on_button_clicked(index)
+    
+    def selectedText(self):
+        """Return the text of the selected option."""
+        return self.options[self._selected_index]
+    
+    def updateTheme(self):
+        """Update styling when theme changes."""
+        self._apply_styles()
 
 
 class SolarRadioImageTab(QWidget):
@@ -203,6 +355,18 @@ class SolarRadioImageTab(QWidget):
 
         self._temp_file_id = uuid.uuid4().hex[:8]
 
+        # Image metadata cache for lazy WCS/colorbar computation
+        # These are expensive to compute and only need to refresh when imagename changes
+        self._cached_imagename = None  # Track which image is cached
+        self._cached_fits_header = None  # FITS header cache
+        self._cached_fits_flag = False  # Whether current image is FITS
+        self._cached_csys = None  # CASA coordsys cache
+        self._cached_summary = None  # CASA summary cache
+        self._cached_csys_record = None  # CASA csys record cache
+
+        # Debounce timers for UI responsiveness
+        self._gamma_debounce_timer = None
+
         self.contour_settings = {
             "source": "same",
             "external_image": "",
@@ -254,6 +418,7 @@ class SolarRadioImageTab(QWidget):
 
         self.setup_ui()
         self._setup_file_navigation_shortcuts()
+        self._set_button_cursors()
 
     def _setup_file_navigation_shortcuts(self):
         """Setup keyboard shortcuts for file navigation within this tab"""
@@ -277,6 +442,18 @@ class SolarRadioImageTab(QWidget):
         # F11 for fullscreen toggle
         # fullscreen_shortcut = QShortcut(QKeySequence("F11"), self)
         # fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
+
+    def _set_button_cursors(self):
+        """Set pointing hand cursor on all buttons for better UX"""
+        from PyQt5.QtGui import QCursor
+        
+        # Find all QPushButton widgets and set cursor
+        for button in self.findChildren(QPushButton):
+            button.setCursor(Qt.PointingHandCursor)
+        
+        # Also set cursor for QToolButton (toolbar icons)
+        for button in self.findChildren(QToolButton):
+            button.setCursor(Qt.PointingHandCursor)
 
     def show_status_message(self, message):
         """Helper method to show messages in the status bar"""
@@ -306,6 +483,7 @@ class SolarRadioImageTab(QWidget):
         control_layout.setContentsMargins(0, 0, 10, 0)
         control_layout.setSpacing(15)
         self.create_file_controls(control_layout)
+        control_layout.addStretch()
         self.create_display_controls(control_layout)
         splitter.addWidget(control_panel)
 
@@ -340,24 +518,34 @@ class SolarRadioImageTab(QWidget):
     def create_file_controls(self, parent_layout):
         group = QGroupBox("Image Selection")
         layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout.setSpacing(8)  # Tighter spacing for compact layout
 
-        # Add radio buttons for selection type
-        selection_type_layout = QHBoxLayout()
+        # Modern segmented control for file type selection
+        toggle_layout = QHBoxLayout()
+        self.file_type_toggle = SegmentedControl(["CASA Image", "FITS File"])
+        toggle_layout.addWidget(self.file_type_toggle)
+        toggle_layout.addStretch()
+        layout.addLayout(toggle_layout)
+
+        # For backward compatibility with radio button checks
+        # Create hidden radio buttons that stay in sync with segmented control
         self.selection_type_group = QButtonGroup(self)
-
-        self.radio_casa_image = QRadioButton("CASA Image")
-        self.radio_fits_file = QRadioButton("FITS File")
-        self.radio_casa_image.setChecked(True)  # Default to CASA image
-
+        self.radio_casa_image = QRadioButton()
+        self.radio_fits_file = QRadioButton()
+        self.radio_casa_image.setChecked(True)
+        self.radio_casa_image.hide()
+        self.radio_fits_file.hide()
         self.selection_type_group.addButton(self.radio_casa_image)
         self.selection_type_group.addButton(self.radio_fits_file)
-
-        selection_type_layout.addWidget(self.radio_casa_image)
-        selection_type_layout.addWidget(self.radio_fits_file)
-        selection_type_layout.addStretch()
-
-        layout.addLayout(selection_type_layout)
+        
+        # Sync segmented control with hidden radio buttons
+        def sync_selection(index):
+            if index == 0:
+                self.radio_casa_image.setChecked(True)
+            else:
+                self.radio_fits_file.setChecked(True)
+        
+        self.file_type_toggle.selectionChanged.connect(sync_selection)
 
         file_layout = QHBoxLayout()
         file_layout.setSpacing(8)
@@ -387,44 +575,197 @@ class SolarRadioImageTab(QWidget):
             padding-top: 22px;
             padding-bottom: 18px;
             margin-top: -4px;
+            border-radius: 8px;
         }
         QPushButton:hover {
-            background-color: #484848;
+            background-color: rgba(99, 102, 241, 0.2);
         }
         QPushButton:pressed {
-            background-color: #303030;
+            background-color: rgba(99, 102, 241, 0.35);
         }
         """
         )
         file_layout.addWidget(self.dir_entry, 1)
         file_layout.addWidget(self.browse_btn)
         layout.addLayout(file_layout)
-        stokes_layout = QFormLayout()
-        stokes_layout.setSpacing(10)
-        stokes_layout.setVerticalSpacing(10)
-        stokes_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        # Add a separator line
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(separator)
+        
+        # Row 1: Stokes + Threshold on same row
+        stokes_thresh_layout = QHBoxLayout()
+        stokes_thresh_layout.setSpacing(12)
+        
+        # Stokes dropdown
+        stokes_label = QLabel("Stokes:")
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(
             ["I", "Q", "U", "V", "L", "Lfrac", "Vfrac", "Q/I", "U/I", "U/V", "PANG"]
         )
         self.stokes_combo.currentTextChanged.connect(self.on_stokes_changed)
-        stokes_layout.addRow("Stokes Parameter:", self.stokes_combo)
+        
+        # Use custom delegate to properly render disabled items with grayed text
+        self.stokes_combo.setItemDelegate(DisabledItemDelegate(self.stokes_combo))
+
+        
+        stokes_thresh_layout.addStretch()
+        # Threshold (sigma)
+        thresh_label = QLabel("Thres (σ):")
+        thresh_label.setToolTip("Threshold in units of sigma (RMS)")
         self.threshold_entry = QLineEdit("10")
-        stokes_layout.addRow("Threshold (σ):", self.threshold_entry)
+        self.threshold_entry.setFixedWidth(50)
+        self.threshold_entry.setToolTip("Threshold in units of sigma (RMS)")
+        
+        stokes_thresh_layout.addWidget(stokes_label)
+        stokes_thresh_layout.addWidget(self.stokes_combo, 1)
+        stokes_thresh_layout.addWidget(thresh_label)
+        stokes_thresh_layout.addWidget(self.threshold_entry)
+        layout.addLayout(stokes_thresh_layout)
+        
+        # Row 2: Fast Load toggle on left, RMS settings on right
+        options_row = QHBoxLayout()
+        options_row.setSpacing(8)
+        options_row.setContentsMargins(0, 2, 0, 2)
+        
+        # Fast Load toggle (left side)
+        self.downsample_toggle = QCheckBox()
+        self.downsample_toggle.setObjectName("FastLoadToggle")
+        self.downsample_toggle.setToolTip(
+            "Enable fast preview mode for quick image browsing.\n"
+            "Images are loaded at reduced resolution for faster display."
+        )
+        
+        # Theme-aware Fast Load toggle style
+        if theme_manager.is_dark:
+            toggle_bg = "#3a3d4d"
+            toggle_bg_hover = "#4a4d5d"
+            toggle_border = "#4a4d5d"
+            label_color = "#a5a8b8"
+        else:
+            toggle_bg = "#d0d0d0"
+            toggle_bg_hover = "#c0c0c0"
+            toggle_border = "#b0b0b0"
+            label_color = "#555555"
+        
+        self.downsample_toggle.setStyleSheet(f"""
+            QCheckBox#FastLoadToggle {{
+                spacing: 0px;
+            }}
+            QCheckBox#FastLoadToggle::indicator {{
+                width: 28px;
+                height: 14px;
+                border-radius: 7px;
+                background-color: {toggle_bg};
+                border: 1px solid {toggle_border};
+            }}
+            QCheckBox#FastLoadToggle::indicator:hover {{
+                background-color: {toggle_bg_hover};
+            }}
+            QCheckBox#FastLoadToggle::indicator:checked {{
+                background-color: #6366f1;
+                border-color: #818cf8;
+            }}
+            QCheckBox#FastLoadToggle::indicator:checked:hover {{
+                background-color: #7c7ff5;
+            }}
+        """)
+        
+        fast_icon = QLabel("⚡")
+        self.fast_label = QLabel("Fast")
+        self.fast_label.setStyleSheet(f"color: {label_color}; font-size: 10pt;")
+        
+        # Status badge
+        self.downsample_status = QLabel("")
+        self.downsample_status.setStyleSheet("background-color: transparent;")
+        
+        def update_fast_load_status(checked):
+            if checked:
+                self.downsample_status.setText("Preview")
+                self.downsample_status.setStyleSheet("""
+                    QLabel {
+                        background-color: rgba(16, 185, 129, 0.15);
+                        color: #10b981;
+                        font-weight: 600;
+                        font-size: 9pt;
+                        padding: 1px 6px;
+                        border-radius: 3px;
+                    }
+                """)
+            else:
+                self.downsample_status.setText("")
+                self.downsample_status.setStyleSheet("background-color: transparent;")
+            
+            # Invalidate contour data when downsample mode changes
+            # This ensures contour data will be reloaded at the correct resolution
+            self.contour_settings["contour_data"] = None
+            self.current_contour_wcs = None
+            
+            # If image is already loaded, reload it with new downsample setting
+            if self.current_image_data is not None and self.imagename:
+                self.on_visualization_changed()
+                self.reset_view()
 
-        # Add RMS Box Settings button
-        rms_box_btn = QPushButton("RMS Box")
-        rms_box_btn.clicked.connect(self.show_rms_box_dialog)
-        stokes_layout.addRow("", rms_box_btn)
-
-        layout.addLayout(stokes_layout)
+        
+        self.downsample_toggle.stateChanged.connect(update_fast_load_status)
+        
+        # Add Fast Load widgets to the left
+        options_row.addWidget(self.downsample_toggle)
+        options_row.addWidget(fast_icon)
+        options_row.addWidget(self.fast_label)
+        options_row.addWidget(self.downsample_status)
+        
+        # Stretch in the middle
+        options_row.addStretch()
+        
+        # RMS Box settings on the right (label + icon)
+        self.rms_label = QLabel("RMS")
+        rms_label_color = "#a5a8b8" if theme_manager.is_dark else "#555555"
+        self.rms_label.setStyleSheet(f"color: {rms_label_color}; font-size: 10pt;")
+        self.rms_label.setToolTip("RMS Box Settings")
+        
+        self.rms_settings_btn = QPushButton()
+        self.rms_settings_btn.setObjectName("IconOnlyNBGButton")
+        self.rms_settings_btn.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/settings.png"
+                )
+            )
+        )
+        self.rms_settings_btn.setIconSize(QSize(20, 20))
+        self.rms_settings_btn.setToolTip("RMS Box Settings - Configure noise estimation region")
+        self.rms_settings_btn.setFixedSize(28, 28)
+        self.rms_settings_btn.clicked.connect(self.show_rms_box_dialog)
+        self.rms_settings_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QPushButton:hover {
+                background-color: rgba(99, 102, 241, 0.2);
+            }
+            QPushButton:pressed {
+                background-color: rgba(99, 102, 241, 0.35);
+            }
+        """)
+        
+        options_row.addWidget(self.rms_label)
+        options_row.addWidget(self.rms_settings_btn)
+        
+        layout.addLayout(options_row)
+        
         parent_layout.addWidget(group)
 
     def create_display_controls(self, parent_layout):
         group = QGroupBox("Display Settings")
         main_layout = QVBoxLayout(group)
+        main_layout.setSpacing(8)  # Tighter spacing
 
-        # Basic display settings
+        # Basic display settings - compact row
         form_layout = QFormLayout()
         radio_colormaps = [
             "viridis",
@@ -443,7 +784,7 @@ class SolarRadioImageTab(QWidget):
             preferred_items=radio_colormaps, all_items=all_colormaps
         )
         self.cmap_combo.setCurrentText("viridis")
-        self.cmap_combo.colormapSelected.connect(self.on_visualization_changed)
+        self.cmap_combo.colormapSelected.connect(self.update_display)
         form_layout.addRow("Colormap:", self.cmap_combo)
 
         # Stretch function
@@ -473,24 +814,86 @@ class SolarRadioImageTab(QWidget):
         # Overlays subgroup
         overlays_group = QGroupBox("Overlays")
         overlays_layout = QVBoxLayout(overlays_group)
+        overlays_layout.setSpacing(8)
+        overlays_layout.setContentsMargins(8, 8, 8, 8)
 
-        # Grid layout for all overlay controls
+        # Modern grid layout with fixed column widths for perfect alignment
         grid_layout = QGridLayout()
-        grid_layout.setSpacing(10)
-
-        # Basic display options - left side
-        self.show_beam_checkbox = QCheckBox("Show Beam")
+        grid_layout.setSpacing(6)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Theme-aware toggle style for overlay checkboxes
+        if theme_manager.is_dark:
+            toggle_bg = "#3a3d4d"
+            toggle_bg_hover = "#4a4d5d"
+            toggle_border = "#4a4d5d"
+            toggle_border_hover = "#5a5d6d"
+            text_color = "#e0e0e0"
+        else:
+            toggle_bg = "#d0d0d0"
+            toggle_bg_hover = "#c0c0c0"
+            toggle_border = "#b0b0b0"
+            toggle_border_hover = "#a0a0a0"
+            text_color = "#333333"
+        
+        overlay_toggle_style = f"""
+            QCheckBox {{
+                spacing: 6px;
+                font-size: 10pt;
+                color: {text_color};
+            }}
+            QCheckBox::indicator {{
+                width: 28px;
+                height: 14px;
+                border-radius: 7px;
+                background-color: {toggle_bg};
+                border: 1px solid {toggle_border};
+            }}
+            QCheckBox::indicator:hover {{
+                background-color: {toggle_bg_hover};
+                border-color: {toggle_border_hover};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: #6366f1;
+                border-color: #818cf8;
+            }}
+            QCheckBox::indicator:checked:hover {{
+                background-color: #7c7ff5;
+            }}
+        """
+        
+        # Modern settings button style (works for both themes)
+        settings_btn_style = """
+            QPushButton {
+                background-color: transparent;
+                border-radius: 4px;
+                padding: 2px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: rgba(99, 102, 241, 0.2);
+            }
+            QPushButton:pressed {
+                background-color: rgba(99, 102, 241, 0.35);
+            }
+        """
+        
+        # Row 0: Show Beam | Show Grid
+        self.show_beam_checkbox = QCheckBox("Beam")
         self.show_beam_checkbox.setChecked(True)
+        self.show_beam_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
-
-        # Basic display options - right side
-        self.show_grid_checkbox = QCheckBox("Show Grid")
+        
+        self.show_grid_checkbox = QCheckBox("Grid")
         self.show_grid_checkbox.setChecked(False)
+        self.show_grid_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_grid_checkbox.stateChanged.connect(self.on_checkbox_changed)
-
-        # Solar disk controls with settings button
+        
+        # Row 1: Solar Disk + settings | Contours + settings
         self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
+        self.show_solar_disk_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        
         self.solar_disk_center_button = QPushButton()
         self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
         self.solar_disk_center_button.setIcon(
@@ -500,45 +903,17 @@ class SolarRadioImageTab(QWidget):
                 )
             )
         )
-        self.solar_disk_center_button.setIconSize(QSize(24, 24))
-        self.solar_disk_center_button.setToolTip(
-            "Customize Solar Disk (center, size, appearance)"
-        )
-        self.solar_disk_center_button.setFixedSize(32, 32)
+        self.solar_disk_center_button.setIconSize(QSize(18, 18))
+        self.solar_disk_center_button.setToolTip("Customize Solar Disk")
+        self.solar_disk_center_button.setFixedSize(24, 24)
+        self.solar_disk_center_button.setStyleSheet(settings_btn_style)
         self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
-
-        # Vertical line separator
-        vline_1 = QFrame()
-        vline_1.setFrameShape(QFrame.VLine)
-        vline_1.setFrameShadow(QFrame.Sunken)
-        vline_1.setStyleSheet(
-            """
-            QFrame {
-                color: transparent;
-                border: none;
-                background-color: transparent;
-                width: 2px;
-            }
-        """
-        )
-        vline_2 = QFrame()
-        vline_2.setFrameShape(QFrame.VLine)
-        vline_2.setFrameShadow(QFrame.Sunken)
-        vline_2.setStyleSheet(
-            """
-            QFrame {
-                color: transparent;
-                border: none;
-                background-color: transparent;
-                width: 2px;
-            }
-        """
-        )
-
-        # Contour controls with settings button
+        
         self.show_contours_checkbox = QCheckBox("Contours")
         self.show_contours_checkbox.setChecked(False)
+        self.show_contours_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_contours_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        
         self.contour_settings_button = QPushButton()
         self.contour_settings_button.setObjectName("IconOnlyNBGButton")
         self.contour_settings_button.setIcon(
@@ -548,44 +923,67 @@ class SolarRadioImageTab(QWidget):
                 )
             )
         )
-        self.contour_settings_button.setIconSize(QSize(24, 24))
+        self.contour_settings_button.setIconSize(QSize(18, 18))
         self.contour_settings_button.setToolTip("Contour Settings")
-        self.contour_settings_button.setFixedSize(32, 32)
+        self.contour_settings_button.setFixedSize(24, 24)
+        self.contour_settings_button.setStyleSheet(settings_btn_style)
         self.contour_settings_button.clicked.connect(self.show_contour_settings)
-
-        # Add widgets to grid layout
-        # Row 0: Basic display options
-        grid_layout.addWidget(self.show_beam_checkbox, 0, 0)
-        grid_layout.addWidget(vline_1, 0, 2)
-        grid_layout.addWidget(self.show_grid_checkbox, 0, 3)
-
-        # Row 1: Solar disk and Contours
-        grid_layout.addWidget(self.show_solar_disk_checkbox, 1, 0)
-        grid_layout.addWidget(self.solar_disk_center_button, 1, 1)
-        grid_layout.addWidget(vline_2, 1, 2)  # Same vertical line spans both rows
-        grid_layout.addWidget(self.show_contours_checkbox, 1, 3)
-        grid_layout.addWidget(self.contour_settings_button, 1, 4)
-
-        # Set column stretch to ensure proper spacing
-        grid_layout.setColumnStretch(0, 1)  # Left side checkboxes
-        grid_layout.setColumnStretch(1, 0)  # Left side button
-        grid_layout.setColumnStretch(2, 0)  # Vertical line
-        grid_layout.setColumnStretch(3, 1)  # Right side checkboxes
-        grid_layout.setColumnStretch(4, 0)  # Right side button
-
+        
+        # Create left/right widget containers for tight grouping
+        left_group_0 = QWidget()
+        left_layout_0 = QHBoxLayout(left_group_0)
+        left_layout_0.setContentsMargins(0, 0, 0, 0)
+        left_layout_0.setSpacing(4)
+        left_layout_0.addWidget(self.show_beam_checkbox)
+        left_layout_0.addStretch()
+        
+        right_group_0 = QWidget()
+        right_layout_0 = QHBoxLayout(right_group_0)
+        right_layout_0.setContentsMargins(0, 0, 0, 0)
+        right_layout_0.setSpacing(4)
+        right_layout_0.addWidget(self.show_grid_checkbox)
+        right_layout_0.addStretch()
+        
+        left_group_1 = QWidget()
+        left_layout_1 = QHBoxLayout(left_group_1)
+        left_layout_1.setContentsMargins(0, 0, 0, 0)
+        left_layout_1.setSpacing(2)
+        left_layout_1.addWidget(self.show_solar_disk_checkbox)
+        left_layout_1.addWidget(self.solar_disk_center_button)
+        left_layout_1.addStretch()
+        
+        right_group_1 = QWidget()
+        right_layout_1 = QHBoxLayout(right_group_1)
+        right_layout_1.setContentsMargins(0, 0, 0, 0)
+        right_layout_1.setSpacing(2)
+        right_layout_1.addWidget(self.show_contours_checkbox)
+        right_layout_1.addWidget(self.contour_settings_button)
+        right_layout_1.addStretch()
+        
+        # Add to grid - 2 columns, stretch only in the middle
+        grid_layout.addWidget(left_group_0, 0, 0)
+        grid_layout.addWidget(right_group_0, 0, 1)
+        grid_layout.addWidget(left_group_1, 1, 0)
+        grid_layout.addWidget(right_group_1, 1, 1)
+        
+        # Equal column stretch for alignment
+        grid_layout.setColumnStretch(0, 1)
+        grid_layout.setColumnStretch(1, 1)
+        
         overlays_layout.addLayout(grid_layout)
         main_layout.addWidget(overlays_group)
 
         # Intensity Range subgroup
         intensity_group = QGroupBox("Intensity Range")
         intensity_layout = QVBoxLayout(intensity_group)
+        intensity_layout.setSpacing(6)  # Compact spacing
 
         # Min/Max range
         range_layout = QHBoxLayout()
         self.vmin_entry = QLineEdit("0.0")
-        self.vmin_entry.editingFinished.connect(self.on_visualization_changed)
+        self.vmin_entry.editingFinished.connect(self.update_display)
         self.vmax_entry = QLineEdit("1.0")
-        self.vmax_entry.editingFinished.connect(self.on_visualization_changed)
+        self.vmax_entry.editingFinished.connect(self.update_display)
         range_layout.addWidget(QLabel("Min:"))
         range_layout.addWidget(self.vmin_entry)
         range_layout.addWidget(QLabel("Max:"))
@@ -596,7 +994,7 @@ class SolarRadioImageTab(QWidget):
         gamma_layout = QHBoxLayout()
         self.gamma_slider = QSlider(Qt.Horizontal)
         self.gamma_slider.setRange(1, 100)
-        self.gamma_slider.setValue(10)
+        self.gamma_slider.setValue(20)
         self.gamma_slider.valueChanged.connect(self.update_gamma_value)
         self.gamma_entry = QLineEdit("1.0")
         self.gamma_entry.setFixedWidth(60)
@@ -606,14 +1004,32 @@ class SolarRadioImageTab(QWidget):
         gamma_layout.addWidget(self.gamma_entry)
         intensity_layout.addLayout(gamma_layout)
 
-        # Preset buttons
+        # Preset buttons - compact secondary actions
         preset_layout = QHBoxLayout()
+        preset_layout.setSpacing(6)
+        
+        # Common compact style for preset buttons
+        preset_btn_style = """
+            QPushButton {
+                padding: 2px 6px;
+                font-size: 9pt;
+                min-width: 45px;
+                min-height: 20px;
+            }
+        """
+        
         self.auto_minmax_button = QPushButton("Auto")
+        self.auto_minmax_button.setStyleSheet(preset_btn_style)
         self.auto_minmax_button.clicked.connect(self.auto_minmax)
+        
         self.auto_percentile_button = QPushButton("1-99%")
+        self.auto_percentile_button.setStyleSheet(preset_btn_style)
         self.auto_percentile_button.clicked.connect(self.auto_percentile)
+        
         self.auto_median_button = QPushButton("Med±3σ")
+        self.auto_median_button.setStyleSheet(preset_btn_style)
         self.auto_median_button.clicked.connect(self.auto_median_rms)
+        
         preset_layout.addWidget(self.auto_minmax_button)
         preset_layout.addWidget(self.auto_percentile_button)
         preset_layout.addWidget(self.auto_median_button)
@@ -626,15 +1042,23 @@ class SolarRadioImageTab(QWidget):
         self.plot_button.setStyleSheet(
             """
             QPushButton {
-                background-color: #3871DE; 
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                    stop:0 #4f46e5, stop:1 #6366f1);
                 color: white; 
-                padding: 5px; 
-                font-weight: bold;
-                border-radius: 3px;
-                min-height: 25px;
+                padding: 6px 16px; 
+                font-weight: 600;
+                font-size: 10pt;
+                letter-spacing: 0.5px;
+                border-radius: 6px;
+                border: none;
+                min-height: 28px;
             }
             QPushButton:hover {
-                background-color: #4A82EF;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                    stop:0 #6366f1, stop:1 #818cf8);
+            }
+            QPushButton:pressed {
+                background: #3730a3;
             }
             """
         )
@@ -648,9 +1072,9 @@ class SolarRadioImageTab(QWidget):
         layout = QVBoxLayout(group)
         range_layout = QHBoxLayout()
         self.vmin_entry = QLineEdit("0.0")
-        self.vmin_entry.editingFinished.connect(self.on_visualization_changed)
+        self.vmin_entry.editingFinished.connect(self.update_display)
         self.vmax_entry = QLineEdit("1.0")
-        self.vmax_entry.editingFinished.connect(self.on_visualization_changed)
+        self.vmax_entry.editingFinished.connect(self.update_display)
         range_layout.addWidget(QLabel("Min:"))
         range_layout.addWidget(self.vmin_entry)
         range_layout.addWidget(QLabel("Max:"))
@@ -658,7 +1082,7 @@ class SolarRadioImageTab(QWidget):
         gamma_layout = QHBoxLayout()
         self.gamma_slider = QSlider(Qt.Horizontal)
         self.gamma_slider.setRange(1, 100)
-        self.gamma_slider.setValue(10)
+        self.gamma_slider.setValue(20)
         self.gamma_slider.valueChanged.connect(self.update_gamma_value)
         self.gamma_entry = QLineEdit("1.0")
         self.gamma_entry.setFixedWidth(60)
@@ -880,7 +1304,7 @@ class SolarRadioImageTab(QWidget):
             "",
             self,
         )
-        self.ruler_action.setToolTip("Measure Angular Distance (click and drag)")
+        self.ruler_action.setToolTip("Measure Angular Distance (Select two points on the map)")
         self.ruler_action.setCheckable(True)
         self.ruler_action.setChecked(False)
         self.ruler_action.toggled.connect(
@@ -950,59 +1374,14 @@ class SolarRadioImageTab(QWidget):
         self.tb_btn.setEnabled(
             False
         )  # Disabled by default, enabled when units are Jy/beam
-        self.tb_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #FF9800;
-                color: white;
-                border: none;
-                padding: 2px 10px;
-                border-radius: 4px;
-                min-width: 20px;
-                min-height: 16px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #F57C00;
-            }
-            QPushButton:pressed, QPushButton:checked {
-                background-color: #E65100;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-                color: #757575;
-            }
-        """
-        )
+        # Style will be applied by _update_special_button_styles()
         self.tb_btn.clicked.connect(self._toggle_tb_mode)
         toolbar.addWidget(self.tb_btn)
 
         # Add helioprojective viewer button
         self.hpc_btn = QPushButton("HPC")
         self.hpc_btn.setToolTip("Convert to Helioprojective view")
-        self.hpc_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                padding: 2px 10px;
-                border-radius: 4px;
-                min-width: 30px;
-                min-height: 16px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-            QPushButton:pressed {
-                background-color: #0D47A1;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-            }
-        """
-        )
+        # Style will be applied by _update_special_button_styles()
         self.hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
         toolbar.addWidget(self.hpc_btn)
 
@@ -1143,7 +1522,7 @@ class SolarRadioImageTab(QWidget):
                 color: {btn_text};
                 border: none;
                 padding: 2px 8px;
-                border-radius: 4px;
+                border-radius: 6px;
                 min-width: 16px;
                 min-height: 14px;
                 font-weight: bold;
@@ -1156,7 +1535,7 @@ class SolarRadioImageTab(QWidget):
                 background-color: {btn_pressed};
             }}
             QPushButton:disabled {{
-                #background-color: {btn_disabled_bg};
+                background-color: transparent;
                 color: {btn_disabled_text};
             }}
         """
@@ -1182,6 +1561,136 @@ class SolarRadioImageTab(QWidget):
         if not hasattr(self, "_nav_theme_callback_registered"):
             theme_manager.register_callback(lambda t: self._update_nav_button_styles())
             self._nav_theme_callback_registered = True
+
+    def _update_special_button_styles(self):
+        """Update styles for TB, HPC, NOAA, and Helioviewer buttons based on current theme.
+        
+        These buttons have gradient backgrounds and need theme-aware disabled states.
+        """
+        # Determine disabled colors based on theme
+        if theme_manager.is_dark:
+            disabled_bg = "#4a4a6a"
+            disabled_text = "#6b7280"
+        else:
+            disabled_bg = "#C5C5C5"
+            disabled_text = "#8E8E8E"
+
+        
+        # TB Button (orange gradient)
+        if hasattr(self, "tb_btn"):
+            self.tb_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #f59e0b, stop:1 #fbbf24);
+                    color: #1f2937;
+                    border: none;
+                    padding: 4px 12px;
+                    border-radius: 6px;
+                    min-width: 28px;
+                    min-height: 22px;
+                    font-size: 11pt;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #fbbf24, stop:1 #fcd34d);
+                }}
+                QPushButton:pressed, QPushButton:checked {{
+                    background: #d97706;
+                    color: white;
+                }}
+                QPushButton:disabled {{
+                    background: {disabled_bg};
+                    color: {disabled_text};
+                }}
+            """)
+        
+        # HPC Button (blue gradient)
+        if hasattr(self, "hpc_btn"):
+            self.hpc_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #3b82f6, stop:1 #60a5fa);
+                    color: white;
+                    border: none;
+                    padding: 4px 12px;
+                    border-radius: 6px;
+                    min-width: 36px;
+                    min-height: 22px;
+                    font-size: 11pt;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #60a5fa, stop:1 #93c5fd);
+                }}
+                QPushButton:pressed {{
+                    background: #1d4ed8;
+                }}
+                QPushButton:disabled {{
+                    background: {disabled_bg};
+                    color: {disabled_text};
+                }}
+            """)
+        
+        # NOAA Events Button (purple gradient)
+        if hasattr(self, "noaa_events_btn"):
+            self.noaa_events_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #7c3aed, stop:1 #a78bfa);
+                    color: white;
+                    border: none;
+                    padding: 5px 10px;
+                    border-radius: 6px;
+                    font-weight: 600;
+                    font-size: 9pt;
+                    min-height: 24px;
+                }}
+                QPushButton:hover {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #a78bfa, stop:1 #c4b5fd);
+                }}
+                QPushButton:pressed {{
+                    background: #5b21b6;
+                }}
+                QPushButton:disabled {{
+                    background: {disabled_bg};
+                    color: {disabled_text};
+                }}
+            """)
+        
+        # Helioviewer Button (cyan gradient)
+        if hasattr(self, "helioviewer_btn"):
+            self.helioviewer_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #0ea5e9, stop:1 #38bdf8);
+                    color: white;
+                    border: none;
+                    padding: 5px 10px;
+                    border-radius: 6px;
+                    font-weight: 600;
+                    font-size: 9pt;
+                    min-height: 24px;
+                }}
+                QPushButton:hover {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 #38bdf8, stop:1 #7dd3fc);
+                }}
+                QPushButton:pressed {{
+                    background: #0369a1;
+                }}
+                QPushButton:disabled {{
+                    background: {disabled_bg};
+                    color: {disabled_text};
+                }}
+            """)
+        
+        # Register theme callback if not already done
+        if not hasattr(self, "_special_btn_theme_callback_registered"):
+            theme_manager.register_callback(lambda t: self._update_special_button_styles())
+            self._special_btn_theme_callback_registered = True
 
     def show_noaa_events_for_current_image(self):
         """Show NOAA Solar Events for the current image date and auto-fetch events."""
@@ -1680,7 +2189,7 @@ class SolarRadioImageTab(QWidget):
 
         # Reset TB button
         if hasattr(self, "tb_btn"):
-            self.tb_btn.setText("Tb")
+            self.tb_btn.setText("TB")
             self.tb_btn.setToolTip("Convert to Brightness Temperature (K)")
             self.tb_btn.setChecked(False)
 
@@ -1730,7 +2239,7 @@ class SolarRadioImageTab(QWidget):
         self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.stats_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         for i in range(6):
-            self.stats_table.setRowHeight(i, 30)
+            self.stats_table.setRowHeight(i, 24)
         self.stats_table.setColumnWidth(1, 180)
         headers = ["Min", "Max", "Mean", "Std Dev", "Sum", "RMS"]
         for row, label in enumerate(headers):
@@ -1741,9 +2250,16 @@ class SolarRadioImageTab(QWidget):
             )
         layout.addWidget(self.stats_table)
 
-        # Histogram button
+        # Histogram button - compact styling
         self.histogram_btn = QPushButton("📊 Histogram")
         self.histogram_btn.setToolTip("Show pixel value histogram for current ROI")
+        self.histogram_btn.setStyleSheet("""
+            QPushButton {
+                padding: 4px 10px;
+                font-size: 9pt;
+                min-height: 24px;
+            }
+        """)
         self.histogram_btn.clicked.connect(self._show_roi_histogram)
         layout.addWidget(self.histogram_btn)
 
@@ -1766,7 +2282,7 @@ class SolarRadioImageTab(QWidget):
             0, QHeaderView.Stretch
         )
         for i in range(6):
-            self.image_stats_table.setRowHeight(i, 30)
+            self.image_stats_table.setRowHeight(i, 24)
         self.image_stats_table.setColumnWidth(1, 180)
 
         headers = ["Max", "Min", "RMS", "Mean (RMS box)", "Pos. DR", "Neg. DR"]
@@ -1793,26 +2309,7 @@ class SolarRadioImageTab(QWidget):
         )
         self.noaa_events_btn.setEnabled(False)  # Disabled by default
         self.noaa_events_btn.setMinimumWidth(80)
-        self.noaa_events_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #7B1FA2;
-                color: white;
-                border: none;
-                padding: 8px 12px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #9C27B0;
-            }
-            QPushButton:pressed {
-                background-color: #6A1B9A;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-                color: #757575;
-            }
-        """)
+        # Style will be applied by _update_special_button_styles()
         self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
         buttons_layout.addWidget(self.noaa_events_btn)
 
@@ -1823,38 +2320,24 @@ class SolarRadioImageTab(QWidget):
         )
         self.helioviewer_btn.setEnabled(False)  # Disabled by default
         self.helioviewer_btn.setMinimumWidth(80)
-        self.helioviewer_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1e90ff;
-                color: white;
-                border: none;
-                padding: 8px 12px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #4169e1;
-            }
-            QPushButton:disabled {
-                /* background-color: #555; */
-                background-color: #BDBDBD;
-                /* color: #888; */
-                color: #757575;
-            }
-        """)
+        # Style will be applied by _update_special_button_styles()
         self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
         buttons_layout.addWidget(self.helioviewer_btn)
 
         # Add horizontal layout to parent
         parent_layout.addLayout(buttons_layout)
+        
+        # Apply theme-aware styles to special buttons (calls this after all 4 buttons exist)
+        self._update_special_button_styles()
 
     def create_coord_display(self, parent_layout):
         group = QGroupBox("Cursor Position")
         layout = QVBoxLayout(group)
+        layout.setContentsMargins(8, 8, 8, 8)
         self.coord_label = QLabel("RA: −\nDEC: −")
         self.coord_label.setAlignment(Qt.AlignCenter)
-        self.coord_label.setStyleSheet("font-family: monospace; font-size: 11pt;")
-        self.coord_label.setMinimumHeight(70)
+        self.coord_label.setStyleSheet("font-family: monospace; font-size: 10pt;")
+        self.coord_label.setMinimumHeight(50)
         layout.addWidget(self.coord_label)
         parent_layout.addWidget(group)
 
@@ -2128,7 +2611,24 @@ class SolarRadioImageTab(QWidget):
     def plot_data(self):
         self.on_visualization_changed()
 
-    def on_visualization_changed(self, colormap_name=None, dir_load=False):
+    def update_display(self, colormap_name=None):
+        """
+        Fast visualization update - only redraws without reloading data.
+        Use this for colormap, stretch, gamma, vmin/vmax changes.
+        """
+        if self.current_image_data is None:
+            return
+        self.on_visualization_changed(colormap_name=colormap_name, reload_data=False)
+
+    def on_visualization_changed(self, colormap_name=None, dir_load=False, reload_data=True):
+        """
+        Handle visualization parameter changes.
+        
+        Args:
+            colormap_name: Optional colormap to use
+            dir_load: Whether this is a directory load (applies presets)
+            reload_data: If False, skip load_data and just redraw (faster for viz-only changes)
+        """
         if not hasattr(self, "imagename") or not self.imagename:
             QMessageBox.warning(
                 self, "No Image", "Please select a CASA image directory first!"
@@ -2144,7 +2644,10 @@ class SolarRadioImageTab(QWidget):
         main_window = self.parent()
         #if main_window and hasattr(main_window, "statusBar"):
         if main_window:
-            self.show_status_message("Loading ... Please wait")
+            if reload_data:
+                self.show_status_message("Loading ... Please wait")
+            else:
+                self.show_status_message("Updating display...")
 
         stokes = self.stokes_combo.currentText() if self.stokes_combo else "I"
         try:
@@ -2200,7 +2703,13 @@ class SolarRadioImageTab(QWidget):
                             )
                         self.cmap_combo.setCurrentText("viridis")
 
-            self.load_data(self.imagename, stokes, threshold, auto_adjust_rms=dir_load)
+            # Only reload data if needed (new image, stokes change, etc.)
+            # Skip for visualization-only changes (colormap, stretch, gamma, vmin/vmax)
+            if reload_data:
+                # Validate Stokes selection when loading a new image
+                if dir_load:
+                    stokes = self._validate_and_switch_stokes(self.imagename, stokes)
+                self.load_data(self.imagename, stokes, threshold, auto_adjust_rms=dir_load)
             if dir_load:
                 fname = os.path.basename(self.imagename).lower()
                 if "hmi" in fname:
@@ -2484,7 +2993,7 @@ class SolarRadioImageTab(QWidget):
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
         # self.update_gamma_slider()
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2556,7 +3065,7 @@ class SolarRadioImageTab(QWidget):
         # self.update_gamma_slider()
         self.vmin_entry.setText(f"{dmin:.3f}")
         self.vmax_entry.setText(f"{dmax:.3f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2639,7 +3148,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2671,7 +3180,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2716,7 +3225,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2754,7 +3263,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2779,7 +3288,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2835,7 +3344,7 @@ class SolarRadioImageTab(QWidget):
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
         self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="none")
+        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
 
         main_window = self.parent()
         if main_window:
@@ -2865,28 +3374,45 @@ class SolarRadioImageTab(QWidget):
         self.vmax_entry.setText(f"{vmax_val:.3f}")
 
     def update_gamma_value(self):
-        gamma = self.gamma_slider.value() / 10.0
+        """Update gamma from slider - debounced for responsiveness."""
+        gamma = self.gamma_slider.value() / 20.0
         self.gamma_entry.setText(f"{gamma:.1f}")
 
+        # Only update plot if using power stretch
         if (
             self.current_image_data is not None
             and self.stretch_combo.currentText() == "power"
         ):
-            try:
-                vmin_val = float(self.vmin_entry.text())
-                vmax_val = float(self.vmax_entry.text())
-                stretch = self.stretch_combo.currentText()
-                cmap = self.cmap_combo.currentText()
-                self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
-            except ValueError:
-                pass
-
+            # Use debouncing to avoid multiple redraws while dragging
+            if self._gamma_debounce_timer is None:
+                from PyQt5.QtCore import QTimer
+                self._gamma_debounce_timer = QTimer()
+                self._gamma_debounce_timer.setSingleShot(True)
+                self._gamma_debounce_timer.timeout.connect(self._apply_gamma_change)
+            
+            # Restart the timer (150ms delay)
+            self._gamma_debounce_timer.start(150)
+    
+    def _apply_gamma_change(self):
+        """Actually apply the gamma change after debounce delay."""
+        if self.current_image_data is None:
+            return
+        try:
+            gamma = float(self.gamma_entry.text())
+            vmin_val = float(self.vmin_entry.text())
+            vmax_val = float(self.vmax_entry.text())
+            stretch = self.stretch_combo.currentText()
+            cmap = self.cmap_combo.currentText()
+            self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+        except ValueError:
+            pass
+    
     def update_gamma_slider(self):
         try:
             gamma = float(self.gamma_entry.text())
-            if 0.1 <= gamma <= 10.0:
+            if 0.1 <= gamma <= 5.0:
                 self.gamma_slider.blockSignals(True)
-                self.gamma_slider.setValue(int(gamma * 10))
+                self.gamma_slider.setValue(int(gamma * 20))
                 self.gamma_slider.blockSignals(False)
 
                 if (
@@ -2903,7 +3429,7 @@ class SolarRadioImageTab(QWidget):
                         pass
         except ValueError:
             self.gamma_entry.setText("1.0")
-            self.gamma_slider.setValue(10)
+            self.gamma_slider.setValue(20)
 
     def on_stretch_changed(self, index):
         self.update_gamma_slider_state()
@@ -2942,8 +3468,34 @@ class SolarRadioImageTab(QWidget):
             self.gamma_slider.setStyleSheet("")
             self.gamma_entry.setStyleSheet("")
         else:
-            self.gamma_slider.setStyleSheet("background-color: #555555;")
-            self.gamma_entry.setStyleSheet("background-color: #555555;")
+            # Use theme-aware colors for disabled state
+            palette = theme_manager.palette
+            disabled_bg = palette.get('surface', '#16162a')
+            disabled_text = palette.get('disabled', '#4a4a6a')
+            border_color = palette.get('border', '#2d2d4a')
+            
+            self.gamma_slider.setStyleSheet(f"""
+                QSlider {{
+                    background-color: transparent;
+                }}
+                QSlider::groove:horizontal {{
+                    background: {border_color};
+                    opacity: 0.5;
+                }}
+                QSlider::handle:horizontal {{
+                    background: {disabled_text};
+                }}
+                QSlider::sub-page:horizontal {{
+                    background: {disabled_text};
+                }}
+            """)
+            self.gamma_entry.setStyleSheet(f"""
+                QLineEdit {{
+                    background-color: {disabled_bg};
+                    color: {disabled_text};
+                    border-color: {border_color};
+                }}
+            """)
 
     def show_roi_stats(self, roi, ra_dec_info=""):
         if roi.size == 0:
@@ -3462,6 +4014,22 @@ class SolarRadioImageTab(QWidget):
                 )
             )
 
+        # Update RMS settings button icon
+        if hasattr(self, "rms_settings_btn"):
+            self.rms_settings_btn.setIcon(
+                QIcon(
+                    pkg_resources.resource_filename(
+                        "solar_radio_image_viewer",
+                        f"assets/{get_icon_path('settings.png')}",
+                    )
+                )
+            )
+
+        # Update gamma slider disabled styling for new theme
+        if hasattr(self, "gamma_slider") and hasattr(self, "stretch_combo"):
+            self.update_gamma_slider_state()
+
+
     def _toggle_tb_mode(self):
         """Toggle between flux (Jy/beam) and brightness temperature (K) view"""
         import tempfile
@@ -3588,12 +4156,12 @@ class SolarRadioImageTab(QWidget):
                 self.on_visualization_changed(dir_load=True)
 
                 # Update button
-                self.tb_btn.setText("Tb")
+                self.tb_btn.setText("TB")
                 self.tb_btn.setToolTip("Revert to Brightness Temperature (K) view")
                 self.tb_btn.setChecked(True)
 
                 QApplication.restoreOverrideCursor()
-                self.show_status_message("Showing flux (Jy/beam) - click Tb to revert")
+                self.show_status_message("Showing flux (Jy/beam) - click TB to revert")
 
             else:
                 # Jy/beam -> K (TB conversion)
@@ -3635,13 +4203,13 @@ class SolarRadioImageTab(QWidget):
                 self.on_visualization_changed(dir_load=True)
 
                 # Update button
-                self.tb_btn.setText("Flux")
+                self.tb_btn.setText("FLUX")
                 self.tb_btn.setToolTip("Revert to Flux (Jy/beam) view")
                 self.tb_btn.setChecked(True)
 
                 QApplication.restoreOverrideCursor()
                 self.show_status_message(
-                    "Showing brightness temperature (K) - click Flux to revert"
+                    "Showing brightness temperature (K) - click FLUX to revert"
                 )
 
         except Exception as e:
@@ -3704,11 +4272,11 @@ class SolarRadioImageTab(QWidget):
 
         # Update button based on original unit
         if original_unit == "K":
-            self.tb_btn.setText("Flux")
+            self.tb_btn.setText("FLUX")
             self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
             self.show_status_message("Showing brightness temperature (K)")
         else:
-            self.tb_btn.setText("Tb")
+            self.tb_btn.setText("TB")
             self.tb_btn.setToolTip("Convert to Brightness Temperature (K)")
             self.show_status_message("Showing flux (Jy/beam)")
 
@@ -4638,7 +5206,7 @@ class SolarRadioImageTab(QWidget):
         """
         from astropy.io import fits
 
-        hdul = fits.open(imagename)
+        hdul = fits.open(imagename, memmap=True)
         data = hdul[0].data
         header = hdul[0].header
         hdul.close()
@@ -4818,9 +5386,15 @@ class SolarRadioImageTab(QWidget):
         try:
             # Use the current RMS box when loading data
             from .utils import get_pixel_values_from_image
+            
+            # Calculate target size for fast load mode
+            target_size = 0  # 0 = no downsampling
+            if hasattr(self, 'downsample_toggle') and self.downsample_toggle.isChecked():
+                target_size = 800  # Smart downsampling to ~800px max dimension
 
             pix, csys, psf = get_pixel_values_from_image(
-                imagename, stokes, threshold, rms_box=tuple(self.current_rms_box)
+                imagename, stokes, threshold, rms_box=tuple(self.current_rms_box),
+                target_size=target_size
             )
 
             self.current_image_data = pix
@@ -4909,17 +5483,17 @@ class SolarRadioImageTab(QWidget):
                         self.tb_btn.setEnabled(is_jy_beam or is_kelvin)
 
                         if is_kelvin:
-                            self.tb_btn.setText("Flux")
+                            self.tb_btn.setText("FLUX")
                             self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
                         elif is_jy_beam:
-                            self.tb_btn.setText("Tb")
+                            self.tb_btn.setText("TB")
                             self.tb_btn.setToolTip(
                                 "Convert to Brightness Temperature (K)"
                             )
                         else:
-                            self.tb_btn.setText("Tb")
+                            self.tb_btn.setText("FLUX")
                             self.tb_btn.setToolTip(
-                                "Convert to Brightness Temperature (K)"
+                                "Convert to Flux (Jy/beam) view"
                             )
 
                         # Reset TB mode when loading new image (not when loading TB temp)
@@ -4998,15 +5572,15 @@ class SolarRadioImageTab(QWidget):
                         self.tb_btn.setEnabled(is_jy_beam or is_kelvin)
 
                         if is_kelvin:
-                            self.tb_btn.setText("Flux")
+                            self.tb_btn.setText("FLUX")
                             self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
                         elif is_jy_beam:
-                            self.tb_btn.setText("Tb")
+                            self.tb_btn.setText("TB")
                             self.tb_btn.setToolTip(
                                 "Convert to Brightness Temperature (K)"
                             )
                         else:
-                            self.tb_btn.setText("Tb")
+                            self.tb_btn.setText("TB")
                             self.tb_btn.setToolTip(
                                 "Convert to Brightness Temperature (K)"
                             )
@@ -5070,7 +5644,7 @@ class SolarRadioImageTab(QWidget):
         stretch="linear",
         cmap="viridis",
         gamma=1.0,
-        interpolation="none",
+        interpolation="nearest",
         tight_layout=False,
         preserve_view=True,
     ):
@@ -5079,35 +5653,60 @@ class SolarRadioImageTab(QWidget):
         # Show wait cursor during plotting
         QApplication.setOverrideCursor(Qt.WaitCursor)
 
-        fits_flag = False
-        if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
-            from astropy.io import fits
+        # Lazy load image metadata - only refresh when imagename changes
+        if self._cached_imagename != self.imagename:
+            # Cache miss - need to reload metadata
+            self._cached_fits_flag = False
+            self._cached_fits_header = None
+            self._cached_csys = None
+            self._cached_summary = None
+            self._cached_csys_record = None
+            
+            if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
+                from astropy.io import fits
 
-            try:
-                fits_flag = True
-                hdul = fits.open(self.imagename)
-                header = hdul[0].header
-            except Exception as e:
                 try:
-                    header = fits.getheader(self.imagename)
+                    self._cached_fits_flag = True
+                    with fits.open(self.imagename, memmap=True) as hdul:
+                        # Make a copy of header so we don't hold the file open
+                        self._cached_fits_header = dict(hdul[0].header)
                 except Exception as e:
-                    print(f"[ERROR] Error getting header: {e}")
-                    self.show_status_message(f"Error getting header: {e}")
-                    fits_flag = False
-        try:
-            ia_tool = IA()
-            ia_tool.open(self.imagename)
-            csys = ia_tool.coordsys()
-            summary = ia_tool.summary()
-            csys_record = ia_tool.coordsys().torecord()
-            ia_tool.close()
-        except Exception as e:
-            print(f"[ERROR] Error getting image metadata: {e}")
-            self.show_status_message(f"Error getting image metadata: {e}")
-            # return
+                    try:
+                        self._cached_fits_header = dict(fits.getheader(self.imagename))
+                    except Exception as e2:
+                        print(f"[ERROR] Error getting header: {e2}")
+                        self.show_status_message(f"Error getting header: {e2}")
+                        self._cached_fits_flag = False
+            
+            try:
+                ia_tool = IA()
+                ia_tool.open(self.imagename)
+                self._cached_csys = ia_tool.coordsys()
+                self._cached_summary = ia_tool.summary()
+                self._cached_csys_record = ia_tool.coordsys().torecord()
+                ia_tool.close()
+            except Exception as e:
+                print(f"[ERROR] Error getting image metadata: {e}")
+                self.show_status_message(f"Error getting image metadata: {e}")
+            
+            self._cached_imagename = self.imagename
+        
+        # Use cached values
+        fits_flag = self._cached_fits_flag
+        header = self._cached_fits_header
+        csys = self._cached_csys
+        summary = self._cached_summary
+        csys_record = self._cached_csys_record
+        
+        # Null-safe fallbacks for header and csys_record
+        if header is None:
+            header = {}
+        if csys_record is None:
+            csys_record = {}
 
         start_time = time.time()
         if self.current_image_data is None:
+            QApplication.restoreOverrideCursor()
             return
 
         data = self.current_image_data
@@ -5977,6 +6576,135 @@ class SolarRadioImageTab(QWidget):
                     f"Stokes changed to {stokes}, display range: [{dmin:.4g}, {dmax:.4g}]"
                 )
 
+    def _update_stokes_combo_state(self, available_stokes):
+        """
+        Update the Stokes combo box to enable/disable items based on available Stokes.
+        
+        Args:
+            available_stokes: List of available base Stokes, e.g., ["I"] or ["I", "Q", "U", "V"]
+        """
+        if not hasattr(self, 'stokes_combo') or self.stokes_combo is None:
+            return
+        
+        from PyQt5.QtGui import QBrush, QColor
+        
+        # Get theme-aware colors for disabled state - use palette for consistency
+        try:
+            from .styles import theme_manager
+            palette = theme_manager.palette
+            is_dark = theme_manager.is_dark
+            # Use the same disabled color from palette as contour dialog
+            disabled_color = QColor(palette.get('disabled', '#cccccc'))
+            enabled_color = QColor(palette.get('text', '#ffffff' if is_dark else '#000000'))
+        except ImportError:
+            # Fallback colors
+            disabled_color = QColor("#cccccc")
+            enabled_color = QColor("#000000")
+        
+        # Derived parameters and their requirements
+        # Parameters requiring Q: Q, Q/I
+        # Parameters requiring U: U, U/I, U/V, L, Lfrac, PANG
+        # Parameters requiring V: V, Vfrac, U/V
+        requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
+        requires_u = {"U", "U/I", "U/V", "L", "Lfrac", "PANG"}
+        requires_v = {"V", "Vfrac", "U/V"}
+        
+        has_q = "Q" in available_stokes
+        has_u = "U" in available_stokes
+        has_v = "V" in available_stokes
+        
+        # Store current selection before modifying
+        current_selection = self.stokes_combo.currentText()
+        
+        # Iterate through combo items and enable/disable based on requirements
+        model = self.stokes_combo.model()
+        for i in range(self.stokes_combo.count()):
+            item_text = self.stokes_combo.itemText(i)
+            
+            # Check if this item can be enabled
+            enabled = True
+            if item_text in requires_q and not has_q:
+                enabled = False
+            if item_text in requires_u and not has_u:
+                enabled = False
+            if item_text in requires_v and not has_v:
+                enabled = False
+            
+            # Set item enabled/disabled using model flags AND foreground color
+            item = model.item(i)
+            if item:
+                if enabled:
+                    item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    item.setData(QBrush(enabled_color), Qt.ForegroundRole)
+                else:
+                    # Remove both enabled and selectable flags
+                    item.setFlags(item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
+                    item.setData(QBrush(disabled_color), Qt.ForegroundRole)
+        
+        # Store available stokes for later reference
+        self._available_stokes = available_stokes
+
+
+    def _validate_and_switch_stokes(self, imagename, selected_stokes):
+        """
+        Check if selected Stokes is available; if not, warn user and switch to I.
+        
+        Args:
+            imagename: Path to the image
+            selected_stokes: Currently selected Stokes parameter
+            
+        Returns:
+            str: The validated Stokes parameter to use
+        """
+        from .utils import get_available_stokes
+        
+        available_stokes = get_available_stokes(imagename)
+        
+        # Update combo box state
+        self._update_stokes_combo_state(available_stokes)
+        
+        # Check if selected Stokes is valid
+        requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
+        requires_u = {"U", "U/I", "U/V", "L", "Lfrac", "PANG"}
+        requires_v = {"V", "Vfrac", "U/V"}
+        
+        has_q = "Q" in available_stokes
+        has_u = "U" in available_stokes
+        has_v = "V" in available_stokes
+        
+        needs_switch = False
+        missing_stokes = []
+        
+        if selected_stokes in requires_q and not has_q:
+            needs_switch = True
+            missing_stokes.append("Q")
+        if selected_stokes in requires_u and not has_u:
+            needs_switch = True
+            missing_stokes.append("U")
+        if selected_stokes in requires_v and not has_v:
+            needs_switch = True
+            missing_stokes.append("V")
+        
+        if needs_switch:
+            # Show warning dialog
+            QMessageBox.warning(
+                self,
+                "Stokes Parameter Unavailable",
+                f"The selected Stokes parameter '{selected_stokes}' requires "
+                f"polarization data ({', '.join(set(missing_stokes))}) that is not available "
+                f"in this image.\n\n"
+                f"Available Stokes: {', '.join(available_stokes)}\n\n"
+                f"Switching to Stokes I."
+            )
+            
+            # Switch to Stokes I
+            self.stokes_combo.blockSignals(True)
+            self.stokes_combo.setCurrentText("I")
+            self.stokes_combo.blockSignals(False)
+            return "I"
+        
+        return selected_stokes
+
     def on_checkbox_changed(self):
         if not hasattr(self, "current_image_data") or self.current_image_data is None:
             return
@@ -6413,9 +7141,9 @@ class SolarRadioImageTab(QWidget):
                 height = abs(dec2 - dec1) * u.degree
 
                 ra_dec_info = (
-                    f"Region Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
-                    f"Dec={center_coord.dec.to_string(sep=':', precision=2)}"
-                    f"\nAngular Size: {width.to(u.arcsec):.2f} × {height.to(u.arcsec):.2f}"
+                    f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                    f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
+                    f'\nSize: {width.to(u.arcsec):.1f} × {height.to(u.arcsec):.1f}'
                     # f"\nCorners: "
                     # f"\n  Bottom-Left: RA={coord1.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
                     # f"Dec={coord1.dec.to_string(sep=':', precision=2)}"
@@ -6494,9 +7222,9 @@ class SolarRadioImageTab(QWidget):
                 )  # arcsec
 
                 ra_dec_info = (
-                    f"\nEllipse Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
-                    f"Dec={center_coord.dec.to_string(sep=':', precision=2)}"
-                    f'\nAngular Size: {angular_width:.2f}" × {angular_height:.2f}"'
+                    f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                    f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
+                    f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
                 )
             except Exception as e:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
@@ -6715,7 +7443,62 @@ class SolarRadioImageTab(QWidget):
             if not self.contour_settings.get("use_default_rms_region", True):
                 rms_box = self.contour_settings.get("rms_box", rms_box)
 
+            # Calculate target size for fast load mode (must match load_data)
+            target_size = 0  # 0 = no downsampling
+            if hasattr(self, 'downsample_toggle') and self.downsample_toggle.isChecked():
+                target_size = 800  # Smart downsampling to ~800px max dimension
+
             contour_csys = None
+            
+            # Validate contour Stokes before loading
+            contour_stokes = self.contour_settings.get("stokes", "I")
+            source_image = None
+            
+            if self.contour_settings["source"] == "same":
+                source_image = self.imagename
+            else:
+                source_image = self.contour_settings.get("external_image")
+            
+            if source_image:
+                from .utils import get_available_stokes
+                available_stokes = get_available_stokes(source_image)
+                
+                # Check if contour Stokes is valid
+                requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
+                requires_u = {"U", "U/I", "V/I", "L", "Lfrac", "PANG"}
+                requires_v = {"V", "Vfrac", "V/I"}
+                
+                has_q = "Q" in available_stokes
+                has_u = "U" in available_stokes
+                has_v = "V" in available_stokes
+                
+                needs_switch = False
+                missing_stokes = []
+                
+                if contour_stokes in requires_q and not has_q:
+                    needs_switch = True
+                    missing_stokes.append("Q")
+                if contour_stokes in requires_u and not has_u:
+                    needs_switch = True
+                    missing_stokes.append("U")
+                if contour_stokes in requires_v and not has_v:
+                    needs_switch = True
+                    missing_stokes.append("V")
+                
+                if needs_switch:
+                    # Show warning dialog and switch to Stokes I
+                    QMessageBox.warning(
+                        self,
+                        "Contour Stokes Unavailable",
+                        f"The contour Stokes parameter '{contour_stokes}' requires "
+                        f"polarization data ({', '.join(set(missing_stokes))}) that is not available "
+                        f"in the source image.\n\n"
+                        f"Available Stokes: {', '.join(available_stokes)}\n\n"
+                        f"Switching contour to Stokes I."
+                    )
+                    self.contour_settings["stokes"] = "I"
+                    contour_stokes = "I"
+            
             if self.contour_settings["source"] == "same":
                 if self.imagename:
                     stokes = self.contour_settings["stokes"]
@@ -6723,16 +7506,19 @@ class SolarRadioImageTab(QWidget):
 
                     if stokes in ["I", "Q", "U", "V"]:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, stokes, threshold, rms_box
+                            self.imagename, stokes, threshold, rms_box,
+                            target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, numerator_stokes, threshold, rms_box
+                            self.imagename, numerator_stokes, threshold, rms_box,
+                            target_size=target_size
                         )
                         denominator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "I", threshold, rms_box
+                            self.imagename, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         mask = denominator_pix != 0
                         ratio = np.zeros_like(numerator_pix)
@@ -6740,22 +7526,27 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "Q", threshold, rms_box
+                            self.imagename, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "U", threshold, rms_box
+                            self.imagename, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "Q", threshold, rms_box
+                            self.imagename, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "U", threshold, rms_box
+                            self.imagename, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         i_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "I", threshold, rms_box
+                            self.imagename, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         mask = i_pix != 0
@@ -6764,16 +7555,19 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "Q", threshold, rms_box
+                            self.imagename, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "U", threshold, rms_box
+                            self.imagename, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
                         self.contour_settings["contour_data"] = pang
                     else:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "I", threshold, rms_box
+                            self.imagename, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
                     self.current_contour_wcs = contour_csys
@@ -6788,16 +7582,19 @@ class SolarRadioImageTab(QWidget):
 
                     if stokes in ["I", "Q", "U", "V"]:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, stokes, threshold, rms_box
+                            external_image, stokes, threshold, rms_box,
+                            target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, numerator_stokes, threshold, rms_box
+                            external_image, numerator_stokes, threshold, rms_box,
+                            target_size=target_size
                         )
                         denominator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "I", threshold, rms_box
+                            external_image, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         mask = denominator_pix != 0
                         ratio = np.zeros_like(numerator_pix)
@@ -6805,22 +7602,27 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "Q", threshold, rms_box
+                            external_image, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "U", threshold, rms_box
+                            external_image, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "Q", threshold, rms_box
+                            external_image, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "U", threshold, rms_box
+                            external_image, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         i_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "I", threshold, rms_box
+                            external_image, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         mask = i_pix != 0
@@ -6829,16 +7631,19 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "Q", threshold, rms_box
+                            external_image, "Q", threshold, rms_box,
+                            target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "U", threshold, rms_box
+                            external_image, "U", threshold, rms_box,
+                            target_size=target_size
                         )
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
                         self.contour_settings["contour_data"] = pang
                     else:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "I", threshold, rms_box
+                            external_image, "I", threshold, rms_box,
+                            target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
                     self.current_contour_wcs = contour_csys
@@ -6858,11 +7663,6 @@ class SolarRadioImageTab(QWidget):
             print(f"[ERROR] Error loading contour data: {e}")
             self.show_status_message(f"Error loading contour data: {e}")
             self.contour_settings["contour_data"] = None
-            main_window = self.parent()
-            if main_window:
-                main_window.statusBar().showMessage(
-                    f"Error loading contour data: {str(e)}"
-                )
 
     def draw_contours(self, ax):
         main_window = self.window()
@@ -6875,29 +7675,48 @@ class SolarRadioImageTab(QWidget):
         if self.current_contour_wcs is None:
             return
 
+        # OPTIMIZATION: Fast path for same-image contours
+        # When contour source is the current image, skip expensive metadata loading
+        # and reprojection since the data is already aligned
+        is_same_image = self.contour_settings["source"] == "same"
+        
         fits_flag = False
-        if self.contour_settings["source"] == "same":
+        header = None
+        csys = None
+        summary = None
+        
+        if is_same_image:
+            # Use cached metadata from plot_image - no need to reload
+            fits_flag = self._cached_fits_flag
+            header = self._cached_fits_header or {}
+            csys = self._cached_csys
+            summary = self._cached_summary
             contour_imagename = self.imagename
         else:
+            # External image - need to load metadata
             contour_imagename = self.contour_settings["external_image"]
+            
+            if contour_imagename.endswith(".fits") or contour_imagename.endswith(".fts"):
+                from astropy.io import fits
 
-        if contour_imagename.endswith(".fits") or contour_imagename.endswith(".fts"):
-            from astropy.io import fits
+                fits_flag = True
+                try:
+                    with fits.open(contour_imagename, memmap=True) as hdul:
+                        header = dict(hdul[0].header)
+                except Exception as e:
+                    print(f"[ERROR] Error getting contour FITS header: {e}")
+                    header = {}
 
-            fits_flag = True
-            hdul = fits.open(contour_imagename)
-            header = hdul[0].header
-
-        try:
-            ia_tool = IA()
-            ia_tool.open(contour_imagename)
-            csys = ia_tool.coordsys()
-            summary = ia_tool.summary()
-            ia_tool.close()
-        except Exception as e:
-            print(f"[ERROR] Error getting metadata: {e}")
-            self.show_status_message(f"Error getting metadata: {e}")
-            return
+            try:
+                ia_tool = IA()
+                ia_tool.open(contour_imagename)
+                csys = ia_tool.coordsys()
+                summary = ia_tool.summary()
+                ia_tool.close()
+            except Exception as e:
+                print(f"[ERROR] Error getting metadata: {e}")
+                self.show_status_message(f"Error getting metadata: {e}")
+                return
 
         try:
             # Check if the contour and image projection match
@@ -6974,8 +7793,10 @@ class SolarRadioImageTab(QWidget):
             contour_wcs_obj = None  # Initialize before the condition block
 
             # Check if reprojection is needed (WCS differs between contour and image)
+            # OPTIMIZATION: Skip reprojection check for same-image contours - they're already aligned
             needs_reprojection = False
-            if self.current_contour_wcs is not None and image_wcs_obj is not None:
+
+            if not is_same_image and self.current_contour_wcs is not None and image_wcs_obj is not None:
                 # Build the contour WCS object
                 from astropy.wcs import WCS
 
@@ -7530,13 +8351,51 @@ class SolarRadioImageTab(QWidget):
             f"Filter: {self._file_filter_pattern}  |  {len(self._file_list)} files"
         )
         layout.addWidget(info_label)
+        
+        # Search box
+        search_layout = QHBoxLayout()
+        search_layout.setSpacing(8)
+        
+        search_label = QLabel("🔍")
+        search_input = QLineEdit()
+        search_input.setPlaceholderText("Search files...")
+        search_input.setClearButtonEnabled(True)
+        
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(search_input)
+        layout.addLayout(search_layout)
 
         # File list
         file_list_widget = QListWidget()
+        
+        # Store original file list for filtering
+        original_items = []
         for i, path in enumerate(self._file_list):
             filename = os.path.basename(path)
             item_text = f"{i + 1}. {filename}"
             file_list_widget.addItem(item_text)
+            original_items.append((i, item_text, path))
+        
+        # Search/filter function
+        def filter_files(search_text):
+            search_text = search_text.lower().strip()
+            file_list_widget.clear()
+            
+            if not search_text:
+                # Show all items
+                for idx, item_text, path in original_items:
+                    file_list_widget.addItem(item_text)
+                # Restore selection
+                if self._file_list_index >= 0:
+                    file_list_widget.setCurrentRow(self._file_list_index)
+            else:
+                # Filter items
+                for idx, item_text, path in original_items:
+                    filename = os.path.basename(path).lower()
+                    if search_text in filename:
+                        file_list_widget.addItem(item_text)
+        
+        search_input.textChanged.connect(filter_files)
 
         # Highlight current file
         if self._file_list_index >= 0:
@@ -7561,20 +8420,33 @@ class SolarRadioImageTab(QWidget):
                 if not viewer or not hasattr(viewer, '_file_list'):
                     dialog.close()
                     return
-                    
-                selected_idx = file_list_widget.currentRow()
-                if selected_idx < 0 or selected_idx >= len(viewer._file_list):
+                
+                # Get selected item
+                current_item = file_list_widget.currentItem()
+                if not current_item:
                     viewer.show_status_message("Please select a file first.")
                     return
+                
+                # Extract original index from item text (format: "N. filename")
+                item_text = current_item.text()
+                try:
+                    original_idx = int(item_text.split('.')[0]) - 1  # Convert to 0-based index
+                except (ValueError, IndexError):
+                    viewer.show_status_message("Error parsing file index.")
+                    return
+                
+                if original_idx < 0 or original_idx >= len(viewer._file_list):
+                    viewer.show_status_message("Invalid file selection.")
+                    return
                     
-                new_path = viewer._file_list[selected_idx]
+                new_path = viewer._file_list[original_idx]
                 
                 # Check if file still exists
                 if not os.path.exists(new_path):
                     viewer.show_status_message(f"File no longer exists: {os.path.basename(new_path)}")
                     return
                 
-                viewer._file_list_index = selected_idx
+                viewer._file_list_index = original_idx
 
                 # Reset HPC state
                 viewer._reset_hpc_state()
@@ -7592,8 +8464,8 @@ class SolarRadioImageTab(QWidget):
                 viewer._update_nav_buttons()
                 viewer.show_status_message(f"Loaded {os.path.basename(new_path)}")
                 
-                # Update the selection in the list to show current file
-                file_list_widget.setCurrentRow(selected_idx)
+                # Clear search and refresh list to show current selection
+                search_input.clear()
                 
             except RuntimeError as e:
                 # Viewer was deleted
@@ -7941,6 +8813,107 @@ class SolarRadioImageTab(QWidget):
                 "Please enter valid integer values for the RMS box coordinates.",
             )
 
+    def _update_overlay_toggle_styles(self):
+        """Update overlay checkbox and button styles based on current theme."""
+        # Theme-aware toggle style for overlay checkboxes
+        if theme_manager.is_dark:
+            toggle_bg = "#3a3d4d"
+            toggle_bg_hover = "#4a4d5d"
+            toggle_border = "#4a4d5d"
+            toggle_border_hover = "#5a5d6d"
+            text_color = "#e0e0e0"
+        else:
+            toggle_bg = "#d0d0d0"
+            toggle_bg_hover = "#c0c0c0"
+            toggle_border = "#b0b0b0"
+            toggle_border_hover = "#a0a0a0"
+            text_color = "#333333"
+        
+        overlay_toggle_style = f"""
+            QCheckBox {{
+                spacing: 6px;
+                font-size: 10pt;
+                color: {text_color};
+            }}
+            QCheckBox::indicator {{
+                width: :8px;
+                height: 14px;
+                border-radius: 7px;
+                background-color: {toggle_bg};
+                border: 1px solid {toggle_border};
+            }}
+            QCheckBox::indicator:hover {{
+                background-color: {toggle_bg_hover};
+                border-color: {toggle_border_hover};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: #6366f1;
+                border-color: #818cf8;
+            }}
+            QCheckBox::indicator:checked:hover {{
+                background-color: #7c7ff5;
+            }}
+        """
+        
+        settings_btn_style = """
+            QPushButton {
+                background-color: transparent;
+                border-radius: 4px;
+                padding: 2px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: rgba(99, 102, 241, 0.2);
+            }
+            QPushButton:pressed {
+                background-color: rgba(99, 102, 241, 0.35);
+            }
+        """
+        
+        # Apply to overlay checkboxes
+        for checkbox in [self.show_beam_checkbox, self.show_grid_checkbox,
+                         self.show_solar_disk_checkbox, self.show_contours_checkbox]:
+            if hasattr(self, checkbox.objectName()) or checkbox:
+                checkbox.setStyleSheet(overlay_toggle_style)
+        
+        # Apply to settings buttons
+        for btn in [self.solar_disk_center_button, self.contour_settings_button]:
+            if hasattr(self, btn.objectName()) or btn:
+                btn.setStyleSheet(settings_btn_style)
+        
+        # Update Fast Load toggle style
+        if hasattr(self, 'downsample_toggle'):
+            fast_toggle_style = f"""
+                QCheckBox#FastLoadToggle {{
+                    spacing: 0px;
+                }}
+                QCheckBox#FastLoadToggle::indicator {{
+                    width: 28px;
+                    height: 14px;
+                    border-radius: 7px;
+                    background-color: {toggle_bg};
+                    border: 1px solid {toggle_border};
+                }}
+                QCheckBox#FastLoadToggle::indicator:hover {{
+                    background-color: {toggle_bg_hover};
+                }}
+                QCheckBox#FastLoadToggle::indicator:checked {{
+                    background-color: #6366f1;
+                    border-color: #818cf8;
+                }}
+                QCheckBox#FastLoadToggle::indicator:checked:hover {{
+                    background-color: #7c7ff5;
+                }}
+            """
+            self.downsample_toggle.setStyleSheet(fast_toggle_style)
+        
+        # Update Fast and RMS labels
+        label_color = "#a5a8b8" if theme_manager.is_dark else "#555555"
+        if hasattr(self, 'fast_label'):
+            self.fast_label.setStyleSheet(f"color: {label_color}; font-size: 10pt;")
+        if hasattr(self, 'rms_label'):
+            self.rms_label.setStyleSheet(f"color: {label_color}; font-size: 10pt;")
+
     def refresh_icons(self):
         """Refresh all icons to match the current theme."""
         # Update left panel buttons
@@ -7950,6 +8923,9 @@ class SolarRadioImageTab(QWidget):
             self.solar_disk_center_button.setIcon(QIcon(themed_icon("settings.png")))
         if hasattr(self, "contour_settings_button"):
             self.contour_settings_button.setIcon(QIcon(themed_icon("settings.png")))
+        
+        # Update overlay toggle styles for theme
+        self._update_overlay_toggle_styles()
 
         # Update navigation buttons (if they exist in left panel)
         if hasattr(self, "zoom_in_button"):
@@ -8273,8 +9249,17 @@ class CustomTabWidget(QTabWidget):
 class SolarRadioImageViewerApp(QMainWindow):
     def __init__(self, imagename=None):
         super().__init__()
+        
+        # Initialize bundled fonts before any widgets are created
+        theme_manager.initialize_fonts()
+        
         self.setWindowTitle("SolarViewer")
-        self.resize(1920, 1080)
+        
+        screen = QApplication.primaryScreen().availableGeometry()
+        # Use 90% of available screen size, capped at reasonable maximums
+        width = min(int(screen.width() * 0.90), 1920)
+        height = min(int(screen.height() * 0.90), 1080)
+        self.resize(width, height)
 
         # Use custom tab widget
         self.tab_widget = CustomTabWidget()
@@ -8401,11 +9386,16 @@ class SolarRadioImageViewerApp(QMainWindow):
         export_act.triggered.connect(self.export_data)
         file_menu.addAction(export_act)
 
-        export_data_act = QAction("Export Data as FITS", self)
+        export_data_act = QAction("Export as FITS", self)
         export_data_act.setShortcut("Ctrl+F")
         export_data_act.setStatusTip("Export current data as FITS file")
         export_data_act.triggered.connect(self.export_as_fits)
         file_menu.addAction(export_data_act)
+
+        export_casa_act = QAction("Export as CASA Image", self)
+        export_casa_act.setStatusTip("Export/convert current data to CASA image format")
+        export_casa_act.triggered.connect(self.export_as_casa_image)
+        file_menu.addAction(export_casa_act)
 
         export_tb_act = QAction("Export TB Map as FITS", self)
         export_tb_act.setStatusTip(
@@ -8841,6 +9831,8 @@ class SolarRadioImageViewerApp(QMainWindow):
         for tab in self.tabs:
             tab.setStyleSheet(stylesheet)
             tab.refresh_icons()
+            #if hasattr(tab, '_available_stokes') and tab._available_stokes:
+            #    tab._update_stokes_combo_state(tab._available_stokes)
 
         # Refresh tab bar theme (colors and icons)
         if hasattr(self, "tab_widget") and hasattr(
@@ -9024,28 +10016,282 @@ class SolarRadioImageViewerApp(QMainWindow):
             QMessageBox.information(self, "Exported", f"Figure saved to {path}")
 
     def export_as_fits(self):
+        """Export current image data as FITS file with all metadata preserved."""
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
             QMessageBox.warning(self, "No Data", "No image data to export")
             return
 
         try:
+            import os
             from astropy.io import fits
 
             path, _ = QFileDialog.getSaveFileName(
                 self, "Export as FITS", "", "FITS Files (*.fits);;All Files (*)"
             )
-            if path:
+            if not path:
+                return
+            
+            # Check if source is a CASA image (directory)
+            if hasattr(current_tab, 'imagename') and current_tab.imagename:
+                source_image = current_tab.imagename
+            else:
+                source_image = None
+            
+            # If source is a CASA image directory, use casatask exportfits
+            if source_image and os.path.isdir(source_image):
+                try:
+                    import subprocess
+                    import sys
+                    
+                    # Run exportfits in subprocess with stokes='all'
+                    script = f'''
+import sys
+from casatasks import exportfits
+try:
+    exportfits(imagename="{source_image}", fitsimage="{path}", overwrite=True, stokeslast=True)
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+                    result = subprocess.run(
+                        [sys.executable, "-c", script],
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if result.returncode != 0:
+                        raise RuntimeError(f"exportfits failed: {result.stderr}")
+                    
+                    QMessageBox.information(self, "Exported", f"CASA image exported to {path}")
+                    return
+                except Exception as e:
+                    QMessageBox.critical(self, "Export Error", f"Failed to export CASA image: {str(e)}")
+                    return
+            
+            # For FITS files, copy the original with all data and metadata
+            if source_image and (source_image.endswith('.fits') or source_image.endswith('.fts')):
+                try:
+                    import shutil
+                    # If saving to a different location, copy the original file
+                    if os.path.abspath(source_image) != os.path.abspath(path):
+                        shutil.copy2(source_image, path)
+                        QMessageBox.information(self, "Exported", f"FITS file exported to {path}")
+                    else:
+                        QMessageBox.warning(self, "Same File", "Source and destination are the same file.")
+                    return
+                except Exception as e:
+                    # Fall back to creating from current data if copy fails
+                    pass
+            
+            # Fallback: create FITS from current_image_data with header
+            # Get the original header if available
+            original_header = None
+            if hasattr(current_tab, 'current_header') and current_tab.current_header:
+                original_header = current_tab.current_header
+            
+            # Create HDU with data
+            if original_header:
+                # Convert dict to FITS Header if needed
+                if isinstance(original_header, dict):
+                    header = fits.Header()
+                    for key, value in original_header.items():
+                        # Skip problematic keys and ensure valid FITS keywords
+                        if key in ['SIMPLE', 'BITPIX', 'NAXIS', 'EXTEND', '']:
+                            continue
+                        if key.startswith('NAXIS'):
+                            continue
+                        try:
+                            # Handle COMMENT and HISTORY specially
+                            if key in ['COMMENT', 'HISTORY']:
+                                if isinstance(value, list):
+                                    for v in value:
+                                        header[key] = str(v)
+                                else:
+                                    header[key] = str(value)
+                            else:
+                                header[key] = value
+                        except (ValueError, KeyError):
+                            # Skip keys that can't be added
+                            pass
+                    hdu = fits.PrimaryHDU(current_tab.current_image_data, header=header)
+                else:
+                    # Already a FITS header
+                    hdu = fits.PrimaryHDU(current_tab.current_image_data, header=original_header)
+            else:
+                # No header available, create basic HDU
                 hdu = fits.PrimaryHDU(current_tab.current_image_data)
-                hdul = fits.HDUList([hdu])
-                hdul.writeto(path, overwrite=True)
-                QMessageBox.information(self, "Exported", f"Data saved to {path}")
+            
+            # Add HISTORY entry
+            hdu.header.add_history('Exported with SolarViewer')
+            
+            hdul = fits.HDUList([hdu])
+            hdul.writeto(path, overwrite=True)
+            QMessageBox.information(self, "Exported", f"Data saved to {path}")
         except ImportError:
             QMessageBox.warning(
                 self,
                 "Missing Dependency",
                 "Astropy is required for FITS export. Please install it.",
             )
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
+
+    def export_as_casa_image(self):
+        """Export/convert current image to CASA image format."""
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab or current_tab.current_image_data is None:
+            QMessageBox.warning(self, "No Data", "No image data to export")
+            return
+
+        try:
+            import os
+            import subprocess
+            import sys
+
+            # Get source image path
+            if hasattr(current_tab, 'imagename') and current_tab.imagename:
+                source_image = current_tab.imagename
+            else:
+                QMessageBox.warning(self, "No Source", "No source image file available")
+                return
+            
+            # Suggest a default output name based on source
+            default_name = os.path.splitext(os.path.basename(source_image))[0] + ".image"
+            
+            # Ask user for output path and name
+            output_image, _ = QFileDialog.getSaveFileName(
+                self, "Export as CASA Image", default_name, 
+                "CASA Image (*.image);;All Files (*)"
+            )
+            if not output_image:
+                return
+            
+            # Ensure it has .image extension
+            if not output_image.endswith('.image'):
+                output_image += '.image'
+            
+            # Check if output already exists
+            if os.path.exists(output_image):
+                reply = QMessageBox.question(
+                    self, "Overwrite?",
+                    f"'{output_image}' already exists. Do you want to overwrite it?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.No:
+                    return
+                import shutil
+                shutil.rmtree(output_image)
+            
+            # If source is already a CASA image, copy it
+            if os.path.isdir(source_image):
+                import shutil
+                shutil.copytree(source_image, output_image)
+                QMessageBox.information(self, "Exported", f"CASA image exported to {output_image}")
+                return
+            
+            # If source is a FITS file, use importfits via subprocess
+            if source_image.endswith('.fits') or source_image.endswith('.fts'):
+                # Check coordinate system
+                import tempfile
+                fits_to_import = source_image
+                is_hpc_converted = False
+                
+                try:
+                    from astropy.io import fits as afits
+                    with afits.open(source_image) as hdul:
+                        header = hdul[0].header
+                        ctype1 = header.get('CTYPE1', '').upper()
+                        ctype2 = header.get('CTYPE2', '').upper()
+                        
+                        # Check for helioprojective coordinates
+                        if 'HPLN' in ctype1 or 'HPLN' in ctype2 or 'HPLT' in ctype1 or 'HPLT' in ctype2:
+                            # Convert HPC to RA/Dec first
+                            from .helioprojective import convert_hpc_to_radec
+                            
+                            temp_radec_file = os.path.join(
+                                tempfile.gettempdir(),
+                                f"solarviewer_radec_export_{os.getpid()}.fits"
+                            )
+                            
+                            QApplication.setOverrideCursor(Qt.WaitCursor)
+                            success = convert_hpc_to_radec(source_image, temp_radec_file, overwrite=True)
+                            QApplication.restoreOverrideCursor()
+                            
+                            if not success:
+                                QMessageBox.warning(
+                                    self, "Conversion Failed",
+                                    "Failed to convert helioprojective coordinates to RA/Dec."
+                                )
+                                return
+                            
+                            fits_to_import = temp_radec_file
+                            is_hpc_converted = True
+                        
+                        # Check for other unsupported coordinate systems
+                        elif not ('RA' in ctype1 or 'DEC' in ctype2 or 'GLON' not in ctype1):
+                            # Block galactic, ecliptic, and other non-celestial coordinates
+                            unsupported_types = []
+                            if 'GLON' in ctype1 or 'GLAT' in ctype2:
+                                unsupported_types.append("Galactic")
+                            elif 'ELON' in ctype1 or 'ELAT' in ctype2:
+                                unsupported_types.append("Ecliptic")
+                            elif 'SLON' in ctype1 or 'SLAT' in ctype2:
+                                unsupported_types.append("Supergalactic")
+                            else:
+                                unsupported_types.append(f"{ctype1}/{ctype2}")
+                            
+                            if unsupported_types:
+                                QMessageBox.warning(
+                                    self, "Unsupported Coordinates",
+                                    f"This FITS file uses {', '.join(unsupported_types)} coordinates.\n\n"
+                                    "Only RA/Dec (celestial) and helioprojective (Solar-X/Y) "
+                                    "coordinate systems are supported for CASA export."
+                                )
+                                return
+                except Exception as e:
+                    pass  # If we can't check, proceed anyway
+                
+                # Run importfits
+                script = f'''
+import sys
+from casatasks import importfits
+try:
+    importfits(fitsimage="{fits_to_import}", imagename="{output_image}", overwrite=True)
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+                result = subprocess.run(
+                    [sys.executable, "-c", script],
+                    capture_output=True,
+                    text=True
+                )
+                
+                # Clean up temp file if we created one
+                if is_hpc_converted and os.path.exists(fits_to_import):
+                    try:
+                        os.remove(fits_to_import)
+                    except:
+                        pass
+                
+                if result.returncode != 0:
+                    raise RuntimeError(f"importfits failed: {result.stderr}")
+                
+                if is_hpc_converted:
+                    QMessageBox.information(
+                        self, "Exported",
+                        f"CASA image exported to:\n{output_image}\n\n"
+                        "Note: Helioprojective coordinates were converted to RA/Dec."
+                    )
+                else:
+                    QMessageBox.information(self, "Exported", f"FITS converted to CASA image: {output_image}")
+                return
+            
+            QMessageBox.warning(self, "Unsupported", "Source must be a FITS file or CASA image")
+            
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
 
@@ -10097,13 +11343,14 @@ except Exception as e:
         layout.setContentsMargins(30, 25, 30, 25)
 
         # Title
-        title = QLabel("Solar Radio Image Viewer")
+        title = QLabel("SolarViewer")
         title.setStyleSheet("font-size: 18pt; font-weight: bold;")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
         # Version
-        version = QLabel("Version 1.0.3")
+        from . import __version__
+        version = QLabel(f"Version {__version__}")
         version.setStyleSheet("font-size: 12pt;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)

@@ -97,56 +97,129 @@ class ContourSettingsDialog(QDialog):
         self.setWindowTitle("Contour Settings")
         self.settings = settings.copy() if settings else {}
         
+        # Import theme manager for theme-aware styling
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        # Get colors directly from the palette for consistency
+        palette = theme_manager.palette
+        is_dark = theme_manager.is_dark
+        
+        border_color = palette['border']
+        surface_color = palette['surface']
+        base_color = palette['base']
+        disabled_color = palette['disabled']
+        button_hover = palette['button_hover']
+        button_pressed = palette['button_pressed']
+        text_color = palette['text']
+        highlight_color = palette['highlight']
+        
         # Set stylesheet BEFORE creating widgets so styles apply correctly
         self.setStyleSheet(
-            """
-            QGroupBox {
-                border: 1px solid #666666;
-                border-radius: 25px;
+            f"""
+            QGroupBox {{
+                background-color: {surface_color};
+                border: 1px solid {border_color};
+                border-radius: 10px;
                 margin-top: 16px;
                 padding: 15px;
                 padding-top: 10px;
                 font-weight: bold;
-            }
-            QGroupBox::title {
+            }}
+            QGroupBox::title {{
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 left: 15px;
                 top: 2px;
                 padding: 2px 12px;
-                background-color: palette(window);
-                border-radius: 15px;
-            }
-            QLineEdit {
+                background-color: {surface_color};
+                color: {highlight_color};
+                border-radius: 4px;
+            }}
+            QLineEdit {{
+                background-color: {base_color};
+                color: {text_color};
                 padding: 5px;
-                border: 1px solid #666666;
-                border-radius: 8px;
-            }
-            QLineEdit:disabled {
-                background-color: #555555;
-                color: #888888;
-            }
-            QComboBox {
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+            QLineEdit:focus {{
+                border-color: {highlight_color};
+                border-width: 2px;
+            }}
+            QLineEdit:disabled {{
+                background-color: {surface_color};
+                color: {disabled_color};
+            }}
+            QComboBox {{
+                background-color: {base_color};
+                color: {text_color};
                 padding: 5px;
-                border: 1px solid #666666;
-                border-radius: 8px;
-            }
-            QComboBox:disabled {
-                background-color: #555555;
-                color: #888888;
-            }
-            QRadioButton:disabled {
-                color: #888888;
-            }
-            QSpinBox, QDoubleSpinBox {
-                border-radius: 8px;
-            }
-            QSpinBox:disabled, QDoubleSpinBox:disabled {
-                background-color: #555555;
-                color: #888888;
-            }
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+            QComboBox:hover {{
+                border-color: {highlight_color};
+            }}
+            QComboBox:disabled {{
+                background-color: {surface_color};
+                color: {disabled_color};
+            }}
+            QRadioButton {{
+                color: {text_color};
+            }}
+            QRadioButton::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {border_color};
+                border-radius: 9px;
+                background-color: {base_color};
+            }}
+            QRadioButton::indicator:checked {{
+                background-color: {highlight_color};
+                border-color: {highlight_color};
+            }}
+            QRadioButton:disabled {{
+                color: {disabled_color};
+            }}
+            QSpinBox, QDoubleSpinBox {{
+                background-color: {base_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+            QSpinBox:disabled, QDoubleSpinBox:disabled {{
+                background-color: {surface_color};
+                color: {disabled_color};
+            }}
+            QCheckBox {{
+                color: {text_color};
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {border_color};
+                border-radius: 4px;
+                background-color: {base_color};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {highlight_color};
+                border-color: {highlight_color};
+            }}
+            QLabel {{
+                color: {text_color};
+            }}
+            QLabel:disabled {{
+                color: {disabled_color};
+            }}
         """
         )
+        
+        # Store theme colors for use in browse button
+        self._hover_bg = button_hover
+        self._pressed_bg = button_pressed
         
         self.setup_ui()
 
@@ -238,21 +311,21 @@ class ContourSettingsDialog(QDialog):
         self._update_browse_icon()
         
         self.browse_button.setStyleSheet(
-            """
-            QPushButton {
+            f"""
+            QPushButton {{
                 background-color: transparent;
                 border: none;
                 padding: 4px;
-            }
-            QPushButton:hover {
-                background-color: #484848;
-            }
-            QPushButton:pressed {
-                background-color: #303030;
-            }
-            QPushButton:disabled {
+            }}
+            QPushButton:hover {{
+                background-color: {self._hover_bg};
+            }}
+            QPushButton:pressed {{
+                background-color: {self._pressed_bg};
+            }}
+            QPushButton:disabled {{
                 background-color: transparent;
-            }
+            }}
         """
         )
 
@@ -298,10 +371,17 @@ class ContourSettingsDialog(QDialog):
         self.external_image_radio.toggled.connect(self.update_external_options)
         self.radio_casa_image.toggled.connect(self.update_placeholder_text)
         self.radio_fits_file.toggled.connect(self.update_placeholder_text)
+        
+        # Connect source change to update Stokes availability
+        self.same_image_radio.toggled.connect(self._update_stokes_for_current_source)
+        self.external_image_radio.toggled.connect(self._update_stokes_for_current_source)
 
         # Initially update states
         self.update_external_options(self.external_image_radio.isChecked())
         self.update_placeholder_text()
+        
+        # Initialize Stokes combo state based on current source
+        self._update_stokes_for_current_source()
 
         # Middle row: Contour Levels and Appearance side by side
         mid_layout = QHBoxLayout()
@@ -374,22 +454,26 @@ class ContourSettingsDialog(QDialog):
         self.use_default_rms_box.stateChanged.connect(self.toggle_rms_inputs)
         rms_layout.addWidget(self.use_default_rms_box, 0, 0, 1, 4)
         # Arrange X min and Y min side by side, then X max and Y max
-        rms_layout.addWidget(QLabel("X min:"), 1, 0)
+        self.rms_xmin_label = QLabel("X min:")
+        rms_layout.addWidget(self.rms_xmin_label, 1, 0)
         self.rms_xmin = QSpinBox()
         self.rms_xmin.setRange(0, 10000)
         self.rms_xmin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[0])
         rms_layout.addWidget(self.rms_xmin, 1, 1)
-        rms_layout.addWidget(QLabel("Y min:"), 1, 2)
+        self.rms_ymin_label = QLabel("Y min:")
+        rms_layout.addWidget(self.rms_ymin_label, 1, 2)
         self.rms_ymin = QSpinBox()
         self.rms_ymin.setRange(0, 10000)
         self.rms_ymin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[2])
         rms_layout.addWidget(self.rms_ymin, 1, 3)
-        rms_layout.addWidget(QLabel("X max:"), 2, 0)
+        self.rms_xmax_label = QLabel("X max:")
+        rms_layout.addWidget(self.rms_xmax_label, 2, 0)
         self.rms_xmax = QSpinBox()
         self.rms_xmax.setRange(0, 10000)
         self.rms_xmax.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[1])
         rms_layout.addWidget(self.rms_xmax, 2, 1)
-        rms_layout.addWidget(QLabel("Y max:"), 2, 2)
+        self.rms_ymax_label = QLabel("Y max:")
+        rms_layout.addWidget(self.rms_ymax_label, 2, 2)
         self.rms_ymax = QSpinBox()
         self.rms_ymax.setRange(0, 10000)
         self.rms_ymax.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[3])
@@ -409,16 +493,15 @@ class ContourSettingsDialog(QDialog):
         """Update the enabled state and visual appearance of RMS inputs."""
         enabled = not self.use_default_rms_box.isChecked()
 
-        # Create a widget list for consistent state management
+        # Create widget lists for consistent state management
         rms_inputs = [self.rms_xmin, self.rms_xmax, self.rms_ymin, self.rms_ymax]
+        rms_labels = [self.rms_xmin_label, self.rms_ymin_label, self.rms_xmax_label, self.rms_ymax_label]
 
-        # Update enabled state for all inputs
+        # Update enabled state for all inputs and labels
         for widget in rms_inputs:
             widget.setEnabled(enabled)
-
-        # Clear any custom styles - let palette handle colors
-        for widget in rms_inputs:
-            widget.setStyleSheet("")
+        for label in rms_labels:
+            label.setEnabled(enabled)
 
     def update_external_options(self, enabled):
         """Update the enabled state and visual appearance of external options."""
@@ -492,6 +575,8 @@ class ContourSettingsDialog(QDialog):
             )
             if directory:
                 self.file_path_edit.setText(directory)
+                # Update stokes combo based on external image
+                self._update_stokes_combo_for_external(directory)
         else:
             # Select FITS file
             file_path, _ = QFileDialog.getOpenFileName(
@@ -499,6 +584,89 @@ class ContourSettingsDialog(QDialog):
             )
             if file_path:
                 self.file_path_edit.setText(file_path)
+                # Update stokes combo based on external image
+                self._update_stokes_combo_for_external(file_path)
+
+    def _update_stokes_combo_state(self, available_stokes):
+        """
+        Update the Stokes combo box to enable/disable items based on available Stokes.
+        
+        Args:
+            available_stokes: List of available base Stokes, e.g., ["I"] or ["I", "Q", "U", "V"]
+        """
+        from PyQt5.QtGui import QBrush, QColor
+        
+        # Get theme-aware colors for disabled state
+        try:
+            from .styles import theme_manager
+            palette = theme_manager.palette
+            is_dark = theme_manager.is_dark
+            disabled_color = QColor(palette.get('disabled', '#cccccc'))
+            enabled_color = QColor(palette.get('text', '#ffffff' if is_dark else '#000000'))
+        except ImportError:
+            disabled_color = QColor("#cccccc")
+            enabled_color = QColor("#000000")
+        
+        # Derived parameters and their requirements
+        requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
+        requires_u = {"U", "U/I", "V/I", "L", "Lfrac", "PANG"}
+        requires_v = {"V", "V/I"}
+        
+        has_q = "Q" in available_stokes
+        has_u = "U" in available_stokes
+        has_v = "V" in available_stokes
+        
+        # Iterate through combo items and enable/disable based on requirements
+        model = self.stokes_combo.model()
+        for i in range(self.stokes_combo.count()):
+            item_text = self.stokes_combo.itemText(i)
+            
+            enabled = True
+            if item_text in requires_q and not has_q:
+                enabled = False
+            if item_text in requires_u and not has_u:
+                enabled = False
+            if item_text in requires_v and not has_v:
+                enabled = False
+            
+            item = model.item(i)
+            if item:
+                if enabled:
+                    item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    item.setData(QBrush(enabled_color), Qt.ForegroundRole)
+                else:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
+                    item.setData(QBrush(disabled_color), Qt.ForegroundRole)
+
+    def _update_stokes_combo_for_external(self, imagepath):
+        """Update stokes combo based on an external image file."""
+        if not imagepath or not os.path.exists(imagepath):
+            return
+        try:
+            from .utils import get_available_stokes
+            available_stokes = get_available_stokes(imagepath)
+            self._update_stokes_combo_state(available_stokes)
+        except Exception as e:
+            print(f"[WARNING] Could not detect Stokes from {imagepath}: {e}")
+
+    def _update_stokes_for_current_source(self):
+        """Update stokes combo based on current source selection."""
+        if self.same_image_radio.isChecked():
+            # Use parent viewer's image
+            parent = self.parent()
+            if parent and hasattr(parent, 'imagename') and parent.imagename:
+                try:
+                    from .utils import get_available_stokes
+                    available_stokes = get_available_stokes(parent.imagename)
+                    self._update_stokes_combo_state(available_stokes)
+                except Exception as e:
+                    print(f"[WARNING] Could not detect Stokes: {e}")
+        else:
+            # Use external image path
+            external_path = self.file_path_edit.text()
+            if external_path:
+                self._update_stokes_combo_for_external(external_path)
+
 
     def get_settings(self):
         settings = {}

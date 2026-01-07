@@ -1,7 +1,7 @@
 import os
 import numpy as np
 
-# Try to import CASA tools & tasks
+# Try to import CASA tools (casatasks now run via subprocess)
 try:
     # Suppress CASA logging warnings before importing casatools
     import os as _os
@@ -9,7 +9,7 @@ try:
     _os.environ['CASARC'] = '/dev/null'
     
     from casatools import image as IA
-    from casatasks import immath
+    # Note: casatasks (immath) is now run via subprocess - see run_immath_subprocess()
     
     # Configure CASA logging to suppress warnings
     try:
@@ -29,7 +29,31 @@ except ImportError:
     )
     CASA_AVAILABLE = False
     IA = None
-    immath = None
+
+
+def run_immath_subprocess(imagename, outfile, mode="lpoli"):
+    """Run immath in a subprocess to avoid memory issues with casatasks."""
+    import subprocess
+    import sys
+    
+    script = f'''
+import sys
+from casatasks import immath
+try:
+    immath(imagename="{imagename}", outfile="{outfile}", mode="{mode}")
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {{e}}", file=sys.stderr)
+    sys.exit(1)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"immath failed: {result.stderr}")
+    return True
 
 # Try to import scipy
 try:
@@ -52,6 +76,74 @@ except ImportError:
     ASTROPY_AVAILABLE = False
     WCS = None
     u = None
+
+def get_available_stokes(imagename):
+    """
+    Detect available Stokes parameters from a CASA image or FITS file.
+    
+    Parameters:
+        imagename : str
+            Path to the CASA image directory or FITS file.
+    
+    Returns:
+        list: Available Stokes parameters, e.g., ["I"] or ["I", "Q", "U", "V"]
+    """
+    all_stokes = ["I", "Q", "U", "V"]
+    
+    # Check if it's a FITS file
+    is_fits = imagename.lower().endswith('.fits') or imagename.lower().endswith('.fts')
+    
+    if is_fits and ASTROPY_AVAILABLE:
+        try:
+            from astropy.io import fits
+            with fits.open(imagename, memmap=True) as hdul:
+                header = hdul[0].header
+                ndim = header.get("NAXIS", 0)
+                
+                # Find Stokes axis
+                for i in range(1, ndim + 1):
+                    ctype = header.get(f"CTYPE{i}", "").lower()
+                    if ctype == "stokes":
+                        num_stokes = header.get(f"NAXIS{i}", 1)
+                        return all_stokes[:num_stokes]
+                
+                # No Stokes axis found - assume single Stokes I
+                return ["I"]
+        except Exception as e:
+            print(f"[WARNING] Could not detect Stokes from FITS: {e}")
+            return ["I"]
+    
+    elif CASA_AVAILABLE:
+        try:
+            ia_tool = IA()
+            ia_tool.open(imagename)
+            summary = ia_tool.summary()
+            ia_tool.close()
+            
+            dimension_names = summary.get("axisnames")
+            dimension_shapes = summary.get("shape")
+            
+            if dimension_names is None:
+                return ["I"]
+            
+            # Convert to list for case-insensitive search
+            dimension_names_lower = [str(name).lower() for name in dimension_names]
+            
+            # Find Stokes axis
+            if "stokes" in dimension_names_lower:
+                stokes_idx = dimension_names_lower.index("stokes")
+                num_stokes = dimension_shapes[stokes_idx]
+                return all_stokes[:num_stokes]
+            
+            # No Stokes axis found - assume single Stokes I
+            return ["I"]
+        except Exception as e:
+            print(f"[WARNING] Could not detect Stokes from CASA image: {e}")
+            return ["I"]
+    
+    # Fallback
+    return ["I"]
+
 
 
 def estimate_rms_near_Sun(imagename, stokes="I", box=(0, 200, 0, 130)):
@@ -125,6 +217,8 @@ def get_pixel_values_from_image(
     thres,
     rms_box=(0, 200, 0, 130),
     stokes_map={"I": 0, "Q": 1, "U": 2, "V": 3},
+    downsample=1,
+    target_size=0,
 ):
     """
     Retrieve pixel values from a CASA image with proper error handling and dimension checks.
@@ -140,6 +234,12 @@ def get_pixel_values_from_image(
          Region coordinates (x1, x2, y1, y2) for RMS estimation.
       stokes_map : dict, optional
          Mapping of standard stokes parameters to their corresponding axis indices.
+      downsample : int, optional
+         Fixed factor by which to downsample. Default is 1 (no downsampling).
+         If target_size is set, this is ignored.
+      target_size : int, optional
+         Target maximum dimension in pixels. If > 0, downsample factor is calculated
+         automatically to achieve approximately this size. Default is 0 (disabled).
 
     Returns:
       pix : numpy.ndarray
@@ -171,6 +271,15 @@ def get_pixel_values_from_image(
             raise ValueError("Image summary does not contain 'axisnames'")
         # Ensure we can index; convert to numpy array if needed
         dimension_names = np.array(dimension_names)
+        
+        # Calculate smart downsample factor based on image dimensions
+        if target_size > 0 and len(dimension_shapes) >= 2:
+            # Get spatial dimensions (first two axes are typically RA/Dec or X/Y)
+            max_spatial_dim = max(dimension_shapes[0], dimension_shapes[1])
+            if max_spatial_dim > target_size:
+                # Calculate factor to achieve target size
+                downsample = max(1, int(np.ceil(max_spatial_dim / target_size)))
+
 
         if "Right Ascension" in dimension_names:
             try:
@@ -198,9 +307,29 @@ def get_pixel_values_from_image(
                 # If Frequency axis is missing, assume index 0
                 freq_idx = None
 
-            data = ia_tool.getchunk()
+            # Use strided reading for fast downsampling (reads every Nth pixel from disk)
+            if downsample > 1:
+                inc = [downsample] * len(dimension_shapes)
+                data = ia_tool.getchunk(inc=inc)
+            else:
+                data = ia_tool.getchunk()
             psf = ia_tool.restoringbeam()
             csys = ia_tool.coordsys()
+            
+            # Adjust coordinate system for downsampled data
+            if downsample > 1:
+                # Get current increment and reference pixel
+                current_inc = csys.increment()
+                current_refpix = csys.referencepixel()
+                
+                # Scale increment (pixel size) by downsample factor
+                new_inc_vals = [v * downsample for v in current_inc['numeric']]
+                csys.setincrement(value=new_inc_vals)
+                
+                # Adjust reference pixel position (divide by downsample factor)
+                new_refpix_vals = [(v / downsample) for v in current_refpix['numeric']]
+                csys.setreferencepixel(value=new_refpix_vals)
+                
         if "SOLAR-X" in dimension_names:
             try:
                 ra_idx = int(np.where(dimension_names == "SOLAR-X")[0][0])
@@ -223,9 +352,28 @@ def get_pixel_values_from_image(
             else:
                 # If Frequency axis is missing, assume index 0
                 freq_idx = None
-            data = ia_tool.getchunk()
+            # Use strided reading for fast downsampling (reads every Nth pixel from disk)
+            if downsample > 1:
+                inc = [downsample] * len(dimension_shapes)
+                data = ia_tool.getchunk(inc=inc)
+            else:
+                data = ia_tool.getchunk()
             psf = ia_tool.restoringbeam()
             csys = ia_tool.coordsys()
+            
+            # Adjust coordinate system for downsampled data
+            if downsample > 1:
+                # Get current increment and reference pixel
+                current_inc = csys.increment()
+                current_refpix = csys.referencepixel()
+                
+                # Scale increment (pixel size) by downsample factor
+                new_inc_vals = [v * downsample for v in current_inc['numeric']]
+                csys.setincrement(value=new_inc_vals)
+                
+                # Adjust reference pixel position (divide by downsample factor)
+                new_refpix_vals = [(v / downsample) for v in current_refpix['numeric']]
+                csys.setreferencepixel(value=new_refpix_vals)
 
     except Exception as e:
         ia_tool.close()
@@ -284,7 +432,7 @@ def get_pixel_values_from_image(
             )
         outfile = "temp_p_map.im"
         try:
-            immath(imagename=imagename, outfile=outfile, mode="lpoli")
+            run_immath_subprocess(imagename=imagename, outfile=outfile, mode="lpoli")
             p_rms = estimate_rms_near_Sun(outfile, "I", rms_box)
         except Exception as e:
             raise RuntimeError(f"Error generating polarization map: {e}")
@@ -986,7 +1134,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
             if is_fits:
                 new_header = header_info['original_header'].copy()
                 new_header['BUNIT'] = 'K'
-                new_header['HISTORY'] = 'Converted to brightness temperature by SolarViewer'
+                new_header['HISTORY'] = 'Converted to brightness temperature with SolarViewer'
                 
                 # Ensure RESTFRQ is present (needed for downstream HPC conversion)
                 if 'RESTFRQ' not in new_header:
@@ -1023,6 +1171,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                         tb_data_save = tb_data
                 
                 new_hdu = fits.PrimaryHDU(data=tb_data_save, header=new_header)
+                new_hdu.header.add_history('Brightness temperature map generated with SolarViewer')
                 new_hdu.writeto(outfile, overwrite=True)
             else:
                 # For CASA, need to export first
@@ -1036,7 +1185,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                     original_data = hdul[0].data
                     new_header = hdul[0].header.copy()
                     new_header['BUNIT'] = 'K'
-                    new_header['HISTORY'] = 'Converted to brightness temperature by SolarViewer'
+                    new_header['HISTORY'] = 'Converted to brightness temperature with SolarViewer'
                     
                     # Check for multi-Stokes
                     if original_data.ndim >= 3:
@@ -1049,6 +1198,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                         else:
                             tb_data_save = tb_data
                     new_hdu = fits.PrimaryHDU(data=tb_data_save, header=new_header)
+                    new_hdu.header.add_history('Brightness temperature map generated with SolarViewer')
                     new_hdu.writeto(outfile, overwrite=True)
                 
                 if os.path.exists(temp_export):
@@ -1192,7 +1342,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
             if is_fits:
                 new_header = header_info['original_header'].copy()
                 new_header['BUNIT'] = 'Jy/beam'
-                new_header['HISTORY'] = 'Converted from brightness temperature by SolarViewer'
+                new_header['HISTORY'] = 'Converted from brightness temperature with SolarViewer'
                 
                 # Ensure RESTFRQ is present (needed for downstream HPC conversion)
                 if 'RESTFRQ' not in new_header:
@@ -1225,6 +1375,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                         flux_data_save = flux_data
                 
                 new_hdu = fits.PrimaryHDU(data=flux_data_save, header=new_header)
+                new_hdu.header.add_history('Flux density map generated with SolarViewer')
                 new_hdu.writeto(outfile, overwrite=True)
             else:
                 # For CASA, need to export first
@@ -1238,7 +1389,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                     original_data = hdul[0].data
                     new_header = hdul[0].header.copy()
                     new_header['BUNIT'] = 'Jy/beam'
-                    new_header['HISTORY'] = 'Converted from brightness temperature by SolarViewer'
+                    new_header['HISTORY'] = 'Converted from brightness temperature with SolarViewer'
                     
                     if original_data.ndim >= 3:
                         # print(f"[Flux] Converting full Stokes CASA data (shape: {original_data.shape})")
@@ -1250,6 +1401,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                             flux_data_save = flux_data
                     
                     new_hdu = fits.PrimaryHDU(data=flux_data_save, header=new_header)
+                    new_hdu.header.add_history('Flux density map generated with SolarViewer')
                     new_hdu.writeto(outfile, overwrite=True)
                 
                 if os.path.exists(temp_export):

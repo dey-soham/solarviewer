@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0.4
+Type=Application
+Name=SolarViewer
+Comment=Visualize and analyze solar radio images
+Exec=solarviewer %F
+Icon=solarviewer
+Terminal=false
+Categories=Science;Astronomy;Education;
+Keywords=Solar;Radio;Astronomy;Image;Viewer;
+StartupNotify=true
+MimeType=image/fits;
