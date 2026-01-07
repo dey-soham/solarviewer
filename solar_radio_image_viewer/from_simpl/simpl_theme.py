@@ -8,52 +8,77 @@ to ensure visual consistency.
 
 import sys
 
-# Theme palettes matching solarviewer's styles.py
-DARK_PALETTE = {
-    "window": "#1a1a2e",
-    "base": "#16213e",
-    "text": "#eeeeee",
-    "highlight": "#e94560",
-    "highlight_hover": "#ff6b6b",
-    "button": "#0f3460",
-    "button_hover": "#1a4a7a",
-    "button_pressed": "#0a2540",
-    "border": "#2a3f5f",
-    "disabled": "#4a4a6a",
-    "success": "#2ecc71",
-    "warning": "#f39c12",
-    "error": "#e74c3c",
-    "secondary": "#533483",
-    "surface": "#1f2940",
-}
+# Try to import palettes from main viewer styles for consistency
+try:
+    from ..styles import DARK_PALETTE, LIGHT_PALETTE, theme_manager
+    _HAS_VIEWER_STYLES = True
+except ImportError:
+    _HAS_VIEWER_STYLES = False
+    theme_manager = None
+    
+    # Fallback palettes matching solarviewer's styles.py
+    DARK_PALETTE = {
+        "window": "#0f0f1a",
+        "base": "#1a1a2e",
+        "text": "#f0f0f5",
+        "text_secondary": "#a0a0b0",
+        "highlight": "#6366f1",
+        "highlight_hover": "#818cf8",
+        "highlight_glow": "rgba(99, 102, 241, 0.3)",
+        "button": "#252542",
+        "button_hover": "#32325d",
+        "button_pressed": "#1a1a35",
+        "button_gradient_start": "#3730a3",
+        "button_gradient_end": "#4f46e5",
+        "border": "#2d2d4a",
+        "border_light": "#3d3d5c",
+        "disabled": "#4a4a6a",
+        "success": "#22c55e",
+        "warning": "#f59e0b",
+        "error": "#ef4444",
+        "secondary": "#8b5cf6",
+        "surface": "#16162a",
+        "surface_elevated": "#1e1e3a",
+        "shadow": "rgba(0, 0, 0, 0.4)",
+    }
 
-LIGHT_PALETTE = {
-    "window": "#A59D84",
-    "base": "#ECEBDE",
-    "text": "#1a1a1a",
-    "input_text": "#1a1a1a",
-    "highlight": "#0066cc",
-    "highlight_hover": "#0052a3",
-    "button": "#f0f0f0",
-    "button_hover": "#e0e0e0",
-    "button_pressed": "#d0d0d0",
-    "border": "#b0b0b0",
-    "disabled": "#999999",
-    "success": "#28a745",
-    "warning": "#ffc107",
-    "error": "#dc3545",
-    "secondary": "#6c5ce7",
-    "surface": "#ECEBDE",
-    "toolbar_bg": "#D7D3BF",
-    "plot_bg": "#ECEBDE",
-    "plot_text": "#1a1a1a",
-    "plot_grid": "#d0d0d0",
-}
+    LIGHT_PALETTE = {
+        "window": "#f5f3eb",
+        "base": "#ffffff",
+        "text": "#1f2937",
+        "text_secondary": "#6b7280",
+        "input_text": "#1f2937",
+        "highlight": "#4f46e5",
+        "highlight_hover": "#6366f1",
+        "highlight_glow": "rgba(79, 70, 229, 0.2)",
+        "button": "#e5e5e5",
+        "button_hover": "#d4d4d4",
+        "button_pressed": "#c4c4c4",
+        "button_gradient_start": "#4f46e5",
+        "button_gradient_end": "#6366f1",
+        "border": "#d1d5db",
+        "border_light": "#e5e7eb",
+        "disabled": "#9ca3af",
+        "success": "#16a34a",
+        "warning": "#d97706",
+        "error": "#dc2626",
+        "secondary": "#7c3aed",
+        "surface": "#fafaf8",
+        "surface_elevated": "#ffffff",
+        "toolbar_bg": "#ebebdf",
+        "plot_bg": "#ffffff",
+        "plot_text": "#1f2937",
+        "plot_grid": "#e5e7eb",
+        "shadow": "rgba(0, 0, 0, 0.08)",
+    }
 
 
 def get_palette(theme_name):
     """Get palette dict for the given theme name."""
+    # Always use the theme_name argument to determine which palette to return
+    # The palettes are already imported from styles.py if available, so we get consistent colors
     return DARK_PALETTE if theme_name == "dark" else LIGHT_PALETTE
+
 
 
 def get_stylesheet(theme_name):

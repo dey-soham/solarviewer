@@ -817,7 +817,7 @@ class SolarDataViewerGUI(QMainWindow):
 
         # Warning label for PSF
         self.psf_warning = QLabel("⚠️ PSF deconvolution might take a while")
-        self.psf_warning.setStyleSheet("color: orange; font-size: 11px;")
+        self.psf_warning.setStyleSheet("color: orange;")
         self.psf_warning.hide()
         self.psf_checkbox.stateChanged.connect(
             lambda state: self.psf_warning.setVisible(state == 2)

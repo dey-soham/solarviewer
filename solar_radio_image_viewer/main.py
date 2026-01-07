@@ -139,7 +139,8 @@ Examples:
     else:
         # Launch the standard viewer
         window = SolarRadioImageViewerApp(args.imagename)
-        window.resize(1920, 1080)
+        # Note: Window sizing is handled in SolarRadioImageViewerApp.__init__
+        # using screen-aware sizing (90% of available screen, capped at 1920x1080)
         window.show()
         sys.exit(app.exec_())
 

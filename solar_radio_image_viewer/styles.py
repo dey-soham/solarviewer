@@ -139,8 +139,8 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {palette['surface']};
         border: 1px solid {group_border};
         border-radius: 10px;
-        margin-top: 20px;
-        padding: 16px 12px 12px 12px;
+        margin-top: 10px;
+        padding: 12px 12px 12px 12px;
         font-weight: 600;
     }}
     
@@ -162,10 +162,10 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {palette['button']};
         color: {palette['text']};
         border: 1px solid {palette['border']};
-        border-radius: 8px;
-        padding: 8px 16px;
-        min-width: 80px;
-        min-height: 32px;
+        border-radius: 6px;
+        padding: 4px 12px;
+        min-width: 60px;
+        min-height: 26px;
         font-size: 10pt;
         font-weight: 500;
     }}
@@ -244,9 +244,9 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {input_bg};
         color: {input_text};
         border: 1px solid {palette['border']};
-        border-radius: 8px;
-        padding: 8px 12px;
-        min-height: 32px;
+        border-radius: 5px;
+        padding: 2px 6px;
+        min-height: 20px;
         font-size: 10pt;
         selection-background-color: {palette['highlight']};
     }}
@@ -272,9 +272,9 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {input_bg};
         color: {input_text};
         border: 1px solid {palette['border']};
-        border-radius: 8px;
-        padding: 8px 12px;
-        min-height: 32px;
+        border-radius: 5px;
+        padding: 2px 6px;
+        min-height: 20px;
         font-size: 10pt;
     }}
     
