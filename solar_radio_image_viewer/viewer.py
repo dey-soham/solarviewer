@@ -316,6 +316,11 @@ class SolarRadioImageTab(QWidget):
         self._file_list_index = -1  # Current position in file list
         self._file_filter_pattern = "*"  # Glob pattern for filtering
         self._file_base_dir = None  # Base directory of loaded file
+        
+        # Remote file navigation state
+        self._remote_file_list = []  # List of RemoteFileInfo for remote navigation
+        self._remote_base_dir = None  # Remote directory path
+        self._is_remote_mode = False  # Whether current file is from remote
 
         # Ruler/distance measurement state
         self._ruler_mode = False
@@ -2537,6 +2542,14 @@ class SolarRadioImageTab(QWidget):
     def select_file_or_directory(self):
         import time
 
+        # Check if we're in remote mode - if so, use remote file browser
+        main_window = self.window()
+        if hasattr(main_window, 'remote_connection') and main_window.remote_connection:
+            if main_window.remote_connection.is_connected():
+                # Use remote file browser instead of local dialog
+                self._select_remote_file(main_window)
+                return
+
         if self.radio_casa_image.isChecked():
             # Select CASA image directory
             directory = QFileDialog.getExistingDirectory(
@@ -2588,6 +2601,64 @@ class SolarRadioImageTab(QWidget):
                 )
                 # Scan directory for file navigation
                 self._scan_directory_files()
+
+    def _select_remote_file(self, main_window):
+        """
+        Open the remote file browser when in remote mode.
+        This is called by select_file_or_directory when connected to a remote server.
+        """
+        import time
+        
+        try:
+            from .remote import RemoteFileBrowser
+            
+            # Determine if we're in CASA mode (directories) or FITS mode (files)
+            casa_mode = self.radio_casa_image.isChecked()
+            
+            browser = RemoteFileBrowser(
+                main_window.remote_connection,
+                cache=main_window.remote_cache,
+                parent=self,
+                casa_mode=casa_mode,
+            )
+            
+            # Connect to handle the selected file
+            def on_file_selected(local_path):
+                if not local_path or not os.path.exists(local_path):
+                    return
+                
+                start_time = time.time()
+                self._reset_hpc_state()
+                self.imagename = local_path
+                self.dir_entry.setText(local_path)
+                self.contour_settings["contour_data"] = None
+                self.current_contour_wcs = None
+                self.figure.clear()
+                self.on_visualization_changed(dir_load=True)
+                self.update_tab_name_from_path(local_path)
+                
+                # Set remote mode - store remote directory info for navigation
+                self._is_remote_mode = True
+                self._remote_base_dir = browser.current_path
+                
+                # Populate remote file list for navigation
+                self._populate_remote_file_list(
+                    main_window,
+                    browser.current_path,
+                    casa_mode,
+                    local_path
+                )
+                
+                elapsed = time.time() - start_time
+                basename = os.path.basename(local_path)
+                self.show_status_message(f"Loaded remote file: {basename} ({elapsed:.2f}s)")
+            
+            browser.fileSelected.connect(on_file_selected)
+            browser.exec_()
+            
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Remote Error", f"Failed to open remote browser: {e}")
 
     def schedule_plot(self):
         # If a timer already exists and is active, stop it.
@@ -8170,6 +8241,173 @@ class SolarRadioImageTab(QWidget):
         else:
             self._file_pos_label.setText("")
             self._file_pos_label.setToolTip("")
+    
+    def _populate_remote_file_list(self, main_window, remote_dir, casa_mode, current_local_path):
+        """Populate the file list from a remote directory for navigation."""
+        try:
+            if not main_window.remote_connection or not main_window.remote_connection.is_connected():
+                return
+            
+            # Get file listing from remote directory
+            entries = main_window.remote_connection.list_directory(
+                remote_dir,
+                show_hidden=False,
+                fits_only=not casa_mode,
+            )
+            
+            # Filter to appropriate type
+            if casa_mode:
+                # Only directories for CASA mode
+                self._remote_file_list = [e for e in entries if e.is_dir]
+            else:
+                # Only FITS files
+                self._remote_file_list = [e for e in entries if e.is_fits]
+            
+            # Sort by name
+            self._remote_file_list.sort(key=lambda x: x.name.lower())
+            
+            # Store in _file_list for navigation (use remote paths)
+            self._file_list = [e.path for e in self._remote_file_list]
+            
+            # Find current file index by matching the basename
+            current_basename = os.path.basename(current_local_path)
+            self._file_list_index = -1
+            for i, entry in enumerate(self._remote_file_list):
+                if entry.name == current_basename:
+                    self._file_list_index = i
+                    break
+            
+            self._update_nav_buttons()
+            
+        except Exception as e:
+            print(f"[WARNING] Failed to populate remote file list: {e}")
+            self._remote_file_list = []
+            self._file_list = []
+            self._file_list_index = -1
+            self._update_nav_buttons()
+    
+    def _load_remote_file(self, remote_path):
+        """Download and load a remote file for navigation."""
+        from pathlib import Path
+        
+        main_window = self.window()
+        if not main_window or not hasattr(main_window, 'remote_connection'):
+            return False
+        
+        if not main_window.remote_connection or not main_window.remote_connection.is_connected():
+            return False
+        
+        try:
+            from PyQt5.QtWidgets import QProgressDialog
+            from PyQt5.QtCore import Qt
+            
+            # Get the remote file info
+            entry = main_window.remote_connection.get_file_info(remote_path)
+            
+            # Check cache first
+            cached_path = main_window.remote_cache.get_cached_path(
+                main_window.remote_connection._host,
+                remote_path,
+                entry.mtime,
+                entry.size,
+            )
+            
+            if cached_path:
+                local_path = str(cached_path)
+            else:
+                # Download the file with progress dialog
+                local_path = main_window.remote_cache.get_cache_path(
+                    main_window.remote_connection._host,
+                    remote_path,
+                )
+                
+                # Create progress dialog
+                progress = QProgressDialog(
+                    f"Downloading {os.path.basename(remote_path)}...",
+                    "Cancel",
+                    0, 100,
+                    self
+                )
+                progress.setWindowTitle("Downloading")
+                progress.setWindowModality(Qt.WindowModal)
+                progress.setMinimumDuration(0)
+                progress.setValue(0)
+                progress.show()
+                
+                # Progress callback
+                def update_progress(transferred, total):
+                    # Check if user cancelled
+                    if progress.wasCanceled():
+                        raise InterruptedError("Download cancelled by user")
+                    
+                    if total > 0:
+                        percent = int(100 * transferred / total)
+                        progress.setValue(percent)
+                        if total > 1024 * 1024:
+                            progress.setLabelText(
+                                f"Downloading {os.path.basename(remote_path)}...\n"
+                                f"{transferred / (1024**2):.1f} / {total / (1024**2):.1f} MB"
+                            )
+                        else:
+                            progress.setLabelText(
+                                f"Downloading {os.path.basename(remote_path)}...\n"
+                                f"{transferred / 1024:.1f} / {total / 1024:.1f} KB"
+                            )
+                    # Process events to keep UI responsive
+                    from PyQt5.QtWidgets import QApplication
+                    QApplication.processEvents()
+                    
+                    # Check again after processing events
+                    if progress.wasCanceled():
+                        raise InterruptedError("Download cancelled by user")
+                
+                try:
+                    if entry.is_dir:
+                        # CASA image directory
+                        local_path = main_window.remote_connection.download_directory(
+                            remote_path,
+                            str(local_path.parent),
+                            progress_callback=update_progress,
+                        )
+                    else:
+                        # FITS file
+                        local_path = main_window.remote_connection.download_file(
+                            remote_path,
+                            str(local_path),
+                            progress_callback=update_progress,
+                        )
+                finally:
+                    progress.close()
+                
+                # Mark as cached
+                main_window.remote_cache.mark_cached(
+                    main_window.remote_connection._host,
+                    remote_path,
+                    Path(local_path),
+                    entry.mtime,
+                    entry.size,
+                )
+            
+            # Load the file
+            self._reset_hpc_state()
+            self.imagename = local_path
+            self.dir_entry.setText(local_path)
+            self.contour_settings["contour_data"] = None
+            self.current_contour_wcs = None
+            self.figure.clear()
+            self.on_visualization_changed(dir_load=True)
+            self.update_tab_name_from_path(local_path)
+            
+            return True
+            
+        except InterruptedError:
+            # User cancelled the download
+            self.show_status_message("Download cancelled")
+            return False
+        except Exception as e:
+            print(f"[ERROR] Failed to load remote file: {e}")
+            self.show_status_message(f"Failed to load remote file: {e}")
+            return False
 
     def _on_prev_file(self):
         """Load the previous file in the file list"""
@@ -8179,6 +8417,13 @@ class SolarRadioImageTab(QWidget):
         new_index = self._file_list_index - 1
         new_path = self._file_list[new_index]
         self._file_list_index = new_index
+        
+        # Check if in remote mode
+        if self._is_remote_mode:
+            if self._load_remote_file(new_path):
+                self._update_nav_buttons()
+                self.show_status_message(f"Loaded {os.path.basename(new_path)}")
+            return
 
         # Reset HPC state
         self._reset_hpc_state()
@@ -8207,6 +8452,13 @@ class SolarRadioImageTab(QWidget):
         new_index = self._file_list_index + 1
         new_path = self._file_list[new_index]
         self._file_list_index = new_index
+        
+        # Check if in remote mode
+        if self._is_remote_mode:
+            if self._load_remote_file(new_path):
+                self._update_nav_buttons()
+                self.show_status_message(f"Loaded {os.path.basename(new_path)}")
+            return
 
         # Reset HPC state
         self._reset_hpc_state()
@@ -8232,6 +8484,13 @@ class SolarRadioImageTab(QWidget):
         new_index = 0
         new_path = self._file_list[new_index]
         self._file_list_index = new_index
+        
+        # Check if in remote mode
+        if self._is_remote_mode:
+            if self._load_remote_file(new_path):
+                self._update_nav_buttons()
+                self.show_status_message(f"Loaded first file: {os.path.basename(new_path)}")
+            return
 
         # Reset HPC state
         self._reset_hpc_state()
@@ -8257,6 +8516,13 @@ class SolarRadioImageTab(QWidget):
         new_index = len(self._file_list) - 1
         new_path = self._file_list[new_index]
         self._file_list_index = new_index
+        
+        # Check if in remote mode
+        if self._is_remote_mode:
+            if self._load_remote_file(new_path):
+                self._update_nav_buttons()
+                self.show_status_message(f"Loaded last file: {os.path.basename(new_path)}")
+            return
 
         # Reset HPC state
         self._reset_hpc_state()
@@ -8287,6 +8553,7 @@ class SolarRadioImageTab(QWidget):
     def _show_filter_dialog(self):
         """Show a dialog to set the file filter pattern"""
         from PyQt5.QtWidgets import QInputDialog
+        import fnmatch
 
         pattern, ok = QInputDialog.getText(
             self,
@@ -8297,7 +8564,28 @@ class SolarRadioImageTab(QWidget):
 
         if ok:
             self._file_filter_pattern = pattern if pattern else "*"
-            self._scan_directory_files(rescan_only=True)
+            
+            # Check if in remote mode
+            if self._is_remote_mode and self._remote_file_list:
+                # Filter the remote file list using the pattern
+                filtered = [
+                    e for e in self._remote_file_list
+                    if fnmatch.fnmatch(e.name, self._file_filter_pattern)
+                ]
+                self._file_list = [e.path for e in filtered]
+                
+                # Find current file in filtered list
+                current_basename = os.path.basename(self.imagename) if self.imagename else ""
+                self._file_list_index = -1
+                for i, e in enumerate(filtered):
+                    if e.name == current_basename:
+                        self._file_list_index = i
+                        break
+                
+                self._update_nav_buttons()
+            else:
+                # Local mode - rescan directory
+                self._scan_directory_files(rescan_only=True)
 
             if self._file_list:
                 self.show_status_message(
@@ -8441,7 +8729,23 @@ class SolarRadioImageTab(QWidget):
                     
                 new_path = viewer._file_list[original_idx]
                 
-                # Check if file still exists
+                # Check if in remote mode
+                if viewer._is_remote_mode:
+                    # Remote mode - download and load
+                    viewer._file_list_index = original_idx
+                    if viewer._load_remote_file(new_path):
+                        viewer._update_nav_buttons()
+                        viewer.show_status_message(f"Loaded {os.path.basename(new_path)}")
+                        # Try to update dialog, but handle case where user closed it
+                        try:
+                            search_input.clear()
+                            file_list_widget.setCurrentRow(original_idx)
+                        except RuntimeError:
+                            # Dialog was closed during download, that's okay
+                            pass
+                    return
+                
+                # Local mode - check if file still exists
                 if not os.path.exists(new_path):
                     viewer.show_status_message(f"File no longer exists: {os.path.basename(new_path)}")
                     return
@@ -9272,6 +9576,19 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.max_tabs = 10
         self.settings = QSettings("SolarViewer", "SolarViewer")
         self._open_dialogs = []  # Track non-modal dialogs to prevent garbage collection
+        
+        # Remote mode state
+        self.remote_connection = None  # SSHConnection when connected
+        self.remote_cache = None  # RemoteFileCache for downloaded files
+        
+        # Remote connection status indicator in status bar (clickable)
+        self.remote_status_btn = QPushButton("🔌 Not Connected")
+        self.remote_status_btn.setFlat(True)
+        self.remote_status_btn.setCursor(Qt.PointingHandCursor)
+        self.remote_status_btn.setToolTip("Click to connect to a remote server")
+        self.remote_status_btn.clicked.connect(self._on_remote_status_clicked)
+        self._apply_remote_status_style(connected=False)
+        self.statusBar().addPermanentWidget(self.remote_status_btn)
 
         self.statusBar().showMessage("Ready")
         self.create_menus()
@@ -9379,6 +9696,29 @@ class SolarRadioImageViewerApp(QMainWindow):
         open_fits_act.setStatusTip("Open a FITS file")
         open_fits_act.triggered.connect(self.select_fits_file)
         file_menu.addAction(open_fits_act)
+
+        file_menu.addSeparator()
+        
+        # Remote mode actions
+        self.connect_remote_act = QAction("🌐 Connect to Remote Server...", self)
+        self.connect_remote_act.setShortcut("Ctrl+Shift+R")
+        self.connect_remote_act.setStatusTip("Connect to a remote server via SSH")
+        self.connect_remote_act.triggered.connect(self.show_remote_connection_dialog)
+        file_menu.addAction(self.connect_remote_act)
+        
+        self.browse_remote_act = QAction("📁 Open Remote FITS File...", self)
+        self.browse_remote_act.setStatusTip("Open a FITS file from the connected remote server")
+        self.browse_remote_act.triggered.connect(self.show_remote_file_browser)
+        self.browse_remote_act.setVisible(False)  # Hidden until connected
+        file_menu.addAction(self.browse_remote_act)
+        
+        self.disconnect_remote_act = QAction("❌ Disconnect from Remote", self)
+        self.disconnect_remote_act.setStatusTip("Disconnect from the remote server")
+        self.disconnect_remote_act.triggered.connect(self.disconnect_remote)
+        self.disconnect_remote_act.setVisible(False)  # Hidden until connected
+        file_menu.addAction(self.disconnect_remote_act)
+
+        file_menu.addSeparator()
 
         export_act = QAction("Export Figure", self)
         export_act.setShortcut("Ctrl+E")
@@ -11440,6 +11780,7 @@ except Exception as e:
                 [
                     ("Ctrl+O", "Open CASA Image"),
                     ("Ctrl+Shift+O", "Open FITS File"),
+                    ("Ctrl+Shift+R", "Connect to Remote Server"),
                     ("Ctrl+E", "Export Figure"),
                     ("Ctrl+F", "Export as FITS"),
                     ("Ctrl+Shift+N", "Fast Viewer"),
@@ -12434,3 +12775,180 @@ sys.exit(app.exec_())
 
             traceback.print_exc()
             QMessageBox.critical(self, "Error", error_message)
+
+    # =========================================================================
+    # Remote Mode Methods
+    # =========================================================================
+    
+    def show_remote_connection_dialog(self):
+        """Show the SSH connection dialog."""
+        try:
+            from .remote import ConnectionDialog, RemoteFileCache
+            
+            dialog = ConnectionDialog(self)
+            dialog.connectionEstablished.connect(self._on_remote_connected)
+            dialog.exec_()
+            
+        except ImportError as e:
+            QMessageBox.warning(
+                self,
+                "Missing Dependency",
+                f"Remote mode requires paramiko. Install it with:\n\npip install paramiko\n\nError: {e}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open connection dialog: {e}")
+    
+    def _on_remote_connected(self, connection):
+        """Handle successful remote connection."""
+        from .remote import RemoteFileCache
+        
+        self.remote_connection = connection
+        if self.remote_cache is None:
+            self.remote_cache = RemoteFileCache()
+        
+        self._update_remote_menu_state()
+        self._update_remote_status_indicator()
+    
+    def show_remote_file_browser(self):
+        """Show the remote file browser dialog."""
+        if not self.remote_connection or not self.remote_connection.is_connected():
+            QMessageBox.warning(
+                self,
+                "Not Connected",
+                "Please connect to a remote server first."
+            )
+            return
+        
+        try:
+            from .remote import RemoteFileBrowser
+            
+            browser = RemoteFileBrowser(
+                self.remote_connection,
+                cache=self.remote_cache,
+                parent=self,
+            )
+            browser.fileSelected.connect(self._on_remote_file_selected)
+            browser.exec_()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open remote browser: {e}")
+    
+    def _on_remote_file_selected(self, local_path: str):
+        """Handle file selected from remote browser (now downloaded locally)."""
+        if not local_path or not os.path.exists(local_path):
+            return
+        
+        # Get the current tab and load the file
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab:
+            import time
+            start_time = time.time()
+            
+            current_tab._reset_hpc_state()
+            current_tab.imagename = local_path
+            current_tab.dir_entry.setText(local_path)
+            current_tab.contour_settings["contour_data"] = None
+            current_tab.current_contour_wcs = None
+            current_tab.figure.clear()
+            current_tab.on_visualization_changed(dir_load=True)
+            current_tab.update_tab_name_from_path(local_path)
+            
+            elapsed = time.time() - start_time
+            basename = os.path.basename(local_path)
+            self.statusBar().showMessage(f"Loaded remote file: {basename} ({elapsed:.2f}s)", 5000)
+            
+            current_tab._scan_directory_files()
+    
+    def disconnect_remote(self):
+        """Disconnect from the remote server."""
+        if self.remote_connection:
+            try:
+                host_info = self.remote_connection.connection_info
+                self.remote_connection.disconnect()
+                self.statusBar().showMessage(f"Disconnected from {host_info}", 3000)
+            except Exception as e:
+                print(f"[WARNING] Error disconnecting: {e}")
+            finally:
+                self.remote_connection = None
+        
+        self._update_remote_menu_state()
+        self._update_remote_status_indicator()
+    
+    def _update_remote_menu_state(self):
+        """Update the enabled state of remote menu items."""
+        connected = (
+            self.remote_connection is not None 
+            and self.remote_connection.is_connected()
+        )
+        
+        # Update menu actions
+        if hasattr(self, 'connect_remote_act'):
+            self.connect_remote_act.setEnabled(not connected)
+            if connected:
+                self.connect_remote_act.setText(f"🌐 Connected: {self.remote_connection.connection_info}")
+            else:
+                self.connect_remote_act.setText("🌐 Connect to Remote Server...")
+        
+        if hasattr(self, 'browse_remote_act'):
+            self.browse_remote_act.setVisible(connected)
+        
+        if hasattr(self, 'disconnect_remote_act'):
+            self.disconnect_remote_act.setVisible(connected)
+    
+    def _update_remote_status_indicator(self):
+        """Update the permanent status bar indicator for remote connection."""
+        if hasattr(self, 'remote_status_btn'):
+            connected = self.remote_connection and self.remote_connection.is_connected()
+            if connected:
+                self.remote_status_btn.setText(f"🌐 {self.remote_connection.connection_info}")
+                self.remote_status_btn.setToolTip("Click to disconnect from remote server")
+            else:
+                self.remote_status_btn.setText("🔌 Not Connected")
+                self.remote_status_btn.setToolTip("Click to connect to a remote server")
+            self._apply_remote_status_style(connected)
+    
+    def _apply_remote_status_style(self, connected: bool):
+        """Apply styling to the remote status button based on connection state."""
+        if connected:
+            self.remote_status_btn.setStyleSheet("""
+                QPushButton {
+                    color: #4CAF50;
+                    font-weight: bold;
+                    padding: 4px 10px;
+                    margin-right: 5px;
+                    background-color: rgba(76, 175, 80, 0.15);
+                    border: 1px solid #4CAF50;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(244, 67, 54, 0.15);
+                    border-color: #F44336;
+                    color: #F44336;
+                }
+            """)
+        else:
+            self.remote_status_btn.setStyleSheet("""
+                QPushButton {
+                    color: #9E9E9E;
+                    font-weight: bold;
+                    padding: 4px 10px;
+                    margin-right: 5px;
+                    background-color: transparent;
+                    border: 1px solid #757575;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(33, 150, 243, 0.15);
+                    border-color: #2196F3;
+                    color: #2196F3;
+                }
+            """)
+    
+    def _on_remote_status_clicked(self):
+        """Handle click on the remote status button."""
+        if self.remote_connection and self.remote_connection.is_connected():
+            # Already connected - disconnect
+            self.disconnect_remote()
+        else:
+            # Not connected - show connection dialog
+            self.show_remote_connection_dialog()
