@@ -478,24 +478,51 @@ class RemoteFileBrowser(QDialog):
         """Navigate to last used directory or home if not available."""
         host = self.connection._host
         
-        # Use last path if available, otherwise try to get home directory
+        # Use last path if available
         if host in RemoteFileBrowser._last_paths:
             self._navigate_to(RemoteFileBrowser._last_paths[host])
         else:
-            # Get home directory - this is a quick call
-            try:
-                home = self.connection.get_home_directory()
-                self._navigate_to(home)
-            except:
+            # Use cached home directory if available, otherwise start at root
+            # This avoids a blocking get_home_directory() call
+            if hasattr(self.connection, '_last_home') and self.connection._last_home:
+                self._navigate_to(self.connection._last_home)
+            else:
+                # Start at root - non-blocking
                 self._navigate_to("/")
     
     def _load_home_directory(self):
         """Navigate to home directory."""
-        try:
-            home = self.connection.get_home_directory()
-            self._navigate_to(home)
-        except SSHConnectionError as e:
-            self._navigate_to("/")
+        # Use cached home if available for instant navigation
+        if hasattr(self.connection, '_last_home') and self.connection._last_home:
+            self._navigate_to(self.connection._last_home)
+        else:
+            # Fetch home directory in background thread
+            self._fetch_home_async()
+    
+    def _fetch_home_async(self):
+        """Fetch home directory asynchronously."""
+        from PyQt5.QtCore import QThread, pyqtSignal
+        
+        class HomeThread(QThread):
+            result = pyqtSignal(str)
+            
+            def __init__(self, connection):
+                super().__init__()
+                self.connection = connection
+            
+            def run(self):
+                try:
+                    home = self.connection.get_home_directory()
+                    self.result.emit(home)
+                except:
+                    self.result.emit("/")
+        
+        def on_home_fetched(home_path):
+            self._navigate_to(home_path)
+        
+        self._home_thread = HomeThread(self.connection)
+        self._home_thread.result.connect(on_home_fetched)
+        self._home_thread.start()
     
     def _navigate_to(self, path: str):
         """Navigate to a specific directory."""
@@ -530,6 +557,11 @@ class RemoteFileBrowser(QDialog):
         Args:
             force_refresh: If True, bypass cache and fetch fresh data
         """
+        # Check connection before attempting operations
+        if not self.connection or not self.connection.is_connected():
+            self.status_label.setText("⚠️ Not connected")
+            return
+        
         # Cancel any existing listing operation (don't wait - just mark cancelled)
         if self._list_thread and self._list_thread.isRunning():
             try:
@@ -692,6 +724,11 @@ class RemoteFileBrowser(QDialog):
         items = self.tree.selectedItems()
         if items:
             entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
+            if entry is None:  # Safeguard against missing data
+                self.open_btn.setEnabled(False)
+                if self.casa_mode:
+                    self.go_into_btn.setEnabled(False)
+                return
             if self.casa_mode:
                 # In CASA mode, enable Select for directories (CASA images are directories)
                 self.open_btn.setEnabled(entry.is_dir)
@@ -712,12 +749,16 @@ class RemoteFileBrowser(QDialog):
             return
         
         entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
+        if entry is None:  # Safeguard
+            return
         if entry.is_dir:
             self._navigate_to(entry.path)
     
     def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
         """Handle double-click on item."""
         entry: RemoteFileInfo = item.data(0, Qt.UserRole)
+        if entry is None:  # Safeguard
+            return
         
         if entry.is_dir:
             self._navigate_to(entry.path)
@@ -731,6 +772,8 @@ class RemoteFileBrowser(QDialog):
             return
         
         entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
+        if entry is None:  # Safeguard
+            return
         if self.casa_mode:
             if entry.is_dir:
                 self._download_and_open(entry)
@@ -826,9 +869,33 @@ class RemoteFileBrowser(QDialog):
         QMessageBox.warning(self, "Download Error", f"Failed to download file: {error_msg}")
     
     def closeEvent(self, event):
-        """Handle dialog close."""
-        # Cancel any ongoing download
+        """Handle dialog close - clean up threads without blocking."""
+        # Cancel and cleanup download thread (non-blocking)
         if self._download_thread and self._download_thread.isRunning():
-            self._download_thread.terminate()
-            self._download_thread.wait()
+            try:
+                self._download_thread.finished.disconnect()
+                self._download_thread.error.disconnect()
+                self._download_thread.progress.disconnect()
+            except:
+                pass
+            # Don't wait - let it finish in background
+            RemoteFileBrowser._has_pending_operation = True
+        
+        # Cancel listing thread (non-blocking)
+        if self._list_thread and self._list_thread.isRunning():
+            try:
+                self._list_thread.finished.disconnect()
+                self._list_thread.error.disconnect()
+            except:
+                pass
+            self._list_thread.cancel()
+        
+        # Cleanup home thread if running
+        if hasattr(self, '_home_thread') and self._home_thread and self._home_thread.isRunning():
+            try:
+                self._home_thread.result.disconnect()
+            except:
+                pass
+            # Don't wait - let it finish
+        
         super().closeEvent(event)

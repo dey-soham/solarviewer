@@ -93,6 +93,7 @@ class SSHConnection:
         self._username: str = ""
         self._connected: bool = False
         self._ssh_config: Optional[SSHConfig] = None
+        self._last_home: str = ""  # Cached home directory for non-blocking access
         
         # Store connection parameters for auto-reconnect
         self._connect_params: dict = {}
@@ -657,7 +658,10 @@ class SSHConnection:
         
         try:
             # Use SFTP normalize to get absolute path of ~
-            return self._sftp.normalize(".")
+            home = self._sftp.normalize(".")
+            # Cache for non-blocking access later
+            self._last_home = home
+            return home
         except:
             return "/"
     

@@ -197,16 +197,57 @@ class RemoteFileCache:
             host: If specified, only clear cache for this host.
                   If None, clear all cached files.
         """
-        keys_to_remove = []
+        import shutil
         
-        for key, entry in self._metadata.items():
-            if host is None or entry.remote_host == host:
+        # SAFETY CHECK: Ensure we are deleting a safe directory
+        # We only want to delete inside ~/.cache/solarviewer/remote or similar
+        resolved_path = self.cache_dir.resolve()
+        safe_path_indicator = "solarviewer"
+        
+        if resolved_path == Path.home().resolve() or resolved_path == Path("/").resolve():
+            print(f"SAFETY ERROR: Refusing to clear cache at dangerous path: {resolved_path}")
+            return
+            
+        if safe_path_indicator not in str(resolved_path) and ".cache" not in str(resolved_path):
+            print(f"SAFETY ERROR: Refusing to clear cache at suspicious path (missing 'solarviewer' or '.cache'): {resolved_path}")
+            return
+        
+        if host is None:
+            # Clear everything
+            keys_to_remove = list(self._metadata.keys())
+            
+            # Delete physical files recursively
+            try:
+                if not self.cache_dir.exists():
+                    return
+
+                # Iterate over subdirectories in cache root
+                for item in self.cache_dir.iterdir():
+                    # Double check item is inside cache_dir
+                    if item.parent.resolve() != resolved_path:
+                        continue
+                        
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    elif item.name != self.METADATA_FILE:
+                        item.unlink()
+            except Exception as e:
+                print(f"Error clearing cache directory: {e}")
+                
+        else:
+            # Clear specific host only
+            safe_host = host.replace(":", "_").replace("@", "_at_")
+            host_dir = self.cache_dir / safe_host
+            
+            if host_dir.exists() and host_dir.parent.resolve() == resolved_path:
                 try:
-                    Path(entry.local_path).unlink()
-                except:
-                    pass
-                keys_to_remove.append(key)
+                    shutil.rmtree(host_dir)
+                except Exception as e:
+                    print(f"Error clearing host cache {host}: {e}")
+            
+            keys_to_remove = [k for k, v in self._metadata.items() if v.remote_host == host]
         
+        # Update metadata
         for key in keys_to_remove:
             del self._metadata[key]
         

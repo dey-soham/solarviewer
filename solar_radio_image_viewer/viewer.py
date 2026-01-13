@@ -9792,6 +9792,11 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.disconnect_remote_act.triggered.connect(self.disconnect_remote)
         self.disconnect_remote_act.setVisible(False)  # Hidden until connected
         file_menu.addAction(self.disconnect_remote_act)
+        
+        self.clear_cache_act = QAction("🗑️ Clear Remote Cache...", self)
+        self.clear_cache_act.setStatusTip("Clear cached remote files to free up disk space")
+        self.clear_cache_act.triggered.connect(self.clear_remote_cache)
+        file_menu.addAction(self.clear_cache_act)
 
         file_menu.addSeparator()
 
@@ -13050,6 +13055,43 @@ sys.exit(app.exec_())
         if hasattr(self, '_health_check_timer'):
             self._health_check_timer.stop()
             #print("[SSH] Health check timer stopped")
+            
+    def clear_remote_cache(self):
+        """Clear cached remote files and directory listings."""
+        # Confirm with user
+        reply = QMessageBox.question(
+            self,
+            "Clear Remote Cache",
+            "This will delete all locally cached files from remote servers.\n"
+            "This action cannot be undone.\n\n"
+            "Are you sure you want to clear the cache?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        try:
+            # Clear file cache
+            if self.remote_cache:
+                self.remote_cache.clear_cache()
+            else:
+                # Initialize temporary cache just to clear it if main one not init yet
+                from .remote import RemoteFileCache
+                RemoteFileCache().clear_cache()
+            
+            # Clear listing cache
+            from .remote import RemoteFileBrowser
+            if hasattr(RemoteFileBrowser, '_listing_cache'):
+                RemoteFileBrowser._listing_cache.clear()
+            
+            # Show success message
+            self.statusBar().showMessage("🗑️ Remote cache cleared successfully", 5000)
+            QMessageBox.information(self, "Cache Cleared", "Remote file cache has been cleared successfully.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to clear cache: {str(e)}")
     
     def _check_connection_health(self):
         """Periodically check connection health and auto-reconnect if needed."""
