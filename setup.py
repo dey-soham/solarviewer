@@ -47,7 +47,7 @@ setup(
     # },
     include_package_data=True,
     package_data={
-        "solar_radio_image_viewer": ["assets/*.png", "assets/*.fits"],
+        "solar_radio_image_viewer": ["assets/*.png", "assets/*.fits", "assets/*.ttf"],
     },
     install_requires=[
         "setuptools<81",

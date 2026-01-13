@@ -39,7 +39,16 @@ def load_bundled_fonts():
                     loaded_any = True
         except Exception as e:
             print(f"Could not load font {font_file}: {e}")
-    
+
+    # Load Noto Emoji as fallback for emoji characters
+    try:
+        emoji_path = pkg_resources.resource_filename(
+            "solar_radio_image_viewer", "assets/NotoEmoji-Regular.ttf"
+        )
+        font_db.addApplicationFont(emoji_path)
+    except Exception as e:
+        print(f"Could not load emoji font: {e}")
+
     _fonts_loaded = True
     
     if loaded_any:
@@ -125,7 +134,7 @@ def get_stylesheet(palette, is_dark=True):
     return f"""
     /* ===== GLOBAL STYLES ===== */
     QWidget {{
-        font-family: 'Inter', 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
+        font-family: 'Inter', 'Noto Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
         font-size: 11pt;
         color: {palette['text']};
     }}
