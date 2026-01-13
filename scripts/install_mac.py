@@ -111,6 +111,7 @@ export PATH="{bin_dir}:$PATH"
             for size in sizes:
                 subprocess.run([
                     "sips", "-Z", str(size),
+                    "-s", "format", "png",
                     str(icon_source), 
                     "--out", str(iconset_dir / f"icon_{size}x{size}.png")
                 ], check=True, stdout=subprocess.DEVNULL)
@@ -118,6 +119,7 @@ export PATH="{bin_dir}:$PATH"
                 # Create @2x files (same size logically, but double pixels)
                 subprocess.run([
                     "sips", "-Z", str(size * 2),
+                    "-s", "format", "png",
                     str(icon_source), 
                     "--out", str(iconset_dir / f"icon_{size}x{size}@2x.png")
                 ], check=True, stdout=subprocess.DEVNULL)
