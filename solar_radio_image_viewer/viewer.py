@@ -352,8 +352,15 @@ class SolarRadioImageTab(QWidget):
         )
         self._radec_temp_file = None  # Path to RA/Dec temp file (from HPC->RA/Dec)
         
+        # Contour coordinate transformation state
+        self._contour_transformed_file = None  # Path to coordinate-transformed contour file
+        self._contour_transformed_from = None  # Original external image that was transformed
+        self._contour_was_transformed = False  # Flag to skip reprojection when transformation aligned coordinates
+        
         # Track non-modal dialogs to prevent garbage collection
         self._open_dialogs = []
+
+
 
         # Unique ID for temp file naming (prevents collisions in multi-tab)
         import uuid
@@ -2231,7 +2238,71 @@ class SolarRadioImageTab(QWidget):
         except Exception:
             return False
 
+    def _get_coordinate_system_from_image(self, imagepath):
+        """
+        Detect coordinate system from a FITS or CASA image.
+        
+        Parameters
+        ----------
+        imagepath : str
+            Path to the FITS file or CASA image
+            
+        Returns
+        -------
+        str
+            'hpc' for helioprojective, 'radec' for RA/Dec, 'unknown' otherwise
+        """
+        if not imagepath or not os.path.exists(imagepath):
+            return 'unknown'
+        
+        try:
+            # For FITS files, check the header first (more reliable)
+            if imagepath.endswith(".fits") or imagepath.endswith(".fts"):
+                from astropy.io import fits
+                header = fits.getheader(imagepath)
+                ctype1 = header.get("CTYPE1", "").upper()
+                ctype2 = header.get("CTYPE2", "").upper()
+                
+                # Check for HPC (Helioprojective)
+                if ("HPLN" in ctype1 or "HPLT" in ctype2 or 
+                    "SOLAR" in ctype1 or "SOLAR" in ctype2):
+                    return 'hpc'
+                # Check for RA/Dec
+                if "RA" in ctype1 or "DEC" in ctype2:
+                    return 'radec'
+        except Exception as e:
+            print(f"[ERROR] FITS header check failed: {e}")
+        
+        try:
+            # For CASA images, use coordinate system info
+            ia_tool = IA()
+            ia_tool.open(imagepath)
+            csys = ia_tool.coordsys()
+            
+            # Get direction reference code (e.g., 'J2000' for RA/Dec, 'SUN' for HPC)
+            ref_code = csys.referencecode('direction')
+            dimension_names = [n.upper() for n in csys.names()]
+            
+            ia_tool.close()
+            
+            # Check for Solar/Helioprojective (SUN reference frame)
+            if ref_code and 'SUN' in str(ref_code).upper():
+                return 'hpc'
+            if "SOLAR-X" in dimension_names or "SOLAR-Y" in dimension_names:
+                return 'hpc'
+            # Check for RA/Dec (J2000 reference frame)
+            if ref_code and 'J2000' in str(ref_code).upper():
+                return 'radec'
+            if "RIGHT ASCENSION" in dimension_names or "DECLINATION" in dimension_names:
+                return 'radec'
+        except Exception as e:
+            print(f"[ERROR] CASA check failed: {e}")
+        
+        return 'unknown'
+
+
     def create_stats_table(self, parent_layout):
+
         group = QGroupBox("Region Statistics")
         layout = QVBoxLayout(group)
         self.info_label = QLabel("No selection")
@@ -7650,21 +7721,104 @@ class SolarRadioImageTab(QWidget):
                 if external_image and os.path.exists(external_image):
                     stokes = self.contour_settings["stokes"]
                     threshold = 5.0
+                    
+                    # Check if we need to transform coordinate systems
+                    # Detect coordinate systems of base image and contour image
+                    base_csys_type = self._get_coordinate_system_from_image(self.imagename)
+                    contour_csys_type = self._get_coordinate_system_from_image(external_image)
+                    
+                    # Use cached transformed file if available and from same source
+                    image_to_load = external_image
+
+                    if (self._contour_transformed_file and 
+                        self._contour_transformed_from == external_image and
+                        os.path.exists(self._contour_transformed_file)):
+                        # Check if transformation is still needed
+                        transformed_csys = self._get_coordinate_system_from_image(self._contour_transformed_file)
+                        if transformed_csys == base_csys_type:
+                            image_to_load = self._contour_transformed_file
+                            self.show_status_message(f"Using cached transformed contour ({contour_csys_type}→{base_csys_type})")
+                        else:
+                            # Transformation no longer matches (base image changed), cleanup and retransform
+                            try:
+                                os.remove(self._contour_transformed_file)
+                            except Exception:
+                                pass
+                            self._contour_transformed_file = None
+                            self._contour_transformed_from = None
+                    
+                    # Check if transformation is needed
+                    if (base_csys_type != 'unknown' and contour_csys_type != 'unknown' and 
+                        base_csys_type != contour_csys_type and image_to_load == external_image):
+                        
+                        # Clear old cached file if external image changed
+                        if self._contour_transformed_from != external_image:
+                            if self._contour_transformed_file and os.path.exists(self._contour_transformed_file):
+                                try:
+                                    os.remove(self._contour_transformed_file)
+                                except Exception:
+                                    pass
+                            self._contour_transformed_file = None
+                            self._contour_transformed_from = None
+                        
+                        # Create temp file for coordinate-transformed contour
+                        import tempfile
+                        import uuid
+                        temp_dir = tempfile.gettempdir()
+                        temp_filename = f"sv_contour_transformed_{self._temp_file_id}.fits"
+                        transformed_path = os.path.join(temp_dir, temp_filename)
+                        
+                        transform_success = False
+                        if base_csys_type == 'hpc' and contour_csys_type == 'radec':
+                            # Convert RA/Dec contour to HPC
+                            self.show_status_message(f"Transforming contour from RA/Dec to HPC...")
+                            from .helioprojective import convert_and_save_hpc_all_stokes
+                            transform_success = convert_and_save_hpc_all_stokes(
+                                external_image, transformed_path, overwrite=True
+                            )
+                        elif base_csys_type == 'radec' and contour_csys_type == 'hpc':
+                            # Convert HPC contour to RA/Dec
+                            self.show_status_message(f"Transforming contour from HPC to RA/Dec...")
+                            from .helioprojective import convert_hpc_to_radec
+                            transform_success = convert_hpc_to_radec(
+                                external_image, transformed_path, overwrite=True
+                            )
+                        
+                        if transform_success and os.path.exists(transformed_path):
+                            image_to_load = transformed_path
+                            self._contour_transformed_file = transformed_path
+                            self._contour_transformed_from = external_image
+                            self.show_status_message(f"Contour transformed ({contour_csys_type}→{base_csys_type})")
+                        else:
+                            print(f"[ERROR] Transformation failed, using original: {external_image}")
+                            self.show_status_message(f"Coordinate transformation failed, using original contour")
+
+                    elif (contour_csys_type != 'unknown' and base_csys_type == contour_csys_type and
+                          self._contour_transformed_from == external_image):
+                        # Coordinates now match (base image changed back), cleanup temp file
+                        if self._contour_transformed_file and os.path.exists(self._contour_transformed_file):
+                            try:
+                                os.remove(self._contour_transformed_file)
+                            except Exception:
+                                pass
+                        self._contour_transformed_file = None
+                        self._contour_transformed_from = None
+
 
                     if stokes in ["I", "Q", "U", "V"]:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, stokes, threshold, rms_box,
+                            image_to_load, stokes, threshold, rms_box,
                             target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, numerator_stokes, threshold, rms_box,
+                            image_to_load, numerator_stokes, threshold, rms_box,
                             target_size=target_size
                         )
                         denominator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "I", threshold, rms_box,
+                            image_to_load, "I", threshold, rms_box,
                             target_size=target_size
                         )
                         mask = denominator_pix != 0
@@ -7673,26 +7827,26 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "Q", threshold, rms_box,
+                            image_to_load, "Q", threshold, rms_box,
                             target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "U", threshold, rms_box,
+                            image_to_load, "U", threshold, rms_box,
                             target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "Q", threshold, rms_box,
+                            image_to_load, "Q", threshold, rms_box,
                             target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "U", threshold, rms_box,
+                            image_to_load, "U", threshold, rms_box,
                             target_size=target_size
                         )
                         i_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "I", threshold, rms_box,
+                            image_to_load, "I", threshold, rms_box,
                             target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
@@ -7702,18 +7856,18 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "Q", threshold, rms_box,
+                            image_to_load, "Q", threshold, rms_box,
                             target_size=target_size
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "U", threshold, rms_box,
+                            image_to_load, "U", threshold, rms_box,
                             target_size=target_size
                         )
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
                         self.contour_settings["contour_data"] = pang
                     else:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            external_image, "I", threshold, rms_box,
+                            image_to_load, "I", threshold, rms_box,
                             target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
@@ -7765,9 +7919,16 @@ class SolarRadioImageTab(QWidget):
             contour_imagename = self.imagename
         else:
             # External image - need to load metadata
-            contour_imagename = self.contour_settings["external_image"]
+            # Use transformed file if coordinate transformation was applied
+            if (self._contour_transformed_file and 
+                os.path.exists(self._contour_transformed_file) and
+                self._contour_transformed_from == self.contour_settings.get("external_image")):
+                contour_imagename = self._contour_transformed_file
+            else:
+                contour_imagename = self.contour_settings["external_image"]
             
             if contour_imagename.endswith(".fits") or contour_imagename.endswith(".fts"):
+
                 from astropy.io import fits
 
                 fits_flag = True
@@ -7873,30 +8034,57 @@ class SolarRadioImageTab(QWidget):
 
                 contour_wcs_obj = WCS(naxis=2)
 
-                ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
-                ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
-                increment = self.current_contour_wcs.increment()["numeric"][0:2]
+                # For FITS files, build WCS directly from header (more reliable for HPC)
+                # CASA misinterprets HPLN-TAN/HPLT-TAN coordinates as J2000
+                if fits_flag and header:
+                    try:
+                        # Build from FITS header directly
+                        contour_wcs_obj.wcs.crpix = [
+                            header.get("CRPIX2", 1),  # Swapped for numpy
+                            header.get("CRPIX1", 1),
+                        ]
+                        contour_wcs_obj.wcs.crval = [
+                            header.get("CRVAL2", 0),
+                            header.get("CRVAL1", 0),
+                        ]
+                        contour_wcs_obj.wcs.cdelt = [
+                            header.get("CDELT2", 1),
+                            header.get("CDELT1", 1),
+                        ]
+                        contour_wcs_obj.wcs.ctype = [
+                            header.get("CTYPE2", ""),
+                            header.get("CTYPE1", ""),
+                        ]
+                    except Exception as e:
+                        print(f"[ERROR] Failed to build WCS from FITS header: {e}")
+                        # Fall back to CASA coordsys
+                        fits_flag = False
+                
+                if not fits_flag:
+                    # Use CASA coordsys (for CASA images or as fallback)
+                    ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
+                    ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
+                    increment = self.current_contour_wcs.increment()["numeric"][0:2]
 
-                # IMPORTANT: CASA WCS stores in (RA, Dec) = (x, y) order
-                # But numpy arrays are (row, col) = (y, x)
-                # We need to SWAP the axes for proper alignment with reproject
-                # This matches how the data is stored in numpy arrays
-                contour_wcs_obj.wcs.crpix = [ref_pix[1], ref_pix[0]]  # Swap to (y, x)
+                    # IMPORTANT: CASA WCS stores in (RA, Dec) = (x, y) order
+                    # But numpy arrays are (row, col) = (y, x)
+                    # We need to SWAP the axes for proper alignment with reproject
+                    contour_wcs_obj.wcs.crpix = [ref_pix[1], ref_pix[0]]  # Swap to (y, x)
 
-                if "Right Ascension" in summary["axisnames"]:
-                    contour_wcs_obj.wcs.crval = [
-                        ref_val[1] * 180 / np.pi,  # Dec first
-                        ref_val[0] * 180 / np.pi,  # RA second
-                    ]
-                    contour_wcs_obj.wcs.cdelt = [
-                        increment[1] * 180 / np.pi,
-                        increment[0] * 180 / np.pi,
-                    ]
-                    # Also swap ctype
-                    contour_wcs_obj.wcs.ctype = ["DEC--SIN", "RA---SIN"]
-                else:
-                    contour_wcs_obj.wcs.crval = [ref_val[1], ref_val[0]]
-                    contour_wcs_obj.wcs.cdelt = [increment[1], increment[0]]
+                    if "Right Ascension" in summary["axisnames"]:
+                        contour_wcs_obj.wcs.crval = [
+                            ref_val[1] * 180 / np.pi,  # Dec first
+                            ref_val[0] * 180 / np.pi,  # RA second
+                        ]
+                        contour_wcs_obj.wcs.cdelt = [
+                            increment[1] * 180 / np.pi,
+                            increment[0] * 180 / np.pi,
+                        ]
+                        contour_wcs_obj.wcs.ctype = ["DEC--SIN", "RA---SIN"]
+                    else:
+                        contour_wcs_obj.wcs.crval = [ref_val[1], ref_val[0]]
+                        contour_wcs_obj.wcs.cdelt = [increment[1], increment[0]]
+
 
                 # Set projection type for contour WCS (swapped to match axis order)
                 if fits_flag:
@@ -8059,6 +8247,7 @@ class SolarRadioImageTab(QWidget):
 
                     # Check if reprojection produced valid data
                     if np.all(array == 0):
+                        footprint_pct = np.sum(footprint > 0) / footprint.size * 100
                         if main_window:
                             self.show_status_message(
                                 "WARNING: Reprojection produced all zeros ..."
@@ -8067,9 +8256,22 @@ class SolarRadioImageTab(QWidget):
                             "[WARNING] Reprojection produced all zeros - checking footprint coverage"
                         )
                         print(
-                            f"  Footprint coverage: {np.sum(footprint > 0) / footprint.size * 100:.1f}%"
+                            f"  Footprint coverage: {footprint_pct:.1f}%"
                         )
+                        if footprint_pct < 1.0:
+                            # Show warning dialog about no overlap
+                            QMessageBox.warning(
+                                self,
+                                "No Coordinate Overlap",
+                                "Contour reprojection produced no valid data (0% footprint).\n\n"
+                                "This typically happens when the base image and contour image "
+                                "are from different observation times, causing them to point at "
+                                "different sky coordinates.\n\n"
+                                "Please ensure both images are from the same or similar observation time.",
+                            )
+                            return  # Don't try to draw empty contours
                     else:
+
                         if main_window:
                             self.show_status_message(f"Reprojection done.. plotting... Please wait...")
 
@@ -8091,7 +8293,53 @@ class SolarRadioImageTab(QWidget):
                     import traceback
 
                     traceback.print_exc()
-                    plot_default = True
+                    
+                    # Fallback: try scipy-based scaling using pixel scale ratio
+                    # This is useful when WCS reprojection fails (e.g., HPC observer=None)
+                    try:
+                        from scipy.ndimage import zoom, shift
+                        
+                        self.show_status_message("WCS reprojection failed, trying pixel-scale fallback...")
+                        
+                        # Calculate scale factors from CDELT
+                        scale_x = contour_wcs_obj.wcs.cdelt[0] / image_wcs_for_reproject.wcs.cdelt[0]
+                        scale_y = contour_wcs_obj.wcs.cdelt[1] / image_wcs_for_reproject.wcs.cdelt[1]
+                        
+                        # Zoom to match pixel scales
+                        zoomed = zoom(contour_data, [abs(scale_y), abs(scale_x)], order=1, mode='constant', cval=0)
+                        
+                        # Pad or crop to match target shape
+                        target_shape = self.current_image_data.shape
+                        result = np.zeros(target_shape)
+                        
+                        # Calculate the offset to center the contour
+                        # Use reference value difference to determine shift
+                        dcrval = contour_wcs_obj.wcs.crval - image_wcs_for_reproject.wcs.crval
+                        offset_x = int(dcrval[0] / image_wcs_for_reproject.wcs.cdelt[0])
+                        offset_y = int(dcrval[1] / image_wcs_for_reproject.wcs.cdelt[1])
+                        
+                        # Calculate copy ranges
+                        src_start_y = max(0, -offset_y)
+                        src_end_y = min(zoomed.shape[0], target_shape[0] - offset_y)
+                        src_start_x = max(0, -offset_x)
+                        src_end_x = min(zoomed.shape[1], target_shape[1] - offset_x)
+                        
+                        dst_start_y = max(0, offset_y)
+                        dst_end_y = dst_start_y + (src_end_y - src_start_y)
+                        dst_start_x = max(0, offset_x)
+                        dst_end_x = dst_start_x + (src_end_x - src_start_x)
+                        
+                        if src_end_y > src_start_y and src_end_x > src_start_x:
+                            result[dst_start_y:dst_end_y, dst_start_x:dst_end_x] = \
+                                zoomed[src_start_y:src_end_y, src_start_x:src_end_x]
+                        
+                        contour_data = result
+                        self.show_status_message("Fallback reprojection done")
+                        print("[INFO] Fallback pixel-scale reprojection successful")
+                    except Exception as fallback_e:
+                        print(f"[ERROR] Fallback reprojection also failed: {fallback_e}")
+                        plot_default = True
+
 
             # For reprojected data, the output matches the base image orientation
             # so we transpose to match how the base image is displayed
@@ -8911,7 +9159,15 @@ class SolarRadioImageTab(QWidget):
                     os.remove(self._tb_temp_file)
                 except Exception:
                     pass
+        # Clean up contour coordinate transformation temp file if exists
+        if hasattr(self, "_contour_transformed_file") and self._contour_transformed_file:
+            if os.path.exists(self._contour_transformed_file):
+                try:
+                    os.remove(self._contour_transformed_file)
+                except Exception:
+                    pass
         super().closeEvent(event)
+
 
     def reset_view(self, show_status_message=True):
         """Reset the view to show the full image with original limits"""

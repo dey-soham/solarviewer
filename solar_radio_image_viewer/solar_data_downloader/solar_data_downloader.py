@@ -1,4 +1,6 @@
 import drms, time, os, glob, warnings
+import sunpy
+from parfive import Downloader
 from sunpy.map import Map
 
 # from sunpy.instr.aia import aiaprep  # This import is no longer available in sunpy 6.0.5
@@ -18,6 +20,69 @@ except ImportError:
 from astropy.io import fits
 from datetime import datetime, timedelta
 import astropy.units as u  # Import astropy units for use throughout the code
+
+# Configure SunPy download timeout (300 seconds = 5 minutes)
+# This helps with large batch downloads that may take longer
+try:
+    sunpy.config.set('downloads', 'timeout', 300)
+except Exception:
+    pass  # Ignore if config doesn't support this setting
+
+# Default download settings for Fido
+DEFAULT_MAX_CONN = 4  # Maximum simultaneous connections
+DEFAULT_MAX_SPLITS = 5  # Maximum splits per file
+DEFAULT_MAX_RETRIES = 3  # Number of retry attempts for failed downloads
+
+
+def robust_fido_fetch(result, output_dir, max_conn=DEFAULT_MAX_CONN, 
+                      max_splits=DEFAULT_MAX_SPLITS, max_retries=DEFAULT_MAX_RETRIES,
+                      progress=True):
+    """
+    Robust Fido.fetch wrapper with retry logic and configurable connection settings.
+    
+    This function handles common download issues like timeouts and partial downloads
+    by using a custom parfive Downloader with better settings and automatically
+    retrying failed downloads.
+    
+    Args:
+        result: Fido search result to download
+        output_dir (str): Directory to save downloaded files
+        max_conn (int): Maximum simultaneous connections (default: 4)
+        max_splits (int): Maximum splits per file for parallel download (default: 5)
+        max_retries (int): Number of retry attempts for failed downloads (default: 3)
+        progress (bool): Show download progress bar (default: True)
+    
+    Returns:
+        parfive.Results: Downloaded file results
+    """
+    from sunpy.net import Fido
+    
+    # Create a custom downloader with better settings for bulk downloads
+    downloader = Downloader(max_conn=max_conn, max_splits=max_splits, progress=progress)
+    
+    # Initial fetch attempt
+    downloaded = Fido.fetch(result, path=output_dir + "/{file}", downloader=downloader)
+    
+    # Retry failed downloads
+    retry_count = 0
+    while downloaded.errors and retry_count < max_retries:
+        retry_count += 1
+        failed_count = len(downloaded.errors)
+        print(f"\nRetrying {failed_count} failed downloads (attempt {retry_count}/{max_retries})...")
+        
+        # Create a fresh downloader for retry
+        retry_downloader = Downloader(max_conn=max_conn, max_splits=max_splits, progress=progress)
+        downloaded = Fido.fetch(downloaded, downloader=retry_downloader)
+    
+    # Report final status
+    if downloaded.errors:
+        print(f"\nWarning: {len(downloaded.errors)} files failed to download after {max_retries} retries:")
+        for error in downloaded.errors[:5]:  # Show first 5 errors
+            print(f"  - {error}")
+        if len(downloaded.errors) > 5:
+            print(f"  ... and {len(downloaded.errors) - 5} more errors")
+    
+    return downloaded
 
 """
 Solar Data Download and Calibration Module
@@ -97,14 +162,15 @@ def get_key(val, my_dict):
     return None
 
 
-def aiaexport(wavelength, cadence, time):
+def aiaexport(wavelength, cadence, start_time, end_time):
     """
     Generate an export command for AIA data.
 
     Args:
         wavelength (str): AIA wavelength (e.g., '171', '1600')
         cadence (str): Time cadence ('12s', '24s', or '1h')
-        time (str): Start time in 'YYYY.MM.DD_HH:MM:SS' format
+        start_time (str): Start time in 'YYYY.MM.DD_HH:MM:SS' format
+        end_time (str): End time in 'YYYY.MM.DD_HH:MM:SS' format
 
     Returns:
         str: The export command string or None if invalid parameters
@@ -118,13 +184,28 @@ def aiaexport(wavelength, cadence, time):
         print(f"Error: {wavelength}Å image not available for {cadence} cadence")
         return None
 
-    # Format time for the export command - ensure proper format for DRMS
-    # The format should be YYYY.MM.DD_HH:MM:SS_UTC with no spaces
-    # Input time is expected to be in YYYY.MM.DD_HH:MM:SS format
-    time_utc = time + "_UTC"
+    # Calculate duration between start and end times
+    try:
+        start_dt = datetime.strptime(start_time.replace('_', ' '), "%Y.%m.%d %H:%M:%S")
+        end_dt = datetime.strptime(end_time.replace('_', ' '), "%Y.%m.%d %H:%M:%S")
+        duration_seconds = (end_dt - start_dt).total_seconds()
+        
+        # Convert to a duration string (e.g., "1h", "30m", "3600s")
+        if duration_seconds >= 3600:
+            duration_str = f"{int(duration_seconds / 3600)}h"
+        elif duration_seconds >= 60:
+            duration_str = f"{int(duration_seconds / 60)}m"
+        else:
+            duration_str = f"{int(duration_seconds)}s"
+    except (ValueError, TypeError):
+        # Default to 1 hour if parsing fails
+        duration_str = "1h"
 
-    # Create export command
-    export_cmd = f"{AIA_SERIES[cadence]}[{time_utc}/1h@{cadence}][{wavelength}]"
+    # Format time for the export command
+    time_utc = start_time + "_UTC"
+
+    # Create export command with calculated duration
+    export_cmd = f"{AIA_SERIES[cadence]}[{time_utc}/{duration_str}@{cadence}][{wavelength}]"
     return export_cmd
 
 
@@ -198,103 +279,115 @@ def download_aia(
         os.makedirs(temp_dir)
 
     # Initialize DRMS client
-    # Email is technically optional for small requests but recommended for reliability
-    # For large export requests, an email address is required for JSOC to notify you
+    # DRMS 0.9.0+ requires an email for all export requests
     if email is None:
-        print(
-            "Warning: No email provided. Small requests may work, but larger requests will likely fail."
-        )
-        print(
-            "Consider providing an email address or using alternative download methods."
-        )
+        print("Error: Email is required for DRMS downloads.")
+        print("Please provide an email address with the --email option,")
+        print("or use --use-fido for downloads without email requirement.")
+        return []
+    
     client = drms.Client(email=email)
 
-    # Format start time for export command - YYYY.MM.DD_HH:MM:SS format required by DRMS
-    # This expects start_time in format YYYY.MM.DD HH:MM:SS
+    # Format start and end times for export command - YYYY.MM.DD_HH:MM:SS format required by DRMS
     start_time_fmt = start_time.replace(" ", "_")
+    end_time_fmt = end_time.replace(" ", "_")
 
-    # Create export command
-    export_cmd = aiaexport(wavelength=wavelength, cadence=cadence, time=start_time_fmt)
+    # Create export command with proper duration
+    export_cmd = aiaexport(wavelength=wavelength, cadence=cadence, start_time=start_time_fmt, end_time=end_time_fmt)
     if export_cmd is None:
         return []
 
     # Request data export
     print(f"Requesting data export with command: {export_cmd}")
     try:
-        response = client.export(export_cmd)
-        record = response.data.record
-        record_list = record.values.tolist()
+        response = client.export(export_cmd, method='url', protocol='fits')
+        
+        # Wait for export to be ready
+        print("Waiting for JSOC export to be ready...")
+        response.wait()
+        
+        if response.status != 0:
+            print(f"Export failed with status {response.status}")
+            print("Try using the --use-fido option as an alternative download method.")
+            return []
+            
+        # Get list of files to download
+        export_data = response.data
+        if export_data is None or len(export_data) == 0:
+            print("No data returned from JSOC export.")
+            print("Try using the --use-fido option as an alternative download method.")
+            return []
+            
+        print(f"Export ready. Found {len(export_data)} files. Downloading...")
+        
     except Exception as e:
         print(f"Error during data export: {str(e)}")
         print("Try using the --use-fido option as an alternative download method.")
         return []
 
-    # Process records to get timestamps
-    record_dict = {}
-    for i in range(len(record_list)):
-        rec = record_list[i].split("{")[-1][:-2]
-        timestamp = record_list[i].split("[")[1].split("T")[1][:-2]
-        if rec == "image_lev":
-            record_dict[i] = timestamp
+    # Filter to only download image files (not spikes)
+    # Export returns both .image_lev1.fits and .spikes.fits files
+    image_data = export_data[export_data['filename'].str.contains('image_lev1')]
+    
+    if len(image_data) == 0:
+        print("No image files found in export (only spike files).")
+        return []
+    
+    print(f"Downloading {len(image_data)} image files (filtered from {len(export_data)} total)...")
 
-    aia_time_list = list(record_dict.values())
-
-    # Get list of times to download
-    time_list = get_time_list(start_time, end_time, interval_seconds)
-
-    # Download and process files
+    # Download all image files from the export
     downloaded_files = []
-    for current_time in time_list:
-        if current_time in aia_time_list:
-            key = get_key(current_time, record_dict)
-            filename = f"{current_time}_{wavelength}"
-
+    for idx in image_data.index:
+        try:
+            # Get the actual filename from the export data
+            original_filename = export_data.loc[idx, 'filename']
+            
             # Define output files for Level 1.0 and Level 1.5
-            level1_file = os.path.join(output_dir, f"aia_{filename}.fits")
-            level1_5_file = os.path.join(output_dir, f"aia_{filename}_lev1.5.fits")
+            level1_file = os.path.join(output_dir, original_filename)
+            level1_5_file = os.path.join(output_dir, original_filename.replace('.fits', '_lev1.5.fits'))
 
-            # Determine which file to check for existence and add to downloaded_files
+            # Skip if already processed
             output_file = level1_5_file if can_calibrate else level1_file
+            if os.path.isfile(output_file):
+                downloaded_files.append(output_file)
+                continue
 
-            if not os.path.isfile(output_file):
-                # Download level 1.0 file
-                response.download(temp_dir, key)
-                temp_file = glob.glob(os.path.join(temp_dir, "*.fits"))[0]
-                os.rename(temp_file, level1_file)
+            # Download the file using keyword argument for index
+            response.download(temp_dir, index=idx)
+            temp_files = glob.glob(os.path.join(temp_dir, "*.fits"))
+            if not temp_files:
+                print(f"Warning: No file downloaded for index {idx}")
+                continue
+                
+            temp_file = temp_files[0]
+            os.rename(temp_file, level1_file)
+            print(f"Downloaded: {os.path.basename(level1_file)}")
 
-                if can_calibrate:
-                    try:
-                        # Convert to level 1.5 using aiapy.calibrate.register
-                        print(
-                            f"Processing {os.path.basename(level1_file)} to Level 1.5..."
-                        )
-                        aia_map = Map(level1_file)
-                        warnings.filterwarnings("ignore")
-
-                        # Use aiapy's register function (replacement for aiaprep)
-                        lev1_5map = register(aia_map)
-                        lev1_5map.save(level1_5_file)
-
-                        # Clean up level 1.0 file if successful
-                        os.remove(level1_file)
-
-                        print(
-                            f"Downloaded and processed: {os.path.basename(level1_5_file)}"
-                        )
-                    except Exception as e:
-                        print(f"Error during Level 1.5 calibration: {str(e)}")
-                        print(
-                            f"Using Level 1.0 file instead: {os.path.basename(level1_file)}"
-                        )
-                        output_file = level1_file  # Use Level 1.0 file instead
-                else:
-                    print(f"Downloaded Level 1.0 file: {os.path.basename(level1_file)}")
-                    if not HAS_AIAPY:
-                        print(
-                            "For Level 1.5 calibration, install aiapy: pip install aiapy"
-                        )
+            if can_calibrate:
+                try:
+                    print(f"Processing {os.path.basename(level1_file)} to Level 1.5...")
+                    aia_map = Map(level1_file)
+                    warnings.filterwarnings("ignore")
+                    lev1_5map = register(aia_map)
+                    lev1_5map.save(level1_5_file)
+                    os.remove(level1_file)
+                    print(f"Processed: {os.path.basename(level1_5_file)}")
+                    output_file = level1_5_file
+                except Exception as e:
+                    print(f"Error during Level 1.5 calibration: {str(e)}")
+                    print(f"Using Level 1.0 file instead: {os.path.basename(level1_file)}")
+                    output_file = level1_file
+            else:
+                print(f"Downloaded Level 1.0 file: {os.path.basename(level1_file)}")
+                if not HAS_AIAPY:
+                    print("For Level 1.5 calibration, install aiapy: pip install aiapy")
+                output_file = level1_file
 
             downloaded_files.append(output_file)
+            
+        except Exception as e:
+            print(f"Error downloading file {idx}: {str(e)}")
+            continue
 
     # Clean up temp directory
     if os.path.exists(temp_dir):
@@ -581,8 +674,8 @@ def download_aia_with_fido(
 
         print(f"Found {len(result[0])} files. Downloading...")
 
-        # Download the files
-        downloaded = Fido.fetch(result, path=output_dir + "/{file}")
+        # Download the files with retry logic
+        downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {str(e)}")
         print("Check your search parameters and ensure sunpy is properly installed.")
@@ -661,13 +754,14 @@ def download_aia_with_fido(
 
 
 
-def hmiexport(series, time):
+def hmiexport(series, start_time, end_time):
     """
     Generate an export command for HMI data.
 
     Args:
         series (str): HMI series (e.g., 'M_45s', 'B_45s', 'Ic_720s')
-        time (str): Start time in 'YYYY.MM.DD_HH:MM:SS' format
+        start_time (str): Start time in 'YYYY.MM.DD_HH:MM:SS' format
+        end_time (str): End time in 'YYYY.MM.DD_HH:MM:SS' format
 
     Returns:
         str: The export command string or None if invalid parameters
@@ -679,11 +773,28 @@ def hmiexport(series, time):
         )
         return None
 
-    # Format time for the export command
-    time_utc = time + "_UTC"
+    # Calculate duration between start and end times
+    try:
+        start_dt = datetime.strptime(start_time.replace('_', ' '), "%Y.%m.%d %H:%M:%S")
+        end_dt = datetime.strptime(end_time.replace('_', ' '), "%Y.%m.%d %H:%M:%S")
+        duration_seconds = (end_dt - start_dt).total_seconds()
+        
+        # Convert to a duration string (e.g., "1h", "30m", "3600s")
+        if duration_seconds >= 3600:
+            duration_str = f"{int(duration_seconds / 3600)}h"
+        elif duration_seconds >= 60:
+            duration_str = f"{int(duration_seconds / 60)}m"
+        else:
+            duration_str = f"{int(duration_seconds)}s"
+    except (ValueError, TypeError):
+        # Default to 1 hour if parsing fails
+        duration_str = "1h"
 
-    # Create export command
-    export_cmd = f"{HMI_SERIES[series]}[{time_utc}/1h]"
+    # Format time for the export command
+    time_utc = start_time + "_UTC"
+
+    # Create export command with calculated duration
+    export_cmd = f"{HMI_SERIES[series]}[{time_utc}/{duration_str}]"
     return export_cmd
 
 
@@ -729,98 +840,99 @@ def download_hmi(
         os.makedirs(temp_dir)
 
     # Initialize DRMS client
-    # Email is technically optional for small requests but recommended for reliability
-    # For large export requests, an email address is required for JSOC to notify you
+    # DRMS 0.9.0+ requires an email for all export requests
     if email is None:
-        print(
-            "Warning: No email provided. Small requests may work, but larger requests will likely fail."
-        )
-        print(
-            "Consider providing an email address or using alternative download methods."
-        )
+        print("Error: Email is required for DRMS downloads.")
+        print("Please provide an email address with the --email option,")
+        print("or use --use-fido for downloads without email requirement.")
+        return []
+    
     client = drms.Client(email=email)
 
-    # Format start time for export command - YYYY.MM.DD_HH:MM:SS format required by DRMS
-    # This expects start_time in format YYYY.MM.DD HH:MM:SS
+    # Format start and end times for export command
     start_time_fmt = start_time.replace(" ", "_")
+    end_time_fmt = end_time.replace(" ", "_")
 
-    # Create export command
-    export_cmd = hmiexport(series=series, time=start_time_fmt)
+    # Create export command with proper duration
+    export_cmd = hmiexport(series=series, start_time=start_time_fmt, end_time=end_time_fmt)
     if export_cmd is None:
         return []
 
     # Request data export
     print(f"Requesting data export with command: {export_cmd}")
     try:
-        response = client.export(export_cmd)
-        record = response.data.record
-        record_list = record.values.tolist()
+        response = client.export(export_cmd, method='url', protocol='fits')
+        
+        # Wait for export to be ready
+        print("Waiting for JSOC export to be ready...")
+        response.wait()
+        
+        if response.status != 0:
+            print(f"Export failed with status {response.status}")
+            print("Try using the --use-fido option as an alternative download method.")
+            return []
+            
+        # Get list of files to download
+        export_data = response.data
+        if export_data is None or len(export_data) == 0:
+            print("No data returned from JSOC export.")
+            print("Try using the --use-fido option as an alternative download method.")
+            return []
+            
+        print(f"Export ready. Found {len(export_data)} files. Downloading...")
+        
     except Exception as e:
         print(f"Error during data export: {str(e)}")
         print("Try using the --use-fido option as an alternative download method.")
         return []
 
-    # Process records to get timestamps
-    record_dict = {}
-    for i in range(len(record_list)):
-        # HMI records have a different format than AIA records
+    # Download all files from the export
+    downloaded_files = []
+    for idx in export_data.index:
         try:
-            parts = record_list[i].split("[")
-            if len(parts) > 1:
-                timestamp_part = parts[1].split("_")[0:3]  # Get the date/time part
-                timestamp = "_".join(timestamp_part)
-                record_dict[i] = timestamp
+            # Get the actual filename from the export data
+            original_filename = export_data.loc[idx, 'filename']
+            output_file = os.path.join(output_dir, original_filename)
+
+            # Skip if already exists
+            if os.path.isfile(output_file):
+                downloaded_files.append(output_file)
+                continue
+
+            # Download the file using keyword argument for index
+            response.download(temp_dir, index=idx)
+            temp_files = glob.glob(os.path.join(temp_dir, "*.fits"))
+            if not temp_files:
+                print(f"Warning: No file downloaded for index {idx}")
+                continue
+                
+            temp_file = temp_files[0]
+            os.rename(temp_file, output_file)
+            print(f"Downloaded: {os.path.basename(output_file)}")
+            downloaded_files.append(output_file)
+            
         except Exception as e:
-            print(f"Warning: Could not parse record {i}: {str(e)}")
+            print(f"Error downloading file {idx}: {str(e)}")
             continue
 
-    hmi_time_list = list(record_dict.values())
-
-    # Get list of times to download
-    time_list = get_time_list(start_time, end_time, interval_seconds)
-
-    # Download and process files
-    downloaded_files = []
-    for current_time in time_list:
-        formatted_current_time = current_time.replace(":", "_").replace(".", "_")
-        matching_times = [t for t in hmi_time_list if formatted_current_time in t]
-
-        if matching_times:
-            for match_time in matching_times:
-                key = get_key(match_time, record_dict)
-                filename = f"hmi_{series}_{match_time.replace(':', '_')}"
-                output_file = os.path.join(output_dir, f"{filename}.fits")
-
-                if not os.path.isfile(output_file):
-                    # Download file
-                    try:
-                        response.download(temp_dir, key)
-                        temp_files = glob.glob(os.path.join(temp_dir, "*.fits"))
-                        if temp_files:
-                            temp_file = temp_files[0]
-                            os.rename(temp_file, output_file)
-                            print(f"Downloaded: {os.path.basename(output_file)}")
-                        else:
-                            print(f"Warning: No files downloaded for {match_time}")
-                            continue
-                    except Exception as e:
-                        print(f"Error downloading file for {match_time}: {str(e)}")
-                        continue
-
-                downloaded_files.append(output_file)
-
-    if not skip_calibration:
+    # Apply calibration if requested
+    if not skip_calibration and downloaded_files:
+        calibrated_files = []
         for file_path in downloaded_files:
-            lvl1_map = Map(file_path)
-            print(f"Processing {os.path.basename(file_path)} to Level 1.5...")
-            lvl1_5_map = update_hmi_pointing(lvl1_map)
-            lvl1_5_map_output_file = os.path.join(
-                output_dir, f"{os.path.basename(file_path)}_lvl1.5.fits"
-            )
-            lvl1_5_map.save(lvl1_5_map_output_file, filetype="fits")
-            print(f"Successfully processed {os.path.basename(file_path)} to Level 1.5")
-            print(f"Deleting {file_path}")
-            os.remove(file_path)
+            try:
+                lvl1_map = Map(file_path)
+                print(f"Processing {os.path.basename(file_path)} to Level 1.5...")
+                lvl1_5_map = update_hmi_pointing(lvl1_map)
+                lvl1_5_map_output_file = file_path.replace('.fits', '_lvl1.5.fits')
+                lvl1_5_map.save(lvl1_5_map_output_file, filetype="fits")
+                print(f"Processed: {os.path.basename(lvl1_5_map_output_file)}")
+                os.remove(file_path)
+                calibrated_files.append(lvl1_5_map_output_file)
+            except Exception as e:
+                print(f"Error calibrating {file_path}: {str(e)}")
+                calibrated_files.append(file_path)
+        downloaded_files = calibrated_files
+
     # Clean up temp directory
     if os.path.exists(temp_dir):
         for file in glob.glob(os.path.join(temp_dir, "*")):
@@ -905,8 +1017,8 @@ def download_hmi_with_fido(
 
         print(f"Found {len(result[0])} files. Downloading...")
 
-        # Download the files
-        downloaded = Fido.fetch(result, path=output_dir + "/{file}")
+        # Download the files with retry logic
+        downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {str(e)}")
         print("Check your search parameters and ensure sunpy is properly installed.")
@@ -1084,8 +1196,8 @@ def download_iris(
 
         print(f"Found {len(result[0])} files. Downloading...")
 
-        # Download the files
-        downloaded = Fido.fetch(result, path=output_dir + "/{file}")
+        # Download the files with retry logic
+        downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {str(e)}")
         print("Check your search parameters and ensure sunpy is properly installed.")
@@ -1289,8 +1401,8 @@ def download_soho(
 
         print(f"Found {total_files} files. Downloading...")
 
-        # Download the files
-        downloaded = Fido.fetch(result, path=output_dir + "/{file}")
+        # Download the files with retry logic
+        downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {str(e)}")
         print("Check your search parameters and ensure sunpy is properly installed.")
@@ -1480,8 +1592,8 @@ def download_goes_suvi(
 
         print(f"Found {total_files} files. Downloading...")
 
-        # Download the files
-        downloaded = Fido.fetch(result, path=output_dir + "/{file}")
+        # Download the files with retry logic
+        downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {str(e)}")
         return []
@@ -1589,8 +1701,8 @@ def download_stereo(
 
         print(f"Found {total_files} files. Downloading...")
 
-        # Download the files
-        downloaded = Fido.fetch(result, path=output_dir + "/{file}")
+        # Download the files with retry logic
+        downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {str(e)}")
         return []
@@ -1652,8 +1764,8 @@ def download_gong(
 
         print(f"Found {total_files} files. Downloading...")
 
-        # Download the files
-        downloaded = Fido.fetch(result, path=output_dir + "/{file}")
+        # Download the files with retry logic
+        downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {str(e)}")
         return []
