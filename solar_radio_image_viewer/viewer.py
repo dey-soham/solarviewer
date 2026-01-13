@@ -13038,33 +13038,114 @@ sys.exit(app.exec_())
         """Start a timer to periodically check connection health."""
         if not hasattr(self, '_health_check_timer'):
             from PyQt5.QtCore import QTimer
-            self._health_check_timer = QTimer()
+            self._health_check_timer = QTimer(self)  # Parent to self
             self._health_check_timer.timeout.connect(self._check_connection_health)
         
-        # Check every 30 seconds
-        self._health_check_timer.start(30000)
+        # Check every 5 seconds
+        self._health_check_timer.start(5000)
+        #print("[SSH] Health check timer started (5s interval)")
     
     def _stop_connection_health_timer(self):
         """Stop the connection health check timer."""
         if hasattr(self, '_health_check_timer'):
             self._health_check_timer.stop()
+            #print("[SSH] Health check timer stopped")
     
     def _check_connection_health(self):
         """Periodically check connection health and auto-reconnect if needed."""
+        #print("[SSH] Health check running...")  # Debug
+        
         if not self.remote_connection:
+            #print("[SSH] Health check: No remote connection")
             return
         
-        # Check if connection is still alive
-        if not self.remote_connection.is_connected():
-            # Connection lost - try auto-reconnect
-            if self.remote_connection.ensure_connected():
-                # Reconnected successfully
-                self.statusBar().showMessage("🔄 Remote connection restored", 5000)
-            else:
-                # Failed to reconnect
-                self.statusBar().showMessage("⚠️ Remote connection lost - click status to reconnect", 10000)
+        # Run ping in background thread to avoid blocking UI
+        from PyQt5.QtCore import QThread, pyqtSignal
+        
+        # If previous ping is still running after 10s, assume connection is dead
+        if hasattr(self, '_ping_thread') and self._ping_thread and self._ping_thread.isRunning():
+            if hasattr(self, '_ping_start_time'):
+                import time
+                elapsed = time.time() - self._ping_start_time
+                if elapsed > 10:
+                    #print(f"[SSH] Health check: Ping stuck for {elapsed:.1f}s - connection appears dead")
+                    # Connection is dead - the ping is stuck
+                    try:
+                        self._ping_thread.terminate()
+                        self._ping_thread.wait(1000)
+                    except:
+                        pass
+                    # Trigger reconnect
+                    if self.remote_connection:
+                        self.remote_connection._connected = False
+                        self.statusBar().showMessage("⚠️ Remote connection lost - click status to reconnect", 10000)
+                        self._update_remote_status_indicator()
+                        self._update_remote_menu_state()
+                    return
+            #print("[SSH] Health check: Previous ping still running, skipping")
+            return
+        
+        class PingThread(QThread):
+            result = pyqtSignal(bool)
             
-            # Update status indicator
-            self._update_remote_status_indicator()
-            self._update_remote_menu_state()
+            def __init__(self, connection):
+                super().__init__()
+                self.connection = connection
+            
+            def run(self):
+                import socket
+                try:
+                    # Quick passive check first
+                    if not self.connection._connected or not self.connection._client:
+                        self.result.emit(False)
+                        return
+                    
+                    transport = self.connection._client.get_transport()
+                    if transport is None or not transport.is_active():
+                        self.result.emit(False)
+                        return
+                    
+                    # Set socket timeout temporarily
+                    sock = transport.sock
+                    old_timeout = sock.gettimeout()
+                    sock.settimeout(3.0)  # 3 second timeout
+                    
+                    try:
+                        # Try to open a new SFTP channel - this requires server response
+                        # If network is down, this will timeout
+                        sftp = self.connection._client.open_sftp()
+                        sftp.close()  # Close it immediately
+                        self.result.emit(True)
+                    except socket.timeout:
+                        print("[SSH] Ping timeout - connection appears dead")
+                        self.result.emit(False)
+                    except Exception as e:
+                        print(f"[SSH] Ping failed: {e}")
+                        self.result.emit(False)
+                    finally:
+                        sock.settimeout(old_timeout)
+                        
+                except Exception as e:
+                    print(f"[SSH] Ping error: {e}")
+                    self.result.emit(False)
+        
+        def on_ping_result(is_alive):
+            if not is_alive:
+                print("[SSH] Health check: Connection lost, attempting reconnect...")
+                if self.remote_connection and self.remote_connection.ensure_connected():
+                    print("[SSH] Health check: Reconnected successfully")
+                    self.statusBar().showMessage("🔄 Remote connection restored", 5000)
+                else:
+                    print("[SSH] Health check: Reconnect failed")
+                    self.statusBar().showMessage("⚠️ Remote connection lost - click status to reconnect", 10000)
+                
+                self._update_remote_status_indicator()
+                self._update_remote_menu_state()
+        
+        #print("[SSH] Health check: Pinging connection in background...")
+        import time
+        self._ping_start_time = time.time()
+        self._ping_thread = PingThread(self.remote_connection)
+        self._ping_thread.result.connect(on_ping_result)
+        self._ping_thread.start()
 

@@ -188,15 +188,20 @@ class SSHConnection:
                 "port": actual_port,
                 "username": actual_user,
                 "timeout": timeout,
-                "allow_agent": True,
                 "look_for_keys": True,
             }
             
             if password:
+                # When password is provided, disable agent to avoid hardware token issues
                 connect_kwargs["password"] = password
+                connect_kwargs["allow_agent"] = False
             elif actual_key and os.path.exists(actual_key):
-                # Load the key file
+                # When explicit key is provided, disable agent to avoid hardware token issues
                 connect_kwargs["key_filename"] = actual_key
+                connect_kwargs["allow_agent"] = False
+            else:
+                # Only use agent when no explicit credentials provided
+                connect_kwargs["allow_agent"] = True
             
             self._client.connect(**connect_kwargs)
             
@@ -289,7 +294,7 @@ class SSHConnection:
             return False
     
     def is_connected(self) -> bool:
-        """Check if currently connected."""
+        """Check if currently connected (passive check only)."""
         if not self._connected or not self._client:
             return False
         
@@ -301,6 +306,47 @@ class SSHConnection:
                 return False
             return True
         except:
+            self._connected = False
+            return False
+    
+    def ping_connection(self, timeout: float = 5.0) -> bool:
+        """
+        Actively test connection by sending traffic.
+        
+        Args:
+            timeout: Timeout in seconds for the test
+            
+        Returns:
+            True if connection is responsive, False otherwise
+        """
+        if not self._connected or not self._client:
+            return False
+        
+        try:
+            transport = self._client.get_transport()
+            if transport is None or not transport.is_active():
+                self._connected = False
+                return False
+            
+            # Set a timeout on the socket for this check
+            sock = transport.sock
+            old_timeout = sock.gettimeout()
+            sock.settimeout(timeout)
+            
+            try:
+                # Use stat('.') which requires an actual server round-trip
+                # Unlike getcwd() which might use cached data
+                if self._sftp:
+                    self._sftp.stat('.')
+                else:
+                    # Just send keep-alive if no SFTP
+                    transport.send_ignore()
+            finally:
+                sock.settimeout(old_timeout)
+            
+            return True
+        except Exception as e:
+            print(f"[SSH] Ping failed: {e}")
             self._connected = False
             return False
     
