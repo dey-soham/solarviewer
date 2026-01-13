@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QFrame,
     QHeaderView,
     QAbstractItemView,
+    QWidget,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QIcon
@@ -178,6 +179,10 @@ class RemoteFileBrowser(QDialog):
     # Class-level flag to track if there's a pending operation that may be blocking
     _has_pending_operation: bool = False
     
+    # Class-level cache for directory listings: {(host, path): (entries, timestamp)}
+    _listing_cache: dict = {}
+    _cache_ttl: int = 60  # Cache TTL in seconds
+    
     def __init__(
         self,
         connection: SSHConnection,
@@ -210,6 +215,13 @@ class RemoteFileBrowser(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
         
+        # Breadcrumb navigation
+        self.breadcrumb_layout = QHBoxLayout()
+        self.breadcrumb_layout.setSpacing(2)
+        self.breadcrumb_widget = QWidget()
+        self.breadcrumb_widget.setLayout(self.breadcrumb_layout)
+        layout.addWidget(self.breadcrumb_widget)
+        
         # Path bar
         path_layout = QHBoxLayout()
         
@@ -231,8 +243,8 @@ class RemoteFileBrowser(QDialog):
         
         self.refresh_btn = QPushButton("🔄")
         self.refresh_btn.setFixedSize(32, 28)
-        self.refresh_btn.setToolTip("Refresh directory")
-        self.refresh_btn.clicked.connect(self._refresh)
+        self.refresh_btn.setToolTip("Refresh directory (bypass cache)")
+        self.refresh_btn.clicked.connect(lambda: self._refresh(force_refresh=True))
         path_layout.addWidget(self.refresh_btn)
         
         layout.addLayout(path_layout)
@@ -415,6 +427,53 @@ class RemoteFileBrowser(QDialog):
         else:
             self.cache_info_label.setText("")
     
+    def _update_breadcrumbs(self):
+        """Update the breadcrumb navigation bar with clickable path segments."""
+        # Clear existing breadcrumbs
+        while self.breadcrumb_layout.count():
+            item = self.breadcrumb_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Split path into segments
+        path = self.current_path.rstrip("/")
+        if not path:
+            path = "/"
+        
+        segments = path.split("/")
+        
+        # Build cumulative paths for each segment
+        cumulative_path = ""
+        for i, segment in enumerate(segments):
+            if i == 0:
+                # Root
+                cumulative_path = "/"
+                display_name = "🏠 /"
+            else:
+                cumulative_path = f"{cumulative_path.rstrip('/')}/{segment}"
+                display_name = segment
+            
+            # Create clickable button
+            btn = QPushButton(display_name)
+            btn.setFlat(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet("QPushButton { text-align: left; padding: 2px 4px; } QPushButton:hover { background-color: palette(mid); }")
+            
+            # Store path for this button
+            target_path = cumulative_path
+            btn.clicked.connect(lambda checked, p=target_path: self._navigate_to(p))
+            
+            self.breadcrumb_layout.addWidget(btn)
+            
+            # Add separator (except for last item)
+            if i < len(segments) - 1:
+                sep = QLabel(" › ")
+                sep.setStyleSheet("color: gray;")
+                self.breadcrumb_layout.addWidget(sep)
+        
+        # Add stretch to push everything left
+        self.breadcrumb_layout.addStretch()
+    
     def _load_initial_directory(self):
         """Navigate to last used directory or home if not available."""
         host = self.connection._host
@@ -447,6 +506,9 @@ class RemoteFileBrowser(QDialog):
         host = self.connection._host
         RemoteFileBrowser._last_paths[host] = path
         
+        # Update breadcrumb navigation
+        self._update_breadcrumbs()
+        
         self._refresh()
     
     def _go_up(self):
@@ -462,8 +524,12 @@ class RemoteFileBrowser(QDialog):
         if path:
             self._navigate_to(path)
     
-    def _refresh(self):
-        """Refresh current directory listing asynchronously."""
+    def _refresh(self, force_refresh: bool = False):
+        """Refresh current directory listing asynchronously.
+        
+        Args:
+            force_refresh: If True, bypass cache and fetch fresh data
+        """
         # Cancel any existing listing operation (don't wait - just mark cancelled)
         if self._list_thread and self._list_thread.isRunning():
             try:
@@ -483,6 +549,19 @@ class RemoteFileBrowser(QDialog):
                     RemoteFileBrowser._has_pending_operation = False
                 except:
                     pass  # Will try again next time
+        
+        # Check cache first (unless force refresh)
+        if not force_refresh:
+            cache_key = (self.connection._host, self.current_path, 
+                         self.show_hidden_cb.isChecked(), self.fits_only_cb.isChecked())
+            if cache_key in RemoteFileBrowser._listing_cache:
+                entries, timestamp = RemoteFileBrowser._listing_cache[cache_key]
+                import time
+                if time.time() - timestamp < RemoteFileBrowser._cache_ttl:
+                    # Use cached entries
+                    self.tree.clear()
+                    self._on_list_finished(entries, from_cache=True)
+                    return
         
         self.tree.clear()
         self.status_label.setText("⏳ Loading...")
@@ -552,9 +631,16 @@ class RemoteFileBrowser(QDialog):
         
         super().reject()
     
-    def _on_list_finished(self, entries: list):
+    def _on_list_finished(self, entries: list, from_cache: bool = False):
         """Handle successful directory listing."""
         self._set_loading_state(False)
+        
+        # Store in cache if this was a fresh fetch
+        if not from_cache:
+            import time
+            cache_key = (self.connection._host, self.current_path,
+                         self.show_hidden_cb.isChecked(), self.fits_only_cb.isChecked())
+            RemoteFileBrowser._listing_cache[cache_key] = (entries, time.time())
         
         from datetime import datetime
         
@@ -592,7 +678,8 @@ class RemoteFileBrowser(QDialog):
             
             self.tree.addTopLevelItem(item)
         
-        self.status_label.setText(f"{len(entries)} items")
+        cache_indicator = " (cached)" if from_cache else ""
+        self.status_label.setText(f"{len(entries)} items{cache_indicator}")
     
     def _on_list_error(self, error_msg: str):
         """Handle directory listing error."""
@@ -633,11 +720,8 @@ class RemoteFileBrowser(QDialog):
         entry: RemoteFileInfo = item.data(0, Qt.UserRole)
         
         if entry.is_dir:
-            # Always navigate into directories on double-click
-            # Use Select button to download CASA image directories
             self._navigate_to(entry.path)
         elif entry.is_fits:
-            # Download and open FITS file
             self._download_and_open(entry)
     
     def _open_selected(self):
@@ -648,11 +732,9 @@ class RemoteFileBrowser(QDialog):
         
         entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
         if self.casa_mode:
-            # In CASA mode, we want directories
             if entry.is_dir:
                 self._download_and_open(entry)
         else:
-            # In FITS mode, we want files
             if not entry.is_dir:
                 self._download_and_open(entry)
     

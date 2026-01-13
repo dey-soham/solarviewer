@@ -94,6 +94,9 @@ class SSHConnection:
         self._connected: bool = False
         self._ssh_config: Optional[SSHConfig] = None
         
+        # Store connection parameters for auto-reconnect
+        self._connect_params: dict = {}
+        
         # Load SSH config if available
         self._load_ssh_config()
     
@@ -197,6 +200,11 @@ class SSHConnection:
             
             self._client.connect(**connect_kwargs)
             
+            # Configure keep-alive to prevent connection timeout
+            transport = self._client.get_transport()
+            if transport:
+                transport.set_keepalive(30)  # Send keep-alive every 30 seconds
+            
             # Open SFTP channel
             self._sftp = self._client.open_sftp()
             
@@ -204,6 +212,16 @@ class SSHConnection:
             self._port = actual_port
             self._username = actual_user
             self._connected = True
+            
+            # Store connection parameters for potential reconnect
+            self._connect_params = {
+                "host": host,
+                "port": port,
+                "username": username,
+                "password": password,
+                "key_path": key_path,
+                "timeout": timeout,
+            }
             
         except paramiko.AuthenticationException as e:
             self._cleanup()
@@ -233,12 +251,42 @@ class SSHConnection:
         
         self._connected = False
     
-    def disconnect(self) -> None:
-        """Disconnect from the remote server."""
+    def disconnect(self, clear_credentials: bool = True) -> None:
+        """Disconnect from the remote server.
+        
+        Args:
+            clear_credentials: If True, clear stored connection parameters
+        """
         self._cleanup()
         self._host = ""
         self._port = 22
         self._username = ""
+        if clear_credentials:
+            self._connect_params = {}
+    
+    def reconnect(self) -> bool:
+        """
+        Attempt to reconnect using stored connection parameters.
+        
+        Returns:
+            True if reconnection succeeded, False otherwise
+        """
+        if not self._connect_params:
+            return False
+        
+        try:
+            # Clean up existing connection
+            self._cleanup()
+            
+            # Reconnect with stored params
+            self.connect(**self._connect_params)
+            return True
+        except SSHConnectionError as e:
+            print(f"[SSH] Reconnection failed: {e}")
+            return False
+        except Exception as e:
+            print(f"[SSH] Reconnection error: {e}")
+            return False
     
     def is_connected(self) -> bool:
         """Check if currently connected."""
@@ -255,6 +303,67 @@ class SSHConnection:
         except:
             self._connected = False
             return False
+    
+    def ensure_connected(self) -> bool:
+        """
+        Ensure connection is active, auto-reconnecting if needed.
+        
+        Returns:
+            True if connected (possibly after reconnect), False if failed
+        """
+        if self.is_connected():
+            return True
+        
+        # Try to reconnect
+        if self._connect_params:
+            print("[SSH] Connection lost, attempting auto-reconnect...")
+            if self.reconnect():
+                print("[SSH] Auto-reconnect successful")
+                return True
+            else:
+                print("[SSH] Auto-reconnect failed")
+        
+        return False
+    
+    def check_health(self) -> dict:
+        """
+        Perform a health check on the connection.
+        
+        Returns:
+            dict with status info: {
+                'connected': bool,
+                'transport_active': bool,
+                'sftp_active': bool,
+                'can_reconnect': bool
+            }
+        """
+        result = {
+            'connected': False,
+            'transport_active': False,
+            'sftp_active': False,
+            'can_reconnect': bool(self._connect_params)
+        }
+        
+        if not self._client:
+            return result
+        
+        try:
+            transport = self._client.get_transport()
+            if transport and transport.is_active():
+                result['transport_active'] = True
+                result['connected'] = True
+        except:
+            pass
+        
+        try:
+            if self._sftp:
+                # Try a simple operation to test SFTP
+                self._sftp.getcwd()
+                result['sftp_active'] = True
+        except:
+            pass
+        
+        return result
     
     def refresh_sftp(self) -> bool:
         """
@@ -505,3 +614,22 @@ class SSHConnection:
             return self._sftp.normalize(".")
         except:
             return "/"
+    
+    def get_directory_count(self, path: str) -> int:
+        """
+        Get the number of items in a directory (fast - just counts names).
+        
+        Args:
+            path: Remote directory path
+            
+        Returns:
+            Number of items in directory, or -1 if error
+        """
+        if not self.is_connected():
+            return -1
+        
+        try:
+            # listdir is faster than listdir_attr as it doesn't fetch attributes
+            return len(self._sftp.listdir(path))
+        except:
+            return -1

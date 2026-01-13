@@ -12883,6 +12883,9 @@ sys.exit(app.exec_())
         
         self._update_remote_menu_state()
         self._update_remote_status_indicator()
+        
+        # Start periodic health check
+        self._start_connection_health_timer()
     
     def show_remote_file_browser(self):
         """Show the remote file browser dialog."""
@@ -12936,6 +12939,9 @@ sys.exit(app.exec_())
     
     def disconnect_remote(self):
         """Disconnect from the remote server."""
+        # Stop health check timer
+        self._stop_connection_health_timer()
+        
         if self.remote_connection:
             try:
                 host_info = self.remote_connection.connection_info
@@ -13027,3 +13033,38 @@ sys.exit(app.exec_())
         else:
             # Not connected - show connection dialog
             self.show_remote_connection_dialog()
+    
+    def _start_connection_health_timer(self):
+        """Start a timer to periodically check connection health."""
+        if not hasattr(self, '_health_check_timer'):
+            from PyQt5.QtCore import QTimer
+            self._health_check_timer = QTimer()
+            self._health_check_timer.timeout.connect(self._check_connection_health)
+        
+        # Check every 30 seconds
+        self._health_check_timer.start(30000)
+    
+    def _stop_connection_health_timer(self):
+        """Stop the connection health check timer."""
+        if hasattr(self, '_health_check_timer'):
+            self._health_check_timer.stop()
+    
+    def _check_connection_health(self):
+        """Periodically check connection health and auto-reconnect if needed."""
+        if not self.remote_connection:
+            return
+        
+        # Check if connection is still alive
+        if not self.remote_connection.is_connected():
+            # Connection lost - try auto-reconnect
+            if self.remote_connection.ensure_connected():
+                # Reconnected successfully
+                self.statusBar().showMessage("🔄 Remote connection restored", 5000)
+            else:
+                # Failed to reconnect
+                self.statusBar().showMessage("⚠️ Remote connection lost - click status to reconnect", 10000)
+            
+            # Update status indicator
+            self._update_remote_status_indicator()
+            self._update_remote_menu_state()
+
