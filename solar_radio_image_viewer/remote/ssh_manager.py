@@ -18,6 +18,11 @@ try:
     from paramiko import SSHClient, SFTPClient, RSAKey, Ed25519Key, ECDSAKey
     from paramiko.config import SSHConfig
     HAS_PARAMIKO = True
+    
+    # Suppress verbose paramiko logging (SFTP open/close messages)
+    import logging
+    logging.getLogger("paramiko.transport.sftp").setLevel(logging.WARNING)
+    logging.getLogger("paramiko.transport").setLevel(logging.WARNING)
 except ImportError:
     HAS_PARAMIKO = False
     SSHClient = None
@@ -249,6 +254,32 @@ class SSHConnection:
             return True
         except:
             self._connected = False
+            return False
+    
+    def refresh_sftp(self) -> bool:
+        """
+        Refresh the SFTP channel. 
+        Useful if the previous SFTP session was interrupted.
+        
+        Returns:
+            True if refresh succeeded, False otherwise
+        """
+        if not self._connected or not self._client:
+            return False
+        
+        try:
+            # Close existing SFTP if any
+            if self._sftp:
+                try:
+                    self._sftp.close()
+                except:
+                    pass
+            
+            # Open new SFTP channel
+            self._sftp = self._client.open_sftp()
+            return True
+        except Exception as e:
+            print(f"[SSH] Failed to refresh SFTP: {e}")
             return False
     
     @property

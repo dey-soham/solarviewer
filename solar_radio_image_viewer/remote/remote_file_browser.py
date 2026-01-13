@@ -75,6 +75,93 @@ class DownloadThread(QThread):
         self.progress.emit(transferred, total)
 
 
+class ListDirectoryThread(QThread):
+    """Thread for listing directories without blocking UI."""
+    
+    finished = pyqtSignal(list)  # list of RemoteFileInfo
+    error = pyqtSignal(str)  # error message
+    
+    def __init__(
+        self,
+        connection: SSHConnection,
+        path: str,
+        show_hidden: bool = False,
+        fits_only: bool = False,
+    ):
+        super().__init__()
+        self.connection = connection
+        self.path = path
+        self.show_hidden = show_hidden
+        self.fits_only = fits_only
+        self._cancelled = False
+        self._sftp = None  # Thread's own SFTP channel
+    
+    def cancel(self):
+        """Request cancellation of the listing operation."""
+        self._cancelled = True
+        # Try to close our SFTP channel to interrupt blocking operation
+        if self._sftp:
+            try:
+                self._sftp.close()
+            except:
+                pass
+    
+    def run(self):
+        try:
+            # Create our own SFTP channel for this thread
+            if self.connection._client:
+                self._sftp = self.connection._client.open_sftp()
+            else:
+                raise SSHConnectionError("SSH client not connected")
+            
+            # List directory using our own SFTP channel
+            import stat
+            entries = []
+            for attr in self._sftp.listdir_attr(self.path):
+                if self._cancelled:
+                    break
+                    
+                name = attr.filename
+                
+                # Skip hidden files if not requested
+                if not self.show_hidden and name.startswith('.'):
+                    continue
+                
+                is_dir = stat.S_ISDIR(attr.st_mode)
+                full_path = os.path.join(self.path, name)
+                
+                info = RemoteFileInfo(
+                    name=name,
+                    path=full_path,
+                    is_dir=is_dir,
+                    size=attr.st_size,
+                    mtime=attr.st_mtime,
+                )
+                
+                # Filter for FITS files if requested
+                if self.fits_only and not is_dir and not info.is_fits:
+                    continue
+                
+                entries.append(info)
+            
+            if not self._cancelled:
+                # Sort: directories first, then alphabetically
+                entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
+                self.finished.emit(entries)
+                
+        except Exception as e:
+            if not self._cancelled:
+                self.error.emit(str(e))
+        finally:
+            # Always close our SFTP channel
+            if self._sftp:
+                try:
+                    self._sftp.close()
+                except:
+                    pass
+                self._sftp = None
+
+
 class RemoteFileBrowser(QDialog):
     """
     File browser dialog for navigating remote directories via SFTP.
@@ -84,6 +171,12 @@ class RemoteFileBrowser(QDialog):
     """
     
     fileSelected = pyqtSignal(str)  # local path to downloaded file
+    
+    # Class-level variable to remember last browsed directory per host
+    _last_paths: dict = {}  # {host: last_path}
+    
+    # Class-level flag to track if there's a pending operation that may be blocking
+    _has_pending_operation: bool = False
     
     def __init__(
         self,
@@ -105,12 +198,13 @@ class RemoteFileBrowser(QDialog):
         self.cache = cache or RemoteFileCache()
         self.current_path = "/"
         self._download_thread: Optional[DownloadThread] = None
+        self._list_thread: Optional[ListDirectoryThread] = None
         
         self._setup_ui()
         self._apply_styles()
         
-        # Load initial directory
-        QTimer.singleShot(100, self._load_home_directory)
+        # Load initial directory - use last path if available
+        QTimer.singleShot(100, self._load_initial_directory)
     
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -205,6 +299,13 @@ class RemoteFileBrowser(QDialog):
         button_layout.addWidget(self.cache_info_label)
         self._update_cache_info()
         
+        # Loading cancel button (hidden by default)
+        self.loading_cancel_btn = QPushButton("⛔ Cancel Loading")
+        self.loading_cancel_btn.setToolTip("Cancel the current directory listing")
+        self.loading_cancel_btn.clicked.connect(self._cancel_listing)
+        self.loading_cancel_btn.setVisible(False)
+        button_layout.addWidget(self.loading_cancel_btn)
+        
         button_layout.addStretch()
         
         # Go Into button - for navigating into directories in CASA mode
@@ -215,7 +316,7 @@ class RemoteFileBrowser(QDialog):
         if self.casa_mode:
             button_layout.addWidget(self.go_into_btn)
         
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = QPushButton("Close")
         self.cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(self.cancel_btn)
         
@@ -314,6 +415,21 @@ class RemoteFileBrowser(QDialog):
         else:
             self.cache_info_label.setText("")
     
+    def _load_initial_directory(self):
+        """Navigate to last used directory or home if not available."""
+        host = self.connection._host
+        
+        # Use last path if available, otherwise try to get home directory
+        if host in RemoteFileBrowser._last_paths:
+            self._navigate_to(RemoteFileBrowser._last_paths[host])
+        else:
+            # Get home directory - this is a quick call
+            try:
+                home = self.connection.get_home_directory()
+                self._navigate_to(home)
+            except:
+                self._navigate_to("/")
+    
     def _load_home_directory(self):
         """Navigate to home directory."""
         try:
@@ -326,6 +442,11 @@ class RemoteFileBrowser(QDialog):
         """Navigate to a specific directory."""
         self.current_path = path
         self.path_edit.setText(path)
+        
+        # Remember this path for next time
+        host = self.connection._host
+        RemoteFileBrowser._last_paths[host] = path
+        
         self._refresh()
     
     def _go_up(self):
@@ -342,57 +463,142 @@ class RemoteFileBrowser(QDialog):
             self._navigate_to(path)
     
     def _refresh(self):
-        """Refresh current directory listing."""
-        self.tree.clear()
-        self.status_label.setText("Loading...")
+        """Refresh current directory listing asynchronously."""
+        # Cancel any existing listing operation (don't wait - just mark cancelled)
+        if self._list_thread and self._list_thread.isRunning():
+            try:
+                self._list_thread.finished.disconnect()
+                self._list_thread.error.disconnect()
+            except:
+                pass
+            self._list_thread.cancel()
+            # Mark that we have a pending operation
+            RemoteFileBrowser._has_pending_operation = True
         
-        try:
-            entries = self.connection.list_directory(
-                self.current_path,
-                show_hidden=self.show_hidden_cb.isChecked(),
-                fits_only=self.fits_only_cb.isChecked(),
-            )
+        # If there was a pending operation from before and thread is done, refresh SFTP
+        if RemoteFileBrowser._has_pending_operation:
+            if self._list_thread is None or not self._list_thread.isRunning():
+                try:
+                    self.connection.refresh_sftp()
+                    RemoteFileBrowser._has_pending_operation = False
+                except:
+                    pass  # Will try again next time
+        
+        self.tree.clear()
+        self.status_label.setText("⏳ Loading...")
+        
+        # Disable UI during loading
+        self._set_loading_state(True)
+        
+        # Start async listing
+        self._list_thread = ListDirectoryThread(
+            self.connection,
+            self.current_path,
+            show_hidden=self.show_hidden_cb.isChecked(),
+            fits_only=self.fits_only_cb.isChecked(),
+        )
+        self._list_thread.finished.connect(self._on_list_finished)
+        self._list_thread.error.connect(self._on_list_error)
+        self._list_thread.start()
+    
+    def _set_loading_state(self, loading: bool):
+        """Enable/disable UI elements during loading."""
+        self.up_btn.setEnabled(not loading)
+        self.home_btn.setEnabled(not loading)
+        self.refresh_btn.setEnabled(not loading)
+        self.path_edit.setEnabled(not loading)
+        self.show_hidden_cb.setEnabled(not loading)
+        self.fits_only_cb.setEnabled(not loading)
+        self.open_btn.setEnabled(not loading and False)  # Also check selection
+        
+        # Show/update loading cancel button
+        if loading:
+            self.loading_cancel_btn.setVisible(True)
+            self.status_label.setText("⏳ Loading... (click Cancel to abort)")
+        else:
+            self.loading_cancel_btn.setVisible(False)
+    
+    def _cancel_listing(self):
+        """Cancel the current directory listing operation."""
+        if self._list_thread and self._list_thread.isRunning():
+            self._list_thread.cancel()
+            self._list_thread.wait(1000)
+            self._set_loading_state(False)
+            self.status_label.setText("Cancelled")
+    
+    def reject(self):
+        """Override reject to cancel any running operations before closing."""
+        # Cancel listing thread if running
+        if self._list_thread and self._list_thread.isRunning():
+            # Disconnect signals so results are ignored
+            try:
+                self._list_thread.finished.disconnect()
+                self._list_thread.error.disconnect()
+            except:
+                pass
+            self._list_thread.cancel()
+            # Don't wait - just let it finish in background
+        
+        # Cancel download thread if running
+        if self._download_thread and self._download_thread.isRunning():
+            try:
+                self._download_thread.finished.disconnect()
+                self._download_thread.error.disconnect()
+                self._download_thread.progress.disconnect()
+            except:
+                pass
+            # Don't wait - just let it finish in background
+            RemoteFileBrowser._has_pending_operation = True
+        
+        super().reject()
+    
+    def _on_list_finished(self, entries: list):
+        """Handle successful directory listing."""
+        self._set_loading_state(False)
+        
+        from datetime import datetime
+        
+        for entry in entries:
+            item = QTreeWidgetItem()
             
-            for entry in entries:
-                item = QTreeWidgetItem()
-                
-                # Name with icon
-                if entry.is_dir:
-                    item.setText(0, f"📁 {entry.name}")
-                elif entry.is_fits:
-                    item.setText(0, f"🔭 {entry.name}")
+            # Name with icon
+            if entry.is_dir:
+                item.setText(0, f"📁 {entry.name}")
+            elif entry.is_fits:
+                item.setText(0, f"🔭 {entry.name}")
+            else:
+                item.setText(0, f"📄 {entry.name}")
+            
+            # Size
+            if entry.is_dir:
+                item.setText(1, "<DIR>")
+            else:
+                size = entry.size
+                if size > 1024 * 1024 * 1024:
+                    item.setText(1, f"{size / (1024**3):.1f} GB")
+                elif size > 1024 * 1024:
+                    item.setText(1, f"{size / (1024**2):.1f} MB")
+                elif size > 1024:
+                    item.setText(1, f"{size / 1024:.1f} KB")
                 else:
-                    item.setText(0, f"📄 {entry.name}")
-                
-                # Size
-                if entry.is_dir:
-                    item.setText(1, "<DIR>")
-                else:
-                    size = entry.size
-                    if size > 1024 * 1024 * 1024:
-                        item.setText(1, f"{size / (1024**3):.1f} GB")
-                    elif size > 1024 * 1024:
-                        item.setText(1, f"{size / (1024**2):.1f} MB")
-                    elif size > 1024:
-                        item.setText(1, f"{size / 1024:.1f} KB")
-                    else:
-                        item.setText(1, f"{size} B")
-                
-                # Modified time
-                from datetime import datetime
-                mtime = datetime.fromtimestamp(entry.mtime)
-                item.setText(2, mtime.strftime("%Y-%m-%d %H:%M"))
-                
-                # Store file info
-                item.setData(0, Qt.UserRole, entry)
-                
-                self.tree.addTopLevelItem(item)
+                    item.setText(1, f"{size} B")
             
-            self.status_label.setText(f"{len(entries)} items")
+            # Modified time
+            mtime = datetime.fromtimestamp(entry.mtime)
+            item.setText(2, mtime.strftime("%Y-%m-%d %H:%M"))
             
-        except SSHConnectionError as e:
-            self.status_label.setText(f"Error: {e}")
-            QMessageBox.warning(self, "Error", f"Failed to list directory: {e}")
+            # Store file info
+            item.setData(0, Qt.UserRole, entry)
+            
+            self.tree.addTopLevelItem(item)
+        
+        self.status_label.setText(f"{len(entries)} items")
+    
+    def _on_list_error(self, error_msg: str):
+        """Handle directory listing error."""
+        self._set_loading_state(False)
+        self.status_label.setText(f"❌ Error: {error_msg}")
+        QMessageBox.warning(self, "Error", f"Failed to list directory:\n{error_msg}")
     
     def _on_selection_changed(self):
         """Update UI when selection changes."""

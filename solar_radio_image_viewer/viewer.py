@@ -8243,44 +8243,119 @@ class SolarRadioImageTab(QWidget):
             self._file_pos_label.setToolTip("")
     
     def _populate_remote_file_list(self, main_window, remote_dir, casa_mode, current_local_path):
-        """Populate the file list from a remote directory for navigation."""
+        """Populate the file list from a remote directory for navigation (async)."""
+        # Start async population - don't block UI
+        from PyQt5.QtCore import QThread, pyqtSignal, QObject
+        
+        class PopulateThread(QThread):
+            finished = pyqtSignal(list, int)  # entries, current_index
+            error = pyqtSignal(str)
+            
+            def __init__(self, connection, remote_dir, casa_mode, current_basename):
+                super().__init__()
+                self.connection = connection
+                self.remote_dir = remote_dir
+                self.casa_mode = casa_mode
+                self.current_basename = current_basename
+                self._sftp = None
+            
+            def run(self):
+                try:
+                    # Create our own SFTP channel
+                    if self.connection._client:
+                        self._sftp = self.connection._client.open_sftp()
+                    else:
+                        self.error.emit("Not connected")
+                        return
+                    
+                    import stat
+                    entries = []
+                    for attr in self._sftp.listdir_attr(self.remote_dir):
+                        name = attr.filename
+                        if name.startswith('.'):
+                            continue
+                        
+                        is_dir = stat.S_ISDIR(attr.st_mode)
+                        full_path = os.path.join(self.remote_dir, name)
+                        
+                        # Import RemoteFileInfo
+                        from .remote.ssh_manager import RemoteFileInfo
+                        info = RemoteFileInfo(
+                            name=name,
+                            path=full_path,
+                            is_dir=is_dir,
+                            size=attr.st_size,
+                            mtime=attr.st_mtime,
+                        )
+                        
+                        # Filter based on mode
+                        if self.casa_mode:
+                            if is_dir:
+                                entries.append(info)
+                        else:
+                            if info.is_fits:
+                                entries.append(info)
+                    
+                    # Sort
+                    entries.sort(key=lambda x: x.name.lower())
+                    
+                    # Find current index
+                    current_idx = -1
+                    for i, e in enumerate(entries):
+                        if e.name == self.current_basename:
+                            current_idx = i
+                            break
+                    
+                    self.finished.emit(entries, current_idx)
+                    
+                except Exception as e:
+                    self.error.emit(str(e))
+                finally:
+                    if self._sftp:
+                        try:
+                            self._sftp.close()
+                        except:
+                            pass
+        
         try:
             if not main_window.remote_connection or not main_window.remote_connection.is_connected():
                 return
             
-            # Get file listing from remote directory
-            entries = main_window.remote_connection.list_directory(
+            current_basename = os.path.basename(current_local_path)
+            
+            # Store reference to thread to prevent garbage collection
+            self._populate_thread = PopulateThread(
+                main_window.remote_connection,
                 remote_dir,
-                show_hidden=False,
-                fits_only=not casa_mode,
+                casa_mode,
+                current_basename
             )
             
-            # Filter to appropriate type
-            if casa_mode:
-                # Only directories for CASA mode
-                self._remote_file_list = [e for e in entries if e.is_dir]
-            else:
-                # Only FITS files
-                self._remote_file_list = [e for e in entries if e.is_fits]
+            def on_finished(entries, current_idx):
+                try:
+                    self._remote_file_list = entries
+                    self._file_list = [e.path for e in entries]
+                    self._file_list_index = current_idx
+                    self._update_nav_buttons()
+                except RuntimeError:
+                    pass  # Widget deleted
             
-            # Sort by name
-            self._remote_file_list.sort(key=lambda x: x.name.lower())
+            def on_error(msg):
+                print(f"[WARNING] Failed to populate remote file list: {msg}")
+                self._remote_file_list = []
+                self._file_list = []
+                self._file_list_index = -1
+                try:
+                    self._update_nav_buttons()
+                except RuntimeError:
+                    pass
             
-            # Store in _file_list for navigation (use remote paths)
-            self._file_list = [e.path for e in self._remote_file_list]
-            
-            # Find current file index by matching the basename
-            current_basename = os.path.basename(current_local_path)
-            self._file_list_index = -1
-            for i, entry in enumerate(self._remote_file_list):
-                if entry.name == current_basename:
-                    self._file_list_index = i
-                    break
-            
-            self._update_nav_buttons()
+            self._populate_thread.finished.connect(on_finished)
+            self._populate_thread.error.connect(on_error)
+            self._populate_thread.start()
             
         except Exception as e:
-            print(f"[WARNING] Failed to populate remote file list: {e}")
+            print(f"[WARNING] Failed to start remote file list population: {e}")
             self._remote_file_list = []
             self._file_list = []
             self._file_list_index = -1
