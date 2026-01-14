@@ -307,6 +307,21 @@ class SolarRadioImageTab(QWidget):
             "alpha": 0.6,
             "show_center": False,
         }
+        
+        # Beam style properties
+        self.beam_style = {
+            "edgecolor": "black",
+            "facecolor": "white",
+            "linewidth": 1.5,
+            "alpha": 0.4,
+        }
+        
+        # Grid style properties
+        self.grid_style = {
+            "color": "white",
+            "linestyle": "--",
+            "alpha": 0.5,
+        }
 
         # Initialize RMS box values
         self.current_rms_box = [0, 200, 0, 130]
@@ -891,16 +906,46 @@ class SolarRadioImageTab(QWidget):
             }
         """
         
-        # Row 0: Show Beam | Show Grid
+        # Row 0: Show Beam + settings | Show Grid + settings
         self.show_beam_checkbox = QCheckBox("Beam")
         self.show_beam_checkbox.setChecked(True)
         self.show_beam_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
         
+        self.beam_settings_button = QPushButton()
+        self.beam_settings_button.setObjectName("IconOnlyNBGButton")
+        self.beam_settings_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/settings.png"
+                )
+            )
+        )
+        self.beam_settings_button.setIconSize(QSize(18, 18))
+        self.beam_settings_button.setToolTip("Beam Settings")
+        self.beam_settings_button.setFixedSize(24, 24)
+        self.beam_settings_button.setStyleSheet(settings_btn_style)
+        self.beam_settings_button.clicked.connect(self.show_beam_settings)
+        
         self.show_grid_checkbox = QCheckBox("Grid")
         self.show_grid_checkbox.setChecked(False)
         self.show_grid_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_grid_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        
+        self.grid_settings_button = QPushButton()
+        self.grid_settings_button.setObjectName("IconOnlyNBGButton")
+        self.grid_settings_button.setIcon(
+            QIcon(
+                pkg_resources.resource_filename(
+                    "solar_radio_image_viewer", "assets/settings.png"
+                )
+            )
+        )
+        self.grid_settings_button.setIconSize(QSize(18, 18))
+        self.grid_settings_button.setToolTip("Grid Settings")
+        self.grid_settings_button.setFixedSize(24, 24)
+        self.grid_settings_button.setStyleSheet(settings_btn_style)
+        self.grid_settings_button.clicked.connect(self.show_grid_settings)
         
         # Row 1: Solar Disk + settings | Contours + settings
         self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
@@ -946,15 +991,17 @@ class SolarRadioImageTab(QWidget):
         left_group_0 = QWidget()
         left_layout_0 = QHBoxLayout(left_group_0)
         left_layout_0.setContentsMargins(0, 0, 0, 0)
-        left_layout_0.setSpacing(4)
+        left_layout_0.setSpacing(2)
         left_layout_0.addWidget(self.show_beam_checkbox)
+        left_layout_0.addWidget(self.beam_settings_button)
         left_layout_0.addStretch()
         
         right_group_0 = QWidget()
         right_layout_0 = QHBoxLayout(right_group_0)
         right_layout_0.setContentsMargins(0, 0, 0, 0)
-        right_layout_0.setSpacing(4)
+        right_layout_0.setSpacing(2)
         right_layout_0.addWidget(self.show_grid_checkbox)
+        right_layout_0.addWidget(self.grid_settings_button)
         right_layout_0.addStretch()
         
         left_group_1 = QWidget()
@@ -4168,6 +4215,28 @@ class SolarRadioImageTab(QWidget):
                 )
             )
 
+        # Update beam settings button icon
+        if hasattr(self, "beam_settings_button"):
+            self.beam_settings_button.setIcon(
+                QIcon(
+                    pkg_resources.resource_filename(
+                        "solar_radio_image_viewer",
+                        f"assets/{get_icon_path('settings.png')}",
+                    )
+                )
+            )
+
+        # Update grid settings button icon
+        if hasattr(self, "grid_settings_button"):
+            self.grid_settings_button.setIcon(
+                QIcon(
+                    pkg_resources.resource_filename(
+                        "solar_radio_image_viewer",
+                        f"assets/{get_icon_path('settings.png')}",
+                    )
+                )
+            )
+
         # Update gamma slider disabled styling for new theme
         if hasattr(self, "gamma_slider") and hasattr(self, "stretch_combo"):
             self.update_gamma_slider_state()
@@ -6041,7 +6110,12 @@ class SolarRadioImageTab(QWidget):
                     hasattr(self, "show_grid_checkbox")
                     and self.show_grid_checkbox.isChecked()
                 ):
-                    ax.coords.grid(True, color="white", alpha=0.5, linestyle="--")
+                    ax.coords.grid(
+                        True,
+                        color=self.grid_style.get("color", "white"),
+                        alpha=self.grid_style.get("alpha", 0.5),
+                        linestyle=self.grid_style.get("linestyle", "--")
+                    )
                 else:
                     ax.coords.grid(False)
                 if (
@@ -6462,10 +6536,10 @@ class SolarRadioImageTab(QWidget):
                     height=minor_pix,
                     angle=pa_deg,
                     fill=True,
-                    edgecolor="black",
-                    linewidth=1.5,
-                    facecolor="white",
-                    alpha=0.4,
+                    edgecolor=self.beam_style.get("edgecolor", "black"),
+                    linewidth=self.beam_style.get("linewidth", 1.5),
+                    facecolor=self.beam_style.get("facecolor", "white"),
+                    alpha=self.beam_style.get("alpha", 0.4),
                 )
                 ax.add_patch(ellipse)
                 self.beam_properties = {
@@ -6595,10 +6669,10 @@ class SolarRadioImageTab(QWidget):
             height=minor_pix,
             angle=pa_deg,
             fill=True,
-            edgecolor="black",
-            facecolor="white",
-            linewidth=1.5,
-            alpha=0.4,
+            edgecolor=self.beam_style.get("edgecolor", "black"),
+            facecolor=self.beam_style.get("facecolor", "white"),
+            linewidth=self.beam_style.get("linewidth", 1.5),
+            alpha=self.beam_style.get("alpha", 0.4),
         )
         ax.add_patch(ellipse)
 
@@ -7120,6 +7194,60 @@ class SolarRadioImageTab(QWidget):
         # Set up for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
+        
+        # Track dialog for garbage collection
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        
+        dialog.show()
+
+    def show_beam_settings(self):
+        """Show non-modal beam settings dialog."""
+        from .dialogs import BeamSettingsDialog
+        
+        # If dialog already exists and is visible, just raise it
+        if hasattr(self, '_beam_settings_dialog') and self._beam_settings_dialog is not None:
+            try:
+                if self._beam_settings_dialog.isVisible():
+                    self._beam_settings_dialog.raise_()
+                    self._beam_settings_dialog.activateWindow()
+                    return
+            except RuntimeError:
+                self._beam_settings_dialog = None
+
+        dialog = BeamSettingsDialog(self, beam_style=self.beam_style)
+        self._beam_settings_dialog = dialog
+        
+        # Set up for non-modal behavior
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: setattr(self, '_beam_settings_dialog', None))
+        
+        # Track dialog for garbage collection
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        
+        dialog.show()
+
+    def show_grid_settings(self):
+        """Show non-modal grid settings dialog."""
+        from .dialogs import GridSettingsDialog
+        
+        # If dialog already exists and is visible, just raise it
+        if hasattr(self, '_grid_settings_dialog') and self._grid_settings_dialog is not None:
+            try:
+                if self._grid_settings_dialog.isVisible():
+                    self._grid_settings_dialog.raise_()
+                    self._grid_settings_dialog.activateWindow()
+                    return
+            except RuntimeError:
+                self._grid_settings_dialog = None
+
+        dialog = GridSettingsDialog(self, grid_style=self.grid_style)
+        self._grid_settings_dialog = dialog
+        
+        # Set up for non-modal behavior
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: setattr(self, '_grid_settings_dialog', None))
         
         # Track dialog for garbage collection
         dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
