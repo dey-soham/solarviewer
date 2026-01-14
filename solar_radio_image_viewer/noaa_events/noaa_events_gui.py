@@ -356,10 +356,10 @@ class CollapsibleSection(QWidget):
         self.header.setStyleSheet(f"""
             QPushButton {{
                 text-align: left;
-                padding: 12px 16px;
+                padding: 8px 14px;
                 font-weight: 600;
                 border: {border};
-                border-radius: 8px;
+                border-radius: 6px;
                 background-color: {bg_normal};
                 color: {text_color};
             }}
@@ -574,28 +574,34 @@ class NOAAEventsViewer(QMainWindow):
        
         layout.addLayout(top_bar)
         
-        # Modern summary bar
+        # Modern summary bar - subtle styling
         self.summary_frame = QFrame()
         
-        # Use simple gradient based on palette
+        # Use subtle transparent background matching the theme
         palette = theme_manager.palette
-        highlight = palette['highlight']
-        
-        # Convert hex to rgba for transparent gradient
-        self.summary_frame.setStyleSheet(f"""
-            QFrame {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {highlight}1A,
-                    stop:1 {highlight}0D);
-                border-radius: 10px;
-                border: 1px solid {highlight}33;
-            }}
-        """)
+        if theme_manager.is_dark:
+            # Dark theme: subtle purple tint
+            self.summary_frame.setStyleSheet(f"""
+                QFrame {{
+                    background-color: rgba(99, 102, 241, 0.08);
+                    border-radius: 8px;
+                    border: 1px solid rgba(99, 102, 241, 0.2);
+                }}
+            """)
+        else:
+            # Light theme: subtle tinted background
+            self.summary_frame.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 8px;
+                    border: 1px solid {palette['border']};
+                }}
+            """)
         summary_layout = QHBoxLayout(self.summary_frame)
-        summary_layout.setContentsMargins(20, 16, 20, 16)
+        summary_layout.setContentsMargins(16, 10, 16, 10)
         
-        self.summary_label = QLabel("Select a date and click 'Fetch Events' to view solar activity.")
-        self.summary_label.setStyleSheet("font-weight: 500;")
+        self.summary_label = QLabel("Select a date and click 'Fetch' to view solar activity.")
+        self.summary_label.setStyleSheet(f"color: {palette['text_secondary']};")
         self.summary_label.setWordWrap(True)
         summary_layout.addWidget(self.summary_label)
         
@@ -607,8 +613,8 @@ class NOAAEventsViewer(QMainWindow):
         # Tab 1: Solar Events (existing content)
         events_tab = QWidget()
         events_layout = QVBoxLayout(events_tab)
-        events_layout.setContentsMargins(24, 24, 24, 24)
-        events_layout.setSpacing(24)
+        events_layout.setContentsMargins(16, 12, 16, 12)
+        events_layout.setSpacing(10)
         
         # X-ray Flares section
         self.xray_section = CollapsibleSection("X-ray Flares", "☀️")
@@ -638,6 +644,15 @@ class NOAAEventsViewer(QMainWindow):
         self.events_bottom_spacer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         events_layout.addWidget(self.events_bottom_spacer)
         
+        # Solar Events credits label
+        events_credits_label = QLabel(
+            'Data Source: <a href="https://solarmonitor.org/">SolarMonitor.org</a> '
+            '(NOAA/SWPC Solar Events Archive)'
+        )
+        events_credits_label.setOpenExternalLinks(True)
+        events_credits_label.setStyleSheet(f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;")
+        events_layout.addWidget(events_credits_label)
+        
         # Initial logic check
         self.update_events_layout_logic()
         
@@ -651,8 +666,8 @@ class NOAAEventsViewer(QMainWindow):
         # Tab 2: Active Regions
         ar_tab = QWidget()
         ar_layout = QVBoxLayout(ar_tab)
-        ar_layout.setContentsMargins(24, 24, 24, 24)
-        ar_layout.setSpacing(24)
+        ar_layout.setContentsMargins(16, 12, 16, 12)
+        ar_layout.setSpacing(10)
         
         # Active regions table
         self.ar_table = EventTable([
@@ -666,6 +681,15 @@ class NOAAEventsViewer(QMainWindow):
         self.ar_info_label.setWordWrap(True)
         self.ar_info_label.setStyleSheet(f"color: {theme_manager.palette['text']}; font-style: italic; padding: 10px; font-weight: light; opacity: 0.4;")
         ar_layout.addWidget(self.ar_info_label)
+        
+        # Active Regions credits label
+        ar_credits_label = QLabel(
+            'Data Source: <a href="https://solarmonitor.org/">SolarMonitor.org</a> '
+            '(NOAA/SWPC Solar Region Summary & ARM Flare Forecasts)'
+        )
+        ar_credits_label.setOpenExternalLinks(True)
+        ar_credits_label.setStyleSheet(f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;")
+        ar_layout.addWidget(ar_credits_label)
 
         
         #ar_layout.addStretch()
@@ -680,8 +704,8 @@ class NOAAEventsViewer(QMainWindow):
         # Tab 3: Solar Conditions (Real-time data)
         conditions_tab = QWidget()
         conditions_layout = QVBoxLayout(conditions_tab)
-        conditions_layout.setContentsMargins(24, 24, 24, 24)
-        conditions_layout.setSpacing(24)
+        conditions_layout.setContentsMargins(16, 12, 16, 12)
+        conditions_layout.setSpacing(12)
         
         # Geomagnetic Activity Card - modern styling
         geo_card = QFrame()
@@ -819,6 +843,15 @@ class NOAAEventsViewer(QMainWindow):
         
         conditions_layout.addStretch()
         
+        # Solar Conditions credits label
+        conditions_credits_label = QLabel(
+            'Data Source: <a href="https://www.swpc.noaa.gov/">NOAA SWPC</a> '
+            '(Space Weather Prediction Center)'
+        )
+        conditions_credits_label.setOpenExternalLinks(True)
+        conditions_credits_label.setStyleSheet(f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;")
+        conditions_layout.addWidget(conditions_credits_label)
+        
         # Make conditions tab scrollable
         conditions_scroll = QScrollArea()
         conditions_scroll.setWidgetResizable(True)
@@ -829,8 +862,8 @@ class NOAAEventsViewer(QMainWindow):
         # Tab 4: CME Alerts
         cme_tab = QWidget()
         cme_layout = QVBoxLayout(cme_tab)
-        cme_layout.setContentsMargins(24, 24, 24, 24)
-        cme_layout.setSpacing(24)
+        cme_layout.setContentsMargins(16, 12, 16, 12)
+        cme_layout.setSpacing(10)
         
         # CME table
         self.cme_table = EventTable([
@@ -844,7 +877,15 @@ class NOAAEventsViewer(QMainWindow):
         self.cme_info_label.setStyleSheet(f"color: {theme_manager.palette['text']}; font-style: italic; padding: 10px; font-weight: light; opacity: 0.4;")
         cme_layout.addWidget(self.cme_info_label)
         
-        # cme_layout.addStretch()
+        # CME credits label with link
+        cme_credits_label = QLabel(
+            'Data Source: <a href="https://kauai.ccmc.gsfc.nasa.gov/DONKI/">NASA DONKI</a> '
+            '(Space Weather Database Of Notifications, Knowledge, Information)'
+        )
+        cme_credits_label.setOpenExternalLinks(True)
+        cme_credits_label.setStyleSheet(f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 5px 10px;")
+        cme_layout.addWidget(cme_credits_label)
+        
         
         # Make CME tab scrollable
         cme_scroll = QScrollArea()
@@ -862,10 +903,19 @@ class NOAAEventsViewer(QMainWindow):
         images_scroll_content = QWidget()
         self.images_grid = QVBoxLayout(images_scroll_content) # Use VBox for list of cards or Grid
         self.images_grid.setSpacing(16)
-        self.images_grid.setContentsMargins(24, 24, 24, 24)
+        self.images_grid.setContentsMargins(16, 12, 16, 12)
         
         images_scroll.setWidget(images_scroll_content)
         images_layout.addWidget(images_scroll)
+        
+        # Context Images credits label
+        images_credits_label = QLabel(
+            'Data Source: <a href="https://helioviewer.org/">Helioviewer.org</a> '
+            '(SDO, SOHO, STEREO, GOES imagery)'
+        )
+        images_credits_label.setOpenExternalLinks(True)
+        images_credits_label.setStyleSheet(f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;")
+        images_layout.addWidget(images_credits_label)
         
         self.tabs.addTab(images_tab, "📷 Context Images")
         
@@ -1645,9 +1695,9 @@ class NOAAEventsViewer(QMainWindow):
             return
 
         palette = theme_manager.palette
-        header = QLabel("Solar Context Imagery (Helioviewer.org / SolarMonitor.org / NASA SDO / SOHO)")
-        header.setStyleSheet(f"color: {palette['text']}; padding: 10px; opacity: 0.4;")
-        self.images_grid.addWidget(header)
+        #header = QLabel("Solar Context Imagery (Helioviewer.org / SolarMonitor.org / NASA SDO / SOHO)")
+        #header.setStyleSheet(f"color: {palette['text']}; padding: 10px; opacity: 0.4;")
+        #self.images_grid.addWidget(header)
         
         # Create a card for each image
         for img in images:

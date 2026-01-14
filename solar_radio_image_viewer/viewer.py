@@ -7436,7 +7436,7 @@ class SolarRadioImageTab(QWidget):
         except:
             return
 
-        # Calculate ellipse parameters
+        # Calculate ellipse parameters in display coordinates
         center_x = (x1 + x2) / 2
         center_y = (y1 + y2) / 2
         width = abs(x2 - x1)
@@ -7445,14 +7445,23 @@ class SolarRadioImageTab(QWidget):
         if width < 1 or height < 1:
             return
 
-        # Create ellipse mask
-        h, w = self.current_image_data.shape
-        y_coords, x_coords = np.ogrid[:h, :w]
+        # The displayed image is transposed from current_image_data.
+        # Display: transposed_data[x_display, y_display] = current_image_data[y_display, x_display]
+        # So matplotlib's xdata corresponds to axis 0 (rows) and ydata to axis 1 (cols) in current_image_data.
+        # We need to swap coordinates for the mask.
+        data_center_row = center_x  # display x -> data row (axis 0)
+        data_center_col = center_y  # display y -> data col (axis 1)
+        data_height = width  # display width -> data height (axis 0 extent)
+        data_width = height  # display height -> data width (axis 1 extent)
 
-        # Ellipse equation: ((x-cx)/a)^2 + ((y-cy)/b)^2 <= 1
-        a = width / 2
-        b = height / 2
-        mask = ((x_coords - center_x) / a) ** 2 + ((y_coords - center_y) / b) ** 2 <= 1
+        # Create ellipse mask on current_image_data
+        h, w = self.current_image_data.shape  # h = rows (axis 0), w = cols (axis 1)
+        row_coords, col_coords = np.ogrid[:h, :w]
+
+        # Ellipse equation: ((col - center_col) / a)^2 + ((row - center_row) / b)^2 <= 1
+        a = data_width / 2   # semi-axis along columns (axis 1)
+        b = data_height / 2  # semi-axis along rows (axis 0)
+        mask = ((col_coords - data_center_col) / a) ** 2 + ((row_coords - data_center_row) / b) ** 2 <= 1
 
         # Get pixels within ellipse
         roi_data = self.current_image_data[mask]
@@ -7461,9 +7470,10 @@ class SolarRadioImageTab(QWidget):
             return
 
         # Store ellipse ROI info as bounding box for compatibility
-        xlow, xhigh = int(center_x - a), int(center_x + a)
-        ylow, yhigh = int(center_y - b), int(center_y + b)
-        self.current_roi = (max(0, xlow), min(h, xhigh), max(0, ylow), min(w, yhigh))
+        # current_roi uses data coordinates: (row_low, row_high, col_low, col_high)
+        row_low, row_high = int(data_center_row - b), int(data_center_row + b)
+        col_low, col_high = int(data_center_col - a), int(data_center_col + a)
+        self.current_roi = (max(0, row_low), min(h, row_high), max(0, col_low), min(w, col_high))
 
         ra_dec_info = ""
         if self.current_wcs:
@@ -7481,12 +7491,14 @@ class SolarRadioImageTab(QWidget):
                 wcs.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
                 wcs.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
 
+                # Convert display coordinates to world coordinates
+                # center_x, center_y are in display coordinates (used for WCS)
                 ra_center, dec_center = wcs.wcs_pix2world(center_x, center_y, 0)
                 center_coord = SkyCoord(
                     ra=ra_center * u.degree, dec=dec_center * u.degree
                 )
 
-                # Angular size of ellipse
+                # Angular size of ellipse (display width/height)
                 angular_width = abs(width * increment[0] * 180 / np.pi) * 3600  # arcsec
                 angular_height = (
                     abs(height * increment[1] * 180 / np.pi) * 3600

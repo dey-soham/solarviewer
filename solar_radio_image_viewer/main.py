@@ -96,6 +96,10 @@ Examples:
         print("Please provide a valid path to an image file.")
         sys.exit(1)
 
+    # Enable HiDPI scaling for high-resolution displays
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    
     # Initialize the application
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
