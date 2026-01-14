@@ -196,7 +196,7 @@ class RemoteFileBrowser(QDialog):
         self.casa_mode = casa_mode
         mode_str = "CASA Images" if casa_mode else "FITS Files"
         self.setWindowTitle(f"Browse Remote {mode_str} - {connection.connection_info}")
-        self.setMinimumSize(700, 500)
+        self.setMinimumSize(700, 800)
         self.setModal(True)
         
         self.connection = connection
@@ -213,44 +213,75 @@ class RemoteFileBrowser(QDialog):
     
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Header with title and connection info
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(12)
+        
+        title_label = QLabel("📁 Remote Browser")
+        title_label.setObjectName("DialogTitle")
+        title_label.setStyleSheet("font-size: 14pt;")
+        header_layout.addWidget(title_label)
+        
+        header_layout.addStretch()
+        
+        connection_label = QLabel(f"🔗 {self.connection.connection_info}")
+        connection_label.setObjectName("ConnectionInfo")
+        header_layout.addWidget(connection_label)
+        
+        layout.addLayout(header_layout)
         
         # Breadcrumb navigation
         self.breadcrumb_layout = QHBoxLayout()
-        self.breadcrumb_layout.setSpacing(2)
+        self.breadcrumb_layout.setSpacing(0)
+        self.breadcrumb_layout.setContentsMargins(8, 2, 8, 2)
         self.breadcrumb_widget = QWidget()
+        self.breadcrumb_widget.setObjectName("BreadcrumbWidget")
         self.breadcrumb_widget.setLayout(self.breadcrumb_layout)
         layout.addWidget(self.breadcrumb_widget)
         
-        # Path bar
-        path_layout = QHBoxLayout()
+        # Navigation toolbar
+        nav_layout = QHBoxLayout()
+        nav_layout.setSpacing(8)
         
         self.home_btn = QPushButton("🏠")
-        self.home_btn.setFixedSize(32, 28)
+        self.home_btn.setObjectName("NavButton")
+        self.home_btn.setFixedSize(32, 32)
         self.home_btn.setToolTip("Go to home directory")
+        self.home_btn.setCursor(Qt.PointingHandCursor)
         self.home_btn.clicked.connect(self._load_home_directory)
-        path_layout.addWidget(self.home_btn)
+        nav_layout.addWidget(self.home_btn)
         
         self.up_btn = QPushButton("⬆️")
-        self.up_btn.setFixedSize(32, 28)
+        self.up_btn.setObjectName("NavButton")
+        self.up_btn.setFixedSize(32, 32)
         self.up_btn.setToolTip("Go up one directory")
+        self.up_btn.setCursor(Qt.PointingHandCursor)
         self.up_btn.clicked.connect(self._go_up)
-        path_layout.addWidget(self.up_btn)
+        nav_layout.addWidget(self.up_btn)
         
         self.path_edit = QLineEdit()
+        self.path_edit.setObjectName("PathInput")
+        self.path_edit.setPlaceholderText("Enter path...")
+        self.path_edit.setFixedHeight(32)
         self.path_edit.returnPressed.connect(self._on_path_entered)
-        path_layout.addWidget(self.path_edit)
+        nav_layout.addWidget(self.path_edit)
         
         self.refresh_btn = QPushButton("🔄")
-        self.refresh_btn.setFixedSize(32, 28)
+        self.refresh_btn.setObjectName("NavButton")
+        self.refresh_btn.setFixedSize(32, 32)
         self.refresh_btn.setToolTip("Refresh directory (bypass cache)")
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
         self.refresh_btn.clicked.connect(lambda: self._refresh(force_refresh=True))
-        path_layout.addWidget(self.refresh_btn)
+        nav_layout.addWidget(self.refresh_btn)
         
-        layout.addLayout(path_layout)
+        layout.addLayout(nav_layout)
         
         # File tree
         self.tree = QTreeWidget()
+        self.tree.setObjectName("FileTree")
         self.tree.setHeaderLabels(["Name", "Size", "Modified"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
@@ -267,53 +298,76 @@ class RemoteFileBrowser(QDialog):
         self.tree.setColumnWidth(1, 100)
         self.tree.setColumnWidth(2, 150)
         
-        layout.addWidget(self.tree)
+        layout.addWidget(self.tree, stretch=1)
         
-        # Options
-        options_layout = QHBoxLayout()
+        # Options bar
+        options_frame = QFrame()
+        options_frame.setObjectName("OptionsFrame")
+        options_layout = QHBoxLayout(options_frame)
+        options_layout.setContentsMargins(12, 8, 12, 8)
+        options_layout.setSpacing(16)
         
         self.show_hidden_cb = QCheckBox("Show hidden files")
+        self.show_hidden_cb.setCursor(Qt.PointingHandCursor)
         self.show_hidden_cb.stateChanged.connect(self._refresh)
         options_layout.addWidget(self.show_hidden_cb)
         
         self.fits_only_cb = QCheckBox("FITS files only")
         self.fits_only_cb.setChecked(True)
+        self.fits_only_cb.setCursor(Qt.PointingHandCursor)
         self.fits_only_cb.stateChanged.connect(self._refresh)
         options_layout.addWidget(self.fits_only_cb)
         
         options_layout.addStretch()
         
-        layout.addLayout(options_layout)
+        layout.addWidget(options_frame)
         
-        # Progress bar (hidden by default)
+        # Progress area (hidden by default)
         self.progress_frame = QFrame()
+        self.progress_frame.setObjectName("ProgressFrame")
         progress_layout = QVBoxLayout(self.progress_frame)
-        progress_layout.setContentsMargins(0, 0, 0, 0)
+        progress_layout.setContentsMargins(12, 12, 12, 12)
+        progress_layout.setSpacing(8)
         
         self.progress_label = QLabel("Downloading...")
+        self.progress_label.setObjectName("ProgressLabel")
         progress_layout.addWidget(self.progress_label)
         
         self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("ModernProgressBar")
         self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(True)
         progress_layout.addWidget(self.progress_bar)
         
         self.progress_frame.hide()
         layout.addWidget(self.progress_frame)
         
-        # Status label
-        self.status_label = QLabel("")
-        layout.addWidget(self.status_label)
+        # Status bar
+        status_layout = QHBoxLayout()
+        status_layout.setSpacing(8)
         
-        # Buttons
-        button_layout = QHBoxLayout()
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("StatusLabel")
+        status_layout.addWidget(self.status_label)
+        
+        status_layout.addStretch()
         
         self.cache_info_label = QLabel("")
-        button_layout.addWidget(self.cache_info_label)
+        self.cache_info_label.setObjectName("CacheInfo")
+        status_layout.addWidget(self.cache_info_label)
         self._update_cache_info()
+        
+        layout.addLayout(status_layout)
+        
+        # Action buttons
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
         
         # Loading cancel button (hidden by default)
         self.loading_cancel_btn = QPushButton("⛔ Cancel Loading")
+        self.loading_cancel_btn.setObjectName("CancelLoadingButton")
         self.loading_cancel_btn.setToolTip("Cancel the current directory listing")
+        self.loading_cancel_btn.setCursor(Qt.PointingHandCursor)
         self.loading_cancel_btn.clicked.connect(self._cancel_listing)
         self.loading_cancel_btn.setVisible(False)
         button_layout.addWidget(self.loading_cancel_btn)
@@ -324,92 +378,317 @@ class RemoteFileBrowser(QDialog):
         self.go_into_btn = QPushButton("📂 Go Into")
         self.go_into_btn.setToolTip("Navigate into the selected directory")
         self.go_into_btn.setEnabled(False)
+        self.go_into_btn.setCursor(Qt.PointingHandCursor)
         self.go_into_btn.clicked.connect(self._go_into_selected)
         if self.casa_mode:
             button_layout.addWidget(self.go_into_btn)
         
         self.cancel_btn = QPushButton("Close")
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
         self.cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(self.cancel_btn)
         
         self.open_btn = QPushButton("Select" if self.casa_mode else "Open")
+        self.open_btn.setObjectName("PrimaryButton")
         self.open_btn.setEnabled(False)
         self.open_btn.setDefault(True)
+        self.open_btn.setCursor(Qt.PointingHandCursor)
         self.open_btn.clicked.connect(self._open_selected)
         button_layout.addWidget(self.open_btn)
         
         layout.addLayout(button_layout)
     
     def _apply_styles(self):
-        """Apply styling to the dialog using theme_manager for consistency."""
+        """Apply modern styling to the dialog using theme_manager."""
         try:
             from ..styles import theme_manager
         except ImportError:
             from styles import theme_manager
         
         palette = theme_manager.palette
-        border = palette["border"]
-        surface = palette["surface"]
+        is_dark = theme_manager.is_dark
+        
+        # Colors from palette
+        window = palette["window"]
         base = palette["base"]
-        highlight = palette["highlight"]
+        surface = palette["surface"]
+        surface_elevated = palette.get("surface_elevated", surface)
+        border = palette["border"]
+        border_light = palette.get("border_light", border)
         text = palette["text"]
+        text_secondary = palette.get("text_secondary", palette.get("disabled", "#888888"))
+        highlight = palette["highlight"]
+        highlight_hover = palette.get("highlight_hover", highlight)
         button = palette["button"]
         button_hover = palette["button_hover"]
+        button_pressed = palette.get("button_pressed", button)
+        disabled = palette.get("disabled", "#666666")
+        shadow = palette.get("shadow", "rgba(0,0,0,0.2)")
+        
+        # Gradient for primary button
+        gradient_start = palette.get("button_gradient_start", highlight)
+        gradient_end = palette.get("button_gradient_end", highlight_hover)
         
         self.setStyleSheet(f"""
-            QTreeWidget {{
-                border: 1px solid {border};
-                border-radius: 4px;
-                background-color: {base};
+            /* Dialog background */
+            QDialog {{
+                background-color: {window};
+            }}
+            
+            /* Header title */
+            QLabel#DialogTitle {{
+                font-size: 16pt;
+                font-weight: 700;
                 color: {text};
+                padding: 4px 0;
             }}
-            QTreeWidget::item {{
-                padding: 4px;
+            
+            QLabel#ConnectionInfo {{
+                font-size: 10pt;
+                color: {text_secondary};
+                padding: 4px 8px;
+                background-color: {surface};
+                border: 1px solid {border};
+                border-radius: 6px;
             }}
-            QTreeWidget::item:selected {{
-                background-color: {highlight};
-                color: #ffffff;
+            
+            /* Breadcrumb widget */
+            QWidget#BreadcrumbWidget {{
+                background-color: {surface};
+                border: 1px solid {border};
+                border-radius: 6px;
+                max-height: 28px;
             }}
-            QTreeWidget::item:hover {{
+            
+            QWidget#BreadcrumbWidget QPushButton {{
+                background-color: transparent;
+                border: none;
+                color: {text_secondary};
+                font-size: 10pt;
+                padding: 2px 4px;
+                margin: 0px;
+                border-radius: 4px;
+                min-width: 0px;
+                min-height: 0px;
+            }}
+            
+            QWidget#BreadcrumbWidget QPushButton:hover {{
                 background-color: {button_hover};
+                color: {text};
             }}
-            QLineEdit {{
-                padding: 6px;
+            
+            QWidget#BreadcrumbWidget QLabel {{
+                color: {text_secondary};
+                font-size: 10pt;
+                padding: 0px 2px;
+            }}
+            
+            /* Navigation buttons */
+            QPushButton#NavButton {{
+                background-color: {surface};
                 border: 1px solid {border};
-                border-radius: 4px;
+                border-radius: 8px;
+                font-size: 14pt;
+                padding: 0px;
+            }}
+            
+            QPushButton#NavButton:hover {{
+                background-color: {button_hover};
+                border-color: {highlight};
+            }}
+            
+            QPushButton#NavButton:pressed {{
+                background-color: {button_pressed};
+            }}
+            
+            QPushButton#NavButton:disabled {{
+                color: {disabled};
+                border-color: {border};
+            }}
+            
+            /* Path input */
+            QLineEdit#PathInput {{
+                padding: 4px 10px;
+                font-size: 10pt;
+                border: 1px solid {border};
+                border-radius: 6px;
                 background-color: {base};
                 color: {text};
             }}
-            QLineEdit:focus {{
+            
+            QLineEdit#PathInput:focus {{
                 border-color: {highlight};
                 border-width: 2px;
+                background-color: {surface_elevated};
             }}
-            QPushButton {{
-                padding: 6px 12px;
-                border-radius: 4px;
+            
+            /* File tree */
+            QTreeWidget#FileTree {{
                 border: 1px solid {border};
-                background-color: {button};
+                border-radius: 10px;
+                background-color: {base};
                 color: {text};
+                font-size: 11pt;
+                outline: none;
             }}
-            QPushButton:hover {{
-                border-color: {highlight};
+            
+            QTreeWidget#FileTree::item {{
+                padding: 8px 6px;
+                border-bottom: 1px solid {border_light};
+            }}
+            
+            QTreeWidget#FileTree::item:selected {{
+                background-color: {highlight};
+                color: #ffffff;
+                border-radius: 4px;
+            }}
+            
+            QTreeWidget#FileTree::item:hover:!selected {{
                 background-color: {button_hover};
             }}
-            QPushButton:disabled {{
-                color: {palette['disabled']};
-            }}
-            QProgressBar {{
-                border: 1px solid {border};
-                border-radius: 4px;
-                text-align: center;
+            
+            QHeaderView::section {{
                 background-color: {surface};
-            }}
-            QProgressBar::chunk {{
-                background-color: {highlight};
-                border-radius: 3px;
-            }}
-            QLabel {{
                 color: {text};
+                font-weight: 600;
+                font-size: 10pt;
+                padding: 10px 8px;
+                border: none;
+                border-bottom: 2px solid {highlight};
+            }}
+            
+            /* Options frame */
+            QFrame#OptionsFrame {{
+                background-color: {surface};
+                border: 1px solid {border};
+                border-radius: 8px;
+            }}
+            
+            QFrame#OptionsFrame QCheckBox {{
+                font-size: 10pt;
+                color: {text};
+                spacing: 8px;
+            }}
+            
+            QFrame#OptionsFrame QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {border};
+                border-radius: 4px;
+                background-color: {base};
+            }}
+            
+            QFrame#OptionsFrame QCheckBox::indicator:checked {{
+                background-color: {highlight};
+                border-color: {highlight};
+            }}
+            
+            QFrame#OptionsFrame QCheckBox::indicator:hover {{
+                border-color: {highlight};
+            }}
+            
+            /* Progress frame */
+            QFrame#ProgressFrame {{
+                background-color: {surface};
+                border: 1px solid {border};
+                border-radius: 10px;
+            }}
+            
+            QLabel#ProgressLabel {{
+                font-size: 11pt;
+                font-weight: 500;
+                color: {text};
+            }}
+            
+            QProgressBar#ModernProgressBar {{
+                border: none;
+                border-radius: 8px;
+                background-color: {border};
+                text-align: center;
+                font-size: 10pt;
+                font-weight: 600;
+                color: {text};
+                min-height: 20px;
+            }}
+            
+            QProgressBar#ModernProgressBar::chunk {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {gradient_start}, stop:1 {gradient_end});
+                border-radius: 8px;
+            }}
+            
+            /* Status labels */
+            QLabel#StatusLabel {{
+                font-size: 10pt;
+                color: {text_secondary};
+            }}
+            
+            QLabel#CacheInfo {{
+                font-size: 9pt;
+                color: {text_secondary};
+                padding: 2px 8px;
+                background-color: {surface};
+                border-radius: 4px;
+            }}
+            
+            /* Action buttons */
+            QPushButton {{
+                padding: 5px 14px;
+                font-size: 10pt;
+                font-weight: 500;
+                border: 1px solid {border};
+                border-radius: 6px;
+                background-color: {button};
+                color: {text};
+                min-width: 70px;
+                min-height: 26px;
+            }}
+            
+            QPushButton:hover {{
+                background-color: {button_hover};
+                border-color: {highlight};
+            }}
+            
+            QPushButton:pressed {{
+                background-color: {button_pressed};
+            }}
+            
+            QPushButton:disabled {{
+                color: {disabled};
+                background-color: {surface};
+                border-color: {border};
+            }}
+            
+            /* Primary action button */
+            QPushButton#PrimaryButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {gradient_start}, stop:1 {gradient_end});
+                color: #ffffff;
+                border: none;
+                font-weight: 600;
+                letter-spacing: 0.3px;
+            }}
+            
+            QPushButton#PrimaryButton:hover {{
+                background-color: {highlight_hover};
+            }}
+            
+            QPushButton#PrimaryButton:disabled {{
+                background-color: {disabled};
+                color: {border_light};
+            }}
+            
+            /* Cancel loading button */
+            QPushButton#CancelLoadingButton {{
+                background-color: transparent;
+                border: 1px solid {palette.get('error', '#ef4444')};
+                color: {palette.get('error', '#ef4444')};
+                font-weight: 500;
+            }}
+            
+            QPushButton#CancelLoadingButton:hover {{
+                background-color: {palette.get('error', '#ef4444')};
+                color: #ffffff;
             }}
         """)
     

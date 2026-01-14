@@ -229,7 +229,7 @@ class SegmentedControl(QWidget):
                     border-radius: 5px;
                     padding: 4px 10px;
                     font-weight: 500;
-                    font-size: 9pt;
+                    font-size: 10pt;
                     min-width: 65px;
                     min-height: 22px;
                 }}
@@ -851,7 +851,7 @@ class SolarRadioImageTab(QWidget):
         overlay_toggle_style = f"""
             QCheckBox {{
                 spacing: 6px;
-                font-size: 10pt;
+                font-size: 11pt;
                 color: {text_color};
             }}
             QCheckBox::indicator {{
@@ -1024,7 +1024,7 @@ class SolarRadioImageTab(QWidget):
         preset_btn_style = """
             QPushButton {
                 padding: 3px 8px;
-                font-size: 9pt;
+                font-size: 10pt;
                 min-width: 45px;
                 min-height: 22px;
             }
@@ -1059,11 +1059,11 @@ class SolarRadioImageTab(QWidget):
                 color: white; 
                 padding: 6px 16px; 
                 font-weight: 600;
-                font-size: 10pt;
+                font-size: 11pt;
                 letter-spacing: 0.5px;
                 border-radius: 6px;
                 border: none;
-                min-height: 28px;
+                min-height: 26px;
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
@@ -1398,11 +1398,11 @@ class SolarRadioImageTab(QWidget):
         toolbar.addWidget(self.hpc_btn)
 
         # Add theme-aware separator before file navigation buttons
-        self._hpc_nav_separator = QWidget()
-        self._hpc_nav_separator.setFixedWidth(1)
-        self._hpc_nav_separator.setFixedHeight(20)
-        self._update_hpc_nav_separator_style()
-        toolbar.addWidget(self._hpc_nav_separator)
+        #self._hpc_nav_separator = QWidget()
+        #self._hpc_nav_separator.setFixedWidth(1)
+        #self._hpc_nav_separator.setFixedHeight(20)
+        #self._update_hpc_nav_separator_style()
+        #toolbar.addWidget(self._hpc_nav_separator)
 
         # File navigation buttons - create first, style later so we can update on theme change
         # self._first_file_btn = QPushButton("⏮")
@@ -1599,7 +1599,7 @@ class SolarRadioImageTab(QWidget):
                     padding: 4px 12px;
                     border-radius: 6px;
                     min-width: 28px;
-                    min-height: 22px;
+                    min-height: 20px;
                     font-size: 11pt;
                     font-weight: 600;
                 }}
@@ -1628,7 +1628,7 @@ class SolarRadioImageTab(QWidget):
                     padding: 4px 12px;
                     border-radius: 6px;
                     min-width: 36px;
-                    min-height: 22px;
+                    min-height: 20px;
                     font-size: 11pt;
                     font-weight: 600;
                 }}
@@ -1656,7 +1656,7 @@ class SolarRadioImageTab(QWidget):
                     padding: 5px 10px;
                     border-radius: 6px;
                     font-weight: 600;
-                    font-size: 9pt;
+                    font-size: 11pt;
                     min-height: 24px;
                 }}
                 QPushButton:hover {{
@@ -1683,7 +1683,7 @@ class SolarRadioImageTab(QWidget):
                     padding: 5px 10px;
                     border-radius: 6px;
                     font-weight: 600;
-                    font-size: 9pt;
+                    font-size: 11pt;
                     min-height: 24px;
                 }}
                 QPushButton:hover {{
@@ -2306,7 +2306,7 @@ class SolarRadioImageTab(QWidget):
         group = QGroupBox("Region Statistics")
         layout = QVBoxLayout(group)
         self.info_label = QLabel("No selection")
-        self.info_label.setStyleSheet("font-style: italic; font-size: 11pt;")
+        self.info_label.setStyleSheet("font-style: italic; font-size: 10.5pt;")
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
         self.stats_table = QTableWidget(6, 2)
@@ -2332,7 +2332,7 @@ class SolarRadioImageTab(QWidget):
         self.histogram_btn.setStyleSheet("""
             QPushButton {
                 padding: 4px 10px;
-                font-size: 9pt;
+                font-size: 11pt;
                 min-height: 24px;
             }
         """)
@@ -2346,7 +2346,7 @@ class SolarRadioImageTab(QWidget):
         layout = QVBoxLayout(group)
 
         self.image_info_label = QLabel("Full image statistics")
-        self.image_info_label.setStyleSheet("font-style: italic; font-size: 11pt;")
+        self.image_info_label.setStyleSheet("font-style: italic; font-size: 10.5pt;")
         self.image_info_label.setWordWrap(True)
         layout.addWidget(self.image_info_label)
 
@@ -2412,7 +2412,7 @@ class SolarRadioImageTab(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         self.coord_label = QLabel("RA: −\nDEC: −")
         self.coord_label.setAlignment(Qt.AlignCenter)
-        self.coord_label.setStyleSheet("font-family: monospace; font-size: 10pt;")
+        self.coord_label.setStyleSheet("font-family: monospace; font-size: 11.0pt;")
         self.coord_label.setMinimumHeight(50)
         layout.addWidget(self.coord_label)
         parent_layout.addWidget(group)
@@ -8928,6 +8928,7 @@ class SolarRadioImageTab(QWidget):
             QPushButton,
             QHBoxLayout,
             QLabel,
+            QFrame,
         )
 
         # Check if file list exists
@@ -8948,36 +8949,54 @@ class SolarRadioImageTab(QWidget):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("File List")
-        dialog.setMinimumSize(500, 400)
+        dialog.setMinimumSize(550, 700)
         
         # Store reference to prevent garbage collection
         self._playlist_dialog = dialog
 
         layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
-        # Info label
-        info_label = QLabel(
-            f"Filter: {self._file_filter_pattern}  |  {len(self._file_list)} files"
-        )
-        layout.addWidget(info_label)
+        # Header with title and file count
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(12)
+        
+        title_label = QLabel("📋 File List")
+        title_label.setObjectName("DialogTitle")
+        header_layout.addWidget(title_label)
+        
+        header_layout.addStretch()
+        
+        info_badge = QLabel(f"Filter: {self._file_filter_pattern}  │  {len(self._file_list)} files")
+        info_badge.setObjectName("InfoBadge")
+        header_layout.addWidget(info_badge)
+        
+        layout.addLayout(header_layout)
         
         # Search box
-        search_layout = QHBoxLayout()
+        search_frame = QFrame()
+        search_frame.setObjectName("SearchFrame")
+        search_layout = QHBoxLayout(search_frame)
+        search_layout.setContentsMargins(10, 0, 10, 0)
         search_layout.setSpacing(8)
+        search_layout.setAlignment(Qt.AlignVCenter)
         
         search_label = QLabel("🔍")
+        search_label.setObjectName("SearchIcon")
         search_input = QLineEdit()
+        search_input.setObjectName("SearchInput")
         search_input.setPlaceholderText("Search files...")
         search_input.setClearButtonEnabled(True)
+        search_input.setFixedHeight(28)
         
-        search_layout.addWidget(search_label)
-        search_layout.addWidget(search_input)
-        layout.addLayout(search_layout)
+        search_layout.addWidget(search_label, 0, Qt.AlignVCenter)
+        search_layout.addWidget(search_input, 1, Qt.AlignVCenter)
+        layout.addWidget(search_frame)
 
         # File list
         file_list_widget = QListWidget()
+        file_list_widget.setObjectName("FileListWidget")
         
         # Store original file list for filtering
         original_items = []
@@ -9012,14 +9031,19 @@ class SolarRadioImageTab(QWidget):
         if self._file_list_index >= 0:
             file_list_widget.setCurrentRow(self._file_list_index)
 
-        layout.addWidget(file_list_widget)
+        layout.addWidget(file_list_widget, stretch=1)
 
         # Buttons
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
 
         open_btn = QPushButton("Open")
+        open_btn.setObjectName("PrimaryButton")
         open_btn.setDefault(True)
+        open_btn.setCursor(Qt.PointingHandCursor)
+        
         close_btn = QPushButton("Close")
+        close_btn.setCursor(Qt.PointingHandCursor)
 
         # Store references for use in callbacks
         viewer = self
@@ -9123,6 +9147,129 @@ class SolarRadioImageTab(QWidget):
         btn_layout.addWidget(close_btn)
 
         layout.addLayout(btn_layout)
+        
+        # Apply modern styling
+        palette = theme_manager.palette
+        window = palette["window"]
+        base = palette["base"]
+        surface = palette["surface"]
+        border = palette["border"]
+        border_light = palette.get("border_light", border)
+        text = palette["text"]
+        text_secondary = palette.get("text_secondary", palette.get("disabled", "#888888"))
+        highlight = palette["highlight"]
+        highlight_hover = palette.get("highlight_hover", highlight)
+        button = palette["button"]
+        button_hover = palette["button_hover"]
+        button_pressed = palette.get("button_pressed", button)
+        disabled = palette.get("disabled", "#666666")
+        gradient_start = palette.get("button_gradient_start", highlight)
+        gradient_end = palette.get("button_gradient_end", highlight_hover)
+        
+        dialog.setStyleSheet(f"""
+            QDialog {{
+                background-color: {window};
+            }}
+            
+            QLabel#DialogTitle {{
+                font-size: 14pt;
+                font-weight: 700;
+                color: {text};
+            }}
+            
+            QLabel#InfoBadge {{
+                font-size: 10pt;
+                color: {text_secondary};
+                padding: 4px 10px;
+                background-color: {surface};
+                border: 1px solid {border};
+                border-radius: 6px;
+            }}
+            
+            QFrame#SearchFrame {{
+                background-color: {surface};
+                border: 1px solid {border};
+                border-radius: 8px;
+                min-height: 34px;
+                max-height: 34px;
+            }}
+            
+            QLabel#SearchIcon {{
+                font-size: 12pt;
+                padding: 0px;
+                margin: 0px;
+            }}
+            
+            QLineEdit#SearchInput {{
+                padding: 4px 8px;
+                font-size: 10pt;
+                border: none;
+                background-color: transparent;
+                color: {text};
+            }}
+            
+            QListWidget#FileListWidget {{
+                border: 1px solid {border};
+                border-radius: 10px;
+                background-color: {base};
+                color: {text};
+                font-size: 10.5pt;
+                outline: none;
+                padding: 4px;
+            }}
+            
+            QListWidget#FileListWidget::item {{
+                padding: 6px 8px;
+                border-radius: 4px;
+                margin: 1px 2px;
+            }}
+            
+            QListWidget#FileListWidget::item:selected {{
+                background-color: {highlight};
+                color: #ffffff;
+            }}
+            
+            QListWidget#FileListWidget::item:hover:!selected {{
+                background-color: {button_hover};
+            }}
+            
+            QPushButton {{
+                padding: 6px 16px;
+                font-size: 10pt;
+                font-weight: 500;
+                border: 1px solid {border};
+                border-radius: 6px;
+                background-color: {button};
+                color: {text};
+                min-width: 70px;
+                min-height: 24px;
+            }}
+            
+            QPushButton:hover {{
+                background-color: {button_hover};
+                border-color: {highlight};
+            }}
+            
+            QPushButton:pressed {{
+                background-color: {button_pressed};
+            }}
+            
+            QPushButton#PrimaryButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {gradient_start}, stop:1 {gradient_end});
+                color: #ffffff;
+                border: none;
+                font-weight: 600;
+            }}
+            
+            QPushButton#PrimaryButton:hover {{
+                background-color: {highlight_hover};
+            }}
+            
+            QLabel {{
+                color: {text};
+            }}
+        """)
         
         # Set up dialog for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)
@@ -9467,7 +9614,7 @@ class SolarRadioImageTab(QWidget):
         overlay_toggle_style = f"""
             QCheckBox {{
                 spacing: 6px;
-                font-size: 10pt;
+                font-size: 10.2pt;
                 color: {text_color};
             }}
             QCheckBox::indicator {{
@@ -12205,12 +12352,12 @@ except Exception as e:
 
                 key_label = QLabel(key)
                 key_label.setStyleSheet(
-                    "font-family: 'Courier New', monospace; font-weight: bold; font-size: 9pt;"
+                    "font-family: 'Courier New', monospace; font-weight: bold; font-size: 10.5pt;"
                 )
                 key_label.setFixedWidth(200)
 
                 action_label = QLabel(action)
-                action_label.setStyleSheet("font-size: 10pt;")
+                action_label.setStyleSheet("font-size: 10.5pt;")
 
                 row.addWidget(key_label, 0)
                 row.addWidget(action_label, 1)
@@ -13261,6 +13408,7 @@ sys.exit(app.exec_())
                     background-color: rgba(76, 175, 80, 0.15);
                     border: 1px solid #4CAF50;
                     border-radius: 4px;
+                    min-height: 16px;
                 }
                 QPushButton:hover {
                     background-color: rgba(244, 67, 54, 0.15);
@@ -13278,6 +13426,7 @@ sys.exit(app.exec_())
                     background-color: transparent;
                     border: 1px solid #757575;
                     border-radius: 4px;
+                    min-height: 16px;
                 }
                 QPushButton:hover {
                     background-color: rgba(33, 150, 243, 0.15);

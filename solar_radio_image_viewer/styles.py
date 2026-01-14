@@ -135,7 +135,7 @@ def get_stylesheet(palette, is_dark=True):
     /* ===== GLOBAL STYLES ===== */
     QWidget {{
         font-family: 'Inter', 'Noto Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
-        font-size: 11pt;
+        font-size: 12pt;
         color: {palette['text']};
     }}
     
@@ -256,7 +256,7 @@ def get_stylesheet(palette, is_dark=True):
         border-radius: 5px;
         padding: 2px 6px;
         min-height: 20px;
-        font-size: 10pt;
+        font-size: 11pt;
         selection-background-color: {palette['highlight']};
     }}
     
@@ -284,7 +284,7 @@ def get_stylesheet(palette, is_dark=True):
         border-radius: 5px;
         padding: 2px 6px;
         min-height: 20px;
-        font-size: 10pt;
+        font-size: 11pt;
     }}
     
     QComboBox:hover {{
@@ -355,7 +355,7 @@ def get_stylesheet(palette, is_dark=True):
     
     /* ===== TABLE WIDGET ===== */
     QTableWidget {{
-        font-size: 10pt;
+        font-size: 11pt;
         background-color: {palette['base']};
         alternate-background-color: {palette['surface']};
         gridline-color: {border_light};
@@ -367,7 +367,7 @@ def get_stylesheet(palette, is_dark=True):
     QTableWidget QHeaderView::section {{
         background-color: {palette['button']};
         color: {palette['text']};
-        font-size: 9pt;
+        font-size: 10pt;
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.5px;
@@ -406,7 +406,7 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {palette['surface']};
         border: 1px solid {palette['border']};
         border-radius: 6px;
-        font-size: 11pt;
+        font-size: 10pt;
     }}
     
     /* Secondary text - for hints and descriptions */
