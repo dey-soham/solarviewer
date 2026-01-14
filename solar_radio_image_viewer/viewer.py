@@ -395,6 +395,7 @@ class SolarRadioImageTab(QWidget):
             "contour_data": None,
             "use_default_rms_region": True,
             "rms_box": (0, 200, 0, 130),
+            "show_full_extent": False,  # If True, show full contour extent (Default: capped at 1.5x base image)
         }
 
         # Plot customization settings
@@ -4034,10 +4035,10 @@ class SolarRadioImageTab(QWidget):
                 mid_x,
                 mid_y,
                 distance_info,
-                fontsize=11,
+                fontsize=9,
                 color="red",
                 fontweight="bold",
-                bbox=dict(boxstyle="round", facecolor="white", alpha=0.9),
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.6),
             )
 
             self.canvas.draw_idle()
@@ -7769,13 +7770,15 @@ class SolarRadioImageTab(QWidget):
                         transformed_path = os.path.join(temp_dir, temp_filename)
                         
                         transform_success = False
+                            
                         if base_csys_type == 'hpc' and contour_csys_type == 'radec':
-                            # Convert RA/Dec contour to HPC
+                            # Convert RA/Dec contour to HPC (all Stokes for full flexibility)
                             self.show_status_message(f"Transforming contour from RA/Dec to HPC...")
                             from .helioprojective import convert_and_save_hpc_all_stokes
                             transform_success = convert_and_save_hpc_all_stokes(
                                 external_image, transformed_path, overwrite=True
                             )
+
                         elif base_csys_type == 'radec' and contour_csys_type == 'hpc':
                             # Convert HPC contour to RA/Dec
                             self.show_status_message(f"Transforming contour from HPC to RA/Dec...")
@@ -7792,6 +7795,7 @@ class SolarRadioImageTab(QWidget):
                         else:
                             print(f"[ERROR] Transformation failed, using original: {external_image}")
                             self.show_status_message(f"Coordinate transformation failed, using original contour")
+
 
                     elif (contour_csys_type != 'unknown' and base_csys_type == contour_csys_type and
                           self._contour_transformed_from == external_image):
@@ -7811,6 +7815,7 @@ class SolarRadioImageTab(QWidget):
                             target_size=target_size
                         )
                         self.contour_settings["contour_data"] = pix
+
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
@@ -7873,8 +7878,10 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = pix
                     self.current_contour_wcs = contour_csys
                 else:
+                    print("[ERROR] load_contour_data: external image not found or empty")
                     self.contour_settings["contour_data"] = None
                     self.current_contour_wcs = None
+
 
             main_window = self.parent()
             if main_window:
@@ -7895,16 +7902,22 @@ class SolarRadioImageTab(QWidget):
             self.load_contour_data()
 
         if self.contour_settings["contour_data"] is None:
+            print("[ERROR] draw_contours: contour_data is None after load_contour_data()")
             return
 
         if self.current_contour_wcs is None:
+            print("[ERROR] draw_contours: current_contour_wcs is None")
             return
+        
+        # Reset contour offset (will be set if extended reprojection is used)
+        self._contour_offset = [0, 0]
 
         # OPTIMIZATION: Fast path for same-image contours
         # When contour source is the current image, skip expensive metadata loading
         # and reprojection since the data is already aligned
         is_same_image = self.contour_settings["source"] == "same"
         
+
         fits_flag = False
         header = None
         csys = None
@@ -7949,6 +7962,7 @@ class SolarRadioImageTab(QWidget):
                 print(f"[ERROR] Error getting metadata: {e}")
                 self.show_status_message(f"Error getting metadata: {e}")
                 return
+
 
         try:
             # Check if the contour and image projection match
@@ -8034,32 +8048,48 @@ class SolarRadioImageTab(QWidget):
 
                 contour_wcs_obj = WCS(naxis=2)
 
-                # For FITS files, build WCS directly from header (more reliable for HPC)
-                # CASA misinterprets HPLN-TAN/HPLT-TAN coordinates as J2000
+                # For FITS files, we need to handle the WCS carefully:
+                # - Use current_contour_wcs for CRPIX/CRVAL/CDELT (which is adjusted for downsampling)
+                # - But for HPC FITS files, CASA misinterprets the CTYPE, so use header for CTYPE
                 if fits_flag and header:
                     try:
-                        # Build from FITS header directly
-                        contour_wcs_obj.wcs.crpix = [
-                            header.get("CRPIX2", 1),  # Swapped for numpy
-                            header.get("CRPIX1", 1),
-                        ]
-                        contour_wcs_obj.wcs.crval = [
-                            header.get("CRVAL2", 0),
-                            header.get("CRVAL1", 0),
-                        ]
-                        contour_wcs_obj.wcs.cdelt = [
-                            header.get("CDELT2", 1),
-                            header.get("CDELT1", 1),
-                        ]
-                        contour_wcs_obj.wcs.ctype = [
-                            header.get("CTYPE2", ""),
-                            header.get("CTYPE1", ""),
-                        ]
+                        # Get downsampling-adjusted values from CASA coordsys
+                        ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
+                        ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
+                        increment = self.current_contour_wcs.increment()["numeric"][0:2]
+                        
+                        # Swap axes for numpy (row, col) = (y, x) order
+                        contour_wcs_obj.wcs.crpix = [ref_pix[1], ref_pix[0]]
+                        
+                        # Get CTYPE from FITS header (correct for HPC)
+                        ctype1 = header.get("CTYPE1", "")
+                        ctype2 = header.get("CTYPE2", "")
+                        is_hpc = "HPLN" in ctype1 or "HPLT" in ctype1 or "HPLN" in ctype2 or "HPLT" in ctype2
+                        
+                        if is_hpc:
+                            # For HPC FITS files, CASA coordsys is in radians
+                            # Convert to degrees for WCS reprojection
+                            crval1 = ref_val[0] * 180.0 / np.pi
+                            crval2 = ref_val[1] * 180.0 / np.pi
+                            cdelt1 = increment[0] * 180.0 / np.pi
+                            cdelt2 = increment[1] * 180.0 / np.pi
+                        else:
+                            # For RA/Dec, CASA coordsys is already in radians, convert to degrees
+                            crval1 = ref_val[0] * 180.0 / np.pi
+                            crval2 = ref_val[1] * 180.0 / np.pi
+                            cdelt1 = increment[0] * 180.0 / np.pi
+                            cdelt2 = increment[1] * 180.0 / np.pi
+                        
+                        contour_wcs_obj.wcs.crval = [crval2, crval1]  # Swapped
+                        contour_wcs_obj.wcs.cdelt = [cdelt2, cdelt1]  # Swapped
+                        contour_wcs_obj.wcs.ctype = [ctype2, ctype1]  # From header (correct HPC)
                     except Exception as e:
+
                         print(f"[ERROR] Failed to build WCS from FITS header: {e}")
-                        # Fall back to CASA coordsys
+                        # Fall back to CASA coordsys without FITS header
                         fits_flag = False
                 
+
                 if not fits_flag:
                     # Use CASA coordsys (for CASA images or as fallback)
                     ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
@@ -8205,42 +8235,84 @@ class SolarRadioImageTab(QWidget):
                     contour_wcs_obj.array_shape = contour_data.shape
                     image_wcs_for_reproject.array_shape = self.current_image_data.shape
 
-                    # Debug: Show where contour image corners map to in base image
+                    # Calculate extended or clipped bounds based on show_full_extent setting
+                    extended_shape = self.current_image_data.shape
+                    contour_offset = [0, 0]  # Offset for contour plotting (y, x)
+                    extended_wcs = image_wcs_for_reproject
+                    
+                    show_full_extent = self.contour_settings.get("show_full_extent", False)
+                    
+                    # Always try to extend canvas (default: 1.5x cap, full extent: no cap)
                     try:
-                        # Get world coordinates of contour image corners (in pixel coords 0,0 and max,max)
-                        contour_corners_pix = np.array(
-                            [
-                                [0, 0],
-                                [contour_data.shape[1] - 1, 0],
-                                [0, contour_data.shape[0] - 1],
-                                [contour_data.shape[1] - 1, contour_data.shape[0] - 1],
-                            ]
-                        )
-                        contour_corners_world = contour_wcs_obj.wcs_pix2world(
-                            contour_corners_pix, 0
-                        )
-                        image_corners_pix = image_wcs_for_reproject.wcs_world2pix(
-                            contour_corners_world, 0
-                        )
-                        # print(f"  Contour corners (pix 0,0 -> world -> image pix):")
-                        # print(f"    Bottom-left:  contour(0,0) -> image{image_corners_pix[0]}")
-                        # print(f"    Bottom-right: contour({contour_data.shape[1]-1},0) -> image{image_corners_pix[1]}")
-                        # print(f"    Top-left:     contour(0,{contour_data.shape[0]-1}) -> image{image_corners_pix[2]}")
-                        # print(f"    Top-right:    contour({contour_data.shape[1]-1},{contour_data.shape[0]-1}) -> image{image_corners_pix[3]}")
+                        # Get world coordinates of contour image corners
+                        contour_corners_pix = np.array([
+                            [0, 0],
+                            [contour_data.shape[1] - 1, 0],
+                            [0, contour_data.shape[0] - 1],
+                            [contour_data.shape[1] - 1, contour_data.shape[0] - 1],
+                        ])
+                        contour_corners_world = contour_wcs_obj.wcs_pix2world(contour_corners_pix, 0)
+                        image_corners_pix = image_wcs_for_reproject.wcs_world2pix(contour_corners_world, 0)
+                        
+                        # Calculate the extent of contour in base image coordinates
+                        min_x = min(np.min(image_corners_pix[:, 0]), 0)
+                        max_x = max(np.max(image_corners_pix[:, 0]), self.current_image_data.shape[1] - 1)
+                        min_y = min(np.min(image_corners_pix[:, 1]), 0)
+                        max_y = max(np.max(image_corners_pix[:, 1]), self.current_image_data.shape[0] - 1)
+                        
+                        # Calculate extended dimensions
+                        extended_width = int(np.ceil(max_x - min_x)) + 1
+                        extended_height = int(np.ceil(max_y - min_y)) + 1
+                        
+                        # Apply 1.5x cap by default (unless show_full_extent is enabled)
+                        if not show_full_extent:
+                            max_width = int(self.current_image_data.shape[1] * 1.5)
+                            max_height = int(self.current_image_data.shape[0] * 1.5)
+                            
+                            # Recalculate bounds if capped
+                            if extended_width > max_width:
+                                center_x = self.current_image_data.shape[1] / 2
+                                min_x = center_x - max_width / 2
+                                max_x = center_x + max_width / 2 - 1
+                                extended_width = max_width
+                            if extended_height > max_height:
+                                center_y = self.current_image_data.shape[0] / 2
+                                min_y = center_y - max_height / 2
+                                max_y = center_y + max_height / 2 - 1
+                                extended_height = max_height
+                        
+                        extended_shape = (extended_height, extended_width)
+                        
+                        # Calculate offset (how much the base image is shifted in the extended canvas)
+                        contour_offset = [int(-min_y), int(-min_x)]
+                        
+                        # Adjust WCS reference pixel for the extended shape
+                        extended_wcs = image_wcs_for_reproject.deepcopy()
+                        extended_wcs.wcs.crpix = [
+                            image_wcs_for_reproject.wcs.crpix[0] - min_x,
+                            image_wcs_for_reproject.wcs.crpix[1] - min_y
+                        ]
+                        extended_wcs.array_shape = extended_shape
+                        
                     except Exception as e:
                         if main_window:
-                            self.show_status_message(
-                                f"Could not compute corner mapping: {e}"
-                            )
-                        print(f"[ERROR] Could not compute corner mapping: {e}")
-                        self.show_status_message(f"Could not compute corner mapping: {e}")
+                            self.show_status_message(f"Could not compute extended bounds: {e}")
+                        print(f"[ERROR] Could not compute extended bounds: {e}")
+                        extended_wcs = image_wcs_for_reproject
+                        extended_shape = self.current_image_data.shape
+                        contour_offset = [0, 0]
 
-                    # Reproject the contour data to the image WCS (using swapped WCS for both)
+
+                    # Store offset for contour drawing
+                    self._contour_offset = contour_offset
+
+                    # Reproject the contour data to the extended/clipped WCS
                     array, footprint = reproject_interp(
                         (contour_data, contour_wcs_obj),
-                        image_wcs_for_reproject,
-                        shape_out=self.current_image_data.shape,
+                        extended_wcs,
+                        shape_out=extended_shape,
                     )
+
 
                     # Replace the NaNs with zeros
                     array = np.nan_to_num(array, nan=0.0)
@@ -8344,35 +8416,75 @@ class SolarRadioImageTab(QWidget):
             # For reprojected data, the output matches the base image orientation
             # so we transpose to match how the base image is displayed
             display_contour_data = contour_data.transpose()
+            
+            # Get offset for extended canvas positioning
+            contour_offset = getattr(self, '_contour_offset', [0, 0])
+            
+            # Calculate extent for proper positioning when using extended canvas
+            # extent = [left, right, bottom, top] in data coordinates
+            if contour_offset != [0, 0]:
+                extent = [
+                    -contour_offset[1],  # left (shifted by x offset)
+                    display_contour_data.shape[1] - contour_offset[1],  # right
+                    -contour_offset[0],  # bottom (shifted by y offset)
+                    display_contour_data.shape[0] - contour_offset[0],  # top
+                ]
+            else:
+                extent = None  # Use default (0 to shape)
 
             if pos_levels and len(pos_levels) > 0:
+
                 try:
-                    ax.contour(
-                        display_contour_data,
-                        levels=pos_levels,
-                        colors=self.contour_settings["color"],
-                        linewidths=self.contour_settings["linewidth"],
-                        linestyles=self.contour_settings["pos_linestyle"],
-                        origin="lower",
-                    )
+                    if extent:
+                        # Create coordinate arrays for extended canvas
+                        y = np.linspace(extent[2], extent[3], display_contour_data.shape[0])
+                        x = np.linspace(extent[0], extent[1], display_contour_data.shape[1])
+                        ax.contour(
+                            x, y, display_contour_data,
+                            levels=pos_levels,
+                            colors=self.contour_settings["color"],
+                            linewidths=self.contour_settings["linewidth"],
+                            linestyles=self.contour_settings["pos_linestyle"],
+                        )
+                    else:
+                        ax.contour(
+                            display_contour_data,
+                            levels=pos_levels,
+                            colors=self.contour_settings["color"],
+                            linewidths=self.contour_settings["linewidth"],
+                            linestyles=self.contour_settings["pos_linestyle"],
+                            origin="lower",
+                        )
                 except Exception as e:
                     print(f"[ERROR] Error drawing positive contours: {e}, levels: {pos_levels}")
                     self.show_status_message(f"Error drawing positive contours: {e}, levels: {pos_levels}")
 
             if neg_levels and len(neg_levels) > 0:
                 try:
-                    ax.contour(
-                        display_contour_data,
-                        levels=neg_levels,
-                        colors=self.contour_settings["color"],
-                        linewidths=self.contour_settings["linewidth"],
-                        linestyles=self.contour_settings["neg_linestyle"],
-                        origin="lower",
-                    )
+                    if extent:
+                        y = np.linspace(extent[2], extent[3], display_contour_data.shape[0])
+                        x = np.linspace(extent[0], extent[1], display_contour_data.shape[1])
+                        ax.contour(
+                            x, y, display_contour_data,
+                            levels=neg_levels,
+                            colors=self.contour_settings["color"],
+                            linewidths=self.contour_settings["linewidth"],
+                            linestyles=self.contour_settings["neg_linestyle"],
+                        )
+                    else:
+                        ax.contour(
+                            display_contour_data,
+                            levels=neg_levels,
+                            colors=self.contour_settings["color"],
+                            linewidths=self.contour_settings["linewidth"],
+                            linestyles=self.contour_settings["neg_linestyle"],
+                            origin="lower",
+                        )
                 except Exception as e:
                     print(f"[ERROR] Error drawing negative contours: {e}, levels: {neg_levels}")
                     self.show_status_message(f"Error drawing negative contours: {e}, levels: {neg_levels}")
             if main_window:
+
                 self.show_status_message("Done. ")
 
         except Exception as e:

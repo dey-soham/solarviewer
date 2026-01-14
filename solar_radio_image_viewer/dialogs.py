@@ -440,7 +440,16 @@ class ContourSettingsDialog(QDialog):
         current_neg_linestyle = self.settings.get("neg_linestyle", "--")
         self.neg_linestyle_combo.setCurrentText(current_neg_linestyle)
         appearance_layout.addRow("Negative Style:", self.neg_linestyle_combo)
+        
+        # Show full contour extent checkbox (for external images with different FoV)
+        self.show_full_extent_checkbox = QCheckBox("Show full contour extent")
+        self.show_full_extent_checkbox.setChecked(self.settings.get("show_full_extent", False))
+        self.show_full_extent_checkbox.setToolTip("Default: extend up to 1.5x. Enable for unlimited extent (uses more memory)")
+        appearance_layout.addRow("", self.show_full_extent_checkbox)
+
+        
         mid_layout.addWidget(appearance_group)
+
 
         main_layout.addLayout(mid_layout)
 
@@ -707,11 +716,13 @@ class ContourSettingsDialog(QDialog):
         settings["pos_linestyle"] = self.pos_linestyle_combo.currentText()
         settings["neg_linestyle"] = self.neg_linestyle_combo.currentText()
         settings["linestyle"] = settings["pos_linestyle"]
+        settings["show_full_extent"] = self.show_full_extent_checkbox.isChecked()
         if "contour_data" in self.settings:
             settings["contour_data"] = self.settings["contour_data"]
         else:
             settings["contour_data"] = None
         return settings
+
 
 
 class BatchProcessDialog(QDialog):

@@ -293,8 +293,8 @@ class RemoteFileBrowser(QDialog):
         header = self.tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Fixed)
-        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
         self.tree.setColumnWidth(1, 100)
         self.tree.setColumnWidth(2, 150)
         
