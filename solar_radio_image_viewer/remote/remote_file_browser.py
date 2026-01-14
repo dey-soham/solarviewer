@@ -26,8 +26,9 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QAbstractItemView,
     QWidget,
+    QCompleter,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer, QStringListModel
 from PyQt5.QtGui import QIcon
 
 from .ssh_manager import SSHConnection, SSHConnectionError, RemoteFileInfo
@@ -163,6 +164,84 @@ class ListDirectoryThread(QThread):
                 self._sftp = None
 
 
+class AutocompleteThread(QThread):
+    """Thread for fetching autocomplete suggestions without blocking UI."""
+    
+    finished = pyqtSignal(list)  # list of path suggestions
+    
+    def __init__(
+        self,
+        connection: SSHConnection,
+        parent_path: str,
+        partial_name: str = "",
+    ):
+        super().__init__()
+        self.connection = connection
+        self.parent_path = parent_path
+        self.partial_name = partial_name.lower()
+        self._cancelled = False
+        self._sftp = None
+    
+    def cancel(self):
+        """Request cancellation."""
+        self._cancelled = True
+        if self._sftp:
+            try:
+                self._sftp.close()
+            except:
+                pass
+    
+    def run(self):
+        try:
+            if not self.connection._client:
+                return
+            
+            self._sftp = self.connection._client.open_sftp()
+            
+            import stat
+            suggestions = []
+            for attr in self._sftp.listdir_attr(self.parent_path):
+                if self._cancelled:
+                    break
+                
+                name = attr.filename
+                
+                # Skip hidden files unless partial starts with .
+                if name.startswith('.') and not self.partial_name.startswith('.'):
+                    continue
+                
+                # Only include directories for path completion
+                if not stat.S_ISDIR(attr.st_mode):
+                    continue
+                
+                # Filter by partial name
+                if self.partial_name and not name.lower().startswith(self.partial_name):
+                    continue
+                
+                # Build full path suggestion
+                if self.parent_path == "/":
+                    full_path = f"/{name}"
+                else:
+                    full_path = f"{self.parent_path}/{name}"
+                
+                suggestions.append(full_path)
+            
+            if not self._cancelled:
+                suggestions.sort(key=str.lower)
+                self.finished.emit(suggestions)
+                
+        except Exception:
+            # Silently fail - autocomplete is a convenience feature
+            pass
+        finally:
+            if self._sftp:
+                try:
+                    self._sftp.close()
+                except:
+                    pass
+                self._sftp = None
+
+
 class RemoteFileBrowser(QDialog):
     """
     File browser dialog for navigating remote directories via SFTP.
@@ -204,6 +283,8 @@ class RemoteFileBrowser(QDialog):
         self.current_path = "/"
         self._download_thread: Optional[DownloadThread] = None
         self._list_thread: Optional[ListDirectoryThread] = None
+        self._autocomplete_thread: Optional[AutocompleteThread] = None
+        self._autocomplete_timer: Optional[QTimer] = None
         
         self._setup_ui()
         self._apply_styles()
@@ -267,6 +348,25 @@ class RemoteFileBrowser(QDialog):
         self.path_edit.setPlaceholderText("Enter path...")
         self.path_edit.setFixedHeight(32)
         self.path_edit.returnPressed.connect(self._on_path_entered)
+        
+        # Setup autocomplete
+        self._autocomplete_model = QStringListModel()
+        self._path_completer = QCompleter(self._autocomplete_model, self)
+        self._path_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._path_completer.setCompletionMode(QCompleter.PopupCompletion)
+        self._path_completer.setMaxVisibleItems(10)
+        
+        popup = self._path_completer.popup()
+        popup.setStyleSheet("QListView { font-size: 9pt; }")
+        
+        self.path_edit.setCompleter(self._path_completer)
+        self.path_edit.textChanged.connect(self._on_path_text_changed)
+        
+        # Debounce timer for autocomplete
+        self._autocomplete_timer = QTimer()
+        self._autocomplete_timer.setSingleShot(True)
+        self._autocomplete_timer.timeout.connect(self._fetch_autocomplete)
+        
         nav_layout.addWidget(self.path_edit)
         
         self.refresh_btn = QPushButton("🔄")
@@ -806,7 +906,11 @@ class RemoteFileBrowser(QDialog):
     def _navigate_to(self, path: str):
         """Navigate to a specific directory."""
         self.current_path = path
+        
+        # Set flag to prevent autocomplete from triggering
+        self._navigating = True
         self.path_edit.setText(path)
+        self._navigating = False
         
         # Remember this path for next time
         host = self.connection._host
@@ -829,6 +933,89 @@ class RemoteFileBrowser(QDialog):
         path = self.path_edit.text().strip()
         if path:
             self._navigate_to(path)
+    
+    def _on_path_text_changed(self, text: str):
+        """Handle path text changes - trigger autocomplete with debounce."""
+        # Don't autocomplete if text is empty or doesn't contain /
+        if not text or "/" not in text:
+            return
+        
+        # Don't trigger during path navigation (when we programmatically set the text)
+        if hasattr(self, '_navigating') and self._navigating:
+            return
+        
+        # Start/restart debounce timer
+        if self._autocomplete_timer:
+            self._autocomplete_timer.start(300)  # 300ms debounce
+    
+    def _fetch_autocomplete(self):
+        """Fetch autocomplete suggestions from remote server."""
+        text = self.path_edit.text().strip()
+        if not text or not self.connection or not self.connection.is_connected():
+            return
+        
+        # Parse text into parent directory and partial name
+        if text.endswith("/"):
+            parent_path = text.rstrip("/") or "/"
+            partial_name = ""
+        else:
+            parent_path = os.path.dirname(text)
+            partial_name = os.path.basename(text)
+            if not parent_path:
+                parent_path = "/"
+        
+        # Check cache first - use the existing _listing_cache
+        cache_key = (self.connection._host, parent_path, True, False)  # show_hidden=True, fits_only=False
+        if cache_key in RemoteFileBrowser._listing_cache:
+            import time
+            entries, timestamp = RemoteFileBrowser._listing_cache[cache_key]
+            if time.time() - timestamp < RemoteFileBrowser._cache_ttl:
+                # Filter entries locally
+                suggestions = []
+                for entry in entries:
+                    if entry.is_dir:
+                        if not partial_name or entry.name.lower().startswith(partial_name.lower()):
+                            suggestions.append(entry.path)
+                self._on_autocomplete_finished(suggestions)
+                return
+        
+        # Cancel any existing autocomplete thread and wait for it
+        if self._autocomplete_thread is not None:
+            if self._autocomplete_thread.isRunning():
+                try:
+                    self._autocomplete_thread.finished.disconnect()
+                except:
+                    pass
+                self._autocomplete_thread.cancel()
+                # Wait briefly for thread to finish (non-blocking timeout)
+                self._autocomplete_thread.wait(100)  # 100ms max wait
+                # If still running after wait, let it finish in background
+                # but don't start a new thread this cycle
+                if self._autocomplete_thread.isRunning():
+                    return
+            # Clean up finished thread
+            self._autocomplete_thread = None
+        
+        # Start new autocomplete thread
+        self._autocomplete_thread = AutocompleteThread(
+            self.connection,
+            parent_path,
+            partial_name,
+        )
+        self._autocomplete_thread.finished.connect(self._on_autocomplete_finished)
+        self._autocomplete_thread.start()
+    
+    def _on_autocomplete_finished(self, suggestions: list):
+        """Handle autocomplete results."""
+        if not suggestions:
+            return
+        
+        # Update the completer model
+        self._autocomplete_model.setStringList(suggestions)
+        
+        # Show the completer popup if we have suggestions
+        if len(suggestions) > 0 and self.path_edit.hasFocus():
+            self._path_completer.complete()
     
     def _refresh(self, force_refresh: bool = False):
         """Refresh current directory listing asynchronously.
@@ -1176,5 +1363,18 @@ class RemoteFileBrowser(QDialog):
             except:
                 pass
             # Don't wait - let it finish
+        
+        # Cancel autocomplete thread if running
+        if self._autocomplete_thread and self._autocomplete_thread.isRunning():
+            try:
+                self._autocomplete_thread.finished.disconnect()
+            except:
+                pass
+            self._autocomplete_thread.cancel()
+            self._autocomplete_thread.wait(500)  # Wait up to 500ms for clean shutdown
+        
+        # Stop autocomplete timer
+        if self._autocomplete_timer:
+            self._autocomplete_timer.stop()
         
         super().closeEvent(event)
