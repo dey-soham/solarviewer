@@ -12781,6 +12781,16 @@ read -p "Press Enter to close..."
             QMessageBox.warning(self, "No Image", "No image loaded to export")
             return
 
+        # Check if the image is already in helioprojective coordinates
+        if current_tab._is_already_hpc():
+            QMessageBox.information(
+                self,
+                "Already in Helioprojective",
+                "This image is already in helioprojective (Solar-X/Y) coordinates.\n\n"
+                "No conversion is needed. You can save it directly using File → Save As FITS.",
+            )
+            return
+
         try:
             # Get the output filename from user
             path, _ = QFileDialog.getSaveFileName(
