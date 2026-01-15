@@ -120,6 +120,20 @@ LIGHT_PALETTE = {
 def get_stylesheet(palette, is_dark=True):
     """Generate the complete stylesheet for the given palette."""
     
+    # Get asset path for arrow images
+    try:
+        arrow_up = pkg_resources.resource_filename(
+            "solar_radio_image_viewer", 
+            f"assets/spinbox_up{'_light' if not is_dark else ''}.png"
+        ).replace('\\', '/')
+        arrow_down = pkg_resources.resource_filename(
+            "solar_radio_image_viewer", 
+            f"assets/spinbox_down{'_light' if not is_dark else ''}.png"
+        ).replace('\\', '/')
+    except Exception:
+        arrow_up = ""
+        arrow_down = ""
+    
     # Adjust some colors based on theme
     input_bg = palette["base"]
     input_text = palette.get("input_text", palette["text"])
@@ -277,6 +291,45 @@ def get_stylesheet(palette, is_dark=True):
         font-style: italic;
     }}
     
+    /* Spinbox buttons with image-based arrows */
+    QSpinBox::up-button, QDoubleSpinBox::up-button {{
+        subcontrol-origin: border;
+        subcontrol-position: top right;
+        width: 16px;
+        border-left: 1px solid {border_light};
+        border-top-right-radius: 4px;
+        background-color: {palette['button']};
+    }}
+    
+    QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {{
+        background-color: {palette['button_hover']};
+    }}
+    
+    QSpinBox::down-button, QDoubleSpinBox::down-button {{
+        subcontrol-origin: border;
+        subcontrol-position: bottom right;
+        width: 16px;
+        border-left: 1px solid {border_light};
+        border-bottom-right-radius: 4px;
+        background-color: {palette['button']};
+    }}
+    
+    QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+        background-color: {palette['button_hover']};
+    }}
+    
+    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+        image: url({arrow_up});
+        width: 10px;
+        height: 6px;
+    }}
+    
+    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+        image: url({arrow_down});
+        width: 10px;
+        height: 6px;
+    }}
+    
     QComboBox {{
         background-color: {input_bg};
         color: {input_text};
@@ -296,7 +349,7 @@ def get_stylesheet(palette, is_dark=True):
         border-width: 2px;
     }}
     
-    QComboBox::drop-down {{
+    /*QComboBox::drop-down {{
         border: none;
         width: 28px;
         border-left: 1px solid {border_light};
@@ -307,7 +360,7 @@ def get_stylesheet(palette, is_dark=True):
     QComboBox::down-arrow {{
         width: 12px;
         height: 12px;
-    }}
+    }}*/
     
     QComboBox QAbstractItemView {{
         background-color: {surface_elevated};

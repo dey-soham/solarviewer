@@ -100,6 +100,11 @@ Examples:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     
+    pre_settings = QSettings("SolarViewer", "SolarViewer")
+    ui_scale_factor = pre_settings.value("ui_scale_factor", 1.0, type=float)
+    if ui_scale_factor != 1.0:
+        os.environ["QT_SCALE_FACTOR"] = str(ui_scale_factor)
+    
     # Initialize the application
     app = QApplication(sys.argv)
     app.setStyle("Fusion")

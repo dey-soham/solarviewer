@@ -2366,10 +2366,13 @@ class SolarRadioImageTab(QWidget):
         self.stats_table.setHorizontalHeaderLabels(["Metric", "Value"])
         self.stats_table.verticalHeader().setVisible(False)
         self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.stats_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        # Make columns resizable - Metric fits content, Value stretches
+        self.stats_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.stats_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        # Allow user to resize columns manually
+        self.stats_table.horizontalHeader().setSectionsMovable(False)
         for i in range(6):
             self.stats_table.setRowHeight(i, 24)
-        self.stats_table.setColumnWidth(1, 180)
         headers = ["Min", "Max", "Mean", "Std Dev", "Sum", "RMS"]
         for row, label in enumerate(headers):
             self.stats_table.setItem(row, 0, QTableWidgetItem(label))
@@ -2408,11 +2411,13 @@ class SolarRadioImageTab(QWidget):
         self.image_stats_table.verticalHeader().setVisible(False)
         self.image_stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.image_stats_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.Stretch
+            0, QHeaderView.ResizeToContents
+        )
+        self.image_stats_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.Stretch
         )
         for i in range(6):
             self.image_stats_table.setRowHeight(i, 24)
-        self.image_stats_table.setColumnWidth(1, 180)
 
         headers = ["Max", "Min", "RMS", "Mean (RMS box)", "Pos. DR", "Neg. DR"]
         for row, label in enumerate(headers):
@@ -7584,11 +7589,15 @@ class SolarRadioImageTab(QWidget):
     def setup_canvas(self, parent_layout):
         self.figure = Figure(figsize=(5, 5), dpi=100)
         self.canvas = FigureCanvas(self.figure)
+        
+        # Ensure canvas background matches theme to avoid white gaps when scaling
+        self.canvas.setStyleSheet("background-color: transparent;")
+        
         self.nav_toolbar = NavigationToolbar(self.canvas, self)
         # Make the matplotlib toolbar more compact
         self.nav_toolbar.setFixedHeight(24)
         self.nav_toolbar.setStyleSheet("""
-            NavigationToolbar2QT { padding: 0px; margin: 0px; spacing: 1px; }
+            NavigationToolbar2QT { padding: 0px; margin: 0px; spacing: 1px; background-color: transparent; }
             QToolButton { padding: 2px; margin: 0px; }
         """)
         parent_layout.addWidget(self.nav_toolbar)
@@ -10547,6 +10556,15 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
         view_menu.addAction(self.fullscreen_action)
 
+        view_menu.addSeparator()
+        
+        # Preferences action
+        preferences_action = QAction("⚙️ Preferences...", self)
+        #preferences_action.setShortcut("Ctrl+,")
+        preferences_action.setStatusTip("Open application preferences (UI scale, etc.)")
+        preferences_action.triggered.connect(self._open_preferences_dialog)
+        view_menu.addAction(preferences_action)
+
         # Update action text based on current theme
         self._update_theme_action_text()
 
@@ -10928,6 +10946,24 @@ class SolarRadioImageViewerApp(QMainWindow):
             self.showNormal()
         else:
             self.showFullScreen()
+
+    def _open_preferences_dialog(self):
+        """Open the application preferences dialog (non-modal)."""
+        # Reuse existing dialog or create new one
+        if hasattr(self, '_preferences_dialog') and self._preferences_dialog is not None:
+            try:
+                self._preferences_dialog.raise_()
+                self._preferences_dialog.activateWindow()
+                return
+            except RuntimeError:
+                # Dialog was deleted
+                self._preferences_dialog = None
+        
+        from .dialogs import PreferencesDialog
+        self._preferences_dialog = PreferencesDialog(self)
+        self._preferences_dialog.setAttribute(Qt.WA_DeleteOnClose)
+        self._preferences_dialog.destroyed.connect(lambda: setattr(self, '_preferences_dialog', None))
+        self._preferences_dialog.show()
 
     def _on_theme_changed(self, new_theme):
         """Handle theme change events."""
@@ -12443,82 +12479,189 @@ except Exception as e:
         dialog.show()
 
     def show_about_dialog(self):
-        """Show a professional, minimal about dialog."""
+        """Show a modern, professional about dialog."""
+        from .styles import theme_manager
+        from PyQt5.QtGui import QPixmap
+        import pkg_resources
+        is_dark = theme_manager.is_dark
+        
         dialog = QDialog(self)
-        dialog.setWindowTitle("About")
-        dialog.setMinimumWidth(200)
-        dialog.setMaximumWidth(700)
+        dialog.setWindowTitle("About SolarViewer")
+        #dialog.setFixedSize(510, 580)
+        dialog.resize(510, 580)
 
         layout = QVBoxLayout(dialog)
-        layout.setSpacing(15)
-        layout.setContentsMargins(30, 25, 30, 25)
-
-        # Title
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Header section with gradient background
+        header = QFrame()
+        if is_dark:
+            header.setStyleSheet("""
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #4c1d95, stop:1 #7c3aed);
+                    border-radius: 0px;
+                }
+            """)
+        else:
+            header.setStyleSheet("""
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #7c3aed, stop:1 #a78bfa);
+                    border-radius: 0px;
+                }
+            """)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(30, 25, 30, 20)
+        header_layout.setSpacing(10)
+        
+        icon_label = QLabel()
+        try:
+            icon_path = pkg_resources.resource_filename("solar_radio_image_viewer", "assets/icon.png")
+            pixmap = QPixmap(icon_path)
+            icon_label.setPixmap(pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        except Exception:
+            icon_label.setText("☀️")
+            icon_label.setStyleSheet("font-size: 48pt;")
+        icon_label.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(icon_label)
+        
+        # App title
         title = QLabel("SolarViewer")
-        title.setStyleSheet("font-size: 18pt; font-weight: bold;")
+        title.setStyleSheet("font-size: 26pt; font-weight: bold; color: white;")
         title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-
-        # Version
+        header_layout.addWidget(title)
+        
+        # Version badge
         from . import __version__
-        version = QLabel(f"Version {__version__}")
-        version.setStyleSheet("font-size: 12pt;")
-        version.setAlignment(Qt.AlignCenter)
-        layout.addWidget(version)
-
-        layout.addSpacing(10)
-
+        version_container = QHBoxLayout()
+        version_container.addStretch()
+        version_label = QLabel(f"v{__version__}")
+        version_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(255, 255, 255, 0.2);
+                color: white;
+                padding: 5px 14px;
+                border-radius: 12px;
+                font-size: 11pt;
+                font-weight: bold;
+            }
+        """)
+        version_container.addWidget(version_label)
+        version_container.addStretch()
+        header_layout.addLayout(version_container)
+        
+        layout.addWidget(header)
+        
+        # Content section
+        content = QFrame()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(30, 25, 30, 20)
+        content_layout.setSpacing(16)
+        
         # Description
-        desc = QLabel("A visualization tool for CASA and FITS solar radio images.")
+        desc = QLabel("A powerful visualization tool for CASA and FITS solar radio images")
         desc.setWordWrap(True)
         desc.setAlignment(Qt.AlignCenter)
-        layout.addWidget(desc)
-
-        # layout.addSpacing(5)
-
-        # Features (minimal)
-        """features = QLabel(
-            "• Multi-tab image comparison\n"
-            "• Stokes parameter visualization\n"
-            "• 2D Gaussian & ring model fitting\n"
-            "• Contour overlays with reprojection\n"
-            "• Batch processing & export"
-        )
-        features.setStyleSheet("font-size: 12pt;")
-        features.setAlignment(Qt.AlignCenter)
-        layout.addWidget(features)"""
-
-        layout.addSpacing(15)
-
-        # Author info
-        author = QLabel("Developed by Soham Dey")
-        author.setAlignment(Qt.AlignCenter)
-        layout.addWidget(author)
-
-        email = QLabel("sohamd943@gmail.com")
-        email.setStyleSheet("font-size: 10pt;")
-        email.setAlignment(Qt.AlignCenter)
-        layout.addWidget(email)
-
-        layout.addSpacing(10)
-
-        # Shortcut hint
+        desc.setStyleSheet("font-size: 12pt;")
+        content_layout.addWidget(desc)
+        
+        # Feature pills
+        features_layout = QHBoxLayout()
+        features_layout.setSpacing(10)
+        features_layout.addStretch()
+        
+        feature_style = f"""
+            QLabel {{
+                background-color: {'rgba(124, 58, 237, 0.15)' if is_dark else 'rgba(124, 58, 237, 0.1)'};
+                color: {'#a78bfa' if is_dark else '#7c3aed'};
+                padding: 6px 14px;
+                border-radius: 14px;
+                font-size: 10pt;
+            }}
+        """
+        
+        for feature in ["Multi-tab", "Stokes", "Fitting", "Contours", "Remote"]:
+            pill = QLabel(feature)
+            pill.setStyleSheet(feature_style)
+            features_layout.addWidget(pill)
+        
+        features_layout.addStretch()
+        content_layout.addLayout(features_layout)
+        
+        content_layout.addSpacing(12)
+        
+        # Divider
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(f"background-color: {'#3a3a4a' if is_dark else '#e0e0e0'};")
+        content_layout.addWidget(divider)
+        
+        content_layout.addSpacing(8)
+        
+        # Author section
+        author_label = QLabel("Developed by")
+        author_label.setAlignment(Qt.AlignCenter)
+        author_label.setStyleSheet(f"font-size: 11pt; color: {'#888' if is_dark else '#666'};")
+        content_layout.addWidget(author_label)
+        
+        author_name = QLabel("Soham Dey")
+        author_name.setAlignment(Qt.AlignCenter)
+        author_name.setStyleSheet("font-size: 15pt; font-weight: bold;")
+        content_layout.addWidget(author_name)
+        
+        # Contact links
+        links_layout = QHBoxLayout()
+        links_layout.setSpacing(20)
+        links_layout.addStretch()
+        
+        link_style = f"""
+            QLabel {{
+                color: {'#a78bfa' if is_dark else '#7c3aed'};
+                font-size: 11pt;
+            }}
+            QLabel:hover {{
+                text-decoration: underline;
+            }}
+        """
+        
+        email_link = QLabel("📧 sohamd943@gmail.com")
+        email_link.setStyleSheet(link_style)
+        email_link.setCursor(Qt.PointingHandCursor)
+        links_layout.addWidget(email_link)
+        
+        links_layout.addStretch()
+        content_layout.addLayout(links_layout)
+        
+        content_layout.addSpacing(12)
+        
+        # Keyboard shortcut hint
         hint = QLabel("Press F1 for keyboard shortcuts")
-        hint.setStyleSheet("font-size: 10pt; font-style: italic;")
         hint.setAlignment(Qt.AlignCenter)
-        layout.addWidget(hint)
-
-        layout.addStretch()
-
-        # OK button
+        hint.setStyleSheet(f"font-size: 10pt; font-style: italic; color: {'#666' if is_dark else '#888'};")
+        content_layout.addWidget(hint)
+        
+        content_layout.addStretch()
+        
+        # Close button
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        ok_btn = QPushButton("OK")
-        ok_btn.setFixedWidth(80)
-        ok_btn.clicked.connect(dialog.accept)
-        btn_layout.addWidget(ok_btn)
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                padding: 8px 20px;
+                font-size: 11pt;
+            }
+        """)
+        close_btn.clicked.connect(dialog.accept)
+        close_btn.setDefault(True)
+        btn_layout.addWidget(close_btn)
         btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+        content_layout.addLayout(btn_layout)
+        
+        layout.addWidget(content, 1)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
@@ -12526,152 +12669,294 @@ except Exception as e:
         dialog.show()
 
     def show_keyboard_shortcuts(parent=None):
-        """Show keyboard shortcuts dialog using native Qt widgets in a grid layout."""
-        from PyQt5.QtWidgets import QGridLayout
+        """Show keyboard shortcuts dialog with modern, professional UI design."""
+        from PyQt5.QtWidgets import QGridLayout, QScrollArea, QFrame, QLineEdit
         from PyQt5.QtGui import QFont
+        from PyQt5.QtCore import QSize
 
         dialog = QDialog(parent)
         dialog.setWindowTitle("Keyboard Shortcuts")
-        dialog.setMinimumWidth(750)
+        dialog.setMinimumSize(850, 600)
 
         main_layout = QVBoxLayout(dialog)
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(20, 15, 20, 15)
+        main_layout.setSpacing(16)
+        main_layout.setContentsMargins(24, 20, 24, 20)
+        
+        # Header with search
+        header_layout = QHBoxLayout()
+        
+        title = QLabel("⌨️ Keyboard Shortcuts")
+        title.setStyleSheet("font-size: 16pt; font-weight: bold;")
+        header_layout.addWidget(title)
+        
+        header_layout.addStretch()
+        
+        # Search filter
+        search_box = QLineEdit()
+        search_box.setPlaceholderText("🔍 Filter shortcuts...")
+        search_box.setFixedWidth(200)
+        search_box.setStyleSheet("""
+            QLineEdit {
+                padding: 6px 12px;
+                border-radius: 15px;
+            }
+        """)
+        header_layout.addWidget(search_box)
+        
+        main_layout.addLayout(header_layout)
+        
+        # Scroll area for content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(20)
+        scroll_layout.setContentsMargins(0, 0, 10, 0)
 
-        # Grid layout for categories (2 columns)
-        grid = QGridLayout()
-        grid.setSpacing(25)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-
-        # Shortcut categories
+        # Shortcut categories with icons
         categories = [
-            (
-                "File Operations",
-                [
-                    ("Ctrl+O", "Open CASA Image"),
-                    ("Ctrl+Shift+O", "Open FITS File"),
-                    ("Ctrl+Shift+R", "Connect to Remote Server"),
-                    ("Ctrl+E", "Export Figure"),
-                    ("Ctrl+F", "Export as FITS"),
-                    ("Ctrl+Shift+N", "Fast Viewer"),
-                    ("Ctrl+Q", "Exit"),
-                ],
-            ),
-            (
-                "Navigation & View",
-                [
-                    ("R", "Reset View"),
-                    ("1", "1°×1° Zoom"),
-                    ("+/=", "Zoom In"),
-                    ("-", "Zoom Out"),
-                    ("Space/Enter", "Update Plot"),
-                    ("Ctrl+D", "Toggle Theme"),
-                    ("F11", "Toggle Fullscreen"),
-                ],
-            ),
-            (
-                "Display Presets",
-                [
-                    ("F5", "Auto Min/Max"),
-                    ("F6", "Auto Percentile"),
-                    ("F7", "Median±3×RMS"),
-                    ("F8", "AIA Presets"),
-                    ("F9", "HMI Presets"),
-                ],
-            ),
-            (
-                "Tools",
-                [
-                    ("Ctrl+P", "Phase Center Shift"),
-                    ("Ctrl+M", "Image Metadata"),
-                    ("Ctrl+G", "Fit 2D Gaussian"),
-                    ("Ctrl+L", "Fit Ring"),
-                ],
-            ),
-            (
-                "Region & Export",
-                [
-                    ("Ctrl+S", "Export Sub-Image"),
-                    ("Ctrl+R", "Export ROI"),
-                    ("Ctrl+T", "Add Text"),
-                    ("Ctrl+A", "Add Arrow"),
-                ],
-            ),
-            (
-                "File Navigation",
-                [
-                    ("[", "Previous File"),
-                    ("]", "Next File"),
-                    ("{", "First File"),
-                    ("}", "Last File"),
-                ],
-            ),
-            (
-                "Tab Management",
-                [
-                    ("Ctrl+N", "New Tab"),
-                    ("Ctrl+W", "Close Tab"),
-                    ("Ctrl+Tab", "Next Tab"),
-                    ("Ctrl+Shift+Tab", "Previous Tab"),
-                ],
-            ),
+            ("📁", "File Operations", [
+                ("Ctrl+O", "Open CASA Image"),
+                ("Ctrl+Shift+O", "Open FITS File"),
+                ("Ctrl+Shift+R", "Connect to Remote Server"),
+                ("Ctrl+E", "Export Figure"),
+                ("Ctrl+F", "Export as FITS"),
+                ("Ctrl+Shift+N", "Fast Viewer"),
+                ("Ctrl+Q", "Exit"),
+            ]),
+            ("🧭", "Navigation & View", [
+                ("R", "Reset View"),
+                ("1", "1°×1° Zoom"),
+                ("+  or  =", "Zoom In"),
+                ("-", "Zoom Out"),
+                ("Space  or  Enter", "Update Display"),
+                ("Ctrl+D", "Toggle Dark/Light Theme"),
+                ("F11", "Toggle Fullscreen"),
+            ]),
+            ("🎨", "Display Presets", [
+                ("F5", "Auto Min/Max"),
+                ("F6", "Auto Percentile (1-99%)"),
+                ("F7", "Median ± 3×RMS"),
+                ("F8", "AIA Presets"),
+                ("F9", "HMI Presets"),
+            ]),
+            ("🔧", "Tools & Analysis", [
+                ("Ctrl+P", "Phase Center Shift"),
+                ("Ctrl+M", "Image Metadata"),
+                ("Ctrl+G", "Fit 2D Gaussian"),
+                ("Ctrl+L", "Fit Ring Model"),
+            ]),
+            ("✂️", "Region & Annotation", [
+                ("Ctrl+S", "Export Sub-Image"),
+                ("Ctrl+R", "Export Region"),
+                ("Ctrl+T", "Add Text Annotation"),
+                ("Ctrl+A", "Add Arrow"),
+            ]),
+            ("📂", "File Navigation", [
+                ("[", "Previous File in Directory"),
+                ("]", "Next File in Directory"),
+                ("{", "First File"),
+                ("}", "Last File"),
+            ]),
+            ("📑", "Tab Management", [
+                ("Ctrl+N", "New Tab"),
+                ("Ctrl+W", "Close Current Tab"),
+                ("Ctrl+Tab", "Switch to Next Tab"),
+                ("Ctrl+Shift+Tab", "Switch to Previous Tab"),
+            ]),
         ]
+        
+        # Get theme for styling
+        from .styles import theme_manager
+        is_dark = theme_manager.is_dark
+        
+        # Define theme-aware badge styles
+        if is_dark:
+            badge_style = """
+                QLabel {
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 #4a4a5a, stop:1 #3a3a4a);
+                    color: #f0f0f5;
+                    padding: 4px 10px;
+                    border-radius: 5px;
+                    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+                    font-weight: bold;
+                    font-size: 10pt;
+                    border: 1px solid #5a5a6a;
+                    border-bottom: 2px solid #2a2a3a;
+                }
+            """
+            separator_color = "#888"
+        else:
+            badge_style = """
+                QLabel {
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 #ffffff, stop:1 #e8e8ec);
+                    color: #1f2937;
+                    padding: 4px 10px;
+                    border-radius: 5px;
+                    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+                    font-weight: bold;
+                    font-size: 10pt;
+                    border: 1px solid #c0c0c8;
+                    border-bottom: 2px solid #a0a0a8;
+                }
+            """
+            separator_color = "#666"
 
-        def create_category_widget(name, shortcuts):
-            """Create a widget for a category with header and shortcuts."""
-            widget = QWidget()
-            layout = QVBoxLayout(widget)
-            layout.setContentsMargins(0, 0, 15, 10)
-            layout.setSpacing(8)
-
-            # Header with bottom margin
-            header = QLabel(name)
-            header.setStyleSheet(
-                "font-weight: bold; font-size: 11pt; margin-bottom: 4px;"
-            )
-            layout.addWidget(header)
-
-            # Shortcuts as labels
-            for key, action in shortcuts:
-                row = QHBoxLayout()
-                row.setSpacing(15)
-                row.setContentsMargins(0, 2, 0, 2)
-
-                key_label = QLabel(key)
-                key_label.setStyleSheet(
-                    "font-family: 'Courier New', monospace; font-weight: bold; font-size: 10.5pt;"
-                )
-                key_label.setFixedWidth(200)
-
-                action_label = QLabel(action)
-                action_label.setStyleSheet("font-size: 10.5pt;")
-
-                row.addWidget(key_label, 0)
-                row.addWidget(action_label, 1)
-                layout.addLayout(row)
-
+        def create_key_badge(key_text):
+            """Create a styled keyboard key badge."""
+            container = QWidget()
+            layout = QHBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(4)
+            
+            # Handle "or" alternatives first (like "+ or =")
+            if "  or  " in key_text:
+                alternatives = key_text.split("  or  ")
+                for j, alt in enumerate(alternatives):
+                    if j > 0:
+                        or_label = QLabel("or")
+                        or_label.setStyleSheet(f"color: {separator_color}; font-size: 10pt; margin: 0 6px;")
+                        layout.addWidget(or_label)
+                    badge = QLabel(alt.strip())
+                    badge.setStyleSheet(badge_style)
+                    layout.addWidget(badge)
+            # Handle compound keys like "Ctrl+O"
+            elif "+" in key_text and len(key_text) > 1:
+                parts = key_text.split("+")
+                for i, part in enumerate(parts):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    if i > 0:
+                        plus = QLabel("+")
+                        plus.setStyleSheet(f"font-weight: bold; color: {separator_color}; font-size: 11pt;")
+                        layout.addWidget(plus)
+                    badge = QLabel(part)
+                    badge.setStyleSheet(badge_style)
+                    layout.addWidget(badge)
+            else:
+                # Single key
+                badge = QLabel(key_text.strip())
+                badge.setStyleSheet(badge_style)
+                layout.addWidget(badge)
+            
             layout.addStretch()
-            return widget
+            return container
+        
+        # Store all shortcut widgets for filtering
+        all_shortcut_widgets = []
 
-        # Add categories to grid (2 columns, 3 rows)
-        for i, (name, shortcuts) in enumerate(categories):
-            row = i // 2
-            col = i % 2
-            widget = create_category_widget(name, shortcuts)
-            grid.addWidget(widget, row, col)
+        def create_category_section(icon, name, shortcuts):
+            """Create a styled category section."""
+            section = QFrame()
+            if is_dark:
+                section.setStyleSheet("""
+                    QFrame {
+                        background-color: rgba(255, 255, 255, 0.03);
+                        border-radius: 10px;
+                        padding: 8px;
+                    }
+                """)
+                header_style = """
+                    font-size: 12pt;
+                    font-weight: bold;
+                    color: #a78bfa;
+                    padding-bottom: 6px;
+                    border-bottom: 1px solid rgba(167, 139, 250, 0.3);
+                """
+            else:
+                section.setStyleSheet("""
+                    QFrame {
+                        background-color: rgba(0, 0, 0, 0.03);
+                        border-radius: 10px;
+                        padding: 8px;
+                    }
+                """)
+                header_style = """
+                    font-size: 12pt;
+                    font-weight: bold;
+                    color: #7c3aed;
+                    padding-bottom: 6px;
+                    border-bottom: 1px solid rgba(124, 58, 237, 0.3);
+                """
+            
+            layout = QVBoxLayout(section)
+            layout.setContentsMargins(16, 12, 16, 12)
+            layout.setSpacing(10)
+            
+            # Category header
+            header = QLabel(f"{icon}  {name}")
+            header.setStyleSheet(header_style)
+            layout.addWidget(header)
+            
+            # Shortcuts grid
+            grid = QGridLayout()
+            grid.setSpacing(8)
+            grid.setColumnMinimumWidth(0, 200)
+            
+            shortcut_rows = []
+            for row, (key, action) in enumerate(shortcuts):
+                key_widget = create_key_badge(key)
+                action_label = QLabel(action)
+                # Use palette text color for theme compatibility
+                action_label.setStyleSheet("font-size: 10.5pt;")
+                
+                grid.addWidget(key_widget, row, 0)
+                grid.addWidget(action_label, row, 1)
+                
+                # Store for filtering
+                shortcut_rows.append((key_widget, action_label, key.lower(), action.lower()))
+            
+            layout.addLayout(grid)
+            return section, shortcut_rows
+        
+        # Create all category sections
+        for icon, name, shortcuts in categories:
+            section, rows = create_category_section(icon, name, shortcuts)
+            scroll_layout.addWidget(section)
+            all_shortcut_widgets.extend([(section, rows)])
+        
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        main_layout.addWidget(scroll, 1)
+        
+        # Filter function
+        def filter_shortcuts(text):
+            text = text.lower()
+            for section, rows in all_shortcut_widgets:
+                visible_count = 0
+                for key_widget, action_label, key_text, action_text in rows:
+                    visible = not text or text in key_text or text in action_text
+                    key_widget.setVisible(visible)
+                    action_label.setVisible(visible)
+                    if visible:
+                        visible_count += 1
+                section.setVisible(visible_count > 0)
+        
+        search_box.textChanged.connect(filter_shortcuts)
 
-        main_layout.addLayout(grid)
-
-        # OK button
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        ok_btn = QPushButton("OK")
-        ok_btn.setFixedWidth(80)
-        ok_btn.clicked.connect(dialog.accept)
-        btn_layout.addWidget(ok_btn)
-        btn_layout.addStretch()
-        main_layout.addLayout(btn_layout)
+        # Footer with close button
+        footer = QHBoxLayout()
+        footer.addStretch()
+        
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                padding: 8px 20px;
+                font-size: 11pt;
+            }
+        """)
+        close_btn.clicked.connect(dialog.accept)
+        close_btn.setDefault(True)
+        footer.addWidget(close_btn)
+        
+        main_layout.addLayout(footer)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
