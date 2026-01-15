@@ -357,7 +357,7 @@ class RemoteFileBrowser(QDialog):
         self._path_completer.setMaxVisibleItems(10)
         
         popup = self._path_completer.popup()
-        popup.setStyleSheet("QListView { font-size: 9pt; }")
+        popup.setStyleSheet("QListView { font-size: 10pt; }")
         
         self.path_edit.setCompleter(self._path_completer)
         self.path_edit.textChanged.connect(self._on_path_text_changed)
