@@ -308,8 +308,12 @@ def get_pixel_values_from_image(
                 freq_idx = None
 
             # Use strided reading for fast downsampling (reads every Nth pixel from disk)
+            # IMPORTANT: Only downsample spatial axes, not Stokes or Frequency
             if downsample > 1:
-                inc = [downsample] * len(dimension_shapes)
+                inc = [1] * len(dimension_shapes)  # Start with no downsampling
+                inc[ra_idx] = downsample   # Downsample RA axis
+                inc[dec_idx] = downsample  # Downsample Dec axis
+                # Keep Stokes and Frequency at 1 to read all values
                 data = ia_tool.getchunk(inc=inc)
             else:
                 data = ia_tool.getchunk()
@@ -353,8 +357,12 @@ def get_pixel_values_from_image(
                 # If Frequency axis is missing, assume index 0
                 freq_idx = None
             # Use strided reading for fast downsampling (reads every Nth pixel from disk)
+            # IMPORTANT: Only downsample spatial axes, not Stokes or Frequency
             if downsample > 1:
-                inc = [downsample] * len(dimension_shapes)
+                inc = [1] * len(dimension_shapes)  # Start with no downsampling
+                inc[ra_idx] = downsample   # Downsample SOLAR-X axis
+                inc[dec_idx] = downsample  # Downsample SOLAR-Y axis
+                # Keep Stokes and Frequency at 1 to read all values
                 data = ia_tool.getchunk(inc=inc)
             else:
                 data = ia_tool.getchunk()

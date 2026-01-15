@@ -1248,11 +1248,11 @@ class SolarRadioImageTab(QWidget):
     def setup_figure_toolbar(self, parent_layout):
         """Set up the figure toolbar with zoom and other controls"""
         toolbar = QToolBar()
-        # toolbar.setIconSize(QSize(24, 24))
-        toolbar.setIconSize(QSize(20, 20))
+        toolbar.setIconSize(QSize(18, 18))
+        toolbar.setFixedHeight(28)
         toolbar.setStyleSheet("""
-            QToolBar { padding: 0px; margin: 0px; }
-            QToolButton { padding: 1px 4px; margin: 0px; }
+            QToolBar { padding: 0px; margin: 0px; spacing: 1px; }
+            QToolButton { padding: 2px 3px; margin: 0px; max-height: 24px; }
         """)
         action_group = QActionGroup(self)
         self.rect_action = QAction(
@@ -1437,6 +1437,11 @@ class SolarRadioImageTab(QWidget):
         # Style will be applied by _update_special_button_styles()
         self.tb_btn.clicked.connect(self._toggle_tb_mode)
         toolbar.addWidget(self.tb_btn)
+
+        # Add small spacer between TB and HPC buttons
+        tb_hpc_spacer = QWidget()
+        tb_hpc_spacer.setFixedWidth(2)
+        toolbar.addWidget(tb_hpc_spacer)
 
         # Add helioprojective viewer button
         self.hpc_btn = QPushButton("HPC")
@@ -2460,8 +2465,8 @@ class SolarRadioImageTab(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         self.coord_label = QLabel("RA: −\nDEC: −")
         self.coord_label.setAlignment(Qt.AlignCenter)
-        self.coord_label.setStyleSheet("font-family: monospace; font-size: 11.0pt;")
-        self.coord_label.setMinimumHeight(50)
+        self.coord_label.setStyleSheet("font-family: monospace; font-size: 10.5pt;")
+        self.coord_label.setMinimumHeight(55)
         layout.addWidget(self.coord_label)
         parent_layout.addWidget(group)
 
@@ -5653,6 +5658,7 @@ class SolarRadioImageTab(QWidget):
                     pix = None
             csys = None
             psf = None
+            self.psf = None  # Clear PSF so beam from previous image doesn't persist
 
         if pix is not None:
             height, width = pix.shape
@@ -6328,13 +6334,18 @@ class SolarRadioImageTab(QWidget):
                 ax.set_title(title)
 
             # Format the time and frequency as a title
-        if stretch == "power" or stretch == "histeq":
+        # For non-linear stretches, filter ticks to only show those within data range
+        if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
             cb = self.figure.colorbar(
                 im,
                 ax=ax,
                 aspect=30,
             )
-            cb.ax.set_yticks(cb.ax.get_yticks()[1:-1])
+            # Remove ticks that are outside the actual data range
+            ticks = cb.ax.get_yticks()
+            valid_ticks = [t for t in ticks if vmin_val <= t <= vmax_val]
+            if len(valid_ticks) >= 2:
+                cb.ax.set_yticks(valid_ticks)
         else:
             cb = self.figure.colorbar(
                 im,
@@ -6639,7 +6650,8 @@ class SolarRadioImageTab(QWidget):
         QApplication.restoreOverrideCursor()
 
     def _update_beam_position(self, ax):
-        if not hasattr(self, "beam_properties") or not self.beam_properties:
+        # Don't draw beam if no PSF or beam properties
+        if not self.psf or not hasattr(self, "beam_properties") or not self.beam_properties:
             return
 
         for patch in ax.patches:
@@ -7573,6 +7585,12 @@ class SolarRadioImageTab(QWidget):
         self.figure = Figure(figsize=(5, 5), dpi=100)
         self.canvas = FigureCanvas(self.figure)
         self.nav_toolbar = NavigationToolbar(self.canvas, self)
+        # Make the matplotlib toolbar more compact
+        self.nav_toolbar.setFixedHeight(24)
+        self.nav_toolbar.setStyleSheet("""
+            NavigationToolbar2QT { padding: 0px; margin: 0px; spacing: 1px; }
+            QToolButton { padding: 2px; margin: 0px; }
+        """)
         parent_layout.addWidget(self.nav_toolbar)
         parent_layout.addWidget(self.canvas, 1)
 
@@ -12496,10 +12514,10 @@ except Exception as e:
 
         dialog = QDialog(parent)
         dialog.setWindowTitle("Keyboard Shortcuts")
-        dialog.setMinimumWidth(850)
+        dialog.setMinimumWidth(750)
 
         main_layout = QVBoxLayout(dialog)
-        main_layout.setSpacing(15)
+        main_layout.setSpacing(12)
         main_layout.setContentsMargins(20, 15, 20, 15)
 
         # Grid layout for categories (2 columns)

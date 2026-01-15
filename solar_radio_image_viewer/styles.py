@@ -135,7 +135,7 @@ def get_stylesheet(palette, is_dark=True):
     /* ===== GLOBAL STYLES ===== */
     QWidget {{
         font-family: 'Inter', 'Noto Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
-        font-size: 12pt;
+        font-size: 11pt;
         color: {palette['text']};
     }}
     
@@ -532,16 +532,18 @@ def get_stylesheet(palette, is_dark=True):
     QToolBar {{
         background-color: {palette.get('toolbar_bg', palette['surface'])};
         border: none;
-        padding: 4px;
-        spacing: 4px;
+        padding: 2px;
+        spacing: 2px;
+        max-height: 32px;
     }}
     
     QToolButton {{
         background-color: transparent;
         color: {"#ffffff" if not is_dark and 'toolbar_bg' in palette else palette['text']};
         border: none;
-        border-radius: 6px;
-        padding: 6px;
+        border-radius: 4px;
+        padding: 4px;
+        max-height: 24px;
     }}
     
     QToolButton:hover {{
