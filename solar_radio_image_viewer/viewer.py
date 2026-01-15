@@ -8422,6 +8422,24 @@ class SolarRadioImageTab(QWidget):
                         extended_width = int(np.ceil(max_x - min_x)) + 1
                         extended_height = int(np.ceil(max_y - min_y)) + 1
                         
+                        # Check for large reprojected matrix size when show_full_extent is enabled
+                        if show_full_extent:
+                            max_dim = max(extended_width, extended_height)
+                            if max_dim > 5000:
+                                reply = QMessageBox.warning(
+                                    self,
+                                    "Large Reprojection Size",
+                                    f"The reprojected matrix size ({extended_width} x {extended_height}) "
+                                    f"exceeds 5000 pixels in at least one dimension.\n\n"
+                                    f"This may consume significant memory and take a long time to compute.\n\n"
+                                    f"Do you want to continue?",
+                                    QMessageBox.Yes | QMessageBox.No,
+                                    QMessageBox.No
+                                )
+                                if reply == QMessageBox.No:
+                                    self.show_status_message("Contour drawing cancelled by user.")
+                                    return
+                        
                         # Apply 1.5x cap by default (unless show_full_extent is enabled)
                         if not show_full_extent:
                             max_width = int(self.current_image_data.shape[1] * 1.5)
