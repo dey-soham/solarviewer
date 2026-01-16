@@ -1,7 +1,7 @@
 # Theme palettes for the Solar Radio Image Viewer
 # Supports both dark and light modes with modern, premium styling
 
-import pkg_resources
+import os
 from PyQt5.QtGui import QFontDatabase, QFont
 from PyQt5.QtWidgets import QApplication
 
@@ -28,9 +28,10 @@ def load_bundled_fonts():
     
     for font_file in font_files:
         try:
-            font_path = pkg_resources.resource_filename(
-                "solar_radio_image_viewer", f"assets/{font_file}"
-            )
+            # Use os.path instead of pkg_resources for speed
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            font_path = os.path.join(base_dir, "assets", font_file)
+            
             font_id = font_db.addApplicationFont(font_path)
             if font_id != -1:
                 families = font_db.applicationFontFamilies(font_id)
@@ -42,9 +43,8 @@ def load_bundled_fonts():
 
     # Load Noto Emoji as fallback for emoji characters
     try:
-        emoji_path = pkg_resources.resource_filename(
-            "solar_radio_image_viewer", "assets/NotoEmoji-Regular.ttf"
-        )
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        emoji_path = os.path.join(base_dir, "assets", "NotoEmoji-Regular.ttf")
         font_db.addApplicationFont(emoji_path)
     except Exception as e:
         print(f"Could not load emoji font: {e}")
@@ -122,14 +122,12 @@ def get_stylesheet(palette, is_dark=True):
     
     # Get asset path for arrow images
     try:
-        arrow_up = pkg_resources.resource_filename(
-            "solar_radio_image_viewer", 
-            f"assets/spinbox_up{'_light' if not is_dark else ''}.png"
-        ).replace('\\', '/')
-        arrow_down = pkg_resources.resource_filename(
-            "solar_radio_image_viewer", 
-            f"assets/spinbox_down{'_light' if not is_dark else ''}.png"
-        ).replace('\\', '/')
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        suffix = '_light' if not is_dark else ''
+        
+        arrow_up = os.path.join(base_dir, "assets", f"spinbox_up{suffix}.png").replace('\\', '/')
+        arrow_down = os.path.join(base_dir, "assets", f"spinbox_down{suffix}.png").replace('\\', '/')
+        
     except Exception:
         arrow_up = ""
         arrow_down = ""

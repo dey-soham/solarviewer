@@ -30,12 +30,21 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QSize
-import pkg_resources
+import sys
 import numpy as np
 import os
 import multiprocessing
 import glob
 from PyQt5.QtWidgets import QApplication
+
+def _get_resource_path(relative_path):
+    """Get absolute path to resource, working for dev and PyInstaller."""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
 import uuid
 import traceback
 import time
@@ -224,293 +233,497 @@ class ContourSettingsDialog(QDialog):
         self.setup_ui()
 
     def setup_ui(self):
-
+        from PyQt5.QtGui import QPixmap, QColor
+        
+        # Get theme colors for styling
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        palette = theme_manager.palette
+        is_dark = theme_manager.is_dark
+        highlight_color = palette['highlight']
+        border_color = palette['border']
+        surface_color = palette['surface']
+        text_secondary = palette.get('text_secondary', palette['disabled'])
+        
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(12, 12, 12, 12)
 
-        # Top row: Source selection and Stokes parameter side by side
-        top_layout = QHBoxLayout()
-        top_layout.setSpacing(10)
-
-        # Source selection group
-        source_group = QGroupBox("Contour Source")
-        source_layout = QVBoxLayout(source_group)
-        source_layout.setSpacing(10)
-        source_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Main radio buttons for source selection
-        source_radio_layout = QHBoxLayout()
-        source_radio_layout.setSpacing(20)
+        # ========== TAB WIDGET ==========
+        self.tab_widget = QTabWidget()
+        
+        # ========== TAB 1: SOURCE ==========
+        source_tab = QWidget()
+        source_layout = QVBoxLayout(source_tab)
+        source_layout.setSpacing(20)
+        source_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Source selection
+        source_row = QHBoxLayout()
+        source_row.setSpacing(20)
+        
+        source_label = QLabel("Source:")
+        source_label.setStyleSheet("font-weight: 600;")
+        source_row.addWidget(source_label)
+        
         self.same_image_radio = QRadioButton("Current Image")
-        self.external_image_radio = QRadioButton("External Image")
+        self.external_image_radio = QRadioButton("External")
         if self.settings.get("source") == "external":
             self.external_image_radio.setChecked(True)
         else:
             self.same_image_radio.setChecked(True)
-        source_radio_layout.addWidget(self.same_image_radio)
-        source_radio_layout.addWidget(self.external_image_radio)
-        source_radio_layout.addStretch()
-        source_layout.addLayout(source_radio_layout)
-
-        # External image options in a subgroup
-        self.external_group = (
-            QWidget()
-        )  # Changed from QGroupBox to QWidget for better visual
-        external_layout = QVBoxLayout(self.external_group)
-        external_layout.setSpacing(8)
-        external_layout.setContentsMargins(20, 0, 0, 0)  # Add left indent
-
-        # Radio buttons for file type selection
-        file_type_layout = QHBoxLayout()
-        file_type_layout.setSpacing(20)
-        self.radio_casa_image = QRadioButton("CASA Image")
-        self.radio_fits_file = QRadioButton("FITS File")
-        self.radio_casa_image.setChecked(True)
-        file_type_layout.addWidget(self.radio_casa_image)
-        file_type_layout.addWidget(self.radio_fits_file)
-        file_type_layout.addStretch()
-        external_layout.addLayout(file_type_layout)
-
-        # Browse layout
-        browse_layout = QHBoxLayout()
-        browse_layout.setSpacing(8)
-        self.file_path_edit = QLineEdit(self.settings.get("external_image", ""))
-        self.file_path_edit.setPlaceholderText("Select CASA image directory...")
-        self.file_path_edit.setMinimumWidth(
-            250
-        )  # Set minimum width for better appearance
-
-        self.browse_button = QPushButton()
-        self.browse_button.setObjectName("IconOnlyNBGButton")
-        self.browse_button.setIcon(
-            QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/browse.png"
-                )
-            )
-        )
-        self.browse_button.setIconSize(QSize(24, 24))
-        self.browse_button.setToolTip("Browse")
-        self.browse_button.setFixedSize(32, 32)
-        self.browse_button.clicked.connect(self.browse_file)
+        source_row.addWidget(self.same_image_radio)
+        source_row.addWidget(self.external_image_radio)
+        source_row.addStretch()
+        source_layout.addLayout(source_row)
         
-        # Store both icon variants for theme switching
-        self.browse_icon_light = QIcon(
-            pkg_resources.resource_filename(
-                "solar_radio_image_viewer", "assets/browse.png"
-            )
-        )
-        self.browse_icon_dark = QIcon(
-            pkg_resources.resource_filename(
-                "solar_radio_image_viewer", "assets/browse_light.png"
-            )
-        )
-
-        # Set initial icon based on palette
-        self._update_browse_icon()
+        # Stokes selection with noise threshold on same row
+        stokes_row = QHBoxLayout()
+        stokes_row.setSpacing(20)
         
-        self.browse_button.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                padding: 4px;
-            }}
-            QPushButton:hover {{
-                background-color: {self._hover_bg};
-            }}
-            QPushButton:pressed {{
-                background-color: {self._pressed_bg};
-            }}
-            QPushButton:disabled {{
-                background-color: transparent;
-            }}
-        """
-        )
-
-        browse_layout.addWidget(self.file_path_edit)
-        browse_layout.addWidget(self.browse_button)
-        external_layout.addLayout(browse_layout)
-
-        source_layout.addWidget(self.external_group)
-        top_layout.addWidget(source_group)
-
-        # Stokes parameter group
-        stokes_group = QGroupBox("Stokes Parameter")
-        stokes_layout = QHBoxLayout(stokes_group)
-        stokes_layout.setContentsMargins(10, 15, 10, 10)
-
         stokes_label = QLabel("Stokes:")
-        stokes_label.setMinimumWidth(55)  # Minimum width to prevent cutoff
+        stokes_label.setStyleSheet("font-weight: 600;")
+        stokes_row.addWidget(stokes_label)
+        
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(
             ["I", "Q", "U", "V", "Q/I", "U/I", "V/I", "L", "Lfrac", "PANG"]
         )
-        self.stokes_combo.setFixedWidth(80)
+        self.stokes_combo.setMinimumWidth(100)
         current_stokes = self.settings.get("stokes", "I")
         self.stokes_combo.setCurrentText(current_stokes)
-
-        stokes_layout.addWidget(stokes_label)
-        stokes_layout.addWidget(self.stokes_combo)
-        stokes_layout.addStretch()
-
-        # Set fixed size for stokes group to match source group height
-        stokes_group.setFixedHeight(source_group.sizeHint().height())
-        stokes_group.setMinimumWidth(200)  # Set minimum width
-        top_layout.addWidget(stokes_group)
-
-        main_layout.addLayout(top_layout)
-
-        # Create button group for CASA/FITS selection
+        stokes_row.addWidget(self.stokes_combo)
+        
+        stokes_row.addSpacing(30)
+        
+        # Noise threshold for derived Stokes parameters (Q/I, U/I, V/I, Lfrac, PANG)
+        self.threshold_label = QLabel("Threshold (σ):")
+        self.threshold_label.setStyleSheet("font-weight: 600;")
+        self.threshold_label.setToolTip(
+            "Pixels with signal below this many σ (noise RMS) are masked.\n"
+            "Only applies to derived parameters: Q/I, U/I, V/I, Lfrac, Vfrac, PANG."
+        )
+        stokes_row.addWidget(self.threshold_label)
+        
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(0.0, 50.0)
+        self.threshold_spin.setSingleStep(0.5)
+        self.threshold_spin.setDecimals(1)
+        self.threshold_spin.setValue(self.settings.get("threshold", 5.0))
+        self.threshold_spin.setMinimumWidth(70)
+        self.threshold_spin.setToolTip(
+            "Noise threshold in units of σ (RMS noise).\n"
+            "Default: 5.0 (pixels below 5σ are masked)"
+        )
+        stokes_row.addWidget(self.threshold_spin)
+        
+        stokes_row.addStretch()
+        source_layout.addLayout(stokes_row)
+        
+        # Connect stokes combo to update threshold visibility
+        self.stokes_combo.currentTextChanged.connect(self._update_threshold_visibility)
+        
+        # External file options
+        self.external_group = QWidget()
+        external_layout = QVBoxLayout(self.external_group)
+        external_layout.setSpacing(12)
+        external_layout.setContentsMargins(0, 12, 0, 0)
+        
+        # Separator line
+        sep_line = QFrame()
+        sep_line.setFrameShape(QFrame.HLine)
+        sep_line.setStyleSheet(f"background-color: {border_color};")
+        sep_line.setFixedHeight(1)
+        external_layout.addWidget(sep_line)
+        
+        # File type
+        file_type_row = QHBoxLayout()
+        file_type_row.setSpacing(20)
+        
+        file_type_label = QLabel("File Type:")
+        file_type_label.setStyleSheet("font-weight: 600;")
+        file_type_row.addWidget(file_type_label)
+        
+        self.radio_casa_image = QRadioButton("CASA Image")
+        self.radio_fits_file = QRadioButton("FITS File")
+        self.radio_casa_image.setChecked(True)
+        file_type_row.addWidget(self.radio_casa_image)
+        file_type_row.addWidget(self.radio_fits_file)
+        file_type_row.addStretch()
+        external_layout.addLayout(file_type_row)
+        
+        # File path
+        path_row = QHBoxLayout()
+        path_row.setSpacing(12)
+        
+        path_label = QLabel("Path:")
+        path_label.setStyleSheet("font-weight: 600;")
+        path_row.addWidget(path_label)
+        
+        self.file_path_edit = QLineEdit(self.settings.get("external_image", ""))
+        self.file_path_edit.setPlaceholderText("Select file or directory...")
+        path_row.addWidget(self.file_path_edit, 1)
+        
+        self.browse_button = QPushButton("Browse...")
+        self.browse_button.clicked.connect(self.browse_file)
+        path_row.addWidget(self.browse_button)
+        external_layout.addLayout(path_row)
+        
+        # Store icon references for theme switching
+        self.browse_icon_light = QIcon(_get_resource_path("assets/browse.png"))
+        self.browse_icon_dark = QIcon(_get_resource_path("assets/browse_light.png"))
+        
+        source_layout.addWidget(self.external_group)
+        source_layout.addStretch()
+        
+        # Connections
         self.file_type_button_group = QButtonGroup()
         self.file_type_button_group.addButton(self.radio_casa_image)
         self.file_type_button_group.addButton(self.radio_fits_file)
 
-        # Connect signals for enabling/disabling external options
         self.external_image_radio.toggled.connect(self.update_external_options)
         self.radio_casa_image.toggled.connect(self.update_placeholder_text)
         self.radio_fits_file.toggled.connect(self.update_placeholder_text)
-        
-        # Connect source change to update Stokes availability
         self.same_image_radio.toggled.connect(self._update_stokes_for_current_source)
         self.external_image_radio.toggled.connect(self._update_stokes_for_current_source)
-
-        # Initially update states
+        
         self.update_external_options(self.external_image_radio.isChecked())
         self.update_placeholder_text()
-        
-        # Initialize Stokes combo state based on current source
         self._update_stokes_for_current_source()
+        self._update_threshold_visibility()
+        
+        self.tab_widget.addTab(source_tab, "Source")
 
-        # Middle row: Contour Levels and Appearance side by side
-        mid_layout = QHBoxLayout()
-
-        # Contour Levels group with a form layout
-        levels_group = QGroupBox("Contour Levels")
-        levels_layout = QFormLayout(levels_group)
+        # ========== TAB 2: LEVELS ==========
+        levels_tab = QWidget()
+        levels_layout = QVBoxLayout(levels_tab)
+        levels_layout.setSpacing(20)
+        levels_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Level type
+        type_row = QHBoxLayout()
+        type_row.setSpacing(20)
+        
+        type_label = QLabel("Level Type:")
+        type_label.setStyleSheet("font-weight: 600;")
+        type_row.addWidget(type_label)
+        
         self.level_type_combo = QComboBox()
-        self.level_type_combo.addItems(["fraction", "absolute", "sigma"])
+        self.level_type_combo.addItems(["fraction", "sigma", "absolute"])
         current_level_type = self.settings.get("level_type", "fraction")
         self.level_type_combo.setCurrentText(current_level_type)
-        levels_layout.addRow("Level Type:", self.level_type_combo)
-        self.pos_levels_edit = QLineEdit(
-            ", ".join(
-                str(level)
-                for level in self.settings.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9])
-            )
-        )
-        levels_layout.addRow("Positive Levels:", self.pos_levels_edit)
-        self.neg_levels_edit = QLineEdit(
-            ", ".join(
-                str(level)
-                for level in self.settings.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9])
-            )
-        )
-        levels_layout.addRow("Negative Levels:", self.neg_levels_edit)
+        self.level_type_combo.setMinimumWidth(120)
+        type_row.addWidget(self.level_type_combo)
+        type_row.addStretch()
+        levels_layout.addLayout(type_row)
         
-        # Connect level type change to update default levels
+        # Presets
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(12)
+        
+        presets_label = QLabel("Presets:")
+        presets_label.setStyleSheet("font-weight: 600;")
+        preset_row.addWidget(presets_label)
+        
+        self.preset_5_btn = QPushButton("5 Levels")
+        self.preset_5_btn.clicked.connect(lambda: self._apply_level_preset("5levels"))
+        preset_row.addWidget(self.preset_5_btn)
+        
+        self.preset_3_btn = QPushButton("3 Levels")
+        self.preset_3_btn.clicked.connect(lambda: self._apply_level_preset("3levels"))
+        preset_row.addWidget(self.preset_3_btn)
+        
+        self.preset_dense_btn = QPushButton("Dense")
+        self.preset_dense_btn.clicked.connect(lambda: self._apply_level_preset("dense"))
+        preset_row.addWidget(self.preset_dense_btn)
+        
+        preset_row.addStretch()
+        levels_layout.addLayout(preset_row)
+        
+        # Level values
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(12)
+        pos_label = QLabel("Positive:")
+        pos_label.setStyleSheet("font-weight: 600;")
+        pos_label.setMinimumWidth(70)
+        pos_row.addWidget(pos_label)
+        
+        self.pos_levels_edit = QLineEdit(
+            ", ".join(str(l) for l in self.settings.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9]))
+        )
+        self.pos_levels_edit.setPlaceholderText("e.g., 0.1, 0.3, 0.5, 0.7, 0.9")
+        pos_row.addWidget(self.pos_levels_edit)
+        levels_layout.addLayout(pos_row)
+        
+        neg_row = QHBoxLayout()
+        neg_row.setSpacing(12)
+        neg_label = QLabel("Negative:")
+        neg_label.setStyleSheet("font-weight: 600;")
+        neg_label.setMinimumWidth(70)
+        neg_row.addWidget(neg_label)
+        
+        self.neg_levels_edit = QLineEdit(
+            ", ".join(str(l) for l in self.settings.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9]))
+        )
+        self.neg_levels_edit.setPlaceholderText("e.g., 0.1, 0.3, 0.5, 0.7, 0.9")
+        neg_row.addWidget(self.neg_levels_edit)
+        levels_layout.addLayout(neg_row)
+        
+        levels_layout.addStretch()
+        
         self.level_type_combo.currentTextChanged.connect(self.on_level_type_changed)
         
-        mid_layout.addWidget(levels_group)
+        self.tab_widget.addTab(levels_tab, "Levels")
 
-
-        # Appearance group with a form layout
-        appearance_group = QGroupBox("Appearance")
-        appearance_layout = QFormLayout(appearance_group)
-        self.color_combo = QComboBox()
-        self.color_combo.addItems(
-            ["white", "black", "red", "green", "blue", "yellow", "cyan", "magenta"]
-        )
-        current_color = self.settings.get("color", "white")
-        self.color_combo.setCurrentText(current_color)
-        appearance_layout.addRow("Color:", self.color_combo)
-        self.linewidth_spin = QDoubleSpinBox()
-        self.linewidth_spin.setRange(0.1, 5.0)
-        self.linewidth_spin.setSingleStep(0.1)
-        self.linewidth_spin.setValue(self.settings.get("linewidth", 1.0))
-        appearance_layout.addRow("Line Width:", self.linewidth_spin)
+        # ========== TAB 3: APPEARANCE ==========
+        appearance_tab = QWidget()
+        appearance_layout = QVBoxLayout(appearance_tab)
+        appearance_layout.setSpacing(16)
+        appearance_layout.setContentsMargins(20, 20, 20, 20)
+        
+        colors = ["white", "black", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "lime"]
+        
+        # Helper to create color combo
+        def create_color_combo(default_color):
+            combo = QComboBox()
+            for color in colors:
+                combo.addItem(color)
+                idx = combo.count() - 1
+                pixmap = QPixmap(16, 16)
+                pixmap.fill(QColor(color))
+                combo.setItemIcon(idx, QIcon(pixmap))
+            combo.setCurrentText(default_color)
+            combo.setMinimumWidth(110)
+            return combo
+        
+        # ===== Positive Contours Section =====
+        pos_header = QLabel("Positive Contours")
+        pos_header.setStyleSheet("font-weight: 600; font-size: 11pt;")
+        appearance_layout.addWidget(pos_header)
+        
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(16)
+        
+        pos_color_label = QLabel("Color:")
+        pos_row.addWidget(pos_color_label)
+        self.pos_color_combo = create_color_combo(self.settings.get("pos_color", self.settings.get("color", "white")))
+        pos_row.addWidget(self.pos_color_combo)
+        
+        pos_row.addSpacing(10)
+        
+        pos_width_label = QLabel("Width:")
+        pos_row.addWidget(pos_width_label)
+        self.pos_linewidth_spin = QDoubleSpinBox()
+        self.pos_linewidth_spin.setRange(0.5, 5.0)
+        self.pos_linewidth_spin.setSingleStep(0.5)
+        self.pos_linewidth_spin.setValue(self.settings.get("pos_linewidth", self.settings.get("linewidth", 1.0)))
+        self.pos_linewidth_spin.setMinimumWidth(70)
+        pos_row.addWidget(self.pos_linewidth_spin)
+        
+        pos_row.addSpacing(10)
+        
+        pos_style_label = QLabel("Style:")
+        pos_row.addWidget(pos_style_label)
         self.pos_linestyle_combo = QComboBox()
-        self.pos_linestyle_combo.addItems(["-", "--", "-.", ":"])
-        current_pos_linestyle = self.settings.get("pos_linestyle", "-")
-        self.pos_linestyle_combo.setCurrentText(current_pos_linestyle)
-        appearance_layout.addRow("Positive Style:", self.pos_linestyle_combo)
+        self.pos_linestyle_combo.addItems(["─", "- -", "-·-", "···"])
+        linestyle_map = {"-": 0, "--": 1, "-.": 2, ":": 3}
+        current_pos = self.settings.get("pos_linestyle", "-")
+        self.pos_linestyle_combo.setCurrentIndex(linestyle_map.get(current_pos, 0))
+        self.pos_linestyle_combo.setMinimumWidth(90)
+        pos_row.addWidget(self.pos_linestyle_combo)
+        
+        pos_row.addStretch()
+        appearance_layout.addLayout(pos_row)
+        
+        # ===== Negative Contours Section =====
+        neg_header = QLabel("Negative Contours")
+        neg_header.setStyleSheet("font-weight: 600; font-size: 11pt;")
+        appearance_layout.addWidget(neg_header)
+        
+        neg_row = QHBoxLayout()
+        neg_row.setSpacing(16)
+        
+        neg_color_label = QLabel("Color:")
+        neg_row.addWidget(neg_color_label)
+        self.neg_color_combo = create_color_combo(self.settings.get("neg_color", self.settings.get("color", "white")))
+        neg_row.addWidget(self.neg_color_combo)
+        
+        neg_row.addSpacing(10)
+        
+        neg_width_label = QLabel("Width:")
+        neg_row.addWidget(neg_width_label)
+        self.neg_linewidth_spin = QDoubleSpinBox()
+        self.neg_linewidth_spin.setRange(0.5, 5.0)
+        self.neg_linewidth_spin.setSingleStep(0.5)
+        self.neg_linewidth_spin.setValue(self.settings.get("neg_linewidth", self.settings.get("linewidth", 1.0)))
+        self.neg_linewidth_spin.setMinimumWidth(70)
+        neg_row.addWidget(self.neg_linewidth_spin)
+        
+        neg_row.addSpacing(10)
+        
+        neg_style_label = QLabel("Style:")
+        neg_row.addWidget(neg_style_label)
         self.neg_linestyle_combo = QComboBox()
-        self.neg_linestyle_combo.addItems(["-", "--", "-.", ":"])
-        current_neg_linestyle = self.settings.get("neg_linestyle", "--")
-        self.neg_linestyle_combo.setCurrentText(current_neg_linestyle)
-        appearance_layout.addRow("Negative Style:", self.neg_linestyle_combo)
+        self.neg_linestyle_combo.addItems(["─", "- -", "-·-", "···"])
+        current_neg = self.settings.get("neg_linestyle", "--")
+        self.neg_linestyle_combo.setCurrentIndex(linestyle_map.get(current_neg, 1))
+        self.neg_linestyle_combo.setMinimumWidth(90)
+        neg_row.addWidget(self.neg_linestyle_combo)
         
-        # Show full contour extent checkbox (for external images with different FoV)
-        self.show_full_extent_checkbox = QCheckBox("Show full contour extent")
+        neg_row.addStretch()
+        appearance_layout.addLayout(neg_row)
+        
+        # ===== Options Section =====
+        appearance_layout.addSpacing(8)
+        
+        options_header = QLabel("Options")
+        options_header.setStyleSheet("font-weight: 600; font-size: 11pt;")
+        appearance_layout.addWidget(options_header)
+        
+        options_row = QHBoxLayout()
+        options_row.setSpacing(30)
+        
+        self.show_labels_checkbox = QCheckBox("Show contour labels")
+        self.show_labels_checkbox.setChecked(self.settings.get("show_labels", False))
+        self.show_labels_checkbox.setToolTip("Display level values on the contour lines")
+        options_row.addWidget(self.show_labels_checkbox)
+        
+        self.show_full_extent_checkbox = QCheckBox("Show full extent")
         self.show_full_extent_checkbox.setChecked(self.settings.get("show_full_extent", False))
-        self.show_full_extent_checkbox.setToolTip("Default: extend up to 1.5x. Enable for unlimited extent (uses more memory)")
-        appearance_layout.addRow("", self.show_full_extent_checkbox)
-
+        self.show_full_extent_checkbox.setToolTip("Show contours beyond image boundaries (uses more memory)")
+        options_row.addWidget(self.show_full_extent_checkbox)
+        options_row.addStretch()
+        appearance_layout.addLayout(options_row)
         
-        mid_layout.addWidget(appearance_group)
+        appearance_layout.addStretch()
+        
+        self.tab_widget.addTab(appearance_tab, "Appearance")
 
-
-        main_layout.addLayout(mid_layout)
-
-        # Bottom row: RMS Calculation Region in a compact grid layout
-        rms_group = QGroupBox("RMS Calculation Region")
-        rms_layout = QGridLayout(rms_group)
-        self.use_default_rms_box = QCheckBox("Use default RMS region")
-        self.use_default_rms_box.setChecked(
-            self.settings.get("use_default_rms_region", True)
-        )
+        # ========== TAB 4: RMS ==========
+        rms_tab = QWidget()
+        rms_layout = QVBoxLayout(rms_tab)
+        rms_layout.setSpacing(20)
+        rms_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Default checkbox
+        self.use_default_rms_box = QCheckBox("Use default region")
+        self.use_default_rms_box.setChecked(self.settings.get("use_default_rms_region", True))
+        self.use_default_rms_box.setStyleSheet("font-weight: 500;")
         self.use_default_rms_box.stateChanged.connect(self.toggle_rms_inputs)
-        rms_layout.addWidget(self.use_default_rms_box, 0, 0, 1, 4)
-        # Arrange X min and Y min side by side, then X max and Y max
+        rms_layout.addWidget(self.use_default_rms_box)
+        
+        # Info
+        info_label = QLabel("Define a source-free region for RMS/noise calculation (σ levels).")
+        info_label.setStyleSheet(f"color: {text_secondary}; font-size: 10pt;")
+        rms_layout.addWidget(info_label)
+        
+        # Custom region inputs
+        self.rms_inputs_container = QWidget()
+        rms_grid = QGridLayout(self.rms_inputs_container)
+        rms_grid.setSpacing(16)
+        rms_grid.setContentsMargins(0, 8, 0, 0)
+        
         self.rms_xmin_label = QLabel("X min:")
-        rms_layout.addWidget(self.rms_xmin_label, 1, 0)
+        rms_grid.addWidget(self.rms_xmin_label, 0, 0)
         self.rms_xmin = QSpinBox()
         self.rms_xmin.setRange(0, 10000)
         self.rms_xmin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[0])
-        rms_layout.addWidget(self.rms_xmin, 1, 1)
-        self.rms_ymin_label = QLabel("Y min:")
-        rms_layout.addWidget(self.rms_ymin_label, 1, 2)
-        self.rms_ymin = QSpinBox()
-        self.rms_ymin.setRange(0, 10000)
-        self.rms_ymin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[2])
-        rms_layout.addWidget(self.rms_ymin, 1, 3)
+        rms_grid.addWidget(self.rms_xmin, 0, 1)
+        
         self.rms_xmax_label = QLabel("X max:")
-        rms_layout.addWidget(self.rms_xmax_label, 2, 0)
+        rms_grid.addWidget(self.rms_xmax_label, 0, 2)
         self.rms_xmax = QSpinBox()
         self.rms_xmax.setRange(0, 10000)
         self.rms_xmax.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[1])
-        rms_layout.addWidget(self.rms_xmax, 2, 1)
+        rms_grid.addWidget(self.rms_xmax, 0, 3)
+        
+        self.rms_ymin_label = QLabel("Y min:")
+        rms_grid.addWidget(self.rms_ymin_label, 1, 0)
+        self.rms_ymin = QSpinBox()
+        self.rms_ymin.setRange(0, 10000)
+        self.rms_ymin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[2])
+        rms_grid.addWidget(self.rms_ymin, 1, 1)
+        
         self.rms_ymax_label = QLabel("Y max:")
-        rms_layout.addWidget(self.rms_ymax_label, 2, 2)
+        rms_grid.addWidget(self.rms_ymax_label, 1, 2)
         self.rms_ymax = QSpinBox()
         self.rms_ymax.setRange(0, 10000)
         self.rms_ymax.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[3])
-        rms_layout.addWidget(self.rms_ymax, 2, 3)
-        main_layout.addWidget(rms_group)
-
-        # Initialize RMS inputs state
+        rms_grid.addWidget(self.rms_ymax, 1, 3)
+        
+        rms_layout.addWidget(self.rms_inputs_container)
+        rms_layout.addStretch()
+        
         self.toggle_rms_inputs()
+        
+        self.tab_widget.addTab(rms_tab, "RMS")
+        
+        main_layout.addWidget(self.tab_widget)
 
-        # Button box at the bottom
+        # ========== BUTTON BOX ==========
+        button_row = QHBoxLayout()
+        button_row.setSpacing(12)
+        
+        reset_btn = QPushButton("Reset to Defaults")
+        reset_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border: none;
+                color: {text_secondary};
+                font-size: 10pt;
+                padding: 6px 10px;
+            }}
+            QPushButton:hover {{
+                color: {highlight_color};
+            }}
+        """)
+        reset_btn.clicked.connect(self._reset_to_defaults)
+        button_row.addWidget(reset_btn)
+        
+        button_row.addStretch()
+        
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
-        main_layout.addWidget(button_box)
+        
+        ok_button = button_box.button(QDialogButtonBox.Ok)
+        if ok_button:
+            ok_button.setText("Apply")
+            ok_button.setMinimumWidth(100)
+            ok_button.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 {palette.get('button_gradient_start', highlight_color)}, 
+                        stop:1 {palette.get('button_gradient_end', palette.get('highlight_hover', highlight_color))});
+                    color: #ffffff;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 8px 20px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background-color: {palette.get('highlight_hover', highlight_color)};
+                }}
+            """)
+        
+        cancel_button = button_box.button(QDialogButtonBox.Cancel)
+        if cancel_button:
+            cancel_button.setText("Close")
+            cancel_button.setMinimumWidth(80)
+        
+        button_row.addWidget(button_box)
+        main_layout.addLayout(button_row)
 
     def toggle_rms_inputs(self):
         """Update the enabled state and visual appearance of RMS inputs."""
-        enabled = not self.use_default_rms_box.isChecked()
-
-        # Create widget lists for consistent state management
-        rms_inputs = [self.rms_xmin, self.rms_xmax, self.rms_ymin, self.rms_ymax]
-        rms_labels = [self.rms_xmin_label, self.rms_ymin_label, self.rms_xmax_label, self.rms_ymax_label]
-
-        # Update enabled state for all inputs and labels
-        for widget in rms_inputs:
-            widget.setEnabled(enabled)
-        for label in rms_labels:
-            label.setEnabled(enabled)
+        use_default = self.use_default_rms_box.isChecked()
+        
+        # Hide/show the RMS inputs container
+        if hasattr(self, 'rms_inputs_container'):
+            self.rms_inputs_container.setVisible(not use_default)
 
     def update_external_options(self, enabled):
         """Update the enabled state and visual appearance of external options."""
@@ -569,6 +782,62 @@ class ContourSettingsDialog(QDialog):
             self.pos_levels_edit.setText(", ".join(str(l) for l in pos_levels))
             self.neg_levels_edit.setText(", ".join(str(l) for l in neg_levels))
 
+    def _apply_level_preset(self, preset_name):
+        """Apply a predefined level preset based on current level type."""
+        level_type = self.level_type_combo.currentText()
+        
+        presets = {
+            "fraction": {
+                "5levels": ([0.1, 0.3, 0.5, 0.7, 0.9], [0.1, 0.3, 0.5, 0.7, 0.9]),
+                "3levels": ([0.3, 0.6, 0.9], [0.3, 0.6, 0.9]),
+                "dense": ([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
+            },
+            "sigma": {
+                "5levels": ([3, 6, 10, 15, 20], [3, 6, 10, 15, 20]),
+                "3levels": ([3, 10, 20], [3, 10, 20]),
+                "dense": ([3, 5, 7, 10, 15, 20, 30, 50], [3, 5, 7, 10, 15, 20, 30, 50]),
+            },
+            "absolute": {
+                "5levels": ([100, 500, 1000, 5000, 10000], [100, 500, 1000, 5000, 10000]),
+                "3levels": ([100, 1000, 10000], [100, 1000, 10000]),
+                "dense": ([50, 100, 200, 500, 1000, 2000, 5000, 10000], [50, 100, 200, 500, 1000, 2000, 5000, 10000]),
+            },
+        }
+        
+        if level_type in presets and preset_name in presets[level_type]:
+            pos, neg = presets[level_type][preset_name]
+            self.pos_levels_edit.setText(", ".join(str(l) for l in pos))
+            self.neg_levels_edit.setText(", ".join(str(l) for l in neg))
+
+    def _reset_to_defaults(self):
+        """Reset all dialog settings to default values."""
+        # Source
+        self.same_image_radio.setChecked(True)
+        self.file_path_edit.clear()
+        self.radio_casa_image.setChecked(True)
+        
+        # Stokes
+        self.stokes_combo.setCurrentText("I")
+        
+        # Levels
+        self.level_type_combo.setCurrentText("fraction")
+        self.pos_levels_edit.setText("0.1, 0.3, 0.5, 0.7, 0.9")
+        self.neg_levels_edit.setText("0.1, 0.3, 0.5, 0.7, 0.9")
+        
+        # Appearance
+        self.pos_color_combo.setCurrentText("white")
+        self.neg_color_combo.setCurrentText("white")
+        self.pos_linewidth_spin.setValue(1.0)
+        self.neg_linewidth_spin.setValue(1.0)
+        self.pos_linestyle_combo.setCurrentIndex(0)  # Solid
+        self.neg_linestyle_combo.setCurrentIndex(1)  # Dashed
+        if hasattr(self, 'show_labels_checkbox'):
+            self.show_labels_checkbox.setChecked(False)
+        self.show_full_extent_checkbox.setChecked(False)
+        
+        # RMS
+        self.use_default_rms_box.setChecked(True)
+
     def update_placeholder_text(self):
 
         if self.radio_casa_image.isChecked():
@@ -577,24 +846,64 @@ class ContourSettingsDialog(QDialog):
             self.file_path_edit.setPlaceholderText("Select FITS file...")
 
     def browse_file(self):
-        if self.radio_casa_image.isChecked():
-            # Select CASA image directory
-            directory = QFileDialog.getExistingDirectory(
-                self, "Select a CASA Image Directory"
+        # Check if remote mode is active
+        main_window = None
+        parent = self.parent()
+        if parent:
+            # parent could be ImageViewer, we need MainWindow
+            if hasattr(parent, 'window'):
+                main_window = parent.window()
+            elif hasattr(parent, 'remote_connection'):
+                main_window = parent
+        
+        is_remote = (
+            main_window is not None 
+            and hasattr(main_window, 'remote_connection')
+            and main_window.remote_connection is not None
+            and main_window.remote_connection.is_connected()
+        )
+        
+        if is_remote:
+            # Use remote file browser
+            from .remote.remote_file_browser import RemoteFileBrowser
+            from .remote.file_cache import RemoteFileCache
+            
+            casa_mode = self.radio_casa_image.isChecked()
+            cache = getattr(main_window, 'remote_cache', None) or RemoteFileCache()
+            
+            browser = RemoteFileBrowser(
+                main_window.remote_connection,
+                cache=cache,
+                parent=self,
+                casa_mode=casa_mode,
             )
-            if directory:
-                self.file_path_edit.setText(directory)
-                # Update stokes combo based on external image
-                self._update_stokes_combo_for_external(directory)
+            
+            def on_file_selected(path):
+                self.file_path_edit.setText(path)
+                self._update_stokes_combo_for_external(path)
+            
+            browser.fileSelected.connect(on_file_selected)
+            browser.exec_()
         else:
-            # Select FITS file
-            file_path, _ = QFileDialog.getOpenFileName(
-                self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
-            )
-            if file_path:
-                self.file_path_edit.setText(file_path)
-                # Update stokes combo based on external image
-                self._update_stokes_combo_for_external(file_path)
+            # Use local file dialog
+            if self.radio_casa_image.isChecked():
+                # Select CASA image directory
+                directory = QFileDialog.getExistingDirectory(
+                    self, "Select a CASA Image Directory"
+                )
+                if directory:
+                    self.file_path_edit.setText(directory)
+                    # Update stokes combo based on external image
+                    self._update_stokes_combo_for_external(directory)
+            else:
+                # Select FITS file
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
+                )
+                if file_path:
+                    self.file_path_edit.setText(file_path)
+                    # Update stokes combo based on external image
+                    self._update_stokes_combo_for_external(file_path)
 
     def _update_stokes_combo_state(self, available_stokes):
         """
@@ -676,6 +985,16 @@ class ContourSettingsDialog(QDialog):
             if external_path:
                 self._update_stokes_combo_for_external(external_path)
 
+    def _update_threshold_visibility(self):
+        """Show/hide threshold controls based on selected Stokes parameter."""
+        # Derived Stokes parameters that use thresholding
+        derived_stokes = {"Q/I", "U/I", "V/I", "Lfrac", "Vfrac", "PANG"}
+        current_stokes = self.stokes_combo.currentText()
+        
+        # Enable threshold controls only for derived parameters
+        is_derived = current_stokes in derived_stokes
+        self.threshold_label.setEnabled(is_derived)
+        self.threshold_spin.setEnabled(is_derived)
 
     def get_settings(self):
         settings = {}
@@ -684,6 +1003,7 @@ class ContourSettingsDialog(QDialog):
         )
         settings["external_image"] = self.file_path_edit.text()
         settings["stokes"] = self.stokes_combo.currentText()
+        settings["threshold"] = self.threshold_spin.value()
         settings["level_type"] = self.level_type_combo.currentText()
         try:
             pos_levels_text = self.pos_levels_edit.text()
@@ -711,11 +1031,22 @@ class ContourSettingsDialog(QDialog):
             self.rms_ymin.value(),
             self.rms_ymax.value(),
         )
-        settings["color"] = self.color_combo.currentText()
-        settings["linewidth"] = self.linewidth_spin.value()
-        settings["pos_linestyle"] = self.pos_linestyle_combo.currentText()
-        settings["neg_linestyle"] = self.neg_linestyle_combo.currentText()
+        settings["color"] = self.pos_color_combo.currentText()  # For backward compatibility
+        settings["linewidth"] = self.pos_linewidth_spin.value()  # For backward compatibility
+        settings["pos_color"] = self.pos_color_combo.currentText()
+        settings["neg_color"] = self.neg_color_combo.currentText()
+        settings["pos_linewidth"] = self.pos_linewidth_spin.value()
+        settings["neg_linewidth"] = self.neg_linewidth_spin.value()
+        
+        # Convert linestyle display names back to matplotlib format
+        linestyle_values = ["-", "--", "-.", ":"]
+        pos_idx = self.pos_linestyle_combo.currentIndex()
+        neg_idx = self.neg_linestyle_combo.currentIndex()
+        settings["pos_linestyle"] = linestyle_values[pos_idx] if 0 <= pos_idx < len(linestyle_values) else "-"
+        settings["neg_linestyle"] = linestyle_values[neg_idx] if 0 <= neg_idx < len(linestyle_values) else "--"
         settings["linestyle"] = settings["pos_linestyle"]
+        
+        settings["show_labels"] = self.show_labels_checkbox.isChecked() if hasattr(self, 'show_labels_checkbox') else False
         settings["show_full_extent"] = self.show_full_extent_checkbox.isChecked()
         if "contour_data" in self.settings:
             settings["contour_data"] = self.settings["contour_data"]
@@ -1018,8 +1349,7 @@ class PhaseShiftDialog(QDialog):
 
         # Add a description at the top
         description = QLabel(
-            "This tool shifts the coordinate system so that the solar center aligns with the image phase center. "
-            "This is useful for properly aligning solar observations in heliographic coordinates."
+            "This tool relocates the quiet Sun disk to the actual solar center."
         )
         description.setWordWrap(True)
         #description.setStyleSheet("color: #BBB; font-style: italic;")
@@ -1137,7 +1467,7 @@ class PhaseShiftDialog(QDialog):
         batch_file_layout.addRow("Apply To Pattern:", input_pattern_layout)
 
         # MS File selection (optional) - common for both modes
-        ms_layout = QHBoxLayout()
+        '''ms_layout = QHBoxLayout()
         self.ms_path_edit = QLineEdit("")
         self.ms_path_edit.setPlaceholderText(
             "Optional MS file for phase center calculation"
@@ -1146,19 +1476,19 @@ class PhaseShiftDialog(QDialog):
         self.ms_browse_button.clicked.connect(self.browse_ms)
         ms_layout.addWidget(self.ms_path_edit, 1)
         ms_layout.addWidget(self.ms_browse_button)
-
+        '''
         # Add widgets to input layout
         input_layout.addWidget(self.single_file_widget)
         input_layout.addWidget(self.batch_file_widget)
         self.batch_file_widget.setVisible(False)
 
         # Add MS file row directly to the input layout
-        ms_form_container = QWidget()
+        '''ms_form_container = QWidget()
         ms_form_layout = QFormLayout(ms_form_container)
         ms_form_layout.setContentsMargins(0, 0, 0, 0)
         ms_form_layout.setVerticalSpacing(8)
         ms_form_layout.addRow("MS File (optional):", ms_layout)
-        input_layout.addWidget(ms_form_container)
+        input_layout.addWidget(ms_form_container)'''
 
         # Output options group (right column)
         output_group = QGroupBox("Output Settings")
@@ -1175,7 +1505,7 @@ class PhaseShiftDialog(QDialog):
         # Output file selection for single file
         output_file_layout = QHBoxLayout()
         self.output_path_edit = QLineEdit("")
-        self.output_path_edit.setPlaceholderText("Leave empty to modify input image")
+        self.output_path_edit.setPlaceholderText("Default: centered_{input_name}.fits")
         self.output_browse_button = QPushButton("Browse...")
         self.output_browse_button.clicked.connect(self.browse_output)
         output_file_layout.addWidget(self.output_path_edit, 1)
@@ -1229,42 +1559,66 @@ class PhaseShiftDialog(QDialog):
         method_layout.setSpacing(10)
         method_layout.setContentsMargins(10, 15, 10, 10)
 
-        # Gaussian fitting option
-        self.fit_gaussian_check = QCheckBox("Use Gaussian fitting for solar center")
-        self.fit_gaussian_check.setChecked(False)
-        method_layout.addWidget(self.fit_gaussian_check)
+        # Solar center detection method selection (radio buttons)
+        method_select_layout = QHBoxLayout()
+        method_select_layout.addWidget(QLabel("Detection Method:"))
+        self.gaussian_method_radio = QRadioButton("Gaussian Fitting")
+        self.com_method_radio = QRadioButton("Center of Mass")
+        self.gaussian_method_radio.setChecked(True)  # Default to Gaussian
+        method_select_layout.addWidget(self.gaussian_method_radio)
+        method_select_layout.addWidget(self.com_method_radio)
+        method_select_layout.addStretch()
+        method_layout.addLayout(method_select_layout)
 
-        # Sigma threshold for center-of-mass
+        # Sigma threshold for center-of-mass (only active when CoM is selected)
         sigma_layout = QHBoxLayout()
-        sigma_layout.addWidget(QLabel("Sigma threshold for center-of-mass:"))
+        self.sigma_label = QLabel("Sigma threshold:")
+        sigma_layout.addWidget(self.sigma_label)
         self.sigma_spinbox = QDoubleSpinBox()
         self.sigma_spinbox.setRange(1.0, 20.0)
         self.sigma_spinbox.setValue(10.0)
         self.sigma_spinbox.setSingleStep(0.5)
+        self.sigma_spinbox.setToolTip("Threshold multiplier for center-of-mass detection")
         sigma_layout.addWidget(self.sigma_spinbox)
         sigma_layout.addStretch()
         method_layout.addLayout(sigma_layout)
+        
+        # Initially disable sigma since Gaussian is default
+        self.sigma_label.setEnabled(False)
+        self.sigma_spinbox.setEnabled(False)
+        
+        # Connect method radios to enable/disable sigma
+        self.gaussian_method_radio.toggled.connect(self._update_method_options)
+        self.com_method_radio.toggled.connect(self._update_method_options)
 
-        # Visual centering option
+        # Visual centering option - now default ON
         self.visual_center_check = QCheckBox(
-            "Create a visually centered image (moves pixel data)"
+            "Create visually centered image"
         )
-        self.visual_center_check.setChecked(False)
+        self.visual_center_check.setChecked(True)  # Default to True
+        self.visual_center_check.setToolTip(
+            "Shifts pixel data so Sun appears at image center"
+        )
         method_layout.addWidget(self.visual_center_check)
 
-        # Multiprocessing option for batch mode
+        # Multiprocessing options container (only visible in batch mode)
+        self.multiprocessing_widget = QWidget()
+        mp_layout = QVBoxLayout(self.multiprocessing_widget)
+        mp_layout.setContentsMargins(0, 0, 0, 0)
+        mp_layout.setSpacing(5)
+        
         self.multiprocessing_check = QCheckBox(
-            "Use multiprocessing for batch operations (faster)"
+            "Use multiprocessing for batch operations"
         )
         self.multiprocessing_check.setChecked(True)
         self.multiprocessing_check.setToolTip(
             "Enable parallel processing for batch operations"
         )
-        method_layout.addWidget(self.multiprocessing_check)
+        mp_layout.addWidget(self.multiprocessing_check)
 
         # CPU cores selection
         cores_layout = QHBoxLayout()
-        cores_layout.addWidget(QLabel("Number of CPU cores to use:"))
+        cores_layout.addWidget(QLabel("CPU cores:"))
         self.cores_spinbox = QSpinBox()
         self.cores_spinbox.setRange(1, multiprocessing.cpu_count())
         self.cores_spinbox.setValue(
@@ -1276,10 +1630,13 @@ class PhaseShiftDialog(QDialog):
         )
         cores_layout.addWidget(self.cores_spinbox)
         cores_layout.addStretch()
-        method_layout.addLayout(cores_layout)
+        mp_layout.addLayout(cores_layout)
 
         # Connect multiprocessing checkbox to enable/disable cores spinbox
         self.multiprocessing_check.toggled.connect(self.cores_spinbox.setEnabled)
+        
+        method_layout.addWidget(self.multiprocessing_widget)
+        self.multiprocessing_widget.setVisible(False)  # Hidden by default (single file mode)
 
         # Add the method group to the container (full width)
         method_container_layout.addWidget(method_group)
@@ -1341,6 +1698,9 @@ class PhaseShiftDialog(QDialog):
         self.batch_file_widget.setVisible(not single_mode)
         self.single_output_widget.setVisible(single_mode)
         self.batch_output_widget.setVisible(not single_mode)
+        
+        # Multiprocessing options only visible in batch mode
+        self.multiprocessing_widget.setVisible(not single_mode)
 
         # Update button text
         if single_mode:
@@ -1352,22 +1712,53 @@ class PhaseShiftDialog(QDialog):
         """Update UI based on selected Stokes mode"""
         single_stokes = self.single_stokes_radio.isChecked()
         self.stokes_combo.setEnabled(single_stokes)
+    
+    def _update_method_options(self):
+        """Enable/disable sigma threshold based on detection method selection"""
+        use_com = self.com_method_radio.isChecked()
+        self.sigma_label.setEnabled(use_com)
+        self.sigma_spinbox.setEnabled(use_com)
 
     def browse_image(self):
-        """Browse for input image file"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Image File", "", "FITS Files (*.fits);;CASA Images (*)"
-        )
+        """Browse for input image file (FITS or CASA image directory)"""
+        # Ask user which type of image to select
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Select Image Type")
+        msg_box.setText("What type of image do you want to select?")
+        fits_btn = msg_box.addButton("FITS", QMessageBox.ActionRole)
+        casa_btn = msg_box.addButton("CASA Image", QMessageBox.ActionRole)
+        msg_box.addButton(QMessageBox.Cancel)
+        msg_box.exec_()
+        
+        file_path = None
+        if msg_box.clickedButton() == fits_btn:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select FITS File", "", "FITS Files (*.fits *.fts);;All Files (*)"
+            )
+        elif msg_box.clickedButton() == casa_btn:
+            file_path = QFileDialog.getExistingDirectory(
+                self, "Select CASA Image Directory"
+            )
+        
         if file_path:
             self.image_path_edit.setText(file_path)
             self.imagename = file_path
 
-            # Set default output filename pattern
-            if not self.output_path_edit.text():
-                file_dir = os.path.dirname(file_path)
-                file_name = os.path.basename(file_path)
-                output_path = os.path.join(file_dir, f"shifted_{file_name}")
-                self.output_path_edit.setText(output_path)
+            # Set default output filename: centered_{input_basename}.fits
+            file_dir = os.path.dirname(file_path)
+            file_name = os.path.basename(file_path)
+            # Remove extension and add centered_ prefix
+            base_name = os.path.splitext(file_name)[0]
+            # Handle CASA image directories - strip .image or .im suffix
+            if os.path.isdir(file_path):
+                base_name = file_name
+                # Remove common CASA extensions
+                for ext in ['.image', '.im']:
+                    if base_name.endswith(ext):
+                        base_name = base_name[:-len(ext)]
+                        break
+            output_path = os.path.join(file_dir, f"centered_{base_name}.fits")
+            self.output_path_edit.setText(output_path)
 
     def browse_input_pattern(self):
         """Browse for directory and help set input pattern"""
@@ -1399,11 +1790,28 @@ class PhaseShiftDialog(QDialog):
             self.ms_path_edit.setText(dir_path)
 
     def browse_output(self):
-        """Browse for output file location"""
+        """Browse for output file location (FITS only)"""
+        # Get suggested filename from input if available
+        suggested = ""
+        if self.image_path_edit.text():
+            input_name = os.path.basename(self.image_path_edit.text())
+            base_name = os.path.splitext(input_name)[0]
+            if os.path.isdir(self.image_path_edit.text()):
+                base_name = input_name
+                # Remove common CASA extensions
+                for ext in ['.image', '.im']:
+                    if base_name.endswith(ext):
+                        base_name = base_name[:-len(ext)]
+                        break
+            suggested = f"centered_{base_name}.fits"
+        
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Output As", "", "FITS Files (*.fits);;CASA Images (*)"
+            self, "Save Output As", suggested, "FITS Files (*.fits)"
         )
         if file_path:
+            # Ensure .fits extension
+            if not file_path.endswith('.fits'):
+                file_path = file_path + '.fits'
             self.output_path_edit.setText(file_path)
 
     def browse_reference_image(self):
@@ -1451,7 +1859,8 @@ class PhaseShiftDialog(QDialog):
 
         try:
             # Get common parameters
-            msname = self.ms_path_edit.text() or None
+            #msname = self.ms_path_edit.text() or None
+            msname = None
 
             # Create SolarPhaseCenter instance - removing cellsize and imsize parameters
             spc = SolarPhaseCenter(msname=msname)
@@ -1512,16 +1921,42 @@ class PhaseShiftDialog(QDialog):
                     f"Found {len(matching_files)} files matching the pattern"
                 )
 
+                # Check if reference image is in helioprojective coordinates
+                is_hpc = self._is_helioprojective(reference_image)
+                
+                if is_hpc:
+                    self.status_text.appendPlainText("Detected helioprojective coordinates (Solar-X/Y)")
+                    self.status_text.appendPlainText("Will shift sun to (0,0) Solar-X/Y...")
+
                 # Calculate phase shift based on the reference image
-                ra, dec, needs_shift = spc.cal_solar_phaseshift(
+                use_gaussian = self.gaussian_method_radio.isChecked()
+                phase_result = spc.cal_solar_phaseshift(
                     imagename=reference_image,
-                    fit_gaussian=self.fit_gaussian_check.isChecked(),
+                    fit_gaussian=use_gaussian,
                     sigma=self.sigma_spinbox.value(),
                 )
-
-                self.status_text.appendPlainText(
-                    f"Calculated solar center: RA = {ra} deg, DEC = {dec} deg"
-                )
+                
+                # For HPC images, override true position to (0,0) Solar-X/Y
+                if is_hpc:
+                    phase_result['true_ra'] = 0.0  # Solar-X = 0
+                    phase_result['true_dec'] = 0.0  # Solar-Y = 0
+                    phase_result['is_hpc'] = True
+                    self.status_text.appendPlainText(
+                        f"Apparent position: pixel ({phase_result.get('apparent_pix_x', 'N/A')}, "
+                        f"{phase_result.get('apparent_pix_y', 'N/A')})"
+                    )
+                    self.status_text.appendPlainText("Target position: (0, 0) Solar-X/Y")
+                else:
+                    phase_result['is_hpc'] = False
+                    self.status_text.appendPlainText(
+                        f"True solar position (ephemeris): RA = {phase_result.get('true_ra', 'N/A'):.6f} deg, "
+                        f"DEC = {phase_result.get('true_dec', 'N/A'):.6f} deg"
+                    )
+                    self.status_text.appendPlainText(
+                        f"Apparent position: pixel ({phase_result.get('apparent_pix_x', 'N/A')}, "
+                        f"{phase_result.get('apparent_pix_y', 'N/A')})"
+                    )
+                needs_shift = phase_result.get('needs_shift', False)
 
                 if not needs_shift:
                     self.status_text.appendPlainText(
@@ -1553,8 +1988,8 @@ class PhaseShiftDialog(QDialog):
                         )
 
                     results = spc.apply_shift_to_multiple_fits(
-                        ra=ra,
-                        dec=dec,
+                        ra=phase_result.get('true_ra'),
+                        dec=phase_result.get('true_dec'),
                         input_pattern=input_pattern,
                         output_pattern=output_pattern,
                         stokes=stokes,
@@ -1577,23 +2012,95 @@ class PhaseShiftDialog(QDialog):
                     "Success",
                     f"Batch processing completed: {results[0]} out of {results[1]} files processed successfully.",
                 )
-                self.accept()
+                # Don't auto-close - let user see results
 
             else:
                 # Single file mode
                 imagename = self.image_path_edit.text()
+                
+                # Check if image is in helioprojective coordinates
+                is_hpc = self._is_helioprojective(imagename)
+                
+                if is_hpc:
+                    self.status_text.appendPlainText("Detected helioprojective coordinates (Solar-X/Y)")
+                    self.status_text.appendPlainText("Will shift sun to (0,0) Solar-X/Y...")
+                    
+                    # For HPC, we just need to find where the sun is and shift to center
+                    use_gaussian = self.gaussian_method_radio.isChecked()
+                    phase_result = spc.cal_solar_phaseshift(
+                        imagename=imagename,
+                        fit_gaussian=use_gaussian,
+                        sigma=self.sigma_spinbox.value(),
+                    )
+                    
+                    # For HPC, override true position to (0,0) Solar-X/Y
+                    # This means CRVAL1=0, CRVAL2=0 in the final image
+                    phase_result['true_ra'] = 0.0  # Solar-X = 0
+                    phase_result['true_dec'] = 0.0  # Solar-Y = 0
+                    phase_result['is_hpc'] = True
+                else:
+                    # Standard RA/Dec processing
+                    self.status_text.appendPlainText("Calculating solar center position...")
+                    use_gaussian = self.gaussian_method_radio.isChecked()
+                    
+                    phase_result = spc.cal_solar_phaseshift(
+                        imagename=imagename,
+                        fit_gaussian=use_gaussian,
+                        sigma=self.sigma_spinbox.value(),
+                    )
+                    phase_result['is_hpc'] = False
 
-                # Calculate phase shift
-                self.status_text.appendPlainText("Calculating solar center position...")
-                ra, dec, needs_shift = spc.cal_solar_phaseshift(
-                    imagename=imagename,
-                    fit_gaussian=self.fit_gaussian_check.isChecked(),
-                    sigma=self.sigma_spinbox.value(),
-                )
+                # Display detailed results
+                true_ra = phase_result.get('true_ra')
+                true_dec = phase_result.get('true_dec')
+                apparent_ra = phase_result.get('apparent_ra')
+                apparent_dec = phase_result.get('apparent_dec')
+                apparent_pix_x = phase_result.get('apparent_pix_x')
+                apparent_pix_y = phase_result.get('apparent_pix_y')
+                needs_shift = phase_result.get('needs_shift', False)
+                is_hpc_mode = phase_result.get('is_hpc', False)
 
-                self.status_text.appendPlainText(
-                    f"Calculated solar center: RA = {ra} deg, DEC = {dec} deg"
-                )
+                self.status_text.appendPlainText("")
+                self.status_text.appendPlainText("=== PHASE SHIFT CALCULATION ===")
+                self.status_text.appendPlainText(f"Method: {'Gaussian Fitting' if use_gaussian else 'Center of Mass'}")
+                
+                if is_hpc_mode:
+                    # HPC mode - show Solar-X/Y
+                    self.status_text.appendPlainText(
+                        f"Target position: Solar-X = {true_ra:.1f} arcsec, Solar-Y = {true_dec:.1f} arcsec"
+                    )
+                else:
+                    # RA/Dec mode
+                    if true_ra is not None and true_dec is not None:
+                        self.status_text.appendPlainText(
+                            f"True solar position (ephemeris): RA = {true_ra:.6f}°, DEC = {true_dec:.6f}°"
+                        )
+                    else:
+                        self.status_text.appendPlainText(
+                            "Warning: Could not determine true solar position from ephemeris"
+                        )
+                    
+                    if apparent_ra is not None and apparent_dec is not None:
+                        self.status_text.appendPlainText(
+                            f"Apparent position (image): RA = {apparent_ra:.6f}°, DEC = {apparent_dec:.6f}°"
+                        )
+                
+                if apparent_pix_x is not None and apparent_pix_y is not None:
+                    self.status_text.appendPlainText(
+                        f"Apparent pixel position: ({apparent_pix_x}, {apparent_pix_y})"
+                    )
+                
+                # Calculate and display offset
+                if true_ra is not None and apparent_ra is not None:
+                    import numpy as np
+                    offset_ra = (true_ra - apparent_ra) * 3600  # arcsec
+                    offset_dec = (true_dec - apparent_dec) * 3600  # arcsec
+                    total_offset = np.sqrt(offset_ra**2 + offset_dec**2)
+                    self.status_text.appendPlainText(
+                        f"Offset: RA = {offset_ra:.2f}\", DEC = {offset_dec:.2f}\", Total = {total_offset:.2f}\""
+                    )
+                
+                self.status_text.appendPlainText("")
 
                 if not needs_shift:
                     self.status_text.appendPlainText(
@@ -1602,117 +2109,132 @@ class PhaseShiftDialog(QDialog):
                     result = QMessageBox.question(
                         self,
                         "No Shift Needed",
-                        "No phase shift is needed as the solar center is already aligned. Proceed anyway?",
+                        "The solar center is already close to the phase center. Continue anyway?",
                         QMessageBox.Yes | QMessageBox.No,
                         QMessageBox.No,
                     )
                     if result == QMessageBox.No:
                         return
 
+                # Determine output file
+                output_file = self.output_path_edit.text()
+                if not output_file:
+                    # Generate default output filename
+                    file_dir = os.path.dirname(imagename)
+                    file_name = os.path.basename(imagename)
+                    base_name = os.path.splitext(file_name)[0]
+                    if os.path.isdir(imagename):
+                        base_name = file_name
+                        # Remove common CASA extensions
+                        for ext in ['.image', '.im']:
+                            if base_name.endswith(ext):
+                                base_name = base_name[:-len(ext)]
+                                break
+                    output_file = os.path.join(file_dir, f"centered_{base_name}.fits")
+                
+                # Ensure output is FITS
+                if not output_file.endswith('.fits'):
+                    output_file = output_file + '.fits'
+                
+                # Check for output file overwrite
+                files_to_check = []
+                if full_stokes and len(stokes_list) > 1:
+                    for sp in stokes_list:
+                        base, ext = os.path.splitext(output_file)
+                        files_to_check.append(f"{base}_{sp}{ext}")
+                else:
+                    files_to_check.append(output_file)
+                
+                existing_files = [f for f in files_to_check if os.path.exists(f)]
+                if existing_files:
+                    file_list = "\n".join(existing_files)
+                    result = QMessageBox.question(
+                        self,
+                        "Overwrite Files?",
+                        f"The following output file(s) already exist:\n\n{file_list}\n\nOverwrite?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if result == QMessageBox.No:
+                        return
+                
+                self.status_text.appendPlainText(f"Output file: {output_file}")
+
                 # Process all requested Stokes parameters
                 for stokes_param in stokes_list:
-                    output_file = self.output_path_edit.text() or imagename
-
-                    # For multi-Stokes mode, append stokes parameter to filename if output is specified
-                    if (
-                        full_stokes
-                        and self.output_path_edit.text()
-                        and len(stokes_list) > 1
-                    ):
+                    # For multi-Stokes mode, append stokes parameter to filename
+                    if full_stokes and len(stokes_list) > 1:
                         base, ext = os.path.splitext(output_file)
                         stokes_output_file = f"{base}_{stokes_param}{ext}"
                     else:
                         stokes_output_file = output_file
 
-                    self.status_text.appendPlainText(
-                        f"\nProcessing Stokes {stokes_param}..."
-                    )
-                    self.status_text.appendPlainText(
-                        f"Output file: {stokes_output_file}"
-                    )
+                    self.status_text.appendPlainText(f"\nProcessing Stokes {stokes_param}...")
 
-                    # If output is different from input, make a copy
-                    if stokes_output_file != imagename:
+                    if apparent_pix_x is None or apparent_pix_y is None:
+                        self.status_text.appendPlainText("Error: Could not determine sun position")
+                        continue
+
+                    try:
+                        from .move_phasecenter import exportfits_subprocess
                         import shutil
-
+                        
+                        # Step 1: Create a temporary FITS file from input
+                        temp_dir = os.path.dirname(os.path.abspath(imagename))
+                        temp_shifted = os.path.join(temp_dir, f"_temp_shifted_{os.getpid()}.fits")
+                        
                         if os.path.isdir(imagename):
-                            os.system(f"rm -rf {stokes_output_file}")
-                            os.system(f"cp -r {imagename} {stokes_output_file}")
+                            # Export CASA image to temp FITS
+                            self.status_text.appendPlainText("  Exporting CASA image to FITS...")
+                            exportfits_subprocess(
+                                imagename=imagename,
+                                fitsimage=temp_shifted,
+                                dropdeg=False,
+                                dropstokes=False,
+                                overwrite=True
+                            )
                         else:
-                            shutil.copy(imagename, stokes_output_file)
-                        target = stokes_output_file
-                    else:
-                        target = imagename
-
-                    self.status_text.appendPlainText(
-                        f"Applying phase shift to {target}..."
-                    )
-
-                    result = spc.shift_phasecenter(
-                        imagename=target, ra=ra, dec=dec, stokes=stokes_param
-                    )
-
-                    if result == 0:
-                        self.status_text.appendPlainText(
-                            "Phase shift successfully applied."
+                            # Copy FITS to temp
+                            shutil.copy(imagename, temp_shifted)
+                        
+                        # Step 2: Apply phase shift to temp file (corrects WCS)
+                        self.status_text.appendPlainText("  Applying phase shift (correcting WCS)...")
+                        result = spc.shift_phasecenter(
+                            imagename=temp_shifted, stokes=stokes_param, phase_result=phase_result
                         )
-
-                        # Create visually centered image if requested
+                        
+                        if result != 0:
+                            self.status_text.appendPlainText("Warning: Phase shift may not have been applied correctly")
+                        
+                        # Step 3: Create visually centered image from the shifted file
                         if self.visual_center_check.isChecked():
-                            # Generate output filename for visually centered image
-                            if stokes_output_file == imagename:
-                                # If modifying in place, create a separate centered file
-                                base_path = os.path.splitext(target)[0]
-                                ext = os.path.splitext(target)[1]
-                                visual_output = f"{base_path}_centered{ext}"
+                            self.status_text.appendPlainText("  Creating visually centered image...")
+                            success = spc.visually_center_image(
+                                temp_shifted, stokes_output_file, apparent_pix_x, apparent_pix_y
+                            )
+                            if success:
+                                self.status_text.appendPlainText("✓ Visually centered image created!")
                             else:
-                                # If already creating a new file, derive from that filename
-                                base_path = os.path.splitext(stokes_output_file)[0]
-                                ext = os.path.splitext(stokes_output_file)[1]
-                                visual_output = f"{base_path}_centered{ext}"
+                                self.status_text.appendPlainText("Failed to create visually centered image")
+                        else:
+                            # Just copy the phase-shifted file as output
+                            shutil.copy(temp_shifted, stokes_output_file)
+                            self.status_text.appendPlainText("✓ Phase shift applied (WCS corrected)")
+                        
+                        self.status_text.appendPlainText(f"  Output: {stokes_output_file}")
+                        
+                        # Step 4: Cleanup temp file
+                        if os.path.exists(temp_shifted):
+                            os.remove(temp_shifted)
+                            
+                    except Exception as e:
+                        self.status_text.appendPlainText(f"Error: {str(e)}")
 
-                            try:
-                                # Get the reference pixel values from the shifted image
-                                from astropy.io import fits
-
-                                header = fits.getheader(target)
-                                crpix1 = int(header["CRPIX1"])
-                                crpix2 = int(header["CRPIX2"])
-
-                                self.status_text.appendPlainText(
-                                    f"Creating visually centered image: {visual_output}"
-                                )
-
-                                # Create the visually centered image
-                                success = spc.visually_center_image(
-                                    target, visual_output, crpix1, crpix2
-                                )
-
-                                if success:
-                                    self.status_text.appendPlainText(
-                                        "Visually centered image created successfully."
-                                    )
-                                else:
-                                    self.status_text.appendPlainText(
-                                        "Failed to create visually centered image."
-                                    )
-                            except Exception as vis_error:
-                                self.status_text.appendPlainText(
-                                    f"Error creating visually centered image: {str(vis_error)}"
-                                )
-                    elif result == 1:
-                        self.status_text.appendPlainText("Phase shift not needed.")
-                    else:
-                        self.status_text.appendPlainText(
-                            f"Error applying phase shift for Stokes {stokes_param}."
-                        )
-
+                self.status_text.appendPlainText("\n=== PROCESSING COMPLETE ===")
                 QMessageBox.information(
-                    self,
-                    "Success",
-                    f"Solar phase center shift completed successfully for {len(stokes_list)} Stokes parameters.",
+                    self, "Complete", f"Phase shift completed.\nOutput: {output_file}"
                 )
-                self.accept()
+                # Don't auto-close - let user see results in status area
 
         except Exception as e:
             import traceback
@@ -1720,6 +2242,47 @@ class PhaseShiftDialog(QDialog):
             self.status_text.appendPlainText(f"Error: {str(e)}")
             self.status_text.appendPlainText(traceback.format_exc())
             QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+
+    def _is_helioprojective(self, imagepath):
+        """Check if image is in helioprojective coordinates (Solar-X/Y)"""
+        import os
+        
+        if not imagepath or not os.path.exists(imagepath):
+            return False
+        
+        try:
+            # For FITS files, check the header
+            if imagepath.endswith(".fits") or imagepath.endswith(".fts"):
+                from astropy.io import fits
+                header = fits.getheader(imagepath)
+                ctype1 = header.get("CTYPE1", "").upper()
+                ctype2 = header.get("CTYPE2", "").upper()
+                
+                # Check for HPC (Helioprojective)
+                if ("HPLN" in ctype1 or "HPLT" in ctype2 or 
+                    "SOLAR" in ctype1 or "SOLAR" in ctype2):
+                    return True
+            
+            # For CASA images, check coordinate system
+            if os.path.isdir(imagepath):
+                try:
+                    from casatools import image as IA
+                    ia_tool = IA()
+                    ia_tool.open(imagepath)
+                    csys = ia_tool.coordsys()
+                    dimension_names = [n.upper() for n in csys.names()]
+                    ia_tool.close()
+                    
+                    if "SOLAR-X" in dimension_names or "SOLAR-Y" in dimension_names:
+                        return True
+                    if "HPLN-TAN" in dimension_names or "HPLT-TAN" in dimension_names:
+                        return True
+                except Exception:
+                    pass
+            
+            return False
+        except Exception:
+            return False
 
     def showEvent(self, event):
         """Handle the show event to ensure correct sizing"""

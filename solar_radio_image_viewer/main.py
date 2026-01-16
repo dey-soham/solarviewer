@@ -14,6 +14,14 @@ from PyQt5.QtCore import Qt, QSettings
 from .styles import theme_manager, ThemeManager
 from . import __version__
 
+# Globally suppress Astropy's "Invalid 'BLANK' keyword" warning
+import warnings
+try:
+    from astropy.io.fits.verify import VerifyWarning
+    warnings.filterwarnings('ignore', category=VerifyWarning, message=".*Invalid 'BLANK' keyword.*")
+except ImportError:
+    pass
+
 
 def apply_theme(app, theme_mgr):
     """Apply the current theme to the application."""
@@ -37,6 +45,43 @@ def apply_theme(app, theme_mgr):
     
     app.setPalette(qt_palette)
     app.setStyleSheet(theme_mgr.stylesheet)
+
+
+# Threaded Loading Implementation
+from PyQt5.QtCore import QThread, pyqtSignal
+
+class LoaderThread(QThread):
+    """Background thread to load heavy modules and initialize the viewer."""
+    progress = pyqtSignal(int)
+    message = pyqtSignal(str)
+    finished_loading = pyqtSignal(object)  # Returns the created window
+    
+    def __init__(self, imagename, args_fast):
+        super().__init__()
+        self.imagename = imagename
+        self.args_fast = args_fast
+        
+    def run(self):
+        try:
+            if self.args_fast:
+                return # Fast mode handled separately
+            
+            self.message.emit("Loading core libraries...")
+            self.progress.emit(90)
+            
+            # Heavy imports happen here
+            from .viewer import SolarRadioImageViewerApp
+            self.progress.emit(95)
+            from .viewer import update_matplotlib_theme
+            self.message.emit("Initializing interface...")
+            self.progress.emit(98)
+            self.message.emit("Finalizing...")
+            
+            # Return the imported class, not the instance
+            self.finished_loading.emit(SolarRadioImageViewerApp)
+            
+        except Exception as e:
+            print(f"Error in loader thread: {e}")
 
 
 def main():
@@ -118,40 +163,73 @@ Examples:
         saved_theme = ThemeManager.LIGHT
     
     # Set initial theme BEFORE importing viewer (so matplotlib rcParams are correct)
-    # Use internal method to avoid triggering callbacks before viewer is loaded
     theme_manager._current_theme = saved_theme
     
-    # Now import viewer - it will use the correct theme for matplotlib rcParams
-    from .viewer import SolarRadioImageViewerApp, update_matplotlib_theme
-    
-    # Ensure matplotlib is updated with the correct theme
-    update_matplotlib_theme()
-    
-    # Apply theme to application
-    apply_theme(app, theme_manager)
-    
-    # Register theme change callback to update app
-    def on_theme_change(new_theme):
-        apply_theme(app, theme_manager)
-        update_matplotlib_theme()
-        # Save theme preference
-        settings.setValue("theme", new_theme)
-    
-    theme_manager.register_callback(on_theme_change)
-
-    # Launch the appropriate viewer
+    # Handle Fast Mode (Napari) - Skip complex loading
     if args.fast:
-        # Launch the Napari viewer
         from .napari_viewer import main as napari_main
-
         napari_main(args.imagename)
-    else:
-        # Launch the standard viewer
-        window = SolarRadioImageViewerApp(args.imagename)
-        # Note: Window sizing is handled in SolarRadioImageViewerApp.__init__
-        # using screen-aware sizing (90% of available screen, capped at 1920x1080)
-        window.show()
-        sys.exit(app.exec_())
+        return
+
+    # === STANDARD VIEWER LAUNCH SEQUENCE ===
+    
+    # 1. Show Splash Screen (Imports are fast due to pkg_resources removal)
+    from .splash import ModernSplashScreen
+    splash = ModernSplashScreen(version=__version__)
+    splash.show()
+    app.processEvents()
+    
+    # 2. Setup Loading Thread
+    loader = LoaderThread(args.imagename, args.fast)
+    
+    # Container for the window (to be populated by thread callback)
+    window_container = {'window': None}
+    
+    def on_progress(val):
+        splash.set_progress(val)
+        
+    def on_message(msg):
+        splash.show_message(msg)
+        
+    def on_finished(ViewerClass):
+        # This runs in the main thread
+        splash.set_progress(95)
+        splash.show_message("Building interface...")
+        QApplication.processEvents()
+        
+        # Apply theme BEFORE creating window to ensure correct initialization
+        # We need to re-import update_matplotlib_theme here or get it from module
+        #from .viewer import update_matplotlib_theme
+        #update_matplotlib_theme()
+        apply_theme(app, theme_manager)
+        
+        # Instantiate the main window now that classes are imported and theme is active
+        win = ViewerClass(args.imagename)
+        window_container['window'] = win
+        
+        # Setup theme callback
+        def on_theme_change(new_theme):
+            apply_theme(app, theme_manager)
+        #    #update_matplotlib_theme()
+            settings.setValue("theme", new_theme)
+        theme_manager.register_callback(on_theme_change)
+        
+        splash.set_progress(100)
+        splash.show_message("Ready!")
+        
+        # Finish splash sequence
+        splash.finish(win)
+        win.show()
+        
+    loader.progress.connect(on_progress)
+    loader.message.connect(on_message)
+    loader.finished_loading.connect(on_finished)
+    
+    # 3. Start Loading
+    loader.start()
+    
+    # 4. Enter Main Event Loop
+    sys.exit(app.exec_())
 
 
 if __name__ == "__main__":

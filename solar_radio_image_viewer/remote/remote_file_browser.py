@@ -275,7 +275,8 @@ class RemoteFileBrowser(QDialog):
         self.casa_mode = casa_mode
         mode_str = "CASA Images" if casa_mode else "FITS Files"
         self.setWindowTitle(f"Browse Remote {mode_str} - {connection.connection_info}")
-        self.setMinimumSize(700, 800)
+        self.setMinimumSize(500, 500)
+        self.resize(800, 600)
         self.setModal(True)
         
         self.connection = connection
@@ -471,6 +472,13 @@ class RemoteFileBrowser(QDialog):
         self.loading_cancel_btn.clicked.connect(self._cancel_listing)
         self.loading_cancel_btn.setVisible(False)
         button_layout.addWidget(self.loading_cancel_btn)
+        
+        # Browse Local button - allow selecting local files
+        self.browse_local_btn = QPushButton("📁 Browse Local")
+        self.browse_local_btn.setToolTip("Browse local filesystem instead")
+        self.browse_local_btn.setCursor(Qt.PointingHandCursor)
+        self.browse_local_btn.clicked.connect(self._browse_local)
+        button_layout.addWidget(self.browse_local_btn)
         
         button_layout.addStretch()
         
@@ -1230,6 +1238,31 @@ class RemoteFileBrowser(QDialog):
             self._navigate_to(entry.path)
         elif entry.is_fits:
             self._download_and_open(entry)
+    
+    def _browse_local(self):
+        """Open native file dialog to browse local filesystem."""
+        from PyQt5.QtWidgets import QFileDialog
+        
+        if self.casa_mode:
+            # CASA mode: select directory
+            local_path = QFileDialog.getExistingDirectory(
+                self,
+                "Select Local CASA Image Directory",
+                os.path.expanduser("~"),
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+            )
+        else:
+            # FITS mode: select file
+            local_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Local FITS File",
+                os.path.expanduser("~"),
+                "FITS Files (*.fits *.fts *.fit);;All Files (*)"
+            )
+        
+        if local_path:
+            self.fileSelected.emit(local_path)
+            self.accept()
     
     def _open_selected(self):
         """Open the selected file or directory (in CASA mode)."""

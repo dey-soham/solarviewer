@@ -1,7 +1,7 @@
 # import sys
 import os
 import numpy as np
-import pkg_resources
+from importlib import resources as importlib_resources
 import matplotlib
 
 matplotlib.use("Qt5Agg")
@@ -16,8 +16,6 @@ from matplotlib.backends.backend_qt5agg import (
     NavigationToolbar2QT as NavigationToolbar,
 )
 from matplotlib import rcParams
-from scipy.optimize import curve_fit
-
 
 from PyQt5.QtWidgets import (
     QApplication,
@@ -76,7 +74,7 @@ from .utils import (
     # remove_pixels_away_from_sun,
     get_pixel_values_from_image,
     get_image_metadata,
-    twoD_gaussian,
+    #twoD_gaussian,
     twoD_elliptical_ring,
     IA,
 )
@@ -90,8 +88,7 @@ from .styles import (
 )
 from .searchable_combobox import ColormapSelector
 from astropy.time import Time
-from .solar_data_downloader import launch_gui as launch_downloader_gui
-from .radio_data_downloader import launch_gui as launch_radio_downloader_gui
+from sunpy.map import Map
 
 class DisabledItemDelegate(QStyledItemDelegate):
     """Custom delegate that properly renders disabled items with grayed text."""
@@ -118,6 +115,24 @@ def update_matplotlib_theme():
     rcParams.update(theme_manager.matplotlib_params)
 
 
+# Package root directory for fast resource loading
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def get_resource_path(relative_path):
+    """Get absolute path to a package resource file.
+    
+    Uses os.path for speed (avoids slow pkg_resources import).
+    
+    Args:
+        relative_path: Path relative to the package directory (e.g., 'assets/icon.png')
+    
+    Returns:
+        Absolute path to the resource file
+    """
+    return os.path.join(_PACKAGE_DIR, relative_path)
+
+
 def themed_icon(icon_name):
     """Get the full resource path for a theme-appropriate icon.
 
@@ -128,9 +143,7 @@ def themed_icon(icon_name):
         Full resource path to the appropriate icon
     """
     themed_name = get_icon_path(icon_name)
-    return pkg_resources.resource_filename(
-        "solar_radio_image_viewer", f"assets/{themed_name}"
-    )
+    return get_resource_path(f"assets/{themed_name}")
 
 
 # Initialize matplotlib with default theme
@@ -583,9 +596,7 @@ class SolarRadioImageTab(QWidget):
         self.browse_btn.setObjectName("IconOnlyNBGButton")
         self.browse_btn.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/browse.png"
-                )
+                get_resource_path("assets/browse.png")
             )
         )
         self.browse_btn.setIconSize(QSize(32, 32))
@@ -758,9 +769,7 @@ class SolarRadioImageTab(QWidget):
         self.rms_settings_btn.setObjectName("IconOnlyNBGButton")
         self.rms_settings_btn.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/settings.png"
-                )
+                get_resource_path("assets/settings.png")
             )
         )
         self.rms_settings_btn.setIconSize(QSize(20, 20))
@@ -916,9 +925,7 @@ class SolarRadioImageTab(QWidget):
         self.beam_settings_button.setObjectName("IconOnlyNBGButton")
         self.beam_settings_button.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/settings.png"
-                )
+                get_resource_path("assets/settings.png")
             )
         )
         self.beam_settings_button.setIconSize(QSize(18, 18))
@@ -936,9 +943,7 @@ class SolarRadioImageTab(QWidget):
         self.grid_settings_button.setObjectName("IconOnlyNBGButton")
         self.grid_settings_button.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/settings.png"
-                )
+                get_resource_path("assets/settings.png")
             )
         )
         self.grid_settings_button.setIconSize(QSize(18, 18))
@@ -956,9 +961,7 @@ class SolarRadioImageTab(QWidget):
         self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
         self.solar_disk_center_button.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/settings.png"
-                )
+                get_resource_path("assets/settings.png")
             )
         )
         self.solar_disk_center_button.setIconSize(QSize(18, 18))
@@ -976,9 +979,7 @@ class SolarRadioImageTab(QWidget):
         self.contour_settings_button.setObjectName("IconOnlyNBGButton")
         self.contour_settings_button.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/settings.png"
-                )
+                get_resource_path("assets/settings.png")
             )
         )
         self.contour_settings_button.setIconSize(QSize(18, 18))
@@ -1173,9 +1174,7 @@ class SolarRadioImageTab(QWidget):
         self.zoom_in_button.setObjectName("IconOnlyButton")
         self.zoom_in_button.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/zoom_in.png"
-                )
+                get_resource_path("assets/zoom_in.png")
             )
         )
         self.zoom_in_button.setIconSize(QSize(24, 24))
@@ -1188,9 +1187,7 @@ class SolarRadioImageTab(QWidget):
         self.zoom_out_button.setObjectName("IconOnlyButton")
         self.zoom_out_button.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/zoom_out.png"
-                )
+                get_resource_path("assets/zoom_out.png")
             )
         )
         self.zoom_out_button.setIconSize(QSize(24, 24))
@@ -1202,9 +1199,7 @@ class SolarRadioImageTab(QWidget):
         self.reset_view_button.setObjectName("IconOnlyButton")
         self.reset_view_button.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/reset.png"
-                )
+                get_resource_path("assets/reset.png")
             )
         )
         self.reset_view_button.setIconSize(QSize(24, 24))
@@ -1257,9 +1252,7 @@ class SolarRadioImageTab(QWidget):
         action_group = QActionGroup(self)
         self.rect_action = QAction(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/rectangle_selection.png"
-                )
+                get_resource_path("assets/rectangle_selection.png")
             ),
             "",
             self,
@@ -1275,9 +1268,7 @@ class SolarRadioImageTab(QWidget):
         # Ellipse selection action
         self.ellipse_action = QAction(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/ellipse_selection.png"
-                )
+                get_resource_path("assets/ellipse_selection.png")
             ),
             "",
             self,
@@ -1292,9 +1283,7 @@ class SolarRadioImageTab(QWidget):
 
         self.zoom_in_action = QAction(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/zoom_in.png"
-                )
+                get_resource_path("assets/zoom_in.png")
             ),
             "",
             self,
@@ -1303,9 +1292,7 @@ class SolarRadioImageTab(QWidget):
         self.zoom_in_action.triggered.connect(self.zoom_in)
         self.zoom_out_action = QAction(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/zoom_out.png"
-                )
+                get_resource_path("assets/zoom_out.png")
             ),
             "",
             self,
@@ -1314,9 +1301,7 @@ class SolarRadioImageTab(QWidget):
         self.zoom_out_action.triggered.connect(self.zoom_out)
         self.reset_view_action = QAction(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/reset.png"
-                )
+                get_resource_path("assets/reset.png")
             ),
             "",
             self,
@@ -1327,9 +1312,7 @@ class SolarRadioImageTab(QWidget):
         )
         self.zoom_60arcmin_action = QAction(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/zoom_60arcmin.png"
-                )
+                get_resource_path("assets/zoom_60arcmin.png")
             ),
             "",
             self,
@@ -1340,9 +1323,7 @@ class SolarRadioImageTab(QWidget):
         # Add customize plot action
         self.customize_plot_action = QAction(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/settings.png"
-                )
+                get_resource_path("assets/settings.png")
             ),
             "",
             self,
@@ -1357,9 +1338,7 @@ class SolarRadioImageTab(QWidget):
 
         self.ruler_action = QAction(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", f"assets/{get_icon_path('ruler.png')}"
-                )
+                get_resource_path(f"assets/{get_icon_path('ruler.png')}")
             ),
             "",
             self,
@@ -1377,9 +1356,7 @@ class SolarRadioImageTab(QWidget):
         # Profile cut action
         self.profile_action = QAction(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", f"assets/{get_icon_path('profile.png')}"
-                )
+                get_resource_path(f"assets/{get_icon_path('profile.png')}")
             ),
             "",
             self,
@@ -3063,8 +3040,8 @@ class SolarRadioImageTab(QWidget):
             return
 
         data = self.current_image_data
-        p1 = np.percentile(data, 1)
-        p99 = np.percentile(data, 99)
+        p1 = np.nanpercentile(data, 1)
+        p99 = np.nanpercentile(data, 99)
         self.set_range(p1, p99)
 
         stretch = (
@@ -3093,8 +3070,8 @@ class SolarRadioImageTab(QWidget):
             return
 
         data = self.current_image_data
-        p01 = np.percentile(data, 0.1)
-        p999 = np.percentile(data, 99.9)
+        p01 = np.nanpercentile(data, 0.1)
+        p999 = np.nanpercentile(data, 99.9)
         self.set_range(p01, p999)
         stretch = (
             self.stretch_combo.currentText()
@@ -3121,8 +3098,8 @@ class SolarRadioImageTab(QWidget):
             return
 
         data = self.current_image_data
-        p5 = np.percentile(data, 5)
-        p95 = np.percentile(data, 95)
+        p5 = np.nanpercentile(data, 5)
+        p95 = np.nanpercentile(data, 95)
         self.set_range(p5, p95)
         stretch = (
             self.stretch_combo.currentText()
@@ -4196,9 +4173,8 @@ class SolarRadioImageTab(QWidget):
         if hasattr(self, "ruler_action"):
             self.ruler_action.setIcon(
                 QIcon(
-                    pkg_resources.resource_filename(
-                        "solar_radio_image_viewer",
-                        f"assets/{get_icon_path('ruler.png')}",
+                    get_resource_path(
+                        f"assets/{get_icon_path('ruler.png')}"
                     )
                 )
             )
@@ -4207,9 +4183,8 @@ class SolarRadioImageTab(QWidget):
         if hasattr(self, "profile_action"):
             self.profile_action.setIcon(
                 QIcon(
-                    pkg_resources.resource_filename(
-                        "solar_radio_image_viewer",
-                        f"assets/{get_icon_path('profile.png')}",
+                    get_resource_path(
+                        f"assets/{get_icon_path('profile.png')}"
                     )
                 )
             )
@@ -4218,9 +4193,8 @@ class SolarRadioImageTab(QWidget):
         if hasattr(self, "rms_settings_btn"):
             self.rms_settings_btn.setIcon(
                 QIcon(
-                    pkg_resources.resource_filename(
-                        "solar_radio_image_viewer",
-                        f"assets/{get_icon_path('settings.png')}",
+                    get_resource_path(
+                        f"assets/{get_icon_path('settings.png')}"
                     )
                 )
             )
@@ -4229,9 +4203,8 @@ class SolarRadioImageTab(QWidget):
         if hasattr(self, "beam_settings_button"):
             self.beam_settings_button.setIcon(
                 QIcon(
-                    pkg_resources.resource_filename(
-                        "solar_radio_image_viewer",
-                        f"assets/{get_icon_path('settings.png')}",
+                    get_resource_path(
+                        f"assets/{get_icon_path('settings.png')}"
                     )
                 )
             )
@@ -4240,9 +4213,8 @@ class SolarRadioImageTab(QWidget):
         if hasattr(self, "grid_settings_button"):
             self.grid_settings_button.setIcon(
                 QIcon(
-                    pkg_resources.resource_filename(
-                        "solar_radio_image_viewer",
-                        f"assets/{get_icon_path('settings.png')}",
+                    get_resource_path(
+                        f"assets/{get_icon_path('settings.png')}"
                     )
                 )
             )
@@ -5887,7 +5859,6 @@ class SolarRadioImageTab(QWidget):
             
             if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
                 from astropy.io import fits
-
                 try:
                     self._cached_fits_flag = True
                     with fits.open(self.imagename, memmap=True) as hdul:
@@ -5940,9 +5911,6 @@ class SolarRadioImageTab(QWidget):
             self._cached_transposed = data.transpose()
             self._cached_data_id = id(data)
         transposed_data = self._cached_transposed
-
-        # Remove the call to show_image_stats here since we only want to show stats when data is loaded
-        # self.show_image_stats()
 
         stored_xlim = None
         stored_ylim = None
@@ -7812,7 +7780,7 @@ class SolarRadioImageTab(QWidget):
             if self.contour_settings["source"] == "same":
                 if self.imagename:
                     stokes = self.contour_settings["stokes"]
-                    threshold = 5.0
+                    threshold = self.contour_settings.get("threshold", 5.0)
 
                     if stokes in ["I", "Q", "U", "V"]:
                         pix, contour_csys, _ = get_pixel_values_from_image(
@@ -7821,6 +7789,7 @@ class SolarRadioImageTab(QWidget):
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
+                        from .utils import estimate_rms_near_Sun
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, numerator_stokes, threshold, rms_box,
@@ -7830,9 +7799,21 @@ class SolarRadioImageTab(QWidget):
                             self.imagename, "I", threshold, rms_box,
                             target_size=target_size
                         )
-                        mask = denominator_pix != 0
+                        # Estimate RMS of the numerator Stokes for noise thresholding
+                        try:
+                            num_rms = estimate_rms_near_Sun(self.imagename, numerator_stokes, rms_box)
+                        except Exception:
+                            num_rms = np.nanstd(numerator_pix)
+                        
+                        # Create mask: pixels below threshold * RMS are masked out
+                        noise_mask = np.abs(numerator_pix) < (threshold * num_rms)
+                        numerator_pix_masked = numerator_pix.copy()
+                        numerator_pix_masked[noise_mask] = 0
+                        
+                        # Division mask: avoid divide by zero
+                        div_mask = denominator_pix != 0
                         ratio = np.zeros_like(numerator_pix)
-                        ratio[mask] = numerator_pix[mask] / denominator_pix[mask]
+                        ratio[div_mask] = numerator_pix_masked[div_mask] / denominator_pix[div_mask]
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
@@ -7846,6 +7827,7 @@ class SolarRadioImageTab(QWidget):
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
+                        from .utils import estimate_rms_near_Sun
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "Q", threshold, rms_box,
                             target_size=target_size
@@ -7859,11 +7841,27 @@ class SolarRadioImageTab(QWidget):
                             target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
-                        mask = i_pix != 0
+                        
+                        # Estimate RMS for polarized intensity
+                        try:
+                            q_rms = estimate_rms_near_Sun(self.imagename, "Q", rms_box)
+                            u_rms = estimate_rms_near_Sun(self.imagename, "U", rms_box)
+                            l_rms = np.sqrt(q_rms**2 + u_rms**2)
+                        except Exception:
+                            l_rms = np.nanstd(l_pix)
+                        
+                        # Mask pixels below threshold
+                        noise_mask = l_pix < (threshold * l_rms)
+                        l_pix_masked = l_pix.copy()
+                        l_pix_masked[noise_mask] = 0
+                        
+                        # Division with zero protection
+                        div_mask = i_pix != 0
                         lfrac = np.zeros_like(l_pix)
-                        lfrac[mask] = l_pix[mask] / i_pix[mask]
+                        lfrac[div_mask] = l_pix_masked[div_mask] / i_pix[div_mask]
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
+                        from .utils import estimate_rms_near_Sun
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename, "Q", threshold, rms_box,
                             target_size=target_size
@@ -7872,7 +7870,24 @@ class SolarRadioImageTab(QWidget):
                             self.imagename, "U", threshold, rms_box,
                             target_size=target_size
                         )
+                        
+                        # Calculate polarized intensity for thresholding
+                        l_pix = np.sqrt(q_pix**2 + u_pix**2)
+                        
+                        # Estimate RMS for polarized intensity
+                        try:
+                            q_rms = estimate_rms_near_Sun(self.imagename, "Q", rms_box)
+                            u_rms = estimate_rms_near_Sun(self.imagename, "U", rms_box)
+                            l_rms = np.sqrt(q_rms**2 + u_rms**2)
+                        except Exception:
+                            l_rms = np.nanstd(l_pix)
+                        
+                        # Polarization angle
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
+                        
+                        # Mask pixels below threshold with NaN
+                        noise_mask = l_pix < (threshold * l_rms)
+                        pang[noise_mask] = np.nan
                         self.contour_settings["contour_data"] = pang
                     else:
                         pix, contour_csys, _ = get_pixel_values_from_image(
@@ -7888,7 +7903,7 @@ class SolarRadioImageTab(QWidget):
                 external_image = self.contour_settings["external_image"]
                 if external_image and os.path.exists(external_image):
                     stokes = self.contour_settings["stokes"]
-                    threshold = 5.0
+                    threshold = self.contour_settings.get("threshold", 5.0)
                     
                     # Check if we need to transform coordinate systems
                     # Detect coordinate systems of base image and contour image
@@ -7984,6 +7999,7 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = pix
 
                     elif stokes in ["Q/I", "U/I", "V/I"]:
+                        from .utils import estimate_rms_near_Sun
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
                             image_to_load, numerator_stokes, threshold, rms_box,
@@ -7993,9 +8009,21 @@ class SolarRadioImageTab(QWidget):
                             image_to_load, "I", threshold, rms_box,
                             target_size=target_size
                         )
-                        mask = denominator_pix != 0
+                        # Estimate RMS of the numerator Stokes for noise thresholding
+                        try:
+                            num_rms = estimate_rms_near_Sun(image_to_load, numerator_stokes, rms_box)
+                        except Exception:
+                            num_rms = np.nanstd(numerator_pix)
+                        
+                        # Create mask: pixels below threshold * RMS are masked out
+                        noise_mask = np.abs(numerator_pix) < (threshold * num_rms)
+                        numerator_pix_masked = numerator_pix.copy()
+                        numerator_pix_masked[noise_mask] = 0
+                        
+                        # Division mask: avoid divide by zero
+                        div_mask = denominator_pix != 0
                         ratio = np.zeros_like(numerator_pix)
-                        ratio[mask] = numerator_pix[mask] / denominator_pix[mask]
+                        ratio[div_mask] = numerator_pix_masked[div_mask] / denominator_pix[div_mask]
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
@@ -8009,6 +8037,7 @@ class SolarRadioImageTab(QWidget):
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
+                        from .utils import estimate_rms_near_Sun
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
                             image_to_load, "Q", threshold, rms_box,
                             target_size=target_size
@@ -8022,11 +8051,27 @@ class SolarRadioImageTab(QWidget):
                             target_size=target_size
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
-                        mask = i_pix != 0
+                        
+                        # Estimate RMS for polarized intensity
+                        try:
+                            q_rms = estimate_rms_near_Sun(image_to_load, "Q", rms_box)
+                            u_rms = estimate_rms_near_Sun(image_to_load, "U", rms_box)
+                            l_rms = np.sqrt(q_rms**2 + u_rms**2)
+                        except Exception:
+                            l_rms = np.nanstd(l_pix)
+                        
+                        # Mask pixels below threshold
+                        noise_mask = l_pix < (threshold * l_rms)
+                        l_pix_masked = l_pix.copy()
+                        l_pix_masked[noise_mask] = 0
+                        
+                        # Division with zero protection
+                        div_mask = i_pix != 0
                         lfrac = np.zeros_like(l_pix)
-                        lfrac[mask] = l_pix[mask] / i_pix[mask]
+                        lfrac[div_mask] = l_pix_masked[div_mask] / i_pix[div_mask]
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
+                        from .utils import estimate_rms_near_Sun
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
                             image_to_load, "Q", threshold, rms_box,
                             target_size=target_size
@@ -8035,7 +8080,24 @@ class SolarRadioImageTab(QWidget):
                             image_to_load, "U", threshold, rms_box,
                             target_size=target_size
                         )
+                        
+                        # Calculate polarized intensity for thresholding
+                        l_pix = np.sqrt(q_pix**2 + u_pix**2)
+                        
+                        # Estimate RMS for polarized intensity
+                        try:
+                            q_rms = estimate_rms_near_Sun(image_to_load, "Q", rms_box)
+                            u_rms = estimate_rms_near_Sun(image_to_load, "U", rms_box)
+                            l_rms = np.sqrt(q_rms**2 + u_rms**2)
+                        except Exception:
+                            l_rms = np.nanstd(l_pix)
+                        
+                        # Polarization angle
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
+                        
+                        # Mask pixels below threshold with NaN
+                        noise_mask = l_pix < (threshold * l_rms)
+                        pang[noise_mask] = np.nan
                         self.contour_settings["contour_data"] = pang
                     else:
                         pix, contour_csys, _ = get_pixel_values_from_image(
@@ -8624,22 +8686,27 @@ class SolarRadioImageTab(QWidget):
                         # Create coordinate arrays for extended canvas
                         y = np.linspace(extent[2], extent[3], display_contour_data.shape[0])
                         x = np.linspace(extent[0], extent[1], display_contour_data.shape[1])
-                        ax.contour(
+                        cs_pos = ax.contour(
                             x, y, display_contour_data,
                             levels=pos_levels,
-                            colors=self.contour_settings["color"],
-                            linewidths=self.contour_settings["linewidth"],
+                            colors=self.contour_settings.get("pos_color", self.contour_settings["color"]),
+                            linewidths=self.contour_settings.get("pos_linewidth", self.contour_settings["linewidth"]),
                             linestyles=self.contour_settings["pos_linestyle"],
                         )
                     else:
-                        ax.contour(
+                        cs_pos = ax.contour(
                             display_contour_data,
                             levels=pos_levels,
-                            colors=self.contour_settings["color"],
-                            linewidths=self.contour_settings["linewidth"],
+                            colors=self.contour_settings.get("pos_color", self.contour_settings["color"]),
+                            linewidths=self.contour_settings.get("pos_linewidth", self.contour_settings["linewidth"]),
                             linestyles=self.contour_settings["pos_linestyle"],
                             origin="lower",
                         )
+                    
+                    # Add contour labels if enabled
+                    if self.contour_settings.get("show_labels", False):
+                        ax.clabel(cs_pos, inline=True, fontsize=8, fmt='%.2g')
+                        
                 except Exception as e:
                     print(f"[ERROR] Error drawing positive contours: {e}, levels: {pos_levels}")
                     self.show_status_message(f"Error drawing positive contours: {e}, levels: {pos_levels}")
@@ -8649,22 +8716,27 @@ class SolarRadioImageTab(QWidget):
                     if extent:
                         y = np.linspace(extent[2], extent[3], display_contour_data.shape[0])
                         x = np.linspace(extent[0], extent[1], display_contour_data.shape[1])
-                        ax.contour(
+                        cs_neg = ax.contour(
                             x, y, display_contour_data,
                             levels=neg_levels,
-                            colors=self.contour_settings["color"],
-                            linewidths=self.contour_settings["linewidth"],
+                            colors=self.contour_settings.get("neg_color", self.contour_settings["color"]),
+                            linewidths=self.contour_settings.get("neg_linewidth", self.contour_settings["linewidth"]),
                             linestyles=self.contour_settings["neg_linestyle"],
                         )
                     else:
-                        ax.contour(
+                        cs_neg = ax.contour(
                             display_contour_data,
                             levels=neg_levels,
-                            colors=self.contour_settings["color"],
-                            linewidths=self.contour_settings["linewidth"],
+                            colors=self.contour_settings.get("neg_color", self.contour_settings["color"]),
+                            linewidths=self.contour_settings.get("neg_linewidth", self.contour_settings["linewidth"]),
                             linestyles=self.contour_settings["neg_linestyle"],
                             origin="lower",
                         )
+                    
+                    # Add contour labels if enabled
+                    if self.contour_settings.get("show_labels", False):
+                        ax.clabel(cs_neg, inline=True, fontsize=8, fmt='%.2g')
+                        
                 except Exception as e:
                     print(f"[ERROR] Error drawing negative contours: {e}, levels: {neg_levels}")
                     self.show_status_message(f"Error drawing negative contours: {e}, levels: {neg_levels}")
@@ -10383,9 +10455,7 @@ class SolarRadioImageViewerApp(QMainWindow):
             QTimer.singleShot(100, first_tab._scan_directory_files)
             # first_tab.auto_minmax()
         """else:
-            first_tab.imagename = pkg_resources.resource_filename(
-                "solar_radio_image_viewer", "assets/splash.fits"
-            )
+            first_tab.imagename = get_resource_path("assets/splash.fits")
             QTimer.singleShot(
                 20,
                 lambda: first_tab.on_visualization_changed(
@@ -10851,6 +10921,12 @@ class SolarRadioImageViewerApp(QMainWindow):
         cli_downloader_action.triggered.connect(self.launch_data_downloader_cli)
         download_menu.addAction(cli_downloader_action)"""
         help_menu = menubar.addMenu("&Help")
+        
+        '''tutorial_act = QAction("Tutorial", self)
+        tutorial_act.setStatusTip("Open comprehensive tutorial and user guide")
+        tutorial_act.triggered.connect(self.show_tutorial)
+        help_menu.addAction(tutorial_act)'''
+        
         shortcuts_act = QAction("Keyboard Shortcuts", self)
         shortcuts_act.setShortcut("F1")
         shortcuts_act.setStatusTip("Show keyboard shortcuts")
@@ -10970,6 +11046,11 @@ class SolarRadioImageViewerApp(QMainWindow):
         # Update matplotlib rcParams
         update_matplotlib_theme()
 
+        # Update Qt application palette BEFORE refreshing icons
+        # This is critical for matplotlib's NavigationToolbar which reads icon
+        # colors from the palette's foreground role
+        self._update_application_palette()
+
         # Update theme action text
         self._update_theme_action_text()
 
@@ -10996,6 +11077,33 @@ class SolarRadioImageViewerApp(QMainWindow):
             self.theme_action.setText("☀️ Switch to Light Mode")
         else:
             self.theme_action.setText("🌙 Switch to Dark Mode")
+
+    def _update_application_palette(self):
+        """Update the Qt application palette to match the current theme.
+        
+        This is critical for matplotlib's NavigationToolbar which reads icon
+        colors from the palette's foreground role (WindowText color).
+        """
+        palette = theme_manager.palette
+        qt_palette = QPalette()
+        qt_palette.setColor(QPalette.Window, QColor(palette["window"]))
+        qt_palette.setColor(QPalette.WindowText, QColor(palette["text"]))
+        qt_palette.setColor(QPalette.Base, QColor(palette["base"]))
+        qt_palette.setColor(QPalette.AlternateBase, QColor(palette["surface"]))
+        qt_palette.setColor(QPalette.Text, QColor(palette["text"]))
+        qt_palette.setColor(QPalette.Button, QColor(palette["button"]))
+        qt_palette.setColor(QPalette.ButtonText, QColor(palette["text"]))
+        qt_palette.setColor(QPalette.Highlight, QColor(palette["highlight"]))
+        qt_palette.setColor(QPalette.HighlightedText, Qt.white)
+        qt_palette.setColor(QPalette.Link, QColor(palette["highlight"]))
+        qt_palette.setColor(QPalette.Disabled, QPalette.Text, QColor(palette["disabled"]))
+        qt_palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(palette["disabled"]))
+        
+        app = QApplication.instance()
+        if app:
+            app.setPalette(qt_palette)
+            app.setStyleSheet(theme_manager.stylesheet)
+
 
     def refresh_all_plots(self):
         """Refresh all matplotlib plots to apply new theme colors."""
@@ -12153,6 +12261,7 @@ except Exception as e:
             QMessageBox.warning(self, "Fit Error", f"Gaussian fit failed: {str(e)}")
 
     def fit_2d_ring(self):
+        from scipy.optimize import curve_fit
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
             QMessageBox.warning(self, "No Data", "Load data first.")
@@ -12482,7 +12591,6 @@ except Exception as e:
         """Show a modern, professional about dialog."""
         from .styles import theme_manager
         from PyQt5.QtGui import QPixmap
-        import pkg_resources
         is_dark = theme_manager.is_dark
         
         dialog = QDialog(self)
@@ -12518,7 +12626,7 @@ except Exception as e:
         
         icon_label = QLabel()
         try:
-            icon_path = pkg_resources.resource_filename("solar_radio_image_viewer", "assets/icon.png")
+            icon_path = get_resource_path("assets/icon.png")
             pixmap = QPixmap(icon_path)
             icon_label.setPixmap(pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception:
@@ -12561,7 +12669,7 @@ except Exception as e:
         content_layout.setSpacing(16)
         
         # Description
-        desc = QLabel("A powerful visualization tool for CASA and FITS solar radio images")
+        desc = QLabel("A visualization tool for CASA and FITS solar radio images")
         desc.setWordWrap(True)
         desc.setAlignment(Qt.AlignCenter)
         desc.setStyleSheet("font-size: 12pt;")
@@ -12663,6 +12771,15 @@ except Exception as e:
         
         layout.addWidget(content, 1)
 
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        dialog.show()
+
+    def show_tutorial(self):
+        """Show the comprehensive tutorial dialog."""
+        from .tutorial import TutorialDialog
+        dialog = TutorialDialog(self)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
         self._open_dialogs.append(dialog)
@@ -13047,6 +13164,7 @@ except Exception as e:
     def launch_data_downloader_gui(self):
         """Launch the Solar Data Downloader GUI."""
         try:
+            from .solar_data_downloader import launch_gui as launch_downloader_gui
             # Try to extract datetime from current tab
             initial_datetime = self._get_current_tab_datetime()
             launch_downloader_gui(self, initial_datetime=initial_datetime)
@@ -13061,6 +13179,7 @@ except Exception as e:
     def launch_radio_data_downloader_gui(self):
         """Launch the Radio Solar Data Downloader GUI."""
         try:
+            from .radio_data_downloader import launch_gui as launch_radio_downloader_gui
             # Try to extract datetime from current tab
             initial_datetime = self._get_current_tab_datetime()
             launch_radio_downloader_gui(self, initial_datetime=initial_datetime)
