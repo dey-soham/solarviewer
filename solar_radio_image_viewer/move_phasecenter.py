@@ -900,11 +900,25 @@ class SolarPhaseCenter:
 
                 # Calculate pixel position for the target RA/DEC
                 w = WCS(temp_fits)
-                pix = np.nanmean(
-                    w.all_world2pix(np.array([[true_ra, true_dec], [true_ra, true_dec]]), 0), axis=0
-                )
-                apparent_pix_x = int(pix[0])
-                apparent_pix_y = int(pix[1])
+                
+                # Handle multi-dimensional WCS by using celestial part
+                if hasattr(w, 'celestial'):
+                    w_celest = w.celestial
+                else:
+                    w_celest = w
+                    
+                try:
+                    # Provide RA and Dec to celestial WCS
+                    pix = w_celest.all_world2pix(np.array([[true_ra, true_dec]]), 0)
+                    apparent_pix_x = int(np.round(pix[0][0]))
+                    apparent_pix_y = int(np.round(pix[0][1]))
+                except Exception as e:
+                    print(f"Error calculating pixel position for RA/Dec: {e}")
+                    # Fallback to image center if WCS conversion fails
+                    naxis1 = header.get('NAXIS1', 512)
+                    naxis2 = header.get('NAXIS2', 512)
+                    apparent_pix_x = naxis1 // 2
+                    apparent_pix_y = naxis2 // 2
                 
                 # Clean up temp files
                 os.system(f"rm -rf {temp_image} {temp_fits}")
@@ -1146,6 +1160,7 @@ class SolarPhaseCenter:
         visual_center=False,
         use_multiprocessing=True,
         max_processes=None,
+        phase_result=None,
     ):
         """
         Apply the same phase shift to multiple FITS files
@@ -1153,9 +1168,9 @@ class SolarPhaseCenter:
         Parameters
         ----------
         ra : float
-            RA of the solar center in degrees
+            RA of the solar center in degrees (legacy, use phase_result)
         dec : float
-            DEC of the solar center in degrees
+            DEC of the solar center in degrees (legacy, use phase_result)
         input_pattern : str
             Glob pattern for input files (e.g., "path/to/*.fits")
         output_pattern : str, optional
@@ -1168,6 +1183,8 @@ class SolarPhaseCenter:
             Whether to use multiprocessing for batch processing
         max_processes : int, optional
             Maximum number of processes to use (defaults to number of CPU cores)
+        phase_result : dict, optional
+            Result from cal_solar_phaseshift() to apply to all files
 
         Returns
         -------
@@ -1196,67 +1213,18 @@ class SolarPhaseCenter:
             # If only one file or multiprocessing is disabled, use the single-processing approach
             if total_count == 1 or not use_multiprocessing:
                 success_count = 0
+                results = []
                 for i, file in enumerate(files):
                     print(f"Processing file {i+1}/{total_count}: {file}")
-
-                    # Determine output file
-                    if output_pattern:
-                        file_basename = os.path.basename(file)
-                        file_name, file_ext = os.path.splitext(file_basename)
-
-                        # Replace wildcards in the output pattern
-                        output_file = output_pattern.replace("*", file_name)
-                        if not output_file.endswith(file_ext):
-                            output_file += file_ext
-
-                        # Make a copy of the input file
-                        if os.path.isdir(file):
-                            os.system(f"rm -rf {output_file}")
-                            os.system(f"cp -r {file} {output_file}")
-                            target = output_file
-                        else:
-                            shutil.copy(file, output_file)
-                            target = output_file
-                    else:
-                        target = file
-
-                    # Apply the phase shift
-                    result = self.shift_phasecenter(
-                        imagename=target, ra=ra, dec=dec, stokes=stokes
-                    )
-
-                    if result == 0:
+                    
+                    file_info = (file, ra, dec, stokes, output_pattern, visual_center, phase_result)
+                    res = self.process_single_file(file_info)
+                    results.append(res)
+                    
+                    if res[0]:
                         success_count += 1
-
-                        # Create a visually centered image if requested
-                        if visual_center:
-                            try:
-                                # Get the reference pixel values from the shifted image
-                                header = fits.getheader(target)
-                                crpix1 = int(header["CRPIX1"])
-                                crpix2 = int(header["CRPIX2"])
-
-                                # Generate output filename for visually centered image
-                                visual_output = (
-                                    os.path.splitext(target)[0]
-                                    + "_centered"
-                                    + os.path.splitext(target)[1]
-                                )
-
-                                print(
-                                    f"Creating visually centered image: {visual_output}"
-                                )
-                                # Create the visually centered image
-                                self.visually_center_image(
-                                    target, visual_output, crpix1, crpix2
-                                )
-                                print(
-                                    f"Visually centered image created: {visual_output}"
-                                )
-                            except Exception as e:
-                                print(
-                                    f"Error creating visually centered image for {target}: {e}"
-                                )
+                    elif res[2]:
+                        print(f"Error processing {file}: {res[2]}")
 
                 print(f"Successfully processed {success_count}/{total_count} files")
 
@@ -1282,7 +1250,7 @@ class SolarPhaseCenter:
 
                 # Prepare the arguments for each file
                 file_args = [
-                    (file, ra, dec, stokes, output_pattern, visual_center)
+                    (file, ra, dec, stokes, output_pattern, visual_center, phase_result)
                     for file in files
                 ]
 
@@ -1331,78 +1299,107 @@ class SolarPhaseCenter:
         Parameters
         ----------
         file_info : tuple
-            Tuple containing (file_path, ra, dec, stokes, output_pattern, visual_center)
+            Tuple containing (file_path, ra, dec, stokes, output_pattern, visual_center, phase_result)
 
         Returns
         -------
         tuple
             Tuple containing (success, file_path, error_message)
         """
-        file, ra, dec, stokes, output_pattern, visual_center = file_info
+        if len(file_info) == 7:
+            file, ra, dec, stokes, output_pattern, visual_center, phase_result = file_info
+        else:
+            file, ra, dec, stokes, output_pattern, visual_center = file_info
+            phase_result = None
 
         try:
             # Use process ID and file identifier to create a unique identifier for this task
+            unique_id = hashlib.md5(file.encode()).hexdigest()[:8]
             process_id = int(hashlib.md5(file.encode()).hexdigest(), 16) % 10000
 
-            # Determine output file
+            # Determine input type
+            is_casa = os.path.isdir(file)
+            
+            # Determine final output FITS file path
             if output_pattern:
                 file_basename = os.path.basename(file)
                 file_name, file_ext = os.path.splitext(file_basename)
+                
+                # If it's a CASA image, the extension might be .image or .im - strip it
+                if is_casa:
+                    for ext in ['.image', '.im', '.ims']:
+                        if file_name.lower().endswith(ext):
+                            file_name = file_name[:-len(ext)]
+                            break
 
                 # Replace wildcards in the output pattern
                 output_file = output_pattern.replace("*", file_name)
-                if not output_file.endswith(file_ext):
-                    output_file += file_ext
-
-                # Make a copy of the input file
-                if os.path.isdir(file):
-                    os.system(f"rm -rf {output_file}")
-                    os.system(f"cp -r {file} {output_file}")
-                    target = output_file
-                else:
-                    shutil.copy(file, output_file)
-                    target = output_file
+                if not output_file.lower().endswith(".fits"):
+                    output_file += ".fits"
             else:
-                target = file
+                # If no output pattern, we modify in-place or generate a fits next to the source
+                if is_casa:
+                    output_file = file.rstrip('/') + ".fits"
+                else:
+                    output_file = file # In-place for FITS
 
-            # Apply the phase shift with the process_id
+            # Define temporary FITS file for processing
+            temp_fits = output_file + f".tmp_{unique_id}.fits"
+
+            # Step 1: Get a FITS file to work with
+            if is_casa:
+                exportfits_subprocess(imagename=file, fitsimage=temp_fits, overwrite=True)
+            else:
+                shutil.copy(file, temp_fits)
+
+            # Step 2: Apply the phase shift to the temp FITS
             result = self.shift_phasecenter(
-                imagename=target, ra=ra, dec=dec, stokes=stokes, process_id=process_id
+                imagename=temp_fits, ra=ra, dec=dec, stokes=stokes, 
+                process_id=process_id, phase_result=phase_result
             )
 
-            if result == 0:
-                # Create a visually centered image if requested
-                if visual_center:
-                    try:
-                        # Get the reference pixel values from the shifted image
-                        header = fits.getheader(target)
-                        crpix1 = int(header["CRPIX1"])
-                        crpix2 = int(header["CRPIX2"])
+            if result != 0 and result != 1: # 0: shifted, 1: not needed
+                 return (False, file, f"Error applying phase shift (code: {result})")
 
-                        # Generate output filename for visually centered image
-                        visual_output = (
-                            os.path.splitext(target)[0]
-                            + "_centered"
-                            + os.path.splitext(target)[1]
-                        )
+            # Step 3: Handle visual centering and Finalize Output
+            if visual_center:
+                try:
+                    # Get the reference pixel values from the shifted image
+                    header = fits.getheader(temp_fits)
+                    
+                    # Use values from phase_result if available, else from header
+                    if phase_result and 'apparent_pix_x' in phase_result:
+                        cpix1 = phase_result['apparent_pix_x']
+                        cpix2 = phase_result['apparent_pix_y']
+                    else:
+                        cpix1 = int(header["CRPIX1"])
+                        cpix2 = int(header["CRPIX2"])
 
-                        # Create the visually centered image
-                        self.visually_center_image(
-                            target, visual_output, crpix1, crpix2
-                        )
-                        return (True, file, None)
-                    except Exception as e:
-                        return (
-                            True,
-                            file,
-                            f"Warning: Error creating visually centered image: {str(e)}",
-                        )
-
-                return (True, file, None)
+                    # Create the visually centered image directly as the final output
+                    self.visually_center_image(temp_fits, output_file, cpix1, cpix2)
+                    
+                    # Cleanup temp
+                    if os.path.exists(temp_fits):
+                        os.remove(temp_fits)
+                    
+                    return (True, file, None)
+                except Exception as e:
+                    # If centering fails, at least we have the shifted file
+                    if os.path.exists(output_file) and output_file != file:
+                        os.remove(output_file)
+                    shutil.move(temp_fits, output_file)
+                    return (True, file, f"Warning: Shift applied but visual centering failed: {str(e)}")
             else:
-                return (False, file, f"Error applying phase shift (code: {result})")
+                # Simply move the shifted temp file to the final output
+                if os.path.exists(output_file) and output_file != file:
+                    os.remove(output_file)
+                shutil.move(temp_fits, output_file)
+                return (True, file, None)
 
         except Exception as e:
+            # Cleanup on failure
+            if 'temp_fits' in locals() and os.path.exists(temp_fits):
+                os.remove(temp_fits)
             return (False, file, f"Error: {str(e)}")
 
 

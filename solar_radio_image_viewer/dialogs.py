@@ -1523,8 +1523,8 @@ class PhaseShiftDialog(QDialog):
         output_pattern_form = QFormLayout()
         output_pattern_form.setVerticalSpacing(8)
         output_pattern_layout = QHBoxLayout()
-        self.output_pattern_edit = QLineEdit("shifted_*.fits")
-        self.output_pattern_edit.setPlaceholderText("e.g., shifted_*.fits")
+        self.output_pattern_edit = QLineEdit("")
+        self.output_pattern_edit.setPlaceholderText("e.g., centered/centered_*.fits")
         self.output_pattern_button = QPushButton("Browse Directory...")
         self.output_pattern_button.clicked.connect(self.browse_output_dir)
         output_pattern_layout.addWidget(self.output_pattern_edit, 1)
@@ -1768,6 +1768,10 @@ class PhaseShiftDialog(QDialog):
         if dir_path:
             # Set a default pattern in the selected directory
             self.input_pattern_edit.setText(os.path.join(dir_path, "*.fits"))
+            
+            # Set a default output pattern in a 'centered' subdirectory
+            output_dir = os.path.join(dir_path, "centered")
+            self.output_pattern_edit.setText(os.path.join(output_dir, "centered_*.fits"))
 
     def browse_output_dir(self):
         """Browse for output directory for batch processing"""
@@ -1816,16 +1820,41 @@ class PhaseShiftDialog(QDialog):
 
     def browse_reference_image(self):
         """Browse for reference image file for batch processing"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Reference Image", "", "FITS Files (*.fits);;CASA Images (*)"
-        )
+        # Ask user which type of image to select
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Select Reference Image Type")
+        msg_box.setText("What type of image do you want to select as reference?")
+        fits_btn = msg_box.addButton("FITS", QMessageBox.ActionRole)
+        casa_btn = msg_box.addButton("CASA Image", QMessageBox.ActionRole)
+        msg_box.addButton(QMessageBox.Cancel)
+        msg_box.exec_()
+        
+        file_path = None
+        if msg_box.clickedButton() == fits_btn:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select FITS Reference", "", "FITS Files (*.fits *.fts);;All Files (*)"
+            )
+        elif msg_box.clickedButton() == casa_btn:
+            file_path = QFileDialog.getExistingDirectory(
+                self, "Select CASA Reference Directory"
+            )
+            
         if file_path:
             self.reference_image_edit.setText(file_path)
 
             # Set default input pattern in the same directory
             if not self.input_pattern_edit.text():
                 file_dir = os.path.dirname(file_path)
-                self.input_pattern_edit.setText(os.path.join(file_dir, "*.fits"))
+                if msg_box.clickedButton() == fits_btn:
+                    self.input_pattern_edit.setText(os.path.join(file_dir, "*.fits"))
+                elif msg_box.clickedButton() == casa_btn:
+                    self.input_pattern_edit.setText(os.path.join(file_dir, "*.image"))
+            
+            # Update default output pattern if needed
+            if not self.output_pattern_edit.text():
+                file_dir = os.path.dirname(file_path)
+                output_dir = os.path.join(file_dir, "centered")
+                self.output_pattern_edit.setText(os.path.join(output_dir, "centered_*.fits"))
 
     def apply_phase_shift(self):
         """Apply the phase shift to the image(s)"""
@@ -1975,6 +2004,16 @@ class PhaseShiftDialog(QDialog):
                 # Apply to all files
                 visual_center = self.visual_center_check.isChecked()
                 use_multiprocessing = self.multiprocessing_check.isChecked()
+                
+                # Ensure output directory exists if output pattern is specified
+                if output_pattern:
+                    output_dir = os.path.dirname(output_pattern)
+                    if output_dir and not os.path.exists(output_dir):
+                        try:
+                            os.makedirs(output_dir, exist_ok=True)
+                            self.status_text.appendPlainText(f"Created output directory: {output_dir}")
+                        except Exception as e:
+                            self.status_text.appendPlainText(f"Error creating output directory: {e}")
                 max_processes = (
                     self.cores_spinbox.value() if use_multiprocessing else None
                 )
@@ -1996,11 +2035,12 @@ class PhaseShiftDialog(QDialog):
                         visual_center=visual_center,
                         use_multiprocessing=use_multiprocessing,
                         max_processes=max_processes,
+                        phase_result=phase_result,
                     )
 
                     if visual_center:
                         self.status_text.appendPlainText(
-                            "Visually centered images were also created with '_centered' suffix."
+                            "Visually centered images creation completed."
                         )
 
                     self.status_text.appendPlainText(
