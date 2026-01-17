@@ -27,15 +27,25 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
+    QProgressBar,
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QSize
-import pkg_resources
+import sys
 import numpy as np
 import os
 import multiprocessing
 import glob
 from PyQt5.QtWidgets import QApplication
+
+def _get_resource_path(relative_path):
+    """Get absolute path to resource, working for dev and PyInstaller."""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
 import uuid
 import traceback
 import time
@@ -64,7 +74,28 @@ def process_single_file_hpc(args):
             "stokes": stokes,
             "success": False,
             "error": None,
+            "skipped": False,  # True if already HPC and just copied
         }
+
+        # Check if file is already in HPC coordinates
+        if is_already_hpc(input_file):
+            # Just copy the file instead of converting
+            import shutil
+            try:
+                if os.path.isdir(input_file):
+                    # CASA image - copy directory
+                    if os.path.exists(output_path):
+                        shutil.rmtree(output_path)
+                    shutil.copytree(input_file, output_path)
+                else:
+                    # FITS file - copy file
+                    shutil.copy2(input_file, output_path)
+                result["success"] = True
+                result["skipped"] = True
+                return result
+            except Exception as e:
+                result["error"] = f"Copy failed: {str(e)}"
+                return result
 
         # Import the function here to ensure we have it in the subprocess
         from .helioprojective import convert_and_save_hpc
@@ -87,6 +118,59 @@ def process_single_file_hpc(args):
         result["error"] = str(e)
         result["traceback"] = traceback.format_exc()
         return result
+
+
+def is_already_hpc(imagepath):
+    """Check if image is already in helioprojective coordinates (Solar-X/Y or HPLN/HPLT).
+    
+    This is a standalone function for use in multiprocessing.
+    
+    Parameters:
+    -----------
+    imagepath : str
+        Path to the image file (FITS) or directory (CASA image)
+    
+    Returns:
+    --------
+    bool
+        True if already in HPC coordinates, False otherwise
+    """
+    if not imagepath or not os.path.exists(imagepath):
+        return False
+    
+    try:
+        # For FITS files, check the header
+        if imagepath.endswith(".fits") or imagepath.endswith(".fts"):
+            from astropy.io import fits
+            header = fits.getheader(imagepath)
+            ctype1 = header.get("CTYPE1", "").upper()
+            ctype2 = header.get("CTYPE2", "").upper()
+            
+            # Check for HPC (Helioprojective)
+            if ("HPLN" in ctype1 or "HPLT" in ctype2 or 
+                "SOLAR" in ctype1 or "SOLAR" in ctype2):
+                return True
+        
+        # For CASA images, check coordinate system
+        if os.path.isdir(imagepath):
+            try:
+                from casatools import image as IA
+                ia_tool = IA()
+                ia_tool.open(imagepath)
+                csys = ia_tool.coordsys()
+                dimension_names = [n.upper() for n in csys.names()]
+                ia_tool.close()
+                
+                if "SOLAR-X" in dimension_names or "SOLAR-Y" in dimension_names:
+                    return True
+                if "HPLN-TAN" in dimension_names or "HPLT-TAN" in dimension_names:
+                    return True
+            except Exception:
+                pass
+        
+        return False
+    except Exception:
+        return False
 
 
 class ContourSettingsDialog(QDialog):
@@ -224,284 +308,497 @@ class ContourSettingsDialog(QDialog):
         self.setup_ui()
 
     def setup_ui(self):
-
+        from PyQt5.QtGui import QPixmap, QColor
+        
+        # Get theme colors for styling
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        palette = theme_manager.palette
+        is_dark = theme_manager.is_dark
+        highlight_color = palette['highlight']
+        border_color = palette['border']
+        surface_color = palette['surface']
+        text_secondary = palette.get('text_secondary', palette['disabled'])
+        
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(12, 12, 12, 12)
 
-        # Top row: Source selection and Stokes parameter side by side
-        top_layout = QHBoxLayout()
-        top_layout.setSpacing(10)
-
-        # Source selection group
-        source_group = QGroupBox("Contour Source")
-        source_layout = QVBoxLayout(source_group)
-        source_layout.setSpacing(10)
-        source_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Main radio buttons for source selection
-        source_radio_layout = QHBoxLayout()
-        source_radio_layout.setSpacing(20)
+        # ========== TAB WIDGET ==========
+        self.tab_widget = QTabWidget()
+        
+        # ========== TAB 1: SOURCE ==========
+        source_tab = QWidget()
+        source_layout = QVBoxLayout(source_tab)
+        source_layout.setSpacing(20)
+        source_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Source selection
+        source_row = QHBoxLayout()
+        source_row.setSpacing(20)
+        
+        source_label = QLabel("Source:")
+        source_label.setStyleSheet("font-weight: 600;")
+        source_row.addWidget(source_label)
+        
         self.same_image_radio = QRadioButton("Current Image")
-        self.external_image_radio = QRadioButton("External Image")
+        self.external_image_radio = QRadioButton("External")
         if self.settings.get("source") == "external":
             self.external_image_radio.setChecked(True)
         else:
             self.same_image_radio.setChecked(True)
-        source_radio_layout.addWidget(self.same_image_radio)
-        source_radio_layout.addWidget(self.external_image_radio)
-        source_radio_layout.addStretch()
-        source_layout.addLayout(source_radio_layout)
-
-        # External image options in a subgroup
-        self.external_group = (
-            QWidget()
-        )  # Changed from QGroupBox to QWidget for better visual
-        external_layout = QVBoxLayout(self.external_group)
-        external_layout.setSpacing(8)
-        external_layout.setContentsMargins(20, 0, 0, 0)  # Add left indent
-
-        # Radio buttons for file type selection
-        file_type_layout = QHBoxLayout()
-        file_type_layout.setSpacing(20)
-        self.radio_casa_image = QRadioButton("CASA Image")
-        self.radio_fits_file = QRadioButton("FITS File")
-        self.radio_casa_image.setChecked(True)
-        file_type_layout.addWidget(self.radio_casa_image)
-        file_type_layout.addWidget(self.radio_fits_file)
-        file_type_layout.addStretch()
-        external_layout.addLayout(file_type_layout)
-
-        # Browse layout
-        browse_layout = QHBoxLayout()
-        browse_layout.setSpacing(8)
-        self.file_path_edit = QLineEdit(self.settings.get("external_image", ""))
-        self.file_path_edit.setPlaceholderText("Select CASA image directory...")
-        self.file_path_edit.setMinimumWidth(
-            250
-        )  # Set minimum width for better appearance
-
-        self.browse_button = QPushButton()
-        self.browse_button.setObjectName("IconOnlyNBGButton")
-        self.browse_button.setIcon(
-            QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", "assets/browse.png"
-                )
-            )
-        )
-        self.browse_button.setIconSize(QSize(24, 24))
-        self.browse_button.setToolTip("Browse")
-        self.browse_button.setFixedSize(32, 32)
-        self.browse_button.clicked.connect(self.browse_file)
+        source_row.addWidget(self.same_image_radio)
+        source_row.addWidget(self.external_image_radio)
+        source_row.addStretch()
+        source_layout.addLayout(source_row)
         
-        # Store both icon variants for theme switching
-        self.browse_icon_light = QIcon(
-            pkg_resources.resource_filename(
-                "solar_radio_image_viewer", "assets/browse.png"
-            )
-        )
-        self.browse_icon_dark = QIcon(
-            pkg_resources.resource_filename(
-                "solar_radio_image_viewer", "assets/browse_light.png"
-            )
-        )
-
-        # Set initial icon based on palette
-        self._update_browse_icon()
+        # Stokes selection with noise threshold on same row
+        stokes_row = QHBoxLayout()
+        stokes_row.setSpacing(20)
         
-        self.browse_button.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                padding: 4px;
-            }}
-            QPushButton:hover {{
-                background-color: {self._hover_bg};
-            }}
-            QPushButton:pressed {{
-                background-color: {self._pressed_bg};
-            }}
-            QPushButton:disabled {{
-                background-color: transparent;
-            }}
-        """
-        )
-
-        browse_layout.addWidget(self.file_path_edit)
-        browse_layout.addWidget(self.browse_button)
-        external_layout.addLayout(browse_layout)
-
-        source_layout.addWidget(self.external_group)
-        top_layout.addWidget(source_group)
-
-        # Stokes parameter group
-        stokes_group = QGroupBox("Stokes Parameter")
-        stokes_layout = QHBoxLayout(stokes_group)
-        stokes_layout.setContentsMargins(10, 15, 10, 10)
-
         stokes_label = QLabel("Stokes:")
-        stokes_label.setMinimumWidth(55)  # Minimum width to prevent cutoff
+        stokes_label.setStyleSheet("font-weight: 600;")
+        stokes_row.addWidget(stokes_label)
+        
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(
             ["I", "Q", "U", "V", "Q/I", "U/I", "V/I", "L", "Lfrac", "PANG"]
         )
-        self.stokes_combo.setFixedWidth(80)
+        self.stokes_combo.setMinimumWidth(100)
         current_stokes = self.settings.get("stokes", "I")
         self.stokes_combo.setCurrentText(current_stokes)
-
-        stokes_layout.addWidget(stokes_label)
-        stokes_layout.addWidget(self.stokes_combo)
-        stokes_layout.addStretch()
-
-        # Set fixed size for stokes group to match source group height
-        stokes_group.setFixedHeight(source_group.sizeHint().height())
-        stokes_group.setMinimumWidth(200)  # Set minimum width
-        top_layout.addWidget(stokes_group)
-
-        main_layout.addLayout(top_layout)
-
-        # Create button group for CASA/FITS selection
+        stokes_row.addWidget(self.stokes_combo)
+        
+        stokes_row.addSpacing(30)
+        
+        # Noise threshold for derived Stokes parameters (Q/I, U/I, V/I, Lfrac, PANG)
+        self.threshold_label = QLabel("Threshold (σ):")
+        self.threshold_label.setStyleSheet("font-weight: 600;")
+        self.threshold_label.setToolTip(
+            "Pixels with signal below this many σ (noise RMS) are masked.\n"
+            "Only applies to derived parameters: Q/I, U/I, V/I, Lfrac, Vfrac, PANG."
+        )
+        stokes_row.addWidget(self.threshold_label)
+        
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(0.0, 50.0)
+        self.threshold_spin.setSingleStep(0.5)
+        self.threshold_spin.setDecimals(1)
+        self.threshold_spin.setValue(self.settings.get("threshold", 5.0))
+        self.threshold_spin.setMinimumWidth(70)
+        self.threshold_spin.setToolTip(
+            "Noise threshold in units of σ (RMS noise).\n"
+            "Default: 5.0 (pixels below 5σ are masked)"
+        )
+        stokes_row.addWidget(self.threshold_spin)
+        
+        stokes_row.addStretch()
+        source_layout.addLayout(stokes_row)
+        
+        # Connect stokes combo to update threshold visibility
+        self.stokes_combo.currentTextChanged.connect(self._update_threshold_visibility)
+        
+        # External file options
+        self.external_group = QWidget()
+        external_layout = QVBoxLayout(self.external_group)
+        external_layout.setSpacing(12)
+        external_layout.setContentsMargins(0, 12, 0, 0)
+        
+        # Separator line
+        sep_line = QFrame()
+        sep_line.setFrameShape(QFrame.HLine)
+        sep_line.setStyleSheet(f"background-color: {border_color};")
+        sep_line.setFixedHeight(1)
+        external_layout.addWidget(sep_line)
+        
+        # File type
+        file_type_row = QHBoxLayout()
+        file_type_row.setSpacing(20)
+        
+        file_type_label = QLabel("File Type:")
+        file_type_label.setStyleSheet("font-weight: 600;")
+        file_type_row.addWidget(file_type_label)
+        
+        self.radio_casa_image = QRadioButton("CASA Image")
+        self.radio_fits_file = QRadioButton("FITS File")
+        self.radio_casa_image.setChecked(True)
+        file_type_row.addWidget(self.radio_casa_image)
+        file_type_row.addWidget(self.radio_fits_file)
+        file_type_row.addStretch()
+        external_layout.addLayout(file_type_row)
+        
+        # File path
+        path_row = QHBoxLayout()
+        path_row.setSpacing(12)
+        
+        path_label = QLabel("Path:")
+        path_label.setStyleSheet("font-weight: 600;")
+        path_row.addWidget(path_label)
+        
+        self.file_path_edit = QLineEdit(self.settings.get("external_image", ""))
+        self.file_path_edit.setPlaceholderText("Select file or directory...")
+        path_row.addWidget(self.file_path_edit, 1)
+        
+        self.browse_button = QPushButton("Browse...")
+        self.browse_button.clicked.connect(self.browse_file)
+        path_row.addWidget(self.browse_button)
+        external_layout.addLayout(path_row)
+        
+        # Store icon references for theme switching
+        self.browse_icon_light = QIcon(_get_resource_path("assets/browse.png"))
+        self.browse_icon_dark = QIcon(_get_resource_path("assets/browse_light.png"))
+        
+        source_layout.addWidget(self.external_group)
+        source_layout.addStretch()
+        
+        # Connections
         self.file_type_button_group = QButtonGroup()
         self.file_type_button_group.addButton(self.radio_casa_image)
         self.file_type_button_group.addButton(self.radio_fits_file)
 
-        # Connect signals for enabling/disabling external options
         self.external_image_radio.toggled.connect(self.update_external_options)
         self.radio_casa_image.toggled.connect(self.update_placeholder_text)
         self.radio_fits_file.toggled.connect(self.update_placeholder_text)
-        
-        # Connect source change to update Stokes availability
         self.same_image_radio.toggled.connect(self._update_stokes_for_current_source)
         self.external_image_radio.toggled.connect(self._update_stokes_for_current_source)
-
-        # Initially update states
+        
         self.update_external_options(self.external_image_radio.isChecked())
         self.update_placeholder_text()
-        
-        # Initialize Stokes combo state based on current source
         self._update_stokes_for_current_source()
+        self._update_threshold_visibility()
+        
+        self.tab_widget.addTab(source_tab, "Source")
 
-        # Middle row: Contour Levels and Appearance side by side
-        mid_layout = QHBoxLayout()
-
-        # Contour Levels group with a form layout
-        levels_group = QGroupBox("Contour Levels")
-        levels_layout = QFormLayout(levels_group)
+        # ========== TAB 2: LEVELS ==========
+        levels_tab = QWidget()
+        levels_layout = QVBoxLayout(levels_tab)
+        levels_layout.setSpacing(20)
+        levels_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Level type
+        type_row = QHBoxLayout()
+        type_row.setSpacing(20)
+        
+        type_label = QLabel("Level Type:")
+        type_label.setStyleSheet("font-weight: 600;")
+        type_row.addWidget(type_label)
+        
         self.level_type_combo = QComboBox()
-        self.level_type_combo.addItems(["fraction", "absolute", "sigma"])
+        self.level_type_combo.addItems(["fraction", "sigma", "absolute"])
         current_level_type = self.settings.get("level_type", "fraction")
         self.level_type_combo.setCurrentText(current_level_type)
-        levels_layout.addRow("Level Type:", self.level_type_combo)
-        self.pos_levels_edit = QLineEdit(
-            ", ".join(
-                str(level)
-                for level in self.settings.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9])
-            )
-        )
-        levels_layout.addRow("Positive Levels:", self.pos_levels_edit)
-        self.neg_levels_edit = QLineEdit(
-            ", ".join(
-                str(level)
-                for level in self.settings.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9])
-            )
-        )
-        levels_layout.addRow("Negative Levels:", self.neg_levels_edit)
+        self.level_type_combo.setMinimumWidth(120)
+        type_row.addWidget(self.level_type_combo)
+        type_row.addStretch()
+        levels_layout.addLayout(type_row)
         
-        # Connect level type change to update default levels
+        # Presets
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(12)
+        
+        presets_label = QLabel("Presets:")
+        presets_label.setStyleSheet("font-weight: 600;")
+        preset_row.addWidget(presets_label)
+        
+        self.preset_5_btn = QPushButton("5 Levels")
+        self.preset_5_btn.clicked.connect(lambda: self._apply_level_preset("5levels"))
+        preset_row.addWidget(self.preset_5_btn)
+        
+        self.preset_3_btn = QPushButton("3 Levels")
+        self.preset_3_btn.clicked.connect(lambda: self._apply_level_preset("3levels"))
+        preset_row.addWidget(self.preset_3_btn)
+        
+        self.preset_dense_btn = QPushButton("Dense")
+        self.preset_dense_btn.clicked.connect(lambda: self._apply_level_preset("dense"))
+        preset_row.addWidget(self.preset_dense_btn)
+        
+        preset_row.addStretch()
+        levels_layout.addLayout(preset_row)
+        
+        # Level values
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(12)
+        pos_label = QLabel("Positive:")
+        pos_label.setStyleSheet("font-weight: 600;")
+        pos_label.setMinimumWidth(70)
+        pos_row.addWidget(pos_label)
+        
+        self.pos_levels_edit = QLineEdit(
+            ", ".join(str(l) for l in self.settings.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9]))
+        )
+        self.pos_levels_edit.setPlaceholderText("e.g., 0.1, 0.3, 0.5, 0.7, 0.9")
+        pos_row.addWidget(self.pos_levels_edit)
+        levels_layout.addLayout(pos_row)
+        
+        neg_row = QHBoxLayout()
+        neg_row.setSpacing(12)
+        neg_label = QLabel("Negative:")
+        neg_label.setStyleSheet("font-weight: 600;")
+        neg_label.setMinimumWidth(70)
+        neg_row.addWidget(neg_label)
+        
+        self.neg_levels_edit = QLineEdit(
+            ", ".join(str(l) for l in self.settings.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9]))
+        )
+        self.neg_levels_edit.setPlaceholderText("e.g., 0.1, 0.3, 0.5, 0.7, 0.9")
+        neg_row.addWidget(self.neg_levels_edit)
+        levels_layout.addLayout(neg_row)
+        
+        levels_layout.addStretch()
+        
         self.level_type_combo.currentTextChanged.connect(self.on_level_type_changed)
         
-        mid_layout.addWidget(levels_group)
+        self.tab_widget.addTab(levels_tab, "Levels")
 
-
-        # Appearance group with a form layout
-        appearance_group = QGroupBox("Appearance")
-        appearance_layout = QFormLayout(appearance_group)
-        self.color_combo = QComboBox()
-        self.color_combo.addItems(
-            ["white", "black", "red", "green", "blue", "yellow", "cyan", "magenta"]
-        )
-        current_color = self.settings.get("color", "white")
-        self.color_combo.setCurrentText(current_color)
-        appearance_layout.addRow("Color:", self.color_combo)
-        self.linewidth_spin = QDoubleSpinBox()
-        self.linewidth_spin.setRange(0.1, 5.0)
-        self.linewidth_spin.setSingleStep(0.1)
-        self.linewidth_spin.setValue(self.settings.get("linewidth", 1.0))
-        appearance_layout.addRow("Line Width:", self.linewidth_spin)
+        # ========== TAB 3: APPEARANCE ==========
+        appearance_tab = QWidget()
+        appearance_layout = QVBoxLayout(appearance_tab)
+        appearance_layout.setSpacing(16)
+        appearance_layout.setContentsMargins(20, 20, 20, 20)
+        
+        colors = ["white", "black", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "lime"]
+        
+        # Helper to create color combo
+        def create_color_combo(default_color):
+            combo = QComboBox()
+            for color in colors:
+                combo.addItem(color)
+                idx = combo.count() - 1
+                pixmap = QPixmap(16, 16)
+                pixmap.fill(QColor(color))
+                combo.setItemIcon(idx, QIcon(pixmap))
+            combo.setCurrentText(default_color)
+            combo.setMinimumWidth(110)
+            return combo
+        
+        # ===== Positive Contours Section =====
+        pos_header = QLabel("Positive Contours")
+        pos_header.setStyleSheet("font-weight: 600; font-size: 11pt;")
+        appearance_layout.addWidget(pos_header)
+        
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(16)
+        
+        pos_color_label = QLabel("Color:")
+        pos_row.addWidget(pos_color_label)
+        self.pos_color_combo = create_color_combo(self.settings.get("pos_color", self.settings.get("color", "white")))
+        pos_row.addWidget(self.pos_color_combo)
+        
+        pos_row.addSpacing(10)
+        
+        pos_width_label = QLabel("Width:")
+        pos_row.addWidget(pos_width_label)
+        self.pos_linewidth_spin = QDoubleSpinBox()
+        self.pos_linewidth_spin.setRange(0.5, 5.0)
+        self.pos_linewidth_spin.setSingleStep(0.5)
+        self.pos_linewidth_spin.setValue(self.settings.get("pos_linewidth", self.settings.get("linewidth", 1.0)))
+        self.pos_linewidth_spin.setMinimumWidth(70)
+        pos_row.addWidget(self.pos_linewidth_spin)
+        
+        pos_row.addSpacing(10)
+        
+        pos_style_label = QLabel("Style:")
+        pos_row.addWidget(pos_style_label)
         self.pos_linestyle_combo = QComboBox()
-        self.pos_linestyle_combo.addItems(["-", "--", "-.", ":"])
-        current_pos_linestyle = self.settings.get("pos_linestyle", "-")
-        self.pos_linestyle_combo.setCurrentText(current_pos_linestyle)
-        appearance_layout.addRow("Positive Style:", self.pos_linestyle_combo)
+        self.pos_linestyle_combo.addItems(["─", "- -", "-·-", "···"])
+        linestyle_map = {"-": 0, "--": 1, "-.": 2, ":": 3}
+        current_pos = self.settings.get("pos_linestyle", "-")
+        self.pos_linestyle_combo.setCurrentIndex(linestyle_map.get(current_pos, 0))
+        self.pos_linestyle_combo.setMinimumWidth(90)
+        pos_row.addWidget(self.pos_linestyle_combo)
+        
+        pos_row.addStretch()
+        appearance_layout.addLayout(pos_row)
+        
+        # ===== Negative Contours Section =====
+        neg_header = QLabel("Negative Contours")
+        neg_header.setStyleSheet("font-weight: 600; font-size: 11pt;")
+        appearance_layout.addWidget(neg_header)
+        
+        neg_row = QHBoxLayout()
+        neg_row.setSpacing(16)
+        
+        neg_color_label = QLabel("Color:")
+        neg_row.addWidget(neg_color_label)
+        self.neg_color_combo = create_color_combo(self.settings.get("neg_color", self.settings.get("color", "white")))
+        neg_row.addWidget(self.neg_color_combo)
+        
+        neg_row.addSpacing(10)
+        
+        neg_width_label = QLabel("Width:")
+        neg_row.addWidget(neg_width_label)
+        self.neg_linewidth_spin = QDoubleSpinBox()
+        self.neg_linewidth_spin.setRange(0.5, 5.0)
+        self.neg_linewidth_spin.setSingleStep(0.5)
+        self.neg_linewidth_spin.setValue(self.settings.get("neg_linewidth", self.settings.get("linewidth", 1.0)))
+        self.neg_linewidth_spin.setMinimumWidth(70)
+        neg_row.addWidget(self.neg_linewidth_spin)
+        
+        neg_row.addSpacing(10)
+        
+        neg_style_label = QLabel("Style:")
+        neg_row.addWidget(neg_style_label)
         self.neg_linestyle_combo = QComboBox()
-        self.neg_linestyle_combo.addItems(["-", "--", "-.", ":"])
-        current_neg_linestyle = self.settings.get("neg_linestyle", "--")
-        self.neg_linestyle_combo.setCurrentText(current_neg_linestyle)
-        appearance_layout.addRow("Negative Style:", self.neg_linestyle_combo)
-        mid_layout.addWidget(appearance_group)
+        self.neg_linestyle_combo.addItems(["─", "- -", "-·-", "···"])
+        current_neg = self.settings.get("neg_linestyle", "--")
+        self.neg_linestyle_combo.setCurrentIndex(linestyle_map.get(current_neg, 1))
+        self.neg_linestyle_combo.setMinimumWidth(90)
+        neg_row.addWidget(self.neg_linestyle_combo)
+        
+        neg_row.addStretch()
+        appearance_layout.addLayout(neg_row)
+        
+        # ===== Options Section =====
+        appearance_layout.addSpacing(8)
+        
+        options_header = QLabel("Options")
+        options_header.setStyleSheet("font-weight: 600; font-size: 11pt;")
+        appearance_layout.addWidget(options_header)
+        
+        options_row = QHBoxLayout()
+        options_row.setSpacing(30)
+        
+        self.show_labels_checkbox = QCheckBox("Show contour labels")
+        self.show_labels_checkbox.setChecked(self.settings.get("show_labels", False))
+        self.show_labels_checkbox.setToolTip("Display level values on the contour lines")
+        options_row.addWidget(self.show_labels_checkbox)
+        
+        self.show_full_extent_checkbox = QCheckBox("Show full extent")
+        self.show_full_extent_checkbox.setChecked(self.settings.get("show_full_extent", False))
+        self.show_full_extent_checkbox.setToolTip("Show contours beyond image boundaries (uses more memory)")
+        options_row.addWidget(self.show_full_extent_checkbox)
+        options_row.addStretch()
+        appearance_layout.addLayout(options_row)
+        
+        appearance_layout.addStretch()
+        
+        self.tab_widget.addTab(appearance_tab, "Appearance")
 
-        main_layout.addLayout(mid_layout)
-
-        # Bottom row: RMS Calculation Region in a compact grid layout
-        rms_group = QGroupBox("RMS Calculation Region")
-        rms_layout = QGridLayout(rms_group)
-        self.use_default_rms_box = QCheckBox("Use default RMS region")
-        self.use_default_rms_box.setChecked(
-            self.settings.get("use_default_rms_region", True)
-        )
+        # ========== TAB 4: RMS ==========
+        rms_tab = QWidget()
+        rms_layout = QVBoxLayout(rms_tab)
+        rms_layout.setSpacing(20)
+        rms_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Default checkbox
+        self.use_default_rms_box = QCheckBox("Use default region")
+        self.use_default_rms_box.setChecked(self.settings.get("use_default_rms_region", True))
+        self.use_default_rms_box.setStyleSheet("font-weight: 500;")
         self.use_default_rms_box.stateChanged.connect(self.toggle_rms_inputs)
-        rms_layout.addWidget(self.use_default_rms_box, 0, 0, 1, 4)
-        # Arrange X min and Y min side by side, then X max and Y max
+        rms_layout.addWidget(self.use_default_rms_box)
+        
+        # Info
+        info_label = QLabel("Define a source-free region for RMS/noise calculation (σ levels).")
+        info_label.setStyleSheet(f"color: {text_secondary}; font-size: 10pt;")
+        rms_layout.addWidget(info_label)
+        
+        # Custom region inputs
+        self.rms_inputs_container = QWidget()
+        rms_grid = QGridLayout(self.rms_inputs_container)
+        rms_grid.setSpacing(16)
+        rms_grid.setContentsMargins(0, 8, 0, 0)
+        
         self.rms_xmin_label = QLabel("X min:")
-        rms_layout.addWidget(self.rms_xmin_label, 1, 0)
+        rms_grid.addWidget(self.rms_xmin_label, 0, 0)
         self.rms_xmin = QSpinBox()
         self.rms_xmin.setRange(0, 10000)
         self.rms_xmin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[0])
-        rms_layout.addWidget(self.rms_xmin, 1, 1)
-        self.rms_ymin_label = QLabel("Y min:")
-        rms_layout.addWidget(self.rms_ymin_label, 1, 2)
-        self.rms_ymin = QSpinBox()
-        self.rms_ymin.setRange(0, 10000)
-        self.rms_ymin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[2])
-        rms_layout.addWidget(self.rms_ymin, 1, 3)
+        rms_grid.addWidget(self.rms_xmin, 0, 1)
+        
         self.rms_xmax_label = QLabel("X max:")
-        rms_layout.addWidget(self.rms_xmax_label, 2, 0)
+        rms_grid.addWidget(self.rms_xmax_label, 0, 2)
         self.rms_xmax = QSpinBox()
         self.rms_xmax.setRange(0, 10000)
         self.rms_xmax.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[1])
-        rms_layout.addWidget(self.rms_xmax, 2, 1)
+        rms_grid.addWidget(self.rms_xmax, 0, 3)
+        
+        self.rms_ymin_label = QLabel("Y min:")
+        rms_grid.addWidget(self.rms_ymin_label, 1, 0)
+        self.rms_ymin = QSpinBox()
+        self.rms_ymin.setRange(0, 10000)
+        self.rms_ymin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[2])
+        rms_grid.addWidget(self.rms_ymin, 1, 1)
+        
         self.rms_ymax_label = QLabel("Y max:")
-        rms_layout.addWidget(self.rms_ymax_label, 2, 2)
+        rms_grid.addWidget(self.rms_ymax_label, 1, 2)
         self.rms_ymax = QSpinBox()
         self.rms_ymax.setRange(0, 10000)
         self.rms_ymax.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[3])
-        rms_layout.addWidget(self.rms_ymax, 2, 3)
-        main_layout.addWidget(rms_group)
-
-        # Initialize RMS inputs state
+        rms_grid.addWidget(self.rms_ymax, 1, 3)
+        
+        rms_layout.addWidget(self.rms_inputs_container)
+        rms_layout.addStretch()
+        
         self.toggle_rms_inputs()
+        
+        self.tab_widget.addTab(rms_tab, "RMS")
+        
+        main_layout.addWidget(self.tab_widget)
 
-        # Button box at the bottom
+        # ========== BUTTON BOX ==========
+        button_row = QHBoxLayout()
+        button_row.setSpacing(12)
+        
+        reset_btn = QPushButton("Reset to Defaults")
+        reset_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border: none;
+                color: {text_secondary};
+                font-size: 10pt;
+                padding: 6px 10px;
+            }}
+            QPushButton:hover {{
+                color: {highlight_color};
+            }}
+        """)
+        reset_btn.clicked.connect(self._reset_to_defaults)
+        button_row.addWidget(reset_btn)
+        
+        button_row.addStretch()
+        
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
-        main_layout.addWidget(button_box)
+        
+        ok_button = button_box.button(QDialogButtonBox.Ok)
+        if ok_button:
+            ok_button.setText("Apply")
+            ok_button.setMinimumWidth(100)
+            ok_button.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
+                        stop:0 {palette.get('button_gradient_start', highlight_color)}, 
+                        stop:1 {palette.get('button_gradient_end', palette.get('highlight_hover', highlight_color))});
+                    color: #ffffff;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 8px 20px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background-color: {palette.get('highlight_hover', highlight_color)};
+                }}
+            """)
+        
+        cancel_button = button_box.button(QDialogButtonBox.Cancel)
+        if cancel_button:
+            cancel_button.setText("Close")
+            cancel_button.setMinimumWidth(80)
+        
+        button_row.addWidget(button_box)
+        main_layout.addLayout(button_row)
 
     def toggle_rms_inputs(self):
         """Update the enabled state and visual appearance of RMS inputs."""
-        enabled = not self.use_default_rms_box.isChecked()
-
-        # Create widget lists for consistent state management
-        rms_inputs = [self.rms_xmin, self.rms_xmax, self.rms_ymin, self.rms_ymax]
-        rms_labels = [self.rms_xmin_label, self.rms_ymin_label, self.rms_xmax_label, self.rms_ymax_label]
-
-        # Update enabled state for all inputs and labels
-        for widget in rms_inputs:
-            widget.setEnabled(enabled)
-        for label in rms_labels:
-            label.setEnabled(enabled)
+        use_default = self.use_default_rms_box.isChecked()
+        
+        # Hide/show the RMS inputs container
+        if hasattr(self, 'rms_inputs_container'):
+            self.rms_inputs_container.setVisible(not use_default)
 
     def update_external_options(self, enabled):
         """Update the enabled state and visual appearance of external options."""
@@ -560,6 +857,62 @@ class ContourSettingsDialog(QDialog):
             self.pos_levels_edit.setText(", ".join(str(l) for l in pos_levels))
             self.neg_levels_edit.setText(", ".join(str(l) for l in neg_levels))
 
+    def _apply_level_preset(self, preset_name):
+        """Apply a predefined level preset based on current level type."""
+        level_type = self.level_type_combo.currentText()
+        
+        presets = {
+            "fraction": {
+                "5levels": ([0.1, 0.3, 0.5, 0.7, 0.9], [0.1, 0.3, 0.5, 0.7, 0.9]),
+                "3levels": ([0.3, 0.6, 0.9], [0.3, 0.6, 0.9]),
+                "dense": ([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]),
+            },
+            "sigma": {
+                "5levels": ([3, 6, 10, 15, 20], [3, 6, 10, 15, 20]),
+                "3levels": ([3, 10, 20], [3, 10, 20]),
+                "dense": ([3, 5, 7, 10, 15, 20, 30, 50], [3, 5, 7, 10, 15, 20, 30, 50]),
+            },
+            "absolute": {
+                "5levels": ([100, 500, 1000, 5000, 10000], [100, 500, 1000, 5000, 10000]),
+                "3levels": ([100, 1000, 10000], [100, 1000, 10000]),
+                "dense": ([50, 100, 200, 500, 1000, 2000, 5000, 10000], [50, 100, 200, 500, 1000, 2000, 5000, 10000]),
+            },
+        }
+        
+        if level_type in presets and preset_name in presets[level_type]:
+            pos, neg = presets[level_type][preset_name]
+            self.pos_levels_edit.setText(", ".join(str(l) for l in pos))
+            self.neg_levels_edit.setText(", ".join(str(l) for l in neg))
+
+    def _reset_to_defaults(self):
+        """Reset all dialog settings to default values."""
+        # Source
+        self.same_image_radio.setChecked(True)
+        self.file_path_edit.clear()
+        self.radio_casa_image.setChecked(True)
+        
+        # Stokes
+        self.stokes_combo.setCurrentText("I")
+        
+        # Levels
+        self.level_type_combo.setCurrentText("fraction")
+        self.pos_levels_edit.setText("0.1, 0.3, 0.5, 0.7, 0.9")
+        self.neg_levels_edit.setText("0.1, 0.3, 0.5, 0.7, 0.9")
+        
+        # Appearance
+        self.pos_color_combo.setCurrentText("white")
+        self.neg_color_combo.setCurrentText("white")
+        self.pos_linewidth_spin.setValue(1.0)
+        self.neg_linewidth_spin.setValue(1.0)
+        self.pos_linestyle_combo.setCurrentIndex(0)  # Solid
+        self.neg_linestyle_combo.setCurrentIndex(1)  # Dashed
+        if hasattr(self, 'show_labels_checkbox'):
+            self.show_labels_checkbox.setChecked(False)
+        self.show_full_extent_checkbox.setChecked(False)
+        
+        # RMS
+        self.use_default_rms_box.setChecked(True)
+
     def update_placeholder_text(self):
 
         if self.radio_casa_image.isChecked():
@@ -568,24 +921,64 @@ class ContourSettingsDialog(QDialog):
             self.file_path_edit.setPlaceholderText("Select FITS file...")
 
     def browse_file(self):
-        if self.radio_casa_image.isChecked():
-            # Select CASA image directory
-            directory = QFileDialog.getExistingDirectory(
-                self, "Select a CASA Image Directory"
+        # Check if remote mode is active
+        main_window = None
+        parent = self.parent()
+        if parent:
+            # parent could be ImageViewer, we need MainWindow
+            if hasattr(parent, 'window'):
+                main_window = parent.window()
+            elif hasattr(parent, 'remote_connection'):
+                main_window = parent
+        
+        is_remote = (
+            main_window is not None 
+            and hasattr(main_window, 'remote_connection')
+            and main_window.remote_connection is not None
+            and main_window.remote_connection.is_connected()
+        )
+        
+        if is_remote:
+            # Use remote file browser
+            from .remote.remote_file_browser import RemoteFileBrowser
+            from .remote.file_cache import RemoteFileCache
+            
+            casa_mode = self.radio_casa_image.isChecked()
+            cache = getattr(main_window, 'remote_cache', None) or RemoteFileCache()
+            
+            browser = RemoteFileBrowser(
+                main_window.remote_connection,
+                cache=cache,
+                parent=self,
+                casa_mode=casa_mode,
             )
-            if directory:
-                self.file_path_edit.setText(directory)
-                # Update stokes combo based on external image
-                self._update_stokes_combo_for_external(directory)
+            
+            def on_file_selected(path):
+                self.file_path_edit.setText(path)
+                self._update_stokes_combo_for_external(path)
+            
+            browser.fileSelected.connect(on_file_selected)
+            browser.exec_()
         else:
-            # Select FITS file
-            file_path, _ = QFileDialog.getOpenFileName(
-                self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
-            )
-            if file_path:
-                self.file_path_edit.setText(file_path)
-                # Update stokes combo based on external image
-                self._update_stokes_combo_for_external(file_path)
+            # Use local file dialog
+            if self.radio_casa_image.isChecked():
+                # Select CASA image directory
+                directory = QFileDialog.getExistingDirectory(
+                    self, "Select a CASA Image Directory"
+                )
+                if directory:
+                    self.file_path_edit.setText(directory)
+                    # Update stokes combo based on external image
+                    self._update_stokes_combo_for_external(directory)
+            else:
+                # Select FITS file
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
+                )
+                if file_path:
+                    self.file_path_edit.setText(file_path)
+                    # Update stokes combo based on external image
+                    self._update_stokes_combo_for_external(file_path)
 
     def _update_stokes_combo_state(self, available_stokes):
         """
@@ -667,6 +1060,16 @@ class ContourSettingsDialog(QDialog):
             if external_path:
                 self._update_stokes_combo_for_external(external_path)
 
+    def _update_threshold_visibility(self):
+        """Show/hide threshold controls based on selected Stokes parameter."""
+        # Derived Stokes parameters that use thresholding
+        derived_stokes = {"Q/I", "U/I", "V/I", "Lfrac", "Vfrac", "PANG"}
+        current_stokes = self.stokes_combo.currentText()
+        
+        # Enable threshold controls only for derived parameters
+        is_derived = current_stokes in derived_stokes
+        self.threshold_label.setEnabled(is_derived)
+        self.threshold_spin.setEnabled(is_derived)
 
     def get_settings(self):
         settings = {}
@@ -675,6 +1078,7 @@ class ContourSettingsDialog(QDialog):
         )
         settings["external_image"] = self.file_path_edit.text()
         settings["stokes"] = self.stokes_combo.currentText()
+        settings["threshold"] = self.threshold_spin.value()
         settings["level_type"] = self.level_type_combo.currentText()
         try:
             pos_levels_text = self.pos_levels_edit.text()
@@ -702,16 +1106,29 @@ class ContourSettingsDialog(QDialog):
             self.rms_ymin.value(),
             self.rms_ymax.value(),
         )
-        settings["color"] = self.color_combo.currentText()
-        settings["linewidth"] = self.linewidth_spin.value()
-        settings["pos_linestyle"] = self.pos_linestyle_combo.currentText()
-        settings["neg_linestyle"] = self.neg_linestyle_combo.currentText()
+        settings["color"] = self.pos_color_combo.currentText()  # For backward compatibility
+        settings["linewidth"] = self.pos_linewidth_spin.value()  # For backward compatibility
+        settings["pos_color"] = self.pos_color_combo.currentText()
+        settings["neg_color"] = self.neg_color_combo.currentText()
+        settings["pos_linewidth"] = self.pos_linewidth_spin.value()
+        settings["neg_linewidth"] = self.neg_linewidth_spin.value()
+        
+        # Convert linestyle display names back to matplotlib format
+        linestyle_values = ["-", "--", "-.", ":"]
+        pos_idx = self.pos_linestyle_combo.currentIndex()
+        neg_idx = self.neg_linestyle_combo.currentIndex()
+        settings["pos_linestyle"] = linestyle_values[pos_idx] if 0 <= pos_idx < len(linestyle_values) else "-"
+        settings["neg_linestyle"] = linestyle_values[neg_idx] if 0 <= neg_idx < len(linestyle_values) else "--"
         settings["linestyle"] = settings["pos_linestyle"]
+        
+        settings["show_labels"] = self.show_labels_checkbox.isChecked() if hasattr(self, 'show_labels_checkbox') else False
+        settings["show_full_extent"] = self.show_full_extent_checkbox.isChecked()
         if "contour_data" in self.settings:
             settings["contour_data"] = self.settings["contour_data"]
         else:
             settings["contour_data"] = None
         return settings
+
 
 
 class BatchProcessDialog(QDialog):
@@ -983,7 +1400,8 @@ class PhaseShiftDialog(QDialog):
     def __init__(self, parent=None, imagename=None):
         super().__init__(parent)
         self.setWindowTitle("Solar Phase Center Shift")
-        self.setMinimumSize(1000, 800)
+        self.setMinimumSize(550, 600)
+        self.resize(650, 650)
         self.imagename = imagename
 
         # Set the dialog size to match the parent window if available
@@ -1000,326 +1418,396 @@ class PhaseShiftDialog(QDialog):
 
     def setup_ui(self):
         from .move_phasecenter import SolarPhaseCenter
-
+        
+        # Theme setup
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        palette = theme_manager.palette
+        text_secondary = palette.get('text_secondary', palette['disabled'])
+        
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(15)
         main_layout.setContentsMargins(15, 15, 15, 15)
 
-        # Add a description at the top
+        # Header description
         description = QLabel(
-            "This tool shifts the coordinate system so that the solar center aligns with the image phase center. "
-            "This is useful for properly aligning solar observations in heliographic coordinates."
+            "This tool relocates the quiet Sun disk to the actual solar center."
         )
         description.setWordWrap(True)
-        #description.setStyleSheet("color: #BBB; font-style: italic;")
-        description.setStyleSheet("font-style: italic;")
+        description.setStyleSheet(f"font-style: italic; color: {text_secondary}; padding: 4px 0;")
         main_layout.addWidget(description)
 
-        # Mode selection: Single file or batch processing
-        mode_container = QWidget()
-        mode_container_layout = QHBoxLayout(mode_container)
-        mode_container_layout.setContentsMargins(0, 0, 0, 0)
-
+        # ========== TAB WIDGET ==========
+        self.tab_widget = QTabWidget()
+        from PyQt5.QtWidgets import QScrollArea
+        
+        # ========== TAB 1: FILES ==========
+        files_tab = QWidget()
+        files_layout = QVBoxLayout(files_tab)
+        files_layout.setSpacing(16)
+        files_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Mode Selection
         mode_group = QGroupBox("Processing Mode")
         mode_layout = QHBoxLayout(mode_group)
-        mode_layout.setContentsMargins(10, 15, 10, 10)
-
+        mode_layout.setSpacing(20)
+        
         self.single_mode_radio = QRadioButton("Single File")
         self.batch_mode_radio = QRadioButton("Batch Processing")
         self.single_mode_radio.setChecked(True)
-
+        
         mode_layout.addWidget(self.single_mode_radio)
         mode_layout.addWidget(self.batch_mode_radio)
-        mode_layout.addStretch(1)
-
-        # Stokes parameter selection - moved next to mode selection
-        stokes_group = QGroupBox("Stokes Parameter")
-        stokes_group_layout = QVBoxLayout(stokes_group)
-        stokes_group_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Add radio buttons for Stokes mode selection
-        stokes_mode_layout = QHBoxLayout()
+        mode_layout.addStretch()
+        files_layout.addWidget(mode_group)
+        
+        # Connect mode radios
+        self.single_mode_radio.toggled.connect(self.update_mode_ui)
+        self.batch_mode_radio.toggled.connect(self.update_mode_ui)
+        
+        # Input Settings Group
+        self.input_group = QGroupBox("Input Location")
+        input_group_layout = QVBoxLayout(self.input_group)
+        input_group_layout.setSpacing(12)
+        
+        # SINGLE MODE: Image Selection
+        self.single_file_widget = QWidget()
+        single_file_layout = QHBoxLayout(self.single_file_widget)
+        single_file_layout.setContentsMargins(0, 0, 0, 0)
+        
+        img_label = QLabel("Image:")
+        img_label.setMinimumWidth(70)
+        img_label.setStyleSheet("font-weight: 600;")
+        single_file_layout.addWidget(img_label)
+        
+        self.image_path_edit = QLineEdit(self.imagename or "")
+        self.image_path_edit.setPlaceholderText("Select input image (FITS/CASA)...")
+        single_file_layout.addWidget(self.image_path_edit, 1)
+        
+        self.browse_button = QPushButton("Browse...")
+        self.browse_button.clicked.connect(self.browse_image)
+        single_file_layout.addWidget(self.browse_button)
+        
+        input_group_layout.addWidget(self.single_file_widget)
+        
+        # BATCH MODE: Reference & Pattern
+        self.batch_file_widget = QWidget()
+        batch_file_layout = QVBoxLayout(self.batch_file_widget)
+        batch_file_layout.setContentsMargins(0, 0, 0, 0)
+        batch_file_layout.setSpacing(12)
+        
+        # Reference Image
+        ref_row = QHBoxLayout()
+        ref_label = QLabel("Ref Image:")
+        ref_label.setMinimumWidth(70)
+        ref_label.setStyleSheet("font-weight: 600;")
+        ref_row.addWidget(ref_label)
+        
+        self.reference_image_edit = QLineEdit("")
+        self.reference_image_edit.setPlaceholderText("Reference image for phase center calculation")
+        ref_row.addWidget(self.reference_image_edit, 1)
+        
+        self.reference_browse_button = QPushButton("Browse...")
+        self.reference_browse_button.clicked.connect(self.browse_reference_image)
+        ref_row.addWidget(self.reference_browse_button)
+        batch_file_layout.addLayout(ref_row)
+        
+        # Input Pattern
+        pat_row = QHBoxLayout()
+        pat_label = QLabel("Pattern:")
+        pat_label.setMinimumWidth(70)
+        pat_label.setStyleSheet("font-weight: 600;")
+        pat_row.addWidget(pat_label)
+        
+        self.input_pattern_edit = QLineEdit("")
+        self.input_pattern_edit.setPlaceholderText("e.g., /path/to/images/*.fits")
+        pat_row.addWidget(self.input_pattern_edit, 1)
+        
+        # Scan button
+        scan_btn = QPushButton("🔍")
+        scan_btn.setFixedWidth(36)
+        scan_btn.setToolTip("Scan for matching files")
+        scan_btn.clicked.connect(self.scan_files)
+        pat_row.addWidget(scan_btn)
+        
+        self.input_pattern_button = QPushButton("Browse...")
+        self.input_pattern_button.clicked.connect(self.browse_input_pattern)
+        pat_row.addWidget(self.input_pattern_button)
+        batch_file_layout.addLayout(pat_row)
+        
+        # File count label
+        self.files_count_label = QLabel("")
+        self.files_count_label.setStyleSheet(f"color: {text_secondary}; font-style: italic; padding-left: 70px;")
+        batch_file_layout.addWidget(self.files_count_label)
+        
+        input_group_layout.addWidget(self.batch_file_widget)
+        files_layout.addWidget(self.input_group)
+        files_layout.addStretch()
+        
+        # Wrap Files Tab in Scroll Area
+        files_scroll = QScrollArea()
+        files_scroll.setWidgetResizable(True)
+        files_scroll.setFrameShape(QFrame.NoFrame)
+        files_scroll.setWidget(files_tab)
+        self.tab_widget.addTab(files_scroll, "📁 Files")
+        
+        # ========== TAB 2: OPTIONS ==========
+        options_tab = QWidget()
+        options_layout = QVBoxLayout(options_tab)
+        options_layout.setSpacing(16)
+        options_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Stokes Settings
+        stokes_group = QGroupBox("Stokes Parameters")
+        stokes_layout = QVBoxLayout(stokes_group)
+        stokes_layout.setSpacing(12)
+        
+        # Mode
+        stokes_mode_row = QHBoxLayout()
+        stokes_mode_row.setSpacing(20)
+        st_mode_label = QLabel("Mode:")
+        st_mode_label.setStyleSheet("font-weight: 600;")
+        stokes_mode_row.addWidget(st_mode_label)
+        
         self.single_stokes_radio = QRadioButton("Single Stokes")
         self.full_stokes_radio = QRadioButton("Full Stokes")
         self.single_stokes_radio.setChecked(True)
-        stokes_mode_layout.addWidget(self.single_stokes_radio)
-        stokes_mode_layout.addWidget(self.full_stokes_radio)
-        stokes_mode_layout.addStretch(1)
-        stokes_group_layout.addLayout(stokes_mode_layout)
-
-        # Add stokes combo box for selection
-        stokes_select_layout = QHBoxLayout()
+        stokes_mode_row.addWidget(self.single_stokes_radio)
+        stokes_mode_row.addWidget(self.full_stokes_radio)
+        stokes_mode_row.addStretch()
+        stokes_layout.addLayout(stokes_mode_row)
+        
+        # Parameter selection
+        param_row = QHBoxLayout()
+        param_row.setSpacing(20)
+        #param_label = QLabel("Parameter:")
+        #param_label.setStyleSheet("font-weight: 600;")
+        #param_row.addWidget(param_label)
+        self.stokes_label = QLabel("Parameter:")
+        self.stokes_label.setStyleSheet("font-weight: 600;")
+        param_row.addWidget(self.stokes_label)
+        
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(["I", "Q", "U", "V"])
-        stokes_select_layout.addWidget(self.stokes_combo)
-        stokes_select_layout.addStretch(1)
-        stokes_group_layout.addLayout(stokes_select_layout)
-
-        # Connect stokes mode radios to update UI
+        self.stokes_combo.setMinimumWidth(100)
+        param_row.addWidget(self.stokes_combo)
+        param_row.addStretch()
+        stokes_layout.addLayout(param_row)
+        
+        # Connect stokes radios
         self.single_stokes_radio.toggled.connect(self.update_stokes_mode)
         self.full_stokes_radio.toggled.connect(self.update_stokes_mode)
-
-        # Add the two groups to the container
-        mode_container_layout.addWidget(mode_group, 1)
-        mode_container_layout.addWidget(stokes_group, 1)
-        main_layout.addWidget(mode_container)
-
-        # Connect mode radios to update UI
-        self.single_mode_radio.toggled.connect(self.update_mode_ui)
-        self.batch_mode_radio.toggled.connect(self.update_mode_ui)
-
-        # Input and Output options in two columns
-        io_container = QWidget()
-        io_layout = QHBoxLayout(io_container)
-        io_layout.setContentsMargins(0, 0, 0, 0)
-        io_layout.setSpacing(15)
-
-        # Input options group (left column)
-        self.input_group = QGroupBox("Input Settings")
-        input_layout = QVBoxLayout(self.input_group)
-        input_layout.setSpacing(10)
-        input_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Single file mode controls
-        self.single_file_widget = QWidget()
-        single_file_layout = QFormLayout(self.single_file_widget)
-        single_file_layout.setContentsMargins(0, 0, 0, 0)
-        single_file_layout.setVerticalSpacing(8)
-
-        # Image selection
-        image_layout = QHBoxLayout()
-        self.image_path_edit = QLineEdit(self.imagename or "")
-        self.image_path_edit.setReadOnly(True)
-        self.browse_button = QPushButton("Browse...")
-        self.browse_button.clicked.connect(self.browse_image)
-        image_layout.addWidget(self.image_path_edit, 1)
-        image_layout.addWidget(self.browse_button)
-        single_file_layout.addRow("Image:", image_layout)
-
-        # Batch mode controls
-        self.batch_file_widget = QWidget()
-        batch_file_layout = QFormLayout(self.batch_file_widget)
-        batch_file_layout.setContentsMargins(0, 0, 0, 0)
-        batch_file_layout.setVerticalSpacing(8)
-
-        # Reference image selection for batch mode
-        reference_image_layout = QHBoxLayout()
-        self.reference_image_edit = QLineEdit("")
-        self.reference_image_edit.setReadOnly(True)
-        self.reference_image_edit.setPlaceholderText(
-            "Select reference image for phase center calculation"
-        )
-        self.reference_browse_button = QPushButton("Browse...")
-        self.reference_browse_button.clicked.connect(self.browse_reference_image)
-        reference_image_layout.addWidget(self.reference_image_edit, 1)
-        reference_image_layout.addWidget(self.reference_browse_button)
-        batch_file_layout.addRow("Reference Image:", reference_image_layout)
-
-        # Input pattern selection
-        input_pattern_layout = QHBoxLayout()
-        self.input_pattern_edit = QLineEdit("")
-        self.input_pattern_edit.setPlaceholderText("e.g., /path/to/images/*.fits")
-        self.input_pattern_button = QPushButton("Browse...")
-        self.input_pattern_button.clicked.connect(self.browse_input_pattern)
-        input_pattern_layout.addWidget(self.input_pattern_edit, 1)
-        input_pattern_layout.addWidget(self.input_pattern_button)
-        batch_file_layout.addRow("Apply To Pattern:", input_pattern_layout)
-
-        # MS File selection (optional) - common for both modes
-        ms_layout = QHBoxLayout()
-        self.ms_path_edit = QLineEdit("")
-        self.ms_path_edit.setPlaceholderText(
-            "Optional MS file for phase center calculation"
-        )
-        self.ms_browse_button = QPushButton("Browse...")
-        self.ms_browse_button.clicked.connect(self.browse_ms)
-        ms_layout.addWidget(self.ms_path_edit, 1)
-        ms_layout.addWidget(self.ms_browse_button)
-
-        # Add widgets to input layout
-        input_layout.addWidget(self.single_file_widget)
-        input_layout.addWidget(self.batch_file_widget)
-        self.batch_file_widget.setVisible(False)
-
-        # Add MS file row directly to the input layout
-        ms_form_container = QWidget()
-        ms_form_layout = QFormLayout(ms_form_container)
-        ms_form_layout.setContentsMargins(0, 0, 0, 0)
-        ms_form_layout.setVerticalSpacing(8)
-        ms_form_layout.addRow("MS File (optional):", ms_layout)
-        input_layout.addWidget(ms_form_container)
-
-        # Output options group (right column)
-        output_group = QGroupBox("Output Settings")
-        output_layout = QVBoxLayout(output_group)
-        output_layout.setSpacing(10)
-        output_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Single file output
-        self.single_output_widget = QWidget()
-        single_output_layout = QFormLayout(self.single_output_widget)
-        single_output_layout.setContentsMargins(0, 0, 0, 0)
-        single_output_layout.setVerticalSpacing(8)
-
-        # Output file selection for single file
-        output_file_layout = QHBoxLayout()
-        self.output_path_edit = QLineEdit("")
-        self.output_path_edit.setPlaceholderText("Leave empty to modify input image")
-        self.output_browse_button = QPushButton("Browse...")
-        self.output_browse_button.clicked.connect(self.browse_output)
-        output_file_layout.addWidget(self.output_path_edit, 1)
-        output_file_layout.addWidget(self.output_browse_button)
-        single_output_layout.addRow("Output File:", output_file_layout)
-        output_layout.addWidget(self.single_output_widget)
-
-        # Batch file output
-        self.batch_output_widget = QWidget()
-        batch_output_layout = QVBoxLayout(self.batch_output_widget)
-        batch_output_layout.setContentsMargins(0, 0, 0, 0)
-        batch_output_layout.setSpacing(8)
-
-        # Output pattern for batch mode
-        output_pattern_form = QFormLayout()
-        output_pattern_form.setVerticalSpacing(8)
-        output_pattern_layout = QHBoxLayout()
-        self.output_pattern_edit = QLineEdit("shifted_*.fits")
-        self.output_pattern_edit.setPlaceholderText("e.g., shifted_*.fits")
-        self.output_pattern_button = QPushButton("Browse Directory...")
-        self.output_pattern_button.clicked.connect(self.browse_output_dir)
-        output_pattern_layout.addWidget(self.output_pattern_edit, 1)
-        output_pattern_layout.addWidget(self.output_pattern_button)
-        output_pattern_form.addRow("Output Pattern:", output_pattern_layout)
-        batch_output_layout.addLayout(output_pattern_form)
-
-        # Add a help text for pattern
-        pattern_help = QLabel(
-            "Use * in the pattern as a placeholder for the original filename."
-        )
-        pattern_help.setStyleSheet("color: #BBB; font-style: italic;")
-        batch_output_layout.addWidget(pattern_help)
-
-        output_layout.addWidget(self.batch_output_widget)
-        self.batch_output_widget.setVisible(False)
-
-        # Add the input and output groups to the container
-        io_layout.addWidget(self.input_group, 1)
-        io_layout.addWidget(output_group, 1)
-        main_layout.addWidget(io_container)
-
-        # Method settings and Visual centering in one row
-        method_container = QWidget()
-        method_container_layout = QHBoxLayout(method_container)
-        method_container_layout.setContentsMargins(0, 0, 0, 0)
-        method_container_layout.setSpacing(15)
-
-        # Method options group
-        method_group = QGroupBox("Method Settings")
+        
+        options_layout.addWidget(stokes_group)
+        
+        # Method Settings
+        method_group = QGroupBox("Detection Method")
         method_layout = QVBoxLayout(method_group)
-        method_layout.setSpacing(10)
-        method_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Gaussian fitting option
-        self.fit_gaussian_check = QCheckBox("Use Gaussian fitting for solar center")
-        self.fit_gaussian_check.setChecked(False)
-        method_layout.addWidget(self.fit_gaussian_check)
-
-        # Sigma threshold for center-of-mass
-        sigma_layout = QHBoxLayout()
-        sigma_layout.addWidget(QLabel("Sigma threshold for center-of-mass:"))
+        method_layout.setSpacing(12)
+        
+        # Method selection
+        met_sel_row = QHBoxLayout()
+        met_sel_row.setSpacing(20)
+        met_label = QLabel("Method:")
+        met_label.setStyleSheet("font-weight: 600;")
+        met_sel_row.addWidget(met_label)
+        
+        self.gaussian_method_radio = QRadioButton("Gaussian Fitting")
+        self.com_method_radio = QRadioButton("Center of Mass")
+        self.gaussian_method_radio.setChecked(True)
+        met_sel_row.addWidget(self.gaussian_method_radio)
+        met_sel_row.addWidget(self.com_method_radio)
+        met_sel_row.addStretch()
+        method_layout.addLayout(met_sel_row)
+        
+        # Sigma threshold
+        sigma_row = QHBoxLayout()
+        sigma_row.setSpacing(20)
+        self.sigma_label = QLabel("Sigma:")
+        self.sigma_label.setStyleSheet("font-weight: 600;")
+        sigma_row.addWidget(self.sigma_label)
+        
         self.sigma_spinbox = QDoubleSpinBox()
         self.sigma_spinbox.setRange(1.0, 20.0)
         self.sigma_spinbox.setValue(10.0)
         self.sigma_spinbox.setSingleStep(0.5)
-        sigma_layout.addWidget(self.sigma_spinbox)
-        sigma_layout.addStretch()
-        method_layout.addLayout(sigma_layout)
-
+        self.sigma_spinbox.setToolTip("Threshold multiplier for center-of-mass detection")
+        sigma_row.addWidget(self.sigma_spinbox)
+        sigma_row.addStretch()
+        method_layout.addLayout(sigma_row)
+        
+        # Initially disable sigma
+        #self.sigma_label.setEnabled(False)
+        #self.sigma_spinbox.setEnabled(False)
+        self.sigma_label.setVisible(False)
+        self.sigma_spinbox.setVisible(False)
+        
+        # Connect method radios
+        self.gaussian_method_radio.toggled.connect(self._update_method_options)
+        self.com_method_radio.toggled.connect(self._update_method_options)
+        
         # Visual centering option
-        self.visual_center_check = QCheckBox(
-            "Create a visually centered image (moves pixel data)"
-        )
-        self.visual_center_check.setChecked(False)
+        self.visual_center_check = QCheckBox("Create visually centered image")
+        self.visual_center_check.setChecked(True)
+        self.visual_center_check.setToolTip("Shifts pixel data so Sun appears at image center")
         method_layout.addWidget(self.visual_center_check)
-
-        # Multiprocessing option for batch mode
-        self.multiprocessing_check = QCheckBox(
-            "Use multiprocessing for batch operations (faster)"
-        )
+        
+        options_layout.addWidget(method_group)
+        
+        # Multiprocessing Options (Batch Only)
+        self.multiprocessing_widget = QWidget()
+        mp_layout = QVBoxLayout(self.multiprocessing_widget)
+        mp_layout.setContentsMargins(0, 0, 0, 0)
+        
+        mp_group = QGroupBox("Performance")
+        mp_group_layout = QVBoxLayout(mp_group)
+        
+        self.multiprocessing_check = QCheckBox("Use multiprocessing")
         self.multiprocessing_check.setChecked(True)
-        self.multiprocessing_check.setToolTip(
-            "Enable parallel processing for batch operations"
-        )
-        method_layout.addWidget(self.multiprocessing_check)
-
-        # CPU cores selection
-        cores_layout = QHBoxLayout()
-        cores_layout.addWidget(QLabel("Number of CPU cores to use:"))
+        mp_group_layout.addWidget(self.multiprocessing_check)
+        
+        cores_row = QHBoxLayout()
+        cores_row.setSpacing(20)
+        cores_label = QLabel("CPU cores:")
+        cores_label.setStyleSheet("font-weight: 600;")
+        cores_row.addWidget(cores_label)
+        
         self.cores_spinbox = QSpinBox()
         self.cores_spinbox.setRange(1, multiprocessing.cpu_count())
-        self.cores_spinbox.setValue(
-            max(1, multiprocessing.cpu_count() - 1)
-        )  # Default to N-1 cores
+        self.cores_spinbox.setValue(max(1, multiprocessing.cpu_count() - 1))
         self.cores_spinbox.setSingleStep(1)
-        self.cores_spinbox.setToolTip(
-            f"Maximum: {multiprocessing.cpu_count()} cores available"
-        )
-        cores_layout.addWidget(self.cores_spinbox)
-        cores_layout.addStretch()
-        method_layout.addLayout(cores_layout)
-
-        # Connect multiprocessing checkbox to enable/disable cores spinbox
+        cores_row.addWidget(self.cores_spinbox)
+        cores_row.addStretch()
+        mp_group_layout.addLayout(cores_row)
+        
+        mp_layout.addWidget(mp_group)
+        
+        # Connect MP check
         self.multiprocessing_check.toggled.connect(self.cores_spinbox.setEnabled)
-
-        # Add the method group to the container (full width)
-        method_container_layout.addWidget(method_group)
-        main_layout.addWidget(method_container)
-
-        # Add a status text area
+        
+        options_layout.addWidget(self.multiprocessing_widget)
+        options_layout.addStretch()
+        
+        # Wrap Options Tab in Scroll Area
+        options_scroll = QScrollArea()
+        options_scroll.setWidgetResizable(True)
+        options_scroll.setFrameShape(QFrame.NoFrame)
+        options_scroll.setWidget(options_tab)
+        self.tab_widget.addTab(options_scroll, "⚙️ Options")
+        
+        # ========== TAB 3: OUTPUT ==========
+        output_tab = QWidget()
+        output_layout = QVBoxLayout(output_tab)
+        output_layout.setSpacing(16)
+        output_layout.setContentsMargins(16, 16, 16, 16)
+        
+        out_group = QGroupBox("Output Settings")
+        out_layout = QVBoxLayout(out_group)
+        out_layout.setSpacing(12)
+        
+        # SINGLE OUTPUT
+        self.single_output_widget = QWidget()
+        single_out_layout = QHBoxLayout(self.single_output_widget)
+        single_out_layout.setContentsMargins(0, 0, 0, 0)
+        
+        out_label = QLabel("File:")
+        out_label.setMinimumWidth(70)
+        out_label.setStyleSheet("font-weight: 600;")
+        single_out_layout.addWidget(out_label)
+        
+        self.output_path_edit = QLineEdit("")
+        self.output_path_edit.setPlaceholderText("Default: centered_{input_name}.fits")
+        single_out_layout.addWidget(self.output_path_edit, 1)
+        
+        self.output_browse_button = QPushButton("Browse...")
+        self.output_browse_button.clicked.connect(self.browse_output)
+        single_out_layout.addWidget(self.output_browse_button)
+        out_layout.addWidget(self.single_output_widget)
+        
+        # BATCH OUTPUT
+        self.batch_output_widget = QWidget()
+        batch_out_layout = QHBoxLayout(self.batch_output_widget)
+        batch_out_layout.setContentsMargins(0, 0, 0, 0)
+        
+        out_pat_label = QLabel("Pattern:")
+        out_pat_label.setMinimumWidth(70)
+        out_pat_label.setStyleSheet("font-weight: 600;")
+        batch_out_layout.addWidget(out_pat_label)
+        
+        self.output_pattern_edit = QLineEdit("")
+        self.output_pattern_edit.setPlaceholderText("e.g., centered/centered_*.fits")
+        batch_out_layout.addWidget(self.output_pattern_edit, 1)
+        
+        self.output_pattern_button = QPushButton("Browse Dir...")
+        self.output_pattern_button.clicked.connect(self.browse_output_dir)
+        batch_out_layout.addWidget(self.output_pattern_button)
+        out_layout.addWidget(self.batch_output_widget)
+        
+        output_layout.addWidget(out_group)
+        
+        # Pattern help
+        help_group = QGroupBox("Pattern Help")
+        help_layout = QVBoxLayout(help_group)
+        help_text = QLabel(
+            "Use <b>*</b> as a placeholder for the original filename.\n\n"
+            "<b>Example:</b> Input <code>sun_2024.fits</code> with pattern <code>centered_*.fits</code>\n"
+            "→ Output: <code>centered_sun_2024.fits</code>"
+        )
+        help_text.setWordWrap(True)
+        help_text.setStyleSheet(f"color: {text_secondary}; line-height: 1.5;")
+        help_layout.addWidget(help_text)
+        output_layout.addWidget(help_group)
+        output_layout.addStretch()
+        
+        # Wrap Output Tab in Scroll Area
+        output_scroll = QScrollArea()
+        output_scroll.setWidgetResizable(True)
+        output_scroll.setFrameShape(QFrame.NoFrame)
+        output_scroll.setWidget(output_tab)
+        self.tab_widget.addTab(output_scroll, "💾 Output")
+        
+        main_layout.addWidget(self.tab_widget, 1)
+        
+        # ========== STATUS PANEL ==========
         status_group = QGroupBox("Status / Results")
         status_layout = QVBoxLayout(status_group)
-        status_layout.setContentsMargins(10, 15, 10, 10)
-
+        status_layout.setContentsMargins(10, 12, 10, 10)
+        
         self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
         self.status_text.setPlaceholderText("Status and results will appear here")
-        self.status_text.setMinimumHeight(100)
-        status_layout.addWidget(self.status_text)
+        self.status_text.setMinimumHeight(25)
+        self.status_text.setMaximumHeight(150)
+        status_layout.addWidget(self.status_text, 1)
+        
+        main_layout.addWidget(status_group)
 
         main_layout.addWidget(status_group)
 
-        # Add dialog buttons
+        # Progress Bar (initially hidden)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setVisible(False)
+        main_layout.addWidget(self.progress_bar)
+
+        # Dialog Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.apply_phase_shift)
         button_box.rejected.connect(self.reject)
-        main_layout.addWidget(button_box)
-
-        # Set the Ok button text based on mode
+        
         self.ok_button = button_box.button(QDialogButtonBox.Ok)
         self.ok_button.setText("Apply Shift")
 
-        # Apply consistent styling to the dialog
-        self.setStyleSheet(
-            """
-            QGroupBox {
-                border: 1px solid #555555;
-                border-radius: 3px;
-                margin-top: 0.5em;
-                padding-top: 0.5em;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
-            }
-            QLabel {
-                margin-top: 2px;
-                margin-bottom: 2px;
-            }
-            QRadioButton, QCheckBox {
-                min-height: 20px;
-            }
-        """
-        )
+        self.cancel_button = button_box.button(QDialogButtonBox.Cancel)
+        # We'll use the cancel button for aborting operations too
+        
+        main_layout.addWidget(button_box)
+        
+        # Initialize UI state
+        self.update_mode_ui()
 
     def update_mode_ui(self):
         """Update UI components based on the selected mode"""
@@ -1330,6 +1818,9 @@ class PhaseShiftDialog(QDialog):
         self.batch_file_widget.setVisible(not single_mode)
         self.single_output_widget.setVisible(single_mode)
         self.batch_output_widget.setVisible(not single_mode)
+        
+        # Multiprocessing options only visible in batch mode
+        self.multiprocessing_widget.setVisible(not single_mode)
 
         # Update button text
         if single_mode:
@@ -1340,23 +1831,55 @@ class PhaseShiftDialog(QDialog):
     def update_stokes_mode(self):
         """Update UI based on selected Stokes mode"""
         single_stokes = self.single_stokes_radio.isChecked()
-        self.stokes_combo.setEnabled(single_stokes)
+        self.stokes_label.setVisible(single_stokes)
+        self.stokes_combo.setVisible(single_stokes)
+    
+    def _update_method_options(self):
+        """Enable/disable sigma threshold based on detection method selection"""
+        use_com = self.com_method_radio.isChecked()
+        self.sigma_label.setVisible(use_com)
+        self.sigma_spinbox.setVisible(use_com)
 
     def browse_image(self):
-        """Browse for input image file"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Image File", "", "FITS Files (*.fits);;CASA Images (*)"
-        )
+        """Browse for input image file (FITS or CASA image directory)"""
+        # Ask user which type of image to select
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Select Image Type")
+        msg_box.setText("What type of image do you want to select?")
+        fits_btn = msg_box.addButton("FITS", QMessageBox.ActionRole)
+        casa_btn = msg_box.addButton("CASA Image", QMessageBox.ActionRole)
+        msg_box.addButton(QMessageBox.Cancel)
+        msg_box.exec_()
+        
+        file_path = None
+        if msg_box.clickedButton() == fits_btn:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select FITS File", "", "FITS Files (*.fits *.fts);;All Files (*)"
+            )
+        elif msg_box.clickedButton() == casa_btn:
+            file_path = QFileDialog.getExistingDirectory(
+                self, "Select CASA Image Directory"
+            )
+        
         if file_path:
             self.image_path_edit.setText(file_path)
             self.imagename = file_path
 
-            # Set default output filename pattern
-            if not self.output_path_edit.text():
-                file_dir = os.path.dirname(file_path)
-                file_name = os.path.basename(file_path)
-                output_path = os.path.join(file_dir, f"shifted_{file_name}")
-                self.output_path_edit.setText(output_path)
+            # Set default output filename: centered_{input_basename}.fits
+            file_dir = os.path.dirname(file_path)
+            file_name = os.path.basename(file_path)
+            # Remove extension and add centered_ prefix
+            base_name = os.path.splitext(file_name)[0]
+            # Handle CASA image directories - strip .image or .im suffix
+            if os.path.isdir(file_path):
+                base_name = file_name
+                # Remove common CASA extensions
+                for ext in ['.image', '.im']:
+                    if base_name.endswith(ext):
+                        base_name = base_name[:-len(ext)]
+                        break
+            output_path = os.path.join(file_dir, f"centered_{base_name}.fits")
+            self.output_path_edit.setText(output_path)
 
     def browse_input_pattern(self):
         """Browse for directory and help set input pattern"""
@@ -1366,6 +1889,10 @@ class PhaseShiftDialog(QDialog):
         if dir_path:
             # Set a default pattern in the selected directory
             self.input_pattern_edit.setText(os.path.join(dir_path, "*.fits"))
+            
+            # Set a default output pattern in a 'centered' subdirectory
+            output_dir = os.path.join(dir_path, "centered")
+            self.output_pattern_edit.setText(os.path.join(output_dir, "centered_*.fits"))
 
     def browse_output_dir(self):
         """Browse for output directory for batch processing"""
@@ -1388,30 +1915,109 @@ class PhaseShiftDialog(QDialog):
             self.ms_path_edit.setText(dir_path)
 
     def browse_output(self):
-        """Browse for output file location"""
+        """Browse for output file location (FITS only)"""
+        # Get suggested filename from input if available
+        suggested = ""
+        if self.image_path_edit.text():
+            input_name = os.path.basename(self.image_path_edit.text())
+            base_name = os.path.splitext(input_name)[0]
+            if os.path.isdir(self.image_path_edit.text()):
+                base_name = input_name
+                # Remove common CASA extensions
+                for ext in ['.image', '.im']:
+                    if base_name.endswith(ext):
+                        base_name = base_name[:-len(ext)]
+                        break
+            suggested = f"centered_{base_name}.fits"
+        
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Output As", "", "FITS Files (*.fits);;CASA Images (*)"
+            self, "Save Output As", suggested, "FITS Files (*.fits)"
         )
         if file_path:
+            # Ensure .fits extension
+            if not file_path.endswith('.fits'):
+                file_path = file_path + '.fits'
             self.output_path_edit.setText(file_path)
 
     def browse_reference_image(self):
         """Browse for reference image file for batch processing"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Reference Image", "", "FITS Files (*.fits);;CASA Images (*)"
-        )
+        # Ask user which type of image to select
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Select Reference Image Type")
+        msg_box.setText("What type of image do you want to select as reference?")
+        fits_btn = msg_box.addButton("FITS", QMessageBox.ActionRole)
+        casa_btn = msg_box.addButton("CASA Image", QMessageBox.ActionRole)
+        msg_box.addButton(QMessageBox.Cancel)
+        msg_box.exec_()
+        
+        file_path = None
+        if msg_box.clickedButton() == fits_btn:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Select FITS Reference", "", "FITS Files (*.fits *.fts);;All Files (*)"
+            )
+        elif msg_box.clickedButton() == casa_btn:
+            file_path = QFileDialog.getExistingDirectory(
+                self, "Select CASA Reference Directory"
+            )
+            
         if file_path:
             self.reference_image_edit.setText(file_path)
 
             # Set default input pattern in the same directory
             if not self.input_pattern_edit.text():
                 file_dir = os.path.dirname(file_path)
-                self.input_pattern_edit.setText(os.path.join(file_dir, "*.fits"))
+                if msg_box.clickedButton() == fits_btn:
+                    self.input_pattern_edit.setText(os.path.join(file_dir, "*.fits"))
+                elif msg_box.clickedButton() == casa_btn:
+                    self.input_pattern_edit.setText(os.path.join(file_dir, "*.image"))
+            
+            # Update default output pattern if needed
+            if not self.output_pattern_edit.text():
+                file_dir = os.path.dirname(file_path)
+                output_dir = os.path.join(file_dir, "centered")
+                self.output_pattern_edit.setText(os.path.join(output_dir, "centered_*.fits"))
+
+    def scan_files(self):
+        """Scan for matched files and display count inline"""
+        input_pattern = self.input_pattern_edit.text()
+        if not input_pattern:
+            self.files_count_label.setText("Please enter a pattern")
+            return
+            
+        try:
+            matched_files = sorted(glob.glob(input_pattern))
+            count = len(matched_files)
+            
+            # Format text
+            if count == 0:
+                text = "No files found"
+                color = "#FF6B6B"  # Light red
+            else:
+                text = f"Found {count} files"
+                color = "#69F0AE"  # Light green (matching HPC dialog style)
+                
+            self.files_count_label.setText(text)
+            self.files_count_label.setStyleSheet(f"color: {color}; font-style: italic; padding-left: 70px;")
+            
+        except Exception as e:
+            self.files_count_label.setText(f"Error: {str(e)}")
+            self.files_count_label.setStyleSheet("color: #FF6B6B; padding-left: 70px;")
+
+    def _get_matching_files(self):
+        """Helper to get files matching the input pattern"""
+        pattern = self.input_pattern_edit.text()
+        if not pattern:
+            return []
+        return sorted(glob.glob(pattern))
 
     def apply_phase_shift(self):
         """Apply the phase shift to the image(s)"""
         import os
         from .move_phasecenter import SolarPhaseCenter
+        from PyQt5.QtWidgets import QProgressDialog, QApplication, QMessageBox
+        from PyQt5.QtCore import Qt
+        import multiprocessing
+        import time
 
         # Check if we're in batch mode or single file mode
         batch_mode = self.batch_mode_radio.isChecked()
@@ -1439,276 +2045,263 @@ class PhaseShiftDialog(QDialog):
                 return
 
         try:
-            # Get common parameters
-            msname = self.ms_path_edit.text() or None
-
-            # Create SolarPhaseCenter instance - removing cellsize and imsize parameters
-            spc = SolarPhaseCenter(msname=msname)
-
-            # Determine Stokes parameter to use
-            if full_stokes:
-                stokes_list = ["I", "Q", "U", "V"]
-                self.status_text.appendPlainText(
-                    "Processing all Stokes parameters: I, Q, U, V"
-                )
-            else:
-                stokes_list = [self.stokes_combo.currentText()]
-                self.status_text.appendPlainText(
-                    f"Processing Stokes {self.stokes_combo.currentText()}"
-                )
-
+            # Create SolarPhaseCenter instance
+            spc = SolarPhaseCenter(msname=None)
+            
+            # Determine common parameters based on mode
             if batch_mode:
-                # Batch processing mode
                 reference_image = self.reference_image_edit.text()
                 input_pattern = self.input_pattern_edit.text()
-                output_pattern = (
-                    self.output_pattern_edit.text()
-                    if self.output_pattern_edit.text()
-                    else None
-                )
-
-                self.status_text.appendPlainText(
-                    f"Using reference image: {reference_image}"
-                )
-                self.status_text.appendPlainText(
-                    f"Processing files matching pattern: {input_pattern}"
-                )
-                if output_pattern:
-                    self.status_text.appendPlainText(
-                        f"Output pattern: {output_pattern}"
-                    )
-                else:
-                    self.status_text.appendPlainText(
-                        f"Will modify input files in-place"
-                    )
-
-                # First calculate phase shift from the reference image
-                self.status_text.appendPlainText(
-                    f"Calculating solar center position using reference image: {reference_image}"
-                )
-
-                # Check if any files match the pattern
+                output_pattern = self.output_pattern_edit.text() or None
                 matching_files = glob.glob(input_pattern)
+                
                 if not matching_files:
-                    QMessageBox.warning(
-                        self,
-                        "Input Error",
-                        f"No files found matching pattern: {input_pattern}",
-                    )
+                    QMessageBox.warning(self, "Input Error", f"No files match: {input_pattern}")
+                    return
+                
+                self.status_text.appendPlainText(f"Found {len(matching_files)} files.")
+            else:
+                reference_image = self.image_path_edit.text()
+                # Single mode input list
+                matching_files = [reference_image]
+                # Default output pattern for single file
+                output_pattern = self.output_path_edit.text() or None
+            
+            # 1. Coordinate check and Phase Result Calculation
+            is_hpc = self._is_helioprojective(reference_image)
+            
+            use_gaussian = self.gaussian_method_radio.isChecked()
+            try:
+                self.status_text.appendPlainText(f"Calculating phase shift from: {reference_image}...")
+                phase_result = spc.cal_solar_phaseshift(
+                    imagename=reference_image,
+                    fit_gaussian=use_gaussian,
+                    sigma=self.sigma_spinbox.value(),
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "Calculation Error", f"Failed to calculate phase shift:\n{str(e)}")
+                return
+            
+            # Handle HPC override or display info
+            if is_hpc:
+                phase_result['true_ra'] = 0.0
+                phase_result['true_dec'] = 0.0
+                phase_result['is_hpc'] = True
+                self.status_text.appendPlainText("Detected HPC. Target: (0, 0) Solar-X/Y")
+            else:
+                phase_result['is_hpc'] = False
+                self.status_text.appendPlainText(
+                    f"True Position: RA={phase_result.get('true_ra', 'N/A'):.4f}, DEC={phase_result.get('true_dec', 'N/A'):.4f}"
+                )
+
+            # Check if shift needed
+            if not phase_result.get('needs_shift', False):
+                self.status_text.appendPlainText("No significant phase shift needed.")
+                if QMessageBox.question(self, "No Shift Needed", 
+                    "Solar center appears aligned. Process anyway?", 
+                    QMessageBox.Yes | QMessageBox.No) == QMessageBox.No:
                     return
 
-                self.status_text.appendPlainText(
-                    f"Found {len(matching_files)} files matching the pattern"
-                )
-
-                # Calculate phase shift based on the reference image
-                ra, dec, needs_shift = spc.cal_solar_phaseshift(
-                    imagename=reference_image,
-                    fit_gaussian=self.fit_gaussian_check.isChecked(),
-                    sigma=self.sigma_spinbox.value(),
-                )
-
-                self.status_text.appendPlainText(
-                    f"Calculated solar center: RA = {ra} deg, DEC = {dec} deg"
-                )
-
-                if not needs_shift:
-                    self.status_text.appendPlainText(
-                        "No phase shift needed. Solar center is already aligned with phase center."
-                    )
-                    result = QMessageBox.question(
-                        self,
-                        "No Shift Needed",
-                        "No phase shift is needed as the solar center is already aligned. Proceed anyway?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No,
-                    )
-                    if result == QMessageBox.No:
+            # 2. Check Overwrite (Single Mode only, for safety)
+            if not batch_mode and output_pattern:
+                if not output_pattern.endswith('.fits'): output_pattern += '.fits'
+                files_to_check = []
+                stokes_params = ["I", "Q", "U", "V"] if full_stokes else ["I"] # Simplified check
+                
+                for s in stokes_params:
+                     # Rough check logic, assuming output_pattern is full path
+                     fname = output_pattern
+                     if full_stokes:
+                         root, ext = os.path.splitext(output_pattern)
+                         fname = f"{root}_{s}{ext}"
+                     files_to_check.append(fname)
+                
+                existing = [f for f in files_to_check if os.path.exists(f)]
+                if existing:
+                    msg = "Overwrite existing files?\n\n" + "\n".join(existing[:5])
+                    if len(existing) > 5: msg += "\n..."
+                    if QMessageBox.question(self, "Overwrite?", msg, QMessageBox.Yes|QMessageBox.No) == QMessageBox.No:
                         return
 
-                # Apply to all files
-                visual_center = self.visual_center_check.isChecked()
-                use_multiprocessing = self.multiprocessing_check.isChecked()
-                max_processes = (
-                    self.cores_spinbox.value() if use_multiprocessing else None
-                )
-
+            # 3. Prepare Tasks
+            visual_center = self.visual_center_check.isChecked()
+            use_multiprocessing = self.multiprocessing_check.isChecked() and batch_mode
+            if not batch_mode: 
+                use_multiprocessing = False # Force synchronous for single file
+            
+            stokes_list = ["I", "Q", "U", "V"] if full_stokes else [self.stokes_combo.currentText()]
+            if full_stokes: self.status_text.appendPlainText("Processing Full Stokes (I,Q,U,V)")
+            
+            tasks = []
+            for fpath in matching_files:
                 for stokes in stokes_list:
-                    self.status_text.appendPlainText(f"\nProcessing Stokes {stokes}...")
-
-                    if use_multiprocessing:
-                        self.status_text.appendPlainText(
-                            f"Using multiprocessing with {max_processes} CPU cores"
-                        )
-
-                    results = spc.apply_shift_to_multiple_fits(
-                        ra=ra,
-                        dec=dec,
-                        input_pattern=input_pattern,
-                        output_pattern=output_pattern,
-                        stokes=stokes,
-                        visual_center=visual_center,
-                        use_multiprocessing=use_multiprocessing,
-                        max_processes=max_processes,
+                    # Construct task tuple matching process_single_file_phase_shift wrapper
+                    task = (
+                        fpath,
+                        phase_result.get('true_ra'),
+                        phase_result.get('true_dec'),
+                        stokes,
+                        output_pattern,
+                        visual_center,
+                        phase_result
                     )
+                    tasks.append(task)
 
-                    if visual_center:
-                        self.status_text.appendPlainText(
-                            "Visually centered images were also created with '_centered' suffix."
-                        )
+            total_tasks = len(tasks)
+            self.status_text.appendPlainText(f"Prepared {total_tasks} processing tasks.")
 
-                    self.status_text.appendPlainText(
-                        f"Successfully processed {results[0]} out of {results[1]} files for Stokes {stokes}"
-                    )
+            # 4. Progress UI Setup (Embedded)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, total_tasks)
+            self.progress_bar.setValue(0)
+            self.ok_button.setEnabled(False)  # Disable Apply
+            self.input_group.setEnabled(False) # Disable inputs
+            self.tab_widget.setEnabled(False) # Disable tabs
+            self.cancel_button.disconnect() # Disconnect default reject
+            self.cancel_button.clicked.connect(self._cancel_processing)
+            
+            self._processing_cancelled = False
+            QApplication.processEvents()
 
-                QMessageBox.information(
-                    self,
-                    "Success",
-                    f"Batch processing completed: {results[0]} out of {results[1]} files processed successfully.",
-                )
-                self.accept()
+            results = []
+            start_time = time.time()
 
+            # 5. Execution Loop
+            try:
+                if use_multiprocessing and len(matching_files) > 1:
+                    max_cores = self.cores_spinbox.value()
+                    self.status_text.appendPlainText(f"Using Multiprocessing ({max_cores} cores)")
+                    
+                    self.pool = multiprocessing.Pool(processes=max_cores)
+                    async_results = [self.pool.apply_async(process_single_file_phase_shift, (t,)) for t in tasks]
+                    self.pool.close()
+
+                    while any(not r.ready() for r in async_results):
+                        QApplication.processEvents()
+                        if self._processing_cancelled:
+                            self.pool.terminate()
+                            self.pool.join()
+                            self.status_text.appendPlainText("Processing canceled.")
+                            break
+                        
+                        completed = sum(1 for r in async_results if r.ready())
+                        self.progress_bar.setValue(completed)
+                        time.sleep(0.05)
+                    
+                    if not self._processing_cancelled:
+                        self.progress_bar.setValue(total_tasks)
+                        results = [r.get() for r in async_results]
+                    
+                    self.pool = None
+                        
+                else:
+                    # Synchronous
+                    for i, task in enumerate(tasks):
+                        QApplication.processEvents()
+                        if self._processing_cancelled:
+                            self.status_text.appendPlainText("Processing canceled.")
+                            results = [] # Incomplete
+                            break
+                        
+                        # Call wrapper directly
+                        res = process_single_file_phase_shift(task)
+                        results.append(res)
+                        
+                        self.progress_bar.setValue(i + 1)
+            
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "Processing Failed", f"Error: {e}")
+                # Don't return yet, ensuring cleanup happens
+            
+            finally:
+                # Cleanup UI state
+                self.progress_bar.setVisible(False)
+                self.ok_button.setEnabled(True)
+                self.input_group.setEnabled(True)
+                self.tab_widget.setEnabled(True)
+                
+                # Reconnect cancel to reject (close dialog)
+                try: self.cancel_button.clicked.disconnect() 
+                except: pass
+                self.cancel_button.clicked.connect(self.reject)
+
+            # 6. Results Summary
+            if self._processing_cancelled: return # Canceled
+
+            elapsed = time.time() - start_time
+            success_count = sum(1 for r in results if r[0])
+            errors = [f"{os.path.basename(r[1])}: {r[2]}" for r in results if not r[0]]
+
+            self.status_text.appendPlainText("-" * 20)
+            self.status_text.appendPlainText(f"Completed in {elapsed:.1f}s")
+            self.status_text.appendPlainText(f"Success: {success_count}/{total_tasks}")
+            
+            if errors:
+                self.status_text.appendPlainText("Errors occurred:")
+                for err in errors[:10]:
+                     self.status_text.appendPlainText(f" - {err}")
+                if len(errors) > 10:
+                    self.status_text.appendPlainText(f" ...and {len(errors)-10} more.")
+                QMessageBox.warning(self, "Partial Success", f"Done with {len(errors)} errors. Check log.")
+            elif success_count > 0:
+                QMessageBox.information(self, "Done", f"Successfully processed {success_count} files.")
             else:
-                # Single file mode
-                imagename = self.image_path_edit.text()
-
-                # Calculate phase shift
-                self.status_text.appendPlainText("Calculating solar center position...")
-                ra, dec, needs_shift = spc.cal_solar_phaseshift(
-                    imagename=imagename,
-                    fit_gaussian=self.fit_gaussian_check.isChecked(),
-                    sigma=self.sigma_spinbox.value(),
-                )
-
-                self.status_text.appendPlainText(
-                    f"Calculated solar center: RA = {ra} deg, DEC = {dec} deg"
-                )
-
-                if not needs_shift:
-                    self.status_text.appendPlainText(
-                        "No phase shift needed. Solar center is already aligned with phase center."
-                    )
-                    result = QMessageBox.question(
-                        self,
-                        "No Shift Needed",
-                        "No phase shift is needed as the solar center is already aligned. Proceed anyway?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No,
-                    )
-                    if result == QMessageBox.No:
-                        return
-
-                # Process all requested Stokes parameters
-                for stokes_param in stokes_list:
-                    output_file = self.output_path_edit.text() or imagename
-
-                    # For multi-Stokes mode, append stokes parameter to filename if output is specified
-                    if (
-                        full_stokes
-                        and self.output_path_edit.text()
-                        and len(stokes_list) > 1
-                    ):
-                        base, ext = os.path.splitext(output_file)
-                        stokes_output_file = f"{base}_{stokes_param}{ext}"
-                    else:
-                        stokes_output_file = output_file
-
-                    self.status_text.appendPlainText(
-                        f"\nProcessing Stokes {stokes_param}..."
-                    )
-                    self.status_text.appendPlainText(
-                        f"Output file: {stokes_output_file}"
-                    )
-
-                    # If output is different from input, make a copy
-                    if stokes_output_file != imagename:
-                        import shutil
-
-                        if os.path.isdir(imagename):
-                            os.system(f"rm -rf {stokes_output_file}")
-                            os.system(f"cp -r {imagename} {stokes_output_file}")
-                        else:
-                            shutil.copy(imagename, stokes_output_file)
-                        target = stokes_output_file
-                    else:
-                        target = imagename
-
-                    self.status_text.appendPlainText(
-                        f"Applying phase shift to {target}..."
-                    )
-
-                    result = spc.shift_phasecenter(
-                        imagename=target, ra=ra, dec=dec, stokes=stokes_param
-                    )
-
-                    if result == 0:
-                        self.status_text.appendPlainText(
-                            "Phase shift successfully applied."
-                        )
-
-                        # Create visually centered image if requested
-                        if self.visual_center_check.isChecked():
-                            # Generate output filename for visually centered image
-                            if stokes_output_file == imagename:
-                                # If modifying in place, create a separate centered file
-                                base_path = os.path.splitext(target)[0]
-                                ext = os.path.splitext(target)[1]
-                                visual_output = f"{base_path}_centered{ext}"
-                            else:
-                                # If already creating a new file, derive from that filename
-                                base_path = os.path.splitext(stokes_output_file)[0]
-                                ext = os.path.splitext(stokes_output_file)[1]
-                                visual_output = f"{base_path}_centered{ext}"
-
-                            try:
-                                # Get the reference pixel values from the shifted image
-                                from astropy.io import fits
-
-                                header = fits.getheader(target)
-                                crpix1 = int(header["CRPIX1"])
-                                crpix2 = int(header["CRPIX2"])
-
-                                self.status_text.appendPlainText(
-                                    f"Creating visually centered image: {visual_output}"
-                                )
-
-                                # Create the visually centered image
-                                success = spc.visually_center_image(
-                                    target, visual_output, crpix1, crpix2
-                                )
-
-                                if success:
-                                    self.status_text.appendPlainText(
-                                        "Visually centered image created successfully."
-                                    )
-                                else:
-                                    self.status_text.appendPlainText(
-                                        "Failed to create visually centered image."
-                                    )
-                            except Exception as vis_error:
-                                self.status_text.appendPlainText(
-                                    f"Error creating visually centered image: {str(vis_error)}"
-                                )
-                    elif result == 1:
-                        self.status_text.appendPlainText("Phase shift not needed.")
-                    else:
-                        self.status_text.appendPlainText(
-                            f"Error applying phase shift for Stokes {stokes_param}."
-                        )
-
-                QMessageBox.information(
-                    self,
-                    "Success",
-                    f"Solar phase center shift completed successfully for {len(stokes_list)} Stokes parameters.",
-                )
-                self.accept()
+                 self.status_text.appendPlainText("No files processed.")
 
         except Exception as e:
+            self.status_text.appendPlainText(f"Detailed Error: {str(e)}")
             import traceback
+            traceback.print_exc()
 
-            self.status_text.appendPlainText(f"Error: {str(e)}")
-            self.status_text.appendPlainText(traceback.format_exc())
-            QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+    def _cancel_processing(self):
+        """Signal processing cancellation"""
+        self._processing_cancelled = True
+        self.status_text.appendPlainText("Stopping... please wait.")
+        self.cancel_button.setEnabled(False) # Prevent double click
+
+
+    def _is_helioprojective(self, imagepath):
+        """Check if image is in helioprojective coordinates (Solar-X/Y)"""
+        import os
+        
+        if not imagepath or not os.path.exists(imagepath):
+            return False
+        
+        try:
+            # For FITS files, check the header
+            if imagepath.endswith(".fits") or imagepath.endswith(".fts"):
+                from astropy.io import fits
+                header = fits.getheader(imagepath)
+                ctype1 = header.get("CTYPE1", "").upper()
+                ctype2 = header.get("CTYPE2", "").upper()
+                
+                # Check for HPC (Helioprojective)
+                if ("HPLN" in ctype1 or "HPLT" in ctype2 or 
+                    "SOLAR" in ctype1 or "SOLAR" in ctype2):
+                    return True
+            
+            # For CASA images, check coordinate system
+            if os.path.isdir(imagepath):
+                try:
+                    from casatools import image as IA
+                    ia_tool = IA()
+                    ia_tool.open(imagepath)
+                    csys = ia_tool.coordsys()
+                    dimension_names = [n.upper() for n in csys.names()]
+                    ia_tool.close()
+                    
+                    if "SOLAR-X" in dimension_names or "SOLAR-Y" in dimension_names:
+                        return True
+                    if "HPLN-TAN" in dimension_names or "HPLT-TAN" in dimension_names:
+                        return True
+                except Exception:
+                    pass
+            
+            return False
+        except Exception:
+            return False
 
     def showEvent(self, event):
         """Handle the show event to ensure correct sizing"""
@@ -1733,242 +2326,472 @@ class HPCBatchConversionDialog(QDialog):
     def __init__(self, parent=None, current_file=None):
         super().__init__(parent)
         self.setWindowTitle("Batch Conversion to Helioprojective Coordinates")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(600, 500)
+        self.resize(750, 700)
         self.parent = parent
         self.current_file = current_file
+        
+        # Import theme manager for theme-aware styling
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        # Get colors directly from the palette for consistency
+        palette = theme_manager.palette
+        is_dark = theme_manager.is_dark
+        
+        border_color = palette['border']
+        surface_color = palette['surface']
+        base_color = palette['base']
+        disabled_color = palette['disabled']
+        text_color = palette['text']
+        highlight_color = palette['highlight']
+        text_secondary = palette.get('text_secondary', disabled_color)
+        
+        # Apply theme-aware stylesheet
+        self.setStyleSheet(
+            f"""
+            QGroupBox {{
+                background-color: {surface_color};
+                border: 1px solid {border_color};
+                border-radius: 10px;
+                margin-top: 16px;
+                padding: 15px;
+                padding-top: 10px;
+                font-weight: bold;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 15px;
+                top: 2px;
+                padding: 2px 12px;
+                background-color: {surface_color};
+                color: {highlight_color};
+                border-radius: 4px;
+            }}
+            QLineEdit {{
+                background-color: {base_color};
+                color: {text_color};
+                padding: 6px 10px;
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+            QLineEdit:focus {{
+                border-color: {highlight_color};
+                border-width: 2px;
+            }}
+            QLineEdit:disabled {{
+                background-color: {surface_color};
+                color: {disabled_color};
+            }}
+            QComboBox {{
+                background-color: {base_color};
+                color: {text_color};
+                padding: 5px 10px;
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+            QComboBox:hover {{
+                border-color: {highlight_color};
+            }}
+            QComboBox:disabled {{
+                background-color: {surface_color};
+                color: {disabled_color};
+            }}
+            QRadioButton {{
+                color: {text_color};
+                spacing: 8px;
+            }}
+            QRadioButton::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {border_color};
+                border-radius: 9px;
+                background-color: {base_color};
+            }}
+            QRadioButton::indicator:checked {{
+                background-color: {highlight_color};
+                border-color: {highlight_color};
+            }}
+            QRadioButton:disabled {{
+                color: {disabled_color};
+            }}
+            QSpinBox, QDoubleSpinBox {{
+                background-color: {base_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 4px 8px;
+            }}
+            QSpinBox:disabled, QDoubleSpinBox:disabled {{
+                background-color: {surface_color};
+                color: {disabled_color};
+            }}
+            QCheckBox {{
+                color: {text_color};
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {border_color};
+                border-radius: 4px;
+                background-color: {base_color};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {highlight_color};
+                border-color: {highlight_color};
+            }}
+            QLabel {{
+                color: {text_color};
+            }}
+            QLabel:disabled {{
+                color: {disabled_color};
+            }}
+            QListWidget {{
+                background-color: {base_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 4px;
+            }}
+            QListWidget::item {{
+                padding: 4px 8px;
+                border-radius: 4px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {highlight_color};
+            }}
+            QPlainTextEdit {{
+                background-color: {base_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 8px;
+            }}
+            QPushButton {{
+                padding: 6px 16px;
+                border-radius: 6px;
+            }}
+        """
+        )
+        
+        # Store theme colors for later use
+        self._highlight_color = highlight_color
+        self._text_secondary = text_secondary
+        
         self.setup_ui()
 
     def setup_ui(self):
-        """Set up the dialog UI with a two-column layout."""
+        """Set up the dialog UI with a modern tabbed layout."""
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        palette = theme_manager.palette
+        highlight_color = palette['highlight']
+        text_secondary = palette.get('text_secondary', palette['disabled'])
+        border_color = palette['border']
+        
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(15)
+        main_layout.setSpacing(12)
         main_layout.setContentsMargins(15, 15, 15, 15)
 
-        # Add a description at the top
-        description = QLabel(
-            "This tool converts multiple images to helioprojective coordinates in batch. "
-            "Select a pattern of files to convert and specify the output pattern."
+        # Header description
+        header = QLabel(
+            "Convert multiple FITS/CASA images to helioprojective coordinates (HPC) in batch."
         )
-        description.setWordWrap(True)
-        #description.setStyleSheet("color: #BBB; font-style: italic;")
-        description.setStyleSheet("font-style: italic;")
-        main_layout.addWidget(description)
+        header.setWordWrap(True)
+        header.setStyleSheet(f"font-style: italic; color: {text_secondary}; padding: 4px 0;")
+        main_layout.addWidget(header)
 
-        # Create two-column layout
-        columns_layout = QHBoxLayout()
-        columns_layout.setSpacing(15)
-
-        # ===== LEFT COLUMN =====
-        left_column = QVBoxLayout()
-        left_column.setSpacing(10)
-
-        # Input section
-        input_group = QGroupBox("Input Settings")
-        input_layout = QVBoxLayout(input_group)
-        input_layout.setSpacing(10)
-        input_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Directory selection
-        dir_layout = QHBoxLayout()
-        self.dir_label = QLabel("Input Directory:")
+        # ========== TAB WIDGET ==========
+        self.tab_widget = QTabWidget()
+        
+        # Import QScrollArea for scrollable tabs
+        from PyQt5.QtWidgets import QScrollArea
+        
+        # ========== TAB 1: FILES ==========
+        files_tab = QWidget()
+        files_layout = QVBoxLayout(files_tab)
+        files_layout.setSpacing(16)
+        files_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Input directory row
+        dir_group = QGroupBox("Input Location")
+        dir_group_layout = QVBoxLayout(dir_group)
+        dir_group_layout.setSpacing(12)
+        
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(12)
+        dir_label = QLabel("Directory:")
+        dir_label.setStyleSheet("font-weight: 600;")
+        dir_label.setMinimumWidth(70)
+        dir_row.addWidget(dir_label)
+        
         self.dir_edit = QLineEdit()
         if self.current_file:
             self.dir_edit.setText(os.path.dirname(self.current_file))
+        self.dir_edit.setPlaceholderText("Select input directory...")
+        dir_row.addWidget(self.dir_edit, 1)
+        
         self.dir_browse_btn = QPushButton("Browse...")
         self.dir_browse_btn.clicked.connect(self.browse_directory)
-        dir_layout.addWidget(self.dir_label)
-        dir_layout.addWidget(self.dir_edit, 1)
-        dir_layout.addWidget(self.dir_browse_btn)
-        input_layout.addLayout(dir_layout)
-
-        # File pattern
-        pattern_layout = QHBoxLayout()
-        self.pattern_label = QLabel("File Pattern:")
+        dir_row.addWidget(self.dir_browse_btn)
+        dir_group_layout.addLayout(dir_row)
+        
+        # File pattern row
+        pattern_row = QHBoxLayout()
+        pattern_row.setSpacing(12)
+        pattern_label = QLabel("Pattern:")
+        pattern_label.setStyleSheet("font-weight: 600;")
+        pattern_label.setMinimumWidth(70)
+        pattern_row.addWidget(pattern_label)
+        
         self.pattern_edit = QLineEdit()
         if self.current_file:
             file_ext = os.path.splitext(self.current_file)[1]
             self.pattern_edit.setText(f"*{file_ext}")
         else:
             self.pattern_edit.setText("*.fits")
-        self.pattern_edit.setPlaceholderText("e.g., *.fits")
-        pattern_layout.addWidget(self.pattern_label)
-        pattern_layout.addWidget(self.pattern_edit, 1)
-        input_layout.addLayout(pattern_layout)
-
-        # Preview button
-        preview_btn = QPushButton("Preview Files")
+        self.pattern_edit.setPlaceholderText("e.g., *.fits, sun_*.fits")
+        pattern_row.addWidget(self.pattern_edit, 1)
+        
+        # Scan button - scans and shows count without opening preview
+        scan_btn = QPushButton("🔍")
+        scan_btn.setFixedWidth(36)
+        scan_btn.setToolTip("Scan for matching files")
+        scan_btn.clicked.connect(self.scan_files)
+        pattern_row.addWidget(scan_btn)
+        
+        preview_btn = QPushButton("Preview")
+        preview_btn.setToolTip("Show list of files matching the pattern")
         preview_btn.clicked.connect(self.preview_files)
-        input_layout.addWidget(preview_btn)
-
-        # Files list
-        self.files_label = QLabel("Files to be processed:")
-        input_layout.addWidget(self.files_label)
-
-        self.files_list = QListWidget()
-        self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.files_list.setMinimumHeight(150)
-        input_layout.addWidget(self.files_list)
-
-        left_column.addWidget(input_group)
-
-        # Stokes and Processing Settings group (combined for better space usage)
-        options_group = QGroupBox("Processing Options")
-        options_layout = QVBoxLayout(options_group)
-        options_layout.setSpacing(10)
-        options_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Stokes parameter selection
-        stokes_form = QFormLayout()
-        stokes_form.setVerticalSpacing(10)
-        stokes_form.setHorizontalSpacing(15)
-
-        # Mode selection layout
-        stokes_mode_layout = QHBoxLayout()
+        pattern_row.addWidget(preview_btn)
+        dir_group_layout.addLayout(pattern_row)
+        
+        # File count label (shown after scanning)
+        self.files_count_label = QLabel("")
+        self.files_count_label.setStyleSheet(f"color: {text_secondary}; font-style: italic; padding-left: 70px;")
+        dir_group_layout.addWidget(self.files_count_label)
+        
+        files_layout.addWidget(dir_group)
+        files_layout.addStretch()
+        
+        # Wrap in scroll area
+        files_scroll = QScrollArea()
+        files_scroll.setWidgetResizable(True)
+        files_scroll.setFrameShape(QFrame.NoFrame)
+        files_scroll.setWidget(files_tab)
+        self.tab_widget.addTab(files_scroll, "📁 Files")
+        
+        # ========== TAB 2: OPTIONS ==========
+        options_tab = QWidget()
+        options_layout = QVBoxLayout(options_tab)
+        options_layout.setSpacing(16)
+        options_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Stokes Settings
+        stokes_group = QGroupBox("Stokes Parameters")
+        stokes_layout = QVBoxLayout(stokes_group)
+        stokes_layout.setSpacing(12)
+        
+        # Mode selection
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(20)
+        mode_label = QLabel("Mode:")
+        mode_label.setStyleSheet("font-weight: 600;")
+        mode_row.addWidget(mode_label)
+        
         self.single_stokes_radio = QRadioButton("Single Stokes")
-        self.full_stokes_radio = QRadioButton("Full Stokes")
+        self.single_stokes_radio.setToolTip("Convert only one Stokes parameter per file")
+        self.full_stokes_radio = QRadioButton("Full Stokes (I, Q, U, V)")
+        self.full_stokes_radio.setToolTip("Convert all Stokes parameters for each file")
         self.single_stokes_radio.setChecked(True)
-        stokes_mode_layout.addWidget(self.single_stokes_radio)
-        stokes_mode_layout.addWidget(self.full_stokes_radio)
-        stokes_mode_layout.addStretch(1)
-        stokes_form.addRow("Mode:", stokes_mode_layout)
-
-        # Stokes combo
+        mode_row.addWidget(self.single_stokes_radio)
+        mode_row.addWidget(self.full_stokes_radio)
+        mode_row.addStretch()
+        stokes_layout.addLayout(mode_row)
+        
+        # Stokes selection
+        param_row = QHBoxLayout()
+        param_row.setSpacing(20)
+        param_label = QLabel("Parameter:")
+        param_label.setStyleSheet("font-weight: 600;")
+        param_row.addWidget(param_label)
+        
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(["I", "Q", "U", "V"])
-        stokes_form.addRow("Parameter:", self.stokes_combo)
-
-        # Connect stokes mode radios to update UI
+        self.stokes_combo.setMinimumWidth(80)
+        param_row.addWidget(self.stokes_combo)
+        param_row.addStretch()
+        stokes_layout.addLayout(param_row)
+        
+        # Connect mode radios
         self.single_stokes_radio.toggled.connect(self.update_stokes_mode)
         self.full_stokes_radio.toggled.connect(self.update_stokes_mode)
-
-        options_layout.addLayout(stokes_form)
-
-        # Add a separator line
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
-        options_layout.addWidget(line)
-
-        # Multiprocessing options
-        self.multiprocessing_check = QCheckBox("Use multiprocessing (faster)")
+        
+        options_layout.addWidget(stokes_group)
+        
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(f"background-color: {border_color};")
+        sep.setFixedHeight(1)
+        options_layout.addWidget(sep)
+        
+        # Performance Settings
+        perf_group = QGroupBox("Performance")
+        perf_layout = QVBoxLayout(perf_group)
+        perf_layout.setSpacing(12)
+        
+        self.multiprocessing_check = QCheckBox("Use multiprocessing for faster conversion")
         self.multiprocessing_check.setChecked(True)
-        options_layout.addWidget(self.multiprocessing_check)
-
-        # CPU cores selection
-        cores_layout = QHBoxLayout()
-        cores_layout.addWidget(QLabel("CPU cores:"))
+        perf_layout.addWidget(self.multiprocessing_check)
+        
+        cores_row = QHBoxLayout()
+        cores_row.setSpacing(12)
+        cores_label = QLabel("CPU Cores:")
+        cores_label.setStyleSheet("font-weight: 600;")
+        cores_row.addWidget(cores_label)
+        
         self.cores_spinbox = QSpinBox()
         self.cores_spinbox.setRange(1, multiprocessing.cpu_count())
         self.cores_spinbox.setValue(max(1, multiprocessing.cpu_count() - 1))
-        cores_layout.addWidget(self.cores_spinbox)
-        cores_layout.addStretch()
-        options_layout.addLayout(cores_layout)
-
-        # Connect multiprocessing checkbox to enable/disable cores spinbox
+        self.cores_spinbox.setMinimumWidth(70)
+        cores_row.addWidget(self.cores_spinbox)
+        
+        cores_hint = QLabel(f"(max: {multiprocessing.cpu_count()})")
+        cores_hint.setStyleSheet(f"color: {text_secondary};")
+        cores_row.addWidget(cores_hint)
+        cores_row.addStretch()
+        perf_layout.addLayout(cores_row)
+        
         self.multiprocessing_check.toggled.connect(self.cores_spinbox.setEnabled)
-
-        left_column.addWidget(options_group)
-
-        # ===== RIGHT COLUMN =====
-        right_column = QVBoxLayout()
-        right_column.setSpacing(10)
-
-        # Output section
-        output_group = QGroupBox("Output Settings")
-        output_layout = QVBoxLayout(output_group)
-        output_layout.setSpacing(10)
-        output_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Output directory and pattern
-        output_dir_layout = QHBoxLayout()
-        self.output_dir_label = QLabel("Output Directory:")
+        
+        options_layout.addWidget(perf_group)
+        options_layout.addStretch()
+        
+        # Wrap in scroll area
+        options_scroll = QScrollArea()
+        options_scroll.setWidgetResizable(True)
+        options_scroll.setFrameShape(QFrame.NoFrame)
+        options_scroll.setWidget(options_tab)
+        self.tab_widget.addTab(options_scroll, "⚙️ Options")
+        
+        # ========== TAB 3: OUTPUT ==========
+        output_tab = QWidget()
+        output_layout = QVBoxLayout(output_tab)
+        output_layout.setSpacing(16)
+        output_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Output location
+        out_group = QGroupBox("Output Location")
+        out_group_layout = QVBoxLayout(out_group)
+        out_group_layout.setSpacing(12)
+        
+        out_dir_row = QHBoxLayout()
+        out_dir_row.setSpacing(12)
+        out_dir_label = QLabel("Directory:")
+        out_dir_label.setStyleSheet("font-weight: 600;")
+        out_dir_label.setMinimumWidth(70)
+        out_dir_row.addWidget(out_dir_label)
+        
         self.output_dir_edit = QLineEdit()
         if self.current_file:
-            self.output_dir_edit.setText(os.path.dirname(self.current_file))
+            # Default to input_dir/hpc/
+            self.output_dir_edit.setText(os.path.join(os.path.dirname(self.current_file), "hpc"))
+        self.output_dir_edit.setPlaceholderText("Select output directory...")
+        out_dir_row.addWidget(self.output_dir_edit, 1)
+        
         self.output_dir_btn = QPushButton("Browse...")
         self.output_dir_btn.clicked.connect(self.browse_output_directory)
-        output_dir_layout.addWidget(self.output_dir_label)
-        output_dir_layout.addWidget(self.output_dir_edit, 1)
-        output_dir_layout.addWidget(self.output_dir_btn)
-        output_layout.addLayout(output_dir_layout)
-
-        output_pattern_layout = QHBoxLayout()
-        self.output_pattern_label = QLabel("Output Pattern:")
+        out_dir_row.addWidget(self.output_dir_btn)
+        out_group_layout.addLayout(out_dir_row)
+        
+        # Output pattern row
+        out_pattern_row = QHBoxLayout()
+        out_pattern_row.setSpacing(12)
+        out_pattern_label = QLabel("Pattern:")
+        out_pattern_label.setStyleSheet("font-weight: 600;")
+        out_pattern_label.setMinimumWidth(70)
+        out_pattern_row.addWidget(out_pattern_label)
+        
         self.output_pattern_edit = QLineEdit("hpc_*.fits")
         self.output_pattern_edit.setPlaceholderText("e.g., hpc_*.fits")
-        output_pattern_layout.addWidget(self.output_pattern_label)
-        output_pattern_layout.addWidget(self.output_pattern_edit, 1)
-        output_layout.addLayout(output_pattern_layout)
-
-        # Add a help text for pattern
-        pattern_help = QLabel(
-            "Use * in the pattern as a placeholder for the original filename."
+        out_pattern_row.addWidget(self.output_pattern_edit, 1)
+        out_group_layout.addLayout(out_pattern_row)
+        
+        output_layout.addWidget(out_group)
+        
+        # Pattern help
+        help_group = QGroupBox("Pattern Help")
+        help_layout = QVBoxLayout(help_group)
+        
+        help_text = QLabel(
+            "Use <b>*</b> as a placeholder for the original filename.\n\n"
+            "<b>Example:</b> Input <code>sun_2024.fits</code> with pattern <code>hpc_*.fits</code>\n"
+            "→ Output: <code>hpc_sun_2024.fits</code>"
         )
-        pattern_help.setStyleSheet("color: #BBB; font-style: italic;")
-        output_layout.addWidget(pattern_help)
-
-        # Add example section
-        example_group = QVBoxLayout()
-        example_title = QLabel("Example:")
-        example_title.setStyleSheet("font-weight: bold;")
-        example_label = QLabel("Input: myimage.fits → Output: hpc_myimage.fits")
-        example_label.setStyleSheet("color: #AAA; font-style: italic;")
-        example_group.addWidget(example_title)
-        example_group.addWidget(example_label)
-        output_layout.addLayout(example_group)
-
-        right_column.addWidget(output_group)
-
-        # Status text area
-        status_group = QGroupBox("Status / Results")
+        help_text.setWordWrap(True)
+        help_text.setStyleSheet(f"color: {text_secondary}; line-height: 1.5;")
+        help_layout.addWidget(help_text)
+        
+        output_layout.addWidget(help_group)
+        output_layout.addStretch()
+        
+        # Wrap in scroll area
+        output_scroll = QScrollArea()
+        output_scroll.setWidgetResizable(True)
+        output_scroll.setFrameShape(QFrame.NoFrame)
+        output_scroll.setWidget(output_tab)
+        self.tab_widget.addTab(output_scroll, "💾 Output")
+        
+        main_layout.addWidget(self.tab_widget, 1)
+        
+        # ========== STATUS PANEL (ALWAYS VISIBLE) ==========
+        status_group = QGroupBox("Status")
         status_layout = QVBoxLayout(status_group)
-        status_layout.setContentsMargins(10, 15, 10, 10)
-
+        status_layout.setContentsMargins(10, 12, 10, 10)
+        
         self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
-        self.status_text.setPlaceholderText("Status and results will appear here")
-        self.status_text.setMinimumHeight(250)  # Increased height for better visibility
-        status_layout.addWidget(self.status_text)
+        self.status_text.setPlaceholderText("Conversion status and results will appear here...")
+        self.status_text.setMinimumHeight(25)
+        self.status_text.setMaximumHeight(150)
+        status_layout.addWidget(self.status_text, 1)
 
-        right_column.addWidget(status_group)
+        # Progress Bar (initially hidden)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
+        status_layout.addWidget(self.progress_bar)
 
-        # Add columns to the layout
-        columns_layout.addLayout(left_column, 1)  # 1 is the stretch factor
-        columns_layout.addLayout(right_column, 1)  # 1 is the stretch factor
-
-        main_layout.addLayout(columns_layout)
-
-        # Dialog buttons
+        main_layout.addWidget(status_group) 
+        
+        # ========== DIALOG BUTTONS ==========
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+        
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.ok_button = button_box.button(QDialogButtonBox.Ok)
         self.ok_button.setText("Convert")
+        self.ok_button.setMinimumWidth(100)
+        
+        self.cancel_button = button_box.button(QDialogButtonBox.Cancel)
+        # We'll re-purpose the cancel button during processing
+        
         button_box.accepted.connect(self.convert_files)
         button_box.rejected.connect(self.reject)
-        main_layout.addWidget(button_box)
+        
+        button_layout.addStretch()
+        button_layout.addWidget(button_box)
+        
+        main_layout.addLayout(button_layout)
 
-        # Apply consistent styling to the dialog
-        self.setStyleSheet(
-            """
-            QGroupBox {
-                border: 1px solid #555555;
-                border-radius: 3px;
-                margin-top: 0.5em;
-                padding-top: 0.5em;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
-            }
-            QLabel {
-                margin-top: 2px;
-                margin-bottom: 2px;
-            }
-            QRadioButton, QCheckBox {
-                min-height: 20px;
-            }
-        """
-        )
 
     def browse_directory(self):
         """Browse for input directory"""
@@ -1985,9 +2808,9 @@ class HPCBatchConversionDialog(QDialog):
         if directory:
             self.dir_edit.setText(directory)
 
-            # Set output directory to match if not already set
-            if not self.output_dir_edit.text():
-                self.output_dir_edit.setText(directory)
+            # Set output directory to input_dir/hpc/ by default
+            if not self.output_dir_edit.text() or self.output_dir_edit.text().endswith("/hpc"):
+                self.output_dir_edit.setText(os.path.join(directory, "hpc"))
 
             # Preview files if pattern is already set
             self.preview_files()
@@ -2014,48 +2837,104 @@ class HPCBatchConversionDialog(QDialog):
         single_stokes = self.single_stokes_radio.isChecked()
         self.stokes_combo.setEnabled(single_stokes)
 
-    def preview_files(self):
-        """Show files that match the pattern in the list widget"""
-        self.files_list.clear()
-
+    def scan_files(self):
+        """Scan for matching files and show count (without opening preview)"""
         input_dir = self.dir_edit.text()
         pattern = self.pattern_edit.text()
 
         if not input_dir:
-            self.status_text.setPlainText("Please select an input directory.")
+            self.files_count_label.setText("⚠️ Select a directory first")
+            return
+
+        try:
+            input_pattern = os.path.join(input_dir, pattern)
+            matching_files = glob.glob(input_pattern)
+            count = len(matching_files)
+            
+            if count == 0:
+                self.files_count_label.setText("⚠️ No files found")
+                self.status_text.setPlainText(f"No files found matching: {pattern}")
+            else:
+                self.files_count_label.setText(f"✓ {count} file{'s' if count != 1 else ''} found")
+                self.status_text.setPlainText(f"Found {count} files matching the pattern.")
+        except Exception as e:
+            self.files_count_label.setText(f"⚠️ Error: {str(e)}")
+
+
+    def preview_files(self):
+        """Show files that match the pattern in a popup dialog"""
+        input_dir = self.dir_edit.text()
+        pattern = self.pattern_edit.text()
+
+        if not input_dir:
+            QMessageBox.warning(self, "No Directory", "Please select an input directory first.")
             return
 
         try:
             # Get matching files
             input_pattern = os.path.join(input_dir, pattern)
-            matching_files = glob.glob(input_pattern)
+            matching_files = sorted(glob.glob(input_pattern))
 
             if not matching_files:
-                self.status_text.setPlainText(
-                    f"No files found matching pattern: {input_pattern}"
+                QMessageBox.information(
+                    self, "No Files Found",
+                    f"No files found matching pattern:\n{input_pattern}"
                 )
                 return
 
-            # Add files to list, showing only basenames but storing full paths as item data
-            for file_path in sorted(matching_files):
+            # Show files in a popup dialog
+            preview_dialog = QDialog(self)
+            preview_dialog.setWindowTitle(f"Preview: {len(matching_files)} files")
+            preview_dialog.setMinimumSize(500, 400)
+            
+            layout = QVBoxLayout(preview_dialog)
+            layout.setSpacing(12)
+            layout.setContentsMargins(16, 16, 16, 16)
+            
+            info_label = QLabel(f"Found <b>{len(matching_files)}</b> files matching <code>{pattern}</code>")
+            layout.addWidget(info_label)
+            
+            file_list = QListWidget()
+            file_list.setAlternatingRowColors(True)
+            for file_path in matching_files:
                 basename = os.path.basename(file_path)
                 item = QListWidgetItem(basename)
-                item.setToolTip(file_path)  # Show full path on hover
-                item.setData(Qt.UserRole, file_path)  # Store full path as data
-                self.files_list.addItem(item)
-
-            self.status_text.setPlainText(
-                f"Found {len(matching_files)} files matching the pattern."
-            )
+                item.setToolTip(file_path)
+                file_list.addItem(item)
+            layout.addWidget(file_list, 1)
+            
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(preview_dialog.accept)
+            btn_layout = QHBoxLayout()
+            btn_layout.addStretch()
+            btn_layout.addWidget(close_btn)
+            layout.addLayout(btn_layout)
+            
+            preview_dialog.exec_()
+            
+            self.status_text.setPlainText(f"Found {len(matching_files)} files matching the pattern.")
+            
         except Exception as e:
             self.status_text.setPlainText(f"Error previewing files: {str(e)}")
-            # Print the full error to console for debugging
             traceback.print_exc()
+
+    def _get_matching_files(self):
+        """Get list of files matching the current pattern"""
+        input_dir = self.dir_edit.text()
+        pattern = self.pattern_edit.text()
+        
+        if not input_dir:
+            return []
+        
+        input_pattern = os.path.join(input_dir, pattern)
+        return sorted(glob.glob(input_pattern))
 
     def convert_files(self):
         """Convert the selected files to helioprojective coordinates"""
-        # Get input files
-        if self.files_list.count() == 0:
+        # Get input files from pattern
+        files_to_process = self._get_matching_files()
+        
+        if not files_to_process:
             QMessageBox.warning(
                 self,
                 "No Files Found",
@@ -2063,23 +2942,9 @@ class HPCBatchConversionDialog(QDialog):
             )
             return
 
-        # Get selected files or use all if none selected
-        selected_items = self.files_list.selectedItems()
-        if selected_items:
-            # Get full paths from item data
-            files_to_process = [item.data(Qt.UserRole) for item in selected_items]
-            self.status_text.appendPlainText(
-                f"Processing {len(files_to_process)} selected files."
-            )
-        else:
-            # Get full paths from item data for all items
-            files_to_process = [
-                self.files_list.item(i).data(Qt.UserRole)
-                for i in range(self.files_list.count())
-            ]
-            self.status_text.appendPlainText(
-                f"Processing all {len(files_to_process)} files."
-            )
+        self.status_text.appendPlainText(
+            f"Processing {len(files_to_process)} files."
+        )
 
         # Get output directory and pattern
         output_dir = self.output_dir_edit.text()
@@ -2093,34 +2958,46 @@ class HPCBatchConversionDialog(QDialog):
             )
             return
 
+        # Create output directory if it doesn't exist
+        if not os.path.exists(output_dir):
+            try:
+                os.makedirs(output_dir)
+                self.status_text.appendPlainText(f"Created output directory: {output_dir}")
+            except OSError as e:
+                QMessageBox.critical(
+                    self,
+                    "Cannot Create Directory",
+                    f"Failed to create output directory:\n{output_dir}\n\nError: {e}",
+                )
+                return
+
         # Get processing options
         use_multiprocessing = self.multiprocessing_check.isChecked()
         max_cores = self.cores_spinbox.value() if use_multiprocessing else 1
         full_stokes = self.full_stokes_radio.isChecked()
         stokes_param = self.stokes_combo.currentText() if not full_stokes else None
 
-        # Prepare progress dialog
-        progress_dialog = QProgressDialog(
-            "Converting files to helioprojective coordinates...",
-            "Cancel",
-            0,
-            len(files_to_process),
-            self,
-        )
-        progress_dialog.setWindowTitle("Batch Conversion")
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.show()
-
         # Import modules needed for processing
         import multiprocessing
         import time
         from .helioprojective import convert_and_save_hpc
 
+        # Setup Progress UI
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.ok_button.setEnabled(False)
+        self.tab_widget.setEnabled(False)
+        try: self.cancel_button.clicked.disconnect() 
+        except: pass
+        self.cancel_button.clicked.connect(self._cancel_processing)
+        self.cancel_button.setEnabled(True)
+        self._processing_cancelled = False
+        
+        QApplication.processEvents()
+
         # Use a worker thread or process for conversion
         try:
             self.status_text.appendPlainText("Starting batch conversion...")
-            self.ok_button.setEnabled(False)
-            QApplication.processEvents()
 
             # Initialize counters
             success_count = 0
@@ -2171,7 +3048,7 @@ class HPCBatchConversionDialog(QDialog):
 
                     # Set up progress tracking
                     total_tasks = len(tasks)
-                    progress_dialog.setMaximum(total_tasks)
+                    self.progress_bar.setRange(0, total_tasks)
 
                     # Create process pool and start processing
                     pool = multiprocessing.Pool(processes=max_cores)
@@ -2182,7 +3059,7 @@ class HPCBatchConversionDialog(QDialog):
 
                     # Monitor progress while processing
                     while not result_objects.ready():
-                        if progress_dialog.wasCanceled():
+                        if self._processing_cancelled:
                             pool.terminate()
                             self.status_text.appendPlainText(
                                 "Operation canceled by user."
@@ -2192,7 +3069,7 @@ class HPCBatchConversionDialog(QDialog):
                         QApplication.processEvents()
 
                     # Get results if not canceled
-                    if not progress_dialog.wasCanceled():
+                    if not self._processing_cancelled:
                         results = result_objects.get()
 
                         # Process results
@@ -2240,12 +3117,12 @@ class HPCBatchConversionDialog(QDialog):
                                     )
 
                         # Update progress to completion
-                        progress_dialog.setValue(total_tasks)
+                        self.progress_bar.setValue(total_tasks)
                 else:
                     # Sequential processing for multi-stokes
                     for i, input_file in enumerate(files_to_process):
                         # Check if canceled
-                        if progress_dialog.wasCanceled():
+                        if self._processing_cancelled:
                             self.status_text.appendPlainText(
                                 "Operation canceled by user."
                             )
@@ -2265,8 +3142,8 @@ class HPCBatchConversionDialog(QDialog):
                         output_path = os.path.join(output_dir, output_filename)
 
                         # Update progress dialog
-                        progress_dialog.setValue(i)
-                        progress_dialog.setLabelText(f"Converting: {base_filename}")
+                        self.progress_bar.setValue(i)
+
                         QApplication.processEvents()
 
                         self.status_text.appendPlainText(
@@ -2343,7 +3220,7 @@ class HPCBatchConversionDialog(QDialog):
 
                     # Set up progress tracking
                     total_tasks = len(tasks)
-                    progress_dialog.setMaximum(total_tasks)
+                    self.progress_bar.setRange(0, total_tasks)
 
                     # Create process pool
                     pool = multiprocessing.Pool(processes=max_cores)
@@ -2354,7 +3231,7 @@ class HPCBatchConversionDialog(QDialog):
 
                     # Monitor progress while processing
                     while not result_objects.ready():
-                        if progress_dialog.wasCanceled():
+                        if self._processing_cancelled:
                             pool.terminate()
                             self.status_text.appendPlainText(
                                 "Operation canceled by user."
@@ -2364,7 +3241,7 @@ class HPCBatchConversionDialog(QDialog):
                         QApplication.processEvents()
 
                     # Process results if not canceled
-                    if not progress_dialog.wasCanceled():
+                    if not self._processing_cancelled:
                         results = result_objects.get()
 
                         # Process results
@@ -2384,12 +3261,12 @@ class HPCBatchConversionDialog(QDialog):
                                 )
 
                         # Update progress to completion
-                        progress_dialog.setValue(total_tasks)
+                        self.progress_bar.setValue(total_tasks)
                 else:
                     # Sequential processing for single stokes
                     for i, input_file in enumerate(files_to_process):
                         # Check if canceled
-                        if progress_dialog.wasCanceled():
+                        if self._processing_cancelled:
                             self.status_text.appendPlainText(
                                 "Operation canceled by user."
                             )
@@ -2409,8 +3286,8 @@ class HPCBatchConversionDialog(QDialog):
                         output_path = os.path.join(output_dir, output_filename)
 
                         # Update progress dialog
-                        progress_dialog.setValue(i)
-                        progress_dialog.setLabelText(f"Converting: {base_filename}")
+                        self.progress_bar.setValue(i)
+
                         QApplication.processEvents()
 
                         self.status_text.appendPlainText(
@@ -2441,7 +3318,7 @@ class HPCBatchConversionDialog(QDialog):
                             self.status_text.appendPlainText(f"  - Error: {str(e)}")
 
             # Complete the progress
-            progress_dialog.setValue(progress_dialog.maximum())
+            self.progress_bar.setValue(self.progress_bar.maximum())
 
             # Show completion message
             summary = (
@@ -2465,8 +3342,21 @@ class HPCBatchConversionDialog(QDialog):
                 pool.join()
 
             # Close progress dialog and re-enable button
-            progress_dialog.close()
+            self.progress_bar.setVisible(False)
             self.ok_button.setEnabled(True)
+            self.tab_widget.setEnabled(True)
+            
+            # Reconnect cancel button to reject
+            try: self.cancel_button.clicked.disconnect() 
+            except: pass
+            self.cancel_button.clicked.connect(self.reject)
+
+
+    def _cancel_processing(self):
+        """Signal processing cancellation"""
+        self._processing_cancelled = True
+        self.status_text.appendPlainText("Stopping... please wait.")
+        self.cancel_button.setEnabled(False)
 
 
 class PlotCustomizationDialog(QDialog):
@@ -3025,3 +3915,417 @@ class PlotCustomizationDialog(QDialog):
             "pad_hspace": self.pad_hspace.value(),
             "use_tight_layout": self.use_tight_layout.isChecked(),
         }
+
+
+class BeamSettingsDialog(QDialog):
+    """Dialog for configuring beam display settings."""
+
+    def __init__(self, parent=None, beam_style=None):
+        super().__init__(parent)
+        self.setWindowTitle("Beam Settings")
+        self.setMinimumWidth(350)
+        self.beam_style = beam_style or {}
+        self.parent_viewer = parent
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Color selection
+        color_group = QGroupBox("Colors")
+        color_layout = QGridLayout(color_group)
+
+        # Edge color
+        edge_label = QLabel("Edge Color:")
+        self.edge_combo = QComboBox()
+        colors = ["black", "white", "red", "green", "blue", "cyan", "magenta", "yellow", "gray"]
+        for color in colors:
+            self.edge_combo.addItem(color)
+        self.edge_combo.setCurrentText(self.beam_style.get("edgecolor", "black"))
+        color_layout.addWidget(edge_label, 0, 0)
+        color_layout.addWidget(self.edge_combo, 0, 1)
+
+        # Face color
+        face_label = QLabel("Fill Color:")
+        self.face_combo = QComboBox()
+        for color in colors:
+            self.face_combo.addItem(color)
+        self.face_combo.setCurrentText(self.beam_style.get("facecolor", "white"))
+        color_layout.addWidget(face_label, 1, 0)
+        color_layout.addWidget(self.face_combo, 1, 1)
+        layout.addWidget(color_group)
+
+        # Style settings
+        style_group = QGroupBox("Style")
+        style_layout = QGridLayout(style_group)
+
+        # Line width
+        linewidth_label = QLabel("Edge Width:")
+        self.linewidth_spinbox = QDoubleSpinBox()
+        self.linewidth_spinbox.setRange(0.5, 5.0)
+        self.linewidth_spinbox.setSingleStep(0.5)
+        self.linewidth_spinbox.setValue(self.beam_style.get("linewidth", 1.5))
+        style_layout.addWidget(linewidth_label, 0, 0)
+        style_layout.addWidget(self.linewidth_spinbox, 0, 1)
+
+        # Opacity
+        alpha_label = QLabel("Opacity:")
+        self.alpha_spinbox = QDoubleSpinBox()
+        self.alpha_spinbox.setRange(0.1, 1.0)
+        self.alpha_spinbox.setSingleStep(0.1)
+        self.alpha_spinbox.setValue(self.beam_style.get("alpha", 0.4))
+        style_layout.addWidget(alpha_label, 1, 0)
+        style_layout.addWidget(self.alpha_spinbox, 1, 1)
+        layout.addWidget(style_group)
+
+        # Create button box with Apply and Close
+        button_box = QDialogButtonBox()
+        apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
+        close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
+        apply_btn.clicked.connect(self.on_apply)
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(button_box)
+
+    def on_apply(self):
+        """Apply settings without closing dialog."""
+        try:
+            if self.parent_viewer:
+                self.parent_viewer.beam_style["edgecolor"] = self.edge_combo.currentText()
+                self.parent_viewer.beam_style["facecolor"] = self.face_combo.currentText()
+                self.parent_viewer.beam_style["linewidth"] = self.linewidth_spinbox.value()
+                self.parent_viewer.beam_style["alpha"] = self.alpha_spinbox.value()
+                self.parent_viewer.schedule_plot()
+                self.parent_viewer.show_status_message("Beam settings applied")
+        except RuntimeError:
+            self.close()
+        except Exception as e:
+            if self.parent_viewer:
+                self.parent_viewer.show_status_message(f"Error applying settings: {e}")
+
+    def get_settings(self):
+        """Return the current settings."""
+        return {
+            "edgecolor": self.edge_combo.currentText(),
+            "facecolor": self.face_combo.currentText(),
+            "linewidth": self.linewidth_spinbox.value(),
+            "alpha": self.alpha_spinbox.value(),
+        }
+
+
+class GridSettingsDialog(QDialog):
+    """Dialog for configuring grid display settings."""
+
+    def __init__(self, parent=None, grid_style=None):
+        super().__init__(parent)
+        self.setWindowTitle("Grid Settings")
+        self.setMinimumWidth(350)
+        self.grid_style = grid_style or {}
+        self.parent_viewer = parent
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Color selection
+        color_group = QGroupBox("Color")
+        color_layout = QHBoxLayout(color_group)
+
+        color_label = QLabel("Grid Color:")
+        self.color_combo = QComboBox()
+        colors = ["white", "black", "red", "green", "blue", "cyan", "magenta", "yellow", "gray"]
+        for color in colors:
+            self.color_combo.addItem(color)
+        self.color_combo.setCurrentText(self.grid_style.get("color", "white"))
+        color_layout.addWidget(color_label)
+        color_layout.addWidget(self.color_combo)
+        layout.addWidget(color_group)
+
+        # Style settings
+        style_group = QGroupBox("Style")
+        style_layout = QGridLayout(style_group)
+
+        # Line style
+        linestyle_label = QLabel("Line Style:")
+        self.linestyle_combo = QComboBox()
+        linestyles = [
+            ("-", "Solid"),
+            ("--", "Dashed"),
+            (":", "Dotted"),
+            ("-.", "Dash-dot"),
+        ]
+        for style_code, style_name in linestyles:
+            self.linestyle_combo.addItem(style_name, style_code)
+
+        # Set current line style
+        current_style = self.grid_style.get("linestyle", "--")
+        for i in range(self.linestyle_combo.count()):
+            if self.linestyle_combo.itemData(i) == current_style:
+                self.linestyle_combo.setCurrentIndex(i)
+                break
+
+        style_layout.addWidget(linestyle_label, 0, 0)
+        style_layout.addWidget(self.linestyle_combo, 0, 1)
+
+        # Opacity
+        alpha_label = QLabel("Opacity:")
+        self.alpha_spinbox = QDoubleSpinBox()
+        self.alpha_spinbox.setRange(0.1, 1.0)
+        self.alpha_spinbox.setSingleStep(0.1)
+        self.alpha_spinbox.setValue(self.grid_style.get("alpha", 0.5))
+        style_layout.addWidget(alpha_label, 1, 0)
+        style_layout.addWidget(self.alpha_spinbox, 1, 1)
+        layout.addWidget(style_group)
+
+        # Create button box with Apply and Close
+        button_box = QDialogButtonBox()
+        apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
+        close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
+        apply_btn.clicked.connect(self.on_apply)
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(button_box)
+
+    def on_apply(self):
+        """Apply settings without closing dialog."""
+        try:
+            if self.parent_viewer:
+                self.parent_viewer.grid_style["color"] = self.color_combo.currentText()
+                self.parent_viewer.grid_style["linestyle"] = self.linestyle_combo.currentData()
+                self.parent_viewer.grid_style["alpha"] = self.alpha_spinbox.value()
+                self.parent_viewer.schedule_plot()
+                self.parent_viewer.show_status_message("Grid settings applied")
+        except RuntimeError:
+            self.close()
+        except Exception as e:
+            if self.parent_viewer:
+                self.parent_viewer.show_status_message(f"Error applying settings: {e}")
+
+    def get_settings(self):
+        """Return the current settings."""
+        return {
+            "color": self.color_combo.currentText(),
+            "linestyle": self.linestyle_combo.currentData(),
+            "alpha": self.alpha_spinbox.value(),
+        }
+
+
+class PreferencesDialog(QDialog):
+    """Dialog for application preferences including UI scale settings."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Preferences")
+        self.setMinimumWidth(400)
+        
+        # Import theme manager for styling
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        palette = theme_manager.palette
+        is_dark = theme_manager.is_dark
+        
+        # Get current settings
+        from PyQt5.QtCore import QSettings
+        self.settings = QSettings("SolarViewer", "SolarViewer")
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # UI Scale group
+        scale_group = QGroupBox("UI Scale")
+        scale_layout = QVBoxLayout(scale_group)
+        
+        # Description label
+        desc_label = QLabel(
+            "Adjust the UI scale factor for high-DPI displays.\n"
+            "Default is 1.0 (100%). Increase for larger UI elements."
+        )
+        desc_label.setWordWrap(True)
+        scale_layout.addWidget(desc_label)
+        
+        # Scale slider with value display
+        slider_layout = QHBoxLayout()
+        
+        # Scale slider - use 5% increments (values 50-200 representing 0.50-2.00)
+        from PyQt5.QtWidgets import QSlider
+        self.scale_slider = QSlider(Qt.Horizontal)
+        self.scale_slider.setMinimum(50)   # 0.5x
+        self.scale_slider.setMaximum(200)  # 2.0x
+        self.scale_slider.setSingleStep(5)  # 5% increments when using arrows
+        self.scale_slider.setPageStep(10)   # 10% increments when clicking track
+        self.scale_slider.setTickInterval(25)  # Tick marks every 25%
+        self.scale_slider.setTickPosition(QSlider.TicksBelow)
+        
+        # Load current scale value
+        current_scale = self.settings.value("ui_scale_factor", 1.0, type=float)
+        self.scale_slider.setValue(int(current_scale * 100))
+        
+        # Spinbox for precise value entry
+        self.scale_spinbox = QDoubleSpinBox()
+        self.scale_spinbox.setRange(0.5, 2.0)
+        self.scale_spinbox.setSingleStep(0.05)
+        self.scale_spinbox.setDecimals(2)
+        self.scale_spinbox.setSuffix("x")
+        self.scale_spinbox.setValue(current_scale)
+        self.scale_spinbox.setFixedWidth(75)
+        
+        # Connect slider and spinbox to sync values
+        self.scale_slider.valueChanged.connect(self._on_slider_changed)
+        self.scale_spinbox.valueChanged.connect(self._on_spinbox_changed)
+        
+        slider_layout.addWidget(QLabel("0.5x"))
+        slider_layout.addWidget(self.scale_slider, 1)
+        slider_layout.addWidget(QLabel("2.0x"))
+        slider_layout.addWidget(self.scale_spinbox)
+        
+        scale_layout.addLayout(slider_layout)
+        
+        # Preset buttons row
+        preset_layout = QHBoxLayout()
+        preset_layout.addWidget(QLabel("Presets:"))
+        
+        presets = [("75%", 0.75), ("100%", 1.0), ("125%", 1.25), ("150%", 1.5), ("175%", 1.75)]
+        for label, value in presets:
+            btn = QPushButton(label)
+            btn.setFixedWidth(50)
+            btn.clicked.connect(lambda checked, v=value: self._set_scale(v))
+            preset_layout.addWidget(btn)
+        preset_layout.addStretch()
+        scale_layout.addLayout(preset_layout)
+        
+        layout.addWidget(scale_group)
+        
+        # Restart notice
+        notice_frame = QFrame()
+        notice_frame.setFrameShape(QFrame.StyledPanel)
+        '''notice_frame.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255, 193, 7, 0.15);
+                border: 1px solid rgba(255, 193, 7, 0.5);
+                border-radius: 6px;
+                padding: 8px;
+            }
+            QLabel {
+                color: inherit;
+            }
+        """)'''
+        notice_layout = QHBoxLayout(notice_frame)
+        notice_layout.setContentsMargins(10, 8, 10, 8)
+        notice_icon = QLabel("⚠️")
+        notice_icon.setStyleSheet("font-size: 16px;")
+        notice_text = QLabel("Scale changes require application restart to take effect.")
+        notice_layout.addWidget(notice_icon)
+        notice_layout.addWidget(notice_text, 1)
+        layout.addWidget(notice_frame)
+        
+        layout.addStretch()
+        
+        # Button box
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self._save_and_close)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+    
+    def _on_slider_changed(self, value):
+        """Update spinbox when slider value changes."""
+        scale = value / 100.0
+        # Block signals to prevent feedback loop
+        self.scale_spinbox.blockSignals(True)
+        self.scale_spinbox.setValue(scale)
+        self.scale_spinbox.blockSignals(False)
+    
+    def _on_spinbox_changed(self, value):
+        """Update slider when spinbox value changes."""
+        # Block signals to prevent feedback loop
+        self.scale_slider.blockSignals(True)
+        self.scale_slider.setValue(int(value * 100))
+        self.scale_slider.blockSignals(False)
+    
+    def _set_scale(self, value):
+        """Set scale from preset button."""
+        self.scale_spinbox.setValue(value)  # This will trigger slider update via signal
+    
+    def _save_and_close(self):
+        """Save settings and close dialog."""
+        scale = self.scale_spinbox.value()  # Use spinbox for more precise value
+        current_scale = self.settings.value("ui_scale_factor", 1.0, type=float)
+        
+        self.settings.setValue("ui_scale_factor", scale)
+        
+        # If scale changed, offer to restart
+        if abs(scale - current_scale) > 0.01:
+            reply = QMessageBox.question(
+                self,
+                "Restart Required",
+                f"UI scale changed to {scale:.2f}x.\n\n"
+                "The application needs to restart for changes to take effect.\n\n"
+                "Would you like to restart now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                # Restart the application
+                import sys
+                import os
+                
+                # Accept dialog first
+                self.accept()
+                
+                # Get the application instance and quit
+                app = QApplication.instance()
+                if app:
+                    # Schedule restart
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(100, lambda: self._do_restart())
+                return
+        
+        self.accept()
+    
+    def _do_restart(self):
+        """Perform application restart."""
+        import sys
+        import os
+        
+        # Get the current executable and arguments
+        python = sys.executable
+        args = sys.argv[:]
+        
+        # Quit current app
+        app = QApplication.instance()
+        if app:
+            app.quit()
+        
+        # Start new instance
+        os.execv(python, [python] + args)
+
+def process_single_file_phase_shift(args):
+    """
+    Wrapper for multiprocessing: instantiates SolarPhaseCenter and processes file.
+    
+    Parameters
+    ----------
+    args : tuple
+        Tuple containing (file_path, ra, dec, stokes, output_pattern, visual_center, phase_result)
+        
+    Returns
+    -------
+    tuple
+        (success, file_path, error_message)
+    """
+    try:
+        from .move_phasecenter import SolarPhaseCenter
+        # Instantiate fresh for this process
+        spc = SolarPhaseCenter()
+        return spc.process_single_file(args)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Try to extract filename from args if possible
+        filename = args[0] if args and len(args) > 0 else "Unknown"
+        return (False, filename, f"Process Error: {str(e)}")

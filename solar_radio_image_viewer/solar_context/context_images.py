@@ -26,18 +26,18 @@ class ContextImage:
 # Format: (nickname, layer_path, description)
 # layer_path format: [observatory,instrument,detector,measurement,visible,opacity]
 ESSENTIAL_INSTRUMENTS = [
-    ("AIA 304", "[SDO,AIA,AIA,304,1,100]", "SDO", "304Å Chromosphere & Transition Region"),
-    ("AIA 193", "[SDO,AIA,AIA,193,1,100]", "SDO", "193Å Corona & Hot Flare Plasma"),
-    ("AIA 171", "[SDO,AIA,AIA,171,1,100]", "SDO", "171Å Quiet Corona"),
-    ("AIA 335", "[SDO,AIA,AIA,335,1,100]", "SDO", "335Å Active Region Corona"),
-    ("HMI Mag", "[SDO,HMI,HMI,magnetogram,1,100]", "SDO", "Magnetogram (Magnetic Field)"),
-    ("HMI Int", "[SDO,HMI,HMI,continuum,1,100]", "SDO", "Continuum (Photosphere)"),
-    ("LASCO C2", "[SOHO,LASCO,C2,white-light,1,100]", "SOHO", "Inner Coronagraph (2-6 Rs)"),
-    ("LASCO C3", "[SOHO,LASCO,C3,white-light,1,100]", "SOHO", "Outer Coronagraph (4-30 Rs)"),
-    ("SUVI 171", "[GOES,SUVI,SUVI,171,1,100]", "GOES", "171Å Corona"),
-    ("SUVI 304", "[GOES,SUVI,SUVI,304,1,100]", "GOES", "304Å Chromosphere"),
-    ("EUVI-A 171", "[STEREO_A,SECCHI,EUVI,171,1,100]", "STEREO_A", "171Å from STEREO-A"),
-    ("EUVI-A 304", "[STEREO_A,SECCHI,EUVI,304,1,100]", "STEREO_A", "304Å from STEREO-A"),
+    ("AIA 304", "[SDO,AIA,AIA,304,1,100]", "SDO", "304Å Chromosphere & Transition Region (He II)"),
+    ("AIA 193", "[SDO,AIA,AIA,193,1,100]", "SDO", "193Å Corona & Flare Plasma (Fe XII/XXIV)"),
+    ("AIA 171", "[SDO,AIA,AIA,171,1,100]", "SDO", "171Å Upper Transition Region & Quiet Corona (Fe IX)"),
+    ("AIA 335", "[SDO,AIA,AIA,335,1,100]", "SDO", "335Å Active Region Corona (Fe XVI)"),
+    ("HMI Mag", "[SDO,HMI,HMI,magnetogram,1,100]", "SDO", "Magnetogram (Photospheric Magnetic Field)"),
+    ("HMI Int", "[SDO,HMI,HMI,continuum,1,100]", "SDO", "Continuum Intensity (Photosphere, Sunspots)"),
+    ("LASCO C2", "[SOHO,LASCO,C2,white-light,1,100]", "SOHO", "Inner Coronagraph (2-6 R☉, White Light)"),
+    ("LASCO C3", "[SOHO,LASCO,C3,white-light,1,100]", "SOHO", "Outer Coronagraph (4-30 R☉, White Light)"),
+    ("SUVI 171", "[GOES,SUVI,SUVI,171,1,100]", "GOES", "171Å Upper Transition Region & Corona"),
+    ("SUVI 304", "[GOES,SUVI,SUVI,304,1,100]", "GOES", "304Å Chromosphere & Transition Region"),
+    ("EUVI-A 171", "[STEREO_A,SECCHI,EUVI,171,1,100]", "STEREO_A", "171Å Corona from STEREO-A (Far-side view)"),
+    ("EUVI-A 304", "[STEREO_A,SECCHI,EUVI,304,1,100]", "STEREO_A", "304Å Chromosphere from STEREO-A (Far-side view)"),
 ]
 
 def fetch_from_helioviewer(event_date: date) -> List[ContextImage]:

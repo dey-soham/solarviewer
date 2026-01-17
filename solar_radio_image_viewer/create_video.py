@@ -101,6 +101,25 @@ def ensure_even_dimensions(image):
     return image
 
 
+
+def canvas_to_rgb_array(canvas):
+    """
+    Convert FigureCanvas to RGB numpy array, handling Matplotlib version differences.
+    """
+    width, height = canvas.get_width_height()
+    try:
+        # Try newer API first (Matplotlib 3.1+)
+        buf = canvas.buffer_rgba()
+        img_data = np.frombuffer(buf, dtype=np.uint8)
+        img_data = img_data.reshape(height, width, 4)
+        return img_data[:, :, :3]  # Return RGB
+    except AttributeError:
+        # Fallback for older Matplotlib
+        img_data = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
+        img_data = img_data.reshape(height, width, 3)
+        return img_data
+
+
 def create_error_frame(options, error_msg="Error loading frame", frame_idx=0, filename=""):
     """
     Create a blank frame with axis and error message when data loading fails.
@@ -143,10 +162,9 @@ def create_error_frame(options, error_msg="Error loading frame", frame_idx=0, fi
     canvas.draw()
     
     # Convert to numpy array
-    width, height = fig.canvas.get_width_height()
-    image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    image = image.reshape(height, width, 3)
+    image = canvas_to_rgb_array(fig.canvas)
     
+
     plt.close(fig)
     
     return image
@@ -737,15 +755,9 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
         canvas.draw()
 
         # Convert to numpy array
-        try:
-            img_data = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
-            img_data = img_data.reshape(canvas.get_width_height()[::-1] + (3,))
-        except AttributeError:
-            # Compatibility issue with newer versions of Matplotlib
-            img_data = np.frombuffer(canvas.buffer_rgba(), dtype=np.uint8)
-            img_data = img_data.reshape(canvas.get_width_height()[::-1] + (4,))
-            # Convert RGBA to RGB by discarding the alpha channel
-            img_data = img_data[:, :, :3]
+        # Convert to numpy array
+        img_data = canvas_to_rgb_array(canvas)
+
 
         # Clean up
         plt.close(fig)

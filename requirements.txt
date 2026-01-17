@@ -35,3 +35,5 @@ opencv-python-headless
 # Video creation dependencies
 imageio[ffmpeg]
 
+# Remote mode (SSH/SFTP access)
+paramiko>=3.0.0

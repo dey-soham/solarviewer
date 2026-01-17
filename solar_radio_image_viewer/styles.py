@@ -1,7 +1,7 @@
 # Theme palettes for the Solar Radio Image Viewer
 # Supports both dark and light modes with modern, premium styling
 
-import pkg_resources
+import os
 from PyQt5.QtGui import QFontDatabase, QFont
 from PyQt5.QtWidgets import QApplication
 
@@ -28,9 +28,10 @@ def load_bundled_fonts():
     
     for font_file in font_files:
         try:
-            font_path = pkg_resources.resource_filename(
-                "solar_radio_image_viewer", f"assets/{font_file}"
-            )
+            # Use os.path instead of pkg_resources for speed
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            font_path = os.path.join(base_dir, "assets", font_file)
+            
             font_id = font_db.addApplicationFont(font_path)
             if font_id != -1:
                 families = font_db.applicationFontFamilies(font_id)
@@ -39,7 +40,15 @@ def load_bundled_fonts():
                     loaded_any = True
         except Exception as e:
             print(f"Could not load font {font_file}: {e}")
-    
+
+    # Load Noto Emoji as fallback for emoji characters
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        emoji_path = os.path.join(base_dir, "assets", "NotoEmoji-Regular.ttf")
+        font_db.addApplicationFont(emoji_path)
+    except Exception as e:
+        print(f"Could not load emoji font: {e}")
+
     _fonts_loaded = True
     
     if loaded_any:
@@ -111,6 +120,18 @@ LIGHT_PALETTE = {
 def get_stylesheet(palette, is_dark=True):
     """Generate the complete stylesheet for the given palette."""
     
+    # Get asset path for arrow images
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        suffix = '_light' if not is_dark else ''
+        
+        arrow_up = os.path.join(base_dir, "assets", f"spinbox_up{suffix}.png").replace('\\', '/')
+        arrow_down = os.path.join(base_dir, "assets", f"spinbox_down{suffix}.png").replace('\\', '/')
+        
+    except Exception:
+        arrow_up = ""
+        arrow_down = ""
+    
     # Adjust some colors based on theme
     input_bg = palette["base"]
     input_text = palette.get("input_text", palette["text"])
@@ -125,7 +146,7 @@ def get_stylesheet(palette, is_dark=True):
     return f"""
     /* ===== GLOBAL STYLES ===== */
     QWidget {{
-        font-family: 'Inter', 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
+        font-family: 'Inter', 'Noto Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
         font-size: 11pt;
         color: {palette['text']};
     }}
@@ -247,7 +268,7 @@ def get_stylesheet(palette, is_dark=True):
         border-radius: 5px;
         padding: 2px 6px;
         min-height: 20px;
-        font-size: 10pt;
+        font-size: 11pt;
         selection-background-color: {palette['highlight']};
     }}
     
@@ -268,6 +289,45 @@ def get_stylesheet(palette, is_dark=True):
         font-style: italic;
     }}
     
+    /* Spinbox buttons with image-based arrows */
+    QSpinBox::up-button, QDoubleSpinBox::up-button {{
+        subcontrol-origin: border;
+        subcontrol-position: top right;
+        width: 16px;
+        border-left: 1px solid {border_light};
+        border-top-right-radius: 4px;
+        background-color: {palette['button']};
+    }}
+    
+    QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {{
+        background-color: {palette['button_hover']};
+    }}
+    
+    QSpinBox::down-button, QDoubleSpinBox::down-button {{
+        subcontrol-origin: border;
+        subcontrol-position: bottom right;
+        width: 16px;
+        border-left: 1px solid {border_light};
+        border-bottom-right-radius: 4px;
+        background-color: {palette['button']};
+    }}
+    
+    QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+        background-color: {palette['button_hover']};
+    }}
+    
+    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+        image: url({arrow_up});
+        width: 10px;
+        height: 6px;
+    }}
+    
+    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+        image: url({arrow_down});
+        width: 10px;
+        height: 6px;
+    }}
+    
     QComboBox {{
         background-color: {input_bg};
         color: {input_text};
@@ -275,7 +335,7 @@ def get_stylesheet(palette, is_dark=True):
         border-radius: 5px;
         padding: 2px 6px;
         min-height: 20px;
-        font-size: 10pt;
+        font-size: 11pt;
     }}
     
     QComboBox:hover {{
@@ -287,7 +347,7 @@ def get_stylesheet(palette, is_dark=True):
         border-width: 2px;
     }}
     
-    QComboBox::drop-down {{
+    /*QComboBox::drop-down {{
         border: none;
         width: 28px;
         border-left: 1px solid {border_light};
@@ -298,7 +358,7 @@ def get_stylesheet(palette, is_dark=True):
     QComboBox::down-arrow {{
         width: 12px;
         height: 12px;
-    }}
+    }}*/
     
     QComboBox QAbstractItemView {{
         background-color: {surface_elevated};
@@ -346,7 +406,7 @@ def get_stylesheet(palette, is_dark=True):
     
     /* ===== TABLE WIDGET ===== */
     QTableWidget {{
-        font-size: 10pt;
+        font-size: 11pt;
         background-color: {palette['base']};
         alternate-background-color: {palette['surface']};
         gridline-color: {border_light};
@@ -358,7 +418,7 @@ def get_stylesheet(palette, is_dark=True):
     QTableWidget QHeaderView::section {{
         background-color: {palette['button']};
         color: {palette['text']};
-        font-size: 9pt;
+        font-size: 10pt;
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.5px;
@@ -397,7 +457,7 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {palette['surface']};
         border: 1px solid {palette['border']};
         border-radius: 6px;
-        font-size: 11pt;
+        font-size: 10pt;
     }}
     
     /* Secondary text - for hints and descriptions */
@@ -523,16 +583,18 @@ def get_stylesheet(palette, is_dark=True):
     QToolBar {{
         background-color: {palette.get('toolbar_bg', palette['surface'])};
         border: none;
-        padding: 4px;
-        spacing: 4px;
+        padding: 2px;
+        spacing: 2px;
+        max-height: 32px;
     }}
     
     QToolButton {{
         background-color: transparent;
         color: {"#ffffff" if not is_dark and 'toolbar_bg' in palette else palette['text']};
         border: none;
-        border-radius: 6px;
-        padding: 6px;
+        border-radius: 4px;
+        padding: 4px;
+        max-height: 24px;
     }}
     
     QToolButton:hover {{
@@ -547,6 +609,21 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {palette['highlight']};
     }}
     
+    /* ===== PROGRESS BAR ===== */
+    QProgressBar {{
+        border: 1px solid {palette['border']};
+        border-radius: 6px;
+        text-align: center;
+        background-color: {palette['base']};
+        color: {palette['text']};
+        font-weight: bold;
+    }}
+
+    QProgressBar::chunk {{
+        background-color: {palette['highlight']};
+        border-radius: 5px;
+    }}
+
     /* ===== STATUS BAR ===== */
     QStatusBar {{
         background-color: {palette['surface']};

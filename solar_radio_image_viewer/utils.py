@@ -308,8 +308,12 @@ def get_pixel_values_from_image(
                 freq_idx = None
 
             # Use strided reading for fast downsampling (reads every Nth pixel from disk)
+            # IMPORTANT: Only downsample spatial axes, not Stokes or Frequency
             if downsample > 1:
-                inc = [downsample] * len(dimension_shapes)
+                inc = [1] * len(dimension_shapes)  # Start with no downsampling
+                inc[ra_idx] = downsample   # Downsample RA axis
+                inc[dec_idx] = downsample  # Downsample Dec axis
+                # Keep Stokes and Frequency at 1 to read all values
                 data = ia_tool.getchunk(inc=inc)
             else:
                 data = ia_tool.getchunk()
@@ -353,8 +357,12 @@ def get_pixel_values_from_image(
                 # If Frequency axis is missing, assume index 0
                 freq_idx = None
             # Use strided reading for fast downsampling (reads every Nth pixel from disk)
+            # IMPORTANT: Only downsample spatial axes, not Stokes or Frequency
             if downsample > 1:
-                inc = [downsample] * len(dimension_shapes)
+                inc = [1] * len(dimension_shapes)  # Start with no downsampling
+                inc[ra_idx] = downsample   # Downsample SOLAR-X axis
+                inc[dec_idx] = downsample  # Downsample SOLAR-Y axis
+                # Keep Stokes and Frequency at 1 to read all values
                 data = ia_tool.getchunk(inc=inc)
             else:
                 data = ia_tool.getchunk()
@@ -837,13 +845,72 @@ def get_image_metadata(imagename):
                 shape = ia_tool.shape()
                 csys = ia_tool.coordsys()
                 
-                # Get messages from summary for raw info
+                # Parse summary messages to extract useful fields
+                # Messages are multi-line strings that need to be split first
                 if 'messages' in summary:
-                    for msg in summary['messages']:
-                        msg = msg.strip()
-                        if ':' in msg:
-                            key, _, value = msg.partition(':')
-                            metadata['raw_header'][key.strip()] = value.strip()
+                    for msg_block in summary['messages']:
+                        # Split the message block into individual lines
+                        lines = str(msg_block).split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            if not line or line.startswith('-'):
+                                continue
+                            
+                            # Skip table header lines
+                            if line.startswith('Axis') or line.startswith('0 ') or line.startswith('1 ') or line.startswith('2 ') or line.startswith('3 '):
+                                continue
+                            
+                            # Parse key: value pairs
+                            if ':' in line:
+                                key, _, value = line.partition(':')
+                                key = key.strip()
+                                value = value.strip()
+                                
+                                # Skip empty values or very long values or coordinate values
+                                if not value or len(value) > 150:
+                                    continue
+                                
+                                # Skip if value looks like a coordinate table entry
+                                if value.startswith('[') and 'ITRF' in value:
+                                    metadata['observation']['Telescope Position'] = value
+                                    metadata['raw_header'][key] = value
+                                    continue
+                                
+                                # Always add to raw_header for "All Headers" view
+                                metadata['raw_header'][key] = value
+                                
+                                # Also map to appropriate organized sections
+                                if key in ['Object name', 'OBJECT']:
+                                    metadata['observation']['Object'] = value
+                                elif key == 'Image name':
+                                    # Just the filename, not the full path
+                                    metadata['observation']['Image Name'] = value.split('/')[-1] if '/' in value else value
+                                elif key == 'Image type':
+                                    metadata['image']['Image Type'] = value
+                                elif key == 'Image quantity':
+                                    metadata['image']['Quantity'] = value
+                                elif key == 'Image units':
+                                    metadata['image']['Units'] = value
+                                elif key in ['Spectral  reference', 'Spectral reference']:
+                                    metadata['spectral']['Reference Frame'] = value
+                                elif key in ['Velocity  type', 'Velocity type']:
+                                    metadata['spectral']['Velocity Type'] = value
+                                elif key in ['Direction reference']:
+                                    metadata['image']['Direction Reference'] = value
+                                elif key == 'Telescope':
+                                    if not metadata['observation'].get('Telescope'):
+                                        metadata['observation']['Telescope'] = value
+                                elif key == 'Observer':
+                                    if not metadata['observation'].get('Observer'):
+                                        metadata['observation']['Observer'] = value
+                                elif key == 'Date observation':
+                                    if not metadata['observation'].get('Date/Time'):
+                                        metadata['observation']['Date/Time'] = format_datetime(value.replace('/', '-').replace('-', '-', 2).replace('/', 'T', 1))
+                                elif key == 'Restoring Beam':
+                                    metadata['beam']['Restoring Beam'] = value
+                                elif key in ['Pixel mask(s)', 'Region(s)']:
+                                    if value and value != 'None':
+                                        metadata['processing'][key] = value
                 
                 # Image dimensions
                 if len(shape) >= 2:
@@ -898,7 +965,6 @@ def get_image_metadata(imagename):
                 except:
                     pass
                 
-                # Get BUNIT
                 try:
                     bunit = ia_tool.brightnessunit()
                     if bunit:
@@ -906,18 +972,76 @@ def get_image_metadata(imagename):
                 except:
                     pass
                 
-                # Telescope from miscinfo
+                # Extract all keywords from miscinfo and store important ones
                 try:
                     miscinfo = ia_tool.miscinfo()
-                    if 'TELESCOP' in miscinfo:
-                        metadata['observation']['Telescope'] = miscinfo['TELESCOP']
-                    if 'DATE-OBS' in miscinfo:
-                        metadata['observation']['Date/Time'] = format_datetime(miscinfo['DATE-OBS'])
-                    if 'OBSERVER' in miscinfo:
+                    
+                    # Store miscinfo keys as raw headers (only simple values, not nested structures)
+                    for key, value in miscinfo.items():
+                        # Skip None, empty, dicts, lists, and overly long values
+                        if value is None:
+                            continue
+                        if isinstance(value, (dict, list, tuple)):
+                            continue
+                        value_str = str(value).strip()
+                        if not value_str or len(value_str) > 200:
+                            continue
+                        # Skip if value contains newlines (multi-line output)
+                        if '\n' in value_str:
+                            continue
+                        metadata['raw_header'][key] = value_str
+                    
+                    # Observation section
+                    telescope_keys = ['TELESCOP', 'INSTRUME', 'ANTENNA']
+                    for key in telescope_keys:
+                        if key in miscinfo and miscinfo[key]:
+                            metadata['observation']['Telescope'] = miscinfo[key]
+                            break
+                    
+                    datetime_keys = ['DATE-OBS', 'DATEOBS', 'DATE_OBS', 'OBSDATE']
+                    for key in datetime_keys:
+                        if key in miscinfo and miscinfo[key]:
+                            metadata['observation']['Date/Time'] = format_datetime(miscinfo[key])
+                            break
+                    
+                    if 'OBSERVER' in miscinfo and miscinfo['OBSERVER']:
                         metadata['observation']['Observer'] = miscinfo['OBSERVER']
-                    if 'OBJECT' in miscinfo:
-                        metadata['observation']['Object'] = miscinfo['OBJECT']
-                except:
+                    
+                    object_keys = ['OBJECT', 'SRCNAME', 'TARGET']
+                    for key in object_keys:
+                        if key in miscinfo and miscinfo[key]:
+                            metadata['observation']['Object'] = miscinfo[key]
+                            break
+                    
+                    if 'ORIGIN' in miscinfo and miscinfo['ORIGIN']:
+                        metadata['observation']['Origin'] = miscinfo['ORIGIN']
+                    
+                    # Processing section - capture software info
+                    if 'ORIGIN' in miscinfo and miscinfo['ORIGIN']:
+                        metadata['processing']['Software'] = miscinfo['ORIGIN']
+                    
+                    # WSClean specific keywords
+                    wsclean_keys = {
+                        'WSCVERSI': 'WSClean Version',
+                        'WSCWEIGH': 'Weighting',
+                        'WSCNWLAY': 'W-Layers',
+                        'WSCCHANS': 'Channels',
+                    }
+                    for key, display_name in wsclean_keys.items():
+                        if key in miscinfo and miscinfo[key]:
+                            metadata['processing'][display_name] = miscinfo[key]
+                    
+                    # CASA/tclean specific keywords
+                    casa_keys = {
+                        'IMAGER': 'Imager',
+                        'IMAGETYP': 'Image Type',
+                        'PROJECT': 'Project',
+                    }
+                    for key, display_name in casa_keys.items():
+                        if key in miscinfo and miscinfo[key]:
+                            metadata['processing'][display_name] = miscinfo[key]
+                    
+                except Exception as e:
                     pass
                     
             finally:

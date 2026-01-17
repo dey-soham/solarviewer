@@ -39,7 +39,7 @@ with open("README.md") as f:
 
 setup(
     name="solarviewer",
-    version="1.1.0",
+    version="1.2.0",
     packages=find_packages(),
     # cmdclass={
     #     'install': PostInstallCommand,
@@ -47,7 +47,7 @@ setup(
     # },
     include_package_data=True,
     package_data={
-        "solar_radio_image_viewer": ["assets/*.png", "assets/*.fits"],
+        "solar_radio_image_viewer": ["assets/*.png", "assets/*.fits", "assets/*.ttf"],
     },
     install_requires=[
         "setuptools<81",
@@ -76,6 +76,7 @@ setup(
         "tifffile>=2022.2.2",
         "aiapy>=0.1.0",
         "imageio[ffmpeg]",
+        "paramiko>=3.0.0",
     ],
     entry_points={
         "console_scripts": [

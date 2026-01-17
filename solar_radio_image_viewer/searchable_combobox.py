@@ -15,9 +15,15 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QIcon
-import pkg_resources
+import os
 from .styles import get_icon_path, theme_manager
 
+# Package directory for fast resource loading
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _get_resource_path(relative_path):
+    """Get absolute path to a package resource file."""
+    return os.path.join(_PACKAGE_DIR, relative_path)
 
 class SearchDialog(QDialog):
     """A dialog for searching and selecting colormaps"""
@@ -164,9 +170,7 @@ class ColormapSelector(QWidget):
         icon_filename = get_icon_path("search.png")
         self.search_button.setIcon(
             QIcon(
-                pkg_resources.resource_filename(
-                    "solar_radio_image_viewer", f"assets/{icon_filename}"
-                )
+                _get_resource_path(f"assets/{icon_filename}")
             )
         )
     

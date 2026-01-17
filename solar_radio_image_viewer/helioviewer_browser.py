@@ -612,7 +612,7 @@ class HelioviewerBrowser(QMainWindow):
         size_layout.setContentsMargins(8, 8, 8, 8)
         self.image_size_spin = QSpinBox()
         self.image_size_spin.setRange(100, 4000)
-        self.image_size_spin.setValue(800)
+        self.image_size_spin.setValue(600)
         self.image_size_spin.setSuffix(" px")
         self.image_size_spin.setToolTip("Image dimensions (100-4000 pixels)")
         size_layout.addWidget(self.image_size_spin)

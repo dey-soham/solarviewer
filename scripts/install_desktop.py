@@ -98,6 +98,28 @@ def install_desktop_integration():
     except Exception:
         pass  # Not critical
 
+    # 5. Create Symlinks in ~/.local/bin
+    bin_dir = home / ".local" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    links = ["solarviewer", "sv"]
+    for link_name in links:
+        target_link = bin_dir / link_name
+        try:
+            if target_link.exists() or target_link.is_symlink():
+                target_link.unlink()
+            target_link.symlink_to(executable_path)
+            print(f"Created symlink: {target_link} -> {executable_path}")
+        except Exception as e:
+            print(f"Warning: Could not create symlink {target_link}: {e}")
+
+    # Check if ~/.local/bin is in PATH
+    if str(bin_dir) not in os.environ["PATH"]:
+        print(
+            f"\nWarning: {bin_dir} is not in your PATH.\n"
+            f"You may need to add it to run '{links[0]}' or '{links[1]}' from the terminal."
+        )
+
     print(
         "\nInstallation complete! You should now see 'SolarViewer' in your application menu."
     )
