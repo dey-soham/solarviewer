@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
+    QProgressBar,
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QSize
@@ -1784,6 +1785,14 @@ class PhaseShiftDialog(QDialog):
         
         main_layout.addWidget(status_group)
 
+        main_layout.addWidget(status_group)
+
+        # Progress Bar (initially hidden)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setVisible(False)
+        main_layout.addWidget(self.progress_bar)
+
         # Dialog Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.apply_phase_shift)
@@ -1791,6 +1800,9 @@ class PhaseShiftDialog(QDialog):
         
         self.ok_button = button_box.button(QDialogButtonBox.Ok)
         self.ok_button.setText("Apply Shift")
+
+        self.cancel_button = button_box.button(QDialogButtonBox.Cancel)
+        # We'll use the cancel button for aborting operations too
         
         main_layout.addWidget(button_box)
         
@@ -2002,6 +2014,10 @@ class PhaseShiftDialog(QDialog):
         """Apply the phase shift to the image(s)"""
         import os
         from .move_phasecenter import SolarPhaseCenter
+        from PyQt5.QtWidgets import QProgressDialog, QApplication, QMessageBox
+        from PyQt5.QtCore import Qt
+        import multiprocessing
+        import time
 
         # Check if we're in batch mode or single file mode
         batch_mode = self.batch_mode_radio.isChecked()
@@ -2029,401 +2045,222 @@ class PhaseShiftDialog(QDialog):
                 return
 
         try:
-            # Get common parameters
-            #msname = self.ms_path_edit.text() or None
-            msname = None
-
-            # Create SolarPhaseCenter instance - removing cellsize and imsize parameters
-            spc = SolarPhaseCenter(msname=msname)
-
-            # Determine Stokes parameter to use
-            if full_stokes:
-                stokes_list = ["I", "Q", "U", "V"]
-                self.status_text.appendPlainText(
-                    "Processing all Stokes parameters: I, Q, U, V"
-                )
-            else:
-                stokes_list = [self.stokes_combo.currentText()]
-                self.status_text.appendPlainText(
-                    f"Processing Stokes {self.stokes_combo.currentText()}"
-                )
-
+            # Create SolarPhaseCenter instance
+            spc = SolarPhaseCenter(msname=None)
+            
+            # Determine common parameters based on mode
             if batch_mode:
-                # Batch processing mode
                 reference_image = self.reference_image_edit.text()
                 input_pattern = self.input_pattern_edit.text()
-                output_pattern = (
-                    self.output_pattern_edit.text()
-                    if self.output_pattern_edit.text()
-                    else None
-                )
-
-                self.status_text.appendPlainText(
-                    f"Using reference image: {reference_image}"
-                )
-                self.status_text.appendPlainText(
-                    f"Processing files matching pattern: {input_pattern}"
-                )
-                if output_pattern:
-                    self.status_text.appendPlainText(
-                        f"Output pattern: {output_pattern}"
-                    )
-                else:
-                    self.status_text.appendPlainText(
-                        f"Will modify input files in-place"
-                    )
-
-                # First calculate phase shift from the reference image
-                self.status_text.appendPlainText(
-                    f"Calculating solar center position using reference image: {reference_image}"
-                )
-
-                # Check if any files match the pattern
+                output_pattern = self.output_pattern_edit.text() or None
                 matching_files = glob.glob(input_pattern)
-                if not matching_files:
-                    QMessageBox.warning(
-                        self,
-                        "Input Error",
-                        f"No files found matching pattern: {input_pattern}",
-                    )
-                    return
-
-                self.status_text.appendPlainText(
-                    f"Found {len(matching_files)} files matching the pattern"
-                )
-
-                # Check if reference image is in helioprojective coordinates
-                is_hpc = self._is_helioprojective(reference_image)
                 
-                if is_hpc:
-                    self.status_text.appendPlainText("Detected helioprojective coordinates (Solar-X/Y)")
-                    self.status_text.appendPlainText("Will shift sun to (0,0) Solar-X/Y...")
-
-                # Calculate phase shift based on the reference image
-                use_gaussian = self.gaussian_method_radio.isChecked()
+                if not matching_files:
+                    QMessageBox.warning(self, "Input Error", f"No files match: {input_pattern}")
+                    return
+                
+                self.status_text.appendPlainText(f"Found {len(matching_files)} files.")
+            else:
+                reference_image = self.image_path_edit.text()
+                # Single mode input list
+                matching_files = [reference_image]
+                # Default output pattern for single file
+                output_pattern = self.output_path_edit.text() or None
+            
+            # 1. Coordinate check and Phase Result Calculation
+            is_hpc = self._is_helioprojective(reference_image)
+            
+            use_gaussian = self.gaussian_method_radio.isChecked()
+            try:
+                self.status_text.appendPlainText(f"Calculating phase shift from: {reference_image}...")
                 phase_result = spc.cal_solar_phaseshift(
                     imagename=reference_image,
                     fit_gaussian=use_gaussian,
                     sigma=self.sigma_spinbox.value(),
                 )
-                
-                # For HPC images, override true position to (0,0) Solar-X/Y
-                if is_hpc:
-                    phase_result['true_ra'] = 0.0  # Solar-X = 0
-                    phase_result['true_dec'] = 0.0  # Solar-Y = 0
-                    phase_result['is_hpc'] = True
-                    self.status_text.appendPlainText(
-                        f"Apparent position: pixel ({phase_result.get('apparent_pix_x', 'N/A')}, "
-                        f"{phase_result.get('apparent_pix_y', 'N/A')})"
-                    )
-                    self.status_text.appendPlainText("Target position: (0, 0) Solar-X/Y")
-                else:
-                    phase_result['is_hpc'] = False
-                    self.status_text.appendPlainText(
-                        f"True solar position (ephemeris): RA = {phase_result.get('true_ra', 'N/A'):.6f} deg, "
-                        f"DEC = {phase_result.get('true_dec', 'N/A'):.6f} deg"
-                    )
-                    self.status_text.appendPlainText(
-                        f"Apparent position: pixel ({phase_result.get('apparent_pix_x', 'N/A')}, "
-                        f"{phase_result.get('apparent_pix_y', 'N/A')})"
-                    )
-                needs_shift = phase_result.get('needs_shift', False)
-
-                if not needs_shift:
-                    self.status_text.appendPlainText(
-                        "No phase shift needed. Solar center is already aligned with phase center."
-                    )
-                    result = QMessageBox.question(
-                        self,
-                        "No Shift Needed",
-                        "No phase shift is needed as the solar center is already aligned. Proceed anyway?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No,
-                    )
-                    if result == QMessageBox.No:
-                        return
-
-                # Apply to all files
-                visual_center = self.visual_center_check.isChecked()
-                use_multiprocessing = self.multiprocessing_check.isChecked()
-                
-                # Ensure output directory exists if output pattern is specified
-                if output_pattern:
-                    output_dir = os.path.dirname(output_pattern)
-                    if output_dir and not os.path.exists(output_dir):
-                        try:
-                            os.makedirs(output_dir, exist_ok=True)
-                            self.status_text.appendPlainText(f"Created output directory: {output_dir}")
-                        except Exception as e:
-                            self.status_text.appendPlainText(f"Error creating output directory: {e}")
-                max_processes = (
-                    self.cores_spinbox.value() if use_multiprocessing else None
-                )
-
-                for stokes in stokes_list:
-                    self.status_text.appendPlainText(f"\nProcessing Stokes {stokes}...")
-
-                    if use_multiprocessing:
-                        self.status_text.appendPlainText(
-                            f"Using multiprocessing with {max_processes} CPU cores"
-                        )
-
-                    results = spc.apply_shift_to_multiple_fits(
-                        ra=phase_result.get('true_ra'),
-                        dec=phase_result.get('true_dec'),
-                        input_pattern=input_pattern,
-                        output_pattern=output_pattern,
-                        stokes=stokes,
-                        visual_center=visual_center,
-                        use_multiprocessing=use_multiprocessing,
-                        max_processes=max_processes,
-                        phase_result=phase_result,
-                    )
-
-                    if visual_center:
-                        self.status_text.appendPlainText(
-                            "Visually centered images creation completed."
-                        )
-
-                    self.status_text.appendPlainText(
-                        f"Successfully processed {results[0]} out of {results[1]} files for Stokes {stokes}"
-                    )
-
-                QMessageBox.information(
-                    self,
-                    "Success",
-                    f"Batch processing completed: {results[0]} out of {results[1]} files processed successfully.",
-                )
-                # Don't auto-close - let user see results
-
+            except Exception as e:
+                QMessageBox.critical(self, "Calculation Error", f"Failed to calculate phase shift:\n{str(e)}")
+                return
+            
+            # Handle HPC override or display info
+            if is_hpc:
+                phase_result['true_ra'] = 0.0
+                phase_result['true_dec'] = 0.0
+                phase_result['is_hpc'] = True
+                self.status_text.appendPlainText("Detected HPC. Target: (0, 0) Solar-X/Y")
             else:
-                # Single file mode
-                imagename = self.image_path_edit.text()
-                
-                # Check if image is in helioprojective coordinates
-                is_hpc = self._is_helioprojective(imagename)
-                
-                if is_hpc:
-                    self.status_text.appendPlainText("Detected helioprojective coordinates (Solar-X/Y)")
-                    self.status_text.appendPlainText("Will shift sun to (0,0) Solar-X/Y...")
-                    
-                    # For HPC, we just need to find where the sun is and shift to center
-                    use_gaussian = self.gaussian_method_radio.isChecked()
-                    phase_result = spc.cal_solar_phaseshift(
-                        imagename=imagename,
-                        fit_gaussian=use_gaussian,
-                        sigma=self.sigma_spinbox.value(),
-                    )
-                    
-                    # For HPC, override true position to (0,0) Solar-X/Y
-                    # This means CRVAL1=0, CRVAL2=0 in the final image
-                    phase_result['true_ra'] = 0.0  # Solar-X = 0
-                    phase_result['true_dec'] = 0.0  # Solar-Y = 0
-                    phase_result['is_hpc'] = True
-                else:
-                    # Standard RA/Dec processing
-                    self.status_text.appendPlainText("Calculating solar center position...")
-                    use_gaussian = self.gaussian_method_radio.isChecked()
-                    
-                    phase_result = spc.cal_solar_phaseshift(
-                        imagename=imagename,
-                        fit_gaussian=use_gaussian,
-                        sigma=self.sigma_spinbox.value(),
-                    )
-                    phase_result['is_hpc'] = False
-
-                # Display detailed results
-                true_ra = phase_result.get('true_ra')
-                true_dec = phase_result.get('true_dec')
-                apparent_ra = phase_result.get('apparent_ra')
-                apparent_dec = phase_result.get('apparent_dec')
-                apparent_pix_x = phase_result.get('apparent_pix_x')
-                apparent_pix_y = phase_result.get('apparent_pix_y')
-                needs_shift = phase_result.get('needs_shift', False)
-                is_hpc_mode = phase_result.get('is_hpc', False)
-
-                self.status_text.appendPlainText("")
-                self.status_text.appendPlainText("=== PHASE SHIFT CALCULATION ===")
-                self.status_text.appendPlainText(f"Method: {'Gaussian Fitting' if use_gaussian else 'Center of Mass'}")
-                
-                if is_hpc_mode:
-                    # HPC mode - show Solar-X/Y
-                    self.status_text.appendPlainText(
-                        f"Target position: Solar-X = {true_ra:.1f} arcsec, Solar-Y = {true_dec:.1f} arcsec"
-                    )
-                else:
-                    # RA/Dec mode
-                    if true_ra is not None and true_dec is not None:
-                        self.status_text.appendPlainText(
-                            f"True solar position (ephemeris): RA = {true_ra:.6f}°, DEC = {true_dec:.6f}°"
-                        )
-                    else:
-                        self.status_text.appendPlainText(
-                            "Warning: Could not determine true solar position from ephemeris"
-                        )
-                    
-                    if apparent_ra is not None and apparent_dec is not None:
-                        self.status_text.appendPlainText(
-                            f"Apparent position (image): RA = {apparent_ra:.6f}°, DEC = {apparent_dec:.6f}°"
-                        )
-                
-                if apparent_pix_x is not None and apparent_pix_y is not None:
-                    self.status_text.appendPlainText(
-                        f"Apparent pixel position: ({apparent_pix_x}, {apparent_pix_y})"
-                    )
-                
-                # Calculate and display offset
-                if true_ra is not None and apparent_ra is not None:
-                    import numpy as np
-                    offset_ra = (true_ra - apparent_ra) * 3600  # arcsec
-                    offset_dec = (true_dec - apparent_dec) * 3600  # arcsec
-                    total_offset = np.sqrt(offset_ra**2 + offset_dec**2)
-                    self.status_text.appendPlainText(
-                        f"Offset: RA = {offset_ra:.2f}\", DEC = {offset_dec:.2f}\", Total = {total_offset:.2f}\""
-                    )
-                
-                self.status_text.appendPlainText("")
-
-                if not needs_shift:
-                    self.status_text.appendPlainText(
-                        "No phase shift needed. Solar center is already aligned with phase center."
-                    )
-                    result = QMessageBox.question(
-                        self,
-                        "No Shift Needed",
-                        "The solar center is already close to the phase center. Continue anyway?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No,
-                    )
-                    if result == QMessageBox.No:
-                        return
-
-                # Determine output file
-                output_file = self.output_path_edit.text()
-                if not output_file:
-                    # Generate default output filename
-                    file_dir = os.path.dirname(imagename)
-                    file_name = os.path.basename(imagename)
-                    base_name = os.path.splitext(file_name)[0]
-                    if os.path.isdir(imagename):
-                        base_name = file_name
-                        # Remove common CASA extensions
-                        for ext in ['.image', '.im']:
-                            if base_name.endswith(ext):
-                                base_name = base_name[:-len(ext)]
-                                break
-                    output_file = os.path.join(file_dir, f"centered_{base_name}.fits")
-                
-                # Ensure output is FITS
-                if not output_file.endswith('.fits'):
-                    output_file = output_file + '.fits'
-                
-                # Check for output file overwrite
-                files_to_check = []
-                if full_stokes and len(stokes_list) > 1:
-                    for sp in stokes_list:
-                        base, ext = os.path.splitext(output_file)
-                        files_to_check.append(f"{base}_{sp}{ext}")
-                else:
-                    files_to_check.append(output_file)
-                
-                existing_files = [f for f in files_to_check if os.path.exists(f)]
-                if existing_files:
-                    file_list = "\n".join(existing_files)
-                    result = QMessageBox.question(
-                        self,
-                        "Overwrite Files?",
-                        f"The following output file(s) already exist:\n\n{file_list}\n\nOverwrite?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No,
-                    )
-                    if result == QMessageBox.No:
-                        return
-                
-                self.status_text.appendPlainText(f"Output file: {output_file}")
-
-                # Process all requested Stokes parameters
-                for stokes_param in stokes_list:
-                    # For multi-Stokes mode, append stokes parameter to filename
-                    if full_stokes and len(stokes_list) > 1:
-                        base, ext = os.path.splitext(output_file)
-                        stokes_output_file = f"{base}_{stokes_param}{ext}"
-                    else:
-                        stokes_output_file = output_file
-
-                    self.status_text.appendPlainText(f"\nProcessing Stokes {stokes_param}...")
-
-                    if apparent_pix_x is None or apparent_pix_y is None:
-                        self.status_text.appendPlainText("Error: Could not determine sun position")
-                        continue
-
-                    try:
-                        from .move_phasecenter import exportfits_subprocess
-                        import shutil
-                        
-                        # Step 1: Create a temporary FITS file from input
-                        temp_dir = os.path.dirname(os.path.abspath(imagename))
-                        temp_shifted = os.path.join(temp_dir, f"_temp_shifted_{os.getpid()}.fits")
-                        
-                        if os.path.isdir(imagename):
-                            # Export CASA image to temp FITS
-                            self.status_text.appendPlainText("  Exporting CASA image to FITS...")
-                            exportfits_subprocess(
-                                imagename=imagename,
-                                fitsimage=temp_shifted,
-                                dropdeg=False,
-                                dropstokes=False,
-                                overwrite=True
-                            )
-                        else:
-                            # Copy FITS to temp
-                            shutil.copy(imagename, temp_shifted)
-                        
-                        # Step 2: Apply phase shift to temp file (corrects WCS)
-                        self.status_text.appendPlainText("  Applying phase shift (correcting WCS)...")
-                        result = spc.shift_phasecenter(
-                            imagename=temp_shifted, stokes=stokes_param, phase_result=phase_result
-                        )
-                        
-                        if result != 0:
-                            self.status_text.appendPlainText("Warning: Phase shift may not have been applied correctly")
-                        
-                        # Step 3: Create visually centered image from the shifted file
-                        if self.visual_center_check.isChecked():
-                            self.status_text.appendPlainText("  Creating visually centered image...")
-                            success = spc.visually_center_image(
-                                temp_shifted, stokes_output_file, apparent_pix_x, apparent_pix_y
-                            )
-                            if success:
-                                self.status_text.appendPlainText("✓ Visually centered image created!")
-                            else:
-                                self.status_text.appendPlainText("Failed to create visually centered image")
-                        else:
-                            # Just copy the phase-shifted file as output
-                            shutil.copy(temp_shifted, stokes_output_file)
-                            self.status_text.appendPlainText("✓ Phase shift applied (WCS corrected)")
-                        
-                        self.status_text.appendPlainText(f"  Output: {stokes_output_file}")
-                        
-                        # Step 4: Cleanup temp file
-                        if os.path.exists(temp_shifted):
-                            os.remove(temp_shifted)
-                            
-                    except Exception as e:
-                        self.status_text.appendPlainText(f"Error: {str(e)}")
-
-                self.status_text.appendPlainText("\n=== PROCESSING COMPLETE ===")
-                QMessageBox.information(
-                    self, "Complete", f"Phase shift completed.\nOutput: {output_file}"
+                phase_result['is_hpc'] = False
+                self.status_text.appendPlainText(
+                    f"True Position: RA={phase_result.get('true_ra', 'N/A'):.4f}, DEC={phase_result.get('true_dec', 'N/A'):.4f}"
                 )
-                # Don't auto-close - let user see results in status area
+
+            # Check if shift needed
+            if not phase_result.get('needs_shift', False):
+                self.status_text.appendPlainText("No significant phase shift needed.")
+                if QMessageBox.question(self, "No Shift Needed", 
+                    "Solar center appears aligned. Process anyway?", 
+                    QMessageBox.Yes | QMessageBox.No) == QMessageBox.No:
+                    return
+
+            # 2. Check Overwrite (Single Mode only, for safety)
+            if not batch_mode and output_pattern:
+                if not output_pattern.endswith('.fits'): output_pattern += '.fits'
+                files_to_check = []
+                stokes_params = ["I", "Q", "U", "V"] if full_stokes else ["I"] # Simplified check
+                
+                for s in stokes_params:
+                     # Rough check logic, assuming output_pattern is full path
+                     fname = output_pattern
+                     if full_stokes:
+                         root, ext = os.path.splitext(output_pattern)
+                         fname = f"{root}_{s}{ext}"
+                     files_to_check.append(fname)
+                
+                existing = [f for f in files_to_check if os.path.exists(f)]
+                if existing:
+                    msg = "Overwrite existing files?\n\n" + "\n".join(existing[:5])
+                    if len(existing) > 5: msg += "\n..."
+                    if QMessageBox.question(self, "Overwrite?", msg, QMessageBox.Yes|QMessageBox.No) == QMessageBox.No:
+                        return
+
+            # 3. Prepare Tasks
+            visual_center = self.visual_center_check.isChecked()
+            use_multiprocessing = self.multiprocessing_check.isChecked() and batch_mode
+            if not batch_mode: 
+                use_multiprocessing = False # Force synchronous for single file
+            
+            stokes_list = ["I", "Q", "U", "V"] if full_stokes else [self.stokes_combo.currentText()]
+            if full_stokes: self.status_text.appendPlainText("Processing Full Stokes (I,Q,U,V)")
+            
+            tasks = []
+            for fpath in matching_files:
+                for stokes in stokes_list:
+                    # Construct task tuple matching process_single_file_phase_shift wrapper
+                    task = (
+                        fpath,
+                        phase_result.get('true_ra'),
+                        phase_result.get('true_dec'),
+                        stokes,
+                        output_pattern,
+                        visual_center,
+                        phase_result
+                    )
+                    tasks.append(task)
+
+            total_tasks = len(tasks)
+            self.status_text.appendPlainText(f"Prepared {total_tasks} processing tasks.")
+
+            # 4. Progress UI Setup (Embedded)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, total_tasks)
+            self.progress_bar.setValue(0)
+            self.ok_button.setEnabled(False)  # Disable Apply
+            self.input_group.setEnabled(False) # Disable inputs
+            self.tab_widget.setEnabled(False) # Disable tabs
+            self.cancel_button.disconnect() # Disconnect default reject
+            self.cancel_button.clicked.connect(self._cancel_processing)
+            
+            self._processing_cancelled = False
+            QApplication.processEvents()
+
+            results = []
+            start_time = time.time()
+
+            # 5. Execution Loop
+            try:
+                if use_multiprocessing and len(matching_files) > 1:
+                    max_cores = self.cores_spinbox.value()
+                    self.status_text.appendPlainText(f"Using Multiprocessing ({max_cores} cores)")
+                    
+                    self.pool = multiprocessing.Pool(processes=max_cores)
+                    async_results = [self.pool.apply_async(process_single_file_phase_shift, (t,)) for t in tasks]
+                    self.pool.close()
+
+                    while any(not r.ready() for r in async_results):
+                        QApplication.processEvents()
+                        if self._processing_cancelled:
+                            self.pool.terminate()
+                            self.pool.join()
+                            self.status_text.appendPlainText("Processing canceled.")
+                            break
+                        
+                        completed = sum(1 for r in async_results if r.ready())
+                        self.progress_bar.setValue(completed)
+                        time.sleep(0.05)
+                    
+                    if not self._processing_cancelled:
+                        self.progress_bar.setValue(total_tasks)
+                        results = [r.get() for r in async_results]
+                    
+                    self.pool = None
+                        
+                else:
+                    # Synchronous
+                    for i, task in enumerate(tasks):
+                        QApplication.processEvents()
+                        if self._processing_cancelled:
+                            self.status_text.appendPlainText("Processing canceled.")
+                            results = [] # Incomplete
+                            break
+                        
+                        # Call wrapper directly
+                        res = process_single_file_phase_shift(task)
+                        results.append(res)
+                        
+                        self.progress_bar.setValue(i + 1)
+            
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "Processing Failed", f"Error: {e}")
+                # Don't return yet, ensuring cleanup happens
+            
+            finally:
+                # Cleanup UI state
+                self.progress_bar.setVisible(False)
+                self.ok_button.setEnabled(True)
+                self.input_group.setEnabled(True)
+                self.tab_widget.setEnabled(True)
+                
+                # Reconnect cancel to reject (close dialog)
+                try: self.cancel_button.clicked.disconnect() 
+                except: pass
+                self.cancel_button.clicked.connect(self.reject)
+
+            # 6. Results Summary
+            if self._processing_cancelled: return # Canceled
+
+            elapsed = time.time() - start_time
+            success_count = sum(1 for r in results if r[0])
+            errors = [f"{os.path.basename(r[1])}: {r[2]}" for r in results if not r[0]]
+
+            self.status_text.appendPlainText("-" * 20)
+            self.status_text.appendPlainText(f"Completed in {elapsed:.1f}s")
+            self.status_text.appendPlainText(f"Success: {success_count}/{total_tasks}")
+            
+            if errors:
+                self.status_text.appendPlainText("Errors occurred:")
+                for err in errors[:10]:
+                     self.status_text.appendPlainText(f" - {err}")
+                if len(errors) > 10:
+                    self.status_text.appendPlainText(f" ...and {len(errors)-10} more.")
+                QMessageBox.warning(self, "Partial Success", f"Done with {len(errors)} errors. Check log.")
+            elif success_count > 0:
+                QMessageBox.information(self, "Done", f"Successfully processed {success_count} files.")
+            else:
+                 self.status_text.appendPlainText("No files processed.")
 
         except Exception as e:
+            self.status_text.appendPlainText(f"Detailed Error: {str(e)}")
             import traceback
+            traceback.print_exc()
 
-            self.status_text.appendPlainText(f"Error: {str(e)}")
-            self.status_text.appendPlainText(traceback.format_exc())
-            QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+    def _cancel_processing(self):
+        """Signal processing cancellation"""
+        self._processing_cancelled = True
+        self.status_text.appendPlainText("Stopping... please wait.")
+        self.cancel_button.setEnabled(False) # Prevent double click
+
 
     def _is_helioprojective(self, imagepath):
         """Check if image is in helioprojective coordinates (Solar-X/Y)"""
@@ -2925,7 +2762,14 @@ class HPCBatchConversionDialog(QDialog):
         self.status_text.setPlaceholderText("Conversion status and results will appear here...")
         self.status_text.setMinimumHeight(25)
         self.status_text.setMaximumHeight(150)
-        status_layout.addWidget(self.status_text,1)
+        status_layout.addWidget(self.status_text, 1)
+
+        # Progress Bar (initially hidden)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
+        status_layout.addWidget(self.progress_bar)
+
         main_layout.addWidget(status_group) 
         
         # ========== DIALOG BUTTONS ==========
@@ -2936,6 +2780,10 @@ class HPCBatchConversionDialog(QDialog):
         self.ok_button = button_box.button(QDialogButtonBox.Ok)
         self.ok_button.setText("Convert")
         self.ok_button.setMinimumWidth(100)
+        
+        self.cancel_button = button_box.button(QDialogButtonBox.Cancel)
+        # We'll re-purpose the cancel button during processing
+        
         button_box.accepted.connect(self.convert_files)
         button_box.rejected.connect(self.reject)
         
@@ -3129,28 +2977,27 @@ class HPCBatchConversionDialog(QDialog):
         full_stokes = self.full_stokes_radio.isChecked()
         stokes_param = self.stokes_combo.currentText() if not full_stokes else None
 
-        # Prepare progress dialog
-        progress_dialog = QProgressDialog(
-            "Converting files to helioprojective coordinates...",
-            "Cancel",
-            0,
-            len(files_to_process),
-            self,
-        )
-        progress_dialog.setWindowTitle("Batch Conversion")
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.show()
-
         # Import modules needed for processing
         import multiprocessing
         import time
         from .helioprojective import convert_and_save_hpc
 
+        # Setup Progress UI
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.ok_button.setEnabled(False)
+        self.tab_widget.setEnabled(False)
+        try: self.cancel_button.clicked.disconnect() 
+        except: pass
+        self.cancel_button.clicked.connect(self._cancel_processing)
+        self.cancel_button.setEnabled(True)
+        self._processing_cancelled = False
+        
+        QApplication.processEvents()
+
         # Use a worker thread or process for conversion
         try:
             self.status_text.appendPlainText("Starting batch conversion...")
-            self.ok_button.setEnabled(False)
-            QApplication.processEvents()
 
             # Initialize counters
             success_count = 0
@@ -3201,7 +3048,7 @@ class HPCBatchConversionDialog(QDialog):
 
                     # Set up progress tracking
                     total_tasks = len(tasks)
-                    progress_dialog.setMaximum(total_tasks)
+                    self.progress_bar.setRange(0, total_tasks)
 
                     # Create process pool and start processing
                     pool = multiprocessing.Pool(processes=max_cores)
@@ -3212,7 +3059,7 @@ class HPCBatchConversionDialog(QDialog):
 
                     # Monitor progress while processing
                     while not result_objects.ready():
-                        if progress_dialog.wasCanceled():
+                        if self._processing_cancelled:
                             pool.terminate()
                             self.status_text.appendPlainText(
                                 "Operation canceled by user."
@@ -3222,7 +3069,7 @@ class HPCBatchConversionDialog(QDialog):
                         QApplication.processEvents()
 
                     # Get results if not canceled
-                    if not progress_dialog.wasCanceled():
+                    if not self._processing_cancelled:
                         results = result_objects.get()
 
                         # Process results
@@ -3270,12 +3117,12 @@ class HPCBatchConversionDialog(QDialog):
                                     )
 
                         # Update progress to completion
-                        progress_dialog.setValue(total_tasks)
+                        self.progress_bar.setValue(total_tasks)
                 else:
                     # Sequential processing for multi-stokes
                     for i, input_file in enumerate(files_to_process):
                         # Check if canceled
-                        if progress_dialog.wasCanceled():
+                        if self._processing_cancelled:
                             self.status_text.appendPlainText(
                                 "Operation canceled by user."
                             )
@@ -3295,8 +3142,8 @@ class HPCBatchConversionDialog(QDialog):
                         output_path = os.path.join(output_dir, output_filename)
 
                         # Update progress dialog
-                        progress_dialog.setValue(i)
-                        progress_dialog.setLabelText(f"Converting: {base_filename}")
+                        self.progress_bar.setValue(i)
+
                         QApplication.processEvents()
 
                         self.status_text.appendPlainText(
@@ -3373,7 +3220,7 @@ class HPCBatchConversionDialog(QDialog):
 
                     # Set up progress tracking
                     total_tasks = len(tasks)
-                    progress_dialog.setMaximum(total_tasks)
+                    self.progress_bar.setRange(0, total_tasks)
 
                     # Create process pool
                     pool = multiprocessing.Pool(processes=max_cores)
@@ -3384,7 +3231,7 @@ class HPCBatchConversionDialog(QDialog):
 
                     # Monitor progress while processing
                     while not result_objects.ready():
-                        if progress_dialog.wasCanceled():
+                        if self._processing_cancelled:
                             pool.terminate()
                             self.status_text.appendPlainText(
                                 "Operation canceled by user."
@@ -3394,7 +3241,7 @@ class HPCBatchConversionDialog(QDialog):
                         QApplication.processEvents()
 
                     # Process results if not canceled
-                    if not progress_dialog.wasCanceled():
+                    if not self._processing_cancelled:
                         results = result_objects.get()
 
                         # Process results
@@ -3414,12 +3261,12 @@ class HPCBatchConversionDialog(QDialog):
                                 )
 
                         # Update progress to completion
-                        progress_dialog.setValue(total_tasks)
+                        self.progress_bar.setValue(total_tasks)
                 else:
                     # Sequential processing for single stokes
                     for i, input_file in enumerate(files_to_process):
                         # Check if canceled
-                        if progress_dialog.wasCanceled():
+                        if self._processing_cancelled:
                             self.status_text.appendPlainText(
                                 "Operation canceled by user."
                             )
@@ -3439,8 +3286,8 @@ class HPCBatchConversionDialog(QDialog):
                         output_path = os.path.join(output_dir, output_filename)
 
                         # Update progress dialog
-                        progress_dialog.setValue(i)
-                        progress_dialog.setLabelText(f"Converting: {base_filename}")
+                        self.progress_bar.setValue(i)
+
                         QApplication.processEvents()
 
                         self.status_text.appendPlainText(
@@ -3471,7 +3318,7 @@ class HPCBatchConversionDialog(QDialog):
                             self.status_text.appendPlainText(f"  - Error: {str(e)}")
 
             # Complete the progress
-            progress_dialog.setValue(progress_dialog.maximum())
+            self.progress_bar.setValue(self.progress_bar.maximum())
 
             # Show completion message
             summary = (
@@ -3495,8 +3342,21 @@ class HPCBatchConversionDialog(QDialog):
                 pool.join()
 
             # Close progress dialog and re-enable button
-            progress_dialog.close()
+            self.progress_bar.setVisible(False)
             self.ok_button.setEnabled(True)
+            self.tab_widget.setEnabled(True)
+            
+            # Reconnect cancel button to reject
+            try: self.cancel_button.clicked.disconnect() 
+            except: pass
+            self.cancel_button.clicked.connect(self.reject)
+
+
+    def _cancel_processing(self):
+        """Signal processing cancellation"""
+        self._processing_cancelled = True
+        self.status_text.appendPlainText("Stopping... please wait.")
+        self.cancel_button.setEnabled(False)
 
 
 class PlotCustomizationDialog(QDialog):

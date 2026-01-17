@@ -609,6 +609,21 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {palette['highlight']};
     }}
     
+    /* ===== PROGRESS BAR ===== */
+    QProgressBar {{
+        border: 1px solid {palette['border']};
+        border-radius: 6px;
+        text-align: center;
+        background-color: {palette['base']};
+        color: {palette['text']};
+        font-weight: bold;
+    }}
+
+    QProgressBar::chunk {{
+        background-color: {palette['highlight']};
+        border-radius: 5px;
+    }}
+
     /* ===== STATUS BAR ===== */
     QStatusBar {{
         background-color: {palette['surface']};

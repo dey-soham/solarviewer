@@ -1336,6 +1336,15 @@ class SolarPhaseCenter:
                 output_file = output_pattern.replace("*", file_name)
                 if not output_file.lower().endswith(".fits"):
                     output_file += ".fits"
+
+                # Ensure output directory exists
+                out_dir = os.path.dirname(output_file)
+                if out_dir and not os.path.exists(out_dir):
+                    try:
+                        os.makedirs(out_dir, exist_ok=True)
+                    except OSError:
+                        # Ignore race condition error if dir created by another process
+                        pass
             else:
                 # If no output pattern, we modify in-place or generate a fits next to the source
                 if is_casa:
