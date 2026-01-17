@@ -1399,7 +1399,8 @@ class PhaseShiftDialog(QDialog):
     def __init__(self, parent=None, imagename=None):
         super().__init__(parent)
         self.setWindowTitle("Solar Phase Center Shift")
-        self.setMinimumSize(1000, 800)
+        self.setMinimumSize(550, 600)
+        self.resize(650, 650)
         self.imagename = imagename
 
         # Set the dialog size to match the parent window if available
@@ -1416,352 +1417,385 @@ class PhaseShiftDialog(QDialog):
 
     def setup_ui(self):
         from .move_phasecenter import SolarPhaseCenter
-
+        
+        # Theme setup
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        palette = theme_manager.palette
+        text_secondary = palette.get('text_secondary', palette['disabled'])
+        
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(15)
         main_layout.setContentsMargins(15, 15, 15, 15)
 
-        # Add a description at the top
+        # Header description
         description = QLabel(
             "This tool relocates the quiet Sun disk to the actual solar center."
         )
         description.setWordWrap(True)
-        #description.setStyleSheet("color: #BBB; font-style: italic;")
-        description.setStyleSheet("font-style: italic;")
+        description.setStyleSheet(f"font-style: italic; color: {text_secondary}; padding: 4px 0;")
         main_layout.addWidget(description)
 
-        # Mode selection: Single file or batch processing
-        mode_container = QWidget()
-        mode_container_layout = QHBoxLayout(mode_container)
-        mode_container_layout.setContentsMargins(0, 0, 0, 0)
-
+        # ========== TAB WIDGET ==========
+        self.tab_widget = QTabWidget()
+        from PyQt5.QtWidgets import QScrollArea
+        
+        # ========== TAB 1: FILES ==========
+        files_tab = QWidget()
+        files_layout = QVBoxLayout(files_tab)
+        files_layout.setSpacing(16)
+        files_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Mode Selection
         mode_group = QGroupBox("Processing Mode")
         mode_layout = QHBoxLayout(mode_group)
-        mode_layout.setContentsMargins(10, 15, 10, 10)
-
+        mode_layout.setSpacing(20)
+        
         self.single_mode_radio = QRadioButton("Single File")
         self.batch_mode_radio = QRadioButton("Batch Processing")
         self.single_mode_radio.setChecked(True)
-
+        
         mode_layout.addWidget(self.single_mode_radio)
         mode_layout.addWidget(self.batch_mode_radio)
-        mode_layout.addStretch(1)
-
-        # Stokes parameter selection - moved next to mode selection
-        stokes_group = QGroupBox("Stokes Parameter")
-        stokes_group_layout = QVBoxLayout(stokes_group)
-        stokes_group_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Add radio buttons for Stokes mode selection
-        stokes_mode_layout = QHBoxLayout()
+        mode_layout.addStretch()
+        files_layout.addWidget(mode_group)
+        
+        # Connect mode radios
+        self.single_mode_radio.toggled.connect(self.update_mode_ui)
+        self.batch_mode_radio.toggled.connect(self.update_mode_ui)
+        
+        # Input Settings Group
+        self.input_group = QGroupBox("Input Location")
+        input_group_layout = QVBoxLayout(self.input_group)
+        input_group_layout.setSpacing(12)
+        
+        # SINGLE MODE: Image Selection
+        self.single_file_widget = QWidget()
+        single_file_layout = QHBoxLayout(self.single_file_widget)
+        single_file_layout.setContentsMargins(0, 0, 0, 0)
+        
+        img_label = QLabel("Image:")
+        img_label.setMinimumWidth(70)
+        img_label.setStyleSheet("font-weight: 600;")
+        single_file_layout.addWidget(img_label)
+        
+        self.image_path_edit = QLineEdit(self.imagename or "")
+        self.image_path_edit.setPlaceholderText("Select input image (FITS/CASA)...")
+        single_file_layout.addWidget(self.image_path_edit, 1)
+        
+        self.browse_button = QPushButton("Browse...")
+        self.browse_button.clicked.connect(self.browse_image)
+        single_file_layout.addWidget(self.browse_button)
+        
+        input_group_layout.addWidget(self.single_file_widget)
+        
+        # BATCH MODE: Reference & Pattern
+        self.batch_file_widget = QWidget()
+        batch_file_layout = QVBoxLayout(self.batch_file_widget)
+        batch_file_layout.setContentsMargins(0, 0, 0, 0)
+        batch_file_layout.setSpacing(12)
+        
+        # Reference Image
+        ref_row = QHBoxLayout()
+        ref_label = QLabel("Ref Image:")
+        ref_label.setMinimumWidth(70)
+        ref_label.setStyleSheet("font-weight: 600;")
+        ref_row.addWidget(ref_label)
+        
+        self.reference_image_edit = QLineEdit("")
+        self.reference_image_edit.setPlaceholderText("Reference image for phase center calculation")
+        ref_row.addWidget(self.reference_image_edit, 1)
+        
+        self.reference_browse_button = QPushButton("Browse...")
+        self.reference_browse_button.clicked.connect(self.browse_reference_image)
+        ref_row.addWidget(self.reference_browse_button)
+        batch_file_layout.addLayout(ref_row)
+        
+        # Input Pattern
+        pat_row = QHBoxLayout()
+        pat_label = QLabel("Pattern:")
+        pat_label.setMinimumWidth(70)
+        pat_label.setStyleSheet("font-weight: 600;")
+        pat_row.addWidget(pat_label)
+        
+        self.input_pattern_edit = QLineEdit("")
+        self.input_pattern_edit.setPlaceholderText("e.g., /path/to/images/*.fits")
+        pat_row.addWidget(self.input_pattern_edit, 1)
+        
+        # Scan button
+        scan_btn = QPushButton("🔍")
+        scan_btn.setFixedWidth(36)
+        scan_btn.setToolTip("Scan for matching files")
+        scan_btn.clicked.connect(self.scan_files)
+        pat_row.addWidget(scan_btn)
+        
+        self.input_pattern_button = QPushButton("Browse...")
+        self.input_pattern_button.clicked.connect(self.browse_input_pattern)
+        pat_row.addWidget(self.input_pattern_button)
+        batch_file_layout.addLayout(pat_row)
+        
+        # File count label
+        self.files_count_label = QLabel("")
+        self.files_count_label.setStyleSheet(f"color: {text_secondary}; font-style: italic; padding-left: 70px;")
+        batch_file_layout.addWidget(self.files_count_label)
+        
+        input_group_layout.addWidget(self.batch_file_widget)
+        files_layout.addWidget(self.input_group)
+        files_layout.addStretch()
+        
+        # Wrap Files Tab in Scroll Area
+        files_scroll = QScrollArea()
+        files_scroll.setWidgetResizable(True)
+        files_scroll.setFrameShape(QFrame.NoFrame)
+        files_scroll.setWidget(files_tab)
+        self.tab_widget.addTab(files_scroll, "📁 Files")
+        
+        # ========== TAB 2: OPTIONS ==========
+        options_tab = QWidget()
+        options_layout = QVBoxLayout(options_tab)
+        options_layout.setSpacing(16)
+        options_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Stokes Settings
+        stokes_group = QGroupBox("Stokes Parameters")
+        stokes_layout = QVBoxLayout(stokes_group)
+        stokes_layout.setSpacing(12)
+        
+        # Mode
+        stokes_mode_row = QHBoxLayout()
+        stokes_mode_row.setSpacing(20)
+        st_mode_label = QLabel("Mode:")
+        st_mode_label.setStyleSheet("font-weight: 600;")
+        stokes_mode_row.addWidget(st_mode_label)
+        
         self.single_stokes_radio = QRadioButton("Single Stokes")
         self.full_stokes_radio = QRadioButton("Full Stokes")
         self.single_stokes_radio.setChecked(True)
-        stokes_mode_layout.addWidget(self.single_stokes_radio)
-        stokes_mode_layout.addWidget(self.full_stokes_radio)
-        stokes_mode_layout.addStretch(1)
-        stokes_group_layout.addLayout(stokes_mode_layout)
-
-        # Add stokes combo box for selection
-        stokes_select_layout = QHBoxLayout()
+        stokes_mode_row.addWidget(self.single_stokes_radio)
+        stokes_mode_row.addWidget(self.full_stokes_radio)
+        stokes_mode_row.addStretch()
+        stokes_layout.addLayout(stokes_mode_row)
+        
+        # Parameter selection
+        param_row = QHBoxLayout()
+        param_row.setSpacing(20)
+        #param_label = QLabel("Parameter:")
+        #param_label.setStyleSheet("font-weight: 600;")
+        #param_row.addWidget(param_label)
+        self.stokes_label = QLabel("Parameter:")
+        self.stokes_label.setStyleSheet("font-weight: 600;")
+        param_row.addWidget(self.stokes_label)
+        
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(["I", "Q", "U", "V"])
-        stokes_select_layout.addWidget(self.stokes_combo)
-        stokes_select_layout.addStretch(1)
-        stokes_group_layout.addLayout(stokes_select_layout)
-
-        # Connect stokes mode radios to update UI
+        self.stokes_combo.setMinimumWidth(100)
+        param_row.addWidget(self.stokes_combo)
+        param_row.addStretch()
+        stokes_layout.addLayout(param_row)
+        
+        # Connect stokes radios
         self.single_stokes_radio.toggled.connect(self.update_stokes_mode)
         self.full_stokes_radio.toggled.connect(self.update_stokes_mode)
-
-        # Add the two groups to the container
-        mode_container_layout.addWidget(mode_group, 1)
-        mode_container_layout.addWidget(stokes_group, 1)
-        main_layout.addWidget(mode_container)
-
-        # Connect mode radios to update UI
-        self.single_mode_radio.toggled.connect(self.update_mode_ui)
-        self.batch_mode_radio.toggled.connect(self.update_mode_ui)
-
-        # Input and Output options in two columns
-        io_container = QWidget()
-        io_layout = QHBoxLayout(io_container)
-        io_layout.setContentsMargins(0, 0, 0, 0)
-        io_layout.setSpacing(15)
-
-        # Input options group (left column)
-        self.input_group = QGroupBox("Input Settings")
-        input_layout = QVBoxLayout(self.input_group)
-        input_layout.setSpacing(10)
-        input_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Single file mode controls
-        self.single_file_widget = QWidget()
-        single_file_layout = QFormLayout(self.single_file_widget)
-        single_file_layout.setContentsMargins(0, 0, 0, 0)
-        single_file_layout.setVerticalSpacing(8)
-
-        # Image selection
-        image_layout = QHBoxLayout()
-        self.image_path_edit = QLineEdit(self.imagename or "")
-        self.image_path_edit.setReadOnly(True)
-        self.browse_button = QPushButton("Browse...")
-        self.browse_button.clicked.connect(self.browse_image)
-        image_layout.addWidget(self.image_path_edit, 1)
-        image_layout.addWidget(self.browse_button)
-        single_file_layout.addRow("Image:", image_layout)
-
-        # Batch mode controls
-        self.batch_file_widget = QWidget()
-        batch_file_layout = QFormLayout(self.batch_file_widget)
-        batch_file_layout.setContentsMargins(0, 0, 0, 0)
-        batch_file_layout.setVerticalSpacing(8)
-
-        # Reference image selection for batch mode
-        reference_image_layout = QHBoxLayout()
-        self.reference_image_edit = QLineEdit("")
-        self.reference_image_edit.setReadOnly(True)
-        self.reference_image_edit.setPlaceholderText(
-            "Select reference image for phase center calculation"
-        )
-        self.reference_browse_button = QPushButton("Browse...")
-        self.reference_browse_button.clicked.connect(self.browse_reference_image)
-        reference_image_layout.addWidget(self.reference_image_edit, 1)
-        reference_image_layout.addWidget(self.reference_browse_button)
-        batch_file_layout.addRow("Reference Image:", reference_image_layout)
-
-        # Input pattern selection
-        input_pattern_layout = QHBoxLayout()
-        self.input_pattern_edit = QLineEdit("")
-        self.input_pattern_edit.setPlaceholderText("e.g., /path/to/images/*.fits")
-        self.input_pattern_button = QPushButton("Browse...")
-        self.input_pattern_button.clicked.connect(self.browse_input_pattern)
-        input_pattern_layout.addWidget(self.input_pattern_edit, 1)
-        input_pattern_layout.addWidget(self.input_pattern_button)
-        batch_file_layout.addRow("Apply To Pattern:", input_pattern_layout)
-
-        # MS File selection (optional) - common for both modes
-        '''ms_layout = QHBoxLayout()
-        self.ms_path_edit = QLineEdit("")
-        self.ms_path_edit.setPlaceholderText(
-            "Optional MS file for phase center calculation"
-        )
-        self.ms_browse_button = QPushButton("Browse...")
-        self.ms_browse_button.clicked.connect(self.browse_ms)
-        ms_layout.addWidget(self.ms_path_edit, 1)
-        ms_layout.addWidget(self.ms_browse_button)
-        '''
-        # Add widgets to input layout
-        input_layout.addWidget(self.single_file_widget)
-        input_layout.addWidget(self.batch_file_widget)
-        self.batch_file_widget.setVisible(False)
-
-        # Add MS file row directly to the input layout
-        '''ms_form_container = QWidget()
-        ms_form_layout = QFormLayout(ms_form_container)
-        ms_form_layout.setContentsMargins(0, 0, 0, 0)
-        ms_form_layout.setVerticalSpacing(8)
-        ms_form_layout.addRow("MS File (optional):", ms_layout)
-        input_layout.addWidget(ms_form_container)'''
-
-        # Output options group (right column)
-        output_group = QGroupBox("Output Settings")
-        output_layout = QVBoxLayout(output_group)
-        output_layout.setSpacing(10)
-        output_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Single file output
-        self.single_output_widget = QWidget()
-        single_output_layout = QFormLayout(self.single_output_widget)
-        single_output_layout.setContentsMargins(0, 0, 0, 0)
-        single_output_layout.setVerticalSpacing(8)
-
-        # Output file selection for single file
-        output_file_layout = QHBoxLayout()
-        self.output_path_edit = QLineEdit("")
-        self.output_path_edit.setPlaceholderText("Default: centered_{input_name}.fits")
-        self.output_browse_button = QPushButton("Browse...")
-        self.output_browse_button.clicked.connect(self.browse_output)
-        output_file_layout.addWidget(self.output_path_edit, 1)
-        output_file_layout.addWidget(self.output_browse_button)
-        single_output_layout.addRow("Output File:", output_file_layout)
-        output_layout.addWidget(self.single_output_widget)
-
-        # Batch file output
-        self.batch_output_widget = QWidget()
-        batch_output_layout = QVBoxLayout(self.batch_output_widget)
-        batch_output_layout.setContentsMargins(0, 0, 0, 0)
-        batch_output_layout.setSpacing(8)
-
-        # Output pattern for batch mode
-        output_pattern_form = QFormLayout()
-        output_pattern_form.setVerticalSpacing(8)
-        output_pattern_layout = QHBoxLayout()
-        self.output_pattern_edit = QLineEdit("")
-        self.output_pattern_edit.setPlaceholderText("e.g., centered/centered_*.fits")
-        self.output_pattern_button = QPushButton("Browse Directory...")
-        self.output_pattern_button.clicked.connect(self.browse_output_dir)
-        output_pattern_layout.addWidget(self.output_pattern_edit, 1)
-        output_pattern_layout.addWidget(self.output_pattern_button)
-        output_pattern_form.addRow("Output Pattern:", output_pattern_layout)
-        batch_output_layout.addLayout(output_pattern_form)
-
-        # Add a help text for pattern
-        pattern_help = QLabel(
-            "Use * in the pattern as a placeholder for the original filename."
-        )
-        pattern_help.setStyleSheet("color: #BBB; font-style: italic;")
-        batch_output_layout.addWidget(pattern_help)
-
-        output_layout.addWidget(self.batch_output_widget)
-        self.batch_output_widget.setVisible(False)
-
-        # Add the input and output groups to the container
-        io_layout.addWidget(self.input_group, 1)
-        io_layout.addWidget(output_group, 1)
-        main_layout.addWidget(io_container)
-
-        # Method settings and Visual centering in one row
-        method_container = QWidget()
-        method_container_layout = QHBoxLayout(method_container)
-        method_container_layout.setContentsMargins(0, 0, 0, 0)
-        method_container_layout.setSpacing(15)
-
-        # Method options group
-        method_group = QGroupBox("Method Settings")
+        
+        options_layout.addWidget(stokes_group)
+        
+        # Method Settings
+        method_group = QGroupBox("Detection Method")
         method_layout = QVBoxLayout(method_group)
-        method_layout.setSpacing(10)
-        method_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Solar center detection method selection (radio buttons)
-        method_select_layout = QHBoxLayout()
-        method_select_layout.addWidget(QLabel("Detection Method:"))
+        method_layout.setSpacing(12)
+        
+        # Method selection
+        met_sel_row = QHBoxLayout()
+        met_sel_row.setSpacing(20)
+        met_label = QLabel("Method:")
+        met_label.setStyleSheet("font-weight: 600;")
+        met_sel_row.addWidget(met_label)
+        
         self.gaussian_method_radio = QRadioButton("Gaussian Fitting")
         self.com_method_radio = QRadioButton("Center of Mass")
-        self.gaussian_method_radio.setChecked(True)  # Default to Gaussian
-        method_select_layout.addWidget(self.gaussian_method_radio)
-        method_select_layout.addWidget(self.com_method_radio)
-        method_select_layout.addStretch()
-        method_layout.addLayout(method_select_layout)
-
-        # Sigma threshold for center-of-mass (only active when CoM is selected)
-        sigma_layout = QHBoxLayout()
-        self.sigma_label = QLabel("Sigma threshold:")
-        sigma_layout.addWidget(self.sigma_label)
+        self.gaussian_method_radio.setChecked(True)
+        met_sel_row.addWidget(self.gaussian_method_radio)
+        met_sel_row.addWidget(self.com_method_radio)
+        met_sel_row.addStretch()
+        method_layout.addLayout(met_sel_row)
+        
+        # Sigma threshold
+        sigma_row = QHBoxLayout()
+        sigma_row.setSpacing(20)
+        self.sigma_label = QLabel("Sigma:")
+        self.sigma_label.setStyleSheet("font-weight: 600;")
+        sigma_row.addWidget(self.sigma_label)
+        
         self.sigma_spinbox = QDoubleSpinBox()
         self.sigma_spinbox.setRange(1.0, 20.0)
         self.sigma_spinbox.setValue(10.0)
         self.sigma_spinbox.setSingleStep(0.5)
         self.sigma_spinbox.setToolTip("Threshold multiplier for center-of-mass detection")
-        sigma_layout.addWidget(self.sigma_spinbox)
-        sigma_layout.addStretch()
-        method_layout.addLayout(sigma_layout)
+        sigma_row.addWidget(self.sigma_spinbox)
+        sigma_row.addStretch()
+        method_layout.addLayout(sigma_row)
         
-        # Initially disable sigma since Gaussian is default
-        self.sigma_label.setEnabled(False)
-        self.sigma_spinbox.setEnabled(False)
+        # Initially disable sigma
+        #self.sigma_label.setEnabled(False)
+        #self.sigma_spinbox.setEnabled(False)
+        self.sigma_label.setVisible(False)
+        self.sigma_spinbox.setVisible(False)
         
-        # Connect method radios to enable/disable sigma
+        # Connect method radios
         self.gaussian_method_radio.toggled.connect(self._update_method_options)
         self.com_method_radio.toggled.connect(self._update_method_options)
-
-        # Visual centering option - now default ON
-        self.visual_center_check = QCheckBox(
-            "Create visually centered image"
-        )
-        self.visual_center_check.setChecked(True)  # Default to True
-        self.visual_center_check.setToolTip(
-            "Shifts pixel data so Sun appears at image center"
-        )
+        
+        # Visual centering option
+        self.visual_center_check = QCheckBox("Create visually centered image")
+        self.visual_center_check.setChecked(True)
+        self.visual_center_check.setToolTip("Shifts pixel data so Sun appears at image center")
         method_layout.addWidget(self.visual_center_check)
-
-        # Multiprocessing options container (only visible in batch mode)
+        
+        options_layout.addWidget(method_group)
+        
+        # Multiprocessing Options (Batch Only)
         self.multiprocessing_widget = QWidget()
         mp_layout = QVBoxLayout(self.multiprocessing_widget)
         mp_layout.setContentsMargins(0, 0, 0, 0)
-        mp_layout.setSpacing(5)
         
-        self.multiprocessing_check = QCheckBox(
-            "Use multiprocessing for batch operations"
-        )
+        mp_group = QGroupBox("Performance")
+        mp_group_layout = QVBoxLayout(mp_group)
+        
+        self.multiprocessing_check = QCheckBox("Use multiprocessing")
         self.multiprocessing_check.setChecked(True)
-        self.multiprocessing_check.setToolTip(
-            "Enable parallel processing for batch operations"
-        )
-        mp_layout.addWidget(self.multiprocessing_check)
-
-        # CPU cores selection
-        cores_layout = QHBoxLayout()
-        cores_layout.addWidget(QLabel("CPU cores:"))
+        mp_group_layout.addWidget(self.multiprocessing_check)
+        
+        cores_row = QHBoxLayout()
+        cores_row.setSpacing(20)
+        cores_label = QLabel("CPU cores:")
+        cores_label.setStyleSheet("font-weight: 600;")
+        cores_row.addWidget(cores_label)
+        
         self.cores_spinbox = QSpinBox()
         self.cores_spinbox.setRange(1, multiprocessing.cpu_count())
-        self.cores_spinbox.setValue(
-            max(1, multiprocessing.cpu_count() - 1)
-        )  # Default to N-1 cores
+        self.cores_spinbox.setValue(max(1, multiprocessing.cpu_count() - 1))
         self.cores_spinbox.setSingleStep(1)
-        self.cores_spinbox.setToolTip(
-            f"Maximum: {multiprocessing.cpu_count()} cores available"
-        )
-        cores_layout.addWidget(self.cores_spinbox)
-        cores_layout.addStretch()
-        mp_layout.addLayout(cores_layout)
-
-        # Connect multiprocessing checkbox to enable/disable cores spinbox
+        cores_row.addWidget(self.cores_spinbox)
+        cores_row.addStretch()
+        mp_group_layout.addLayout(cores_row)
+        
+        mp_layout.addWidget(mp_group)
+        
+        # Connect MP check
         self.multiprocessing_check.toggled.connect(self.cores_spinbox.setEnabled)
         
-        method_layout.addWidget(self.multiprocessing_widget)
-        self.multiprocessing_widget.setVisible(False)  # Hidden by default (single file mode)
-
-        # Add the method group to the container (full width)
-        method_container_layout.addWidget(method_group)
-        main_layout.addWidget(method_container)
-
-        # Add a status text area
+        options_layout.addWidget(self.multiprocessing_widget)
+        options_layout.addStretch()
+        
+        # Wrap Options Tab in Scroll Area
+        options_scroll = QScrollArea()
+        options_scroll.setWidgetResizable(True)
+        options_scroll.setFrameShape(QFrame.NoFrame)
+        options_scroll.setWidget(options_tab)
+        self.tab_widget.addTab(options_scroll, "⚙️ Options")
+        
+        # ========== TAB 3: OUTPUT ==========
+        output_tab = QWidget()
+        output_layout = QVBoxLayout(output_tab)
+        output_layout.setSpacing(16)
+        output_layout.setContentsMargins(16, 16, 16, 16)
+        
+        out_group = QGroupBox("Output Settings")
+        out_layout = QVBoxLayout(out_group)
+        out_layout.setSpacing(12)
+        
+        # SINGLE OUTPUT
+        self.single_output_widget = QWidget()
+        single_out_layout = QHBoxLayout(self.single_output_widget)
+        single_out_layout.setContentsMargins(0, 0, 0, 0)
+        
+        out_label = QLabel("File:")
+        out_label.setMinimumWidth(70)
+        out_label.setStyleSheet("font-weight: 600;")
+        single_out_layout.addWidget(out_label)
+        
+        self.output_path_edit = QLineEdit("")
+        self.output_path_edit.setPlaceholderText("Default: centered_{input_name}.fits")
+        single_out_layout.addWidget(self.output_path_edit, 1)
+        
+        self.output_browse_button = QPushButton("Browse...")
+        self.output_browse_button.clicked.connect(self.browse_output)
+        single_out_layout.addWidget(self.output_browse_button)
+        out_layout.addWidget(self.single_output_widget)
+        
+        # BATCH OUTPUT
+        self.batch_output_widget = QWidget()
+        batch_out_layout = QHBoxLayout(self.batch_output_widget)
+        batch_out_layout.setContentsMargins(0, 0, 0, 0)
+        
+        out_pat_label = QLabel("Pattern:")
+        out_pat_label.setMinimumWidth(70)
+        out_pat_label.setStyleSheet("font-weight: 600;")
+        batch_out_layout.addWidget(out_pat_label)
+        
+        self.output_pattern_edit = QLineEdit("")
+        self.output_pattern_edit.setPlaceholderText("e.g., centered/centered_*.fits")
+        batch_out_layout.addWidget(self.output_pattern_edit, 1)
+        
+        self.output_pattern_button = QPushButton("Browse Dir...")
+        self.output_pattern_button.clicked.connect(self.browse_output_dir)
+        batch_out_layout.addWidget(self.output_pattern_button)
+        out_layout.addWidget(self.batch_output_widget)
+        
+        output_layout.addWidget(out_group)
+        
+        # Pattern help
+        help_group = QGroupBox("Pattern Help")
+        help_layout = QVBoxLayout(help_group)
+        help_text = QLabel(
+            "Use <b>*</b> as a placeholder for the original filename.\n\n"
+            "<b>Example:</b> Input <code>sun_2024.fits</code> with pattern <code>centered_*.fits</code>\n"
+            "→ Output: <code>centered_sun_2024.fits</code>"
+        )
+        help_text.setWordWrap(True)
+        help_text.setStyleSheet(f"color: {text_secondary}; line-height: 1.5;")
+        help_layout.addWidget(help_text)
+        output_layout.addWidget(help_group)
+        output_layout.addStretch()
+        
+        # Wrap Output Tab in Scroll Area
+        output_scroll = QScrollArea()
+        output_scroll.setWidgetResizable(True)
+        output_scroll.setFrameShape(QFrame.NoFrame)
+        output_scroll.setWidget(output_tab)
+        self.tab_widget.addTab(output_scroll, "💾 Output")
+        
+        main_layout.addWidget(self.tab_widget, 1)
+        
+        # ========== STATUS PANEL ==========
         status_group = QGroupBox("Status / Results")
         status_layout = QVBoxLayout(status_group)
-        status_layout.setContentsMargins(10, 15, 10, 10)
-
+        status_layout.setContentsMargins(10, 12, 10, 10)
+        
         self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
         self.status_text.setPlaceholderText("Status and results will appear here")
-        self.status_text.setMinimumHeight(100)
-        status_layout.addWidget(self.status_text)
-
+        self.status_text.setMinimumHeight(25)
+        self.status_text.setMaximumHeight(150)
+        status_layout.addWidget(self.status_text, 1)
+        
         main_layout.addWidget(status_group)
 
-        # Add dialog buttons
+        # Dialog Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.apply_phase_shift)
         button_box.rejected.connect(self.reject)
-        main_layout.addWidget(button_box)
-
-        # Set the Ok button text based on mode
+        
         self.ok_button = button_box.button(QDialogButtonBox.Ok)
         self.ok_button.setText("Apply Shift")
-
-        # Apply consistent styling to the dialog
-        self.setStyleSheet(
-            """
-            QGroupBox {
-                border: 1px solid #555555;
-                border-radius: 3px;
-                margin-top: 0.5em;
-                padding-top: 0.5em;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
-            }
-            QLabel {
-                margin-top: 2px;
-                margin-bottom: 2px;
-            }
-            QRadioButton, QCheckBox {
-                min-height: 20px;
-            }
-        """
-        )
+        
+        main_layout.addWidget(button_box)
+        
+        # Initialize UI state
+        self.update_mode_ui()
 
     def update_mode_ui(self):
         """Update UI components based on the selected mode"""
@@ -1785,13 +1819,14 @@ class PhaseShiftDialog(QDialog):
     def update_stokes_mode(self):
         """Update UI based on selected Stokes mode"""
         single_stokes = self.single_stokes_radio.isChecked()
-        self.stokes_combo.setEnabled(single_stokes)
+        self.stokes_label.setVisible(single_stokes)
+        self.stokes_combo.setVisible(single_stokes)
     
     def _update_method_options(self):
         """Enable/disable sigma threshold based on detection method selection"""
         use_com = self.com_method_radio.isChecked()
-        self.sigma_label.setEnabled(use_com)
-        self.sigma_spinbox.setEnabled(use_com)
+        self.sigma_label.setVisible(use_com)
+        self.sigma_spinbox.setVisible(use_com)
 
     def browse_image(self):
         """Browse for input image file (FITS or CASA image directory)"""
@@ -1929,6 +1964,39 @@ class PhaseShiftDialog(QDialog):
                 file_dir = os.path.dirname(file_path)
                 output_dir = os.path.join(file_dir, "centered")
                 self.output_pattern_edit.setText(os.path.join(output_dir, "centered_*.fits"))
+
+    def scan_files(self):
+        """Scan for matched files and display count inline"""
+        input_pattern = self.input_pattern_edit.text()
+        if not input_pattern:
+            self.files_count_label.setText("Please enter a pattern")
+            return
+            
+        try:
+            matched_files = sorted(glob.glob(input_pattern))
+            count = len(matched_files)
+            
+            # Format text
+            if count == 0:
+                text = "No files found"
+                color = "#FF6B6B"  # Light red
+            else:
+                text = f"Found {count} files"
+                color = "#69F0AE"  # Light green (matching HPC dialog style)
+                
+            self.files_count_label.setText(text)
+            self.files_count_label.setStyleSheet(f"color: {color}; font-style: italic; padding-left: 70px;")
+            
+        except Exception as e:
+            self.files_count_label.setText(f"Error: {str(e)}")
+            self.files_count_label.setStyleSheet("color: #FF6B6B; padding-left: 70px;")
+
+    def _get_matching_files(self):
+        """Helper to get files matching the input pattern"""
+        pattern = self.input_pattern_edit.text()
+        if not pattern:
+            return []
+        return sorted(glob.glob(pattern))
 
     def apply_phase_shift(self):
         """Apply the phase shift to the image(s)"""
@@ -4375,3 +4443,29 @@ class PreferencesDialog(QDialog):
         
         # Start new instance
         os.execv(python, [python] + args)
+
+def process_single_file_phase_shift(args):
+    """
+    Wrapper for multiprocessing: instantiates SolarPhaseCenter and processes file.
+    
+    Parameters
+    ----------
+    args : tuple
+        Tuple containing (file_path, ra, dec, stokes, output_pattern, visual_center, phase_result)
+        
+    Returns
+    -------
+    tuple
+        (success, file_path, error_message)
+    """
+    try:
+        from .move_phasecenter import SolarPhaseCenter
+        # Instantiate fresh for this process
+        spc = SolarPhaseCenter()
+        return spc.process_single_file(args)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Try to extract filename from args if possible
+        filename = args[0] if args and len(args) > 0 else "Unknown"
+        return (False, filename, f"Process Error: {str(e)}")
