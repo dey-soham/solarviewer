@@ -73,7 +73,28 @@ def process_single_file_hpc(args):
             "stokes": stokes,
             "success": False,
             "error": None,
+            "skipped": False,  # True if already HPC and just copied
         }
+
+        # Check if file is already in HPC coordinates
+        if is_already_hpc(input_file):
+            # Just copy the file instead of converting
+            import shutil
+            try:
+                if os.path.isdir(input_file):
+                    # CASA image - copy directory
+                    if os.path.exists(output_path):
+                        shutil.rmtree(output_path)
+                    shutil.copytree(input_file, output_path)
+                else:
+                    # FITS file - copy file
+                    shutil.copy2(input_file, output_path)
+                result["success"] = True
+                result["skipped"] = True
+                return result
+            except Exception as e:
+                result["error"] = f"Copy failed: {str(e)}"
+                return result
 
         # Import the function here to ensure we have it in the subprocess
         from .helioprojective import convert_and_save_hpc
@@ -96,6 +117,59 @@ def process_single_file_hpc(args):
         result["error"] = str(e)
         result["traceback"] = traceback.format_exc()
         return result
+
+
+def is_already_hpc(imagepath):
+    """Check if image is already in helioprojective coordinates (Solar-X/Y or HPLN/HPLT).
+    
+    This is a standalone function for use in multiprocessing.
+    
+    Parameters:
+    -----------
+    imagepath : str
+        Path to the image file (FITS) or directory (CASA image)
+    
+    Returns:
+    --------
+    bool
+        True if already in HPC coordinates, False otherwise
+    """
+    if not imagepath or not os.path.exists(imagepath):
+        return False
+    
+    try:
+        # For FITS files, check the header
+        if imagepath.endswith(".fits") or imagepath.endswith(".fts"):
+            from astropy.io import fits
+            header = fits.getheader(imagepath)
+            ctype1 = header.get("CTYPE1", "").upper()
+            ctype2 = header.get("CTYPE2", "").upper()
+            
+            # Check for HPC (Helioprojective)
+            if ("HPLN" in ctype1 or "HPLT" in ctype2 or 
+                "SOLAR" in ctype1 or "SOLAR" in ctype2):
+                return True
+        
+        # For CASA images, check coordinate system
+        if os.path.isdir(imagepath):
+            try:
+                from casatools import image as IA
+                ia_tool = IA()
+                ia_tool.open(imagepath)
+                csys = ia_tool.coordsys()
+                dimension_names = [n.upper() for n in csys.names()]
+                ia_tool.close()
+                
+                if "SOLAR-X" in dimension_names or "SOLAR-Y" in dimension_names:
+                    return True
+                if "HPLN-TAN" in dimension_names or "HPLT-TAN" in dimension_names:
+                    return True
+            except Exception:
+                pass
+        
+        return False
+    except Exception:
+        return False
 
 
 class ContourSettingsDialog(QDialog):
@@ -2347,242 +2421,461 @@ class HPCBatchConversionDialog(QDialog):
     def __init__(self, parent=None, current_file=None):
         super().__init__(parent)
         self.setWindowTitle("Batch Conversion to Helioprojective Coordinates")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(600, 500)
+        self.resize(750, 700)
         self.parent = parent
         self.current_file = current_file
+        
+        # Import theme manager for theme-aware styling
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        # Get colors directly from the palette for consistency
+        palette = theme_manager.palette
+        is_dark = theme_manager.is_dark
+        
+        border_color = palette['border']
+        surface_color = palette['surface']
+        base_color = palette['base']
+        disabled_color = palette['disabled']
+        text_color = palette['text']
+        highlight_color = palette['highlight']
+        text_secondary = palette.get('text_secondary', disabled_color)
+        
+        # Apply theme-aware stylesheet
+        self.setStyleSheet(
+            f"""
+            QGroupBox {{
+                background-color: {surface_color};
+                border: 1px solid {border_color};
+                border-radius: 10px;
+                margin-top: 16px;
+                padding: 15px;
+                padding-top: 10px;
+                font-weight: bold;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 15px;
+                top: 2px;
+                padding: 2px 12px;
+                background-color: {surface_color};
+                color: {highlight_color};
+                border-radius: 4px;
+            }}
+            QLineEdit {{
+                background-color: {base_color};
+                color: {text_color};
+                padding: 6px 10px;
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+            QLineEdit:focus {{
+                border-color: {highlight_color};
+                border-width: 2px;
+            }}
+            QLineEdit:disabled {{
+                background-color: {surface_color};
+                color: {disabled_color};
+            }}
+            QComboBox {{
+                background-color: {base_color};
+                color: {text_color};
+                padding: 5px 10px;
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+            QComboBox:hover {{
+                border-color: {highlight_color};
+            }}
+            QComboBox:disabled {{
+                background-color: {surface_color};
+                color: {disabled_color};
+            }}
+            QRadioButton {{
+                color: {text_color};
+                spacing: 8px;
+            }}
+            QRadioButton::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {border_color};
+                border-radius: 9px;
+                background-color: {base_color};
+            }}
+            QRadioButton::indicator:checked {{
+                background-color: {highlight_color};
+                border-color: {highlight_color};
+            }}
+            QRadioButton:disabled {{
+                color: {disabled_color};
+            }}
+            QSpinBox, QDoubleSpinBox {{
+                background-color: {base_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 4px 8px;
+            }}
+            QSpinBox:disabled, QDoubleSpinBox:disabled {{
+                background-color: {surface_color};
+                color: {disabled_color};
+            }}
+            QCheckBox {{
+                color: {text_color};
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {border_color};
+                border-radius: 4px;
+                background-color: {base_color};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {highlight_color};
+                border-color: {highlight_color};
+            }}
+            QLabel {{
+                color: {text_color};
+            }}
+            QLabel:disabled {{
+                color: {disabled_color};
+            }}
+            QListWidget {{
+                background-color: {base_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 4px;
+            }}
+            QListWidget::item {{
+                padding: 4px 8px;
+                border-radius: 4px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {highlight_color};
+            }}
+            QPlainTextEdit {{
+                background-color: {base_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 8px;
+            }}
+            QPushButton {{
+                padding: 6px 16px;
+                border-radius: 6px;
+            }}
+        """
+        )
+        
+        # Store theme colors for later use
+        self._highlight_color = highlight_color
+        self._text_secondary = text_secondary
+        
         self.setup_ui()
 
     def setup_ui(self):
-        """Set up the dialog UI with a two-column layout."""
+        """Set up the dialog UI with a modern tabbed layout."""
+        try:
+            from .styles import theme_manager
+        except ImportError:
+            from styles import theme_manager
+        
+        palette = theme_manager.palette
+        highlight_color = palette['highlight']
+        text_secondary = palette.get('text_secondary', palette['disabled'])
+        border_color = palette['border']
+        
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(15)
+        main_layout.setSpacing(12)
         main_layout.setContentsMargins(15, 15, 15, 15)
 
-        # Add a description at the top
-        description = QLabel(
-            "This tool converts multiple images to helioprojective coordinates in batch. "
-            "Select a pattern of files to convert and specify the output pattern."
+        # Header description
+        header = QLabel(
+            "Convert multiple FITS/CASA images to helioprojective coordinates (HPC) in batch."
         )
-        description.setWordWrap(True)
-        #description.setStyleSheet("color: #BBB; font-style: italic;")
-        description.setStyleSheet("font-style: italic;")
-        main_layout.addWidget(description)
+        header.setWordWrap(True)
+        header.setStyleSheet(f"font-style: italic; color: {text_secondary}; padding: 4px 0;")
+        main_layout.addWidget(header)
 
-        # Create two-column layout
-        columns_layout = QHBoxLayout()
-        columns_layout.setSpacing(15)
-
-        # ===== LEFT COLUMN =====
-        left_column = QVBoxLayout()
-        left_column.setSpacing(10)
-
-        # Input section
-        input_group = QGroupBox("Input Settings")
-        input_layout = QVBoxLayout(input_group)
-        input_layout.setSpacing(10)
-        input_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Directory selection
-        dir_layout = QHBoxLayout()
-        self.dir_label = QLabel("Input Directory:")
+        # ========== TAB WIDGET ==========
+        self.tab_widget = QTabWidget()
+        
+        # Import QScrollArea for scrollable tabs
+        from PyQt5.QtWidgets import QScrollArea
+        
+        # ========== TAB 1: FILES ==========
+        files_tab = QWidget()
+        files_layout = QVBoxLayout(files_tab)
+        files_layout.setSpacing(16)
+        files_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Input directory row
+        dir_group = QGroupBox("Input Location")
+        dir_group_layout = QVBoxLayout(dir_group)
+        dir_group_layout.setSpacing(12)
+        
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(12)
+        dir_label = QLabel("Directory:")
+        dir_label.setStyleSheet("font-weight: 600;")
+        dir_label.setMinimumWidth(70)
+        dir_row.addWidget(dir_label)
+        
         self.dir_edit = QLineEdit()
         if self.current_file:
             self.dir_edit.setText(os.path.dirname(self.current_file))
+        self.dir_edit.setPlaceholderText("Select input directory...")
+        dir_row.addWidget(self.dir_edit, 1)
+        
         self.dir_browse_btn = QPushButton("Browse...")
         self.dir_browse_btn.clicked.connect(self.browse_directory)
-        dir_layout.addWidget(self.dir_label)
-        dir_layout.addWidget(self.dir_edit, 1)
-        dir_layout.addWidget(self.dir_browse_btn)
-        input_layout.addLayout(dir_layout)
-
-        # File pattern
-        pattern_layout = QHBoxLayout()
-        self.pattern_label = QLabel("File Pattern:")
+        dir_row.addWidget(self.dir_browse_btn)
+        dir_group_layout.addLayout(dir_row)
+        
+        # File pattern row
+        pattern_row = QHBoxLayout()
+        pattern_row.setSpacing(12)
+        pattern_label = QLabel("Pattern:")
+        pattern_label.setStyleSheet("font-weight: 600;")
+        pattern_label.setMinimumWidth(70)
+        pattern_row.addWidget(pattern_label)
+        
         self.pattern_edit = QLineEdit()
         if self.current_file:
             file_ext = os.path.splitext(self.current_file)[1]
             self.pattern_edit.setText(f"*{file_ext}")
         else:
             self.pattern_edit.setText("*.fits")
-        self.pattern_edit.setPlaceholderText("e.g., *.fits")
-        pattern_layout.addWidget(self.pattern_label)
-        pattern_layout.addWidget(self.pattern_edit, 1)
-        input_layout.addLayout(pattern_layout)
-
-        # Preview button
-        preview_btn = QPushButton("Preview Files")
+        self.pattern_edit.setPlaceholderText("e.g., *.fits, sun_*.fits")
+        pattern_row.addWidget(self.pattern_edit, 1)
+        
+        # Scan button - scans and shows count without opening preview
+        scan_btn = QPushButton("🔍")
+        scan_btn.setFixedWidth(36)
+        scan_btn.setToolTip("Scan for matching files")
+        scan_btn.clicked.connect(self.scan_files)
+        pattern_row.addWidget(scan_btn)
+        
+        preview_btn = QPushButton("Preview")
+        preview_btn.setToolTip("Show list of files matching the pattern")
         preview_btn.clicked.connect(self.preview_files)
-        input_layout.addWidget(preview_btn)
-
-        # Files list
-        self.files_label = QLabel("Files to be processed:")
-        input_layout.addWidget(self.files_label)
-
-        self.files_list = QListWidget()
-        self.files_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.files_list.setMinimumHeight(150)
-        input_layout.addWidget(self.files_list)
-
-        left_column.addWidget(input_group)
-
-        # Stokes and Processing Settings group (combined for better space usage)
-        options_group = QGroupBox("Processing Options")
-        options_layout = QVBoxLayout(options_group)
-        options_layout.setSpacing(10)
-        options_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Stokes parameter selection
-        stokes_form = QFormLayout()
-        stokes_form.setVerticalSpacing(10)
-        stokes_form.setHorizontalSpacing(15)
-
-        # Mode selection layout
-        stokes_mode_layout = QHBoxLayout()
+        pattern_row.addWidget(preview_btn)
+        dir_group_layout.addLayout(pattern_row)
+        
+        # File count label (shown after scanning)
+        self.files_count_label = QLabel("")
+        self.files_count_label.setStyleSheet(f"color: {text_secondary}; font-style: italic; padding-left: 70px;")
+        dir_group_layout.addWidget(self.files_count_label)
+        
+        files_layout.addWidget(dir_group)
+        files_layout.addStretch()
+        
+        # Wrap in scroll area
+        files_scroll = QScrollArea()
+        files_scroll.setWidgetResizable(True)
+        files_scroll.setFrameShape(QFrame.NoFrame)
+        files_scroll.setWidget(files_tab)
+        self.tab_widget.addTab(files_scroll, "📁 Files")
+        
+        # ========== TAB 2: OPTIONS ==========
+        options_tab = QWidget()
+        options_layout = QVBoxLayout(options_tab)
+        options_layout.setSpacing(16)
+        options_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Stokes Settings
+        stokes_group = QGroupBox("Stokes Parameters")
+        stokes_layout = QVBoxLayout(stokes_group)
+        stokes_layout.setSpacing(12)
+        
+        # Mode selection
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(20)
+        mode_label = QLabel("Mode:")
+        mode_label.setStyleSheet("font-weight: 600;")
+        mode_row.addWidget(mode_label)
+        
         self.single_stokes_radio = QRadioButton("Single Stokes")
-        self.full_stokes_radio = QRadioButton("Full Stokes")
+        self.single_stokes_radio.setToolTip("Convert only one Stokes parameter per file")
+        self.full_stokes_radio = QRadioButton("Full Stokes (I, Q, U, V)")
+        self.full_stokes_radio.setToolTip("Convert all Stokes parameters for each file")
         self.single_stokes_radio.setChecked(True)
-        stokes_mode_layout.addWidget(self.single_stokes_radio)
-        stokes_mode_layout.addWidget(self.full_stokes_radio)
-        stokes_mode_layout.addStretch(1)
-        stokes_form.addRow("Mode:", stokes_mode_layout)
-
-        # Stokes combo
+        mode_row.addWidget(self.single_stokes_radio)
+        mode_row.addWidget(self.full_stokes_radio)
+        mode_row.addStretch()
+        stokes_layout.addLayout(mode_row)
+        
+        # Stokes selection
+        param_row = QHBoxLayout()
+        param_row.setSpacing(20)
+        param_label = QLabel("Parameter:")
+        param_label.setStyleSheet("font-weight: 600;")
+        param_row.addWidget(param_label)
+        
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(["I", "Q", "U", "V"])
-        stokes_form.addRow("Parameter:", self.stokes_combo)
-
-        # Connect stokes mode radios to update UI
+        self.stokes_combo.setMinimumWidth(80)
+        param_row.addWidget(self.stokes_combo)
+        param_row.addStretch()
+        stokes_layout.addLayout(param_row)
+        
+        # Connect mode radios
         self.single_stokes_radio.toggled.connect(self.update_stokes_mode)
         self.full_stokes_radio.toggled.connect(self.update_stokes_mode)
-
-        options_layout.addLayout(stokes_form)
-
-        # Add a separator line
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
-        options_layout.addWidget(line)
-
-        # Multiprocessing options
-        self.multiprocessing_check = QCheckBox("Use multiprocessing (faster)")
+        
+        options_layout.addWidget(stokes_group)
+        
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(f"background-color: {border_color};")
+        sep.setFixedHeight(1)
+        options_layout.addWidget(sep)
+        
+        # Performance Settings
+        perf_group = QGroupBox("Performance")
+        perf_layout = QVBoxLayout(perf_group)
+        perf_layout.setSpacing(12)
+        
+        self.multiprocessing_check = QCheckBox("Use multiprocessing for faster conversion")
         self.multiprocessing_check.setChecked(True)
-        options_layout.addWidget(self.multiprocessing_check)
-
-        # CPU cores selection
-        cores_layout = QHBoxLayout()
-        cores_layout.addWidget(QLabel("CPU cores:"))
+        perf_layout.addWidget(self.multiprocessing_check)
+        
+        cores_row = QHBoxLayout()
+        cores_row.setSpacing(12)
+        cores_label = QLabel("CPU Cores:")
+        cores_label.setStyleSheet("font-weight: 600;")
+        cores_row.addWidget(cores_label)
+        
         self.cores_spinbox = QSpinBox()
         self.cores_spinbox.setRange(1, multiprocessing.cpu_count())
         self.cores_spinbox.setValue(max(1, multiprocessing.cpu_count() - 1))
-        cores_layout.addWidget(self.cores_spinbox)
-        cores_layout.addStretch()
-        options_layout.addLayout(cores_layout)
-
-        # Connect multiprocessing checkbox to enable/disable cores spinbox
+        self.cores_spinbox.setMinimumWidth(70)
+        cores_row.addWidget(self.cores_spinbox)
+        
+        cores_hint = QLabel(f"(max: {multiprocessing.cpu_count()})")
+        cores_hint.setStyleSheet(f"color: {text_secondary};")
+        cores_row.addWidget(cores_hint)
+        cores_row.addStretch()
+        perf_layout.addLayout(cores_row)
+        
         self.multiprocessing_check.toggled.connect(self.cores_spinbox.setEnabled)
-
-        left_column.addWidget(options_group)
-
-        # ===== RIGHT COLUMN =====
-        right_column = QVBoxLayout()
-        right_column.setSpacing(10)
-
-        # Output section
-        output_group = QGroupBox("Output Settings")
-        output_layout = QVBoxLayout(output_group)
-        output_layout.setSpacing(10)
-        output_layout.setContentsMargins(10, 15, 10, 10)
-
-        # Output directory and pattern
-        output_dir_layout = QHBoxLayout()
-        self.output_dir_label = QLabel("Output Directory:")
+        
+        options_layout.addWidget(perf_group)
+        options_layout.addStretch()
+        
+        # Wrap in scroll area
+        options_scroll = QScrollArea()
+        options_scroll.setWidgetResizable(True)
+        options_scroll.setFrameShape(QFrame.NoFrame)
+        options_scroll.setWidget(options_tab)
+        self.tab_widget.addTab(options_scroll, "⚙️ Options")
+        
+        # ========== TAB 3: OUTPUT ==========
+        output_tab = QWidget()
+        output_layout = QVBoxLayout(output_tab)
+        output_layout.setSpacing(16)
+        output_layout.setContentsMargins(16, 16, 16, 16)
+        
+        # Output location
+        out_group = QGroupBox("Output Location")
+        out_group_layout = QVBoxLayout(out_group)
+        out_group_layout.setSpacing(12)
+        
+        out_dir_row = QHBoxLayout()
+        out_dir_row.setSpacing(12)
+        out_dir_label = QLabel("Directory:")
+        out_dir_label.setStyleSheet("font-weight: 600;")
+        out_dir_label.setMinimumWidth(70)
+        out_dir_row.addWidget(out_dir_label)
+        
         self.output_dir_edit = QLineEdit()
         if self.current_file:
-            self.output_dir_edit.setText(os.path.dirname(self.current_file))
+            # Default to input_dir/hpc/
+            self.output_dir_edit.setText(os.path.join(os.path.dirname(self.current_file), "hpc"))
+        self.output_dir_edit.setPlaceholderText("Select output directory...")
+        out_dir_row.addWidget(self.output_dir_edit, 1)
+        
         self.output_dir_btn = QPushButton("Browse...")
         self.output_dir_btn.clicked.connect(self.browse_output_directory)
-        output_dir_layout.addWidget(self.output_dir_label)
-        output_dir_layout.addWidget(self.output_dir_edit, 1)
-        output_dir_layout.addWidget(self.output_dir_btn)
-        output_layout.addLayout(output_dir_layout)
-
-        output_pattern_layout = QHBoxLayout()
-        self.output_pattern_label = QLabel("Output Pattern:")
+        out_dir_row.addWidget(self.output_dir_btn)
+        out_group_layout.addLayout(out_dir_row)
+        
+        # Output pattern row
+        out_pattern_row = QHBoxLayout()
+        out_pattern_row.setSpacing(12)
+        out_pattern_label = QLabel("Pattern:")
+        out_pattern_label.setStyleSheet("font-weight: 600;")
+        out_pattern_label.setMinimumWidth(70)
+        out_pattern_row.addWidget(out_pattern_label)
+        
         self.output_pattern_edit = QLineEdit("hpc_*.fits")
         self.output_pattern_edit.setPlaceholderText("e.g., hpc_*.fits")
-        output_pattern_layout.addWidget(self.output_pattern_label)
-        output_pattern_layout.addWidget(self.output_pattern_edit, 1)
-        output_layout.addLayout(output_pattern_layout)
-
-        # Add a help text for pattern
-        pattern_help = QLabel(
-            "Use * in the pattern as a placeholder for the original filename."
+        out_pattern_row.addWidget(self.output_pattern_edit, 1)
+        out_group_layout.addLayout(out_pattern_row)
+        
+        output_layout.addWidget(out_group)
+        
+        # Pattern help
+        help_group = QGroupBox("Pattern Help")
+        help_layout = QVBoxLayout(help_group)
+        
+        help_text = QLabel(
+            "Use <b>*</b> as a placeholder for the original filename.\n\n"
+            "<b>Example:</b> Input <code>sun_2024.fits</code> with pattern <code>hpc_*.fits</code>\n"
+            "→ Output: <code>hpc_sun_2024.fits</code>"
         )
-        pattern_help.setStyleSheet("color: #BBB; font-style: italic;")
-        output_layout.addWidget(pattern_help)
-
-        # Add example section
-        example_group = QVBoxLayout()
-        example_title = QLabel("Example:")
-        example_title.setStyleSheet("font-weight: bold;")
-        example_label = QLabel("Input: myimage.fits → Output: hpc_myimage.fits")
-        example_label.setStyleSheet("color: #AAA; font-style: italic;")
-        example_group.addWidget(example_title)
-        example_group.addWidget(example_label)
-        output_layout.addLayout(example_group)
-
-        right_column.addWidget(output_group)
-
-        # Status text area
-        status_group = QGroupBox("Status / Results")
+        help_text.setWordWrap(True)
+        help_text.setStyleSheet(f"color: {text_secondary}; line-height: 1.5;")
+        help_layout.addWidget(help_text)
+        
+        output_layout.addWidget(help_group)
+        output_layout.addStretch()
+        
+        # Wrap in scroll area
+        output_scroll = QScrollArea()
+        output_scroll.setWidgetResizable(True)
+        output_scroll.setFrameShape(QFrame.NoFrame)
+        output_scroll.setWidget(output_tab)
+        self.tab_widget.addTab(output_scroll, "💾 Output")
+        
+        main_layout.addWidget(self.tab_widget, 1)
+        
+        # ========== STATUS PANEL (ALWAYS VISIBLE) ==========
+        status_group = QGroupBox("Status")
         status_layout = QVBoxLayout(status_group)
-        status_layout.setContentsMargins(10, 15, 10, 10)
-
+        status_layout.setContentsMargins(10, 12, 10, 10)
+        
         self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
-        self.status_text.setPlaceholderText("Status and results will appear here")
-        self.status_text.setMinimumHeight(250)  # Increased height for better visibility
-        status_layout.addWidget(self.status_text)
-
-        right_column.addWidget(status_group)
-
-        # Add columns to the layout
-        columns_layout.addLayout(left_column, 1)  # 1 is the stretch factor
-        columns_layout.addLayout(right_column, 1)  # 1 is the stretch factor
-
-        main_layout.addLayout(columns_layout)
-
-        # Dialog buttons
+        self.status_text.setPlaceholderText("Conversion status and results will appear here...")
+        self.status_text.setMinimumHeight(25)
+        self.status_text.setMaximumHeight(150)
+        status_layout.addWidget(self.status_text,1)
+        main_layout.addWidget(status_group) 
+        
+        # ========== DIALOG BUTTONS ==========
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+        
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.ok_button = button_box.button(QDialogButtonBox.Ok)
         self.ok_button.setText("Convert")
+        self.ok_button.setMinimumWidth(100)
         button_box.accepted.connect(self.convert_files)
         button_box.rejected.connect(self.reject)
-        main_layout.addWidget(button_box)
+        
+        button_layout.addStretch()
+        button_layout.addWidget(button_box)
+        
+        main_layout.addLayout(button_layout)
 
-        # Apply consistent styling to the dialog
-        self.setStyleSheet(
-            """
-            QGroupBox {
-                border: 1px solid #555555;
-                border-radius: 3px;
-                margin-top: 0.5em;
-                padding-top: 0.5em;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
-            }
-            QLabel {
-                margin-top: 2px;
-                margin-bottom: 2px;
-            }
-            QRadioButton, QCheckBox {
-                min-height: 20px;
-            }
-        """
-        )
 
     def browse_directory(self):
         """Browse for input directory"""
@@ -2599,9 +2892,9 @@ class HPCBatchConversionDialog(QDialog):
         if directory:
             self.dir_edit.setText(directory)
 
-            # Set output directory to match if not already set
-            if not self.output_dir_edit.text():
-                self.output_dir_edit.setText(directory)
+            # Set output directory to input_dir/hpc/ by default
+            if not self.output_dir_edit.text() or self.output_dir_edit.text().endswith("/hpc"):
+                self.output_dir_edit.setText(os.path.join(directory, "hpc"))
 
             # Preview files if pattern is already set
             self.preview_files()
@@ -2628,48 +2921,104 @@ class HPCBatchConversionDialog(QDialog):
         single_stokes = self.single_stokes_radio.isChecked()
         self.stokes_combo.setEnabled(single_stokes)
 
-    def preview_files(self):
-        """Show files that match the pattern in the list widget"""
-        self.files_list.clear()
-
+    def scan_files(self):
+        """Scan for matching files and show count (without opening preview)"""
         input_dir = self.dir_edit.text()
         pattern = self.pattern_edit.text()
 
         if not input_dir:
-            self.status_text.setPlainText("Please select an input directory.")
+            self.files_count_label.setText("⚠️ Select a directory first")
+            return
+
+        try:
+            input_pattern = os.path.join(input_dir, pattern)
+            matching_files = glob.glob(input_pattern)
+            count = len(matching_files)
+            
+            if count == 0:
+                self.files_count_label.setText("⚠️ No files found")
+                self.status_text.setPlainText(f"No files found matching: {pattern}")
+            else:
+                self.files_count_label.setText(f"✓ {count} file{'s' if count != 1 else ''} found")
+                self.status_text.setPlainText(f"Found {count} files matching the pattern.")
+        except Exception as e:
+            self.files_count_label.setText(f"⚠️ Error: {str(e)}")
+
+
+    def preview_files(self):
+        """Show files that match the pattern in a popup dialog"""
+        input_dir = self.dir_edit.text()
+        pattern = self.pattern_edit.text()
+
+        if not input_dir:
+            QMessageBox.warning(self, "No Directory", "Please select an input directory first.")
             return
 
         try:
             # Get matching files
             input_pattern = os.path.join(input_dir, pattern)
-            matching_files = glob.glob(input_pattern)
+            matching_files = sorted(glob.glob(input_pattern))
 
             if not matching_files:
-                self.status_text.setPlainText(
-                    f"No files found matching pattern: {input_pattern}"
+                QMessageBox.information(
+                    self, "No Files Found",
+                    f"No files found matching pattern:\n{input_pattern}"
                 )
                 return
 
-            # Add files to list, showing only basenames but storing full paths as item data
-            for file_path in sorted(matching_files):
+            # Show files in a popup dialog
+            preview_dialog = QDialog(self)
+            preview_dialog.setWindowTitle(f"Preview: {len(matching_files)} files")
+            preview_dialog.setMinimumSize(500, 400)
+            
+            layout = QVBoxLayout(preview_dialog)
+            layout.setSpacing(12)
+            layout.setContentsMargins(16, 16, 16, 16)
+            
+            info_label = QLabel(f"Found <b>{len(matching_files)}</b> files matching <code>{pattern}</code>")
+            layout.addWidget(info_label)
+            
+            file_list = QListWidget()
+            file_list.setAlternatingRowColors(True)
+            for file_path in matching_files:
                 basename = os.path.basename(file_path)
                 item = QListWidgetItem(basename)
-                item.setToolTip(file_path)  # Show full path on hover
-                item.setData(Qt.UserRole, file_path)  # Store full path as data
-                self.files_list.addItem(item)
-
-            self.status_text.setPlainText(
-                f"Found {len(matching_files)} files matching the pattern."
-            )
+                item.setToolTip(file_path)
+                file_list.addItem(item)
+            layout.addWidget(file_list, 1)
+            
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(preview_dialog.accept)
+            btn_layout = QHBoxLayout()
+            btn_layout.addStretch()
+            btn_layout.addWidget(close_btn)
+            layout.addLayout(btn_layout)
+            
+            preview_dialog.exec_()
+            
+            self.status_text.setPlainText(f"Found {len(matching_files)} files matching the pattern.")
+            
         except Exception as e:
             self.status_text.setPlainText(f"Error previewing files: {str(e)}")
-            # Print the full error to console for debugging
             traceback.print_exc()
+
+    def _get_matching_files(self):
+        """Get list of files matching the current pattern"""
+        input_dir = self.dir_edit.text()
+        pattern = self.pattern_edit.text()
+        
+        if not input_dir:
+            return []
+        
+        input_pattern = os.path.join(input_dir, pattern)
+        return sorted(glob.glob(input_pattern))
 
     def convert_files(self):
         """Convert the selected files to helioprojective coordinates"""
-        # Get input files
-        if self.files_list.count() == 0:
+        # Get input files from pattern
+        files_to_process = self._get_matching_files()
+        
+        if not files_to_process:
             QMessageBox.warning(
                 self,
                 "No Files Found",
@@ -2677,23 +3026,9 @@ class HPCBatchConversionDialog(QDialog):
             )
             return
 
-        # Get selected files or use all if none selected
-        selected_items = self.files_list.selectedItems()
-        if selected_items:
-            # Get full paths from item data
-            files_to_process = [item.data(Qt.UserRole) for item in selected_items]
-            self.status_text.appendPlainText(
-                f"Processing {len(files_to_process)} selected files."
-            )
-        else:
-            # Get full paths from item data for all items
-            files_to_process = [
-                self.files_list.item(i).data(Qt.UserRole)
-                for i in range(self.files_list.count())
-            ]
-            self.status_text.appendPlainText(
-                f"Processing all {len(files_to_process)} files."
-            )
+        self.status_text.appendPlainText(
+            f"Processing {len(files_to_process)} files."
+        )
 
         # Get output directory and pattern
         output_dir = self.output_dir_edit.text()
@@ -2706,6 +3041,19 @@ class HPCBatchConversionDialog(QDialog):
                 "Please specify an output directory.",
             )
             return
+
+        # Create output directory if it doesn't exist
+        if not os.path.exists(output_dir):
+            try:
+                os.makedirs(output_dir)
+                self.status_text.appendPlainText(f"Created output directory: {output_dir}")
+            except OSError as e:
+                QMessageBox.critical(
+                    self,
+                    "Cannot Create Directory",
+                    f"Failed to create output directory:\n{output_dir}\n\nError: {e}",
+                )
+                return
 
         # Get processing options
         use_multiprocessing = self.multiprocessing_check.isChecked()
