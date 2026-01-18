@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.7%2B-blue?logo=python&logoColor=white" alt="Python 3.7+"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white" alt="Python 3.9+"></a>
   <a href="https://pypi.org/project/solarviewer/"><img src="https://img.shields.io/pypi/v/solarviewer?color=blue&logo=pypi&logoColor=white" alt="PyPI version"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
   <a href="https://github.com/dey-soham/solarviewer"><img src="https://img.shields.io/github/stars/dey-soham/solarviewer?style=social" alt="GitHub stars"></a>
@@ -69,7 +69,7 @@
 
 ### Prerequisites
 
-- Python 3.7 or higher
+- Python 3.9 or higher
 - pip package manager
 - **CASA data directory**: The `~/.casa/data` folder must exist for CASA to work properly. Create it with:
   ```bash
