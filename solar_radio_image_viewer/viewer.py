@@ -924,9 +924,7 @@ class SolarRadioImageTab(QWidget):
         self.beam_settings_button = QPushButton()
         self.beam_settings_button.setObjectName("IconOnlyNBGButton")
         self.beam_settings_button.setIcon(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            )
+            QIcon(themed_icon("settings.png"))
         )
         self.beam_settings_button.setIconSize(QSize(18, 18))
         self.beam_settings_button.setToolTip("Beam Settings")
@@ -942,9 +940,7 @@ class SolarRadioImageTab(QWidget):
         self.grid_settings_button = QPushButton()
         self.grid_settings_button.setObjectName("IconOnlyNBGButton")
         self.grid_settings_button.setIcon(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            )
+            QIcon(themed_icon("settings.png"))
         )
         self.grid_settings_button.setIconSize(QSize(18, 18))
         self.grid_settings_button.setToolTip("Grid Settings")
@@ -960,9 +956,7 @@ class SolarRadioImageTab(QWidget):
         self.solar_disk_center_button = QPushButton()
         self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
         self.solar_disk_center_button.setIcon(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            )
+            QIcon(themed_icon("settings.png"))
         )
         self.solar_disk_center_button.setIconSize(QSize(18, 18))
         self.solar_disk_center_button.setToolTip("Customize Solar Disk")
@@ -978,9 +972,7 @@ class SolarRadioImageTab(QWidget):
         self.contour_settings_button = QPushButton()
         self.contour_settings_button.setObjectName("IconOnlyNBGButton")
         self.contour_settings_button.setIcon(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            )
+            QIcon(themed_icon("settings.png"))
         )
         self.contour_settings_button.setIconSize(QSize(18, 18))
         self.contour_settings_button.setToolTip("Contour Settings")
@@ -10074,6 +10066,10 @@ class SolarRadioImageTab(QWidget):
             self.solar_disk_center_button.setIcon(QIcon(themed_icon("settings.png")))
         if hasattr(self, "contour_settings_button"):
             self.contour_settings_button.setIcon(QIcon(themed_icon("settings.png")))
+        if hasattr(self, "beam_settings_button"):
+            self.beam_settings_button.setIcon(QIcon(themed_icon("settings.png")))
+        if hasattr(self, "grid_settings_button"):
+            self.grid_settings_button.setIcon(QIcon(themed_icon("settings.png")))
         
         # Update overlay toggle styles for theme
         self._update_overlay_toggle_styles()
