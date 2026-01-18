@@ -86,6 +86,7 @@ from .styles import (
     get_stylesheet,
     get_icon_path,
 )
+from .dialogs import UpdateDialog
 from .searchable_combobox import ColormapSelector
 from astropy.time import Time
 from sunpy.map import Map
@@ -10933,6 +10934,11 @@ class SolarRadioImageViewerApp(QMainWindow):
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
 
+        update_act = QAction("Check for Updates...", self)
+        update_act.setStatusTip("Check for application updates")
+        update_act.triggered.connect(self.show_update_dialog)
+        help_menu.addAction(update_act)
+
         # Tools menu
         # tools_menu = self.menuBar().addMenu("&Tools")
 
@@ -12578,6 +12584,21 @@ except Exception as e:
         buttons.rejected.connect(dialog.close)
         layout.addWidget(buttons)
 
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        dialog.show()
+
+    def show_update_dialog(self):
+        """Show the update check dialog (non-modal)."""
+        # Check if already open
+        for dialog in self._open_dialogs:
+            if isinstance(dialog, UpdateDialog):
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+
+        dialog = UpdateDialog(self)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
         self._open_dialogs.append(dialog)
