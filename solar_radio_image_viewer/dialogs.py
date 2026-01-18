@@ -673,6 +673,12 @@ class ContourSettingsDialog(QDialog):
         self.show_full_extent_checkbox.setChecked(self.settings.get("show_full_extent", False))
         self.show_full_extent_checkbox.setToolTip("Show contours beyond image boundaries (uses more memory)")
         options_row.addWidget(self.show_full_extent_checkbox)
+        
+        self.downsample_checkbox = QCheckBox("Downsample")
+        self.downsample_checkbox.setChecked(self.settings.get("downsample", True))
+        self.downsample_checkbox.setToolTip("Automatically downsample large contour images to 2048x2048 for faster reprojection")
+        options_row.addWidget(self.downsample_checkbox)
+        
         options_row.addStretch()
         appearance_layout.addLayout(options_row)
         
@@ -912,6 +918,8 @@ class ContourSettingsDialog(QDialog):
         if hasattr(self, 'show_labels_checkbox'):
             self.show_labels_checkbox.setChecked(False)
         self.show_full_extent_checkbox.setChecked(False)
+        if hasattr(self, 'downsample_checkbox'):
+            self.downsample_checkbox.setChecked(True)
         
         # RMS
         self.use_default_rms_box.setChecked(True)
@@ -1126,6 +1134,7 @@ class ContourSettingsDialog(QDialog):
         
         settings["show_labels"] = self.show_labels_checkbox.isChecked() if hasattr(self, 'show_labels_checkbox') else False
         settings["show_full_extent"] = self.show_full_extent_checkbox.isChecked()
+        settings["downsample"] = self.downsample_checkbox.isChecked() if hasattr(self, 'downsample_checkbox') else True
         if "contour_data" in self.settings:
             settings["contour_data"] = self.settings["contour_data"]
         else:

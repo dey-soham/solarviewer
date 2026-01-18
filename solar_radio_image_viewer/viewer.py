@@ -1,4 +1,4 @@
-# import sys
+import sys
 import os
 import numpy as np
 from importlib import resources as importlib_resources
@@ -152,7 +152,6 @@ rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
 update_matplotlib_theme()
 mplstyle.use("fast")
-
 
 # For region selection modes
 class RegionMode:
@@ -462,6 +461,10 @@ class SolarRadioImageTab(QWidget):
             "pad_hspace": 0.2,
             "use_tight_layout": False,
         }
+        
+        # Rendering optimization state
+        self._last_rendered_state = {}
+        self.image_plot = None
 
         self.setup_ui()
         self._setup_file_navigation_shortcuts()
@@ -5833,6 +5836,46 @@ class SolarRadioImageTab(QWidget):
         # self.plot_image()
         # self.schedule_plot()
 
+
+    def _get_render_state(self, tight_layout=False):
+        """
+        Capture the current structural state of the plot.
+        Returns a dict of values that, if changed, require a full redraw.
+        """
+        state = {
+            "data_id": id(self.current_image_data) if self.current_image_data is not None else None,
+            "wcs_id": id(self.current_wcs) if self.current_wcs else None,
+            "fits_flag": self._cached_fits_flag,
+            "tight_layout": tight_layout,
+            
+            # Overlay states
+            "show_beam": self.show_beam_checkbox.isChecked(),
+            "show_grid": self.show_grid_checkbox.isChecked(),
+            "show_solar_disk": self.show_solar_disk_checkbox.isChecked(),
+            "show_contours": self.show_contours_checkbox.isChecked(),
+        }
+            
+        # Settings snapshots
+        exclude_keys = {
+            "contour_data", "contour_wcs", "contour_header", "wcs", "header", "data"
+        }
+        cs_snap = {k: self.contour_settings[k] for k in self.contour_settings if k not in exclude_keys}
+        
+        # Track identity of heavy objects separately if needed (only if they exist)
+        if "contour_data" in self.contour_settings:
+             state["contour_data_id"] = id(self.contour_settings["contour_data"])
+        else:
+             state["contour_data_id"] = None
+             
+        state["contour_settings"] = str(cs_snap)
+        
+        state["grid_settings"] = str(self.grid_style)
+        state["beam_settings"] = str(self.beam_style)
+        state["solar_disk_settings"] = str(self.solar_disk_style)
+        state["plot_settings"] = str(self.plot_settings)
+
+        return state
+
     def plot_image(
         self,
         vmin_val=None,
@@ -5923,6 +5966,80 @@ class SolarRadioImageTab(QWidget):
                 stored_xlim = None
                 stored_ylim = None
 
+        # Determine vmin/vmax CACHED for Fast Path
+        # We need these values to compute Normalization
+        fp_vmin = vmin_val
+        if fp_vmin is None: fp_vmin = np.nanmin(data)
+        fp_vmax = vmax_val
+        if fp_vmax is None: fp_vmax = np.nanmax(data)
+        if fp_vmax <= fp_vmin: fp_vmax = fp_vmin + 1e-6
+        
+        # Create the normalization object early for Fast Path
+        if stretch == "log":
+            safe_min = max(fp_vmin, 1e-8)
+            safe_max = max(fp_vmax, safe_min * 1.01)
+            norm = LogNorm(vmin=safe_min, vmax=safe_max)
+        elif stretch == "sqrt":
+            norm = SqrtNorm(vmin=fp_vmin, vmax=fp_vmax)
+        elif stretch == "arcsinh":
+            norm = AsinhNorm(vmin=fp_vmin, vmax=fp_vmax)
+        elif stretch == "power":
+            norm = PowerNorm(vmin=fp_vmin, vmax=fp_vmax, gamma=gamma)
+        elif stretch == "zscale":
+            norm = ZScaleNorm(
+                vmin=fp_vmin, vmax=fp_vmax, contrast=0.25, num_samples=600
+            )
+        elif stretch == "histeq":
+            norm = HistEqNorm(vmin=fp_vmin, vmax=fp_vmax, n_bins=256)
+        else:
+            norm = Normalize(vmin=fp_vmin, vmax=fp_vmax)
+
+        # FAST PATH OPTIMIZATION: Update existing plot if structure hasn't changed
+        # MUST BE DONE BEFORE figure.clear()
+        current_state = self._get_render_state(tight_layout=tight_layout)
+        
+        can_fast_path = (
+            hasattr(self, "image_plot") 
+            and self.image_plot is not None 
+            and self.figure.axes 
+            and preserve_view
+        )
+        
+        if can_fast_path:
+             if self._last_rendered_state == current_state:
+                 # Success! Update and Return.
+                 try:
+                     self.image_plot.set_cmap(cmap)
+                     self.image_plot.set_norm(norm)
+                     norm_params = (fp_vmin, fp_vmax, stretch, gamma)
+                     last_norm_params = getattr(self, "_last_norm_params", None)
+                     
+                     if last_norm_params != norm_params:
+                         if hasattr(self, "colorbar") and self.colorbar:
+                             self.colorbar.update_normal(self.image_plot)
+                             if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
+                                 try:
+                                     ticks = self.colorbar.ax.get_yticks()
+                                     valid_ticks = [t for t in ticks if fp_vmin <= t <= fp_vmax]
+                                     if len(valid_ticks) >= 2:
+                                         self.colorbar.ax.set_yticks(valid_ticks)
+                                 except Exception:
+                                     pass
+                     
+                     # Cache new params
+                     self._last_norm_params = norm_params
+                     
+                     self.canvas.draw()
+                     QApplication.restoreOverrideCursor()
+                     return
+                 except Exception as e:
+                     print(f"Fast Path Update Failed: {e}")
+             else:
+                 # Debugging Mismatch (Optional log, keeping it minimal)
+                 pass
+
+
+
         self.figure.clear()
 
         # Determine vmin/vmax
@@ -5950,8 +6067,16 @@ class SolarRadioImageTab(QWidget):
             )
         elif stretch == "histeq":
             norm = HistEqNorm(vmin=vmin_val, vmax=vmax_val, n_bins=256)
-        else:
-            norm = Normalize(vmin=vmin_val, vmax=vmax_val)
+        
+        if vmin_val is None: vmin_val = fp_vmin
+        if vmax_val is None: vmax_val = fp_vmax
+        
+        # Monkey patch removal if present
+        if hasattr(self.figure, "_monkey_patched"):
+            del self.figure._monkey_patched
+            self.figure.clear = self.figure._original_clear
+            
+
 
         # Cache the WCS object if current_wcs hasn't changed.
         wcs_obj = None
@@ -6054,6 +6179,7 @@ class SolarRadioImageTab(QWidget):
                     interpolation=interpolation,
                     # aspect="auto",
                 )
+                self.image_plot = im
                 if fits_flag:
                     if header["CTYPE1"] == "HPLN-TAN":
                         ax.set_xlabel("Solar X")
@@ -6117,6 +6243,7 @@ class SolarRadioImageTab(QWidget):
                     interpolation=interpolation,
                     aspect="auto",
                 )
+                self.image_plot = im
                 ax.set_xlabel("Pixel X")
                 ax.set_ylabel("Pixel Y")
         else:
@@ -6129,6 +6256,7 @@ class SolarRadioImageTab(QWidget):
                 interpolation=interpolation,
                 aspect="auto",
             )
+            self.image_plot = im
             ax.set_xlabel("Pixel X")
             ax.set_ylabel("Pixel Y")
 
@@ -6326,19 +6454,27 @@ class SolarRadioImageTab(QWidget):
                 ax=ax,
                 aspect=30,
             )
+        self.colorbar = cb
 
         # Apply plot customization settings
         ps = self.plot_settings
-
+        
+        # Helper to resolve "auto" colors based on theme
+        from .styles import theme_manager
+        is_dark = theme_manager.is_dark
+        theme_text = "#ffffff" if is_dark else "#000000"
+        theme_tick = "#e0e0e0" if is_dark else "#333333"
+        theme_border = "#ffffff" if is_dark else "#000000"
+        
         # Get text color for labels and title
         text_color = ps.get("text_color", "auto")
         if text_color == "auto":
-            text_color = None  # Use matplotlib default
-
+            text_color = theme_text  # Explicitly set based on theme
+            
         # Get tick color for tick marks and tick labels (separate from text_color)
         tick_color = ps.get("tick_color", "auto")
         if tick_color == "auto":
-            tick_color = None  # Use matplotlib default
+            tick_color = theme_tick  # Explicitly set based on theme
 
         # Build label kwargs with color if specified
         label_kwargs = {"fontsize": ps.get("axis_label_fontsize", 12)}
@@ -6432,14 +6568,21 @@ class SolarRadioImageTab(QWidget):
         # Apply background colors
         plot_bg = ps.get("plot_bg_color", "auto")
         figure_bg = ps.get("figure_bg_color", "auto")
+        
+        # Resolve defaults from current theme (stored in rcParams)
+        from matplotlib import rcParams
+        if plot_bg == "auto":
+            plot_bg = rcParams.get("axes.facecolor", "white")
+        if figure_bg == "auto":
+            figure_bg = rcParams.get("figure.facecolor", "white")
 
-        if plot_bg and plot_bg != "auto":
+        if plot_bg:
             try:
                 ax.set_facecolor(plot_bg)
             except ValueError:
                 pass  # Invalid color, ignore
 
-        if figure_bg and figure_bg != "auto":
+        if figure_bg:
             try:
                 self.figure.patch.set_facecolor(figure_bg)
                 self.figure.set_facecolor(figure_bg)
@@ -6449,8 +6592,12 @@ class SolarRadioImageTab(QWidget):
         # Apply border (spine) color and width
         border_color = ps.get("border_color", "auto")
         border_width = ps.get("border_width", 1.0)
+        
+        if border_color == "auto":
+             border_color = theme_border
 
-        if border_color and border_color != "auto":
+        if border_color:
+
             for spine in ax.spines.values():
                 spine.set_color(border_color)
             # For WCSAxes, also set frame color
@@ -6619,6 +6766,17 @@ class SolarRadioImageTab(QWidget):
 
         # Instead of immediate draw, use draw_idle to coalesce multiple calls
         self.canvas.draw_idle()
+        
+        # Save state for next update
+        self._last_rendered_state = self._get_render_state(tight_layout=tight_layout)
+        
+        # Recalculate defaults if they were None (same logic as start of function)
+        _s_vmin = vmin_val if vmin_val is not None else np.nanmin(data)
+        _s_vmax = vmax_val if vmax_val is not None else np.nanmax(data)
+        if _s_vmax <= _s_vmin: _s_vmax = _s_vmin + 1e-6
+        
+        self._last_norm_params = (_s_vmin, _s_vmax, stretch, gamma)
+
 
         # Restore normal cursor
         QApplication.restoreOverrideCursor()
@@ -8446,7 +8604,20 @@ class SolarRadioImageTab(QWidget):
                 # Check if image shapes differ
                 if contour_data.shape != self.current_image_data.shape:
                     needs_reprojection = True
-
+        
+            # Handle manual downsampling for "Same Image" or aligned images (no reprojection needed)
+            # This ensures large images are still downsampled for performance
+            if not needs_reprojection:
+                 self._contour_ds_factor = 1 # Default
+                 if self.contour_settings.get("downsample", True):
+                     max_dim = max(contour_data.shape)
+                     if max_dim > 2048:
+                          factor = int(np.ceil(max_dim / 2048.0))
+                          print(f"[INFO] Downsampling aligned contour by {factor}x (original size: {contour_data.shape})")
+                          # Simple slicing is sufficient for aligned data
+                          contour_data = contour_data[::factor, ::factor]
+                          self._contour_ds_factor = factor
+        
             if needs_reprojection and contour_wcs_obj is not None:
                 try:
                     from reproject import reproject_interp
@@ -8532,7 +8703,9 @@ class SolarRadioImageTab(QWidget):
                         extended_shape = (extended_height, extended_width)
                         
                         # Calculate offset (how much the base image is shifted in the extended canvas)
-                        contour_offset = [int(-min_y), int(-min_x)]
+                        # Use floats to preserve sub-pixel accuracy
+                        contour_offset = [-min_y, -min_x]
+
                         
                         # Adjust WCS reference pixel for the extended shape
                         extended_wcs = image_wcs_for_reproject.deepcopy()
@@ -8567,6 +8740,7 @@ class SolarRadioImageTab(QWidget):
                         str(image_wcs_for_reproject.wcs.crval), # Base image WCS params (includes downsampling state)
                         str(image_wcs_for_reproject.wcs.cdelt),
                         show_full_extent, # Extent setting
+                        self.contour_settings.get("downsample", True), # Downsample setting
                     )
                     
                     cached_result = self._reproject_cache.get(cache_key)
@@ -8576,27 +8750,61 @@ class SolarRadioImageTab(QWidget):
                         # print("Using cached reprojected contour data")
                         if main_window:
                             self.show_status_message("Using cached contour alignment...")
-                        array, offset = cached_result
+                        array, offset, ds_factor = cached_result
                         self._contour_offset = offset
+                        
+                        # Apply downsampling factor to offset if needed for plotting calculations
+                        # Note: The array itself is already downsampled, so we just use it.
+                        # The offset is in base image pixels, which is correct for placement.
                     else:
                         # Cache miss - perform reprojection
+                        
+                        # OPTIMIZATION: Downsample large arrays to save memory/time
+                        # Contours don't need pixel-perfect 4k resolution
+                        contour_ds_factor = 1
+                        max_dim = max(extended_shape)
+                        downsample_enabled = self.contour_settings.get("downsample", True)
+                        
+                        if downsample_enabled and max_dim > 2048:
+                            contour_ds_factor = int(np.ceil(max_dim / 2048.0))
+                            print(f"[INFO] Downsampling contour reprojection by {contour_ds_factor}x (original size: {extended_shape})")
+                            
+                            # Adjust shape
+                            new_height = extended_shape[0] // contour_ds_factor
+                            new_width = extended_shape[1] // contour_ds_factor
+                            extended_shape = (new_height, new_width)
+                            
+                            # Adjust WCS
+                            extended_wcs.wcs.cdelt *= contour_ds_factor
+                            extended_wcs.wcs.crpix /= contour_ds_factor
+                        
                         # Reproject the contour data to the extended/clipped WCS
-                        array, footprint = reproject_interp(
+                        # OPTIMIZATION: Don't calculate footprint unless needed (2x speedup)
+                        array = reproject_interp(
                             (contour_data, contour_wcs_obj),
                             extended_wcs,
                             shape_out=extended_shape,
+                            return_footprint=False,
                         )
                         
                         # Store in cache
-                        self._reproject_cache[cache_key] = (array, self._contour_offset)
-
-
+                        self._reproject_cache[cache_key] = (array, self._contour_offset, contour_ds_factor)
 
                     # Replace the NaNs with zeros
                     array = np.nan_to_num(array, nan=0.0)
 
                     # Check if reprojection produced valid data
                     if np.all(array == 0):
+                        # Re-run with footprint to diagnose coverage
+                        if main_window:
+                            self.show_status_message("Reprojection yielded zeros, checking overlap...")
+                        
+                        _, footprint = reproject_interp(
+                            (contour_data, contour_wcs_obj),
+                            extended_wcs,
+                            shape_out=extended_shape,
+                            return_footprint=True,
+                        )
                         footprint_pct = np.sum(footprint > 0) / footprint.size * 100
                         if main_window:
                             self.show_status_message(
@@ -8627,6 +8835,11 @@ class SolarRadioImageTab(QWidget):
 
                     contour_data = array
                     reprojection_done = True
+                    
+                    # Store factor for extent calculation
+                    self._contour_ds_factor = contour_ds_factor if 'contour_ds_factor' in locals() else 1
+                    if 'ds_factor' in locals():
+                         self._contour_ds_factor = ds_factor
 
                 except ImportError as e:
                     print(f"[ERROR] reproject library not available: {e}")
@@ -8700,23 +8913,34 @@ class SolarRadioImageTab(QWidget):
             
             # Calculate extent for proper positioning when using extended canvas
             # extent = [left, right, bottom, top] in data coordinates
-            if contour_offset != [0, 0]:
+            
+            ds_factor = getattr(self, '_contour_ds_factor', 1)
+            
+            # Apply extent if offset is non-zero OR downsampling is active (since pixels differ from base)
+            if contour_offset != [0, 0] or ds_factor > 1:
                 extent = [
                     -contour_offset[1],  # left (shifted by x offset)
-                    display_contour_data.shape[1] - contour_offset[1],  # right
+                    -contour_offset[1] + (display_contour_data.shape[0] * ds_factor),  # right (add Width / shape[0])
                     -contour_offset[0],  # bottom (shifted by y offset)
-                    display_contour_data.shape[0] - contour_offset[0],  # top
+                    -contour_offset[0] + (display_contour_data.shape[1] * ds_factor),  # top (add Height / shape[1])
                 ]
             else:
                 extent = None  # Use default (0 to shape)
+
 
             if pos_levels and len(pos_levels) > 0:
 
                 try:
                     if extent:
                         # Create coordinate arrays for extended canvas
-                        y = np.linspace(extent[2], extent[3], display_contour_data.shape[0])
-                        x = np.linspace(extent[0], extent[1], display_contour_data.shape[1])
+                        # NOTE: display_contour_data is Transposed (X, Y).
+                        # So Rows (dim 0) = X-axis, Cols (dim 1) = Y-axis.
+                        # We must map Rows to Vertical (y) and Cols to Horizontal (x).
+                        # Vertical Axis should show X-range (extent[0], extent[1])
+                        # Horizontal Axis should show Y-range (extent[2], extent[3])
+                        
+                        y = np.linspace(extent[0], extent[1], display_contour_data.shape[0])
+                        x = np.linspace(extent[2], extent[3], display_contour_data.shape[1])
                         cs_pos = ax.contour(
                             x, y, display_contour_data,
                             levels=pos_levels,
@@ -8745,8 +8969,9 @@ class SolarRadioImageTab(QWidget):
             if neg_levels and len(neg_levels) > 0:
                 try:
                     if extent:
-                        y = np.linspace(extent[2], extent[3], display_contour_data.shape[0])
-                        x = np.linspace(extent[0], extent[1], display_contour_data.shape[1])
+                        y = np.linspace(extent[0], extent[1], display_contour_data.shape[0])
+                        x = np.linspace(extent[2], extent[3], display_contour_data.shape[1])
+
                         cs_neg = ax.contour(
                             x, y, display_contour_data,
                             levels=neg_levels,
@@ -8771,6 +8996,7 @@ class SolarRadioImageTab(QWidget):
                 except Exception as e:
                     print(f"[ERROR] Error drawing negative contours: {e}, levels: {neg_levels}")
                     self.show_status_message(f"Error drawing negative contours: {e}, levels: {neg_levels}")
+
             if main_window:
 
                 self.show_status_message("Done. ")

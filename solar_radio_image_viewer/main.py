@@ -55,6 +55,7 @@ class LoaderThread(QThread):
     progress = pyqtSignal(int)
     message = pyqtSignal(str)
     finished_loading = pyqtSignal(object)  # Returns the created window
+    error = pyqtSignal(str) # Signal for loading errors
     
     def __init__(self, imagename, args_fast):
         super().__init__()
@@ -81,7 +82,10 @@ class LoaderThread(QThread):
             self.finished_loading.emit(SolarRadioImageViewerApp)
             
         except Exception as e:
+            import traceback
+            error_details = "".join(traceback.format_exception(None, e, e.__traceback__))
             print(f"Error in loader thread: {e}")
+            self.error.emit(error_details)
 
 
 def main():
@@ -191,39 +195,87 @@ Examples:
     def on_message(msg):
         splash.show_message(msg)
         
+    from PyQt5.QtWidgets import QMessageBox
+
+    def on_failure(error_msg):
+        """Handle startup failure by showing an error dialog."""
+        splash.hide() # Hide splash so it doesn't cover the error
+        
+        msg = QMessageBox()
+        
+        # Apply theme stylesheet with specific override for QTextEdit (details box)
+        custom_style = theme_manager.stylesheet + """
+        QTextEdit {
+            background-color: %s;
+            color: %s;
+            border: 1px solid %s;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 10pt;
+        }
+        QLabel {
+            font-family: 'Inter', system-ui, sans-serif;
+            font-size: 11pt;
+            color: %s;
+        }
+        QPushButton {
+            font-family: 'Inter', system-ui, sans-serif;
+            font-size: 10pt;
+            font-weight: 500;
+        }
+        """ % (
+            theme_manager.palette['base'], 
+            theme_manager.palette['text'],
+            theme_manager.palette['border'],
+            theme_manager.palette['text']
+        )
+        msg.setStyleSheet(custom_style)
+        
+        msg.setIcon(QMessageBox.Critical)
+        msg.setWindowTitle("Startup Error")
+        msg.setText("SolarViewer failed to start.")
+        msg.setInformativeText("An error occurred while initializing the application.")
+        msg.setDetailedText(error_msg)
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec_()
+        sys.exit(1)
+
     def on_finished(ViewerClass):
         # This runs in the main thread
-        splash.set_progress(95)
-        splash.show_message("Building interface...")
-        QApplication.processEvents()
-        
-        # Apply theme BEFORE creating window to ensure correct initialization
-        # We need to re-import update_matplotlib_theme here or get it from module
-        #from .viewer import update_matplotlib_theme
-        #update_matplotlib_theme()
-        apply_theme(app, theme_manager)
-        
-        # Instantiate the main window now that classes are imported and theme is active
-        win = ViewerClass(args.imagename)
-        window_container['window'] = win
-        
-        # Setup theme callback
-        def on_theme_change(new_theme):
+        try:
+            splash.set_progress(95)
+            splash.show_message("Building interface...")
+            QApplication.processEvents()
+            
+            # Apply theme BEFORE creating window to ensure correct initialization
             apply_theme(app, theme_manager)
-        #    #update_matplotlib_theme()
-            settings.setValue("theme", new_theme)
-        theme_manager.register_callback(on_theme_change)
-        
-        splash.set_progress(100)
-        splash.show_message("Ready!")
-        
-        # Finish splash sequence
-        splash.finish(win)
-        win.show()
+            
+            # Instantiate the main window now that classes are imported and theme is active
+            win = ViewerClass(args.imagename)
+            window_container['window'] = win
+            
+            # Setup theme callback
+            def on_theme_change(new_theme):
+                apply_theme(app, theme_manager)
+                settings.setValue("theme", new_theme)
+            theme_manager.register_callback(on_theme_change)
+            
+            splash.set_progress(100)
+            splash.show_message("Ready!")
+            
+            # Finish splash sequence
+            splash.finish(win)
+            win.show()
+            
+        except Exception as e:
+            import traceback
+            error_details = "".join(traceback.format_exception(None, e, e.__traceback__))
+            print(f"[ERROR] Startup failed: {e}")
+            on_failure(error_details)
         
     loader.progress.connect(on_progress)
     loader.message.connect(on_message)
     loader.finished_loading.connect(on_finished)
+    loader.error.connect(on_failure) # Connect the new error signal
     
     # 3. Start Loading
     loader.start()
