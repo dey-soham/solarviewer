@@ -37,9 +37,16 @@ import sys
 with open("README.md") as f:
     long_description = f.read()
 
+def get_version():
+    with open("solar_radio_image_viewer/version.py") as f:
+        for line in f:
+            if line.startswith("__version__"):
+                return line.split("=")[1].strip().strip('"').strip("'")
+    raise RuntimeError("Unable to find version string.")
+
 setup(
     name="solarviewer",
-    version="1.2.0",
+    version=get_version(),
     packages=find_packages(),
     # cmdclass={
     #     'install': PostInstallCommand,
@@ -91,7 +98,7 @@ setup(
             "heliobrowser=solar_radio_image_viewer.helioviewer_browser:main",
         ],
     },
-    python_requires=">=3.7",
+    python_requires=">=3.9",
     description="SolarViewer - A comprehensive tool for visualizing and analyzing solar radio images",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -104,12 +111,11 @@ setup(
         "Topic :: Scientific/Engineering :: Astronomy",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
     project_urls={
         "Documentation": "https://github.com/dey-soham/solarviewer/wiki",

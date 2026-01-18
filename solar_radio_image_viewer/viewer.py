@@ -86,6 +86,7 @@ from .styles import (
     get_stylesheet,
     get_icon_path,
 )
+from .dialogs import UpdateDialog
 from .searchable_combobox import ColormapSelector
 from astropy.time import Time
 from sunpy.map import Map
@@ -924,9 +925,7 @@ class SolarRadioImageTab(QWidget):
         self.beam_settings_button = QPushButton()
         self.beam_settings_button.setObjectName("IconOnlyNBGButton")
         self.beam_settings_button.setIcon(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            )
+            QIcon(themed_icon("settings.png"))
         )
         self.beam_settings_button.setIconSize(QSize(18, 18))
         self.beam_settings_button.setToolTip("Beam Settings")
@@ -942,9 +941,7 @@ class SolarRadioImageTab(QWidget):
         self.grid_settings_button = QPushButton()
         self.grid_settings_button.setObjectName("IconOnlyNBGButton")
         self.grid_settings_button.setIcon(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            )
+            QIcon(themed_icon("settings.png"))
         )
         self.grid_settings_button.setIconSize(QSize(18, 18))
         self.grid_settings_button.setToolTip("Grid Settings")
@@ -960,9 +957,7 @@ class SolarRadioImageTab(QWidget):
         self.solar_disk_center_button = QPushButton()
         self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
         self.solar_disk_center_button.setIcon(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            )
+            QIcon(themed_icon("settings.png"))
         )
         self.solar_disk_center_button.setIconSize(QSize(18, 18))
         self.solar_disk_center_button.setToolTip("Customize Solar Disk")
@@ -978,9 +973,7 @@ class SolarRadioImageTab(QWidget):
         self.contour_settings_button = QPushButton()
         self.contour_settings_button.setObjectName("IconOnlyNBGButton")
         self.contour_settings_button.setIcon(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            )
+            QIcon(themed_icon("settings.png"))
         )
         self.contour_settings_button.setIconSize(QSize(18, 18))
         self.contour_settings_button.setToolTip("Contour Settings")
@@ -10074,6 +10067,10 @@ class SolarRadioImageTab(QWidget):
             self.solar_disk_center_button.setIcon(QIcon(themed_icon("settings.png")))
         if hasattr(self, "contour_settings_button"):
             self.contour_settings_button.setIcon(QIcon(themed_icon("settings.png")))
+        if hasattr(self, "beam_settings_button"):
+            self.beam_settings_button.setIcon(QIcon(themed_icon("settings.png")))
+        if hasattr(self, "grid_settings_button"):
+            self.grid_settings_button.setIcon(QIcon(themed_icon("settings.png")))
         
         # Update overlay toggle styles for theme
         self._update_overlay_toggle_styles()
@@ -10936,6 +10933,11 @@ class SolarRadioImageViewerApp(QMainWindow):
         about_act.setStatusTip("Show information about this application")
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
+
+        update_act = QAction("Check for Updates...", self)
+        update_act.setStatusTip("Check for application updates")
+        update_act.triggered.connect(self.show_update_dialog)
+        help_menu.addAction(update_act)
 
         # Tools menu
         # tools_menu = self.menuBar().addMenu("&Tools")
@@ -12582,6 +12584,21 @@ except Exception as e:
         buttons.rejected.connect(dialog.close)
         layout.addWidget(buttons)
 
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        self._open_dialogs.append(dialog)
+        dialog.show()
+
+    def show_update_dialog(self):
+        """Show the update check dialog (non-modal)."""
+        # Check if already open
+        for dialog in self._open_dialogs:
+            if isinstance(dialog, UpdateDialog):
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+
+        dialog = UpdateDialog(self)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
         self._open_dialogs.append(dialog)
