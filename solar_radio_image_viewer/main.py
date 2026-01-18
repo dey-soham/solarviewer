@@ -88,6 +88,7 @@ class LoaderThread(QThread):
             self.error.emit(error_details)
 
 
+
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
@@ -157,6 +158,11 @@ Examples:
     # Initialize the application
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    
+    # === Initialize Log Console ===
+    # Redirect stdout/stderr to the console window
+    from .log_console import LogConsole
+    log_console = LogConsole.get_instance()
     
     # Load saved theme preference BEFORE importing viewer
     settings = QSettings("SolarViewer", "SolarViewer")

@@ -10786,6 +10786,20 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Ensure add button is visible after adding a new tab
         QTimer.singleShot(100, self.ensureAddButtonVisible)
+    
+    def show_log_console(self):
+        """Show the embedded log console dialog."""
+        try:
+            from .log_console import LogConsole
+            console = LogConsole.get_instance()
+            console.show()
+            console.raise_()
+            console.activateWindow()
+        except ImportError:
+            self.show_status_message("Error: Log Console module not found")
+        except Exception as e:
+            print(f"[ERROR] Failed to open log console: {e}")
+            self.show_status_message(f"Error opening log console: {e}")
 
     def create_menus(self):
         menubar = self.menuBar()
@@ -10887,6 +10901,14 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
         view_menu.addAction(self.fullscreen_action)
 
+        # Log Console action
+        self.log_console_action = QAction("Show Log Console", self)
+        self.log_console_action.setShortcut("Ctrl+L")
+        self.log_console_action.setStatusTip("Show application log console")
+        self.log_console_action.triggered.connect(self.show_log_console)
+        view_menu.addAction(self.log_console_action)
+
+
         view_menu.addSeparator()
         
         # Preferences action
@@ -10972,7 +10994,7 @@ class SolarRadioImageViewerApp(QMainWindow):
         gauss_act.triggered.connect(self.fit_2d_gaussian)
         fitting_menu.addAction(gauss_act)
         ring_act = QAction("Fit Elliptical Ring", self)
-        ring_act.setShortcut("Ctrl+L")
+        #ring_act.setShortcut("Ctrl+L")
         ring_act.setStatusTip("Fit an elliptical ring to the selected region")
         ring_act.triggered.connect(self.fit_2d_ring)
         fitting_menu.addAction(ring_act)
@@ -13132,6 +13154,7 @@ except Exception as e:
                 ("-", "Zoom Out"),
                 ("Space  or  Enter", "Update Display"),
                 ("Ctrl+D", "Toggle Dark/Light Theme"),
+                ("Ctrl+L", "Log Console"),
                 ("F11", "Toggle Fullscreen"),
             ]),
             ("🎨", "Display Presets", [
@@ -13145,7 +13168,7 @@ except Exception as e:
                 ("Ctrl+P", "Phase Center Shift"),
                 ("Ctrl+M", "Image Metadata"),
                 ("Ctrl+G", "Fit 2D Gaussian"),
-                ("Ctrl+L", "Fit Ring Model"),
+                #("Ctrl+L", "Fit Ring Model"),
             ]),
             ("✂️", "Region & Annotation", [
                 ("Ctrl+S", "Export Sub-Image"),
@@ -13415,6 +13438,10 @@ except Exception as e:
         except:
             pass
         super().closeEvent(event)
+        
+        # Ensure the entire application (including Log Console) quits
+        from PyQt5.QtWidgets import QApplication
+        QApplication.instance().quit()
 
     def launch_napari_viewer(self):
         """Launch the Napari-based fast image viewer"""
