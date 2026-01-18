@@ -405,6 +405,11 @@ class SolarRadioImageTab(QWidget):
         self._cached_summary = None  # CASA summary cache
         self._cached_csys_record = None  # CASA csys record cache
 
+        # Cache for reprojected contours to avoid redundant heavy computations
+        # Key: (base_image_path, contour_image_path, stokes, visualization_params...)
+        # Value: (reprojected_data, extended_wcs, extended_shape, contour_offset)
+        self._reproject_cache = {}
+
         # Debounce timers for UI responsiveness
         self._gamma_debounce_timer = None
 
@@ -2804,6 +2809,9 @@ class SolarRadioImageTab(QWidget):
                 self, "No Image", "Please select a CASA image directory first!"
             )
             return
+
+        if dir_load:
+            self._reproject_cache = {}
 
         tight_layout = False
         """if dir_load:
@@ -8546,12 +8554,42 @@ class SolarRadioImageTab(QWidget):
                     # Store offset for contour drawing
                     self._contour_offset = contour_offset
 
-                    # Reproject the contour data to the extended/clipped WCS
-                    array, footprint = reproject_interp(
-                        (contour_data, contour_wcs_obj),
-                        extended_wcs,
-                        shape_out=extended_shape,
+                    # Check cache for reprojected data
+                    # Create a comprehensive cache key
+                    cache_key = (
+                        self.imagename,  # Base image
+                        contour_imagename, # Contour image source
+                        self.contour_settings.get("stokes", ""), # Stokes parameter (crucial!)
+                        contour_data.shape, # Original contour shape
+                        "fits_header" if fits_flag else "casa_csys", # Source type
+                        str(contour_wcs_obj.wcs.crval), # Contour WCS params
+                        str(contour_wcs_obj.wcs.cdelt),
+                        str(image_wcs_for_reproject.wcs.crval), # Base image WCS params (includes downsampling state)
+                        str(image_wcs_for_reproject.wcs.cdelt),
+                        show_full_extent, # Extent setting
                     )
+                    
+                    cached_result = self._reproject_cache.get(cache_key)
+                    
+                    if cached_result is not None:
+                         # cache hit
+                        # print("Using cached reprojected contour data")
+                        if main_window:
+                            self.show_status_message("Using cached contour alignment...")
+                        array, offset = cached_result
+                        self._contour_offset = offset
+                    else:
+                        # Cache miss - perform reprojection
+                        # Reproject the contour data to the extended/clipped WCS
+                        array, footprint = reproject_interp(
+                            (contour_data, contour_wcs_obj),
+                            extended_wcs,
+                            shape_out=extended_shape,
+                        )
+                        
+                        # Store in cache
+                        self._reproject_cache[cache_key] = (array, self._contour_offset)
+
 
 
                     # Replace the NaNs with zeros
