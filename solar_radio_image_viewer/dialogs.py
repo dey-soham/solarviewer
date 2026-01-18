@@ -4572,10 +4572,20 @@ class UpdateDialog(QDialog):
             self.repaint() # Force redraw
             
             try:
-                # Run pip install --upgrade solarviewer
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", "--upgrade", "solarviewer"]
-                )
+                import os
+                venv_path = sys.prefix
+                activate_script = os.path.join(venv_path, "bin", "activate")
+                
+                if os.path.exists(activate_script):
+                    # Run via shell to support sourcing. 
+                    # Use '.' which is POSIX compliant (works in sh, bash, zsh, dash) instead of 'source' (bash-ism)
+                    cmd = f". \"{activate_script}\" && pip install --upgrade solarviewer"
+                    subprocess.check_call(cmd, shell=True)
+                else:
+                    # Fallback if no standard activate script found
+                    subprocess.check_call(
+                        [sys.executable, "-m", "pip", "install", "--upgrade", "solarviewer"]
+                    )
                 
                 QMessageBox.information(
                     self,
