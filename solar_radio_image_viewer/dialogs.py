@@ -4587,14 +4587,48 @@ class UpdateDialog(QDialog):
                 
                 if os.path.exists(activate_script):
                     # Run via shell to support sourcing. 
-                    # Use '.' which is POSIX compliant (works in sh, bash, zsh, dash) instead of 'source' (bash-ism)
                     cmd = f". \"{activate_script}\" && pip install --upgrade solarviewer"
-                    subprocess.check_call(cmd, shell=True)
+                    print(f"[INFO] Executing: {cmd}")
+                    
+                    # Use Popen to capture and print output in real-time
+                    process = subprocess.Popen(
+                        cmd, 
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1
+                    )
+                    
+                    # Stream output to main stdout (which Log Console captures)
+                    for line in process.stdout:
+                        print(line, end="")
+                        QApplication.processEvents() # Keep UI responsive
+                        
+                    process.wait()
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, cmd)
+                        
                 else:
                     # Fallback if no standard activate script found
-                    subprocess.check_call(
-                        [sys.executable, "-m", "pip", "install", "--upgrade", "solarviewer"]
+                    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "solarviewer"]
+                    print(f"[INFO] Executing: {' '.join(cmd)}")
+                    
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1
                     )
+                    
+                    for line in process.stdout:
+                        print(line, end="")
+                        QApplication.processEvents()
+                        
+                    process.wait()
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, cmd)
                 
                 QMessageBox.information(
                     self,
