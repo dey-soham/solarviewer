@@ -9158,32 +9158,41 @@ class SolarRadioImageTab(QWidget):
                         return
                     
                     import stat
+                    from .remote.ssh_manager import RemoteFileInfo
+                    
                     entries = []
-                    for attr in self._sftp.listdir_attr(self.remote_dir):
+                    attrs = self._sftp.listdir_attr(self.remote_dir)
+                    
+                    for attr in attrs:
                         name = attr.filename
                         if name.startswith('.'):
                             continue
                         
-                        is_dir = stat.S_ISDIR(attr.st_mode)
-                        full_path = os.path.join(self.remote_dir, name)
+                        st_mode = attr.st_mode
+                        is_dir = stat.S_ISDIR(st_mode)
                         
-                        # Import RemoteFileInfo
-                        from .remote.ssh_manager import RemoteFileInfo
-                        info = RemoteFileInfo(
-                            name=name,
-                            path=full_path,
-                            is_dir=is_dir,
-                            size=attr.st_size,
-                            mtime=attr.st_mtime,
-                        )
-                        
-                        # Filter based on mode
+                        # Pre-filter check
+                        include_item = False
                         if self.casa_mode:
-                            if is_dir:
-                                entries.append(info)
+                            if is_dir and (name.endswith('.image') or name.endswith('.im')):
+                                include_item = True
                         else:
-                            if info.is_fits:
-                                entries.append(info)
+                            # Check extension for FITS files OR CASA images
+                            is_fits = not is_dir and name.lower().endswith(('.fits', '.fts', '.fit'))
+                            
+                            if is_fits:
+                                include_item = True
+                        
+                        if include_item:
+                            full_path = os.path.join(self.remote_dir, name)
+                            info = RemoteFileInfo(
+                                name=name,
+                                path=full_path,
+                                is_dir=is_dir,
+                                size=attr.st_size,
+                                mtime=attr.st_mtime,
+                            )
+                            entries.append(info)
                     
                     # Sort
                     entries.sort(key=lambda x: x.name.lower())
