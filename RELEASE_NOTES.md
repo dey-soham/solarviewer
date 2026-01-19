@@ -1,5 +1,30 @@
 # SolarViewer Release Notes
 
+## Version 1.2.0
+
+### Features & Infrastructure
+*   **Remote Support**: Added comprehensive support for remote file access and operations.
+*   **Desktop Integration**: Application can now be installed as a desktop application using `sv --install`.
+*   **In-App Updates**: Added support for checking and performing updates directly within the application.
+*   **Log Console**: Integrated a log console for real-time application feedback.
+*   **Splash Screen**: Added a splash screen for improved startup experience.
+
+### Visualization & Contours
+*   **Contour Reprojection**: Added support for contour plotting on the entire extension after reprojection.
+*   **Coordinate Conversion**: Automatic conversion between coordinate systems (HPC and RA/DEC) for contour overplots.
+*   **Beam & Grid**: Added consolidated customization settings for beam and grid visualization.
+
+### Performance & UI
+*   **Plotting Performance**: Significantly decreased rendering time for FITS plotting, colormap adjustments, and stretch/preset changes.
+*   **Contour Optimization**: Added contour downsampling support to accelerate contour loading after reprojection.
+*   **High DPI Support**: Added support for High DPI displays with user-adjustable UI scaling in Preferences.
+*   **UI Consistency**: Standardized the design and layout of many dialogs for a consistent user experience.
+
+### Bug Fixes & General
+*   **Phase Center**: Fixed issues with solar phase center shifting.
+*   **General**: Other quality of life improvements.
+
+
 ## Version 1.1.0
 
 ### User Interface & Experience
@@ -80,18 +105,6 @@ You don't need to leave the app to get context data anymore. I've added a browse
 - Fixed a bug where the solar disk would just disappear if you reset the zoom.
 - Fixed rotation issues in HPC transformations.
 - Suppressed a bunch of noisy CASA warnings.
-
-### Installation
-
-To install:
-```bash
-pip install .
-```
-
-If you need the full feature set (LOFAR tools, etc):
-```bash
-pip install .[full]
-```
 
 ### Contributors
 - Soham Dey
