@@ -43,21 +43,23 @@
 - **Stokes Parameters** — Full polarization support (I, Q, U, V, L, Lfrac, Vfrac, PANG)
 
 ### 🌐 Data Access & Downloads
-
+ 
+- **Remote Access (SSH/SFTP)** — Browse and open files directly from remote servers with local caching
 - **Helioviewer Browser** — Browse and download images from NASA's Helioviewer API with time-series playback
 - **Solar Data Downloader** — Download data from SDO/AIA, IRIS, SOHO, GOES SUVI, STEREO, and GONG
 - **Radio Data Downloader** — Access solar radio observation archives
 - **Solar Activity Viewer** — Browse solar events (flares, CMEs, active regions) with real-time data
-
+ 
 ### 🎬 Video Creation
-
+ 
 - **Time-lapse Videos** — Create MP4 videos from image sequences
 - **Contour Overlays** — Overlay radio contours on EUV/optical base images
 - **Custom Annotations** — Add timestamps, colorbars, and min/max plots
 - **Preview Mode** — Real-time preview before rendering
-
+ 
 ### 🔧 Advanced Tools
-
+ 
+- **Log Console** — Internal console to view application logs and debugging information
 - **LOFAR/SIMPL Support** — Calibration table visualizer, dynamic spectra viewer, pipeline log viewer
 - **Coordinate Transformations** — Convert between RA/Dec and helioprojective coordinates
 - **Phase Center Tool** — Shift image phase centers for radio interferometry data

@@ -62,7 +62,7 @@ from PyQt5.QtWidgets import (
     # QStyle,
     QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QIcon, QIntValidator, QColor, QPalette
 from PyQt5.QtWidgets import QStyledItemDelegate
 
@@ -89,7 +89,22 @@ from .styles import (
 from .dialogs import UpdateDialog
 from .searchable_combobox import ColormapSelector
 from astropy.time import Time
+from .utils.update_checker import check_for_updates
+from .version import __version__
 from sunpy.map import Map
+
+class CheckUpdateThread(QThread):
+    """Background thread to check for updates on PyPI."""
+    update_available = pyqtSignal(str)  # Emits latest version string
+    
+    def run(self):
+        try:
+            is_available, latest_ver, error = check_for_updates(__version__)
+            if is_available and latest_ver:
+                self.update_available.emit(latest_ver)
+        except Exception:
+            pass  # Silently fail for updates
+
 
 class DisabledItemDelegate(QStyledItemDelegate):
     """Custom delegate that properly renders disabled items with grayed text."""
@@ -10723,6 +10738,23 @@ class SolarRadioImageViewerApp(QMainWindow):
         self._apply_remote_status_style(connected=False)
         self.statusBar().addPermanentWidget(self.remote_status_btn)
 
+        # Update Notification Button (Hidden by default)
+        self.update_btn = QPushButton("🚀 Update Available")
+        self.update_btn.setFlat(True)
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self._update_update_btn_style() # Set initial style
+        self.update_btn.setVisible(False)
+        self.update_btn.clicked.connect(self._on_update_clicked)
+        self.statusBar().addPermanentWidget(self.update_btn)
+
+        # Start update check in background
+        self._update_thread = CheckUpdateThread()
+        self._update_thread.update_available.connect(self._on_update_available)
+        self._update_thread.start()
+        
+        # Register for theme changes
+        theme_manager.register_callback(self._on_theme_changed)
+
         self.statusBar().showMessage("Ready")
         self.create_menus()
 
@@ -10751,6 +10783,49 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Ensure add button is visible after initialization
         QTimer.singleShot(200, self.ensureAddButtonVisible)
+
+    def _update_update_btn_style(self):
+        """Update the update notification button style based on theme."""
+        if not hasattr(self, 'update_btn'):
+            return
+            
+        is_dark = theme_manager.is_dark
+        
+        if is_dark:
+            # Current style that looks good in dark mode
+            color = "#10b981" # Emerald 500
+            bg_hover = "rgba(16, 185, 129, 0.1)"
+            border_color = "#10b981"
+        else:
+            # Darker green for light theme (Emerald 600)
+            color = "#059669" 
+            bg_hover = "rgba(5, 150, 105, 0.1)"
+            border_color = "#059669"
+            
+        self.update_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {color};
+                font-weight: bold;
+                padding: 0 4px;
+                border: 1px solid {border_color};
+                border-radius: 4px;
+                background-color: transparent;
+            }}
+            QPushButton:hover {{
+                background-color: {bg_hover};
+            }}
+        """)
+
+    def _on_update_available(self, latest_ver):
+        """Show the update button when an update is found."""
+        self.update_btn.setText(f"🚀 Update Available: {latest_ver}")
+        self.update_btn.setToolTip(f"A new version ({latest_ver}) is available! Click to learn more.")
+        self.update_btn.setVisible(True)
+        self.latest_version = latest_ver
+
+    def _on_update_clicked(self):
+        """Show the software update dialog."""
+        self.show_update_dialog()
 
     def ensureAddButtonVisible(self):
         """Make sure the add button is visible and on top"""
@@ -11383,6 +11458,9 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Refresh all matplotlib plots
         self.refresh_all_plots()
+        
+        # Update notification button style
+        self._update_update_btn_style()
 
     def _update_theme_action_text(self):
         """Update theme toggle action text based on current theme."""
