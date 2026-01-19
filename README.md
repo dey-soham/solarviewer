@@ -78,6 +78,22 @@
 
 > **Note**: No other manual installation is required — all dependencies are installed automatically via pip.
 
+### Recommended: Virtual Environment
+
+It is highly recommended to install SolarViewer in a virtual environment to avoid conflicts with system packages.
+
+```bash
+# Create a virtual environment
+python3 -m venv ~/.sv
+
+# Activate the environment
+source ~/.sv/bin/activate
+```
+
+Once the virtual environment is active, proceed with the installation below. 
+
+**Pro Tip**: After running `sv --install` (see Desktop Integration below), you won't need to manually activate the environment to launch the application!
+
 ### Install from PyPI
 
 ```bash
@@ -90,6 +106,23 @@ pip install solarviewer
 git clone https://github.com/dey-soham/solarviewer.git
 cd solarviewer
 pip install -e .
+```
+
+### Desktop Integration
+
+After installation, you can create a desktop entry and icon (Linux) or an application bundle (macOS) to launch SolarViewer from your application menu:
+
+```bash
+# Install desktop shortcuts and icons
+solarviewer --install
+# or
+sv --install
+```
+
+To remove the desktop integration later:
+
+```bash
+solarviewer --uninstall
 ```
 
 ### Dependencies
@@ -154,10 +187,12 @@ heliobrowser       # Helioviewer browser
 solarviewer [OPTIONS] [IMAGEFILE]
 
 Options:
-  -f, --fast    Launch fast Napari viewer
-  --light       Start with light theme
-  -v, --version Show version and exit
-  -h, --help    Show help message
+  -f, --fast        Launch fast Napari viewer
+  --install         Install desktop integration
+  --uninstall       Uninstall desktop integration
+  --light           Start with light theme
+  -v, --version     Show version and exit
+  -h, --help        Show help message
 ```
 
 ---

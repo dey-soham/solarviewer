@@ -56,11 +56,6 @@ def install_desktop_integration():
         with open(desktop_template, "r") as f:
             content = f.read()
 
-        # Replace placeholders/update Exec
-        # The template has Exec=solarviewer %F. We replace 'solarviewer' with the full path if needed,
-        # but usually using the full path is safer to avoid PATH issues in desktop launchers.
-        # However, we need to preserve %F
-
         updated_content = content.replace("Exec=solarviewer", f"Exec={executable_path}")
         updated_content = updated_content.replace(
             "Icon=solarviewer", f"Icon={target_icon_path}"

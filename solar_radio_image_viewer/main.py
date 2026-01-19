@@ -137,8 +137,31 @@ Examples:
         version=f"SolarViewer {__version__}",
         help="Show the application version and exit",
     )
+    
+    # Desktop Integration
+    parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Install desktop integration (menu shortcut and icon)",
+    )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Uninstall desktop integration",
+    )
 
     args = parser.parse_args()
+
+    # Handle Desktop Integration
+    if args.install:
+        from .install_utils import install_desktop_integration
+        success = install_desktop_integration()
+        sys.exit(0 if success else 1)
+        
+    if args.uninstall:
+        from .install_utils import uninstall_desktop_integration
+        success = uninstall_desktop_integration()
+        sys.exit(0 if success else 1)
 
     # Check if the specified image file exists
     if args.imagename and not os.path.exists(args.imagename):
