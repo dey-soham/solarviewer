@@ -119,9 +119,15 @@ class LogConsole(QDialog):
         # Redirect
         sys.stdout = StreamRedirector(self.stdout_orig, self.log_signal)
         sys.stderr = StreamRedirector(self.stderr_orig, self.log_signal)
-        
-        # Apply theme if available
+
         self.apply_theme()
+        
+        # Register for theme updates
+        try:
+            from .styles import theme_manager
+            theme_manager.register_callback(self.apply_theme)
+        except ImportError:
+            pass
         
         # Track auto-scroll state
         self.auto_scroll = True
@@ -155,7 +161,8 @@ class LogConsole(QDialog):
         cursor.clearSelection()
         self.text_edit.setTextCursor(cursor)
 
-    def apply_theme(self):
+    def apply_theme(self, *args):
+        """Apply current theme colors."""
         try:
             from .styles import theme_manager
             self.setStyleSheet(theme_manager.stylesheet)
@@ -165,15 +172,18 @@ class LogConsole(QDialog):
             is_dark = theme_manager.is_dark
             
             # Darker background for console than standard input
-            console_bg = "#0d0d15" if is_dark else "#f0f0f0"
+            console_bg = "#0d0d15" if is_dark else "#fcfcfc"
             console_text = palette['text']
+            border_color = palette['border']
             
             self.text_edit.setStyleSheet(f"""
                 QTextEdit {{
                     background-color: {console_bg};
                     color: {console_text};
-                    border: none;
+                    border: 1px solid {border_color};
+                    border-radius: 4px;
                     font-family: 'Consolas', 'Courier New', monospace;
+                    padding: 4px;
                 }}
             """)
         except ImportError:

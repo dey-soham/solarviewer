@@ -182,11 +182,6 @@ Examples:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     
-    # === Initialize Log Console ===
-    # Redirect stdout/stderr to the console window
-    from .log_console import LogConsole
-    log_console = LogConsole.get_instance()
-    
     # Load saved theme preference BEFORE importing viewer
     settings = QSettings("SolarViewer", "SolarViewer")
     saved_theme = settings.value("theme", ThemeManager.DARK)
@@ -197,6 +192,12 @@ Examples:
     
     # Set initial theme BEFORE importing viewer (so matplotlib rcParams are correct)
     theme_manager._current_theme = saved_theme
+    
+    # === Initialize Log Console ===
+    # Redirect stdout/stderr to the console window
+    # Initialize AFTER theme is set so it picks up the correct style
+    from .log_console import LogConsole
+    log_console = LogConsole.get_instance()
     
     # Handle Fast Mode (Napari) - Skip complex loading
     if args.fast:
