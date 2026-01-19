@@ -6021,37 +6021,49 @@ class SolarRadioImageTab(QWidget):
         )
         
         if can_fast_path:
-             if self._last_rendered_state == current_state:
-                 # Success! Update and Return.
-                 try:
-                     self.image_plot.set_cmap(cmap)
-                     self.image_plot.set_norm(norm)
-                     norm_params = (fp_vmin, fp_vmax, stretch, gamma)
-                     last_norm_params = getattr(self, "_last_norm_params", None)
+            if self._last_rendered_state == current_state:
+                # Success! Update and Return.
+                try:
+                    self.image_plot.set_cmap(cmap)
+                    self.image_plot.set_norm(norm)
+                    norm_params = (fp_vmin, fp_vmax, stretch, gamma)
+                    #last_norm_params = getattr(self, "_last_norm_params", None)
+
+                    if hasattr(self, "colorbar") and self.colorbar:
+                        self.colorbar.update_normal(self.image_plot)
+                        if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
+                            try:
+                                ticks = self.colorbar.ax.get_yticks()
+                                valid_ticks = [t for t in ticks if fp_vmin <= t <= fp_vmax]
+                                if len(valid_ticks) >= 2:
+                                    self.colorbar.ax.set_yticks(valid_ticks)
+                            except Exception:
+                                pass
                      
-                     if last_norm_params != norm_params:
-                         if hasattr(self, "colorbar") and self.colorbar:
-                             self.colorbar.update_normal(self.image_plot)
-                             if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
-                                 try:
-                                     ticks = self.colorbar.ax.get_yticks()
-                                     valid_ticks = [t for t in ticks if fp_vmin <= t <= fp_vmax]
-                                     if len(valid_ticks) >= 2:
-                                         self.colorbar.ax.set_yticks(valid_ticks)
-                                 except Exception:
-                                     pass
+                    '''if last_norm_params != norm_params:
+                        if hasattr(self, "colorbar") and self.colorbar:
+                            self.colorbar.update_normal(self.image_plot)
+                            if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
+                                try:
+                                    ticks = self.colorbar.ax.get_yticks()
+                                    valid_ticks = [t for t in ticks if fp_vmin <= t <= fp_vmax]
+                                    if len(valid_ticks) >= 2:
+                                        self.colorbar.ax.set_yticks(valid_ticks)
+                                except Exception:
+                                    pass
+                    '''
                      
-                     # Cache new params
-                     self._last_norm_params = norm_params
+                    # Cache new params
+                    self._last_norm_params = norm_params
                      
-                     self.canvas.draw()
-                     QApplication.restoreOverrideCursor()
-                     return
-                 except Exception as e:
-                     print(f"Fast Path Update Failed: {e}")
-             else:
-                 # Debugging Mismatch (Optional log, keeping it minimal)
-                 pass
+                    self.canvas.draw()
+                    QApplication.restoreOverrideCursor()
+                    return
+                except Exception as e:
+                    print(f"Fast Path Update Failed: {e}")
+            else:
+                # Debugging Mismatch (Optional log, keeping it minimal)
+                pass
 
 
 
