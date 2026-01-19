@@ -92,7 +92,7 @@ source ~/.sv/bin/activate
 
 Once the virtual environment is active, proceed with the installation below. 
 
-**Pro Tip**: After running `sv --install` (see Desktop Integration below), you won't need to manually activate the environment to launch the application!
+**💡 Pro Tip**: After running `sv --install` (see Desktop Integration below), you won't need to manually activate the environment to launch the application!
 
 ### Install from PyPI
 
