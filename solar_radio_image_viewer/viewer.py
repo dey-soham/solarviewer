@@ -1,4 +1,4 @@
-# import sys
+import sys
 import os
 import numpy as np
 from importlib import resources as importlib_resources
@@ -62,7 +62,7 @@ from PyQt5.QtWidgets import (
     # QStyle,
     QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QIcon, QIntValidator, QColor, QPalette
 from PyQt5.QtWidgets import QStyledItemDelegate
 
@@ -89,7 +89,22 @@ from .styles import (
 from .dialogs import UpdateDialog
 from .searchable_combobox import ColormapSelector
 from astropy.time import Time
+from .utils.update_checker import check_for_updates
+from .version import __version__
 from sunpy.map import Map
+
+class CheckUpdateThread(QThread):
+    """Background thread to check for updates on PyPI."""
+    update_available = pyqtSignal(str)  # Emits latest version string
+    
+    def run(self):
+        try:
+            is_available, latest_ver, error = check_for_updates(__version__)
+            if is_available and latest_ver:
+                self.update_available.emit(latest_ver)
+        except Exception:
+            pass  # Silently fail for updates
+
 
 class DisabledItemDelegate(QStyledItemDelegate):
     """Custom delegate that properly renders disabled items with grayed text."""
@@ -152,7 +167,6 @@ rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
 update_matplotlib_theme()
 mplstyle.use("fast")
-
 
 # For region selection modes
 class RegionMode:
@@ -405,6 +419,11 @@ class SolarRadioImageTab(QWidget):
         self._cached_summary = None  # CASA summary cache
         self._cached_csys_record = None  # CASA csys record cache
 
+        # Cache for reprojected contours to avoid redundant heavy computations
+        # Key: (base_image_path, contour_image_path, stokes, visualization_params...)
+        # Value: (reprojected_data, extended_wcs, extended_shape, contour_offset)
+        self._reproject_cache = {}
+
         # Debounce timers for UI responsiveness
         self._gamma_debounce_timer = None
 
@@ -457,6 +476,10 @@ class SolarRadioImageTab(QWidget):
             "pad_hspace": 0.2,
             "use_tight_layout": False,
         }
+        
+        # Rendering optimization state
+        self._last_rendered_state = {}
+        self.image_plot = None
 
         self.setup_ui()
         self._setup_file_navigation_shortcuts()
@@ -2804,6 +2827,9 @@ class SolarRadioImageTab(QWidget):
                 self, "No Image", "Please select a CASA image directory first!"
             )
             return
+
+        if dir_load:
+            self._reproject_cache = {}
 
         tight_layout = False
         """if dir_load:
@@ -5825,6 +5851,46 @@ class SolarRadioImageTab(QWidget):
         # self.plot_image()
         # self.schedule_plot()
 
+
+    def _get_render_state(self, tight_layout=False):
+        """
+        Capture the current structural state of the plot.
+        Returns a dict of values that, if changed, require a full redraw.
+        """
+        state = {
+            "data_id": id(self.current_image_data) if self.current_image_data is not None else None,
+            "wcs_id": id(self.current_wcs) if self.current_wcs else None,
+            "fits_flag": self._cached_fits_flag,
+            "tight_layout": tight_layout,
+            
+            # Overlay states
+            "show_beam": self.show_beam_checkbox.isChecked(),
+            "show_grid": self.show_grid_checkbox.isChecked(),
+            "show_solar_disk": self.show_solar_disk_checkbox.isChecked(),
+            "show_contours": self.show_contours_checkbox.isChecked(),
+        }
+            
+        # Settings snapshots
+        exclude_keys = {
+            "contour_data", "contour_wcs", "contour_header", "wcs", "header", "data"
+        }
+        cs_snap = {k: self.contour_settings[k] for k in self.contour_settings if k not in exclude_keys}
+        
+        # Track identity of heavy objects separately if needed (only if they exist)
+        if "contour_data" in self.contour_settings:
+             state["contour_data_id"] = id(self.contour_settings["contour_data"])
+        else:
+             state["contour_data_id"] = None
+             
+        state["contour_settings"] = str(cs_snap)
+        
+        state["grid_settings"] = str(self.grid_style)
+        state["beam_settings"] = str(self.beam_style)
+        state["solar_disk_settings"] = str(self.solar_disk_style)
+        state["plot_settings"] = str(self.plot_settings)
+
+        return state
+
     def plot_image(
         self,
         vmin_val=None,
@@ -5915,6 +5981,92 @@ class SolarRadioImageTab(QWidget):
                 stored_xlim = None
                 stored_ylim = None
 
+        # Determine vmin/vmax CACHED for Fast Path
+        # We need these values to compute Normalization
+        fp_vmin = vmin_val
+        if fp_vmin is None: fp_vmin = np.nanmin(data)
+        fp_vmax = vmax_val
+        if fp_vmax is None: fp_vmax = np.nanmax(data)
+        if fp_vmax <= fp_vmin: fp_vmax = fp_vmin + 1e-6
+        
+        # Create the normalization object early for Fast Path
+        if stretch == "log":
+            safe_min = max(fp_vmin, 1e-8)
+            safe_max = max(fp_vmax, safe_min * 1.01)
+            norm = LogNorm(vmin=safe_min, vmax=safe_max)
+        elif stretch == "sqrt":
+            norm = SqrtNorm(vmin=fp_vmin, vmax=fp_vmax)
+        elif stretch == "arcsinh":
+            norm = AsinhNorm(vmin=fp_vmin, vmax=fp_vmax)
+        elif stretch == "power":
+            norm = PowerNorm(vmin=fp_vmin, vmax=fp_vmax, gamma=gamma)
+        elif stretch == "zscale":
+            norm = ZScaleNorm(
+                vmin=fp_vmin, vmax=fp_vmax, contrast=0.25, num_samples=600
+            )
+        elif stretch == "histeq":
+            norm = HistEqNorm(vmin=fp_vmin, vmax=fp_vmax, n_bins=256)
+        else:
+            norm = Normalize(vmin=fp_vmin, vmax=fp_vmax)
+
+        # FAST PATH OPTIMIZATION: Update existing plot if structure hasn't changed
+        # MUST BE DONE BEFORE figure.clear()
+        current_state = self._get_render_state(tight_layout=tight_layout)
+        
+        can_fast_path = (
+            hasattr(self, "image_plot") 
+            and self.image_plot is not None 
+            and self.figure.axes 
+            and preserve_view
+        )
+        
+        if can_fast_path:
+            if self._last_rendered_state == current_state:
+                # Success! Update and Return.
+                try:
+                    self.image_plot.set_cmap(cmap)
+                    self.image_plot.set_norm(norm)
+                    norm_params = (fp_vmin, fp_vmax, stretch, gamma)
+                    #last_norm_params = getattr(self, "_last_norm_params", None)
+
+                    if hasattr(self, "colorbar") and self.colorbar:
+                        self.colorbar.update_normal(self.image_plot)
+                        if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
+                            try:
+                                ticks = self.colorbar.ax.get_yticks()
+                                valid_ticks = [t for t in ticks if fp_vmin <= t <= fp_vmax]
+                                if len(valid_ticks) >= 2:
+                                    self.colorbar.ax.set_yticks(valid_ticks)
+                            except Exception:
+                                pass
+                     
+                    '''if last_norm_params != norm_params:
+                        if hasattr(self, "colorbar") and self.colorbar:
+                            self.colorbar.update_normal(self.image_plot)
+                            if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
+                                try:
+                                    ticks = self.colorbar.ax.get_yticks()
+                                    valid_ticks = [t for t in ticks if fp_vmin <= t <= fp_vmax]
+                                    if len(valid_ticks) >= 2:
+                                        self.colorbar.ax.set_yticks(valid_ticks)
+                                except Exception:
+                                    pass
+                    '''
+                     
+                    # Cache new params
+                    self._last_norm_params = norm_params
+                     
+                    self.canvas.draw()
+                    QApplication.restoreOverrideCursor()
+                    return
+                except Exception as e:
+                    print(f"Fast Path Update Failed: {e}")
+            else:
+                # Debugging Mismatch (Optional log, keeping it minimal)
+                pass
+
+
+
         self.figure.clear()
 
         # Determine vmin/vmax
@@ -5942,8 +6094,16 @@ class SolarRadioImageTab(QWidget):
             )
         elif stretch == "histeq":
             norm = HistEqNorm(vmin=vmin_val, vmax=vmax_val, n_bins=256)
-        else:
-            norm = Normalize(vmin=vmin_val, vmax=vmax_val)
+        
+        if vmin_val is None: vmin_val = fp_vmin
+        if vmax_val is None: vmax_val = fp_vmax
+        
+        # Monkey patch removal if present
+        if hasattr(self.figure, "_monkey_patched"):
+            del self.figure._monkey_patched
+            self.figure.clear = self.figure._original_clear
+            
+
 
         # Cache the WCS object if current_wcs hasn't changed.
         wcs_obj = None
@@ -6046,6 +6206,7 @@ class SolarRadioImageTab(QWidget):
                     interpolation=interpolation,
                     # aspect="auto",
                 )
+                self.image_plot = im
                 if fits_flag:
                     if header["CTYPE1"] == "HPLN-TAN":
                         ax.set_xlabel("Solar X")
@@ -6109,6 +6270,7 @@ class SolarRadioImageTab(QWidget):
                     interpolation=interpolation,
                     aspect="auto",
                 )
+                self.image_plot = im
                 ax.set_xlabel("Pixel X")
                 ax.set_ylabel("Pixel Y")
         else:
@@ -6121,6 +6283,7 @@ class SolarRadioImageTab(QWidget):
                 interpolation=interpolation,
                 aspect="auto",
             )
+            self.image_plot = im
             ax.set_xlabel("Pixel X")
             ax.set_ylabel("Pixel Y")
 
@@ -6318,19 +6481,27 @@ class SolarRadioImageTab(QWidget):
                 ax=ax,
                 aspect=30,
             )
+        self.colorbar = cb
 
         # Apply plot customization settings
         ps = self.plot_settings
-
+        
+        # Helper to resolve "auto" colors based on theme
+        from .styles import theme_manager
+        is_dark = theme_manager.is_dark
+        theme_text = "#ffffff" if is_dark else "#000000"
+        theme_tick = "#e0e0e0" if is_dark else "#333333"
+        theme_border = "#ffffff" if is_dark else "#000000"
+        
         # Get text color for labels and title
         text_color = ps.get("text_color", "auto")
         if text_color == "auto":
-            text_color = None  # Use matplotlib default
-
+            text_color = theme_text  # Explicitly set based on theme
+            
         # Get tick color for tick marks and tick labels (separate from text_color)
         tick_color = ps.get("tick_color", "auto")
         if tick_color == "auto":
-            tick_color = None  # Use matplotlib default
+            tick_color = theme_tick  # Explicitly set based on theme
 
         # Build label kwargs with color if specified
         label_kwargs = {"fontsize": ps.get("axis_label_fontsize", 12)}
@@ -6424,14 +6595,21 @@ class SolarRadioImageTab(QWidget):
         # Apply background colors
         plot_bg = ps.get("plot_bg_color", "auto")
         figure_bg = ps.get("figure_bg_color", "auto")
+        
+        # Resolve defaults from current theme (stored in rcParams)
+        from matplotlib import rcParams
+        if plot_bg == "auto":
+            plot_bg = rcParams.get("axes.facecolor", "white")
+        if figure_bg == "auto":
+            figure_bg = rcParams.get("figure.facecolor", "white")
 
-        if plot_bg and plot_bg != "auto":
+        if plot_bg:
             try:
                 ax.set_facecolor(plot_bg)
             except ValueError:
                 pass  # Invalid color, ignore
 
-        if figure_bg and figure_bg != "auto":
+        if figure_bg:
             try:
                 self.figure.patch.set_facecolor(figure_bg)
                 self.figure.set_facecolor(figure_bg)
@@ -6441,8 +6619,12 @@ class SolarRadioImageTab(QWidget):
         # Apply border (spine) color and width
         border_color = ps.get("border_color", "auto")
         border_width = ps.get("border_width", 1.0)
+        
+        if border_color == "auto":
+             border_color = theme_border
 
-        if border_color and border_color != "auto":
+        if border_color:
+
             for spine in ax.spines.values():
                 spine.set_color(border_color)
             # For WCSAxes, also set frame color
@@ -6611,6 +6793,17 @@ class SolarRadioImageTab(QWidget):
 
         # Instead of immediate draw, use draw_idle to coalesce multiple calls
         self.canvas.draw_idle()
+        
+        # Save state for next update
+        self._last_rendered_state = self._get_render_state(tight_layout=tight_layout)
+        
+        # Recalculate defaults if they were None (same logic as start of function)
+        _s_vmin = vmin_val if vmin_val is not None else np.nanmin(data)
+        _s_vmax = vmax_val if vmax_val is not None else np.nanmax(data)
+        if _s_vmax <= _s_vmin: _s_vmax = _s_vmin + 1e-6
+        
+        self._last_norm_params = (_s_vmin, _s_vmax, stretch, gamma)
+
 
         # Restore normal cursor
         QApplication.restoreOverrideCursor()
@@ -8438,7 +8631,20 @@ class SolarRadioImageTab(QWidget):
                 # Check if image shapes differ
                 if contour_data.shape != self.current_image_data.shape:
                     needs_reprojection = True
-
+        
+            # Handle manual downsampling for "Same Image" or aligned images (no reprojection needed)
+            # This ensures large images are still downsampled for performance
+            if not needs_reprojection:
+                 self._contour_ds_factor = 1 # Default
+                 if self.contour_settings.get("downsample", True):
+                     max_dim = max(contour_data.shape)
+                     if max_dim > 2048:
+                          factor = int(np.ceil(max_dim / 2048.0))
+                          print(f"[INFO] Downsampling aligned contour by {factor}x (original size: {contour_data.shape})")
+                          # Simple slicing is sufficient for aligned data
+                          contour_data = contour_data[::factor, ::factor]
+                          self._contour_ds_factor = factor
+        
             if needs_reprojection and contour_wcs_obj is not None:
                 try:
                     from reproject import reproject_interp
@@ -8524,7 +8730,9 @@ class SolarRadioImageTab(QWidget):
                         extended_shape = (extended_height, extended_width)
                         
                         # Calculate offset (how much the base image is shifted in the extended canvas)
-                        contour_offset = [int(-min_y), int(-min_x)]
+                        # Use floats to preserve sub-pixel accuracy
+                        contour_offset = [-min_y, -min_x]
+
                         
                         # Adjust WCS reference pixel for the extended shape
                         extended_wcs = image_wcs_for_reproject.deepcopy()
@@ -8546,19 +8754,84 @@ class SolarRadioImageTab(QWidget):
                     # Store offset for contour drawing
                     self._contour_offset = contour_offset
 
-                    # Reproject the contour data to the extended/clipped WCS
-                    array, footprint = reproject_interp(
-                        (contour_data, contour_wcs_obj),
-                        extended_wcs,
-                        shape_out=extended_shape,
+                    # Check cache for reprojected data
+                    # Create a comprehensive cache key
+                    cache_key = (
+                        self.imagename,  # Base image
+                        contour_imagename, # Contour image source
+                        self.contour_settings.get("stokes", ""), # Stokes parameter (crucial!)
+                        contour_data.shape, # Original contour shape
+                        "fits_header" if fits_flag else "casa_csys", # Source type
+                        str(contour_wcs_obj.wcs.crval), # Contour WCS params
+                        str(contour_wcs_obj.wcs.cdelt),
+                        str(image_wcs_for_reproject.wcs.crval), # Base image WCS params (includes downsampling state)
+                        str(image_wcs_for_reproject.wcs.cdelt),
+                        show_full_extent, # Extent setting
+                        self.contour_settings.get("downsample", True), # Downsample setting
                     )
-
+                    
+                    cached_result = self._reproject_cache.get(cache_key)
+                    
+                    if cached_result is not None:
+                         # cache hit
+                        # print("Using cached reprojected contour data")
+                        if main_window:
+                            self.show_status_message("Using cached contour alignment...")
+                        array, offset, ds_factor = cached_result
+                        self._contour_offset = offset
+                        
+                        # Apply downsampling factor to offset if needed for plotting calculations
+                        # Note: The array itself is already downsampled, so we just use it.
+                        # The offset is in base image pixels, which is correct for placement.
+                    else:
+                        # Cache miss - perform reprojection
+                        
+                        # OPTIMIZATION: Downsample large arrays to save memory/time
+                        # Contours don't need pixel-perfect 4k resolution
+                        contour_ds_factor = 1
+                        max_dim = max(extended_shape)
+                        downsample_enabled = self.contour_settings.get("downsample", True)
+                        
+                        if downsample_enabled and max_dim > 2048:
+                            contour_ds_factor = int(np.ceil(max_dim / 2048.0))
+                            print(f"[INFO] Downsampling contour reprojection by {contour_ds_factor}x (original size: {extended_shape})")
+                            
+                            # Adjust shape
+                            new_height = extended_shape[0] // contour_ds_factor
+                            new_width = extended_shape[1] // contour_ds_factor
+                            extended_shape = (new_height, new_width)
+                            
+                            # Adjust WCS
+                            extended_wcs.wcs.cdelt *= contour_ds_factor
+                            extended_wcs.wcs.crpix /= contour_ds_factor
+                        
+                        # Reproject the contour data to the extended/clipped WCS
+                        # OPTIMIZATION: Don't calculate footprint unless needed (2x speedup)
+                        array = reproject_interp(
+                            (contour_data, contour_wcs_obj),
+                            extended_wcs,
+                            shape_out=extended_shape,
+                            return_footprint=False,
+                        )
+                        
+                        # Store in cache
+                        self._reproject_cache[cache_key] = (array, self._contour_offset, contour_ds_factor)
 
                     # Replace the NaNs with zeros
                     array = np.nan_to_num(array, nan=0.0)
 
                     # Check if reprojection produced valid data
                     if np.all(array == 0):
+                        # Re-run with footprint to diagnose coverage
+                        if main_window:
+                            self.show_status_message("Reprojection yielded zeros, checking overlap...")
+                        
+                        _, footprint = reproject_interp(
+                            (contour_data, contour_wcs_obj),
+                            extended_wcs,
+                            shape_out=extended_shape,
+                            return_footprint=True,
+                        )
                         footprint_pct = np.sum(footprint > 0) / footprint.size * 100
                         if main_window:
                             self.show_status_message(
@@ -8589,6 +8862,11 @@ class SolarRadioImageTab(QWidget):
 
                     contour_data = array
                     reprojection_done = True
+                    
+                    # Store factor for extent calculation
+                    self._contour_ds_factor = contour_ds_factor if 'contour_ds_factor' in locals() else 1
+                    if 'ds_factor' in locals():
+                         self._contour_ds_factor = ds_factor
 
                 except ImportError as e:
                     print(f"[ERROR] reproject library not available: {e}")
@@ -8662,23 +8940,34 @@ class SolarRadioImageTab(QWidget):
             
             # Calculate extent for proper positioning when using extended canvas
             # extent = [left, right, bottom, top] in data coordinates
-            if contour_offset != [0, 0]:
+            
+            ds_factor = getattr(self, '_contour_ds_factor', 1)
+            
+            # Apply extent if offset is non-zero OR downsampling is active (since pixels differ from base)
+            if contour_offset != [0, 0] or ds_factor > 1:
                 extent = [
                     -contour_offset[1],  # left (shifted by x offset)
-                    display_contour_data.shape[1] - contour_offset[1],  # right
+                    -contour_offset[1] + (display_contour_data.shape[0] * ds_factor),  # right (add Width / shape[0])
                     -contour_offset[0],  # bottom (shifted by y offset)
-                    display_contour_data.shape[0] - contour_offset[0],  # top
+                    -contour_offset[0] + (display_contour_data.shape[1] * ds_factor),  # top (add Height / shape[1])
                 ]
             else:
                 extent = None  # Use default (0 to shape)
+
 
             if pos_levels and len(pos_levels) > 0:
 
                 try:
                     if extent:
                         # Create coordinate arrays for extended canvas
-                        y = np.linspace(extent[2], extent[3], display_contour_data.shape[0])
-                        x = np.linspace(extent[0], extent[1], display_contour_data.shape[1])
+                        # NOTE: display_contour_data is Transposed (X, Y).
+                        # So Rows (dim 0) = X-axis, Cols (dim 1) = Y-axis.
+                        # We must map Rows to Vertical (y) and Cols to Horizontal (x).
+                        # Vertical Axis should show X-range (extent[0], extent[1])
+                        # Horizontal Axis should show Y-range (extent[2], extent[3])
+                        
+                        y = np.linspace(extent[0], extent[1], display_contour_data.shape[0])
+                        x = np.linspace(extent[2], extent[3], display_contour_data.shape[1])
                         cs_pos = ax.contour(
                             x, y, display_contour_data,
                             levels=pos_levels,
@@ -8707,8 +8996,9 @@ class SolarRadioImageTab(QWidget):
             if neg_levels and len(neg_levels) > 0:
                 try:
                     if extent:
-                        y = np.linspace(extent[2], extent[3], display_contour_data.shape[0])
-                        x = np.linspace(extent[0], extent[1], display_contour_data.shape[1])
+                        y = np.linspace(extent[0], extent[1], display_contour_data.shape[0])
+                        x = np.linspace(extent[2], extent[3], display_contour_data.shape[1])
+
                         cs_neg = ax.contour(
                             x, y, display_contour_data,
                             levels=neg_levels,
@@ -8733,6 +9023,7 @@ class SolarRadioImageTab(QWidget):
                 except Exception as e:
                     print(f"[ERROR] Error drawing negative contours: {e}, levels: {neg_levels}")
                     self.show_status_message(f"Error drawing negative contours: {e}, levels: {neg_levels}")
+
             if main_window:
 
                 self.show_status_message("Done. ")
@@ -8871,39 +9162,117 @@ class SolarRadioImageTab(QWidget):
             
             def run(self):
                 try:
-                    # Create our own SFTP channel
-                    if self.connection._client:
-                        self._sftp = self.connection._client.open_sftp()
-                    else:
-                        self.error.emit("Not connected")
-                        return
+                    import json
+                    import shlex
+
+                    # FAST PATH: Try executing a python script on the remote server
+                    # This filters on the server side, avoiding huge loops for large directories
+                    py_script = """
+import os, json, sys, stat
+path = sys.argv[1]
+entries = []
+casa_mode = %s
+
+try:
+    with os.scandir(path) as it:
+        for e in it:
+            name = e.name
+            if name.startswith('.'): continue
+            
+            is_dir = e.is_dir()
+            
+            include = False
+            if casa_mode:
+                if is_dir and (name.endswith('.image') or name.endswith('.im')):
+                    include = True
+            else:
+                is_fits = not is_dir and name.lower().endswith(('.fits', '.fts', '.fit'))
+                if is_fits: include = True
+            
+            if include:
+                s = e.stat()
+                entries.append({
+                    'n': name,
+                    'd': is_dir,
+                    's': s.st_size,
+                    'm': s.st_mtime
+                })
+    print(json.dumps(entries))
+except Exception:
+    print("[]")
+""" % ("True" if self.casa_mode else "False")
+
+                    # Try python3 first, then python
+                    cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.remote_dir)}"
+                    stdin, stdout, stderr = self.connection._client.exec_command(cmd)
                     
-                    import stat
+                    # Read output
+                    out_data = stdout.read().decode('utf-8').strip()
+                    
                     entries = []
-                    for attr in self._sftp.listdir_attr(self.remote_dir):
-                        name = attr.filename
-                        if name.startswith('.'):
-                            continue
-                        
-                        is_dir = stat.S_ISDIR(attr.st_mode)
-                        full_path = os.path.join(self.remote_dir, name)
-                        
-                        # Import RemoteFileInfo
-                        from .remote.ssh_manager import RemoteFileInfo
-                        info = RemoteFileInfo(
-                            name=name,
-                            path=full_path,
-                            is_dir=is_dir,
-                            size=attr.st_size,
-                            mtime=attr.st_mtime,
-                        )
-                        
-                        # Filter based on mode
-                        if self.casa_mode:
-                            if is_dir:
+                    success = False
+
+                    if out_data and out_data.startswith('['):
+                        try:
+                            raw_entries = json.loads(out_data)
+                            from .remote.ssh_manager import RemoteFileInfo
+                            
+                            for item in raw_entries:
+                                full_path = os.path.join(self.remote_dir, item['n'])
+                                info = RemoteFileInfo(
+                                    name=item['n'],
+                                    path=full_path,
+                                    is_dir=item['d'],
+                                    size=item['s'],
+                                    mtime=item['m'],
+                                )
                                 entries.append(info)
+                            success = True
+                        except:
+                            pass
+                    
+                    # FALLBACK: If fast path failed (no python, etc), use slower SFTP loop
+                    if not success:
+                        if self.connection._client:
+                            self._sftp = self.connection._client.open_sftp()
                         else:
-                            if info.is_fits:
+                            self.error.emit("Not connected")
+                            return
+                            
+                        import stat
+                        from .remote.ssh_manager import RemoteFileInfo
+                        
+                        attrs = self._sftp.listdir_attr(self.remote_dir)
+                        
+                        for attr in attrs:
+                            name = attr.filename
+                            if name.startswith('.'):
+                                continue
+                            
+                            st_mode = attr.st_mode
+                            is_dir = stat.S_ISDIR(st_mode)
+                            
+                            # Pre-filter check
+                            include_item = False
+                            if self.casa_mode:
+                                if is_dir and (name.endswith('.image') or name.endswith('.im')):
+                                    include_item = True
+                            else:
+                                # Check extension for FITS files OR CASA images
+                                is_fits = not is_dir and name.lower().endswith(('.fits', '.fts', '.fit'))
+                                
+                                if is_fits:
+                                    include_item = True
+                            
+                            if include_item:
+                                full_path = os.path.join(self.remote_dir, name)
+                                info = RemoteFileInfo(
+                                    name=name,
+                                    path=full_path,
+                                    is_dir=is_dir,
+                                    size=attr.st_size,
+                                    mtime=attr.st_mtime,
+                                )
                                 entries.append(info)
                     
                     # Sort
@@ -8984,7 +9353,8 @@ class SolarRadioImageTab(QWidget):
         
         try:
             from PyQt5.QtWidgets import QProgressDialog
-            from PyQt5.QtCore import Qt
+            from PyQt5.QtCore import Qt, QEventLoop
+            from .remote.download_thread import DownloadThread
             
             # Get the remote file info
             entry = main_window.remote_connection.get_file_info(remote_path)
@@ -9000,7 +9370,7 @@ class SolarRadioImageTab(QWidget):
             if cached_path:
                 local_path = str(cached_path)
             else:
-                # Download the file with progress dialog
+                # Download the file with progress dialog (NON-BLOCKING Main Thread)
                 local_path = main_window.remote_cache.get_cache_path(
                     main_window.remote_connection._host,
                     remote_path,
@@ -9017,14 +9387,22 @@ class SolarRadioImageTab(QWidget):
                 progress.setWindowModality(Qt.WindowModal)
                 progress.setMinimumDuration(0)
                 progress.setValue(0)
-                progress.show()
                 
-                # Progress callback
-                def update_progress(transferred, total):
-                    # Check if user cancelled
-                    if progress.wasCanceled():
-                        raise InterruptedError("Download cancelled by user")
-                    
+                # Setup Download Thread
+                download_thread = DownloadThread(
+                    main_window.remote_connection,
+                    remote_path,
+                    str(local_path),
+                    is_directory=entry.is_dir,
+                )
+                
+                # Store local variables to capture result
+                download_result = {"success": False, "error": None, "path": None}
+                
+                # Create local event loop to wait for thread
+                loop = QEventLoop()
+                
+                def on_progress(transferred, total):
                     if total > 0:
                         percent = int(100 * transferred / total)
                         progress.setValue(percent)
@@ -9038,31 +9416,47 @@ class SolarRadioImageTab(QWidget):
                                 f"Downloading {os.path.basename(remote_path)}...\n"
                                 f"{transferred / 1024:.1f} / {total / 1024:.1f} KB"
                             )
-                    # Process events to keep UI responsive
-                    from PyQt5.QtWidgets import QApplication
-                    QApplication.processEvents()
-                    
-                    # Check again after processing events
-                    if progress.wasCanceled():
-                        raise InterruptedError("Download cancelled by user")
                 
-                try:
-                    if entry.is_dir:
-                        # CASA image directory
-                        local_path = main_window.remote_connection.download_directory(
-                            remote_path,
-                            str(local_path.parent),
-                            progress_callback=update_progress,
-                        )
+                def on_finished(path):
+                    download_result["success"] = True
+                    download_result["path"] = path
+                    loop.quit()
+                    
+                def on_error(msg):
+                    download_result["success"] = False
+                    download_result["error"] = msg
+                    loop.quit()
+                    
+                def on_cancel():
+                    download_thread.cancel()
+                    progress.setLabelText("Cancelling...")
+                    progress.setCancelButtonText(None)  # Disable cancel button
+                    # We don't quit loop yet, wait for thread to actually stop or finish
+                    # But if we rely on loop.quit, we need to ensure thread finishes.
+                    # As a fallback, we can forcefully quit loop if needed, but better to wait.
+                    
+                download_thread.progress.connect(on_progress)
+                download_thread.finished.connect(on_finished)
+                download_thread.error.connect(on_error)
+                progress.canceled.connect(on_cancel)
+                
+                # Start thread and show dialog
+                download_thread.start()
+                progress.show()
+                
+                # Wait for completion
+                loop.exec_()
+                
+                progress.close()
+                download_thread.wait() # Ensure thread is joined
+                
+                if not download_result["success"]:
+                    if download_result["error"]:
+                        raise Exception(download_result["error"])
                     else:
-                        # FITS file
-                        local_path = main_window.remote_connection.download_file(
-                            remote_path,
-                            str(local_path),
-                            progress_callback=update_progress,
-                        )
-                finally:
-                    progress.close()
+                        raise InterruptedError("Download cancelled") # User cancelled
+                
+                local_path = download_result["path"]
                 
                 # Mark as cached
                 main_window.remote_cache.mark_cached(
@@ -10434,6 +10828,23 @@ class SolarRadioImageViewerApp(QMainWindow):
         self._apply_remote_status_style(connected=False)
         self.statusBar().addPermanentWidget(self.remote_status_btn)
 
+        # Update Notification Button (Hidden by default)
+        self.update_btn = QPushButton("🚀 Update Available")
+        self.update_btn.setFlat(True)
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self._update_update_btn_style() # Set initial style
+        self.update_btn.setVisible(False)
+        self.update_btn.clicked.connect(self._on_update_clicked)
+        self.statusBar().addPermanentWidget(self.update_btn)
+
+        # Start update check in background
+        self._update_thread = CheckUpdateThread()
+        self._update_thread.update_available.connect(self._on_update_available)
+        self._update_thread.start()
+        
+        # Register for theme changes
+        theme_manager.register_callback(self._on_theme_changed)
+
         self.statusBar().showMessage("Ready")
         self.create_menus()
 
@@ -10462,6 +10873,49 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Ensure add button is visible after initialization
         QTimer.singleShot(200, self.ensureAddButtonVisible)
+
+    def _update_update_btn_style(self):
+        """Update the update notification button style based on theme."""
+        if not hasattr(self, 'update_btn'):
+            return
+            
+        is_dark = theme_manager.is_dark
+        
+        if is_dark:
+            # Current style that looks good in dark mode
+            color = "#10b981" # Emerald 500
+            bg_hover = "rgba(16, 185, 129, 0.1)"
+            border_color = "#10b981"
+        else:
+            # Darker green for light theme (Emerald 600)
+            color = "#059669" 
+            bg_hover = "rgba(5, 150, 105, 0.1)"
+            border_color = "#059669"
+            
+        self.update_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {color};
+                font-weight: bold;
+                padding: 0 4px;
+                border: 1px solid {border_color};
+                border-radius: 4px;
+                background-color: transparent;
+            }}
+            QPushButton:hover {{
+                background-color: {bg_hover};
+            }}
+        """)
+
+    def _on_update_available(self, latest_ver):
+        """Show the update button when an update is found."""
+        self.update_btn.setText(f"🚀 Update Available: {latest_ver}")
+        self.update_btn.setToolTip(f"A new version ({latest_ver}) is available! Click to learn more.")
+        self.update_btn.setVisible(True)
+        self.latest_version = latest_ver
+
+    def _on_update_clicked(self):
+        """Show the software update dialog."""
+        self.show_update_dialog()
 
     def ensureAddButtonVisible(self):
         """Make sure the add button is visible and on top"""
@@ -10522,6 +10976,20 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Ensure add button is visible after adding a new tab
         QTimer.singleShot(100, self.ensureAddButtonVisible)
+    
+    def show_log_console(self):
+        """Show the embedded log console dialog."""
+        try:
+            from .log_console import LogConsole
+            console = LogConsole.get_instance()
+            console.show()
+            console.raise_()
+            console.activateWindow()
+        except ImportError:
+            self.show_status_message("Error: Log Console module not found")
+        except Exception as e:
+            print(f"[ERROR] Failed to open log console: {e}")
+            self.show_status_message(f"Error opening log console: {e}")
 
     def create_menus(self):
         menubar = self.menuBar()
@@ -10623,6 +11091,14 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
         view_menu.addAction(self.fullscreen_action)
 
+        # Log Console action
+        self.log_console_action = QAction("Show Log Console", self)
+        self.log_console_action.setShortcut("Ctrl+L")
+        self.log_console_action.setStatusTip("Show application log console")
+        self.log_console_action.triggered.connect(self.show_log_console)
+        view_menu.addAction(self.log_console_action)
+
+
         view_menu.addSeparator()
         
         # Preferences action
@@ -10708,7 +11184,7 @@ class SolarRadioImageViewerApp(QMainWindow):
         gauss_act.triggered.connect(self.fit_2d_gaussian)
         fitting_menu.addAction(gauss_act)
         ring_act = QAction("Fit Elliptical Ring", self)
-        ring_act.setShortcut("Ctrl+L")
+        #ring_act.setShortcut("Ctrl+L")
         ring_act.setStatusTip("Fit an elliptical ring to the selected region")
         ring_act.triggered.connect(self.fit_2d_ring)
         fitting_menu.addAction(ring_act)
@@ -11072,6 +11548,9 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Refresh all matplotlib plots
         self.refresh_all_plots()
+        
+        # Update notification button style
+        self._update_update_btn_style()
 
     def _update_theme_action_text(self):
         """Update theme toggle action text based on current theme."""
@@ -12868,6 +13347,7 @@ except Exception as e:
                 ("-", "Zoom Out"),
                 ("Space  or  Enter", "Update Display"),
                 ("Ctrl+D", "Toggle Dark/Light Theme"),
+                ("Ctrl+L", "Log Console"),
                 ("F11", "Toggle Fullscreen"),
             ]),
             ("🎨", "Display Presets", [
@@ -12881,7 +13361,7 @@ except Exception as e:
                 ("Ctrl+P", "Phase Center Shift"),
                 ("Ctrl+M", "Image Metadata"),
                 ("Ctrl+G", "Fit 2D Gaussian"),
-                ("Ctrl+L", "Fit Ring Model"),
+                #("Ctrl+L", "Fit Ring Model"),
             ]),
             ("✂️", "Region & Annotation", [
                 ("Ctrl+S", "Export Sub-Image"),
@@ -13151,6 +13631,10 @@ except Exception as e:
         except:
             pass
         super().closeEvent(event)
+        
+        # Ensure the entire application (including Log Console) quits
+        from PyQt5.QtWidgets import QApplication
+        QApplication.instance().quit()
 
     def launch_napari_viewer(self):
         """Launch the Napari-based fast image viewer"""

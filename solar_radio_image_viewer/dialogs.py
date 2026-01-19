@@ -673,6 +673,12 @@ class ContourSettingsDialog(QDialog):
         self.show_full_extent_checkbox.setChecked(self.settings.get("show_full_extent", False))
         self.show_full_extent_checkbox.setToolTip("Show contours beyond image boundaries (uses more memory)")
         options_row.addWidget(self.show_full_extent_checkbox)
+        
+        self.downsample_checkbox = QCheckBox("Downsample")
+        self.downsample_checkbox.setChecked(self.settings.get("downsample", True))
+        self.downsample_checkbox.setToolTip("Automatically downsample large contour images to 2048x2048 for faster reprojection")
+        options_row.addWidget(self.downsample_checkbox)
+        
         options_row.addStretch()
         appearance_layout.addLayout(options_row)
         
@@ -912,6 +918,8 @@ class ContourSettingsDialog(QDialog):
         if hasattr(self, 'show_labels_checkbox'):
             self.show_labels_checkbox.setChecked(False)
         self.show_full_extent_checkbox.setChecked(False)
+        if hasattr(self, 'downsample_checkbox'):
+            self.downsample_checkbox.setChecked(True)
         
         # RMS
         self.use_default_rms_box.setChecked(True)
@@ -1126,6 +1134,7 @@ class ContourSettingsDialog(QDialog):
         
         settings["show_labels"] = self.show_labels_checkbox.isChecked() if hasattr(self, 'show_labels_checkbox') else False
         settings["show_full_extent"] = self.show_full_extent_checkbox.isChecked()
+        settings["downsample"] = self.downsample_checkbox.isChecked() if hasattr(self, 'downsample_checkbox') else True
         if "contour_data" in self.settings:
             settings["contour_data"] = self.settings["contour_data"]
         else:
@@ -4578,14 +4587,48 @@ class UpdateDialog(QDialog):
                 
                 if os.path.exists(activate_script):
                     # Run via shell to support sourcing. 
-                    # Use '.' which is POSIX compliant (works in sh, bash, zsh, dash) instead of 'source' (bash-ism)
                     cmd = f". \"{activate_script}\" && pip install --upgrade solarviewer"
-                    subprocess.check_call(cmd, shell=True)
+                    print(f"[INFO] Executing: {cmd}")
+                    
+                    # Use Popen to capture and print output in real-time
+                    process = subprocess.Popen(
+                        cmd, 
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1
+                    )
+                    
+                    # Stream output to main stdout (which Log Console captures)
+                    for line in process.stdout:
+                        print(line, end="")
+                        QApplication.processEvents() # Keep UI responsive
+                        
+                    process.wait()
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, cmd)
+                        
                 else:
                     # Fallback if no standard activate script found
-                    subprocess.check_call(
-                        [sys.executable, "-m", "pip", "install", "--upgrade", "solarviewer"]
+                    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "solarviewer"]
+                    print(f"[INFO] Executing: {' '.join(cmd)}")
+                    
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1
                     )
+                    
+                    for line in process.stdout:
+                        print(line, end="")
+                        QApplication.processEvents()
+                        
+                    process.wait()
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(process.returncode, cmd)
                 
                 QMessageBox.information(
                     self,

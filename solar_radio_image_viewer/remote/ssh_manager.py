@@ -548,7 +548,27 @@ class SSHConnection:
             else:
                 self._sftp.get(remote_path, local_path)
             return local_path
-        except IOError as e:
+        except Exception as e:
+            # If download fails (especially interruption), the SFTP channel might be in a bad state.
+            # Close it to force a fresh channel on next use.
+            if self._sftp:
+                try:
+                    self._sftp.close()
+                except:
+                    pass
+                self._sftp = None
+                
+                # Check if we need to reconnect the SSH client itself?
+                # Usually closing SFTP is enough, but if transport is garbage, might need full reconnect.
+                # For now, let's try resetting SFTP only.
+                # If we are effectively disconnected, next ensure_connection/is_connected check should handle it.
+                if self._client:
+                     try:
+                        self._sftp = self._client.open_sftp()
+                     except:
+                        # If re-opening fails, just leave it closed. Next status check will catch it.
+                        self._sftp = None
+
             raise SSHConnectionError(f"Failed to download {remote_path}: {e}")
     
     def download_directory(
@@ -571,40 +591,58 @@ class SSHConnection:
         if not self.is_connected():
             raise SSHConnectionError("Not connected to remote server")
         
-        # Create local directory with same name
-        local_dir = os.path.join(local_path, os.path.basename(remote_path))
-        os.makedirs(local_dir, exist_ok=True)
-        
-        # Get all files recursively with sizes
-        files_to_download = self._get_files_recursive_with_sizes(remote_path)
-        
-        # Calculate total size
-        total_bytes = sum(size for _, _, size in files_to_download)
-        bytes_transferred = 0
-        
-        for remote_file, rel_path, file_size in files_to_download:
-            local_file = os.path.join(local_dir, rel_path)
-            os.makedirs(os.path.dirname(local_file), exist_ok=True)
+        try:
+            # Create local directory with same name
+            local_dir = os.path.join(local_path, os.path.basename(remote_path))
+            os.makedirs(local_dir, exist_ok=True)
             
-            # Create a per-file progress callback that updates cumulative progress
-            if progress_callback:
-                def make_file_callback(current_total):
-                    def file_progress(transferred, _):
-                        progress_callback(current_total + transferred, total_bytes)
-                    return file_progress
+            # Get all files recursively with sizes
+            files_to_download = self._get_files_recursive_with_sizes(remote_path)
+            
+            # Calculate total size
+            total_bytes = sum(size for _, _, size in files_to_download)
+            bytes_transferred = 0
+            
+            for remote_file, rel_path, file_size in files_to_download:
+                local_file = os.path.join(local_dir, rel_path)
+                os.makedirs(os.path.dirname(local_file), exist_ok=True)
                 
-                file_callback = make_file_callback(bytes_transferred)
-                self._sftp.get(remote_file, local_file, callback=file_callback)
-            else:
-                self._sftp.get(remote_file, local_file)
+                # Create a per-file progress callback that updates cumulative progress
+                if progress_callback:
+                    def make_file_callback(current_total):
+                        def file_progress(transferred, _):
+                            progress_callback(current_total + transferred, total_bytes)
+                        return file_progress
+                    
+                    file_callback = make_file_callback(bytes_transferred)
+                    self._sftp.get(remote_file, local_file, callback=file_callback)
+                else:
+                    self._sftp.get(remote_file, local_file)
+                
+                bytes_transferred += file_size
+                
+                # Final update for this file
+                if progress_callback:
+                    progress_callback(bytes_transferred, total_bytes)
             
-            bytes_transferred += file_size
-            
-            # Final update for this file
-            if progress_callback:
-                progress_callback(bytes_transferred, total_bytes)
-        
-        return local_dir
+            return local_dir
+
+        except Exception as e:
+            # If download fails, reset SFTP channel to prevent "Garbage packet" errors on next use
+            if self._sftp:
+                try:
+                    self._sftp.close()
+                except:
+                    pass
+                self._sftp = None
+                
+                if self._client:
+                     try:
+                        self._sftp = self._client.open_sftp()
+                     except:
+                        self._sftp = None
+                        
+            raise SSHConnectionError(f"Failed to download directory {remote_path}: {e}")
     
     def _get_files_recursive_with_sizes(self, remote_path: str, base_path: str = None) -> List[Tuple[str, str, int]]:
         """Get all files in a directory recursively with their sizes."""

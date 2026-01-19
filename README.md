@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.7%2B-blue?logo=python&logoColor=white" alt="Python 3.7+"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white" alt="Python 3.9+"></a>
   <a href="https://pypi.org/project/solarviewer/"><img src="https://img.shields.io/pypi/v/solarviewer?color=blue&logo=pypi&logoColor=white" alt="PyPI version"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
   <a href="https://github.com/dey-soham/solarviewer"><img src="https://img.shields.io/github/stars/dey-soham/solarviewer?style=social" alt="GitHub stars"></a>
@@ -43,21 +43,23 @@
 - **Stokes Parameters** — Full polarization support (I, Q, U, V, L, Lfrac, Vfrac, PANG)
 
 ### 🌐 Data Access & Downloads
-
+ 
+- **Remote Access (SSH/SFTP)** — Browse and open files directly from remote servers with local caching
 - **Helioviewer Browser** — Browse and download images from NASA's Helioviewer API with time-series playback
 - **Solar Data Downloader** — Download data from SDO/AIA, IRIS, SOHO, GOES SUVI, STEREO, and GONG
 - **Radio Data Downloader** — Access solar radio observation archives
 - **Solar Activity Viewer** — Browse solar events (flares, CMEs, active regions) with real-time data
-
+ 
 ### 🎬 Video Creation
-
+ 
 - **Time-lapse Videos** — Create MP4 videos from image sequences
 - **Contour Overlays** — Overlay radio contours on EUV/optical base images
 - **Custom Annotations** — Add timestamps, colorbars, and min/max plots
 - **Preview Mode** — Real-time preview before rendering
-
+ 
 ### 🔧 Advanced Tools
-
+ 
+- **Log Console** — Internal console to view application logs and debugging information
 - **LOFAR/SIMPL Support** — Calibration table visualizer, dynamic spectra viewer, pipeline log viewer
 - **Coordinate Transformations** — Convert between RA/Dec and helioprojective coordinates
 - **Phase Center Tool** — Shift image phase centers for radio interferometry data
@@ -69,7 +71,7 @@
 
 ### Prerequisites
 
-- Python 3.7 or higher
+- Python 3.9 or higher
 - pip package manager
 - **CASA data directory**: The `~/.casa/data` folder must exist for CASA to work properly. Create it with:
   ```bash
@@ -77,6 +79,22 @@
   ```
 
 > **Note**: No other manual installation is required — all dependencies are installed automatically via pip.
+
+### Recommended: Virtual Environment
+
+It is highly recommended to install SolarViewer in a virtual environment to avoid conflicts with system packages.
+
+```bash
+# Create a virtual environment
+python3 -m venv ~/.sv
+
+# Activate the environment
+source ~/.sv/bin/activate
+```
+
+Once the virtual environment is active, proceed with the installation below. 
+
+**💡 Pro Tip**: After running `sv --install` (see Desktop Integration below), you won't need to manually activate the environment to launch the application!
 
 ### Install from PyPI
 
@@ -90,6 +108,23 @@ pip install solarviewer
 git clone https://github.com/dey-soham/solarviewer.git
 cd solarviewer
 pip install -e .
+```
+
+### Desktop Integration
+
+After installation, you can create a desktop entry and icon (Linux) or an application bundle (macOS) to launch SolarViewer from your application menu:
+
+```bash
+# Install desktop shortcuts and icons
+solarviewer --install
+# or
+sv --install
+```
+
+To remove the desktop integration later:
+
+```bash
+solarviewer --uninstall
 ```
 
 ### Dependencies
@@ -154,10 +189,12 @@ heliobrowser       # Helioviewer browser
 solarviewer [OPTIONS] [IMAGEFILE]
 
 Options:
-  -f, --fast    Launch fast Napari viewer
-  --light       Start with light theme
-  -v, --version Show version and exit
-  -h, --help    Show help message
+  -f, --fast        Launch fast Napari viewer
+  --install         Install desktop integration
+  --uninstall       Uninstall desktop integration
+  --light           Start with light theme
+  -v, --version     Show version and exit
+  -h, --help        Show help message
 ```
 
 ---
@@ -202,23 +239,40 @@ Options:
 solarviewer/
 ├── solar_radio_image_viewer/
 │   ├── main.py                 # Entry point
+│   ├── install_utils.py        # Desktop integration (install/uninstall)
 │   ├── viewer.py               # Standard viewer
+│   ├── assets/                 # Icons and resources
 │   ├── helioprojective.py      # Coordinate conversions
 │   ├── helioprojective_viewer.py
 │   ├── helioviewer_browser.py  # Helioviewer API browser
 │   ├── napari_viewer.py        # Fast viewer
 │   ├── video_dialog.py         # Video creation UI
 │   ├── create_video.py         # Video rendering
+│   ├── video_utils.py          # Video utilities
 │   ├── noaa_events/            # Solar events browser
 │   ├── solar_data_downloader/  # SDO/AIA, IRIS, etc.
 │   ├── radio_data_downloader/  # Radio data archives
 │   ├── solar_context/          # Real-time solar data
+│   ├── remote/                 # Remote file access (SSH/SFTP)
 │   ├── from_simpl/             # LOFAR/SIMPL tools
+│   ├── learmonth-py/           # Learmonth data downloader
+│   ├── move_phasecenter.py     # Phase center correction tool
+│   ├── tutorial.py             # Tutorial
+│   ├── dialogs.py              # Application dialogs
+│   ├── splash.py               # Splash screen
+│   ├── log_console.py          # Internal log viewer
+│   ├── searchable_combobox.py  # Custom combobox widget
+│   ├── norms.py                # Image normalization
 │   ├── utils.py                # Utility functions
+│   ├── utils/                  # Additional utilities (updater, limiter)
+│   ├── version.py              # Version information
 │   └── styles.py               # UI themes (light/dark)
+├── resources/                  # Desktop integration resources
 ├── setup.py
 ├── requirements.txt
-└── README.md
+├── README.md
+├── LICENSE
+└── RELEASE_NOTES.md
 ```
 
 ---

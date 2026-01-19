@@ -35,46 +35,7 @@ from .ssh_manager import SSHConnection, SSHConnectionError, RemoteFileInfo
 from .file_cache import RemoteFileCache
 
 
-class DownloadThread(QThread):
-    """Thread for downloading files without blocking UI."""
-    
-    progress = pyqtSignal(int, int)  # bytes_transferred, total_bytes
-    finished = pyqtSignal(str)  # local_path
-    error = pyqtSignal(str)  # error message
-    
-    def __init__(
-        self,
-        connection: SSHConnection,
-        remote_path: str,
-        local_path: str,
-        is_directory: bool = False,
-    ):
-        super().__init__()
-        self.connection = connection
-        self.remote_path = remote_path
-        self.local_path = local_path
-        self.is_directory = is_directory
-    
-    def run(self):
-        try:
-            if self.is_directory:
-                result = self.connection.download_directory(
-                    self.remote_path,
-                    self.local_path,
-                    progress_callback=self._progress,
-                )
-            else:
-                result = self.connection.download_file(
-                    self.remote_path,
-                    self.local_path,
-                    progress_callback=self._progress,
-                )
-            self.finished.emit(result)
-        except Exception as e:
-            self.error.emit(str(e))
-    
-    def _progress(self, transferred: int, total: int):
-        self.progress.emit(transferred, total)
+from .download_thread import DownloadThread
 
 
 class ListDirectoryThread(QThread):
@@ -110,6 +71,86 @@ class ListDirectoryThread(QThread):
     
     def run(self):
         try:
+            # FAST PATH: Try executing a python script on the remote server
+            try:
+                import json
+                import shlex
+                
+                # Script tailored to this view's flags (show_hidden, fits_only)
+                py_script = """
+import os, json, sys, stat
+path = sys.argv[1]
+entries = []
+show_hidden = %s
+fits_only = %s
+
+try:
+    with os.scandir(path) as it:
+        for e in it:
+            name = e.name
+            
+            # Skip hidden files unless requested
+            if not show_hidden and name.startswith('.'):
+                continue
+            
+            is_dir = e.is_dir()
+            
+            # Filter for FITS files if requested
+            if fits_only and not is_dir:
+                if not name.lower().endswith(('.fits', '.fts', '.fit')):
+                    continue
+            
+            s = e.stat()
+            entries.append({
+                'n': name,
+                'd': is_dir,
+                's': s.st_size,
+                'm': s.st_mtime
+            })
+            
+    print(json.dumps(entries))
+except Exception:
+    print("[]")
+""" % ("True" if self.show_hidden else "False", "True" if self.fits_only else "False")
+
+                # Try python3 first
+                cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.path)}"
+                stdin, stdout, stderr = self.connection._client.exec_command(cmd)
+                
+                # Check for cancellation before reading
+                if self._cancelled:
+                    return
+
+                out_data = stdout.read().decode('utf-8').strip()
+                
+                if out_data and out_data.startswith('['):
+                    try:
+                        raw_entries = json.loads(out_data)
+                        entries = []
+                        for item in raw_entries:
+                            if self._cancelled:
+                                return
+                                
+                            full_path = os.path.join(self.path, item['n'])
+                            info = RemoteFileInfo(
+                                name=item['n'],
+                                path=full_path,
+                                is_dir=item['d'],
+                                size=item['s'],
+                                mtime=item['m'],
+                            )
+                            entries.append(info)
+                        
+                        # Sort and emit
+                        entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
+                        self.finished.emit(entries)
+                        return # Success!
+                    except:
+                        pass # Fallback to SFTP
+            except Exception:
+                pass # Fallback to SFTP
+
+            # FALLBACK: Use SFTP loop (slow for large dirs)
             # Create our own SFTP channel for this thread
             if self.connection._client:
                 self._sftp = self.connection._client.open_sftp()
@@ -119,7 +160,9 @@ class ListDirectoryThread(QThread):
             # List directory using our own SFTP channel
             import stat
             entries = []
-            for attr in self._sftp.listdir_attr(self.path):
+            attrs = self._sftp.listdir_attr(self.path)
+            
+            for attr in attrs:
                 if self._cancelled:
                     break
                     
@@ -261,6 +304,16 @@ class RemoteFileBrowser(QDialog):
     # Class-level cache for directory listings: {(host, path): (entries, timestamp)}
     _listing_cache: dict = {}
     _cache_ttl: int = 60  # Cache TTL in seconds
+
+    # Class-level list to keep track of active download threads to prevent garbage collection
+    _active_downloads: List[QThread] = []
+    
+    @classmethod
+    def _remove_active_thread(cls, thread):
+        """Remove a thread from the active downloads list."""
+        if thread in cls._active_downloads:
+            cls._active_downloads.remove(thread)
+
     
     def __init__(
         self,
@@ -1316,10 +1369,18 @@ class RemoteFileBrowser(QDialog):
             is_directory=entry.is_dir,
         )
         self._download_thread.progress.connect(self._on_download_progress)
-        self._download_thread.finished.connect(
-            lambda path: self._on_download_finished(path, entry)
-        )
+        self._download_thread.finished.connect(self._on_download_finished)
         self._download_thread.error.connect(self._on_download_error)
+        
+        # Add to active downloads to prevent GC
+        RemoteFileBrowser._active_downloads.append(self._download_thread)
+        
+        # Connect cleanup logic (independent of dialog instance)
+        thread_ref = self._download_thread
+        cleanup_lambda = lambda _: RemoteFileBrowser._remove_active_thread(thread_ref)
+        self._download_thread.finished.connect(cleanup_lambda)
+        self._download_thread.error.connect(cleanup_lambda)
+        
         self._download_thread.start()
         
         # Store entry for marking cache
@@ -1340,9 +1401,11 @@ class RemoteFileBrowser(QDialog):
                     f"Downloading... {transferred / 1024:.1f} / {total / 1024:.1f} KB"
                 )
     
-    def _on_download_finished(self, local_path: str, entry: RemoteFileInfo):
+    def _on_download_finished(self, local_path: str):
         """Handle download completion."""
         self.progress_frame.hide()
+        
+        entry = self._current_download_entry
         
         # Mark as cached
         self.cache.mark_cached(
@@ -1359,12 +1422,23 @@ class RemoteFileBrowser(QDialog):
         # Emit signal and close
         self.fileSelected.emit(local_path)
         self.accept()
+        
+        # Remove from active list
+        if self._download_thread in RemoteFileBrowser._active_downloads:
+            RemoteFileBrowser._active_downloads.remove(self._download_thread)
+            self._download_thread = None
     
     def _on_download_error(self, error_msg: str):
         """Handle download error."""
         self.progress_frame.hide()
         self.open_btn.setEnabled(True)
         self.status_label.setText(f"Error: {error_msg}")
+        
+        # Remove from active list
+        if self._download_thread in RemoteFileBrowser._active_downloads:
+            RemoteFileBrowser._active_downloads.remove(self._download_thread)
+            self._download_thread = None
+            
         QMessageBox.warning(self, "Download Error", f"Failed to download file: {error_msg}")
     
     def closeEvent(self, event):
@@ -1372,9 +1446,10 @@ class RemoteFileBrowser(QDialog):
         # Cancel and cleanup download thread (non-blocking)
         if self._download_thread and self._download_thread.isRunning():
             try:
-                self._download_thread.finished.disconnect()
-                self._download_thread.error.disconnect()
-                self._download_thread.progress.disconnect()
+                # Disconnect UI callbacks specifically
+                self._download_thread.finished.disconnect(self._on_download_finished)
+                self._download_thread.error.disconnect(self._on_download_error)
+                self._download_thread.progress.disconnect(self._on_download_progress)
             except:
                 pass
             # Don't wait - let it finish in background
