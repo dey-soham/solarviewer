@@ -9150,49 +9150,118 @@ class SolarRadioImageTab(QWidget):
             
             def run(self):
                 try:
-                    # Create our own SFTP channel
-                    if self.connection._client:
-                        self._sftp = self.connection._client.open_sftp()
-                    else:
-                        self.error.emit("Not connected")
-                        return
+                    import json
+                    import shlex
+
+                    # FAST PATH: Try executing a python script on the remote server
+                    # This filters on the server side, avoiding huge loops for large directories
+                    py_script = """
+import os, json, sys, stat
+path = sys.argv[1]
+entries = []
+casa_mode = %s
+
+try:
+    with os.scandir(path) as it:
+        for e in it:
+            name = e.name
+            if name.startswith('.'): continue
+            
+            is_dir = e.is_dir()
+            
+            include = False
+            if casa_mode:
+                if is_dir and (name.endswith('.image') or name.endswith('.im')):
+                    include = True
+            else:
+                is_fits = not is_dir and name.lower().endswith(('.fits', '.fts', '.fit'))
+                if is_fits: include = True
+            
+            if include:
+                s = e.stat()
+                entries.append({
+                    'n': name,
+                    'd': is_dir,
+                    's': s.st_size,
+                    'm': s.st_mtime
+                })
+    print(json.dumps(entries))
+except Exception:
+    print("[]")
+""" % ("True" if self.casa_mode else "False")
+
+                    # Try python3 first, then python
+                    cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.remote_dir)}"
+                    stdin, stdout, stderr = self.connection._client.exec_command(cmd)
                     
-                    import stat
-                    from .remote.ssh_manager import RemoteFileInfo
+                    # Read output
+                    out_data = stdout.read().decode('utf-8').strip()
                     
                     entries = []
-                    attrs = self._sftp.listdir_attr(self.remote_dir)
-                    
-                    for attr in attrs:
-                        name = attr.filename
-                        if name.startswith('.'):
-                            continue
-                        
-                        st_mode = attr.st_mode
-                        is_dir = stat.S_ISDIR(st_mode)
-                        
-                        # Pre-filter check
-                        include_item = False
-                        if self.casa_mode:
-                            if is_dir and (name.endswith('.image') or name.endswith('.im')):
-                                include_item = True
-                        else:
-                            # Check extension for FITS files OR CASA images
-                            is_fits = not is_dir and name.lower().endswith(('.fits', '.fts', '.fit'))
+                    success = False
+
+                    if out_data and out_data.startswith('['):
+                        try:
+                            raw_entries = json.loads(out_data)
+                            from .remote.ssh_manager import RemoteFileInfo
                             
-                            if is_fits:
-                                include_item = True
+                            for item in raw_entries:
+                                full_path = os.path.join(self.remote_dir, item['n'])
+                                info = RemoteFileInfo(
+                                    name=item['n'],
+                                    path=full_path,
+                                    is_dir=item['d'],
+                                    size=item['s'],
+                                    mtime=item['m'],
+                                )
+                                entries.append(info)
+                            success = True
+                        except:
+                            pass
+                    
+                    # FALLBACK: If fast path failed (no python, etc), use slower SFTP loop
+                    if not success:
+                        if self.connection._client:
+                            self._sftp = self.connection._client.open_sftp()
+                        else:
+                            self.error.emit("Not connected")
+                            return
+                            
+                        import stat
+                        from .remote.ssh_manager import RemoteFileInfo
                         
-                        if include_item:
-                            full_path = os.path.join(self.remote_dir, name)
-                            info = RemoteFileInfo(
-                                name=name,
-                                path=full_path,
-                                is_dir=is_dir,
-                                size=attr.st_size,
-                                mtime=attr.st_mtime,
-                            )
-                            entries.append(info)
+                        attrs = self._sftp.listdir_attr(self.remote_dir)
+                        
+                        for attr in attrs:
+                            name = attr.filename
+                            if name.startswith('.'):
+                                continue
+                            
+                            st_mode = attr.st_mode
+                            is_dir = stat.S_ISDIR(st_mode)
+                            
+                            # Pre-filter check
+                            include_item = False
+                            if self.casa_mode:
+                                if is_dir and (name.endswith('.image') or name.endswith('.im')):
+                                    include_item = True
+                            else:
+                                # Check extension for FITS files OR CASA images
+                                is_fits = not is_dir and name.lower().endswith(('.fits', '.fts', '.fit'))
+                                
+                                if is_fits:
+                                    include_item = True
+                            
+                            if include_item:
+                                full_path = os.path.join(self.remote_dir, name)
+                                info = RemoteFileInfo(
+                                    name=name,
+                                    path=full_path,
+                                    is_dir=is_dir,
+                                    size=attr.st_size,
+                                    mtime=attr.st_mtime,
+                                )
+                                entries.append(info)
                     
                     # Sort
                     entries.sort(key=lambda x: x.name.lower())

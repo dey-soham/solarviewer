@@ -71,6 +71,86 @@ class ListDirectoryThread(QThread):
     
     def run(self):
         try:
+            # FAST PATH: Try executing a python script on the remote server
+            try:
+                import json
+                import shlex
+                
+                # Script tailored to this view's flags (show_hidden, fits_only)
+                py_script = """
+import os, json, sys, stat
+path = sys.argv[1]
+entries = []
+show_hidden = %s
+fits_only = %s
+
+try:
+    with os.scandir(path) as it:
+        for e in it:
+            name = e.name
+            
+            # Skip hidden files unless requested
+            if not show_hidden and name.startswith('.'):
+                continue
+            
+            is_dir = e.is_dir()
+            
+            # Filter for FITS files if requested
+            if fits_only and not is_dir:
+                if not name.lower().endswith(('.fits', '.fts', '.fit')):
+                    continue
+            
+            s = e.stat()
+            entries.append({
+                'n': name,
+                'd': is_dir,
+                's': s.st_size,
+                'm': s.st_mtime
+            })
+            
+    print(json.dumps(entries))
+except Exception:
+    print("[]")
+""" % ("True" if self.show_hidden else "False", "True" if self.fits_only else "False")
+
+                # Try python3 first
+                cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.path)}"
+                stdin, stdout, stderr = self.connection._client.exec_command(cmd)
+                
+                # Check for cancellation before reading
+                if self._cancelled:
+                    return
+
+                out_data = stdout.read().decode('utf-8').strip()
+                
+                if out_data and out_data.startswith('['):
+                    try:
+                        raw_entries = json.loads(out_data)
+                        entries = []
+                        for item in raw_entries:
+                            if self._cancelled:
+                                return
+                                
+                            full_path = os.path.join(self.path, item['n'])
+                            info = RemoteFileInfo(
+                                name=item['n'],
+                                path=full_path,
+                                is_dir=item['d'],
+                                size=item['s'],
+                                mtime=item['m'],
+                            )
+                            entries.append(info)
+                        
+                        # Sort and emit
+                        entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
+                        self.finished.emit(entries)
+                        return # Success!
+                    except:
+                        pass # Fallback to SFTP
+            except Exception:
+                pass # Fallback to SFTP
+
+            # FALLBACK: Use SFTP loop (slow for large dirs)
             # Create our own SFTP channel for this thread
             if self.connection._client:
                 self._sftp = self.connection._client.open_sftp()
@@ -80,7 +160,9 @@ class ListDirectoryThread(QThread):
             # List directory using our own SFTP channel
             import stat
             entries = []
-            for attr in self._sftp.listdir_attr(self.path):
+            attrs = self._sftp.listdir_attr(self.path)
+            
+            for attr in attrs:
                 if self._cancelled:
                     break
                     
