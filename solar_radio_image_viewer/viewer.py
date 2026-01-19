@@ -9248,7 +9248,8 @@ class SolarRadioImageTab(QWidget):
         
         try:
             from PyQt5.QtWidgets import QProgressDialog
-            from PyQt5.QtCore import Qt
+            from PyQt5.QtCore import Qt, QEventLoop
+            from .remote.download_thread import DownloadThread
             
             # Get the remote file info
             entry = main_window.remote_connection.get_file_info(remote_path)
@@ -9264,7 +9265,7 @@ class SolarRadioImageTab(QWidget):
             if cached_path:
                 local_path = str(cached_path)
             else:
-                # Download the file with progress dialog
+                # Download the file with progress dialog (NON-BLOCKING Main Thread)
                 local_path = main_window.remote_cache.get_cache_path(
                     main_window.remote_connection._host,
                     remote_path,
@@ -9281,14 +9282,22 @@ class SolarRadioImageTab(QWidget):
                 progress.setWindowModality(Qt.WindowModal)
                 progress.setMinimumDuration(0)
                 progress.setValue(0)
-                progress.show()
                 
-                # Progress callback
-                def update_progress(transferred, total):
-                    # Check if user cancelled
-                    if progress.wasCanceled():
-                        raise InterruptedError("Download cancelled by user")
-                    
+                # Setup Download Thread
+                download_thread = DownloadThread(
+                    main_window.remote_connection,
+                    remote_path,
+                    str(local_path),
+                    is_directory=entry.is_dir,
+                )
+                
+                # Store local variables to capture result
+                download_result = {"success": False, "error": None, "path": None}
+                
+                # Create local event loop to wait for thread
+                loop = QEventLoop()
+                
+                def on_progress(transferred, total):
                     if total > 0:
                         percent = int(100 * transferred / total)
                         progress.setValue(percent)
@@ -9302,31 +9311,47 @@ class SolarRadioImageTab(QWidget):
                                 f"Downloading {os.path.basename(remote_path)}...\n"
                                 f"{transferred / 1024:.1f} / {total / 1024:.1f} KB"
                             )
-                    # Process events to keep UI responsive
-                    from PyQt5.QtWidgets import QApplication
-                    QApplication.processEvents()
-                    
-                    # Check again after processing events
-                    if progress.wasCanceled():
-                        raise InterruptedError("Download cancelled by user")
                 
-                try:
-                    if entry.is_dir:
-                        # CASA image directory
-                        local_path = main_window.remote_connection.download_directory(
-                            remote_path,
-                            str(local_path.parent),
-                            progress_callback=update_progress,
-                        )
+                def on_finished(path):
+                    download_result["success"] = True
+                    download_result["path"] = path
+                    loop.quit()
+                    
+                def on_error(msg):
+                    download_result["success"] = False
+                    download_result["error"] = msg
+                    loop.quit()
+                    
+                def on_cancel():
+                    download_thread.cancel()
+                    progress.setLabelText("Cancelling...")
+                    progress.setCancelButtonText(None)  # Disable cancel button
+                    # We don't quit loop yet, wait for thread to actually stop or finish
+                    # But if we rely on loop.quit, we need to ensure thread finishes.
+                    # As a fallback, we can forcefully quit loop if needed, but better to wait.
+                    
+                download_thread.progress.connect(on_progress)
+                download_thread.finished.connect(on_finished)
+                download_thread.error.connect(on_error)
+                progress.canceled.connect(on_cancel)
+                
+                # Start thread and show dialog
+                download_thread.start()
+                progress.show()
+                
+                # Wait for completion
+                loop.exec_()
+                
+                progress.close()
+                download_thread.wait() # Ensure thread is joined
+                
+                if not download_result["success"]:
+                    if download_result["error"]:
+                        raise Exception(download_result["error"])
                     else:
-                        # FITS file
-                        local_path = main_window.remote_connection.download_file(
-                            remote_path,
-                            str(local_path),
-                            progress_callback=update_progress,
-                        )
-                finally:
-                    progress.close()
+                        raise InterruptedError("Download cancelled") # User cancelled
+                
+                local_path = download_result["path"]
                 
                 # Mark as cached
                 main_window.remote_cache.mark_cached(
