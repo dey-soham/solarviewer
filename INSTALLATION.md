@@ -7,7 +7,7 @@ This guide describes how to install SolarViewer and set it up as a native deskto
 ## Prerequisites
 
 - **OS**: Linux or macOS
-- **Python**: 3.9 or higher
+- **Python**: 3.10 or higher
 - **CASA**: A valid CASA data directory at `~/.casa/data`
 
 ## 1. Install Codebase
@@ -20,8 +20,19 @@ It is **highly recommended** to install SolarViewer in a dedicated virtual envir
 # Create a virtual environment named '.sv' in your home directory
 python3 -m venv ~/.sv
 
+# Using uv:
+# uv venv ~/.sv -p 3.13
+
+# Using conda:
+# conda create -p ~/.sv python=3.13
+```
+
+```bash
 # Activate the environment
 source ~/.sv/bin/activate
+
+# Using conda:
+# conda activate ~/.sv
 ```
 
 ### Step 2: Install Package
@@ -30,6 +41,11 @@ source ~/.sv/bin/activate
 # Option A: Install from PyPI (Recommended)
 pip install solarviewer
 
+# Using uv:
+# uv pip install solarviewer
+```
+
+```bash
 # Option B: Install from Source (for development)
 git clone https://github.com/dey-soham/solarviewer.git
 cd solarviewer
@@ -86,6 +102,15 @@ rm -rf ~/.sv
     *   Restart Finder.
     *   Or run `killall Dock` in the terminal to refresh the icon cache.
 
+### **Build Error: `Failed to build python-casacore` (macOS)**
+If you see an error like `Call to scikit_build_core.build.build_wheel failed` or `Casacore: unable to find the header file casa/aips.h`, it means the wrapper cannot find the underlying C++ libraries. This is common on Apple Silicon Macs.
+
+**Fix:** Install the C++ `casacore` libraries via Homebrew:
+```bash
+brew install casacore
+```
+Then try installing SolarViewer again.
+
 ### **Command `solarviewer` or `sv` not found?**
 *   Ensure your virtual environment is active:
     ```bash
@@ -101,3 +126,14 @@ rm -rf ~/.sv
         ```bash
         export PATH="$HOME/.local/bin:$PATH"
         ```
+
+### **SSL Error**
+We have included an automatic fix for `ssl.SSLError` on Linux/Python 3.11+. If you still encounter issues, try running with:
+```bash
+OPENSSL_CONF=/dev/null solarviewer
+```
+
+To make this permanent, add it to your shell configuration (`~/.bashrc` or `~/.zshrc`):
+```bash
+export OPENSSL_CONF=/dev/null
+```

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# Suppress CASA warnings (C++ level) before any imports
 import os
 
 os.environ.setdefault("CASA_LOGLEVEL", "ERROR")
 os.environ["CASARC"] = "/dev/null"  # Prevent CASA config loading
+os.environ["OPENSSL_CONF"] = "/dev/null"  # Fix SSL error on Linux with Python 3.11+
 
 import sys
 import argparse
@@ -22,7 +22,15 @@ try:
     from astropy.io.fits.verify import VerifyWarning
 
     warnings.filterwarnings(
-        "ignore", category=VerifyWarning, message=".*Invalid 'BLANK' keyword.*"
+        "ignore",
+        category=VerifyWarning,
+        message=".*Invalid 'BLANK' keyword.*",
+    )
+    # Suppress Numpy 2.0+ warning about invalid values in string formatting
+    warnings.filterwarnings(
+        "ignore",
+        category=RuntimeWarning,
+        message=".*invalid value encountered in do_format.*",
     )
 except ImportError:
     pass

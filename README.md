@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white" alt="Python 3.9+"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white" alt="Python 3.10+"></a>
   <a href="https://pypi.org/project/solarviewer/"><img src="https://img.shields.io/pypi/v/solarviewer?color=blue&logo=pypi&logoColor=white" alt="PyPI version"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
   <a href="https://github.com/dey-soham/solarviewer"><img src="https://img.shields.io/github/stars/dey-soham/solarviewer?style=social" alt="GitHub stars"></a>
@@ -69,9 +69,12 @@
 
 ## 📦 Installation
 
+**💡** Facing issues? See the [Troubleshooting Guide](INSTALLATION.md#troubleshooting).
+
+
 ### Prerequisites
 
-- Python 3.9 or higher
+- Python 3.10 or higher
 - pip package manager
 - **CASA data directory**: The `~/.casa/data` folder must exist for CASA to work properly. Create it with:
   ```bash
@@ -88,18 +91,32 @@ It is highly recommended to install SolarViewer in a virtual environment to avoi
 # Create a virtual environment
 python3 -m venv ~/.sv
 
+# Using uv
+# uv venv ~/.sv -p 3.13
+
+# Using conda
+# conda create -p ~/.sv python=3.13
+```
+
+```bash
 # Activate the environment
 source ~/.sv/bin/activate
+
+# Using conda:
+# conda activate ~/.sv
 ```
 
 Once the virtual environment is active, proceed with the installation below. 
 
-**💡 Pro Tip**: After running `sv --install` (see Desktop Integration below), you won't need to manually activate the environment to launch the application!
+**💡** After running `sv --install` (see Desktop Integration below), you won't need to manually activate the environment to launch the application!
 
 ### Install from PyPI
 
 ```bash
 pip install solarviewer
+
+# Using uv
+# uv pip install solarviewer
 ```
 
 ### Install from Source
