@@ -84,7 +84,7 @@ class DownloadWorker(QThread):
                 "Holloman": "Holloman",
             }
             site = site_map.get(instrument, "Learmonth")
-            
+
             date = self.params.get("date")
             start_time = self.params.get("start_time")
             end_time = self.params.get("end_time")
@@ -105,12 +105,14 @@ class DownloadWorker(QThread):
                 flag_cal_time=flag_cal,
                 progress_callback=self.progress.emit,
             )
-            
+
             if result:
                 self.finished.emit(result)
             else:
-                self.error.emit(f"Download or conversion failed for {site}. Check if data is available for this date.")
-                
+                self.error.emit(
+                    f"Download or conversion failed for {site}. Check if data is available for this date."
+                )
+
         except Exception as e:
             self.error.emit(str(e))
 
@@ -123,7 +125,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.setWindowTitle("Radio Solar Data Downloader")
         self.setMinimumWidth(600)
         self.setMinimumHeight(800)
-        
+
         # Store initial datetime for time selection
         self.initial_datetime = initial_datetime
 
@@ -145,7 +147,7 @@ class RadioDataDownloaderGUI(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up download worker thread when window is closed."""
-        if hasattr(self, 'download_worker') and self.download_worker is not None:
+        if hasattr(self, "download_worker") and self.download_worker is not None:
             if self.download_worker.isRunning():
                 self.download_worker.cancel()
                 self.download_worker.quit()
@@ -158,12 +160,14 @@ class RadioDataDownloaderGUI(QMainWindow):
         layout = QVBoxLayout()
 
         self.instrument_combo = QComboBox()
-        self.instrument_combo.addItems([
-            "Learmonth (Australia)",
-            "San Vito (Italy)",
-            "Palehua (Hawaii, USA)",
-            "Holloman (New Mexico, USA)",
-        ])
+        self.instrument_combo.addItems(
+            [
+                "Learmonth (Australia)",
+                "San Vito (Italy)",
+                "Palehua (Hawaii, USA)",
+                "Holloman (New Mexico, USA)",
+            ]
+        )
         self.instrument_combo.currentTextChanged.connect(self.on_instrument_changed)
 
         # Info label - dynamically updated based on selection
@@ -186,7 +190,9 @@ class RadioDataDownloaderGUI(QMainWindow):
             "Palehua (Hawaii, USA)": "Palehua, Hawaii.\nFrequency: 25-180 MHz | Data from NOAA NCEI archive.",
             "Holloman (New Mexico, USA)": "Holloman AFB, New Mexico.\nFrequency: 25-180 MHz | ⚠️ Limited data: Apr 2000 - Jul 2004 only.",
         }
-        self.info_label.setText(site_info.get(text, "RSTN Solar Spectrograph: 25-180 MHz"))
+        self.info_label.setText(
+            site_info.get(text, "RSTN Solar Spectrograph: 25-180 MHz")
+        )
 
     def create_time_selection(self):
         """Create the time range selection section."""
@@ -210,7 +216,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.date_only_edit = QDateTimeEdit()
         self.date_only_edit.setCalendarPopup(True)
         self.date_only_edit.setDisplayFormat("yyyy.MM.dd")
-        
+
         # Use initial_datetime if provided, otherwise yesterday
         if self.initial_datetime:
             initial_qdt = QDateTime(self.initial_datetime)
@@ -229,7 +235,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.start_datetime = QDateTimeEdit()
         self.start_datetime.setCalendarPopup(True)
         self.start_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
-        
+
         # Use initial_datetime if provided, otherwise yesterday 00:00:00
         if self.initial_datetime:
             initial_qdt = QDateTime(self.initial_datetime)
@@ -251,10 +257,11 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.end_datetime = QDateTimeEdit()
         self.end_datetime.setCalendarPopup(True)
         self.end_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
-        
+
         # Use initial_datetime + 1 hour if provided, otherwise yesterday 23:59:59
         if self.initial_datetime:
             from datetime import timedelta
+
             end_dt = self.initial_datetime + timedelta(hours=1)
             self.end_datetime.setDateTime(QDateTime(end_dt))
         else:
@@ -269,13 +276,13 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.end_layout_widget.hide()
 
         # Note about data availability
-        '''note_label = QLabel(
+        """note_label = QLabel(
             "Note: Data may not be available for all dates. "
             "Learmonth data is typically available within 1-2 days."
         )
         note_label.setStyleSheet("color: #888;")
         note_label.setWordWrap(True)
-        layout.addWidget(note_label)'''
+        layout.addWidget(note_label)"""
 
         group.setLayout(layout)
         self.layout.addWidget(group)
@@ -296,6 +303,7 @@ class RadioDataDownloaderGUI(QMainWindow):
     def on_start_date_changed(self, new_date):
         """Sync end date when start date is changed."""
         from PyQt5.QtCore import QTime
+
         # Keep the current end time but change the date
         current_end_time = self.end_datetime.time()
         end_dt = QDateTime(new_date, current_end_time)
@@ -314,7 +322,7 @@ class RadioDataDownloaderGUI(QMainWindow):
 
         dir_layout = QHBoxLayout()
         dir_layout.addWidget(QLabel("Output Directory:"))
-        
+
         self.output_dir = QLineEdit()
         self.output_dir.setText(os.path.join(os.getcwd(), "radio_solar_data"))
         dir_layout.addWidget(self.output_dir)
@@ -322,7 +330,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         browse_button = QPushButton("Browse...")
         browse_button.clicked.connect(self.browse_output_dir)
         dir_layout.addWidget(browse_button)
-        
+
         layout.addLayout(dir_layout)
         group.setLayout(layout)
         self.layout.addWidget(group)
@@ -390,7 +398,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumHeight(150)
         self.log_text.setPlaceholderText("Download status will appear here...")
-        
+
         layout.addWidget(self.log_text)
         group.setLayout(layout)
         self.layout.addWidget(group)
@@ -429,17 +437,19 @@ class RadioDataDownloaderGUI(QMainWindow):
             # Time range mode
             start_dt = self.start_datetime.dateTime()
             end_dt = self.end_datetime.dateTime()
-            
+
             # Validate time range
             if start_dt >= end_dt:
-                QMessageBox.warning(self, "Error", "Start time must be before end time.")
+                QMessageBox.warning(
+                    self, "Error", "Start time must be before end time."
+                )
                 return
-            
+
             date = start_dt.toString("yyyy-MM-dd")
             start_time = start_dt.toString("HH:mm:ss")
             end_time = end_dt.toString("HH:mm:ss")
             log_msg = f"Starting download for {date}...\nTime range: {start_time} to {end_time}"
-        
+
         params = {
             "instrument": self.instrument_combo.currentText(),
             "date": date,
@@ -483,14 +493,16 @@ class RadioDataDownloaderGUI(QMainWindow):
 
         self.log_message(f"\n✓ Success! FITS file created:")
         self.log_message(f"  {fits_file}")
-        self.log_message("\nYou can now open this file with the Dynamic Spectrum Viewer:")
+        self.log_message(
+            "\nYou can now open this file with the Dynamic Spectrum Viewer:"
+        )
         self.log_message("  Tools → LOFAR Tools → Dynamic Spectrum Viewer")
 
         QMessageBox.information(
             self,
             "Download Complete",
             f"FITS file created successfully!\n\n{fits_file}\n\n"
-            "You can open this file with the Dynamic Spectrum Viewer."
+            "You can open this file with the Dynamic Spectrum Viewer.",
         )
 
     def on_error(self, error_message: str):
@@ -504,7 +516,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         QMessageBox.critical(
             self,
             "Download Failed",
-            f"Failed to download or convert data:\n\n{error_message}"
+            f"Failed to download or convert data:\n\n{error_message}",
         )
 
 

@@ -14,12 +14,12 @@ def uninstall_mac_app():
 
     # Define paths
     home = Path.home()
-    
+
     # 1. Remove .app Bundle
     install_dir = home / "Applications"
     app_name = "SolarViewer.app"
     app_bundle = install_dir / app_name
-    
+
     if app_bundle.exists():
         print(f"Removing {app_bundle}...")
         try:
@@ -33,7 +33,7 @@ def uninstall_mac_app():
     # 2. Remove Symlinks
     bin_dir = home / ".local" / "bin"
     links = ["solarviewer", "sv"]
-    
+
     for link_name in links:
         target_link = bin_dir / link_name
         if target_link.exists() or target_link.is_symlink():
@@ -53,7 +53,7 @@ if __name__ == "__main__":
     if sys.platform != "darwin":
         print("Warning: This script is intended for macOS.")
         response = input("Do you want to continue anyway? (y/n): ")
-        if response.lower() != 'y':
+        if response.lower() != "y":
             sys.exit(1)
-            
+
     uninstall_mac_app()

@@ -74,7 +74,7 @@ from .utils import (
     # remove_pixels_away_from_sun,
     get_pixel_values_from_image,
     get_image_metadata,
-    #twoD_gaussian,
+    # twoD_gaussian,
     twoD_elliptical_ring,
     IA,
 )
@@ -93,10 +93,12 @@ from .utils.update_checker import check_for_updates
 from .version import __version__
 from sunpy.map import Map
 
+
 class CheckUpdateThread(QThread):
     """Background thread to check for updates on PyPI."""
+
     update_available = pyqtSignal(str)  # Emits latest version string
-    
+
     def run(self):
         try:
             is_available, latest_ver, error = check_for_updates(__version__)
@@ -108,20 +110,22 @@ class CheckUpdateThread(QThread):
 
 class DisabledItemDelegate(QStyledItemDelegate):
     """Custom delegate that properly renders disabled items with grayed text."""
-    
+
     def paint(self, painter, option, index):
         # Check if item is disabled
         if not (index.flags() & Qt.ItemIsEnabled):
             # Get disabled color from theme
             try:
-                disabled_color = QColor(theme_manager.palette.get('disabled', '#cccccc'))
+                disabled_color = QColor(
+                    theme_manager.palette.get("disabled", "#cccccc")
+                )
             except:
-                disabled_color = QColor('#cccccc')
-            
+                disabled_color = QColor("#cccccc")
+
             # Modify the palette to use disabled color for text
             option.palette.setColor(QPalette.Text, disabled_color)
             option.palette.setColor(QPalette.HighlightedText, disabled_color)
-        
+
         super().paint(painter, option, index)
 
 
@@ -137,12 +141,12 @@ _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def get_resource_path(relative_path):
     """Get absolute path to a package resource file.
-    
+
     Uses os.path for speed (avoids slow pkg_resources import).
-    
+
     Args:
         relative_path: Path relative to the package directory (e.g., 'assets/icon.png')
-    
+
     Returns:
         Absolute path to the resource file
     """
@@ -168,6 +172,7 @@ rcParams["font.size"] = 12
 update_matplotlib_theme()
 mplstyle.use("fast")
 
+
 # For region selection modes
 class RegionMode:
     RECTANGLE = 0
@@ -176,25 +181,25 @@ class RegionMode:
 
 class SegmentedControl(QWidget):
     """A modern segmented control widget."""
-    
+
     selectionChanged = pyqtSignal(int)  # Emits index of selected segment
-    
+
     def __init__(self, options, parent=None):
         super().__init__(parent)
         self.options = options
         self._selected_index = 0
         self._buttons = []
-        
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        
+
         # Create container for the pill shape
         self._container = QWidget()
         container_layout = QHBoxLayout(self._container)
         container_layout.setContentsMargins(2, 2, 2, 2)
         container_layout.setSpacing(1)
-        
+
         for i, option in enumerate(options):
             btn = QPushButton(option)
             btn.setCheckable(True)
@@ -202,54 +207,58 @@ class SegmentedControl(QWidget):
             btn.clicked.connect(lambda checked, idx=i: self._on_button_clicked(idx))
             self._buttons.append(btn)
             container_layout.addWidget(btn)
-        
+
         # Select first by default
         if self._buttons:
             self._buttons[0].setChecked(True)
-        
+
         layout.addWidget(self._container)
         self._apply_styles()
-        
+
         # Register for theme changes
         theme_manager.register_callback(self._on_theme_changed)
-    
+
     def _on_theme_changed(self, theme):
         """Update styling when theme changes."""
         self._apply_styles()
-    
+
     def _apply_styles(self):
         """Apply button-style toggle styling matching app palette."""
         from .styles import theme_manager
+
         palette = theme_manager.palette
         is_dark = theme_manager.is_dark
-        
+
         # Container styling - subtle pill background
         if is_dark:
-            surface = palette.get('surface', '#16162a')
+            surface = palette.get("surface", "#16162a")
             border_style = "none"
-            hover_bg = palette.get('button_hover', '#32325d')
+            hover_bg = palette.get("button_hover", "#32325d")
         else:
             surface = "rgba(0, 0, 0, 0.03)"
-            border_color = palette.get('border', '#d1d5db')
+            border_color = palette.get("border", "#d1d5db")
             border_style = f"1px solid {border_color}"
             hover_bg = "rgba(0, 0, 0, 0.06)"
-        
-        self._container.setStyleSheet(f"""
+
+        self._container.setStyleSheet(
+            f"""
             QWidget {{
                 background-color: {surface};
                 border: {border_style};
                 border-radius: 8px;
             }}
-        """)
-        
+        """
+        )
+
         # Button styling - matches app button palette
-        text_color = palette.get('text', '#f0f0f5')
-        text_secondary = palette.get('text_secondary', '#a0a0b0')
-        highlight = palette.get('highlight', '#6366f1')
-        highlight_hover = palette.get('highlight_hover', '#818cf8')
-        
+        text_color = palette.get("text", "#f0f0f5")
+        text_secondary = palette.get("text_secondary", "#a0a0b0")
+        highlight = palette.get("highlight", "#6366f1")
+        highlight_hover = palette.get("highlight_hover", "#818cf8")
+
         for btn in self._buttons:
-            btn.setStyleSheet(f"""
+            btn.setStyleSheet(
+                f"""
                 QPushButton {{
                     background-color: transparent;
                     color: {text_secondary};
@@ -273,35 +282,36 @@ class SegmentedControl(QWidget):
                 QPushButton:checked:hover {{
                     background-color: {highlight_hover};
                 }}
-            """)
-    
+            """
+            )
+
     def _on_button_clicked(self, index):
         """Handle button click - ensure only one is selected."""
         if index == self._selected_index:
             # Re-check if clicking already selected (don't allow deselect)
             self._buttons[index].setChecked(True)
             return
-        
+
         # Uncheck all others
         for i, btn in enumerate(self._buttons):
             btn.setChecked(i == index)
-        
+
         self._selected_index = index
         self.selectionChanged.emit(index)
-    
+
     def selectedIndex(self):
         """Return the currently selected index."""
         return self._selected_index
-    
+
     def setSelectedIndex(self, index):
         """Set the selected index programmatically."""
         if 0 <= index < len(self._buttons):
             self._on_button_clicked(index)
-    
+
     def selectedText(self):
         """Return the text of the selected option."""
         return self.options[self._selected_index]
-    
+
     def updateTheme(self):
         """Update styling when theme changes."""
         self._apply_styles()
@@ -335,7 +345,7 @@ class SolarRadioImageTab(QWidget):
             "alpha": 0.6,
             "show_center": False,
         }
-        
+
         # Beam style properties
         self.beam_style = {
             "edgecolor": "black",
@@ -343,7 +353,7 @@ class SolarRadioImageTab(QWidget):
             "linewidth": 1.5,
             "alpha": 0.4,
         }
-        
+
         # Grid style properties
         self.grid_style = {
             "color": "white",
@@ -359,7 +369,7 @@ class SolarRadioImageTab(QWidget):
         self._file_list_index = -1  # Current position in file list
         self._file_filter_pattern = "*"  # Glob pattern for filtering
         self._file_base_dir = None  # Base directory of loaded file
-        
+
         # Remote file navigation state
         self._remote_file_list = []  # List of RemoteFileInfo for remote navigation
         self._remote_base_dir = None  # Remote directory path
@@ -394,16 +404,20 @@ class SolarRadioImageTab(QWidget):
             None  # Original HPC file before RA/Dec conversion
         )
         self._radec_temp_file = None  # Path to RA/Dec temp file (from HPC->RA/Dec)
-        
+
         # Contour coordinate transformation state
-        self._contour_transformed_file = None  # Path to coordinate-transformed contour file
-        self._contour_transformed_from = None  # Original external image that was transformed
-        self._contour_was_transformed = False  # Flag to skip reprojection when transformation aligned coordinates
-        
+        self._contour_transformed_file = (
+            None  # Path to coordinate-transformed contour file
+        )
+        self._contour_transformed_from = (
+            None  # Original external image that was transformed
+        )
+        self._contour_was_transformed = (
+            False  # Flag to skip reprojection when transformation aligned coordinates
+        )
+
         # Track non-modal dialogs to prevent garbage collection
         self._open_dialogs = []
-
-
 
         # Unique ID for temp file naming (prevents collisions in multi-tab)
         import uuid
@@ -444,6 +458,8 @@ class SolarRadioImageTab(QWidget):
             "use_default_rms_region": True,
             "rms_box": (0, 200, 0, 130),
             "show_full_extent": False,  # If True, show full contour extent (Default: capped at 1.5x base image)
+            "dim_h": 0,
+            "dim_w": 0,
         }
 
         # Plot customization settings
@@ -476,7 +492,7 @@ class SolarRadioImageTab(QWidget):
             "pad_hspace": 0.2,
             "use_tight_layout": False,
         }
-        
+
         # Rendering optimization state
         self._last_rendered_state = {}
         self.image_plot = None
@@ -511,11 +527,11 @@ class SolarRadioImageTab(QWidget):
     def _set_button_cursors(self):
         """Set pointing hand cursor on all buttons for better UX"""
         from PyQt5.QtGui import QCursor
-        
+
         # Find all QPushButton widgets and set cursor
         for button in self.findChildren(QPushButton):
             button.setCursor(Qt.PointingHandCursor)
-        
+
         # Also set cursor for QToolButton (toolbar icons)
         for button in self.findChildren(QToolButton):
             button.setCursor(Qt.PointingHandCursor)
@@ -602,14 +618,14 @@ class SolarRadioImageTab(QWidget):
         self.radio_fits_file.hide()
         self.selection_type_group.addButton(self.radio_casa_image)
         self.selection_type_group.addButton(self.radio_fits_file)
-        
+
         # Sync segmented control with hidden radio buttons
         def sync_selection(index):
             if index == 0:
                 self.radio_casa_image.setChecked(True)
             else:
                 self.radio_fits_file.setChecked(True)
-        
+
         self.file_type_toggle.selectionChanged.connect(sync_selection)
 
         file_layout = QHBoxLayout()
@@ -618,11 +634,7 @@ class SolarRadioImageTab(QWidget):
         self.dir_entry.setPlaceholderText("Select image directory or FITS file...")
         self.browse_btn = QPushButton()
         self.browse_btn.setObjectName("IconOnlyNBGButton")
-        self.browse_btn.setIcon(
-            QIcon(
-                get_resource_path("assets/browse.png")
-            )
-        )
+        self.browse_btn.setIcon(QIcon(get_resource_path("assets/browse.png")))
         self.browse_btn.setIconSize(QSize(32, 32))
         self.browse_btn.setToolTip("Browse")
         self.browse_btn.setFixedSize(32, 32)
@@ -657,11 +669,11 @@ class SolarRadioImageTab(QWidget):
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
-        
+
         # Row 1: Stokes + Threshold on same row
         stokes_thresh_layout = QHBoxLayout()
         stokes_thresh_layout.setSpacing(12)
-        
+
         # Stokes dropdown
         stokes_label = QLabel("Stokes:")
         self.stokes_combo = QComboBox()
@@ -669,11 +681,10 @@ class SolarRadioImageTab(QWidget):
             ["I", "Q", "U", "V", "L", "Lfrac", "Vfrac", "Q/I", "U/I", "U/V", "PANG"]
         )
         self.stokes_combo.currentTextChanged.connect(self.on_stokes_changed)
-        
+
         # Use custom delegate to properly render disabled items with grayed text
         self.stokes_combo.setItemDelegate(DisabledItemDelegate(self.stokes_combo))
 
-        
         stokes_thresh_layout.addStretch()
         # Threshold (sigma)
         thresh_label = QLabel("Thres (σ):")
@@ -681,18 +692,18 @@ class SolarRadioImageTab(QWidget):
         self.threshold_entry = QLineEdit("10")
         self.threshold_entry.setFixedWidth(50)
         self.threshold_entry.setToolTip("Threshold in units of sigma (RMS)")
-        
+
         stokes_thresh_layout.addWidget(stokes_label)
         stokes_thresh_layout.addWidget(self.stokes_combo, 1)
         stokes_thresh_layout.addWidget(thresh_label)
         stokes_thresh_layout.addWidget(self.threshold_entry)
         layout.addLayout(stokes_thresh_layout)
-        
+
         # Row 2: Fast Load toggle on left, RMS settings on right
         options_row = QHBoxLayout()
         options_row.setSpacing(8)
         options_row.setContentsMargins(0, 2, 0, 2)
-        
+
         # Fast Load toggle (left side)
         self.downsample_toggle = QCheckBox()
         self.downsample_toggle.setObjectName("FastLoadToggle")
@@ -700,7 +711,7 @@ class SolarRadioImageTab(QWidget):
             "Enable fast preview mode for quick image browsing.\n"
             "Images are loaded at reduced resolution for faster display."
         )
-        
+
         # Theme-aware Fast Load toggle style
         if theme_manager.is_dark:
             toggle_bg = "#3a3d4d"
@@ -712,8 +723,9 @@ class SolarRadioImageTab(QWidget):
             toggle_bg_hover = "#c0c0c0"
             toggle_border = "#b0b0b0"
             label_color = "#555555"
-        
-        self.downsample_toggle.setStyleSheet(f"""
+
+        self.downsample_toggle.setStyleSheet(
+            f"""
             QCheckBox#FastLoadToggle {{
                 spacing: 0px;
             }}
@@ -734,20 +746,22 @@ class SolarRadioImageTab(QWidget):
             QCheckBox#FastLoadToggle::indicator:checked:hover {{
                 background-color: #7c7ff5;
             }}
-        """)
-        
+        """
+        )
+
         fast_icon = QLabel("⚡")
         self.fast_label = QLabel("Fast")
         self.fast_label.setStyleSheet(f"color: {label_color}; font-size: 10pt;")
-        
+
         # Status badge
         self.downsample_status = QLabel("")
         self.downsample_status.setStyleSheet("background-color: transparent;")
-        
+
         def update_fast_load_status(checked):
             if checked:
                 self.downsample_status.setText("Preview")
-                self.downsample_status.setStyleSheet("""
+                self.downsample_status.setStyleSheet(
+                    """
                     QLabel {
                         background-color: rgba(16, 185, 129, 0.15);
                         color: #10b981;
@@ -756,51 +770,50 @@ class SolarRadioImageTab(QWidget):
                         padding: 1px 6px;
                         border-radius: 3px;
                     }
-                """)
+                """
+                )
             else:
                 self.downsample_status.setText("")
                 self.downsample_status.setStyleSheet("background-color: transparent;")
-            
+
             # Invalidate contour data when downsample mode changes
             # This ensures contour data will be reloaded at the correct resolution
             self.contour_settings["contour_data"] = None
             self.current_contour_wcs = None
-            
+
             # If image is already loaded, reload it with new downsample setting
             if self.current_image_data is not None and self.imagename:
                 self.on_visualization_changed()
                 self.reset_view()
 
-        
         self.downsample_toggle.stateChanged.connect(update_fast_load_status)
-        
+
         # Add Fast Load widgets to the left
         options_row.addWidget(self.downsample_toggle)
         options_row.addWidget(fast_icon)
         options_row.addWidget(self.fast_label)
         options_row.addWidget(self.downsample_status)
-        
+
         # Stretch in the middle
         options_row.addStretch()
-        
+
         # RMS Box settings on the right (label + icon)
         self.rms_label = QLabel("RMS")
         rms_label_color = "#a5a8b8" if theme_manager.is_dark else "#555555"
         self.rms_label.setStyleSheet(f"color: {rms_label_color}; font-size: 10pt;")
         self.rms_label.setToolTip("RMS Box Settings")
-        
+
         self.rms_settings_btn = QPushButton()
         self.rms_settings_btn.setObjectName("IconOnlyNBGButton")
-        self.rms_settings_btn.setIcon(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            )
-        )
+        self.rms_settings_btn.setIcon(QIcon(get_resource_path("assets/settings.png")))
         self.rms_settings_btn.setIconSize(QSize(20, 20))
-        self.rms_settings_btn.setToolTip("RMS Box Settings - Configure noise estimation region")
+        self.rms_settings_btn.setToolTip(
+            "RMS Box Settings - Configure noise estimation region"
+        )
         self.rms_settings_btn.setFixedSize(28, 28)
         self.rms_settings_btn.clicked.connect(self.show_rms_box_dialog)
-        self.rms_settings_btn.setStyleSheet("""
+        self.rms_settings_btn.setStyleSheet(
+            """
             QPushButton {
                 background-color: transparent;
                 border-radius: 6px;
@@ -812,13 +825,14 @@ class SolarRadioImageTab(QWidget):
             QPushButton:pressed {
                 background-color: rgba(99, 102, 241, 0.35);
             }
-        """)
-        
+        """
+        )
+
         options_row.addWidget(self.rms_label)
         options_row.addWidget(self.rms_settings_btn)
-        
+
         layout.addLayout(options_row)
-        
+
         parent_layout.addWidget(group)
 
     def create_display_controls(self, parent_layout):
@@ -882,7 +896,7 @@ class SolarRadioImageTab(QWidget):
         grid_layout = QGridLayout()
         grid_layout.setSpacing(6)
         grid_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # Theme-aware toggle style for overlay checkboxes
         if theme_manager.is_dark:
             toggle_bg = "#3a3d4d"
@@ -896,7 +910,7 @@ class SolarRadioImageTab(QWidget):
             toggle_border = "#b0b0b0"
             toggle_border_hover = "#a0a0a0"
             text_color = "#333333"
-        
+
         overlay_toggle_style = f"""
             QCheckBox {{
                 spacing: 6px;
@@ -922,7 +936,7 @@ class SolarRadioImageTab(QWidget):
                 background-color: #7c7ff5;
             }}
         """
-        
+
         # Modern settings button style (works for both themes)
         settings_btn_style = """
             QPushButton {
@@ -938,72 +952,64 @@ class SolarRadioImageTab(QWidget):
                 background-color: rgba(99, 102, 241, 0.35);
             }
         """
-        
+
         # Row 0: Show Beam + settings | Show Grid + settings
         self.show_beam_checkbox = QCheckBox("Beam")
         self.show_beam_checkbox.setChecked(True)
         self.show_beam_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        
+
         self.beam_settings_button = QPushButton()
         self.beam_settings_button.setObjectName("IconOnlyNBGButton")
-        self.beam_settings_button.setIcon(
-            QIcon(themed_icon("settings.png"))
-        )
+        self.beam_settings_button.setIcon(QIcon(themed_icon("settings.png")))
         self.beam_settings_button.setIconSize(QSize(18, 18))
         self.beam_settings_button.setToolTip("Beam Settings")
         self.beam_settings_button.setFixedSize(24, 24)
         self.beam_settings_button.setStyleSheet(settings_btn_style)
         self.beam_settings_button.clicked.connect(self.show_beam_settings)
-        
+
         self.show_grid_checkbox = QCheckBox("Grid")
         self.show_grid_checkbox.setChecked(False)
         self.show_grid_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_grid_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        
+
         self.grid_settings_button = QPushButton()
         self.grid_settings_button.setObjectName("IconOnlyNBGButton")
-        self.grid_settings_button.setIcon(
-            QIcon(themed_icon("settings.png"))
-        )
+        self.grid_settings_button.setIcon(QIcon(themed_icon("settings.png")))
         self.grid_settings_button.setIconSize(QSize(18, 18))
         self.grid_settings_button.setToolTip("Grid Settings")
         self.grid_settings_button.setFixedSize(24, 24)
         self.grid_settings_button.setStyleSheet(settings_btn_style)
         self.grid_settings_button.clicked.connect(self.show_grid_settings)
-        
+
         # Row 1: Solar Disk + settings | Contours + settings
         self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
         self.show_solar_disk_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        
+
         self.solar_disk_center_button = QPushButton()
         self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
-        self.solar_disk_center_button.setIcon(
-            QIcon(themed_icon("settings.png"))
-        )
+        self.solar_disk_center_button.setIcon(QIcon(themed_icon("settings.png")))
         self.solar_disk_center_button.setIconSize(QSize(18, 18))
         self.solar_disk_center_button.setToolTip("Customize Solar Disk")
         self.solar_disk_center_button.setFixedSize(24, 24)
         self.solar_disk_center_button.setStyleSheet(settings_btn_style)
         self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
-        
+
         self.show_contours_checkbox = QCheckBox("Contours")
         self.show_contours_checkbox.setChecked(False)
         self.show_contours_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_contours_checkbox.stateChanged.connect(self.on_checkbox_changed)
-        
+
         self.contour_settings_button = QPushButton()
         self.contour_settings_button.setObjectName("IconOnlyNBGButton")
-        self.contour_settings_button.setIcon(
-            QIcon(themed_icon("settings.png"))
-        )
+        self.contour_settings_button.setIcon(QIcon(themed_icon("settings.png")))
         self.contour_settings_button.setIconSize(QSize(18, 18))
         self.contour_settings_button.setToolTip("Contour Settings")
         self.contour_settings_button.setFixedSize(24, 24)
         self.contour_settings_button.setStyleSheet(settings_btn_style)
         self.contour_settings_button.clicked.connect(self.show_contour_settings)
-        
+
         # Create left/right widget containers for tight grouping
         left_group_0 = QWidget()
         left_layout_0 = QHBoxLayout(left_group_0)
@@ -1012,7 +1018,7 @@ class SolarRadioImageTab(QWidget):
         left_layout_0.addWidget(self.show_beam_checkbox)
         left_layout_0.addWidget(self.beam_settings_button)
         left_layout_0.addStretch()
-        
+
         right_group_0 = QWidget()
         right_layout_0 = QHBoxLayout(right_group_0)
         right_layout_0.setContentsMargins(0, 0, 0, 0)
@@ -1020,7 +1026,7 @@ class SolarRadioImageTab(QWidget):
         right_layout_0.addWidget(self.show_grid_checkbox)
         right_layout_0.addWidget(self.grid_settings_button)
         right_layout_0.addStretch()
-        
+
         left_group_1 = QWidget()
         left_layout_1 = QHBoxLayout(left_group_1)
         left_layout_1.setContentsMargins(0, 0, 0, 0)
@@ -1028,7 +1034,7 @@ class SolarRadioImageTab(QWidget):
         left_layout_1.addWidget(self.show_solar_disk_checkbox)
         left_layout_1.addWidget(self.solar_disk_center_button)
         left_layout_1.addStretch()
-        
+
         right_group_1 = QWidget()
         right_layout_1 = QHBoxLayout(right_group_1)
         right_layout_1.setContentsMargins(0, 0, 0, 0)
@@ -1036,17 +1042,17 @@ class SolarRadioImageTab(QWidget):
         right_layout_1.addWidget(self.show_contours_checkbox)
         right_layout_1.addWidget(self.contour_settings_button)
         right_layout_1.addStretch()
-        
+
         # Add to grid - 2 columns, stretch only in the middle
         grid_layout.addWidget(left_group_0, 0, 0)
         grid_layout.addWidget(right_group_0, 0, 1)
         grid_layout.addWidget(left_group_1, 1, 0)
         grid_layout.addWidget(right_group_1, 1, 1)
-        
+
         # Equal column stretch for alignment
         grid_layout.setColumnStretch(0, 1)
         grid_layout.setColumnStretch(1, 1)
-        
+
         overlays_layout.addLayout(grid_layout)
         main_layout.addWidget(overlays_group)
 
@@ -1084,7 +1090,7 @@ class SolarRadioImageTab(QWidget):
         # Preset buttons - compact secondary actions
         preset_layout = QHBoxLayout()
         preset_layout.setSpacing(6)
-        
+
         # Common compact style for preset buttons
         preset_btn_style = """
             QPushButton {
@@ -1094,19 +1100,19 @@ class SolarRadioImageTab(QWidget):
                 min-height: 22px;
             }
         """
-        
+
         self.auto_minmax_button = QPushButton("Auto")
         self.auto_minmax_button.setStyleSheet(preset_btn_style)
         self.auto_minmax_button.clicked.connect(self.auto_minmax)
-        
+
         self.auto_percentile_button = QPushButton("1-99%")
         self.auto_percentile_button.setStyleSheet(preset_btn_style)
         self.auto_percentile_button.clicked.connect(self.auto_percentile)
-        
+
         self.auto_median_button = QPushButton("Med±3σ")
         self.auto_median_button.setStyleSheet(preset_btn_style)
         self.auto_median_button.clicked.connect(self.auto_median_rms)
-        
+
         preset_layout.addWidget(self.auto_minmax_button)
         preset_layout.addWidget(self.auto_percentile_button)
         preset_layout.addWidget(self.auto_median_button)
@@ -1188,11 +1194,7 @@ class SolarRadioImageTab(QWidget):
         zoom_layout = QHBoxLayout()
         self.zoom_in_button = QPushButton()
         self.zoom_in_button.setObjectName("IconOnlyButton")
-        self.zoom_in_button.setIcon(
-            QIcon(
-                get_resource_path("assets/zoom_in.png")
-            )
-        )
+        self.zoom_in_button.setIcon(QIcon(get_resource_path("assets/zoom_in.png")))
         self.zoom_in_button.setIconSize(QSize(24, 24))
         self.zoom_in_button.setToolTip("Zoom In")
         # self.zoom_in_button.setFixedSize(32, 32)
@@ -1201,11 +1203,7 @@ class SolarRadioImageTab(QWidget):
         self.zoom_in_button.clicked.connect(self.zoom_in)
         self.zoom_out_button = QPushButton()
         self.zoom_out_button.setObjectName("IconOnlyButton")
-        self.zoom_out_button.setIcon(
-            QIcon(
-                get_resource_path("assets/zoom_out.png")
-            )
-        )
+        self.zoom_out_button.setIcon(QIcon(get_resource_path("assets/zoom_out.png")))
         self.zoom_out_button.setIconSize(QSize(24, 24))
         self.zoom_out_button.setToolTip("Zoom Out")
         # self.zoom_out_button.setFixedSize(32, 32)
@@ -1213,11 +1211,7 @@ class SolarRadioImageTab(QWidget):
         self.zoom_out_button.clicked.connect(self.zoom_out)
         self.reset_view_button = QPushButton()
         self.reset_view_button.setObjectName("IconOnlyButton")
-        self.reset_view_button.setIcon(
-            QIcon(
-                get_resource_path("assets/reset.png")
-            )
-        )
+        self.reset_view_button.setIcon(QIcon(get_resource_path("assets/reset.png")))
         self.reset_view_button.setIconSize(QSize(24, 24))
         self.reset_view_button.setToolTip("Reset View")
         # self.reset_view_button.setFixedSize(32, 32)
@@ -1261,15 +1255,15 @@ class SolarRadioImageTab(QWidget):
         toolbar = QToolBar()
         toolbar.setIconSize(QSize(18, 18))
         toolbar.setFixedHeight(28)
-        toolbar.setStyleSheet("""
+        toolbar.setStyleSheet(
+            """
             QToolBar { padding: 0px; margin: 0px; spacing: 1px; }
             QToolButton { padding: 2px 3px; margin: 0px; max-height: 24px; }
-        """)
+        """
+        )
         action_group = QActionGroup(self)
         self.rect_action = QAction(
-            QIcon(
-                get_resource_path("assets/rectangle_selection.png")
-            ),
+            QIcon(get_resource_path("assets/rectangle_selection.png")),
             "",
             self,
         )
@@ -1283,9 +1277,7 @@ class SolarRadioImageTab(QWidget):
 
         # Ellipse selection action
         self.ellipse_action = QAction(
-            QIcon(
-                get_resource_path("assets/ellipse_selection.png")
-            ),
+            QIcon(get_resource_path("assets/ellipse_selection.png")),
             "",
             self,
         )
@@ -1298,27 +1290,21 @@ class SolarRadioImageTab(QWidget):
         action_group.addAction(self.ellipse_action)
 
         self.zoom_in_action = QAction(
-            QIcon(
-                get_resource_path("assets/zoom_in.png")
-            ),
+            QIcon(get_resource_path("assets/zoom_in.png")),
             "",
             self,
         )
         self.zoom_in_action.setToolTip("Zoom In")
         self.zoom_in_action.triggered.connect(self.zoom_in)
         self.zoom_out_action = QAction(
-            QIcon(
-                get_resource_path("assets/zoom_out.png")
-            ),
+            QIcon(get_resource_path("assets/zoom_out.png")),
             "",
             self,
         )
         self.zoom_out_action.setToolTip("Zoom Out")
         self.zoom_out_action.triggered.connect(self.zoom_out)
         self.reset_view_action = QAction(
-            QIcon(
-                get_resource_path("assets/reset.png")
-            ),
+            QIcon(get_resource_path("assets/reset.png")),
             "",
             self,
         )
@@ -1327,9 +1313,7 @@ class SolarRadioImageTab(QWidget):
             lambda: self.reset_view(show_status_message=True)
         )
         self.zoom_60arcmin_action = QAction(
-            QIcon(
-                get_resource_path("assets/zoom_60arcmin.png")
-            ),
+            QIcon(get_resource_path("assets/zoom_60arcmin.png")),
             "",
             self,
         )
@@ -1338,9 +1322,7 @@ class SolarRadioImageTab(QWidget):
 
         # Add customize plot action
         self.customize_plot_action = QAction(
-            QIcon(
-                get_resource_path("assets/settings.png")
-            ),
+            QIcon(get_resource_path("assets/settings.png")),
             "",
             self,
         )
@@ -1353,13 +1335,13 @@ class SolarRadioImageTab(QWidget):
         from .styles import get_icon_path
 
         self.ruler_action = QAction(
-            QIcon(
-                get_resource_path(f"assets/{get_icon_path('ruler.png')}")
-            ),
+            QIcon(get_resource_path(f"assets/{get_icon_path('ruler.png')}")),
             "",
             self,
         )
-        self.ruler_action.setToolTip("Measure Angular Distance (Select two points on the map)")
+        self.ruler_action.setToolTip(
+            "Measure Angular Distance (Select two points on the map)"
+        )
         self.ruler_action.setCheckable(True)
         self.ruler_action.setChecked(False)
         self.ruler_action.toggled.connect(
@@ -1371,9 +1353,7 @@ class SolarRadioImageTab(QWidget):
 
         # Profile cut action
         self.profile_action = QAction(
-            QIcon(
-                get_resource_path(f"assets/{get_icon_path('profile.png')}")
-            ),
+            QIcon(get_resource_path(f"assets/{get_icon_path('profile.png')}")),
             "",
             self,
         )
@@ -1444,11 +1424,11 @@ class SolarRadioImageTab(QWidget):
         toolbar.addWidget(self.hpc_btn)
 
         # Add theme-aware separator before file navigation buttons
-        #self._hpc_nav_separator = QWidget()
-        #self._hpc_nav_separator.setFixedWidth(1)
-        #self._hpc_nav_separator.setFixedHeight(20)
-        #self._update_hpc_nav_separator_style()
-        #toolbar.addWidget(self._hpc_nav_separator)
+        # self._hpc_nav_separator = QWidget()
+        # self._hpc_nav_separator.setFixedWidth(1)
+        # self._hpc_nav_separator.setFixedHeight(20)
+        # self._update_hpc_nav_separator_style()
+        # toolbar.addWidget(self._hpc_nav_separator)
 
         # File navigation buttons - create first, style later so we can update on theme change
         # self._first_file_btn = QPushButton("⏮")
@@ -1508,11 +1488,13 @@ class SolarRadioImageTab(QWidget):
         else:
             sep_color = "#9E9E9E"  # Medium grey for light theme
 
-        self._profile_zoom_separator.setStyleSheet(f"""
+        self._profile_zoom_separator.setStyleSheet(
+            f"""
             QWidget {{
                 background-color: {sep_color};
             }}
-        """)
+        """
+        )
 
         # Register theme callback if not already done
         if not hasattr(self, "_separator_theme_callback_registered"):
@@ -1534,11 +1516,13 @@ class SolarRadioImageTab(QWidget):
         else:
             sep_color = "#9E9E9E"  # Medium grey for light theme
 
-        self._hpc_nav_separator.setStyleSheet(f"""
+        self._hpc_nav_separator.setStyleSheet(
+            f"""
             QWidget {{
                 background-color: {sep_color};
             }}
-        """)
+        """
+        )
 
         # Register theme callback if not already done
         if not hasattr(self, "_hpc_nav_separator_theme_callback_registered"):
@@ -1622,7 +1606,7 @@ class SolarRadioImageTab(QWidget):
 
     def _update_special_button_styles(self):
         """Update styles for TB, HPC, NOAA, and Helioviewer buttons based on current theme.
-        
+
         These buttons have gradient backgrounds and need theme-aware disabled states.
         """
         # Determine disabled colors based on theme
@@ -1633,10 +1617,10 @@ class SolarRadioImageTab(QWidget):
             disabled_bg = "#C5C5C5"
             disabled_text = "#8E8E8E"
 
-        
         # TB Button (orange gradient)
         if hasattr(self, "tb_btn"):
-            self.tb_btn.setStyleSheet(f"""
+            self.tb_btn.setStyleSheet(
+                f"""
                 QPushButton {{
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
                         stop:0 #f59e0b, stop:1 #fbbf24);
@@ -1661,11 +1645,13 @@ class SolarRadioImageTab(QWidget):
                     background: {disabled_bg};
                     color: {disabled_text};
                 }}
-            """)
-        
+            """
+            )
+
         # HPC Button (blue gradient)
         if hasattr(self, "hpc_btn"):
-            self.hpc_btn.setStyleSheet(f"""
+            self.hpc_btn.setStyleSheet(
+                f"""
                 QPushButton {{
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
                         stop:0 #3b82f6, stop:1 #60a5fa);
@@ -1689,11 +1675,13 @@ class SolarRadioImageTab(QWidget):
                     background: {disabled_bg};
                     color: {disabled_text};
                 }}
-            """)
-        
+            """
+            )
+
         # NOAA Events Button (purple gradient)
         if hasattr(self, "noaa_events_btn"):
-            self.noaa_events_btn.setStyleSheet(f"""
+            self.noaa_events_btn.setStyleSheet(
+                f"""
                 QPushButton {{
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
                         stop:0 #7c3aed, stop:1 #a78bfa);
@@ -1716,11 +1704,13 @@ class SolarRadioImageTab(QWidget):
                     background: {disabled_bg};
                     color: {disabled_text};
                 }}
-            """)
-        
+            """
+            )
+
         # Helioviewer Button (cyan gradient)
         if hasattr(self, "helioviewer_btn"):
-            self.helioviewer_btn.setStyleSheet(f"""
+            self.helioviewer_btn.setStyleSheet(
+                f"""
                 QPushButton {{
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
                         stop:0 #0ea5e9, stop:1 #38bdf8);
@@ -1743,11 +1733,14 @@ class SolarRadioImageTab(QWidget):
                     background: {disabled_bg};
                     color: {disabled_text};
                 }}
-            """)
-        
+            """
+            )
+
         # Register theme callback if not already done
         if not hasattr(self, "_special_btn_theme_callback_registered"):
-            theme_manager.register_callback(lambda t: self._update_special_button_styles())
+            theme_manager.register_callback(
+                lambda t: self._update_special_button_styles()
+            )
             self._special_btn_theme_callback_registered = True
 
     def show_noaa_events_for_current_image(self):
@@ -1856,7 +1849,9 @@ class SolarRadioImageTab(QWidget):
                                 extracted_date = t.to_datetime().date()
                     except Exception as casa_err:
                         print(f"[ERROR] CASA date extraction failed: {casa_err}")
-                        self.show_status_message(f"CASA date extraction failed: {casa_err}")
+                        self.show_status_message(
+                            f"CASA date extraction failed: {casa_err}"
+                        )
 
             # Method 3: Filename parsing
             if extracted_date is None:
@@ -2163,9 +2158,9 @@ class SolarRadioImageTab(QWidget):
                 if os.path.exists(self._radec_temp_file):
                     try:
                         os.remove(self._radec_temp_file)
-                        #print(
+                        # print(
                         #    f"[HPC] Removed temp RA/Dec file: {self._radec_temp_file}"
-                        #)
+                        # )
                     except Exception:
                         pass
                 self._radec_temp_file = None
@@ -2238,9 +2233,9 @@ class SolarRadioImageTab(QWidget):
             if os.path.exists(self._tb_temp_file):
                 try:
                     os.remove(self._tb_temp_file)
-                    #print(
+                    # print(
                     #    f"[TB] Cleaned up temp file on new image load: {self._tb_temp_file}"
-                    #)
+                    # )
                 except Exception:
                     pass
             self._tb_temp_file = None
@@ -2284,68 +2279,111 @@ class SolarRadioImageTab(QWidget):
         except Exception:
             return False
 
-    def _get_coordinate_system_from_image(self, imagepath):
+    def _get_image_dimensions(self, imagepath):
         """
-        Detect coordinate system from a FITS or CASA image.
+        Get dimensions (height, width) of an image file (FITS or CASA).
         
         Parameters
         ----------
         imagepath : str
-            Path to the FITS file or CASA image
+            Path to the image file or directory
             
+        Returns
+        -------
+        tuple
+            (height, width) in pixels, or (0, 0) on failure
+        """
+        height, width = 0, 0
+        if not imagepath or not os.path.exists(imagepath):
+            return height, width
+            
+        try:
+            if os.path.isdir(imagepath):  # CASA image
+                ia_tool = IA()
+                ia_tool.open(imagepath)
+                shape = ia_tool.shape()
+                ia_tool.close()
+                # CASA shape is usually [width, height, stokes, freq]
+                if len(shape) >= 2:
+                    width, height = shape[0], shape[1]
+            else:  # FITS file
+                from astropy.io import fits
+                # Use headers to be fast, avoid loading full data
+                header = fits.getheader(imagepath)
+                # NAXIS1 is width (x), NAXIS2 is height (y)
+                width = header.get("NAXIS1", 0)
+                height = header.get("NAXIS2", 0)
+        except Exception as e:
+            print(f"[ERROR] Could not get image dimensions for {imagepath}: {e}")
+            
+        return height, width
+
+    def _get_coordinate_system_from_image(self, imagepath):
+        """
+        Detect coordinate system from a FITS or CASA image.
+
+        Parameters
+        ----------
+        imagepath : str
+            Path to the FITS file or CASA image
+
         Returns
         -------
         str
             'hpc' for helioprojective, 'radec' for RA/Dec, 'unknown' otherwise
         """
         if not imagepath or not os.path.exists(imagepath):
-            return 'unknown'
-        
+            return "unknown"
+
         try:
             # For FITS files, check the header first (more reliable)
             if imagepath.endswith(".fits") or imagepath.endswith(".fts"):
                 from astropy.io import fits
+
                 header = fits.getheader(imagepath)
                 ctype1 = header.get("CTYPE1", "").upper()
                 ctype2 = header.get("CTYPE2", "").upper()
-                
+
                 # Check for HPC (Helioprojective)
-                if ("HPLN" in ctype1 or "HPLT" in ctype2 or 
-                    "SOLAR" in ctype1 or "SOLAR" in ctype2):
-                    return 'hpc'
+                if (
+                    "HPLN" in ctype1
+                    or "HPLT" in ctype2
+                    or "SOLAR" in ctype1
+                    or "SOLAR" in ctype2
+                ):
+                    return "hpc"
                 # Check for RA/Dec
                 if "RA" in ctype1 or "DEC" in ctype2:
-                    return 'radec'
+                    return "radec"
         except Exception as e:
             print(f"[ERROR] FITS header check failed: {e}")
-        
+
         try:
             # For CASA images, use coordinate system info
             ia_tool = IA()
             ia_tool.open(imagepath)
             csys = ia_tool.coordsys()
-            
+
             # Get direction reference code (e.g., 'J2000' for RA/Dec, 'SUN' for HPC)
-            ref_code = csys.referencecode('direction')
+            ref_code = csys.referencecode("direction")
             dimension_names = [n.upper() for n in csys.names()]
-            
+
             ia_tool.close()
-            
+
             # Check for Solar/Helioprojective (SUN reference frame)
-            if ref_code and 'SUN' in str(ref_code).upper():
-                return 'hpc'
+            if ref_code and "SUN" in str(ref_code).upper():
+                return "hpc"
             if "SOLAR-X" in dimension_names or "SOLAR-Y" in dimension_names:
-                return 'hpc'
+                return "hpc"
             # Check for RA/Dec (J2000 reference frame)
-            if ref_code and 'J2000' in str(ref_code).upper():
-                return 'radec'
+            if ref_code and "J2000" in str(ref_code).upper():
+                return "radec"
             if "RIGHT ASCENSION" in dimension_names or "DECLINATION" in dimension_names:
-                return 'radec'
+                return "radec"
         except Exception as e:
             print(f"[ERROR] CASA check failed: {e}")
-        
-        return 'unknown'
 
+        return "unknown"
 
     def create_stats_table(self, parent_layout):
 
@@ -2360,7 +2398,9 @@ class SolarRadioImageTab(QWidget):
         self.stats_table.verticalHeader().setVisible(False)
         self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
         # Make columns resizable - Metric fits content, Value stretches
-        self.stats_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.stats_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents
+        )
         self.stats_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         # Allow user to resize columns manually
         self.stats_table.horizontalHeader().setSectionsMovable(False)
@@ -2378,13 +2418,15 @@ class SolarRadioImageTab(QWidget):
         # Histogram button - compact styling
         self.histogram_btn = QPushButton("📊 Histogram")
         self.histogram_btn.setToolTip("Show pixel value histogram for current ROI")
-        self.histogram_btn.setStyleSheet("""
+        self.histogram_btn.setStyleSheet(
+            """
             QPushButton {
                 padding: 4px 10px;
                 font-size: 11pt;
                 min-height: 24px;
             }
-        """)
+        """
+        )
         self.histogram_btn.clicked.connect(self._show_roi_histogram)
         layout.addWidget(self.histogram_btn)
 
@@ -2429,7 +2471,7 @@ class SolarRadioImageTab(QWidget):
         buttons_layout = QHBoxLayout()
 
         # Solar Activity button (smaller, no icon)
-        #self.noaa_events_btn = QPushButton("☀️")
+        # self.noaa_events_btn = QPushButton("☀️")
         self.noaa_events_btn = QPushButton("☀️ Activity")
         self.noaa_events_btn.setToolTip(
             "View Solar Activity (Events, Active Regions, Conditions, CMEs)"
@@ -2440,7 +2482,7 @@ class SolarRadioImageTab(QWidget):
         self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
         buttons_layout.addWidget(self.noaa_events_btn)
 
-        #self.helioviewer_btn = QPushButton("🌐")
+        # self.helioviewer_btn = QPushButton("🌐")
         self.helioviewer_btn = QPushButton("🌐 Helioviewer")
         self.helioviewer_btn.setToolTip(
             "Browse Helioviewer images around current observation time"
@@ -2453,7 +2495,7 @@ class SolarRadioImageTab(QWidget):
 
         # Add horizontal layout to parent
         parent_layout.addLayout(buttons_layout)
-        
+
         # Apply theme-aware styles to special buttons (calls this after all 4 buttons exist)
         self._update_special_button_styles()
 
@@ -2534,33 +2576,47 @@ class SolarRadioImageTab(QWidget):
                                 break
                         except (ValueError, TypeError) as e:
                             print(f"[WARNING] Failed to parse {key}={date_str}: {e}")
-                            self.show_status_message(f"Failed to parse {key}={date_str}: {e}")
+                            self.show_status_message(
+                                f"Failed to parse {key}={date_str}: {e}"
+                            )
                             continue
 
             # Fallback: Try the simpler parsing method used by solar activity button
             # This handles some edge cases with fractional seconds that fail in some Python versions
             if not obs_datetime and hasattr(self, "imagename") and self.imagename:
                 lower_name = self.imagename.lower()
-                if lower_name.endswith(".fits") or lower_name.endswith(".fts") or lower_name.endswith(".fit"):
+                if (
+                    lower_name.endswith(".fits")
+                    or lower_name.endswith(".fts")
+                    or lower_name.endswith(".fit")
+                ):
                     try:
                         from astropy.io import fits as fits_fallback
-                        
+
                         header = fits_fallback.getheader(self.imagename)
                         image_time = (
                             header.get("DATE-OBS")
                             or header.get("DATE_OBS")
                             or header.get("STARTOBS")
                         )
-                        
+
                         # Special handling for SOHO (DATE-OBS + TIME-OBS)
-                        if header.get("TELESCOP") == "SOHO" and header.get("TIME-OBS") and image_time:
+                        if (
+                            header.get("TELESCOP") == "SOHO"
+                            and header.get("TIME-OBS")
+                            and image_time
+                        ):
                             image_time = f"{image_time}T{header['TIME-OBS']}"
-                        
+
                         if image_time:
                             image_time = str(image_time)
                             if "T" in image_time:
                                 # More aggressive cleaning: remove Z, timezone, and fractional seconds
-                                clean_str = image_time.replace("Z", "").split("+")[0].split(".")[0]
+                                clean_str = (
+                                    image_time.replace("Z", "")
+                                    .split("+")[0]
+                                    .split(".")[0]
+                                )
                                 # Handle case where there's a negative offset timezone
                                 if "-" in clean_str[11:]:
                                     clean_str = clean_str[:19]
@@ -2570,12 +2626,20 @@ class SolarRadioImageTab(QWidget):
                                     # Last resort: just extract date part
                                     date_part = clean_str.split("T")[0]
                                     if len(date_part) >= 10:
-                                        obs_datetime = datetime.strptime(date_part[:10], "%Y-%m-%d")
+                                        obs_datetime = datetime.strptime(
+                                            date_part[:10], "%Y-%m-%d"
+                                        )
                             elif "-" in image_time and len(image_time) >= 10:
-                                obs_datetime = datetime.strptime(image_time[:10], "%Y-%m-%d")
+                                obs_datetime = datetime.strptime(
+                                    image_time[:10], "%Y-%m-%d"
+                                )
                     except Exception as fallback_err:
-                        print(f"[WARNING] Fallback time parsing also failed: {fallback_err}")
-                        self.show_status_message(f"Fallback time parsing failed: {fallback_err}")
+                        print(
+                            f"[WARNING] Fallback time parsing also failed: {fallback_err}"
+                        )
+                        self.show_status_message(
+                            f"Fallback time parsing failed: {fallback_err}"
+                        )
 
             # Try CASA image metadata (using IA tool coordsys like the rest of viewer.py)
             if not obs_datetime and hasattr(self, "imagename") and self.imagename:
@@ -2604,9 +2668,9 @@ class SolarRadioImageTab(QWidget):
 
                                 t = Time(mjd_value, format="mjd")
                                 obs_datetime = t.datetime
-                                #print(
+                                # print(
                                 #    f"Extracted CASA observation time: {obs_datetime}"
-                                #)
+                                # )
                     except Exception as e:
                         print(f"[WARNING] Could not extract CASA observation time: {e}")
                         import traceback
@@ -2622,9 +2686,13 @@ class SolarRadioImageTab(QWidget):
                 end_dt = obs_datetime + timedelta(minutes=30)
                 initial_start = QDateTime(start_dt)
                 initial_end = QDateTime(end_dt)
-                self.show_status_message(f"Opening Helioviewer Browser for {obs_datetime} (±30 min)")
+                self.show_status_message(
+                    f"Opening Helioviewer Browser for {obs_datetime} (±30 min)"
+                )
             else:
-                self.show_status_message("No observation time found in file, using default time range")
+                self.show_status_message(
+                    "No observation time found in file, using default time range"
+                )
 
             # Launch browser
             # browser = HelioviewerBrowser(self.parent(), initial_start=initial_start, initial_end=initial_end)
@@ -2666,7 +2734,7 @@ class SolarRadioImageTab(QWidget):
 
         # Check if we're in remote mode - if so, use remote file browser
         main_window = self.window()
-        if hasattr(main_window, 'remote_connection') and main_window.remote_connection:
+        if hasattr(main_window, "remote_connection") and main_window.remote_connection:
             if main_window.remote_connection.is_connected():
                 # Use remote file browser instead of local dialog
                 self._select_remote_file(main_window)
@@ -2730,25 +2798,25 @@ class SolarRadioImageTab(QWidget):
         This is called by select_file_or_directory when connected to a remote server.
         """
         import time
-        
+
         try:
             from .remote import RemoteFileBrowser
-            
+
             # Determine if we're in CASA mode (directories) or FITS mode (files)
             casa_mode = self.radio_casa_image.isChecked()
-            
+
             browser = RemoteFileBrowser(
                 main_window.remote_connection,
                 cache=main_window.remote_cache,
                 parent=self,
                 casa_mode=casa_mode,
             )
-            
+
             # Connect to handle the selected file
             def on_file_selected(local_path):
                 if not local_path or not os.path.exists(local_path):
                     return
-                
+
                 start_time = time.time()
                 self._reset_hpc_state()
                 self.imagename = local_path
@@ -2758,29 +2826,31 @@ class SolarRadioImageTab(QWidget):
                 self.figure.clear()
                 self.on_visualization_changed(dir_load=True)
                 self.update_tab_name_from_path(local_path)
-                
+
                 # Set remote mode - store remote directory info for navigation
                 self._is_remote_mode = True
                 self._remote_base_dir = browser.current_path
-                
+
                 # Populate remote file list for navigation
                 self._populate_remote_file_list(
-                    main_window,
-                    browser.current_path,
-                    casa_mode,
-                    local_path
+                    main_window, browser.current_path, casa_mode, local_path
                 )
-                
+
                 elapsed = time.time() - start_time
                 basename = os.path.basename(local_path)
-                self.show_status_message(f"Loaded remote file: {basename} ({elapsed:.2f}s)")
-            
+                self.show_status_message(
+                    f"Loaded remote file: {basename} ({elapsed:.2f}s)"
+                )
+
             browser.fileSelected.connect(on_file_selected)
             browser.exec_()
-            
+
         except Exception as e:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.critical(self, "Remote Error", f"Failed to open remote browser: {e}")
+
+            QMessageBox.critical(
+                self, "Remote Error", f"Failed to open remote browser: {e}"
+            )
 
     def schedule_plot(self):
         # If a timer already exists and is active, stop it.
@@ -2813,10 +2883,12 @@ class SolarRadioImageTab(QWidget):
             return
         self.on_visualization_changed(colormap_name=colormap_name, reload_data=False)
 
-    def on_visualization_changed(self, colormap_name=None, dir_load=False, reload_data=True):
+    def on_visualization_changed(
+        self, colormap_name=None, dir_load=False, reload_data=True
+    ):
         """
         Handle visualization parameter changes.
-        
+
         Args:
             colormap_name: Optional colormap to use
             dir_load: Whether this is a directory load (applies presets)
@@ -2838,7 +2910,7 @@ class SolarRadioImageTab(QWidget):
             tight_layout = False"""
 
         main_window = self.parent()
-        #if main_window and hasattr(main_window, "statusBar"):
+        # if main_window and hasattr(main_window, "statusBar"):
         if main_window:
             if reload_data:
                 self.show_status_message("Loading ... Please wait")
@@ -2905,7 +2977,9 @@ class SolarRadioImageTab(QWidget):
                 # Validate Stokes selection when loading a new image
                 if dir_load:
                     stokes = self._validate_and_switch_stokes(self.imagename, stokes)
-                self.load_data(self.imagename, stokes, threshold, auto_adjust_rms=dir_load)
+                self.load_data(
+                    self.imagename, stokes, threshold, auto_adjust_rms=dir_load
+                )
             if dir_load:
                 fname = os.path.basename(self.imagename).lower()
                 if "hmi" in fname:
@@ -3010,7 +3084,13 @@ class SolarRadioImageTab(QWidget):
                 self.auto_minmax()
             else:
                 self.plot_image(
-                    vmin_val, vmax_val, stretch, cmap, gamma, tight_layout=tight_layout, preserve_view=not dir_load
+                    vmin_val,
+                    vmax_val,
+                    stretch,
+                    cmap,
+                    gamma,
+                    tight_layout=tight_layout,
+                    preserve_view=not dir_load,
                 )
 
             if main_window:
@@ -3253,7 +3333,9 @@ class SolarRadioImageTab(QWidget):
         else:
             cmap = self.cmap_combo.currentText()
             print(f"[Warning] {cmap} colormap not available, using default")
-            self.show_status_message(f"Warning: {cmap} colormap not available, using default")
+            self.show_status_message(
+                f"Warning: {cmap} colormap not available, using default"
+            )
 
         self.stretch_combo.setCurrentText(stretch)
         self.cmap_combo.setCurrentText(cmap)
@@ -3582,13 +3664,14 @@ class SolarRadioImageTab(QWidget):
             # Use debouncing to avoid multiple redraws while dragging
             if self._gamma_debounce_timer is None:
                 from PyQt5.QtCore import QTimer
+
                 self._gamma_debounce_timer = QTimer()
                 self._gamma_debounce_timer.setSingleShot(True)
                 self._gamma_debounce_timer.timeout.connect(self._apply_gamma_change)
-            
+
             # Restart the timer (150ms delay)
             self._gamma_debounce_timer.start(150)
-    
+
     def _apply_gamma_change(self):
         """Actually apply the gamma change after debounce delay."""
         if self.current_image_data is None:
@@ -3602,7 +3685,7 @@ class SolarRadioImageTab(QWidget):
             self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
         except ValueError:
             pass
-    
+
     def update_gamma_slider(self):
         try:
             gamma = float(self.gamma_entry.text())
@@ -3666,11 +3749,12 @@ class SolarRadioImageTab(QWidget):
         else:
             # Use theme-aware colors for disabled state
             palette = theme_manager.palette
-            disabled_bg = palette.get('surface', '#16162a')
-            disabled_text = palette.get('disabled', '#4a4a6a')
-            border_color = palette.get('border', '#2d2d4a')
-            
-            self.gamma_slider.setStyleSheet(f"""
+            disabled_bg = palette.get("surface", "#16162a")
+            disabled_text = palette.get("disabled", "#4a4a6a")
+            border_color = palette.get("border", "#2d2d4a")
+
+            self.gamma_slider.setStyleSheet(
+                f"""
                 QSlider {{
                     background-color: transparent;
                 }}
@@ -3684,14 +3768,17 @@ class SolarRadioImageTab(QWidget):
                 QSlider::sub-page:horizontal {{
                     background: {disabled_text};
                 }}
-            """)
-            self.gamma_entry.setStyleSheet(f"""
+            """
+            )
+            self.gamma_entry.setStyleSheet(
+                f"""
                 QLineEdit {{
                     background-color: {disabled_bg};
                     color: {disabled_text};
                     border-color: {border_color};
                 }}
-            """)
+            """
+            )
 
     def show_roi_stats(self, roi, ra_dec_info=""):
         if roi.size == 0:
@@ -4097,7 +4184,9 @@ class SolarRadioImageTab(QWidget):
             self.canvas.draw_idle()
 
             # Show in status bar
-            self.show_status_message(f"Distance: {distance_info} (end: {x2:.1f}, {y2:.1f})")
+            self.show_status_message(
+                f"Distance: {distance_info} (end: {x2:.1f}, {y2:.1f})"
+            )
 
             # Reset for next measurement
             self._ruler_start = None
@@ -4121,7 +4210,7 @@ class SolarRadioImageTab(QWidget):
                 dx_arcsec = dx_px * scale_x
                 dy_arcsec = dy_px * scale_y
                 angular_dist = np.sqrt(dx_arcsec**2 + dy_arcsec**2)
-                
+
                 # Get world coordinates for both points
                 world1 = self.current_wcs.toworld([x1, y1, 0, 0])["numeric"]
                 world2 = self.current_wcs.toworld([x2, y2, 0, 0])["numeric"]
@@ -4129,28 +4218,40 @@ class SolarRadioImageTab(QWidget):
                 dec1_deg = world1[1] * 180 / np.pi if world1[1] else None
                 ra2_deg = world2[0] * 180 / np.pi if world2[0] else None
                 dec2_deg = world2[1] * 180 / np.pi if world2[1] else None
-                
+
                 # Professional terminal output
                 print("\n" + "=" * 60)
                 print("              LINE DISTANCE MEASUREMENT")
                 print("=" * 60)
-                print(f"  Coordinate System: WCS (scale: {scale_x:.4f}\"/px)")
+                print(f'  Coordinate System: WCS (scale: {scale_x:.4f}"/px)')
                 print("-" * 60)
-                print(f"  {'Point':<12} {'X (px)':<12} {'Y (px)':<12} {'RA (deg)':<15} {'Dec (deg)':<15}")
+                print(
+                    f"  {'Point':<12} {'X (px)':<12} {'Y (px)':<12} {'RA (deg)':<15} {'Dec (deg)':<15}"
+                )
                 print("-" * 60)
                 if ra1_deg is not None and dec1_deg is not None:
-                    print(f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {ra1_deg:<15.6f} {dec1_deg:<15.6f}")
+                    print(
+                        f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {ra1_deg:<15.6f} {dec1_deg:<15.6f}"
+                    )
                 else:
-                    print(f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {'N/A':<15} {'N/A':<15}")
+                    print(
+                        f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {'N/A':<15} {'N/A':<15}"
+                    )
                 if ra2_deg is not None and dec2_deg is not None:
-                    print(f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {ra2_deg:<15.6f} {dec2_deg:<15.6f}")
+                    print(
+                        f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {ra2_deg:<15.6f} {dec2_deg:<15.6f}"
+                    )
                 else:
-                    print(f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {'N/A':<15} {'N/A':<15}")
+                    print(
+                        f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {'N/A':<15} {'N/A':<15}"
+                    )
                 print("-" * 60)
                 print(f"  {'ΔX':<20} {dx_px:>12.2f} px    {dx_arcsec:>12.2f} arcsec")
                 print(f"  {'ΔY':<20} {dy_px:>12.2f} px    {dy_arcsec:>12.2f} arcsec")
                 print("-" * 60)
-                print(f"  {'Total Distance':<20} {pixel_dist:>12.2f} px    {angular_dist:>12.2f} arcsec")
+                print(
+                    f"  {'Total Distance':<20} {pixel_dist:>12.2f} px    {angular_dist:>12.2f} arcsec"
+                )
                 if angular_dist >= 60:
                     print(f"  {'':<20} {'':<12}       {angular_dist/60:>12.2f} arcmin")
                 print("=" * 60 + "\n")
@@ -4181,7 +4282,7 @@ class SolarRadioImageTab(QWidget):
             print("-" * 60)
             print(f"  {'Total Distance':<20} {pixel_dist:>15.2f} px")
             print("=" * 60 + "\n")
-            
+
             return f"{pixel_dist:.1f} px"
 
     def _on_theme_change(self, theme):
@@ -4191,57 +4292,36 @@ class SolarRadioImageTab(QWidget):
         # Update ruler icon
         if hasattr(self, "ruler_action"):
             self.ruler_action.setIcon(
-                QIcon(
-                    get_resource_path(
-                        f"assets/{get_icon_path('ruler.png')}"
-                    )
-                )
+                QIcon(get_resource_path(f"assets/{get_icon_path('ruler.png')}"))
             )
 
         # Update profile icon
         if hasattr(self, "profile_action"):
             self.profile_action.setIcon(
-                QIcon(
-                    get_resource_path(
-                        f"assets/{get_icon_path('profile.png')}"
-                    )
-                )
+                QIcon(get_resource_path(f"assets/{get_icon_path('profile.png')}"))
             )
 
         # Update RMS settings button icon
         if hasattr(self, "rms_settings_btn"):
             self.rms_settings_btn.setIcon(
-                QIcon(
-                    get_resource_path(
-                        f"assets/{get_icon_path('settings.png')}"
-                    )
-                )
+                QIcon(get_resource_path(f"assets/{get_icon_path('settings.png')}"))
             )
 
         # Update beam settings button icon
         if hasattr(self, "beam_settings_button"):
             self.beam_settings_button.setIcon(
-                QIcon(
-                    get_resource_path(
-                        f"assets/{get_icon_path('settings.png')}"
-                    )
-                )
+                QIcon(get_resource_path(f"assets/{get_icon_path('settings.png')}"))
             )
 
         # Update grid settings button icon
         if hasattr(self, "grid_settings_button"):
             self.grid_settings_button.setIcon(
-                QIcon(
-                    get_resource_path(
-                        f"assets/{get_icon_path('settings.png')}"
-                    )
-                )
+                QIcon(get_resource_path(f"assets/{get_icon_path('settings.png')}"))
             )
 
         # Update gamma slider disabled styling for new theme
         if hasattr(self, "gamma_slider") and hasattr(self, "stretch_combo"):
             self.update_gamma_slider_state()
-
 
     def _toggle_tb_mode(self):
         """Toggle between flux (Jy/beam) and brightness temperature (K) view"""
@@ -4406,7 +4486,6 @@ class SolarRadioImageTab(QWidget):
                     self._tb_original_imagename = None
                     return
 
-
                 # Load the TB FITS file
                 self.imagename = self._tb_temp_file
                 self._tb_mode = True
@@ -4460,7 +4539,6 @@ class SolarRadioImageTab(QWidget):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self.show_status_message(f"Reverting to original ({original_unit})...")
-
 
         # Restore original imagename
         self.imagename = self._tb_original_imagename
@@ -5169,30 +5247,30 @@ class SolarRadioImageTab(QWidget):
         fwhm_left = None
         fwhm_right = None
         show_fwhm = False
-        
+
         try:
             # Find max and baseline
             max_val = np.nanmax(profile)
             min_val = np.nanmin(profile)
             half_max = (max_val + min_val) / 2
             max_idx = np.nanargmax(profile)
-            
+
             # Validation: Check if profile is suitable for FWHM
             # 1. Peak must be prominent (at least 20% above min)
             prominence = (max_val - min_val) / (abs(min_val) + 1e-10)
             if prominence < 0.2:
                 raise ValueError("Peak not prominent enough")
-            
+
             # 2. Peak should not be at the edges
             if max_idx < len(profile) * 0.05 or max_idx > len(profile) * 0.95:
                 raise ValueError("Peak too close to edge")
-            
+
             # 3. Count number of crossings through half-max (should be exactly 2 for FWHM)
             above_half = profile > half_max
             crossings = np.sum(np.diff(above_half.astype(int)) != 0)
             if crossings != 2:
                 raise ValueError(f"Multiple peaks detected ({crossings} crossings)")
-            
+
             # 4. Check monotonic decrease from peak to half-max on both sides
             # Left side: profile should generally decrease from max to left crossing
             left_half = profile[:max_idx]
@@ -5201,15 +5279,15 @@ class SolarRadioImageTab(QWidget):
                 left_diffs = np.diff(left_half)
                 if np.sum(left_diffs < 0) > len(left_diffs) * 0.5:
                     raise ValueError("Non-monotonic left side")
-            
-            # Right side: profile should generally decrease from max to right crossing  
+
+            # Right side: profile should generally decrease from max to right crossing
             right_half = profile[max_idx:]
             if len(right_half) > 3:
                 # Check if right side is mostly decreasing from peak
                 right_diffs = np.diff(right_half)
                 if np.sum(right_diffs > 0) > len(right_diffs) * 0.5:
                     raise ValueError("Non-monotonic right side")
-            
+
             # Find left crossing point (from max going left)
             left_indices = np.where(profile[:max_idx] <= half_max)[0]
             if len(left_indices) > 0:
@@ -5219,12 +5297,14 @@ class SolarRadioImageTab(QWidget):
                     denom = profile[left_idx + 1] - profile[left_idx]
                     if abs(denom) > 1e-10:
                         frac = (half_max - profile[left_idx]) / denom
-                        fwhm_left = distances[left_idx] + frac * (distances[left_idx + 1] - distances[left_idx])
+                        fwhm_left = distances[left_idx] + frac * (
+                            distances[left_idx + 1] - distances[left_idx]
+                        )
                     else:
                         fwhm_left = distances[left_idx]
                 else:
                     fwhm_left = distances[left_idx]
-            
+
             # Find right crossing point (from max going right)
             right_indices = np.where(profile[max_idx:] <= half_max)[0]
             if len(right_indices) > 0:
@@ -5234,28 +5314,44 @@ class SolarRadioImageTab(QWidget):
                     denom = profile[right_idx] - profile[right_idx - 1]
                     if abs(denom) > 1e-10:
                         frac = (half_max - profile[right_idx - 1]) / denom
-                        fwhm_right = distances[right_idx - 1] + frac * (distances[right_idx] - distances[right_idx - 1])
+                        fwhm_right = distances[right_idx - 1] + frac * (
+                            distances[right_idx] - distances[right_idx - 1]
+                        )
                     else:
                         fwhm_right = distances[right_idx]
                 else:
                     fwhm_right = distances[right_idx]
-            
+
             # Calculate FWHM if both crossing points found
             if fwhm_left is not None and fwhm_right is not None:
                 fwhm_value = abs(fwhm_right - fwhm_left)
                 show_fwhm = True
-                
+
                 # Draw FWHM visualization
-                ax.axhline(y=half_max, color='red', linestyle='--', alpha=0.7, label=f'Half Max = {half_max:.4g}')
-                ax.plot([fwhm_left, fwhm_right], [half_max, half_max], 'r-', linewidth=2.5, label=f'FWHM = {fwhm_value:.3f} {dist_unit}')
-                ax.plot([fwhm_left, fwhm_right], [half_max, half_max], 'ro', markersize=8)
-                
+                ax.axhline(
+                    y=half_max,
+                    color="red",
+                    linestyle="--",
+                    alpha=0.7,
+                    label=f"Half Max = {half_max:.4g}",
+                )
+                ax.plot(
+                    [fwhm_left, fwhm_right],
+                    [half_max, half_max],
+                    "r-",
+                    linewidth=2.5,
+                    label=f"FWHM = {fwhm_value:.3f} {dist_unit}",
+                )
+                ax.plot(
+                    [fwhm_left, fwhm_right], [half_max, half_max], "ro", markersize=8
+                )
+
                 # Add vertical lines at FWHM boundaries
-                ax.axvline(x=fwhm_left, color='red', linestyle=':', alpha=0.5)
-                ax.axvline(x=fwhm_right, color='red', linestyle=':', alpha=0.5)
-                
-                ax.legend(loc='best', fontsize=9)
-                
+                ax.axvline(x=fwhm_left, color="red", linestyle=":", alpha=0.5)
+                ax.axvline(x=fwhm_right, color="red", linestyle=":", alpha=0.5)
+
+                ax.legend(loc="best", fontsize=9)
+
                 # Print to terminal professionally
                 print("\n" + "=" * 50)
                 print("         FLUX PROFILE FWHM MEASUREMENT")
@@ -5480,6 +5576,9 @@ class SolarRadioImageTab(QWidget):
                     rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
                     rms = np.sqrt(np.nanmean(rms_region**2))
                 except Exception:
+                    print(
+                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                    )
                     rms = np.nanstd(I)
                 # Mask low signal
                 mask = np.abs(I) < 3 * rms
@@ -5494,6 +5593,9 @@ class SolarRadioImageTab(QWidget):
                     rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
                     rms = np.sqrt(np.nanmean(rms_region**2))
                 except Exception:
+                    print(
+                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                    )
                     rms = np.nanstd(I)
                 mask = np.abs(I) < 3 * rms
                 result = V / np.abs(I)
@@ -5507,6 +5609,9 @@ class SolarRadioImageTab(QWidget):
                     rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
                     rms = np.sqrt(np.nanmean(rms_region**2))
                 except Exception:
+                    print(
+                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                    )
                     rms = np.nanstd(I)
                 mask = np.abs(I) < 3 * rms
                 result = Q / np.abs(I)
@@ -5520,6 +5625,9 @@ class SolarRadioImageTab(QWidget):
                     rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
                     rms = np.sqrt(np.nanmean(rms_region**2))
                 except Exception:
+                    print(
+                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                    )
                     rms = np.nanstd(I)
                 mask = np.abs(I) < 3 * rms
                 result = U / np.abs(I)
@@ -5599,15 +5707,21 @@ class SolarRadioImageTab(QWidget):
         try:
             # Use the current RMS box when loading data
             from .utils import get_pixel_values_from_image
-            
+
             # Calculate target size for fast load mode
             target_size = 0  # 0 = no downsampling
-            if hasattr(self, 'downsample_toggle') and self.downsample_toggle.isChecked():
+            if (
+                hasattr(self, "downsample_toggle")
+                and self.downsample_toggle.isChecked()
+            ):
                 target_size = 800  # Smart downsampling to ~800px max dimension
 
             pix, csys, psf = get_pixel_values_from_image(
-                imagename, stokes, threshold, rms_box=tuple(self.current_rms_box),
-                target_size=target_size
+                imagename,
+                stokes,
+                threshold,
+                rms_box=tuple(self.current_rms_box),
+                target_size=target_size,
             )
 
             self.current_image_data = pix
@@ -5706,9 +5820,7 @@ class SolarRadioImageTab(QWidget):
                             )
                         else:
                             self.tb_btn.setText("FLUX")
-                            self.tb_btn.setToolTip(
-                                "Convert to Flux (Jy/beam) view"
-                            )
+                            self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
 
                         # Reset TB mode when loading new image (not when loading TB temp)
                         if (
@@ -5822,7 +5934,9 @@ class SolarRadioImageTab(QWidget):
 
                 except Exception as casa_err:
                     print(f"[TB] CASA header extraction error: {casa_err}")
-                    self.show_status_message(f"[TB] CASA header extraction error: {casa_err}")
+                    self.show_status_message(
+                        f"[TB] CASA header extraction error: {casa_err}"
+                    )
                     self.current_header = None
                     self._current_bunit = ""
                     if hasattr(self, "tb_btn"):
@@ -5851,39 +5965,50 @@ class SolarRadioImageTab(QWidget):
         # self.plot_image()
         # self.schedule_plot()
 
-
     def _get_render_state(self, tight_layout=False):
         """
         Capture the current structural state of the plot.
         Returns a dict of values that, if changed, require a full redraw.
         """
         state = {
-            "data_id": id(self.current_image_data) if self.current_image_data is not None else None,
+            "data_id": (
+                id(self.current_image_data)
+                if self.current_image_data is not None
+                else None
+            ),
             "wcs_id": id(self.current_wcs) if self.current_wcs else None,
             "fits_flag": self._cached_fits_flag,
             "tight_layout": tight_layout,
-            
             # Overlay states
             "show_beam": self.show_beam_checkbox.isChecked(),
             "show_grid": self.show_grid_checkbox.isChecked(),
             "show_solar_disk": self.show_solar_disk_checkbox.isChecked(),
             "show_contours": self.show_contours_checkbox.isChecked(),
         }
-            
+
         # Settings snapshots
         exclude_keys = {
-            "contour_data", "contour_wcs", "contour_header", "wcs", "header", "data"
+            "contour_data",
+            "contour_wcs",
+            "contour_header",
+            "wcs",
+            "header",
+            "data",
         }
-        cs_snap = {k: self.contour_settings[k] for k in self.contour_settings if k not in exclude_keys}
-        
+        cs_snap = {
+            k: self.contour_settings[k]
+            for k in self.contour_settings
+            if k not in exclude_keys
+        }
+
         # Track identity of heavy objects separately if needed (only if they exist)
         if "contour_data" in self.contour_settings:
-             state["contour_data_id"] = id(self.contour_settings["contour_data"])
+            state["contour_data_id"] = id(self.contour_settings["contour_data"])
         else:
-             state["contour_data_id"] = None
-             
+            state["contour_data_id"] = None
+
         state["contour_settings"] = str(cs_snap)
-        
+
         state["grid_settings"] = str(self.grid_style)
         state["beam_settings"] = str(self.beam_style)
         state["solar_disk_settings"] = str(self.solar_disk_style)
@@ -5915,9 +6040,10 @@ class SolarRadioImageTab(QWidget):
             self._cached_csys = None
             self._cached_summary = None
             self._cached_csys_record = None
-            
+
             if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
                 from astropy.io import fits
+
                 try:
                     self._cached_fits_flag = True
                     with fits.open(self.imagename, memmap=True) as hdul:
@@ -5930,7 +6056,7 @@ class SolarRadioImageTab(QWidget):
                         print(f"[ERROR] Error getting header: {e2}")
                         self.show_status_message(f"Error getting header: {e2}")
                         self._cached_fits_flag = False
-            
+
             try:
                 ia_tool = IA()
                 ia_tool.open(self.imagename)
@@ -5941,16 +6067,16 @@ class SolarRadioImageTab(QWidget):
             except Exception as e:
                 print(f"[ERROR] Error getting image metadata: {e}")
                 self.show_status_message(f"Error getting image metadata: {e}")
-            
+
             self._cached_imagename = self.imagename
-        
+
         # Use cached values
         fits_flag = self._cached_fits_flag
         header = self._cached_fits_header
         csys = self._cached_csys
         summary = self._cached_summary
         csys_record = self._cached_csys_record
-        
+
         # Null-safe fallbacks for header and csys_record
         if header is None:
             header = {}
@@ -5984,11 +6110,14 @@ class SolarRadioImageTab(QWidget):
         # Determine vmin/vmax CACHED for Fast Path
         # We need these values to compute Normalization
         fp_vmin = vmin_val
-        if fp_vmin is None: fp_vmin = np.nanmin(data)
+        if fp_vmin is None:
+            fp_vmin = np.nanmin(data)
         fp_vmax = vmax_val
-        if fp_vmax is None: fp_vmax = np.nanmax(data)
-        if fp_vmax <= fp_vmin: fp_vmax = fp_vmin + 1e-6
-        
+        if fp_vmax is None:
+            fp_vmax = np.nanmax(data)
+        if fp_vmax <= fp_vmin:
+            fp_vmax = fp_vmin + 1e-6
+
         # Create the normalization object early for Fast Path
         if stretch == "log":
             safe_min = max(fp_vmin, 1e-8)
@@ -6012,14 +6141,14 @@ class SolarRadioImageTab(QWidget):
         # FAST PATH OPTIMIZATION: Update existing plot if structure hasn't changed
         # MUST BE DONE BEFORE figure.clear()
         current_state = self._get_render_state(tight_layout=tight_layout)
-        
+
         can_fast_path = (
-            hasattr(self, "image_plot") 
-            and self.image_plot is not None 
-            and self.figure.axes 
+            hasattr(self, "image_plot")
+            and self.image_plot is not None
+            and self.figure.axes
             and preserve_view
         )
-        
+
         if can_fast_path:
             if self._last_rendered_state == current_state:
                 # Success! Update and Return.
@@ -6027,20 +6156,22 @@ class SolarRadioImageTab(QWidget):
                     self.image_plot.set_cmap(cmap)
                     self.image_plot.set_norm(norm)
                     norm_params = (fp_vmin, fp_vmax, stretch, gamma)
-                    #last_norm_params = getattr(self, "_last_norm_params", None)
+                    # last_norm_params = getattr(self, "_last_norm_params", None)
 
                     if hasattr(self, "colorbar") and self.colorbar:
                         self.colorbar.update_normal(self.image_plot)
                         if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
                             try:
                                 ticks = self.colorbar.ax.get_yticks()
-                                valid_ticks = [t for t in ticks if fp_vmin <= t <= fp_vmax]
+                                valid_ticks = [
+                                    t for t in ticks if fp_vmin <= t <= fp_vmax
+                                ]
                                 if len(valid_ticks) >= 2:
                                     self.colorbar.ax.set_yticks(valid_ticks)
                             except Exception:
                                 pass
-                     
-                    '''if last_norm_params != norm_params:
+
+                    """if last_norm_params != norm_params:
                         if hasattr(self, "colorbar") and self.colorbar:
                             self.colorbar.update_normal(self.image_plot)
                             if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
@@ -6051,11 +6182,11 @@ class SolarRadioImageTab(QWidget):
                                         self.colorbar.ax.set_yticks(valid_ticks)
                                 except Exception:
                                     pass
-                    '''
-                     
+                    """
+
                     # Cache new params
                     self._last_norm_params = norm_params
-                     
+
                     self.canvas.draw()
                     QApplication.restoreOverrideCursor()
                     return
@@ -6064,8 +6195,6 @@ class SolarRadioImageTab(QWidget):
             else:
                 # Debugging Mismatch (Optional log, keeping it minimal)
                 pass
-
-
 
         self.figure.clear()
 
@@ -6094,16 +6223,16 @@ class SolarRadioImageTab(QWidget):
             )
         elif stretch == "histeq":
             norm = HistEqNorm(vmin=vmin_val, vmax=vmax_val, n_bins=256)
-        
-        if vmin_val is None: vmin_val = fp_vmin
-        if vmax_val is None: vmax_val = fp_vmax
-        
+
+        if vmin_val is None:
+            vmin_val = fp_vmin
+        if vmax_val is None:
+            vmax_val = fp_vmax
+
         # Monkey patch removal if present
         if hasattr(self.figure, "_monkey_patched"):
             del self.figure._monkey_patched
             self.figure.clear = self.figure._original_clear
-            
-
 
         # Cache the WCS object if current_wcs hasn't changed.
         wcs_obj = None
@@ -6161,7 +6290,9 @@ class SolarRadioImageTab(QWidget):
                                 ]
                             except Exception as e:
                                 print(f"[ERROR] Error getting projection: {e}")
-                                self.show_status_message(f"Error getting projection: {e}")
+                                self.show_status_message(
+                                    f"Error getting projection: {e}"
+                                )
                                 self._cached_wcs_obj = None
                         elif (csys.projection()["type"] == "SIN") and (
                             "Right Ascension" in summary["axisnames"]
@@ -6247,7 +6378,7 @@ class SolarRadioImageTab(QWidget):
                         True,
                         color=self.grid_style.get("color", "white"),
                         alpha=self.grid_style.get("alpha", 0.5),
-                        linestyle=self.grid_style.get("linestyle", "--")
+                        linestyle=self.grid_style.get("linestyle", "--"),
                     )
                 else:
                     ax.coords.grid(False)
@@ -6485,19 +6616,20 @@ class SolarRadioImageTab(QWidget):
 
         # Apply plot customization settings
         ps = self.plot_settings
-        
+
         # Helper to resolve "auto" colors based on theme
         from .styles import theme_manager
+
         is_dark = theme_manager.is_dark
         theme_text = "#ffffff" if is_dark else "#000000"
         theme_tick = "#e0e0e0" if is_dark else "#333333"
         theme_border = "#ffffff" if is_dark else "#000000"
-        
+
         # Get text color for labels and title
         text_color = ps.get("text_color", "auto")
         if text_color == "auto":
             text_color = theme_text  # Explicitly set based on theme
-            
+
         # Get tick color for tick marks and tick labels (separate from text_color)
         tick_color = ps.get("tick_color", "auto")
         if tick_color == "auto":
@@ -6595,9 +6727,10 @@ class SolarRadioImageTab(QWidget):
         # Apply background colors
         plot_bg = ps.get("plot_bg_color", "auto")
         figure_bg = ps.get("figure_bg_color", "auto")
-        
+
         # Resolve defaults from current theme (stored in rcParams)
         from matplotlib import rcParams
+
         if plot_bg == "auto":
             plot_bg = rcParams.get("axes.facecolor", "white")
         if figure_bg == "auto":
@@ -6619,9 +6752,9 @@ class SolarRadioImageTab(QWidget):
         # Apply border (spine) color and width
         border_color = ps.get("border_color", "auto")
         border_width = ps.get("border_width", 1.0)
-        
+
         if border_color == "auto":
-             border_color = theme_border
+            border_color = theme_border
 
         if border_color:
 
@@ -6793,24 +6926,28 @@ class SolarRadioImageTab(QWidget):
 
         # Instead of immediate draw, use draw_idle to coalesce multiple calls
         self.canvas.draw_idle()
-        
+
         # Save state for next update
         self._last_rendered_state = self._get_render_state(tight_layout=tight_layout)
-        
+
         # Recalculate defaults if they were None (same logic as start of function)
         _s_vmin = vmin_val if vmin_val is not None else np.nanmin(data)
         _s_vmax = vmax_val if vmax_val is not None else np.nanmax(data)
-        if _s_vmax <= _s_vmin: _s_vmax = _s_vmin + 1e-6
-        
-        self._last_norm_params = (_s_vmin, _s_vmax, stretch, gamma)
+        if _s_vmax <= _s_vmin:
+            _s_vmax = _s_vmin + 1e-6
 
+        self._last_norm_params = (_s_vmin, _s_vmax, stretch, gamma)
 
         # Restore normal cursor
         QApplication.restoreOverrideCursor()
 
     def _update_beam_position(self, ax):
         # Don't draw beam if no PSF or beam properties
-        if not self.psf or not hasattr(self, "beam_properties") or not self.beam_properties:
+        if (
+            not self.psf
+            or not hasattr(self, "beam_properties")
+            or not self.beam_properties
+        ):
             return
 
         for patch in ax.patches:
@@ -6902,7 +7039,9 @@ class SolarRadioImageTab(QWidget):
 
         main_window = self.parent()
         if main_window:
-            self.show_status_message(f"Loading data for Stokes {stokes}... Please wait...")
+            self.show_status_message(
+                f"Loading data for Stokes {stokes}... Please wait..."
+            )
             QApplication.processEvents()
 
         try:
@@ -6967,28 +7106,31 @@ class SolarRadioImageTab(QWidget):
     def _update_stokes_combo_state(self, available_stokes):
         """
         Update the Stokes combo box to enable/disable items based on available Stokes.
-        
+
         Args:
             available_stokes: List of available base Stokes, e.g., ["I"] or ["I", "Q", "U", "V"]
         """
-        if not hasattr(self, 'stokes_combo') or self.stokes_combo is None:
+        if not hasattr(self, "stokes_combo") or self.stokes_combo is None:
             return
-        
+
         from PyQt5.QtGui import QBrush, QColor
-        
+
         # Get theme-aware colors for disabled state - use palette for consistency
         try:
             from .styles import theme_manager
+
             palette = theme_manager.palette
             is_dark = theme_manager.is_dark
             # Use the same disabled color from palette as contour dialog
-            disabled_color = QColor(palette.get('disabled', '#cccccc'))
-            enabled_color = QColor(palette.get('text', '#ffffff' if is_dark else '#000000'))
+            disabled_color = QColor(palette.get("disabled", "#cccccc"))
+            enabled_color = QColor(
+                palette.get("text", "#ffffff" if is_dark else "#000000")
+            )
         except ImportError:
             # Fallback colors
             disabled_color = QColor("#cccccc")
             enabled_color = QColor("#000000")
-        
+
         # Derived parameters and their requirements
         # Parameters requiring Q: Q, Q/I
         # Parameters requiring U: U, U/I, U/V, L, Lfrac, PANG
@@ -6996,19 +7138,19 @@ class SolarRadioImageTab(QWidget):
         requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
         requires_u = {"U", "U/I", "U/V", "L", "Lfrac", "PANG"}
         requires_v = {"V", "Vfrac", "U/V"}
-        
+
         has_q = "Q" in available_stokes
         has_u = "U" in available_stokes
         has_v = "V" in available_stokes
-        
+
         # Store current selection before modifying
         current_selection = self.stokes_combo.currentText()
-        
+
         # Iterate through combo items and enable/disable based on requirements
         model = self.stokes_combo.model()
         for i in range(self.stokes_combo.count()):
             item_text = self.stokes_combo.itemText(i)
-            
+
             # Check if this item can be enabled
             enabled = True
             if item_text in requires_q and not has_q:
@@ -7017,7 +7159,7 @@ class SolarRadioImageTab(QWidget):
                 enabled = False
             if item_text in requires_v and not has_v:
                 enabled = False
-            
+
             # Set item enabled/disabled using model flags AND foreground color
             item = model.item(i)
             if item:
@@ -7026,43 +7168,44 @@ class SolarRadioImageTab(QWidget):
                     item.setData(QBrush(enabled_color), Qt.ForegroundRole)
                 else:
                     # Remove both enabled and selectable flags
-                    item.setFlags(item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
+                    item.setFlags(
+                        item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable
+                    )
                     item.setData(QBrush(disabled_color), Qt.ForegroundRole)
-        
+
         # Store available stokes for later reference
         self._available_stokes = available_stokes
-
 
     def _validate_and_switch_stokes(self, imagename, selected_stokes):
         """
         Check if selected Stokes is available; if not, warn user and switch to I.
-        
+
         Args:
             imagename: Path to the image
             selected_stokes: Currently selected Stokes parameter
-            
+
         Returns:
             str: The validated Stokes parameter to use
         """
         from .utils import get_available_stokes
-        
+
         available_stokes = get_available_stokes(imagename)
-        
+
         # Update combo box state
         self._update_stokes_combo_state(available_stokes)
-        
+
         # Check if selected Stokes is valid
         requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
         requires_u = {"U", "U/I", "U/V", "L", "Lfrac", "PANG"}
         requires_v = {"V", "Vfrac", "U/V"}
-        
+
         has_q = "Q" in available_stokes
         has_u = "U" in available_stokes
         has_v = "V" in available_stokes
-        
+
         needs_switch = False
         missing_stokes = []
-        
+
         if selected_stokes in requires_q and not has_q:
             needs_switch = True
             missing_stokes.append("Q")
@@ -7072,7 +7215,7 @@ class SolarRadioImageTab(QWidget):
         if selected_stokes in requires_v and not has_v:
             needs_switch = True
             missing_stokes.append("V")
-        
+
         if needs_switch:
             # Show warning dialog
             QMessageBox.warning(
@@ -7082,15 +7225,15 @@ class SolarRadioImageTab(QWidget):
                 f"polarization data ({', '.join(set(missing_stokes))}) that is not available "
                 f"in this image.\n\n"
                 f"Available Stokes: {', '.join(available_stokes)}\n\n"
-                f"Switching to Stokes I."
+                f"Switching to Stokes I.",
             )
-            
+
             # Switch to Stokes I
             self.stokes_combo.blockSignals(True)
             self.stokes_combo.setCurrentText("I")
             self.stokes_combo.blockSignals(False)
             return "I"
-        
+
         return selected_stokes
 
     def on_checkbox_changed(self):
@@ -7139,25 +7282,59 @@ class SolarRadioImageTab(QWidget):
 
         self.schedule_plot()
 
-    def add_text_annotation(self, x, y, text, color="yellow", fontsize=12, fontweight="normal", 
-                             fontstyle="normal", background=None, alpha=1.0):
+    def add_text_annotation(
+        self,
+        x,
+        y,
+        text,
+        color="yellow",
+        fontsize=12,
+        fontweight="normal",
+        fontstyle="normal",
+        background=None,
+        alpha=1.0,
+    ):
         """Add text annotation to the plot with customizable styling."""
         ax = self.figure.gca()
         bbox_props = None
         if background:
             bbox_props = dict(boxstyle="round,pad=0.3", facecolor=background, alpha=0.7)
-        ax.text(x, y, text, color=color, fontsize=fontsize, fontweight=fontweight,
-                fontstyle=fontstyle, bbox=bbox_props, alpha=alpha)
+        ax.text(
+            x,
+            y,
+            text,
+            color=color,
+            fontsize=fontsize,
+            fontweight=fontweight,
+            fontstyle=fontstyle,
+            bbox=bbox_props,
+            alpha=alpha,
+        )
         self.canvas.draw()
 
-    def add_arrow_annotation(self, x1, y1, x2, y2, color="red", linewidth=2.0, 
-                             head_width=8, head_length=10, alpha=1.0):
+    def add_arrow_annotation(
+        self,
+        x1,
+        y1,
+        x2,
+        y2,
+        color="red",
+        linewidth=2.0,
+        head_width=8,
+        head_length=10,
+        alpha=1.0,
+    ):
         """Add arrow annotation to the plot with customizable styling."""
         ax = self.figure.gca()
-        ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
-                    arrowprops=dict(arrowstyle="-|>", color=color, lw=linewidth,
-                                   mutation_scale=head_width),
-                    alpha=alpha)
+        ax.annotate(
+            "",
+            xy=(x2, y2),
+            xytext=(x1, y1),
+            arrowprops=dict(
+                arrowstyle="-|>", color=color, lw=linewidth, mutation_scale=head_width
+            ),
+            alpha=alpha,
+        )
         self.canvas.draw()
 
     def set_solar_disk_center(self):
@@ -7167,7 +7344,7 @@ class SolarRadioImageTab(QWidget):
             return
 
         # If dialog already exists and is visible, just raise it
-        if hasattr(self, '_solar_disk_dialog') and self._solar_disk_dialog is not None:
+        if hasattr(self, "_solar_disk_dialog") and self._solar_disk_dialog is not None:
             try:
                 if self._solar_disk_dialog.isVisible():
                     self._solar_disk_dialog.raise_()
@@ -7182,7 +7359,7 @@ class SolarRadioImageTab(QWidget):
         dialog.setWindowTitle("Solar Disk Settings")
         dialog.setMinimumWidth(400)
         layout = QVBoxLayout(dialog)
-        
+
         # Store reference to prevent garbage collection
         self._solar_disk_dialog = dialog
 
@@ -7326,7 +7503,7 @@ class SolarRadioImageTab(QWidget):
                 if not viewer or viewer.current_image_data is None:
                     dialog.close()
                     return
-                
+
                 viewer.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
                 viewer.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
 
@@ -7335,7 +7512,9 @@ class SolarRadioImageTab(QWidget):
                 viewer.solar_disk_style["linestyle"] = linestyle_combo.currentData()
                 viewer.solar_disk_style["linewidth"] = linewidth_spinbox.value()
                 viewer.solar_disk_style["alpha"] = alpha_spinbox.value()
-                viewer.solar_disk_style["show_center"] = show_center_checkbox.isChecked()
+                viewer.solar_disk_style["show_center"] = (
+                    show_center_checkbox.isChecked()
+                )
 
                 viewer.schedule_plot()
                 viewer.show_status_message("Solar disk settings applied")
@@ -7351,7 +7530,7 @@ class SolarRadioImageTab(QWidget):
             dialog.close()
 
         def on_dialog_destroyed():
-            if hasattr(viewer, '_solar_disk_dialog'):
+            if hasattr(viewer, "_solar_disk_dialog"):
                 viewer._solar_disk_dialog = None
 
         # Create button box with Apply and Close
@@ -7365,19 +7544,28 @@ class SolarRadioImageTab(QWidget):
         # Set up for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
-        
+
         # Track dialog for garbage collection
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
-        
+
         dialog.show()
 
     def show_beam_settings(self):
         """Show non-modal beam settings dialog."""
         from .dialogs import BeamSettingsDialog
-        
+
         # If dialog already exists and is visible, just raise it
-        if hasattr(self, '_beam_settings_dialog') and self._beam_settings_dialog is not None:
+        if (
+            hasattr(self, "_beam_settings_dialog")
+            and self._beam_settings_dialog is not None
+        ):
             try:
                 if self._beam_settings_dialog.isVisible():
                     self._beam_settings_dialog.raise_()
@@ -7388,23 +7576,32 @@ class SolarRadioImageTab(QWidget):
 
         dialog = BeamSettingsDialog(self, beam_style=self.beam_style)
         self._beam_settings_dialog = dialog
-        
+
         # Set up for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.destroyed.connect(lambda: setattr(self, '_beam_settings_dialog', None))
-        
+        dialog.destroyed.connect(lambda: setattr(self, "_beam_settings_dialog", None))
+
         # Track dialog for garbage collection
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
-        
+
         dialog.show()
 
     def show_grid_settings(self):
         """Show non-modal grid settings dialog."""
         from .dialogs import GridSettingsDialog
-        
+
         # If dialog already exists and is visible, just raise it
-        if hasattr(self, '_grid_settings_dialog') and self._grid_settings_dialog is not None:
+        if (
+            hasattr(self, "_grid_settings_dialog")
+            and self._grid_settings_dialog is not None
+        ):
             try:
                 if self._grid_settings_dialog.isVisible():
                     self._grid_settings_dialog.raise_()
@@ -7415,15 +7612,21 @@ class SolarRadioImageTab(QWidget):
 
         dialog = GridSettingsDialog(self, grid_style=self.grid_style)
         self._grid_settings_dialog = dialog
-        
+
         # Set up for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.destroyed.connect(lambda: setattr(self, '_grid_settings_dialog', None))
-        
+        dialog.destroyed.connect(lambda: setattr(self, "_grid_settings_dialog", None))
+
         # Track dialog for garbage collection
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
-        
+
         dialog.show()
 
     def zoom_in(self):
@@ -7585,7 +7788,7 @@ class SolarRadioImageTab(QWidget):
                 ra_dec_info = (
                     f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
                     f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
-                    f'\nSize: {width.to(u.arcsec):.1f} × {height.to(u.arcsec):.1f}'
+                    f"\nSize: {width.to(u.arcsec):.1f} × {height.to(u.arcsec):.1f}"
                     # f"\nCorners: "
                     # f"\n  Bottom-Left: RA={coord1.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
                     # f"Dec={coord1.dec.to_string(sep=':', precision=2)}"
@@ -7630,9 +7833,11 @@ class SolarRadioImageTab(QWidget):
         row_coords, col_coords = np.ogrid[:h, :w]
 
         # Ellipse equation: ((col - center_col) / a)^2 + ((row - center_row) / b)^2 <= 1
-        a = data_width / 2   # semi-axis along columns (axis 1)
+        a = data_width / 2  # semi-axis along columns (axis 1)
         b = data_height / 2  # semi-axis along rows (axis 0)
-        mask = ((col_coords - data_center_col) / a) ** 2 + ((row_coords - data_center_row) / b) ** 2 <= 1
+        mask = ((col_coords - data_center_col) / a) ** 2 + (
+            (row_coords - data_center_row) / b
+        ) ** 2 <= 1
 
         # Get pixels within ellipse
         roi_data = self.current_image_data[mask]
@@ -7644,7 +7849,12 @@ class SolarRadioImageTab(QWidget):
         # current_roi uses data coordinates: (row_low, row_high, col_low, col_high)
         row_low, row_high = int(data_center_row - b), int(data_center_row + b)
         col_low, col_high = int(data_center_col - a), int(data_center_col + a)
-        self.current_roi = (max(0, row_low), min(h, row_high), max(0, col_low), min(w, col_high))
+        self.current_roi = (
+            max(0, row_low),
+            min(h, row_high),
+            max(0, col_low),
+            min(w, col_high),
+        )
 
         ra_dec_info = ""
         if self.current_wcs:
@@ -7697,7 +7907,7 @@ class SolarRadioImageTab(QWidget):
         except (IndexError, TypeError):
             pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
 
-        wcs_obj = getattr(self, '_cached_wcs_obj', None)
+        wcs_obj = getattr(self, "_cached_wcs_obj", None)
         if wcs_obj is not None:
             try:
                 from astropy.coordinates import SkyCoord
@@ -7743,17 +7953,19 @@ class SolarRadioImageTab(QWidget):
     def setup_canvas(self, parent_layout):
         self.figure = Figure(figsize=(5, 5), dpi=100)
         self.canvas = FigureCanvas(self.figure)
-        
+
         # Ensure canvas background matches theme to avoid white gaps when scaling
         self.canvas.setStyleSheet("background-color: transparent;")
-        
+
         self.nav_toolbar = NavigationToolbar(self.canvas, self)
         # Make the matplotlib toolbar more compact
         self.nav_toolbar.setFixedHeight(24)
-        self.nav_toolbar.setStyleSheet("""
+        self.nav_toolbar.setStyleSheet(
+            """
             NavigationToolbar2QT { padding: 0px; margin: 0px; spacing: 1px; background-color: transparent; }
             QToolButton { padding: 2px; margin: 0px; }
-        """)
+        """
+        )
         parent_layout.addWidget(self.nav_toolbar)
         parent_layout.addWidget(self.canvas, 1)
 
@@ -7774,7 +7986,10 @@ class SolarRadioImageTab(QWidget):
         from .dialogs import ContourSettingsDialog
 
         # If dialog already exists and is visible, just raise it
-        if hasattr(self, '_contour_settings_dialog') and self._contour_settings_dialog is not None:
+        if (
+            hasattr(self, "_contour_settings_dialog")
+            and self._contour_settings_dialog is not None
+        ):
             try:
                 if self._contour_settings_dialog.isVisible():
                     self._contour_settings_dialog.raise_()
@@ -7785,7 +8000,7 @@ class SolarRadioImageTab(QWidget):
 
         dialog = ContourSettingsDialog(self, self.contour_settings)
         self._contour_settings_dialog = dialog
-        
+
         # Store reference to viewer
         viewer = self
 
@@ -7799,6 +8014,13 @@ class SolarRadioImageTab(QWidget):
                 if viewer.show_contours_checkbox.isChecked():
                     viewer.load_contour_data()
                     viewer.on_visualization_changed()
+                    
+                    # Update dialog with captured dimensions
+                    w = viewer.contour_settings.get("dim_w", 0)
+                    h = viewer.contour_settings.get("dim_h", 0)
+                    if hasattr(dialog, "update_dimensions_label"):
+                        dialog.update_dimensions_label(w, h)
+
                 viewer.show_status_message("Contour settings applied")
             except RuntimeError:
                 dialog.close()
@@ -7809,7 +8031,7 @@ class SolarRadioImageTab(QWidget):
             dialog.close()
 
         def on_dialog_destroyed():
-            if hasattr(viewer, '_contour_settings_dialog'):
+            if hasattr(viewer, "_contour_settings_dialog"):
                 viewer._contour_settings_dialog = None
 
         # Replace the standard button box with Apply/Close
@@ -7821,23 +8043,31 @@ class SolarRadioImageTab(QWidget):
             close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
             apply_btn.clicked.connect(on_apply)
             close_btn.clicked.connect(on_close)
-        
+
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
-        
-        # Track dialog for garbage collection
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
-        self._open_dialogs.append(dialog)
-        
-        dialog.show()
 
+        # Track dialog for garbage collection
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
+        self._open_dialogs.append(dialog)
+
+        dialog.show()
 
     def show_plot_customization_dialog(self):
         """Open a non-modal plot customization dialog."""
         from .dialogs import PlotCustomizationDialog
 
         # If dialog already exists and is visible, just raise it
-        if hasattr(self, '_plot_customization_dialog') and self._plot_customization_dialog is not None:
+        if (
+            hasattr(self, "_plot_customization_dialog")
+            and self._plot_customization_dialog is not None
+        ):
             try:
                 if self._plot_customization_dialog.isVisible():
                     self._plot_customization_dialog.raise_()
@@ -7848,7 +8078,7 @@ class SolarRadioImageTab(QWidget):
 
         dialog = PlotCustomizationDialog(self, self.plot_settings)
         self._plot_customization_dialog = dialog
-        
+
         # Store reference to viewer
         viewer = self
 
@@ -7880,7 +8110,7 @@ class SolarRadioImageTab(QWidget):
             dialog.close()
 
         def on_dialog_destroyed():
-            if hasattr(viewer, '_plot_customization_dialog'):
+            if hasattr(viewer, "_plot_customization_dialog"):
                 viewer._plot_customization_dialog = None
 
         # Replace the standard button box with Apply/Close
@@ -7891,54 +8121,89 @@ class SolarRadioImageTab(QWidget):
             close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
             apply_btn.clicked.connect(on_apply)
             close_btn.clicked.connect(on_close)
-        
+
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
-        
+
         # Track dialog for garbage collection
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
-        
+
         dialog.show()
 
     def load_contour_data(self):
         try:
-            rms_box = (0, 200, 0, 130)
-            if not self.contour_settings.get("use_default_rms_region", True):
-                rms_box = self.contour_settings.get("rms_box", rms_box)
+            if self.contour_settings["source"] == "external":
+                h, w = self._get_image_dimensions(self.contour_settings["external_image"])
+            else:
+                h, w = self._get_image_dimensions(self.imagename)
+            
+            if h >0 and w >0:
+                self.contour_settings["dim_h"] = h
+                self.contour_settings["dim_w"] = w
+                # use default region logic
+                rms_x1 = int(w * 0.05)
+                rms_y1 = int(h * 0.05)
+                rms_x2 = int(w * 0.95)
+                rms_y2 = int(h * 0.20)
+                rms_box = (rms_x1, rms_x2, rms_y1, rms_y2)
+
+                # Ensure valid region
+                if rms_x2 < rms_x1 or rms_y2 < rms_y1:
+                    print("[Warning] Invalid RMS region. Using default RMS region.")
+                    rms_box = (30, 200, 30, 130)
+            else:
+                print("[Warning] Invalid image dimensions. Using default RMS region.")
+                rms_box = (30, 200, 30, 130)
 
             # Calculate target size for fast load mode (must match load_data)
             target_size = 0  # 0 = no downsampling
-            if hasattr(self, 'downsample_toggle') and self.downsample_toggle.isChecked():
+            if (
+                hasattr(self, "downsample_toggle")
+                and self.downsample_toggle.isChecked()
+            ):
                 target_size = 800  # Smart downsampling to ~800px max dimension
+                rms_box = (40, 400, 40, 160)
+
+            if not self.contour_settings.get("use_default_rms_region", True):
+                rms_box = self.contour_settings.get("rms_box", rms_box)
+            else:
+                self.contour_settings["rms_box"] = rms_box
 
             contour_csys = None
-            
+
             # Validate contour Stokes before loading
             contour_stokes = self.contour_settings.get("stokes", "I")
             source_image = None
-            
+
             if self.contour_settings["source"] == "same":
                 source_image = self.imagename
             else:
                 source_image = self.contour_settings.get("external_image")
-            
+
             if source_image:
                 from .utils import get_available_stokes
+
                 available_stokes = get_available_stokes(source_image)
-                
+
                 # Check if contour Stokes is valid
                 requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
                 requires_u = {"U", "U/I", "V/I", "L", "Lfrac", "PANG"}
                 requires_v = {"V", "Vfrac", "V/I"}
-                
+
                 has_q = "Q" in available_stokes
                 has_u = "U" in available_stokes
                 has_v = "V" in available_stokes
-                
+
                 needs_switch = False
                 missing_stokes = []
-                
+
                 if contour_stokes in requires_q and not has_q:
                     needs_switch = True
                     missing_stokes.append("Q")
@@ -7948,7 +8213,7 @@ class SolarRadioImageTab(QWidget):
                 if contour_stokes in requires_v and not has_v:
                     needs_switch = True
                     missing_stokes.append("V")
-                
+
                 if needs_switch:
                     # Show warning dialog and switch to Stokes I
                     QMessageBox.warning(
@@ -7958,11 +8223,11 @@ class SolarRadioImageTab(QWidget):
                         f"polarization data ({', '.join(set(missing_stokes))}) that is not available "
                         f"in the source image.\n\n"
                         f"Available Stokes: {', '.join(available_stokes)}\n\n"
-                        f"Switching contour to Stokes I."
+                        f"Switching contour to Stokes I.",
                     )
                     self.contour_settings["stokes"] = "I"
                     contour_stokes = "I"
-            
+
             if self.contour_settings["source"] == "same":
                 if self.imagename:
                     stokes = self.contour_settings["stokes"]
@@ -7970,77 +8235,113 @@ class SolarRadioImageTab(QWidget):
 
                     if stokes in ["I", "Q", "U", "V"]:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, stokes, threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            stokes,
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         from .utils import estimate_rms_near_Sun
+
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, numerator_stokes, threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            numerator_stokes,
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         denominator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "I", threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            "I",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         # Estimate RMS of the numerator Stokes for noise thresholding
                         try:
-                            num_rms = estimate_rms_near_Sun(self.imagename, numerator_stokes, rms_box)
+                            num_rms = estimate_rms_near_Sun(
+                                self.imagename, numerator_stokes, rms_box
+                            )
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             num_rms = np.nanstd(numerator_pix)
-                        
+
                         # Create mask: pixels below threshold * RMS are masked out
                         noise_mask = np.abs(numerator_pix) < (threshold * num_rms)
                         numerator_pix_masked = numerator_pix.copy()
                         numerator_pix_masked[noise_mask] = 0
-                        
+
                         # Division mask: avoid divide by zero
                         div_mask = denominator_pix != 0
                         ratio = np.zeros_like(numerator_pix)
-                        ratio[div_mask] = numerator_pix_masked[div_mask] / denominator_pix[div_mask]
+                        ratio[div_mask] = (
+                            numerator_pix_masked[div_mask] / denominator_pix[div_mask]
+                        )
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "Q", threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            "Q",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "U", threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            "U",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
                         from .utils import estimate_rms_near_Sun
+
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "Q", threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            "Q",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "U", threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            "U",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         i_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "I", threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            "I",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
-                        
+
                         # Estimate RMS for polarized intensity
                         try:
                             q_rms = estimate_rms_near_Sun(self.imagename, "Q", rms_box)
                             u_rms = estimate_rms_near_Sun(self.imagename, "U", rms_box)
                             l_rms = np.sqrt(q_rms**2 + u_rms**2)
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             l_rms = np.nanstd(l_pix)
-                        
+
                         # Mask pixels below threshold
                         noise_mask = l_pix < (threshold * l_rms)
                         l_pix_masked = l_pix.copy()
                         l_pix_masked[noise_mask] = 0
-                        
+
                         # Division with zero protection
                         div_mask = i_pix != 0
                         lfrac = np.zeros_like(l_pix)
@@ -8048,37 +8349,50 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
                         from .utils import estimate_rms_near_Sun
+
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "Q", threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            "Q",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "U", threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            "U",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
-                        
+
                         # Calculate polarized intensity for thresholding
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
-                        
+
                         # Estimate RMS for polarized intensity
                         try:
                             q_rms = estimate_rms_near_Sun(self.imagename, "Q", rms_box)
                             u_rms = estimate_rms_near_Sun(self.imagename, "U", rms_box)
                             l_rms = np.sqrt(q_rms**2 + u_rms**2)
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             l_rms = np.nanstd(l_pix)
-                        
+
                         # Polarization angle
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
-                        
+
                         # Mask pixels below threshold with NaN
                         noise_mask = l_pix < (threshold * l_rms)
                         pang[noise_mask] = np.nan
                         self.contour_settings["contour_data"] = pang
                     else:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            self.imagename, "I", threshold, rms_box,
-                            target_size=target_size
+                            self.imagename,
+                            "I",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         self.contour_settings["contour_data"] = pix
                     self.current_contour_wcs = contour_csys
@@ -8090,23 +8404,33 @@ class SolarRadioImageTab(QWidget):
                 if external_image and os.path.exists(external_image):
                     stokes = self.contour_settings["stokes"]
                     threshold = self.contour_settings.get("threshold", 5.0)
-                    
+
                     # Check if we need to transform coordinate systems
                     # Detect coordinate systems of base image and contour image
-                    base_csys_type = self._get_coordinate_system_from_image(self.imagename)
-                    contour_csys_type = self._get_coordinate_system_from_image(external_image)
-                    
+                    base_csys_type = self._get_coordinate_system_from_image(
+                        self.imagename
+                    )
+                    contour_csys_type = self._get_coordinate_system_from_image(
+                        external_image
+                    )
+
                     # Use cached transformed file if available and from same source
                     image_to_load = external_image
 
-                    if (self._contour_transformed_file and 
-                        self._contour_transformed_from == external_image and
-                        os.path.exists(self._contour_transformed_file)):
+                    if (
+                        self._contour_transformed_file
+                        and self._contour_transformed_from == external_image
+                        and os.path.exists(self._contour_transformed_file)
+                    ):
                         # Check if transformation is still needed
-                        transformed_csys = self._get_coordinate_system_from_image(self._contour_transformed_file)
+                        transformed_csys = self._get_coordinate_system_from_image(
+                            self._contour_transformed_file
+                        )
                         if transformed_csys == base_csys_type:
                             image_to_load = self._contour_transformed_file
-                            self.show_status_message(f"Using cached transformed contour ({contour_csys_type}→{base_csys_type})")
+                            self.show_status_message(
+                                f"Using cached transformed contour ({contour_csys_type}→{base_csys_type})"
+                            )
                         else:
                             # Transformation no longer matches (base image changed), cleanup and retransform
                             try:
@@ -8115,60 +8439,85 @@ class SolarRadioImageTab(QWidget):
                                 pass
                             self._contour_transformed_file = None
                             self._contour_transformed_from = None
-                    
+
                     # Check if transformation is needed
-                    if (base_csys_type != 'unknown' and contour_csys_type != 'unknown' and 
-                        base_csys_type != contour_csys_type and image_to_load == external_image):
-                        
+                    if (
+                        base_csys_type != "unknown"
+                        and contour_csys_type != "unknown"
+                        and base_csys_type != contour_csys_type
+                        and image_to_load == external_image
+                    ):
+
                         # Clear old cached file if external image changed
                         if self._contour_transformed_from != external_image:
-                            if self._contour_transformed_file and os.path.exists(self._contour_transformed_file):
+                            if self._contour_transformed_file and os.path.exists(
+                                self._contour_transformed_file
+                            ):
                                 try:
                                     os.remove(self._contour_transformed_file)
                                 except Exception:
                                     pass
                             self._contour_transformed_file = None
                             self._contour_transformed_from = None
-                        
+
                         # Create temp file for coordinate-transformed contour
                         import tempfile
                         import uuid
+
                         temp_dir = tempfile.gettempdir()
-                        temp_filename = f"sv_contour_transformed_{self._temp_file_id}.fits"
+                        temp_filename = (
+                            f"sv_contour_transformed_{self._temp_file_id}.fits"
+                        )
                         transformed_path = os.path.join(temp_dir, temp_filename)
-                        
+
                         transform_success = False
-                            
-                        if base_csys_type == 'hpc' and contour_csys_type == 'radec':
+
+                        if base_csys_type == "hpc" and contour_csys_type == "radec":
                             # Convert RA/Dec contour to HPC (all Stokes for full flexibility)
-                            self.show_status_message(f"Transforming contour from RA/Dec to HPC...")
+                            self.show_status_message(
+                                f"Transforming contour from RA/Dec to HPC..."
+                            )
                             from .helioprojective import convert_and_save_hpc_all_stokes
+
                             transform_success = convert_and_save_hpc_all_stokes(
                                 external_image, transformed_path, overwrite=True
                             )
 
-                        elif base_csys_type == 'radec' and contour_csys_type == 'hpc':
+                        elif base_csys_type == "radec" and contour_csys_type == "hpc":
                             # Convert HPC contour to RA/Dec
-                            self.show_status_message(f"Transforming contour from HPC to RA/Dec...")
+                            self.show_status_message(
+                                f"Transforming contour from HPC to RA/Dec..."
+                            )
                             from .helioprojective import convert_hpc_to_radec
+
                             transform_success = convert_hpc_to_radec(
                                 external_image, transformed_path, overwrite=True
                             )
-                        
+
                         if transform_success and os.path.exists(transformed_path):
                             image_to_load = transformed_path
                             self._contour_transformed_file = transformed_path
                             self._contour_transformed_from = external_image
-                            self.show_status_message(f"Contour transformed ({contour_csys_type}→{base_csys_type})")
+                            self.show_status_message(
+                                f"Contour transformed ({contour_csys_type}→{base_csys_type})"
+                            )
                         else:
-                            print(f"[ERROR] Transformation failed, using original: {external_image}")
-                            self.show_status_message(f"Coordinate transformation failed, using original contour")
+                            print(
+                                f"[ERROR] Transformation failed, using original: {external_image}"
+                            )
+                            self.show_status_message(
+                                f"Coordinate transformation failed, using original contour"
+                            )
 
-
-                    elif (contour_csys_type != 'unknown' and base_csys_type == contour_csys_type and
-                          self._contour_transformed_from == external_image):
+                    elif (
+                        contour_csys_type != "unknown"
+                        and base_csys_type == contour_csys_type
+                        and self._contour_transformed_from == external_image
+                    ):
                         # Coordinates now match (base image changed back), cleanup temp file
-                        if self._contour_transformed_file and os.path.exists(self._contour_transformed_file):
+                        if self._contour_transformed_file and os.path.exists(
+                            self._contour_transformed_file
+                        ):
                             try:
                                 os.remove(self._contour_transformed_file)
                             except Exception:
@@ -8176,81 +8525,116 @@ class SolarRadioImageTab(QWidget):
                         self._contour_transformed_file = None
                         self._contour_transformed_from = None
 
-
                     if stokes in ["I", "Q", "U", "V"]:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, stokes, threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            stokes,
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         self.contour_settings["contour_data"] = pix
 
                     elif stokes in ["Q/I", "U/I", "V/I"]:
                         from .utils import estimate_rms_near_Sun
+
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, numerator_stokes, threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            numerator_stokes,
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         denominator_pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, "I", threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            "I",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         # Estimate RMS of the numerator Stokes for noise thresholding
                         try:
-                            num_rms = estimate_rms_near_Sun(image_to_load, numerator_stokes, rms_box)
+                            num_rms = estimate_rms_near_Sun(
+                                image_to_load, numerator_stokes, rms_box
+                            )
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             num_rms = np.nanstd(numerator_pix)
-                        
+
                         # Create mask: pixels below threshold * RMS are masked out
                         noise_mask = np.abs(numerator_pix) < (threshold * num_rms)
                         numerator_pix_masked = numerator_pix.copy()
                         numerator_pix_masked[noise_mask] = 0
-                        
+
                         # Division mask: avoid divide by zero
                         div_mask = denominator_pix != 0
                         ratio = np.zeros_like(numerator_pix)
-                        ratio[div_mask] = numerator_pix_masked[div_mask] / denominator_pix[div_mask]
+                        ratio[div_mask] = (
+                            numerator_pix_masked[div_mask] / denominator_pix[div_mask]
+                        )
                         self.contour_settings["contour_data"] = ratio
                     elif stokes == "L":
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, "Q", threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            "Q",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, "U", threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            "U",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
                         from .utils import estimate_rms_near_Sun
+
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, "Q", threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            "Q",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, "U", threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            "U",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         i_pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, "I", threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            "I",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
-                        
+
                         # Estimate RMS for polarized intensity
                         try:
                             q_rms = estimate_rms_near_Sun(image_to_load, "Q", rms_box)
                             u_rms = estimate_rms_near_Sun(image_to_load, "U", rms_box)
                             l_rms = np.sqrt(q_rms**2 + u_rms**2)
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             l_rms = np.nanstd(l_pix)
-                        
+
                         # Mask pixels below threshold
                         noise_mask = l_pix < (threshold * l_rms)
                         l_pix_masked = l_pix.copy()
                         l_pix_masked[noise_mask] = 0
-                        
+
                         # Division with zero protection
                         div_mask = i_pix != 0
                         lfrac = np.zeros_like(l_pix)
@@ -8258,45 +8642,59 @@ class SolarRadioImageTab(QWidget):
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
                         from .utils import estimate_rms_near_Sun
+
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, "Q", threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            "Q",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         u_pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, "U", threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            "U",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
-                        
+
                         # Calculate polarized intensity for thresholding
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
-                        
+
                         # Estimate RMS for polarized intensity
                         try:
                             q_rms = estimate_rms_near_Sun(image_to_load, "Q", rms_box)
                             u_rms = estimate_rms_near_Sun(image_to_load, "U", rms_box)
                             l_rms = np.sqrt(q_rms**2 + u_rms**2)
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             l_rms = np.nanstd(l_pix)
-                        
+
                         # Polarization angle
                         pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
-                        
+
                         # Mask pixels below threshold with NaN
                         noise_mask = l_pix < (threshold * l_rms)
                         pang[noise_mask] = np.nan
                         self.contour_settings["contour_data"] = pang
                     else:
                         pix, contour_csys, _ = get_pixel_values_from_image(
-                            image_to_load, "I", threshold, rms_box,
-                            target_size=target_size
+                            image_to_load,
+                            "I",
+                            threshold,
+                            rms_box,
+                            target_size=target_size,
                         )
                         self.contour_settings["contour_data"] = pix
                     self.current_contour_wcs = contour_csys
                 else:
-                    print("[ERROR] load_contour_data: external image not found or empty")
+                    print(
+                        "[ERROR] load_contour_data: external image not found or empty"
+                    )
                     self.contour_settings["contour_data"] = None
                     self.current_contour_wcs = None
-
 
             main_window = self.parent()
             if main_window:
@@ -8317,13 +8715,15 @@ class SolarRadioImageTab(QWidget):
             self.load_contour_data()
 
         if self.contour_settings["contour_data"] is None:
-            print("[ERROR] draw_contours: contour_data is None after load_contour_data()")
+            print(
+                "[ERROR] draw_contours: contour_data is None after load_contour_data()"
+            )
             return
 
         if self.current_contour_wcs is None:
             print("[ERROR] draw_contours: current_contour_wcs is None")
             return
-        
+
         # Reset contour offset (will be set if extended reprojection is used)
         self._contour_offset = [0, 0]
 
@@ -8331,13 +8731,12 @@ class SolarRadioImageTab(QWidget):
         # When contour source is the current image, skip expensive metadata loading
         # and reprojection since the data is already aligned
         is_same_image = self.contour_settings["source"] == "same"
-        
 
         fits_flag = False
         header = None
         csys = None
         summary = None
-        
+
         if is_same_image:
             # Use cached metadata from plot_image - no need to reload
             fits_flag = self._cached_fits_flag
@@ -8348,14 +8747,19 @@ class SolarRadioImageTab(QWidget):
         else:
             # External image - need to load metadata
             # Use transformed file if coordinate transformation was applied
-            if (self._contour_transformed_file and 
-                os.path.exists(self._contour_transformed_file) and
-                self._contour_transformed_from == self.contour_settings.get("external_image")):
+            if (
+                self._contour_transformed_file
+                and os.path.exists(self._contour_transformed_file)
+                and self._contour_transformed_from
+                == self.contour_settings.get("external_image")
+            ):
                 contour_imagename = self._contour_transformed_file
             else:
                 contour_imagename = self.contour_settings["external_image"]
-            
-            if contour_imagename.endswith(".fits") or contour_imagename.endswith(".fts"):
+
+            if contour_imagename.endswith(".fits") or contour_imagename.endswith(
+                ".fts"
+            ):
 
                 from astropy.io import fits
 
@@ -8377,7 +8781,6 @@ class SolarRadioImageTab(QWidget):
                 print(f"[ERROR] Error getting metadata: {e}")
                 self.show_status_message(f"Error getting metadata: {e}")
                 return
-
 
         try:
             # Check if the contour and image projection match
@@ -8422,6 +8825,7 @@ class SolarRadioImageTab(QWidget):
                 # For sigma levels, calculate RMS from the RMS box region of the contour data
                 # This gives a proper noise estimate without source contamination
                 rms_box = self.contour_settings.get("rms_box", (0, 200, 0, 130))
+
                 try:
                     # Calculate RMS from the specified region
                     rms_region = contour_data[
@@ -8431,7 +8835,9 @@ class SolarRadioImageTab(QWidget):
                 except Exception as e:
                     # Fallback to using std of entire image if RMS box fails
                     print(f"[WARNING] Could not calculate RMS from box, using std: {e}")
-                    self.show_status_message(f"WARNING: Could not calculate RMS from box, using std: {e}")
+                    self.show_status_message(
+                        f"WARNING: Could not calculate RMS from box, using std: {e}"
+                    )
                     rms = np.nanstd(contour_data)
 
                 # Positive levels: level * rms (e.g., 3σ, 6σ, 9σ...)
@@ -8457,7 +8863,11 @@ class SolarRadioImageTab(QWidget):
             # OPTIMIZATION: Skip reprojection check for same-image contours - they're already aligned
             needs_reprojection = False
 
-            if not is_same_image and self.current_contour_wcs is not None and image_wcs_obj is not None:
+            if (
+                not is_same_image
+                and self.current_contour_wcs is not None
+                and image_wcs_obj is not None
+            ):
                 # Build the contour WCS object
                 from astropy.wcs import WCS
 
@@ -8469,18 +8879,27 @@ class SolarRadioImageTab(QWidget):
                 if fits_flag and header:
                     try:
                         # Get downsampling-adjusted values from CASA coordsys
-                        ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
-                        ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
+                        ref_val = self.current_contour_wcs.referencevalue()["numeric"][
+                            0:2
+                        ]
+                        ref_pix = self.current_contour_wcs.referencepixel()["numeric"][
+                            0:2
+                        ]
                         increment = self.current_contour_wcs.increment()["numeric"][0:2]
-                        
+
                         # Swap axes for numpy (row, col) = (y, x) order
                         contour_wcs_obj.wcs.crpix = [ref_pix[1], ref_pix[0]]
-                        
+
                         # Get CTYPE from FITS header (correct for HPC)
                         ctype1 = header.get("CTYPE1", "")
                         ctype2 = header.get("CTYPE2", "")
-                        is_hpc = "HPLN" in ctype1 or "HPLT" in ctype1 or "HPLN" in ctype2 or "HPLT" in ctype2
-                        
+                        is_hpc = (
+                            "HPLN" in ctype1
+                            or "HPLT" in ctype1
+                            or "HPLN" in ctype2
+                            or "HPLT" in ctype2
+                        )
+
                         if is_hpc:
                             # For HPC FITS files, CASA coordsys is in radians
                             # Convert to degrees for WCS reprojection
@@ -8494,16 +8913,18 @@ class SolarRadioImageTab(QWidget):
                             crval2 = ref_val[1] * 180.0 / np.pi
                             cdelt1 = increment[0] * 180.0 / np.pi
                             cdelt2 = increment[1] * 180.0 / np.pi
-                        
+
                         contour_wcs_obj.wcs.crval = [crval2, crval1]  # Swapped
                         contour_wcs_obj.wcs.cdelt = [cdelt2, cdelt1]  # Swapped
-                        contour_wcs_obj.wcs.ctype = [ctype2, ctype1]  # From header (correct HPC)
+                        contour_wcs_obj.wcs.ctype = [
+                            ctype2,
+                            ctype1,
+                        ]  # From header (correct HPC)
                     except Exception as e:
 
                         print(f"[ERROR] Failed to build WCS from FITS header: {e}")
                         # Fall back to CASA coordsys without FITS header
                         fits_flag = False
-                
 
                 if not fits_flag:
                     # Use CASA coordsys (for CASA images or as fallback)
@@ -8514,7 +8935,10 @@ class SolarRadioImageTab(QWidget):
                     # IMPORTANT: CASA WCS stores in (RA, Dec) = (x, y) order
                     # But numpy arrays are (row, col) = (y, x)
                     # We need to SWAP the axes for proper alignment with reproject
-                    contour_wcs_obj.wcs.crpix = [ref_pix[1], ref_pix[0]]  # Swap to (y, x)
+                    contour_wcs_obj.wcs.crpix = [
+                        ref_pix[1],
+                        ref_pix[0],
+                    ]  # Swap to (y, x)
 
                     if "Right Ascension" in summary["axisnames"]:
                         contour_wcs_obj.wcs.crval = [
@@ -8530,7 +8954,6 @@ class SolarRadioImageTab(QWidget):
                         contour_wcs_obj.wcs.crval = [ref_val[1], ref_val[0]]
                         contour_wcs_obj.wcs.cdelt = [increment[1], increment[0]]
 
-
                 # Set projection type for contour WCS (swapped to match axis order)
                 if fits_flag:
                     try:
@@ -8538,7 +8961,9 @@ class SolarRadioImageTab(QWidget):
                         contour_wcs_obj.wcs.ctype = [header["CTYPE2"], header["CTYPE1"]]
                     except Exception as e:
                         print(f"[ERROR] Error getting projection type from FITS: {e}")
-                        self.show_status_message(f"Error getting projection type from FITS: {e}")
+                        self.show_status_message(
+                            f"Error getting projection type from FITS: {e}"
+                        )
                         # Use swapped image ctype
                         contour_wcs_obj.wcs.ctype = [
                             image_wcs_obj.wcs.ctype[1],
@@ -8631,20 +9056,22 @@ class SolarRadioImageTab(QWidget):
                 # Check if image shapes differ
                 if contour_data.shape != self.current_image_data.shape:
                     needs_reprojection = True
-        
+
             # Handle manual downsampling for "Same Image" or aligned images (no reprojection needed)
             # This ensures large images are still downsampled for performance
             if not needs_reprojection:
-                 self._contour_ds_factor = 1 # Default
-                 if self.contour_settings.get("downsample", True):
-                     max_dim = max(contour_data.shape)
-                     if max_dim > 2048:
-                          factor = int(np.ceil(max_dim / 2048.0))
-                          print(f"[INFO] Downsampling aligned contour by {factor}x (original size: {contour_data.shape})")
-                          # Simple slicing is sufficient for aligned data
-                          contour_data = contour_data[::factor, ::factor]
-                          self._contour_ds_factor = factor
-        
+                self._contour_ds_factor = 1  # Default
+                if self.contour_settings.get("downsample", True):
+                    max_dim = max(contour_data.shape)
+                    if max_dim > 2048:
+                        factor = int(np.ceil(max_dim / 2048.0))
+                        print(
+                            f"[INFO] Downsampling aligned contour by {factor}x (original size: {contour_data.shape})"
+                        )
+                        # Simple slicing is sufficient for aligned data
+                        contour_data = contour_data[::factor, ::factor]
+                        self._contour_ds_factor = factor
+
             if needs_reprojection and contour_wcs_obj is not None:
                 try:
                     from reproject import reproject_interp
@@ -8667,31 +9094,45 @@ class SolarRadioImageTab(QWidget):
                     extended_shape = self.current_image_data.shape
                     contour_offset = [0, 0]  # Offset for contour plotting (y, x)
                     extended_wcs = image_wcs_for_reproject
-                    
-                    show_full_extent = self.contour_settings.get("show_full_extent", False)
-                    
+
+                    show_full_extent = self.contour_settings.get(
+                        "show_full_extent", False
+                    )
+
                     # Always try to extend canvas (default: 1.5x cap, full extent: no cap)
                     try:
                         # Get world coordinates of contour image corners
-                        contour_corners_pix = np.array([
-                            [0, 0],
-                            [contour_data.shape[1] - 1, 0],
-                            [0, contour_data.shape[0] - 1],
-                            [contour_data.shape[1] - 1, contour_data.shape[0] - 1],
-                        ])
-                        contour_corners_world = contour_wcs_obj.wcs_pix2world(contour_corners_pix, 0)
-                        image_corners_pix = image_wcs_for_reproject.wcs_world2pix(contour_corners_world, 0)
-                        
+                        contour_corners_pix = np.array(
+                            [
+                                [0, 0],
+                                [contour_data.shape[1] - 1, 0],
+                                [0, contour_data.shape[0] - 1],
+                                [contour_data.shape[1] - 1, contour_data.shape[0] - 1],
+                            ]
+                        )
+                        contour_corners_world = contour_wcs_obj.wcs_pix2world(
+                            contour_corners_pix, 0
+                        )
+                        image_corners_pix = image_wcs_for_reproject.wcs_world2pix(
+                            contour_corners_world, 0
+                        )
+
                         # Calculate the extent of contour in base image coordinates
                         min_x = min(np.min(image_corners_pix[:, 0]), 0)
-                        max_x = max(np.max(image_corners_pix[:, 0]), self.current_image_data.shape[1] - 1)
+                        max_x = max(
+                            np.max(image_corners_pix[:, 0]),
+                            self.current_image_data.shape[1] - 1,
+                        )
                         min_y = min(np.min(image_corners_pix[:, 1]), 0)
-                        max_y = max(np.max(image_corners_pix[:, 1]), self.current_image_data.shape[0] - 1)
-                        
+                        max_y = max(
+                            np.max(image_corners_pix[:, 1]),
+                            self.current_image_data.shape[0] - 1,
+                        )
+
                         # Calculate extended dimensions
                         extended_width = int(np.ceil(max_x - min_x)) + 1
                         extended_height = int(np.ceil(max_y - min_y)) + 1
-                        
+
                         # Check for large reprojected matrix size when show_full_extent is enabled
                         if show_full_extent:
                             max_dim = max(extended_width, extended_height)
@@ -8704,17 +9145,19 @@ class SolarRadioImageTab(QWidget):
                                     f"This may consume significant memory and take a long time to compute.\n\n"
                                     f"Do you want to continue?",
                                     QMessageBox.Yes | QMessageBox.No,
-                                    QMessageBox.No
+                                    QMessageBox.No,
                                 )
                                 if reply == QMessageBox.No:
-                                    self.show_status_message("Contour drawing cancelled by user.")
+                                    self.show_status_message(
+                                        "Contour drawing cancelled by user."
+                                    )
                                     return
-                        
+
                         # Apply 1.5x cap by default (unless show_full_extent is enabled)
                         if not show_full_extent:
                             max_width = int(self.current_image_data.shape[1] * 1.5)
                             max_height = int(self.current_image_data.shape[0] * 1.5)
-                            
+
                             # Recalculate bounds if capped
                             if extended_width > max_width:
                                 center_x = self.current_image_data.shape[1] / 2
@@ -8726,30 +9169,30 @@ class SolarRadioImageTab(QWidget):
                                 min_y = center_y - max_height / 2
                                 max_y = center_y + max_height / 2 - 1
                                 extended_height = max_height
-                        
+
                         extended_shape = (extended_height, extended_width)
-                        
+
                         # Calculate offset (how much the base image is shifted in the extended canvas)
                         # Use floats to preserve sub-pixel accuracy
                         contour_offset = [-min_y, -min_x]
 
-                        
                         # Adjust WCS reference pixel for the extended shape
                         extended_wcs = image_wcs_for_reproject.deepcopy()
                         extended_wcs.wcs.crpix = [
                             image_wcs_for_reproject.wcs.crpix[0] - min_x,
-                            image_wcs_for_reproject.wcs.crpix[1] - min_y
+                            image_wcs_for_reproject.wcs.crpix[1] - min_y,
                         ]
                         extended_wcs.array_shape = extended_shape
-                        
+
                     except Exception as e:
                         if main_window:
-                            self.show_status_message(f"Could not compute extended bounds: {e}")
+                            self.show_status_message(
+                                f"Could not compute extended bounds: {e}"
+                            )
                         print(f"[ERROR] Could not compute extended bounds: {e}")
                         extended_wcs = image_wcs_for_reproject
                         extended_shape = self.current_image_data.shape
                         contour_offset = [0, 0]
-
 
                     # Store offset for contour drawing
                     self._contour_offset = contour_offset
@@ -8758,53 +9201,65 @@ class SolarRadioImageTab(QWidget):
                     # Create a comprehensive cache key
                     cache_key = (
                         self.imagename,  # Base image
-                        contour_imagename, # Contour image source
-                        self.contour_settings.get("stokes", ""), # Stokes parameter (crucial!)
-                        contour_data.shape, # Original contour shape
-                        "fits_header" if fits_flag else "casa_csys", # Source type
-                        str(contour_wcs_obj.wcs.crval), # Contour WCS params
+                        contour_imagename,  # Contour image source
+                        self.contour_settings.get(
+                            "stokes", ""
+                        ),  # Stokes parameter (crucial!)
+                        contour_data.shape,  # Original contour shape
+                        "fits_header" if fits_flag else "casa_csys",  # Source type
+                        str(contour_wcs_obj.wcs.crval),  # Contour WCS params
                         str(contour_wcs_obj.wcs.cdelt),
-                        str(image_wcs_for_reproject.wcs.crval), # Base image WCS params (includes downsampling state)
+                        str(
+                            image_wcs_for_reproject.wcs.crval
+                        ),  # Base image WCS params (includes downsampling state)
                         str(image_wcs_for_reproject.wcs.cdelt),
-                        show_full_extent, # Extent setting
-                        self.contour_settings.get("downsample", True), # Downsample setting
+                        show_full_extent,  # Extent setting
+                        self.contour_settings.get(
+                            "downsample", True
+                        ),  # Downsample setting
                     )
-                    
+
                     cached_result = self._reproject_cache.get(cache_key)
-                    
+
                     if cached_result is not None:
-                         # cache hit
+                        # cache hit
                         # print("Using cached reprojected contour data")
                         if main_window:
-                            self.show_status_message("Using cached contour alignment...")
+                            self.show_status_message(
+                                "Using cached contour alignment..."
+                            )
                         array, offset, ds_factor = cached_result
                         self._contour_offset = offset
-                        
+
                         # Apply downsampling factor to offset if needed for plotting calculations
                         # Note: The array itself is already downsampled, so we just use it.
                         # The offset is in base image pixels, which is correct for placement.
                     else:
                         # Cache miss - perform reprojection
-                        
+
                         # OPTIMIZATION: Downsample large arrays to save memory/time
                         # Contours don't need pixel-perfect 4k resolution
                         contour_ds_factor = 1
                         max_dim = max(extended_shape)
-                        downsample_enabled = self.contour_settings.get("downsample", True)
-                        
+                        downsample_enabled = self.contour_settings.get(
+                            "downsample", True
+                        )
+
                         if downsample_enabled and max_dim > 2048:
                             contour_ds_factor = int(np.ceil(max_dim / 2048.0))
-                            print(f"[INFO] Downsampling contour reprojection by {contour_ds_factor}x (original size: {extended_shape})")
-                            
+                            print(
+                                f"[INFO] Downsampling contour reprojection by {contour_ds_factor}x (original size: {extended_shape})"
+                            )
+
                             # Adjust shape
                             new_height = extended_shape[0] // contour_ds_factor
                             new_width = extended_shape[1] // contour_ds_factor
                             extended_shape = (new_height, new_width)
-                            
+
                             # Adjust WCS
                             extended_wcs.wcs.cdelt *= contour_ds_factor
                             extended_wcs.wcs.crpix /= contour_ds_factor
-                        
+
                         # Reproject the contour data to the extended/clipped WCS
                         # OPTIMIZATION: Don't calculate footprint unless needed (2x speedup)
                         array = reproject_interp(
@@ -8813,9 +9268,13 @@ class SolarRadioImageTab(QWidget):
                             shape_out=extended_shape,
                             return_footprint=False,
                         )
-                        
+
                         # Store in cache
-                        self._reproject_cache[cache_key] = (array, self._contour_offset, contour_ds_factor)
+                        self._reproject_cache[cache_key] = (
+                            array,
+                            self._contour_offset,
+                            contour_ds_factor,
+                        )
 
                     # Replace the NaNs with zeros
                     array = np.nan_to_num(array, nan=0.0)
@@ -8824,8 +9283,10 @@ class SolarRadioImageTab(QWidget):
                     if np.all(array == 0):
                         # Re-run with footprint to diagnose coverage
                         if main_window:
-                            self.show_status_message("Reprojection yielded zeros, checking overlap...")
-                        
+                            self.show_status_message(
+                                "Reprojection yielded zeros, checking overlap..."
+                            )
+
                         _, footprint = reproject_interp(
                             (contour_data, contour_wcs_obj),
                             extended_wcs,
@@ -8840,9 +9301,7 @@ class SolarRadioImageTab(QWidget):
                         print(
                             "[WARNING] Reprojection produced all zeros - checking footprint coverage"
                         )
-                        print(
-                            f"  Footprint coverage: {footprint_pct:.1f}%"
-                        )
+                        print(f"  Footprint coverage: {footprint_pct:.1f}%")
                         if footprint_pct < 1.0:
                             # Show warning dialog about no overlap
                             QMessageBox.warning(
@@ -8858,15 +9317,19 @@ class SolarRadioImageTab(QWidget):
                     else:
 
                         if main_window:
-                            self.show_status_message(f"Reprojection done.. plotting... Please wait...")
+                            self.show_status_message(
+                                f"Reprojection done.. plotting... Please wait..."
+                            )
 
                     contour_data = array
                     reprojection_done = True
-                    
+
                     # Store factor for extent calculation
-                    self._contour_ds_factor = contour_ds_factor if 'contour_ds_factor' in locals() else 1
-                    if 'ds_factor' in locals():
-                         self._contour_ds_factor = ds_factor
+                    self._contour_ds_factor = (
+                        contour_ds_factor if "contour_ds_factor" in locals() else 1
+                    )
+                    if "ds_factor" in locals():
+                        self._contour_ds_factor = ds_factor
 
                 except ImportError as e:
                     print(f"[ERROR] reproject library not available: {e}")
@@ -8883,77 +9346,101 @@ class SolarRadioImageTab(QWidget):
                     import traceback
 
                     traceback.print_exc()
-                    
+
                     # Fallback: try scipy-based scaling using pixel scale ratio
                     # This is useful when WCS reprojection fails (e.g., HPC observer=None)
                     try:
                         from scipy.ndimage import zoom, shift
-                        
-                        self.show_status_message("WCS reprojection failed, trying pixel-scale fallback...")
-                        
+
+                        self.show_status_message(
+                            "WCS reprojection failed, trying pixel-scale fallback..."
+                        )
+
                         # Calculate scale factors from CDELT
-                        scale_x = contour_wcs_obj.wcs.cdelt[0] / image_wcs_for_reproject.wcs.cdelt[0]
-                        scale_y = contour_wcs_obj.wcs.cdelt[1] / image_wcs_for_reproject.wcs.cdelt[1]
-                        
+                        scale_x = (
+                            contour_wcs_obj.wcs.cdelt[0]
+                            / image_wcs_for_reproject.wcs.cdelt[0]
+                        )
+                        scale_y = (
+                            contour_wcs_obj.wcs.cdelt[1]
+                            / image_wcs_for_reproject.wcs.cdelt[1]
+                        )
+
                         # Zoom to match pixel scales
-                        zoomed = zoom(contour_data, [abs(scale_y), abs(scale_x)], order=1, mode='constant', cval=0)
-                        
+                        zoomed = zoom(
+                            contour_data,
+                            [abs(scale_y), abs(scale_x)],
+                            order=1,
+                            mode="constant",
+                            cval=0,
+                        )
+
                         # Pad or crop to match target shape
                         target_shape = self.current_image_data.shape
                         result = np.zeros(target_shape)
-                        
+
                         # Calculate the offset to center the contour
                         # Use reference value difference to determine shift
-                        dcrval = contour_wcs_obj.wcs.crval - image_wcs_for_reproject.wcs.crval
+                        dcrval = (
+                            contour_wcs_obj.wcs.crval
+                            - image_wcs_for_reproject.wcs.crval
+                        )
                         offset_x = int(dcrval[0] / image_wcs_for_reproject.wcs.cdelt[0])
                         offset_y = int(dcrval[1] / image_wcs_for_reproject.wcs.cdelt[1])
-                        
+
                         # Calculate copy ranges
                         src_start_y = max(0, -offset_y)
                         src_end_y = min(zoomed.shape[0], target_shape[0] - offset_y)
                         src_start_x = max(0, -offset_x)
                         src_end_x = min(zoomed.shape[1], target_shape[1] - offset_x)
-                        
+
                         dst_start_y = max(0, offset_y)
                         dst_end_y = dst_start_y + (src_end_y - src_start_y)
                         dst_start_x = max(0, offset_x)
                         dst_end_x = dst_start_x + (src_end_x - src_start_x)
-                        
+
                         if src_end_y > src_start_y and src_end_x > src_start_x:
-                            result[dst_start_y:dst_end_y, dst_start_x:dst_end_x] = \
+                            result[dst_start_y:dst_end_y, dst_start_x:dst_end_x] = (
                                 zoomed[src_start_y:src_end_y, src_start_x:src_end_x]
-                        
+                            )
+
                         contour_data = result
                         self.show_status_message("Fallback reprojection done")
                         print("[INFO] Fallback pixel-scale reprojection successful")
                     except Exception as fallback_e:
-                        print(f"[ERROR] Fallback reprojection also failed: {fallback_e}")
+                        print(
+                            f"[ERROR] Fallback reprojection also failed: {fallback_e}"
+                        )
                         plot_default = True
-
 
             # For reprojected data, the output matches the base image orientation
             # so we transpose to match how the base image is displayed
             display_contour_data = contour_data.transpose()
-            
+
             # Get offset for extended canvas positioning
-            contour_offset = getattr(self, '_contour_offset', [0, 0])
-            
+            contour_offset = getattr(self, "_contour_offset", [0, 0])
+
             # Calculate extent for proper positioning when using extended canvas
             # extent = [left, right, bottom, top] in data coordinates
-            
-            ds_factor = getattr(self, '_contour_ds_factor', 1)
-            
+
+            ds_factor = getattr(self, "_contour_ds_factor", 1)
+
             # Apply extent if offset is non-zero OR downsampling is active (since pixels differ from base)
             if contour_offset != [0, 0] or ds_factor > 1:
                 extent = [
                     -contour_offset[1],  # left (shifted by x offset)
-                    -contour_offset[1] + (display_contour_data.shape[0] * ds_factor),  # right (add Width / shape[0])
+                    -contour_offset[1]
+                    + (
+                        display_contour_data.shape[0] * ds_factor
+                    ),  # right (add Width / shape[0])
                     -contour_offset[0],  # bottom (shifted by y offset)
-                    -contour_offset[0] + (display_contour_data.shape[1] * ds_factor),  # top (add Height / shape[1])
+                    -contour_offset[0]
+                    + (
+                        display_contour_data.shape[1] * ds_factor
+                    ),  # top (add Height / shape[1])
                 ]
             else:
                 extent = None  # Use default (0 to shape)
-
 
             if pos_levels and len(pos_levels) > 0:
 
@@ -8965,64 +9452,100 @@ class SolarRadioImageTab(QWidget):
                         # We must map Rows to Vertical (y) and Cols to Horizontal (x).
                         # Vertical Axis should show X-range (extent[0], extent[1])
                         # Horizontal Axis should show Y-range (extent[2], extent[3])
-                        
-                        y = np.linspace(extent[0], extent[1], display_contour_data.shape[0])
-                        x = np.linspace(extent[2], extent[3], display_contour_data.shape[1])
+
+                        y = np.linspace(
+                            extent[0], extent[1], display_contour_data.shape[0]
+                        )
+                        x = np.linspace(
+                            extent[2], extent[3], display_contour_data.shape[1]
+                        )
                         cs_pos = ax.contour(
-                            x, y, display_contour_data,
+                            x,
+                            y,
+                            display_contour_data,
                             levels=pos_levels,
-                            colors=self.contour_settings.get("pos_color", self.contour_settings["color"]),
-                            linewidths=self.contour_settings.get("pos_linewidth", self.contour_settings["linewidth"]),
+                            colors=self.contour_settings.get(
+                                "pos_color", self.contour_settings["color"]
+                            ),
+                            linewidths=self.contour_settings.get(
+                                "pos_linewidth", self.contour_settings["linewidth"]
+                            ),
                             linestyles=self.contour_settings["pos_linestyle"],
                         )
                     else:
                         cs_pos = ax.contour(
                             display_contour_data,
                             levels=pos_levels,
-                            colors=self.contour_settings.get("pos_color", self.contour_settings["color"]),
-                            linewidths=self.contour_settings.get("pos_linewidth", self.contour_settings["linewidth"]),
+                            colors=self.contour_settings.get(
+                                "pos_color", self.contour_settings["color"]
+                            ),
+                            linewidths=self.contour_settings.get(
+                                "pos_linewidth", self.contour_settings["linewidth"]
+                            ),
                             linestyles=self.contour_settings["pos_linestyle"],
                             origin="lower",
                         )
-                    
+
                     # Add contour labels if enabled
                     if self.contour_settings.get("show_labels", False):
-                        ax.clabel(cs_pos, inline=True, fontsize=8, fmt='%.2g')
-                        
+                        ax.clabel(cs_pos, inline=True, fontsize=8, fmt="%.2g")
+
                 except Exception as e:
-                    print(f"[ERROR] Error drawing positive contours: {e}, levels: {pos_levels}")
-                    self.show_status_message(f"Error drawing positive contours: {e}, levels: {pos_levels}")
+                    print(
+                        f"[ERROR] Error drawing positive contours: {e}, levels: {pos_levels}"
+                    )
+                    self.show_status_message(
+                        f"Error drawing positive contours: {e}, levels: {pos_levels}"
+                    )
 
             if neg_levels and len(neg_levels) > 0:
                 try:
                     if extent:
-                        y = np.linspace(extent[0], extent[1], display_contour_data.shape[0])
-                        x = np.linspace(extent[2], extent[3], display_contour_data.shape[1])
+                        y = np.linspace(
+                            extent[0], extent[1], display_contour_data.shape[0]
+                        )
+                        x = np.linspace(
+                            extent[2], extent[3], display_contour_data.shape[1]
+                        )
 
                         cs_neg = ax.contour(
-                            x, y, display_contour_data,
+                            x,
+                            y,
+                            display_contour_data,
                             levels=neg_levels,
-                            colors=self.contour_settings.get("neg_color", self.contour_settings["color"]),
-                            linewidths=self.contour_settings.get("neg_linewidth", self.contour_settings["linewidth"]),
+                            colors=self.contour_settings.get(
+                                "neg_color", self.contour_settings["color"]
+                            ),
+                            linewidths=self.contour_settings.get(
+                                "neg_linewidth", self.contour_settings["linewidth"]
+                            ),
                             linestyles=self.contour_settings["neg_linestyle"],
                         )
                     else:
                         cs_neg = ax.contour(
                             display_contour_data,
                             levels=neg_levels,
-                            colors=self.contour_settings.get("neg_color", self.contour_settings["color"]),
-                            linewidths=self.contour_settings.get("neg_linewidth", self.contour_settings["linewidth"]),
+                            colors=self.contour_settings.get(
+                                "neg_color", self.contour_settings["color"]
+                            ),
+                            linewidths=self.contour_settings.get(
+                                "neg_linewidth", self.contour_settings["linewidth"]
+                            ),
                             linestyles=self.contour_settings["neg_linestyle"],
                             origin="lower",
                         )
-                    
+
                     # Add contour labels if enabled
                     if self.contour_settings.get("show_labels", False):
-                        ax.clabel(cs_neg, inline=True, fontsize=8, fmt='%.2g')
-                        
+                        ax.clabel(cs_neg, inline=True, fontsize=8, fmt="%.2g")
+
                 except Exception as e:
-                    print(f"[ERROR] Error drawing negative contours: {e}, levels: {neg_levels}")
-                    self.show_status_message(f"Error drawing negative contours: {e}, levels: {neg_levels}")
+                    print(
+                        f"[ERROR] Error drawing negative contours: {e}, levels: {neg_levels}"
+                    )
+                    self.show_status_message(
+                        f"Error drawing negative contours: {e}, levels: {neg_levels}"
+                    )
 
             if main_window:
 
@@ -9142,16 +9665,18 @@ class SolarRadioImageTab(QWidget):
         else:
             self._file_pos_label.setText("")
             self._file_pos_label.setToolTip("")
-    
-    def _populate_remote_file_list(self, main_window, remote_dir, casa_mode, current_local_path):
+
+    def _populate_remote_file_list(
+        self, main_window, remote_dir, casa_mode, current_local_path
+    ):
         """Populate the file list from a remote directory for navigation (async)."""
         # Start async population - don't block UI
         from PyQt5.QtCore import QThread, pyqtSignal, QObject
-        
+
         class PopulateThread(QThread):
             finished = pyqtSignal(list, int)  # entries, current_index
             error = pyqtSignal(str)
-            
+
             def __init__(self, connection, remote_dir, casa_mode, current_basename):
                 super().__init__()
                 self.connection = connection
@@ -9159,7 +9684,7 @@ class SolarRadioImageTab(QWidget):
                 self.casa_mode = casa_mode
                 self.current_basename = current_basename
                 self._sftp = None
-            
+
             def run(self):
                 try:
                     import json
@@ -9200,37 +9725,39 @@ try:
     print(json.dumps(entries))
 except Exception:
     print("[]")
-""" % ("True" if self.casa_mode else "False")
+""" % (
+                        "True" if self.casa_mode else "False"
+                    )
 
                     # Try python3 first, then python
                     cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.remote_dir)}"
                     stdin, stdout, stderr = self.connection._client.exec_command(cmd)
-                    
+
                     # Read output
-                    out_data = stdout.read().decode('utf-8').strip()
-                    
+                    out_data = stdout.read().decode("utf-8").strip()
+
                     entries = []
                     success = False
 
-                    if out_data and out_data.startswith('['):
+                    if out_data and out_data.startswith("["):
                         try:
                             raw_entries = json.loads(out_data)
                             from .remote.ssh_manager import RemoteFileInfo
-                            
+
                             for item in raw_entries:
-                                full_path = os.path.join(self.remote_dir, item['n'])
+                                full_path = os.path.join(self.remote_dir, item["n"])
                                 info = RemoteFileInfo(
-                                    name=item['n'],
+                                    name=item["n"],
                                     path=full_path,
-                                    is_dir=item['d'],
-                                    size=item['s'],
-                                    mtime=item['m'],
+                                    is_dir=item["d"],
+                                    size=item["s"],
+                                    mtime=item["m"],
                                 )
                                 entries.append(info)
                             success = True
                         except:
                             pass
-                    
+
                     # FALLBACK: If fast path failed (no python, etc), use slower SFTP loop
                     if not success:
                         if self.connection._client:
@@ -9238,32 +9765,36 @@ except Exception:
                         else:
                             self.error.emit("Not connected")
                             return
-                            
+
                         import stat
                         from .remote.ssh_manager import RemoteFileInfo
-                        
+
                         attrs = self._sftp.listdir_attr(self.remote_dir)
-                        
+
                         for attr in attrs:
                             name = attr.filename
-                            if name.startswith('.'):
+                            if name.startswith("."):
                                 continue
-                            
+
                             st_mode = attr.st_mode
                             is_dir = stat.S_ISDIR(st_mode)
-                            
+
                             # Pre-filter check
                             include_item = False
                             if self.casa_mode:
-                                if is_dir and (name.endswith('.image') or name.endswith('.im')):
+                                if is_dir and (
+                                    name.endswith(".image") or name.endswith(".im")
+                                ):
                                     include_item = True
                             else:
                                 # Check extension for FITS files OR CASA images
-                                is_fits = not is_dir and name.lower().endswith(('.fits', '.fts', '.fit'))
-                                
+                                is_fits = not is_dir and name.lower().endswith(
+                                    (".fits", ".fts", ".fit")
+                                )
+
                                 if is_fits:
                                     include_item = True
-                            
+
                             if include_item:
                                 full_path = os.path.join(self.remote_dir, name)
                                 info = RemoteFileInfo(
@@ -9274,19 +9805,19 @@ except Exception:
                                     mtime=attr.st_mtime,
                                 )
                                 entries.append(info)
-                    
+
                     # Sort
                     entries.sort(key=lambda x: x.name.lower())
-                    
+
                     # Find current index
                     current_idx = -1
                     for i, e in enumerate(entries):
                         if e.name == self.current_basename:
                             current_idx = i
                             break
-                    
+
                     self.finished.emit(entries, current_idx)
-                    
+
                 except Exception as e:
                     self.error.emit(str(e))
                 finally:
@@ -9295,21 +9826,21 @@ except Exception:
                             self._sftp.close()
                         except:
                             pass
-        
+
         try:
-            if not main_window.remote_connection or not main_window.remote_connection.is_connected():
+            if (
+                not main_window.remote_connection
+                or not main_window.remote_connection.is_connected()
+            ):
                 return
-            
+
             current_basename = os.path.basename(current_local_path)
-            
+
             # Store reference to thread to prevent garbage collection
             self._populate_thread = PopulateThread(
-                main_window.remote_connection,
-                remote_dir,
-                casa_mode,
-                current_basename
+                main_window.remote_connection, remote_dir, casa_mode, current_basename
             )
-            
+
             def on_finished(entries, current_idx):
                 try:
                     self._remote_file_list = entries
@@ -9318,7 +9849,7 @@ except Exception:
                     self._update_nav_buttons()
                 except RuntimeError:
                     pass  # Widget deleted
-            
+
             def on_error(msg):
                 print(f"[WARNING] Failed to populate remote file list: {msg}")
                 self._remote_file_list = []
@@ -9328,37 +9859,40 @@ except Exception:
                     self._update_nav_buttons()
                 except RuntimeError:
                     pass
-            
+
             self._populate_thread.finished.connect(on_finished)
             self._populate_thread.error.connect(on_error)
             self._populate_thread.start()
-            
+
         except Exception as e:
             print(f"[WARNING] Failed to start remote file list population: {e}")
             self._remote_file_list = []
             self._file_list = []
             self._file_list_index = -1
             self._update_nav_buttons()
-    
+
     def _load_remote_file(self, remote_path):
         """Download and load a remote file for navigation."""
         from pathlib import Path
-        
+
         main_window = self.window()
-        if not main_window or not hasattr(main_window, 'remote_connection'):
+        if not main_window or not hasattr(main_window, "remote_connection"):
             return False
-        
-        if not main_window.remote_connection or not main_window.remote_connection.is_connected():
+
+        if (
+            not main_window.remote_connection
+            or not main_window.remote_connection.is_connected()
+        ):
             return False
-        
+
         try:
             from PyQt5.QtWidgets import QProgressDialog
             from PyQt5.QtCore import Qt, QEventLoop
             from .remote.download_thread import DownloadThread
-            
+
             # Get the remote file info
             entry = main_window.remote_connection.get_file_info(remote_path)
-            
+
             # Check cache first
             cached_path = main_window.remote_cache.get_cached_path(
                 main_window.remote_connection._host,
@@ -9366,7 +9900,7 @@ except Exception:
                 entry.mtime,
                 entry.size,
             )
-            
+
             if cached_path:
                 local_path = str(cached_path)
             else:
@@ -9375,19 +9909,20 @@ except Exception:
                     main_window.remote_connection._host,
                     remote_path,
                 )
-                
+
                 # Create progress dialog
                 progress = QProgressDialog(
                     f"Downloading {os.path.basename(remote_path)}...",
                     "Cancel",
-                    0, 100,
-                    self
+                    0,
+                    100,
+                    self,
                 )
                 progress.setWindowTitle("Downloading")
                 progress.setWindowModality(Qt.WindowModal)
                 progress.setMinimumDuration(0)
                 progress.setValue(0)
-                
+
                 # Setup Download Thread
                 download_thread = DownloadThread(
                     main_window.remote_connection,
@@ -9395,13 +9930,13 @@ except Exception:
                     str(local_path),
                     is_directory=entry.is_dir,
                 )
-                
+
                 # Store local variables to capture result
                 download_result = {"success": False, "error": None, "path": None}
-                
+
                 # Create local event loop to wait for thread
                 loop = QEventLoop()
-                
+
                 def on_progress(transferred, total):
                     if total > 0:
                         percent = int(100 * transferred / total)
@@ -9416,17 +9951,17 @@ except Exception:
                                 f"Downloading {os.path.basename(remote_path)}...\n"
                                 f"{transferred / 1024:.1f} / {total / 1024:.1f} KB"
                             )
-                
+
                 def on_finished(path):
                     download_result["success"] = True
                     download_result["path"] = path
                     loop.quit()
-                    
+
                 def on_error(msg):
                     download_result["success"] = False
                     download_result["error"] = msg
                     loop.quit()
-                    
+
                 def on_cancel():
                     download_thread.cancel()
                     progress.setLabelText("Cancelling...")
@@ -9434,30 +9969,30 @@ except Exception:
                     # We don't quit loop yet, wait for thread to actually stop or finish
                     # But if we rely on loop.quit, we need to ensure thread finishes.
                     # As a fallback, we can forcefully quit loop if needed, but better to wait.
-                    
+
                 download_thread.progress.connect(on_progress)
                 download_thread.finished.connect(on_finished)
                 download_thread.error.connect(on_error)
                 progress.canceled.connect(on_cancel)
-                
+
                 # Start thread and show dialog
                 download_thread.start()
                 progress.show()
-                
+
                 # Wait for completion
                 loop.exec_()
-                
+
                 progress.close()
-                download_thread.wait() # Ensure thread is joined
-                
+                download_thread.wait()  # Ensure thread is joined
+
                 if not download_result["success"]:
                     if download_result["error"]:
                         raise Exception(download_result["error"])
                     else:
-                        raise InterruptedError("Download cancelled") # User cancelled
-                
+                        raise InterruptedError("Download cancelled")  # User cancelled
+
                 local_path = download_result["path"]
-                
+
                 # Mark as cached
                 main_window.remote_cache.mark_cached(
                     main_window.remote_connection._host,
@@ -9466,7 +10001,7 @@ except Exception:
                     entry.mtime,
                     entry.size,
                 )
-            
+
             # Load the file
             self._reset_hpc_state()
             self.imagename = local_path
@@ -9476,9 +10011,9 @@ except Exception:
             self.figure.clear()
             self.on_visualization_changed(dir_load=True)
             self.update_tab_name_from_path(local_path)
-            
+
             return True
-            
+
         except InterruptedError:
             # User cancelled the download
             self.show_status_message("Download cancelled")
@@ -9496,7 +10031,7 @@ except Exception:
         new_index = self._file_list_index - 1
         new_path = self._file_list[new_index]
         self._file_list_index = new_index
-        
+
         # Check if in remote mode
         if self._is_remote_mode:
             if self._load_remote_file(new_path):
@@ -9531,7 +10066,7 @@ except Exception:
         new_index = self._file_list_index + 1
         new_path = self._file_list[new_index]
         self._file_list_index = new_index
-        
+
         # Check if in remote mode
         if self._is_remote_mode:
             if self._load_remote_file(new_path):
@@ -9563,12 +10098,14 @@ except Exception:
         new_index = 0
         new_path = self._file_list[new_index]
         self._file_list_index = new_index
-        
+
         # Check if in remote mode
         if self._is_remote_mode:
             if self._load_remote_file(new_path):
                 self._update_nav_buttons()
-                self.show_status_message(f"Loaded first file: {os.path.basename(new_path)}")
+                self.show_status_message(
+                    f"Loaded first file: {os.path.basename(new_path)}"
+                )
             return
 
         # Reset HPC state
@@ -9595,12 +10132,14 @@ except Exception:
         new_index = len(self._file_list) - 1
         new_path = self._file_list[new_index]
         self._file_list_index = new_index
-        
+
         # Check if in remote mode
         if self._is_remote_mode:
             if self._load_remote_file(new_path):
                 self._update_nav_buttons()
-                self.show_status_message(f"Loaded last file: {os.path.basename(new_path)}")
+                self.show_status_message(
+                    f"Loaded last file: {os.path.basename(new_path)}"
+                )
             return
 
         # Reset HPC state
@@ -9643,24 +10182,27 @@ except Exception:
 
         if ok:
             self._file_filter_pattern = pattern if pattern else "*"
-            
+
             # Check if in remote mode
             if self._is_remote_mode and self._remote_file_list:
                 # Filter the remote file list using the pattern
                 filtered = [
-                    e for e in self._remote_file_list
+                    e
+                    for e in self._remote_file_list
                     if fnmatch.fnmatch(e.name, self._file_filter_pattern)
                 ]
                 self._file_list = [e.path for e in filtered]
-                
+
                 # Find current file in filtered list
-                current_basename = os.path.basename(self.imagename) if self.imagename else ""
+                current_basename = (
+                    os.path.basename(self.imagename) if self.imagename else ""
+                )
                 self._file_list_index = -1
                 for i, e in enumerate(filtered):
                     if e.name == current_basename:
                         self._file_list_index = i
                         break
-                
+
                 self._update_nav_buttons()
             else:
                 # Local mode - rescan directory
@@ -9693,7 +10235,7 @@ except Exception:
             return
 
         # If dialog already exists and is visible, just raise it
-        if hasattr(self, '_playlist_dialog') and self._playlist_dialog is not None:
+        if hasattr(self, "_playlist_dialog") and self._playlist_dialog is not None:
             try:
                 if self._playlist_dialog.isVisible():
                     self._playlist_dialog.raise_()
@@ -9706,7 +10248,7 @@ except Exception:
         dialog = QDialog(self)
         dialog.setWindowTitle("File List")
         dialog.setMinimumSize(550, 700)
-        
+
         # Store reference to prevent garbage collection
         self._playlist_dialog = dialog
 
@@ -9717,19 +10259,21 @@ except Exception:
         # Header with title and file count
         header_layout = QHBoxLayout()
         header_layout.setSpacing(12)
-        
+
         title_label = QLabel("📋 File List")
         title_label.setObjectName("DialogTitle")
         header_layout.addWidget(title_label)
-        
+
         header_layout.addStretch()
-        
-        info_badge = QLabel(f"Filter: {self._file_filter_pattern}  │  {len(self._file_list)} files")
+
+        info_badge = QLabel(
+            f"Filter: {self._file_filter_pattern}  │  {len(self._file_list)} files"
+        )
         info_badge.setObjectName("InfoBadge")
         header_layout.addWidget(info_badge)
-        
+
         layout.addLayout(header_layout)
-        
+
         # Search box
         search_frame = QFrame()
         search_frame.setObjectName("SearchFrame")
@@ -9737,7 +10281,7 @@ except Exception:
         search_layout.setContentsMargins(10, 0, 10, 0)
         search_layout.setSpacing(8)
         search_layout.setAlignment(Qt.AlignVCenter)
-        
+
         search_label = QLabel("🔍")
         search_label.setObjectName("SearchIcon")
         search_input = QLineEdit()
@@ -9745,7 +10289,7 @@ except Exception:
         search_input.setPlaceholderText("Search files...")
         search_input.setClearButtonEnabled(True)
         search_input.setFixedHeight(28)
-        
+
         search_layout.addWidget(search_label, 0, Qt.AlignVCenter)
         search_layout.addWidget(search_input, 1, Qt.AlignVCenter)
         layout.addWidget(search_frame)
@@ -9753,7 +10297,7 @@ except Exception:
         # File list
         file_list_widget = QListWidget()
         file_list_widget.setObjectName("FileListWidget")
-        
+
         # Store original file list for filtering
         original_items = []
         for i, path in enumerate(self._file_list):
@@ -9761,12 +10305,12 @@ except Exception:
             item_text = f"{i + 1}. {filename}"
             file_list_widget.addItem(item_text)
             original_items.append((i, item_text, path))
-        
+
         # Search/filter function
         def filter_files(search_text):
             search_text = search_text.lower().strip()
             file_list_widget.clear()
-            
+
             if not search_text:
                 # Show all items
                 for idx, item_text, path in original_items:
@@ -9780,7 +10324,7 @@ except Exception:
                     filename = os.path.basename(path).lower()
                     if search_text in filename:
                         file_list_widget.addItem(item_text)
-        
+
         search_input.textChanged.connect(filter_files)
 
         # Highlight current file
@@ -9797,48 +10341,52 @@ except Exception:
         open_btn.setObjectName("PrimaryButton")
         open_btn.setDefault(True)
         open_btn.setCursor(Qt.PointingHandCursor)
-        
+
         close_btn = QPushButton("Close")
         close_btn.setCursor(Qt.PointingHandCursor)
 
         # Store references for use in callbacks
         viewer = self
-        
+
         def on_open():
             """Handle opening a selected file with proper error handling"""
             try:
                 # Check if viewer is still valid
-                if not viewer or not hasattr(viewer, '_file_list'):
+                if not viewer or not hasattr(viewer, "_file_list"):
                     dialog.close()
                     return
-                
+
                 # Get selected item
                 current_item = file_list_widget.currentItem()
                 if not current_item:
                     viewer.show_status_message("Please select a file first.")
                     return
-                
+
                 # Extract original index from item text (format: "N. filename")
                 item_text = current_item.text()
                 try:
-                    original_idx = int(item_text.split('.')[0]) - 1  # Convert to 0-based index
+                    original_idx = (
+                        int(item_text.split(".")[0]) - 1
+                    )  # Convert to 0-based index
                 except (ValueError, IndexError):
                     viewer.show_status_message("Error parsing file index.")
                     return
-                
+
                 if original_idx < 0 or original_idx >= len(viewer._file_list):
                     viewer.show_status_message("Invalid file selection.")
                     return
-                    
+
                 new_path = viewer._file_list[original_idx]
-                
+
                 # Check if in remote mode
                 if viewer._is_remote_mode:
                     # Remote mode - download and load
                     viewer._file_list_index = original_idx
                     if viewer._load_remote_file(new_path):
                         viewer._update_nav_buttons()
-                        viewer.show_status_message(f"Loaded {os.path.basename(new_path)}")
+                        viewer.show_status_message(
+                            f"Loaded {os.path.basename(new_path)}"
+                        )
                         # Try to update dialog, but handle case where user closed it
                         try:
                             search_input.clear()
@@ -9847,12 +10395,14 @@ except Exception:
                             # Dialog was closed during download, that's okay
                             pass
                     return
-                
+
                 # Local mode - check if file still exists
                 if not os.path.exists(new_path):
-                    viewer.show_status_message(f"File no longer exists: {os.path.basename(new_path)}")
+                    viewer.show_status_message(
+                        f"File no longer exists: {os.path.basename(new_path)}"
+                    )
                     return
-                
+
                 viewer._file_list_index = original_idx
 
                 # Reset HPC state
@@ -9870,10 +10420,10 @@ except Exception:
 
                 viewer._update_nav_buttons()
                 viewer.show_status_message(f"Loaded {os.path.basename(new_path)}")
-                
+
                 # Clear search and refresh list to show current selection
                 search_input.clear()
-                
+
             except RuntimeError as e:
                 # Viewer was deleted
                 dialog.close()
@@ -9888,10 +10438,10 @@ except Exception:
 
         def on_close():
             dialog.close()
-            
+
         def on_dialog_destroyed():
             """Clean up reference when dialog is destroyed"""
-            if hasattr(viewer, '_playlist_dialog'):
+            if hasattr(viewer, "_playlist_dialog"):
                 viewer._playlist_dialog = None
 
         open_btn.clicked.connect(on_open)
@@ -9903,7 +10453,7 @@ except Exception:
         btn_layout.addWidget(close_btn)
 
         layout.addLayout(btn_layout)
-        
+
         # Apply modern styling
         palette = theme_manager.palette
         window = palette["window"]
@@ -9912,7 +10462,9 @@ except Exception:
         border = palette["border"]
         border_light = palette.get("border_light", border)
         text = palette["text"]
-        text_secondary = palette.get("text_secondary", palette.get("disabled", "#888888"))
+        text_secondary = palette.get(
+            "text_secondary", palette.get("disabled", "#888888")
+        )
         highlight = palette["highlight"]
         highlight_hover = palette.get("highlight_hover", highlight)
         button = palette["button"]
@@ -9921,8 +10473,9 @@ except Exception:
         disabled = palette.get("disabled", "#666666")
         gradient_start = palette.get("button_gradient_start", highlight)
         gradient_end = palette.get("button_gradient_end", highlight_hover)
-        
-        dialog.setStyleSheet(f"""
+
+        dialog.setStyleSheet(
+            f"""
             QDialog {{
                 background-color: {window};
             }}
@@ -10025,16 +10578,23 @@ except Exception:
             QLabel {{
                 color: {text};
             }}
-        """)
-        
+        """
+        )
+
         # Set up dialog for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
-        
+
         # Track dialog for garbage collection
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
-        
+
         # Show as non-modal
         dialog.show()
 
@@ -10063,14 +10623,16 @@ except Exception:
                 except Exception:
                     pass
         # Clean up contour coordinate transformation temp file if exists
-        if hasattr(self, "_contour_transformed_file") and self._contour_transformed_file:
+        if (
+            hasattr(self, "_contour_transformed_file")
+            and self._contour_transformed_file
+        ):
             if os.path.exists(self._contour_transformed_file):
                 try:
                     os.remove(self._contour_transformed_file)
                 except Exception:
                     pass
         super().closeEvent(event)
-
 
     def reset_view(self, show_status_message=True):
         """Reset the view to show the full image with original limits"""
@@ -10210,14 +10772,16 @@ except Exception:
 
         # Add buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        
+
         def on_apply():
             try:
                 self.apply_dialog_rms_box(dialog)
             except RuntimeError:
-                QMessageBox.warning(dialog, "Error", "The target tab is no longer available.")
+                QMessageBox.warning(
+                    dialog, "Error", "The target tab is no longer available."
+                )
                 dialog.close()
-        
+
         button_box.accepted.connect(on_apply)
         button_box.rejected.connect(dialog.close)
         layout.addWidget(button_box)
@@ -10366,7 +10930,7 @@ except Exception:
             toggle_border = "#b0b0b0"
             toggle_border_hover = "#a0a0a0"
             text_color = "#333333"
-        
+
         overlay_toggle_style = f"""
             QCheckBox {{
                 spacing: 6px;
@@ -10392,7 +10956,7 @@ except Exception:
                 background-color: #7c7ff5;
             }}
         """
-        
+
         settings_btn_style = """
             QPushButton {
                 background-color: transparent;
@@ -10407,20 +10971,24 @@ except Exception:
                 background-color: rgba(99, 102, 241, 0.35);
             }
         """
-        
+
         # Apply to overlay checkboxes
-        for checkbox in [self.show_beam_checkbox, self.show_grid_checkbox,
-                         self.show_solar_disk_checkbox, self.show_contours_checkbox]:
+        for checkbox in [
+            self.show_beam_checkbox,
+            self.show_grid_checkbox,
+            self.show_solar_disk_checkbox,
+            self.show_contours_checkbox,
+        ]:
             if hasattr(self, checkbox.objectName()) or checkbox:
                 checkbox.setStyleSheet(overlay_toggle_style)
-        
+
         # Apply to settings buttons
         for btn in [self.solar_disk_center_button, self.contour_settings_button]:
             if hasattr(self, btn.objectName()) or btn:
                 btn.setStyleSheet(settings_btn_style)
-        
+
         # Update Fast Load toggle style
-        if hasattr(self, 'downsample_toggle'):
+        if hasattr(self, "downsample_toggle"):
             fast_toggle_style = f"""
                 QCheckBox#FastLoadToggle {{
                     spacing: 0px;
@@ -10444,12 +11012,12 @@ except Exception:
                 }}
             """
             self.downsample_toggle.setStyleSheet(fast_toggle_style)
-        
+
         # Update Fast and RMS labels
         label_color = "#a5a8b8" if theme_manager.is_dark else "#555555"
-        if hasattr(self, 'fast_label'):
+        if hasattr(self, "fast_label"):
             self.fast_label.setStyleSheet(f"color: {label_color}; font-size: 10pt;")
-        if hasattr(self, 'rms_label'):
+        if hasattr(self, "rms_label"):
             self.rms_label.setStyleSheet(f"color: {label_color}; font-size: 10pt;")
 
     def refresh_icons(self):
@@ -10465,7 +11033,7 @@ except Exception:
             self.beam_settings_button.setIcon(QIcon(themed_icon("settings.png")))
         if hasattr(self, "grid_settings_button"):
             self.grid_settings_button.setIcon(QIcon(themed_icon("settings.png")))
-        
+
         # Update overlay toggle styles for theme
         self._update_overlay_toggle_styles()
 
@@ -10693,7 +11261,8 @@ class CustomTabBar(QTabBar):
         self.add_tab_button.setIcon(QIcon(themed_icon("add_tab_default.png")))
 
         # Update add button styling
-        self.add_tab_button.setStyleSheet(f"""
+        self.add_tab_button.setStyleSheet(
+            f"""
             QToolButton {{
                 background-color: transparent;
                 border: none;
@@ -10702,13 +11271,15 @@ class CustomTabBar(QTabBar):
             QToolButton:pressed {{
                 background-color: {button_pressed};
             }}
-        """)
+        """
+        )
 
         # Update tab bar styling with theme colors
         close_default = themed_icon("close_tab_default.png")
         close_hover = themed_icon("close_tab_hover.png")
 
-        self.setStyleSheet(f"""
+        self.setStyleSheet(
+            f"""
             QTabBar::tab {{
                 padding: 4px 12px 4px 8px;
                 margin: 0px 0px 0px 0px;
@@ -10742,7 +11313,8 @@ class CustomTabBar(QTabBar):
             QTabBar::close-button:hover {{
                 image: url("{close_hover}");
             }}
-        """)
+        """
+        )
 
 
 class CustomTabWidget(QTabWidget):
@@ -10791,12 +11363,12 @@ class CustomTabWidget(QTabWidget):
 class SolarRadioImageViewerApp(QMainWindow):
     def __init__(self, imagename=None):
         super().__init__()
-        
+
         # Initialize bundled fonts before any widgets are created
         theme_manager.initialize_fonts()
-        
+
         self.setWindowTitle("SolarViewer")
-        
+
         screen = QApplication.primaryScreen().availableGeometry()
         # Use 90% of available screen size, capped at reasonable maximums
         width = min(int(screen.width() * 0.90), 1920)
@@ -10814,11 +11386,11 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.max_tabs = 10
         self.settings = QSettings("SolarViewer", "SolarViewer")
         self._open_dialogs = []  # Track non-modal dialogs to prevent garbage collection
-        
+
         # Remote mode state
         self.remote_connection = None  # SSHConnection when connected
         self.remote_cache = None  # RemoteFileCache for downloaded files
-        
+
         # Remote connection status indicator in status bar (clickable)
         self.remote_status_btn = QPushButton("🔌 Not Connected")
         self.remote_status_btn.setFlat(True)
@@ -10832,7 +11404,7 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.update_btn = QPushButton("🚀 Update Available")
         self.update_btn.setFlat(True)
         self.update_btn.setCursor(Qt.PointingHandCursor)
-        self._update_update_btn_style() # Set initial style
+        self._update_update_btn_style()  # Set initial style
         self.update_btn.setVisible(False)
         self.update_btn.clicked.connect(self._on_update_clicked)
         self.statusBar().addPermanentWidget(self.update_btn)
@@ -10841,7 +11413,7 @@ class SolarRadioImageViewerApp(QMainWindow):
         self._update_thread = CheckUpdateThread()
         self._update_thread.update_available.connect(self._on_update_available)
         self._update_thread.start()
-        
+
         # Register for theme changes
         theme_manager.register_callback(self._on_theme_changed)
 
@@ -10876,23 +11448,24 @@ class SolarRadioImageViewerApp(QMainWindow):
 
     def _update_update_btn_style(self):
         """Update the update notification button style based on theme."""
-        if not hasattr(self, 'update_btn'):
+        if not hasattr(self, "update_btn"):
             return
-            
+
         is_dark = theme_manager.is_dark
-        
+
         if is_dark:
             # Current style that looks good in dark mode
-            color = "#10b981" # Emerald 500
+            color = "#10b981"  # Emerald 500
             bg_hover = "rgba(16, 185, 129, 0.1)"
             border_color = "#10b981"
         else:
             # Darker green for light theme (Emerald 600)
-            color = "#059669" 
+            color = "#059669"
             bg_hover = "rgba(5, 150, 105, 0.1)"
             border_color = "#059669"
-            
-        self.update_btn.setStyleSheet(f"""
+
+        self.update_btn.setStyleSheet(
+            f"""
             QPushButton {{
                 color: {color};
                 font-weight: bold;
@@ -10904,12 +11477,15 @@ class SolarRadioImageViewerApp(QMainWindow):
             QPushButton:hover {{
                 background-color: {bg_hover};
             }}
-        """)
+        """
+        )
 
     def _on_update_available(self, latest_ver):
         """Show the update button when an update is found."""
         self.update_btn.setText(f"🚀 Update Available: {latest_ver}")
-        self.update_btn.setToolTip(f"A new version ({latest_ver}) is available! Click to learn more.")
+        self.update_btn.setToolTip(
+            f"A new version ({latest_ver}) is available! Click to learn more."
+        )
         self.update_btn.setVisible(True)
         self.latest_version = latest_ver
 
@@ -10976,11 +11552,12 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Ensure add button is visible after adding a new tab
         QTimer.singleShot(100, self.ensureAddButtonVisible)
-    
+
     def show_log_console(self):
         """Show the embedded log console dialog."""
         try:
             from .log_console import LogConsole
+
             console = LogConsole.get_instance()
             console.show()
             console.raise_()
@@ -11008,30 +11585,37 @@ class SolarRadioImageViewerApp(QMainWindow):
         file_menu.addAction(open_fits_act)
 
         file_menu.addSeparator()
-        
+
         # Remote mode actions
         self.connect_remote_act = QAction("🌐 Connect to Remote Server...", self)
         self.connect_remote_act.setShortcut("Ctrl+Shift+R")
         self.connect_remote_act.setStatusTip("Connect to a remote server via SSH")
         self.connect_remote_act.triggered.connect(self.show_remote_connection_dialog)
         file_menu.addAction(self.connect_remote_act)
-        
+
         self.browse_remote_act = QAction("📁 Open Remote FITS File...", self)
-        self.browse_remote_act.setStatusTip("Open a FITS file from the connected remote server")
+        self.browse_remote_act.setStatusTip(
+            "Open a FITS file from the connected remote server"
+        )
         self.browse_remote_act.triggered.connect(self.show_remote_file_browser)
         self.browse_remote_act.setVisible(False)  # Hidden until connected
         file_menu.addAction(self.browse_remote_act)
-        
+
         self.disconnect_remote_act = QAction("❌ Disconnect from Remote", self)
         self.disconnect_remote_act.setStatusTip("Disconnect from the remote server")
         self.disconnect_remote_act.triggered.connect(self.disconnect_remote)
         self.disconnect_remote_act.setVisible(False)  # Hidden until connected
         file_menu.addAction(self.disconnect_remote_act)
-        
+
         self.clear_cache_act = QAction("🗑️ Clear Remote Cache...", self)
-        self.clear_cache_act.setStatusTip("Clear cached remote files to free up disk space")
+        self.clear_cache_act.setStatusTip(
+            "Clear cached remote files to free up disk space"
+        )
         self.clear_cache_act.triggered.connect(self.clear_remote_cache)
         file_menu.addAction(self.clear_cache_act)
+
+        # Update cache size when menu shows
+        file_menu.aboutToShow.connect(self._update_cache_menu_item)
 
         file_menu.addSeparator()
 
@@ -11098,12 +11682,11 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.log_console_action.triggered.connect(self.show_log_console)
         view_menu.addAction(self.log_console_action)
 
-
         view_menu.addSeparator()
-        
+
         # Preferences action
         preferences_action = QAction("⚙️ Preferences...", self)
-        #preferences_action.setShortcut("Ctrl+,")
+        # preferences_action.setShortcut("Ctrl+,")
         preferences_action.setStatusTip("Open application preferences (UI scale, etc.)")
         preferences_action.triggered.connect(self._open_preferences_dialog)
         view_menu.addAction(preferences_action)
@@ -11184,7 +11767,7 @@ class SolarRadioImageViewerApp(QMainWindow):
         gauss_act.triggered.connect(self.fit_2d_gaussian)
         fitting_menu.addAction(gauss_act)
         ring_act = QAction("Fit Elliptical Ring", self)
-        #ring_act.setShortcut("Ctrl+L")
+        # ring_act.setShortcut("Ctrl+L")
         ring_act.setStatusTip("Fit an elliptical ring to the selected region")
         ring_act.triggered.connect(self.fit_2d_ring)
         fitting_menu.addAction(ring_act)
@@ -11394,26 +11977,28 @@ class SolarRadioImageViewerApp(QMainWindow):
         cli_downloader_action.triggered.connect(self.launch_data_downloader_cli)
         download_menu.addAction(cli_downloader_action)"""
         help_menu = menubar.addMenu("&Help")
-        
-        '''tutorial_act = QAction("Tutorial", self)
+
+        """tutorial_act = QAction("Tutorial", self)
         tutorial_act.setStatusTip("Open comprehensive tutorial and user guide")
         tutorial_act.triggered.connect(self.show_tutorial)
-        help_menu.addAction(tutorial_act)'''
-        
+        help_menu.addAction(tutorial_act)"""
+
         shortcuts_act = QAction("Keyboard Shortcuts", self)
         shortcuts_act.setShortcut("F1")
         shortcuts_act.setStatusTip("Show keyboard shortcuts")
         shortcuts_act.triggered.connect(self.show_keyboard_shortcuts)
         help_menu.addAction(shortcuts_act)
-        about_act = QAction("About", self)
-        about_act.setStatusTip("Show information about this application")
-        about_act.triggered.connect(self.show_about_dialog)
-        help_menu.addAction(about_act)
 
         update_act = QAction("Check for Updates...", self)
         update_act.setStatusTip("Check for application updates")
         update_act.triggered.connect(self.show_update_dialog)
         help_menu.addAction(update_act)
+
+        about_act = QAction("About", self)
+        about_act.setStatusTip("Show information about this application")
+        about_act.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_act)
+
 
         # Tools menu
         # tools_menu = self.menuBar().addMenu("&Tools")
@@ -11504,7 +12089,10 @@ class SolarRadioImageViewerApp(QMainWindow):
     def _open_preferences_dialog(self):
         """Open the application preferences dialog (non-modal)."""
         # Reuse existing dialog or create new one
-        if hasattr(self, '_preferences_dialog') and self._preferences_dialog is not None:
+        if (
+            hasattr(self, "_preferences_dialog")
+            and self._preferences_dialog is not None
+        ):
             try:
                 self._preferences_dialog.raise_()
                 self._preferences_dialog.activateWindow()
@@ -11512,11 +12100,14 @@ class SolarRadioImageViewerApp(QMainWindow):
             except RuntimeError:
                 # Dialog was deleted
                 self._preferences_dialog = None
-        
+
         from .dialogs import PreferencesDialog
+
         self._preferences_dialog = PreferencesDialog(self)
         self._preferences_dialog.setAttribute(Qt.WA_DeleteOnClose)
-        self._preferences_dialog.destroyed.connect(lambda: setattr(self, '_preferences_dialog', None))
+        self._preferences_dialog.destroyed.connect(
+            lambda: setattr(self, "_preferences_dialog", None)
+        )
         self._preferences_dialog.show()
 
     def _on_theme_changed(self, new_theme):
@@ -11537,7 +12128,7 @@ class SolarRadioImageViewerApp(QMainWindow):
         for tab in self.tabs:
             tab.setStyleSheet(stylesheet)
             tab.refresh_icons()
-            #if hasattr(tab, '_available_stokes') and tab._available_stokes:
+            # if hasattr(tab, '_available_stokes') and tab._available_stokes:
             #    tab._update_stokes_combo_state(tab._available_stokes)
 
         # Refresh tab bar theme (colors and icons)
@@ -11548,7 +12139,7 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Refresh all matplotlib plots
         self.refresh_all_plots()
-        
+
         # Update notification button style
         self._update_update_btn_style()
 
@@ -11561,7 +12152,7 @@ class SolarRadioImageViewerApp(QMainWindow):
 
     def _update_application_palette(self):
         """Update the Qt application palette to match the current theme.
-        
+
         This is critical for matplotlib's NavigationToolbar which reads icon
         colors from the palette's foreground role (WindowText color).
         """
@@ -11577,14 +12168,17 @@ class SolarRadioImageViewerApp(QMainWindow):
         qt_palette.setColor(QPalette.Highlight, QColor(palette["highlight"]))
         qt_palette.setColor(QPalette.HighlightedText, Qt.white)
         qt_palette.setColor(QPalette.Link, QColor(palette["highlight"]))
-        qt_palette.setColor(QPalette.Disabled, QPalette.Text, QColor(palette["disabled"]))
-        qt_palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(palette["disabled"]))
-        
+        qt_palette.setColor(
+            QPalette.Disabled, QPalette.Text, QColor(palette["disabled"])
+        )
+        qt_palette.setColor(
+            QPalette.Disabled, QPalette.ButtonText, QColor(palette["disabled"])
+        )
+
         app = QApplication.instance()
         if app:
             app.setPalette(qt_palette)
             app.setStyleSheet(theme_manager.stylesheet)
-
 
     def refresh_all_plots(self):
         """Refresh all matplotlib plots to apply new theme colors."""
@@ -11634,7 +12228,9 @@ class SolarRadioImageViewerApp(QMainWindow):
                                 ax.coords.frame.set_color(text_color)
                         except Exception as e:
                             print(f"[ERROR] Error updating WCSAxes colors: {e}")
-                            self.show_status_message(f"Error updating WCSAxes colors: {e}")
+                            self.show_status_message(
+                                f"Error updating WCSAxes colors: {e}"
+                            )
 
                 # Redraw canvas
                 if hasattr(tab, "canvas") and tab.canvas:
@@ -11767,21 +12363,21 @@ class SolarRadioImageViewerApp(QMainWindow):
             )
             if not path:
                 return
-            
+
             # Check if source is a CASA image (directory)
-            if hasattr(current_tab, 'imagename') and current_tab.imagename:
+            if hasattr(current_tab, "imagename") and current_tab.imagename:
                 source_image = current_tab.imagename
             else:
                 source_image = None
-            
+
             # If source is a CASA image directory, use casatask exportfits
             if source_image and os.path.isdir(source_image):
                 try:
                     import subprocess
                     import sys
-                    
+
                     # Run exportfits in subprocess with stokes='all'
-                    script = f'''
+                    script = f"""
 import sys
 from casatasks import exportfits
 try:
@@ -11790,43 +12386,54 @@ try:
 except Exception as e:
     print(f"ERROR: {{e}}", file=sys.stderr)
     sys.exit(1)
-'''
+"""
                     result = subprocess.run(
-                        [sys.executable, "-c", script],
-                        capture_output=True,
-                        text=True
+                        [sys.executable, "-c", script], capture_output=True, text=True
                     )
-                    
+
                     if result.returncode != 0:
                         raise RuntimeError(f"exportfits failed: {result.stderr}")
-                    
-                    QMessageBox.information(self, "Exported", f"CASA image exported to {path}")
+
+                    QMessageBox.information(
+                        self, "Exported", f"CASA image exported to {path}"
+                    )
                     return
                 except Exception as e:
-                    QMessageBox.critical(self, "Export Error", f"Failed to export CASA image: {str(e)}")
+                    QMessageBox.critical(
+                        self, "Export Error", f"Failed to export CASA image: {str(e)}"
+                    )
                     return
-            
+
             # For FITS files, copy the original with all data and metadata
-            if source_image and (source_image.endswith('.fits') or source_image.endswith('.fts')):
+            if source_image and (
+                source_image.endswith(".fits") or source_image.endswith(".fts")
+            ):
                 try:
                     import shutil
+
                     # If saving to a different location, copy the original file
                     if os.path.abspath(source_image) != os.path.abspath(path):
                         shutil.copy2(source_image, path)
-                        QMessageBox.information(self, "Exported", f"FITS file exported to {path}")
+                        QMessageBox.information(
+                            self, "Exported", f"FITS file exported to {path}"
+                        )
                     else:
-                        QMessageBox.warning(self, "Same File", "Source and destination are the same file.")
+                        QMessageBox.warning(
+                            self,
+                            "Same File",
+                            "Source and destination are the same file.",
+                        )
                     return
                 except Exception as e:
                     # Fall back to creating from current data if copy fails
                     pass
-            
+
             # Fallback: create FITS from current_image_data with header
             # Get the original header if available
             original_header = None
-            if hasattr(current_tab, 'current_header') and current_tab.current_header:
+            if hasattr(current_tab, "current_header") and current_tab.current_header:
                 original_header = current_tab.current_header
-            
+
             # Create HDU with data
             if original_header:
                 # Convert dict to FITS Header if needed
@@ -11834,13 +12441,13 @@ except Exception as e:
                     header = fits.Header()
                     for key, value in original_header.items():
                         # Skip problematic keys and ensure valid FITS keywords
-                        if key in ['SIMPLE', 'BITPIX', 'NAXIS', 'EXTEND', '']:
+                        if key in ["SIMPLE", "BITPIX", "NAXIS", "EXTEND", ""]:
                             continue
-                        if key.startswith('NAXIS'):
+                        if key.startswith("NAXIS"):
                             continue
                         try:
                             # Handle COMMENT and HISTORY specially
-                            if key in ['COMMENT', 'HISTORY']:
+                            if key in ["COMMENT", "HISTORY"]:
                                 if isinstance(value, list):
                                     for v in value:
                                         header[key] = str(v)
@@ -11854,14 +12461,16 @@ except Exception as e:
                     hdu = fits.PrimaryHDU(current_tab.current_image_data, header=header)
                 else:
                     # Already a FITS header
-                    hdu = fits.PrimaryHDU(current_tab.current_image_data, header=original_header)
+                    hdu = fits.PrimaryHDU(
+                        current_tab.current_image_data, header=original_header
+                    )
             else:
                 # No header available, create basic HDU
                 hdu = fits.PrimaryHDU(current_tab.current_image_data)
-            
+
             # Add HISTORY entry
-            hdu.header.add_history('Exported with SolarViewer')
-            
+            hdu.header.add_history("Exported with SolarViewer")
+
             hdul = fits.HDUList([hdu])
             hdul.writeto(path, overwrite=True)
             QMessageBox.information(self, "Exported", f"Data saved to {path}")
@@ -11887,110 +12496,132 @@ except Exception as e:
             import sys
 
             # Get source image path
-            if hasattr(current_tab, 'imagename') and current_tab.imagename:
+            if hasattr(current_tab, "imagename") and current_tab.imagename:
                 source_image = current_tab.imagename
             else:
                 QMessageBox.warning(self, "No Source", "No source image file available")
                 return
-            
+
             # Suggest a default output name based on source
-            default_name = os.path.splitext(os.path.basename(source_image))[0] + ".image"
-            
+            default_name = (
+                os.path.splitext(os.path.basename(source_image))[0] + ".image"
+            )
+
             # Ask user for output path and name
             output_image, _ = QFileDialog.getSaveFileName(
-                self, "Export as CASA Image", default_name, 
-                "CASA Image (*.image);;All Files (*)"
+                self,
+                "Export as CASA Image",
+                default_name,
+                "CASA Image (*.image);;All Files (*)",
             )
             if not output_image:
                 return
-            
+
             # Ensure it has .image extension
-            if not output_image.endswith('.image'):
-                output_image += '.image'
-            
+            if not output_image.endswith(".image"):
+                output_image += ".image"
+
             # Check if output already exists
             if os.path.exists(output_image):
                 reply = QMessageBox.question(
-                    self, "Overwrite?",
+                    self,
+                    "Overwrite?",
                     f"'{output_image}' already exists. Do you want to overwrite it?",
-                    QMessageBox.Yes | QMessageBox.No
+                    QMessageBox.Yes | QMessageBox.No,
                 )
                 if reply == QMessageBox.No:
                     return
                 import shutil
+
                 shutil.rmtree(output_image)
-            
+
             # If source is already a CASA image, copy it
             if os.path.isdir(source_image):
                 import shutil
+
                 shutil.copytree(source_image, output_image)
-                QMessageBox.information(self, "Exported", f"CASA image exported to {output_image}")
+                QMessageBox.information(
+                    self, "Exported", f"CASA image exported to {output_image}"
+                )
                 return
-            
+
             # If source is a FITS file, use importfits via subprocess
-            if source_image.endswith('.fits') or source_image.endswith('.fts'):
+            if source_image.endswith(".fits") or source_image.endswith(".fts"):
                 # Check coordinate system
                 import tempfile
+
                 fits_to_import = source_image
                 is_hpc_converted = False
-                
+
                 try:
                     from astropy.io import fits as afits
+
                     with afits.open(source_image) as hdul:
                         header = hdul[0].header
-                        ctype1 = header.get('CTYPE1', '').upper()
-                        ctype2 = header.get('CTYPE2', '').upper()
-                        
+                        ctype1 = header.get("CTYPE1", "").upper()
+                        ctype2 = header.get("CTYPE2", "").upper()
+
                         # Check for helioprojective coordinates
-                        if 'HPLN' in ctype1 or 'HPLN' in ctype2 or 'HPLT' in ctype1 or 'HPLT' in ctype2:
+                        if (
+                            "HPLN" in ctype1
+                            or "HPLN" in ctype2
+                            or "HPLT" in ctype1
+                            or "HPLT" in ctype2
+                        ):
                             # Convert HPC to RA/Dec first
                             from .helioprojective import convert_hpc_to_radec
-                            
+
                             temp_radec_file = os.path.join(
                                 tempfile.gettempdir(),
-                                f"solarviewer_radec_export_{os.getpid()}.fits"
+                                f"solarviewer_radec_export_{os.getpid()}.fits",
                             )
-                            
+
                             QApplication.setOverrideCursor(Qt.WaitCursor)
-                            success = convert_hpc_to_radec(source_image, temp_radec_file, overwrite=True)
+                            success = convert_hpc_to_radec(
+                                source_image, temp_radec_file, overwrite=True
+                            )
                             QApplication.restoreOverrideCursor()
-                            
+
                             if not success:
                                 QMessageBox.warning(
-                                    self, "Conversion Failed",
-                                    "Failed to convert helioprojective coordinates to RA/Dec."
+                                    self,
+                                    "Conversion Failed",
+                                    "Failed to convert helioprojective coordinates to RA/Dec.",
                                 )
                                 return
-                            
+
                             fits_to_import = temp_radec_file
                             is_hpc_converted = True
-                        
+
                         # Check for other unsupported coordinate systems
-                        elif not ('RA' in ctype1 or 'DEC' in ctype2 or 'GLON' not in ctype1):
+                        elif not (
+                            "RA" in ctype1 or "DEC" in ctype2 or "GLON" not in ctype1
+                        ):
                             # Block galactic, ecliptic, and other non-celestial coordinates
                             unsupported_types = []
-                            if 'GLON' in ctype1 or 'GLAT' in ctype2:
+                            if "GLON" in ctype1 or "GLAT" in ctype2:
                                 unsupported_types.append("Galactic")
-                            elif 'ELON' in ctype1 or 'ELAT' in ctype2:
+                            elif "ELON" in ctype1 or "ELAT" in ctype2:
                                 unsupported_types.append("Ecliptic")
-                            elif 'SLON' in ctype1 or 'SLAT' in ctype2:
+                            elif "SLON" in ctype1 or "SLAT" in ctype2:
                                 unsupported_types.append("Supergalactic")
                             else:
                                 unsupported_types.append(f"{ctype1}/{ctype2}")
-                            
+
                             if unsupported_types:
                                 QMessageBox.warning(
-                                    self, "Unsupported Coordinates",
+                                    self,
+                                    "Unsupported Coordinates",
                                     f"This FITS file uses {', '.join(unsupported_types)} coordinates.\n\n"
                                     "Only RA/Dec (celestial) and helioprojective (Solar-X/Y) "
-                                    "coordinate systems are supported for CASA export."
+                                    "coordinate systems are supported for CASA export.",
                                 )
                                 return
                 except Exception as e:
                     pass  # If we can't check, proceed anyway
-                
+
                 # Run importfits
-                script = f'''
+                script = f"""
 import sys
 from casatasks import importfits
 try:
@@ -11999,35 +12630,40 @@ try:
 except Exception as e:
     print(f"ERROR: {{e}}", file=sys.stderr)
     sys.exit(1)
-'''
+"""
                 result = subprocess.run(
-                    [sys.executable, "-c", script],
-                    capture_output=True,
-                    text=True
+                    [sys.executable, "-c", script], capture_output=True, text=True
                 )
-                
+
                 # Clean up temp file if we created one
                 if is_hpc_converted and os.path.exists(fits_to_import):
                     try:
                         os.remove(fits_to_import)
                     except:
                         pass
-                
+
                 if result.returncode != 0:
                     raise RuntimeError(f"importfits failed: {result.stderr}")
-                
+
                 if is_hpc_converted:
                     QMessageBox.information(
-                        self, "Exported",
+                        self,
+                        "Exported",
                         f"CASA image exported to:\n{output_image}\n\n"
-                        "Note: Helioprojective coordinates were converted to RA/Dec."
+                        "Note: Helioprojective coordinates were converted to RA/Dec.",
                     )
                 else:
-                    QMessageBox.information(self, "Exported", f"FITS converted to CASA image: {output_image}")
+                    QMessageBox.information(
+                        self,
+                        "Exported",
+                        f"FITS converted to CASA image: {output_image}",
+                    )
                 return
-            
-            QMessageBox.warning(self, "Unsupported", "Source must be a FITS file or CASA image")
-            
+
+            QMessageBox.warning(
+                self, "Unsupported", "Source must be a FITS file or CASA image"
+            )
+
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
 
@@ -12108,7 +12744,13 @@ except Exception as e:
 
         dialog = BatchProcessDialog(self)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
         dialog.show()
 
@@ -12124,7 +12766,13 @@ except Exception as e:
 
             dialog = ImageInfoDialog(self, metadata=metadata)
             dialog.setAttribute(Qt.WA_DeleteOnClose)
-            dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+            dialog.destroyed.connect(
+                lambda: (
+                    self._open_dialogs.remove(dialog)
+                    if dialog in self._open_dialogs
+                    else None
+                )
+            )
             self._open_dialogs.append(dialog)
             dialog.show()
         except Exception as e:
@@ -12219,41 +12867,48 @@ except Exception as e:
         if not current_tab or not current_tab.imagename:
             QMessageBox.warning(self, "No Image", "Please load an image first.")
             return
-        
+
         # Require ROI selection - check if selector exists and is visible
         has_visible_roi = False
-        if (current_tab.current_roi and 
-            isinstance(current_tab.current_roi, tuple) and
-            current_tab.roi_selector):
-            
+        if (
+            current_tab.current_roi
+            and isinstance(current_tab.current_roi, tuple)
+            and current_tab.roi_selector
+        ):
+
             # Check if selector's artist is visible
             # Both RectangleSelector and EllipseSelector have 'to_draw' artist
-            if hasattr(current_tab.roi_selector, 'to_draw'):
+            if hasattr(current_tab.roi_selector, "to_draw"):
                 has_visible_roi = current_tab.roi_selector.to_draw.get_visible()
             # Fallback for older matplotlib versions or if to_draw is missing
-            elif hasattr(current_tab.roi_selector, 'artists'):
-                has_visible_roi = any(a.get_visible() for a in current_tab.roi_selector.artists)
-                
+            elif hasattr(current_tab.roi_selector, "artists"):
+                has_visible_roi = any(
+                    a.get_visible() for a in current_tab.roi_selector.artists
+                )
+
         if not has_visible_roi:
-            QMessageBox.warning(self, "No ROI", "Please select a region of interest (ROI) first.\n\nUse the ROI tool to draw a box around the source.")
+            QMessageBox.warning(
+                self,
+                "No ROI",
+                "Please select a region of interest (ROI) first.\n\nUse the ROI tool to draw a box around the source.",
+            )
             return
 
         imagename = current_tab.imagename
-        
+
         # Get current Stokes from left panel (may be in tab or main app)
         # CASA imfit only accepts standard Stokes: I, Q, U, V
         stokes = "I"
-        if hasattr(self, 'stokes_combo') and self.stokes_combo:
+        if hasattr(self, "stokes_combo") and self.stokes_combo:
             selected_stokes = self.stokes_combo.currentText()
             if selected_stokes in ["I", "Q", "U", "V"]:
                 stokes = selected_stokes
             # For derived parameters (L, Lfrac, etc), fall back to I
-        elif hasattr(current_tab, 'stokes_combo') and current_tab.stokes_combo:
+        elif hasattr(current_tab, "stokes_combo") and current_tab.stokes_combo:
             selected_stokes = current_tab.stokes_combo.currentText()
             if selected_stokes in ["I", "Q", "U", "V"]:
                 stokes = selected_stokes
-        
-        
+
         # Ask user about zero-level offset
         reply = QMessageBox.question(
             self,
@@ -12262,56 +12917,61 @@ except Exception as e:
             "Yes: Fit a constant background level\n"
             "No: Assume zero background",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes 
+            QMessageBox.Yes,
         )
-        dooff = (reply == QMessageBox.Yes)
-            
+        dooff = reply == QMessageBox.Yes
+
         try:
             import subprocess
             import sys
             import tempfile
             import os
             import json
-            
+
             # Box format: 'x1,y1,x2,y2' (pixel coordinates)
             box = ""
             if current_tab.current_roi and isinstance(current_tab.current_roi, tuple):
                 xlow, xhigh, ylow, yhigh = current_tab.current_roi
-                
+
                 # Shrink by 1 pixel safety margin
                 safe_xlow = xlow + 1
                 safe_ylow = ylow + 1
                 safe_xhigh = xhigh - 1 - 1  # Exclusive -> Inclusive (-1) -> Shrink (-1)
                 safe_yhigh = yhigh - 1 - 1  # Exclusive -> Inclusive (-1) -> Shrink (-1)
-                
-                
+
                 # Clamp to image dimensions to prevent out-of-bounds errors
                 if current_tab.current_image_data is not None:
-                     ny, nx = current_tab.current_image_data.shape
-                     safe_xlow = max(0, min(safe_xlow, nx - 1))
-                     safe_xhigh = max(0, min(safe_xhigh, nx - 1))
-                     safe_ylow = max(0, min(safe_ylow, ny - 1)) 
-                     safe_yhigh = max(0, min(safe_yhigh, ny - 1))
-                
+                    ny, nx = current_tab.current_image_data.shape
+                    safe_xlow = max(0, min(safe_xlow, nx - 1))
+                    safe_xhigh = max(0, min(safe_xhigh, nx - 1))
+                    safe_ylow = max(0, min(safe_ylow, ny - 1))
+                    safe_yhigh = max(0, min(safe_yhigh, ny - 1))
+
                 # Ensure valid bounds (don't cross over or be invalid)
                 if safe_xhigh <= safe_xlow:
-                    QMessageBox.warning(self, "Invalid ROI", "Invalid ROI: xhigh <= xlow")
+                    QMessageBox.warning(
+                        self, "Invalid ROI", "Invalid ROI: xhigh <= xlow"
+                    )
                     return
                 if safe_yhigh <= safe_ylow:
-                    QMessageBox.warning(self, "Invalid ROI", "Invalid ROI: yhigh <= ylow")
+                    QMessageBox.warning(
+                        self, "Invalid ROI", "Invalid ROI: yhigh <= ylow"
+                    )
                     return
-                
+
                 box = f"{safe_ylow},{safe_xlow},{safe_yhigh},{safe_xhigh}"  # box uses col,row order (x,y)
-            
+
             # Create temp file for results
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False
+            ) as f:
                 result_file = f.name
-            
+
             # Show wait cursor during fitting
             QApplication.setOverrideCursor(Qt.WaitCursor)
             self.statusBar().showMessage("Fitting Gaussian ... Please wait")
             QApplication.processEvents()
-            
+
             # Run imfit in a subprocess to avoid casatasks/PyQt5 conflicts
             dooff_str = "True" if dooff else "False"
             script = f'''
@@ -12481,14 +13141,14 @@ except Exception as e:
     with open(result_file, "w") as f:
         json.dump({{"success": False, "error": str(e), "traceback": traceback.format_exc()}}, f)
 '''
-            
+
             # Run the script in a subprocess
             env = os.environ.copy()
             # Clear Qt plugin paths to avoid conflicts
             for key in ["QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH"]:
                 if key in env:
                     del env[key]
-            
+
             process = subprocess.run(
                 [sys.executable, "-c", script],
                 capture_output=True,
@@ -12496,29 +13156,29 @@ except Exception as e:
                 env=env,
                 timeout=120,  # 2 minute timeout
             )
-            
+
             # Check if subprocess had errors
             if process.returncode != 0:
                 QApplication.restoreOverrideCursor()
                 error_msg = process.stderr or process.stdout or "Unknown error"
-                QMessageBox.warning(self, "Fit Error", f"imfit subprocess failed:\n{error_msg}")
+                QMessageBox.warning(
+                    self, "Fit Error", f"imfit subprocess failed:\n{error_msg}"
+                )
                 if os.path.exists(result_file):
                     os.remove(result_file)
                 return
-            
 
-            
             # Read results from temp file
             if not os.path.exists(result_file):
                 QApplication.restoreOverrideCursor()
                 QMessageBox.warning(self, "Fit Error", "No results from fitting")
                 return
-            
-            with open(result_file, 'r') as f:
+
+            with open(result_file, "r") as f:
                 output = json.load(f)
-            
+
             os.remove(result_file)
-            
+
             if not output.get("success", False):
                 QApplication.restoreOverrideCursor()
                 error = output.get("error", "Unknown error")
@@ -12526,13 +13186,15 @@ except Exception as e:
                 print(f"[ERROR] Fitting failed: {error}\n{tb}")
                 QMessageBox.warning(self, "Fit Error", f"Fitting failed: {error}")
                 return
-            
+
             results = output.get("results", {})
             if not results:
                 QApplication.restoreOverrideCursor()
-                QMessageBox.warning(self, "Fit Failed", "No components fitted in Gaussian fit")
+                QMessageBox.warning(
+                    self, "Fit Failed", "No components fitted in Gaussian fit"
+                )
                 return
-            
+
             # Helper function for smart unit formatting
             def format_smart_arcsec(value_arcsec):
                 """Convert arcsec to appropriate unit (arcsec, arcmin, or deg)"""
@@ -12541,8 +13203,8 @@ except Exception as e:
                 elif abs(value_arcsec) >= 60:
                     return f"{value_arcsec / 60:.3f}'"
                 else:
-                    return f"{value_arcsec:.3f}\""
-            
+                    return f'{value_arcsec:.3f}"'
+
             # Extract results
             ra_rad = results.get("ra_rad", 0)
             dec_rad = results.get("dec_rad", 0)
@@ -12551,41 +13213,42 @@ except Exception as e:
             # Errors already in arcsec from subprocess
             ra_err_arcsec = results.get("ra_err_arcsec")
             dec_err_arcsec = results.get("dec_err_arcsec")
-            
+
             major_arcsec = results.get("major_arcsec", 0)
             minor_arcsec = results.get("minor_arcsec", 0)
             pa_deg = results.get("pa_deg", 0)
-            
+
             flux = results.get("flux", 0)
             flux_unit = results.get("flux_unit", "Jy")
             flux_err = results.get("flux_err")
             peak_flux = results.get("peak_flux")
             peak_unit = results.get("peak_unit", flux_unit)
             peak_err = results.get("peak_err")
-            
+
             # Errors for shape
             major_err = results.get("major_err")
             minor_err = results.get("minor_err")
             pa_err = results.get("pa_err")
-            
+
             deconv_major = results.get("deconv_major", 0)
             deconv_minor = results.get("deconv_minor", 0)
             deconv_pa = results.get("deconv_pa")
             deconv_major_err = results.get("deconv_major_err")
             deconv_minor_err = results.get("deconv_minor_err")
             deconv_pa_err = results.get("deconv_pa_err")
-            
+
             offset = results.get("offset", 0)
             offset_unit = results.get("offset_unit", "")
             offset_err = results.get("offset_err")
-            
+
             # Convert to HMS/DMS
             from astropy.coordinates import SkyCoord
             import astropy.units as u
-            coord = SkyCoord(ra=ra_deg*u.deg, dec=dec_deg*u.deg)
-            ra_hms = coord.ra.to_string(unit=u.hourangle, sep=':', precision=2)
-            dec_dms = coord.dec.to_string(unit=u.deg, sep=':', precision=2)
-            
+
+            coord = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)
+            ra_hms = coord.ra.to_string(unit=u.hourangle, sep=":", precision=2)
+            dec_dms = coord.dec.to_string(unit=u.deg, sep=":", precision=2)
+
             # Get pixel coordinates if available
             ra_pix = None
             dec_pix = None
@@ -12593,15 +13256,19 @@ except Exception as e:
                 try:
                     # Try with just RA/Dec (2 axes) first, then 4 axes
                     try:
-                        pix = current_tab.current_wcs.topixel([ra_rad, dec_rad])["numeric"]
+                        pix = current_tab.current_wcs.topixel([ra_rad, dec_rad])[
+                            "numeric"
+                        ]
                     except:
                         # Use 4 axes but suppress warning by using valid stokes index 1
-                        pix = current_tab.current_wcs.topixel([ra_rad, dec_rad, 1, 1])["numeric"]
+                        pix = current_tab.current_wcs.topixel([ra_rad, dec_rad, 1, 1])[
+                            "numeric"
+                        ]
                     ra_pix = pix[0]
                     dec_pix = pix[1]
                 except:
                     pass
-            
+
             # Beam parameters
             beam_major = 0
             beam_minor = 0
@@ -12612,25 +13279,25 @@ except Exception as e:
                         beam_major = float(current_tab.psf["major"]["value"][0])
                     else:
                         beam_major = float(current_tab.psf["major"]["value"])
-                    
+
                     if isinstance(current_tab.psf["minor"]["value"], list):
                         beam_minor = float(current_tab.psf["minor"]["value"][0])
                     else:
                         beam_minor = float(current_tab.psf["minor"]["value"])
-                    
+
                     if isinstance(current_tab.psf["positionangle"]["value"], list):
                         beam_pa = float(current_tab.psf["positionangle"]["value"][0])
                     else:
                         beam_pa = float(current_tab.psf["positionangle"]["value"])
                 except:
                     pass
-            
+
             # Helper to format value with error
             def fmt_with_err(val_str, err, unit=""):
                 if err is not None:
                     return f"{val_str} ± {err:.3f}{unit}"
                 return val_str
-            
+
             # Professional terminal output
             print("\n" + "=" * 70)
             print("           2D GAUSSIAN FIT RESULTS")
@@ -12638,36 +13305,44 @@ except Exception as e:
             print("-" * 70)
             print(f"  {'Parameter':<25} {'Value':>25} {'Error':>15}")
             print("-" * 70)
-            
+
             # Position - show errors on deg rows with smart units
             print(f"  {'RA (HMS)':<25} {ra_hms:>25}")
             print(f"  {'Dec (DMS)':<25} {dec_dms:>25}")
-            ra_err_str = f"± {format_smart_arcsec(ra_err_arcsec)}" if ra_err_arcsec else ""
-            dec_err_str = f"± {format_smart_arcsec(dec_err_arcsec)}" if dec_err_arcsec else ""
+            ra_err_str = (
+                f"± {format_smart_arcsec(ra_err_arcsec)}" if ra_err_arcsec else ""
+            )
+            dec_err_str = (
+                f"± {format_smart_arcsec(dec_err_arcsec)}" if dec_err_arcsec else ""
+            )
             print(f"  {'RA (deg)':<25} {ra_deg:>25.6f} {ra_err_str:>15}")
             print(f"  {'Dec (deg)':<25} {dec_deg:>25.6f} {dec_err_str:>15}")
             if ra_pix is not None:
                 print(f"  {'RA (pix)':<25} {ra_pix:>25.2f}")
                 print(f"  {'Dec (pix)':<25} {dec_pix:>25.2f}")
-            
+
             print("-" * 70)
             print("  IMAGE COMPONENT SIZE (convolved with beam):")
             major_str = format_smart_arcsec(major_arcsec)
             minor_str = format_smart_arcsec(minor_arcsec)
-            major_err_str = f"± {major_err:.3f}\"" if major_err else ""
-            minor_err_str = f"± {minor_err:.3f}\"" if minor_err else ""
+            major_err_str = f'± {major_err:.3f}"' if major_err else ""
+            minor_err_str = f'± {minor_err:.3f}"' if minor_err else ""
             pa_err_str = f"± {pa_err:.2f}" if pa_err else ""
             print(f"  {'Major axis FWHM':<25} {major_str:>25} {major_err_str:>15}")
             print(f"  {'Minor axis FWHM':<25} {minor_str:>25} {minor_err_str:>15}")
             print(f"  {'Position Angle (deg)':<25} {pa_deg:>25.2f} {pa_err_str:>15}")
-            
+
             if beam_major > 0:
                 print("-" * 70)
                 print("  CLEAN BEAM SIZE:")
-                print(f"  {'Major axis FWHM':<25} {format_smart_arcsec(beam_major):>25}")
-                print(f"  {'Minor axis FWHM':<25} {format_smart_arcsec(beam_minor):>25}")
+                print(
+                    f"  {'Major axis FWHM':<25} {format_smart_arcsec(beam_major):>25}"
+                )
+                print(
+                    f"  {'Minor axis FWHM':<25} {format_smart_arcsec(beam_minor):>25}"
+                )
                 print(f"  {'Position Angle (deg)':<25} {beam_pa:>25.2f}")
-            
+
             deconv_info = ""
             deconv_theta_info = ""
             if deconv_major > 0 or deconv_minor > 0:
@@ -12675,49 +13350,67 @@ except Exception as e:
                 print("  IMAGE COMPONENT SIZE (deconvolved from beam):")
                 if deconv_major > 0:
                     deconv_maj_str = format_smart_arcsec(deconv_major)
-                    deconv_maj_err_str = f"± {deconv_major_err:.3f}\"" if deconv_major_err else ""
-                    print(f"  {'Major axis FWHM':<25} {deconv_maj_str:>25} {deconv_maj_err_str:>15}")
+                    deconv_maj_err_str = (
+                        f'± {deconv_major_err:.3f}"' if deconv_major_err else ""
+                    )
+                    print(
+                        f"  {'Major axis FWHM':<25} {deconv_maj_str:>25} {deconv_maj_err_str:>15}"
+                    )
                 else:
                     print(f"  {'Major axis FWHM':<25} {'Unresolved':>25}")
                 if deconv_minor > 0:
                     deconv_min_str = format_smart_arcsec(deconv_minor)
-                    deconv_min_err_str = f"± {deconv_minor_err:.3f}\"" if deconv_minor_err else ""
-                    print(f"  {'Minor axis FWHM':<25} {deconv_min_str:>25} {deconv_min_err_str:>15}")
+                    deconv_min_err_str = (
+                        f'± {deconv_minor_err:.3f}"' if deconv_minor_err else ""
+                    )
+                    print(
+                        f"  {'Minor axis FWHM':<25} {deconv_min_str:>25} {deconv_min_err_str:>15}"
+                    )
                 else:
                     print(f"  {'Minor axis FWHM':<25} {'Unresolved':>25}")
                 if deconv_pa is not None:
-                    deconv_pa_err_str = f"± {deconv_pa_err:.2f}" if deconv_pa_err else ""
-                    print(f"  {'Position Angle (deg)':<25} {deconv_pa:>25.2f} {deconv_pa_err_str:>15}")
+                    deconv_pa_err_str = (
+                        f"± {deconv_pa_err:.2f}" if deconv_pa_err else ""
+                    )
+                    print(
+                        f"  {'Position Angle (deg)':<25} {deconv_pa:>25.2f} {deconv_pa_err_str:>15}"
+                    )
                 else:
                     print(f"  {'Position Angle (deg)':<25} {'N/A':>25}")
-                
+
                 # Build deconv info for GUI
-                deconv_maj_str = format_smart_arcsec(deconv_major) if deconv_major > 0 else "Unres"
-                deconv_min_str = format_smart_arcsec(deconv_minor) if deconv_minor > 0 else "Unres"
+                deconv_maj_str = (
+                    format_smart_arcsec(deconv_major) if deconv_major > 0 else "Unres"
+                )
+                deconv_min_str = (
+                    format_smart_arcsec(deconv_minor) if deconv_minor > 0 else "Unres"
+                )
                 deconv_info = f"\nDeconv: {deconv_maj_str} × {deconv_min_str}"
                 if deconv_pa is not None:
                     deconv_theta_info = f"\nDeconv PA: {deconv_pa:.1f}°"
-            
+
             print("-" * 70)
             print("  FLUX:")
             flux_str = f"{flux:.4g} {flux_unit}"
             flux_err_str = f"± {flux_err:.4g}" if flux_err else ""
             print(f"  {'Integrated':<25} {flux_str:>25} {flux_err_str:>15}")
-            
+
             if peak_flux is not None:
                 peak_str = f"{peak_flux:.4g} {peak_unit}"
                 peak_err_str = f"± {peak_err:.4g}" if peak_err else ""
                 print(f"  {'Peak':<25} {peak_str:>25} {peak_err_str:>15}")
-            
+
             if offset != 0 or offset_err:
                 offset_str = f"{offset:.4g} {offset_unit}"
                 offset_err_str = f"± {offset_err:.4g}" if offset_err else ""
-                print(f"  {'Zero-level offset':<25} {offset_str:>25} {offset_err_str:>15}")
-            
+                print(
+                    f"  {'Zero-level offset':<25} {offset_str:>25} {offset_err_str:>15}"
+                )
+
             print("=" * 70 + "\n")
 
             QApplication.restoreOverrideCursor()
-            
+
             # GUI message (compact version)
             msg = (
                 f"2D Gaussian Fit:\n"
@@ -12728,21 +13421,25 @@ except Exception as e:
                 f"{deconv_info}"
                 f"{deconv_theta_info}"
             )
-            
+
             QMessageBox.information(self, "Fit Result", msg)
             self.statusBar().showMessage("Gaussian fit completed", 3000)
-            
+
         except subprocess.TimeoutExpired:
             QApplication.restoreOverrideCursor()
-            QMessageBox.warning(self, "Timeout", "Gaussian fit took too long to complete")
+            QMessageBox.warning(
+                self, "Timeout", "Gaussian fit took too long to complete"
+            )
         except Exception as e:
             QApplication.restoreOverrideCursor()
             import traceback
+
             traceback.print_exc()
             QMessageBox.warning(self, "Fit Error", f"Gaussian fit failed: {str(e)}")
 
     def fit_2d_ring(self):
         from scipy.optimize import curve_fit
+
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
             QMessageBox.warning(self, "No Data", "Load data first.")
@@ -12753,16 +13450,24 @@ except Exception as e:
 
         # Check for visible ROI
         has_visible_roi = False
-        if (current_tab.current_roi and 
-            isinstance(current_tab.current_roi, tuple) and
-            current_tab.roi_selector):
-            if hasattr(current_tab.roi_selector, 'to_draw'):
+        if (
+            current_tab.current_roi
+            and isinstance(current_tab.current_roi, tuple)
+            and current_tab.roi_selector
+        ):
+            if hasattr(current_tab.roi_selector, "to_draw"):
                 has_visible_roi = current_tab.roi_selector.to_draw.get_visible()
-            elif hasattr(current_tab.roi_selector, 'artists'):
-                has_visible_roi = any(a.get_visible() for a in current_tab.roi_selector.artists)
-        
+            elif hasattr(current_tab.roi_selector, "artists"):
+                has_visible_roi = any(
+                    a.get_visible() for a in current_tab.roi_selector.artists
+                )
+
         if not has_visible_roi:
-            QMessageBox.warning(self, "No ROI", "Please select a region of interest (ROI) first.\n\nUse the ROI tool to draw a box around the source.")
+            QMessageBox.warning(
+                self,
+                "No ROI",
+                "Please select a region of interest (ROI) first.\n\nUse the ROI tool to draw a box around the source.",
+            )
             return
 
         xlow, xhigh, ylow, yhigh = current_tab.current_roi
@@ -12801,21 +13506,25 @@ except Exception as e:
                     scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
                     scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
                     avg_scale = (scale_x + scale_y) / 2
-                    
+
                     # Convert to world coordinates
-                    world = current_tab.current_wcs.toworld([x0_px, y0_px, 0, 0])["numeric"]
+                    world = current_tab.current_wcs.toworld([x0_px, y0_px, 0, 0])[
+                        "numeric"
+                    ]
                     ra_deg = world[0] * 180 / np.pi if world[0] else None
                     dec_deg = world[1] * 180 / np.pi if world[1] else None
-                    
+
                     # Convert radii to arcsec
                     inner_r_arcsec = inner_r_px * avg_scale
                     outer_r_arcsec = outer_r_px * avg_scale
                     width_arcsec = outer_r_arcsec - inner_r_arcsec
-                    
+
                     use_wcs = True
-                    wcs_info = f"WCS (scale: {avg_scale:.4f}\"/px)"
+                    wcs_info = f'WCS (scale: {avg_scale:.4f}"/px)'
                 except Exception as wcs_err:
-                    print(f"[INFO] WCS conversion failed, using pixel coordinates: {wcs_err}")
+                    print(
+                        f"[INFO] WCS conversion failed, using pixel coordinates: {wcs_err}"
+                    )
 
             # Professional terminal output
             print("\n" + "=" * 60)
@@ -12859,8 +13568,8 @@ except Exception as e:
                     f"2D Ring Fit (WCS):\n"
                     f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
                     f"Center: ({x0_px:.1f}, {y0_px:.1f}) px\n"
-                    f"Inner R={inner_r_arcsec:.2f}\", Outer R={outer_r_arcsec:.2f}\"\n"
-                    f"Ring Width={width_arcsec:.2f}\""
+                    f'Inner R={inner_r_arcsec:.2f}", Outer R={outer_r_arcsec:.2f}"\n'
+                    f'Ring Width={width_arcsec:.2f}"'
                 )
             else:
                 msg = (
@@ -12907,38 +13616,50 @@ except Exception as e:
         # Style group
         style_group = QGroupBox("Style")
         style_layout = QGridLayout(style_group)
-        
+
         # Color
         style_layout.addWidget(QLabel("Color:"), 0, 0)
         color_combo = QComboBox()
-        color_combo.addItems(["yellow", "white", "red", "cyan", "lime", "magenta", "orange", "blue", "black"])
+        color_combo.addItems(
+            [
+                "yellow",
+                "white",
+                "red",
+                "cyan",
+                "lime",
+                "magenta",
+                "orange",
+                "blue",
+                "black",
+            ]
+        )
         style_layout.addWidget(color_combo, 0, 1)
-        
+
         # Font size
         style_layout.addWidget(QLabel("Font Size:"), 0, 2)
         fontsize_spin = QSpinBox()
         fontsize_spin.setRange(6, 48)
         fontsize_spin.setValue(12)
         style_layout.addWidget(fontsize_spin, 0, 3)
-        
+
         # Font weight
         style_layout.addWidget(QLabel("Weight:"), 1, 0)
         weight_combo = QComboBox()
         weight_combo.addItems(["normal", "bold"])
         style_layout.addWidget(weight_combo, 1, 1)
-        
+
         # Font style
         style_layout.addWidget(QLabel("Style:"), 1, 2)
         fontstyle_combo = QComboBox()
         fontstyle_combo.addItems(["normal", "italic"])
         style_layout.addWidget(fontstyle_combo, 1, 3)
-        
+
         # Background
         style_layout.addWidget(QLabel("Background:"), 2, 0)
         bg_combo = QComboBox()
         bg_combo.addItems(["None", "black", "white", "gray", "yellow", "red", "blue"])
         style_layout.addWidget(bg_combo, 2, 1)
-        
+
         layout.addWidget(style_group)
 
         # Store tab reference for callback
@@ -12947,8 +13668,12 @@ except Exception as e:
         def on_accept():
             try:
                 # Check if tab still exists
-                if tab_ref not in [self.tab_widget.widget(i) for i in range(self.tab_widget.count())]:
-                    QMessageBox.warning(self, "Error", "The target tab has been closed.")
+                if tab_ref not in [
+                    self.tab_widget.widget(i) for i in range(self.tab_widget.count())
+                ]:
+                    QMessageBox.warning(
+                        self, "Error", "The target tab has been closed."
+                    )
                     dialog.close()
                     return
                 x = int(x_pos.text())
@@ -12958,14 +13683,28 @@ except Exception as e:
                 fontsize = fontsize_spin.value()
                 fontweight = weight_combo.currentText()
                 fontstyle = fontstyle_combo.currentText()
-                background = bg_combo.currentText() if bg_combo.currentText() != "None" else None
-                tab_ref.add_text_annotation(x, y, text, color=color, fontsize=fontsize, 
-                                           fontweight=fontweight, fontstyle=fontstyle, background=background)
+                background = (
+                    bg_combo.currentText() if bg_combo.currentText() != "None" else None
+                )
+                tab_ref.add_text_annotation(
+                    x,
+                    y,
+                    text,
+                    color=color,
+                    fontsize=fontsize,
+                    fontweight=fontweight,
+                    fontstyle=fontstyle,
+                    background=background,
+                )
                 dialog.close()
             except ValueError:
-                QMessageBox.warning(self, "Invalid Input", "Please enter valid numeric coordinates")
+                QMessageBox.warning(
+                    self, "Invalid Input", "Please enter valid numeric coordinates"
+                )
             except RuntimeError:
-                QMessageBox.warning(self, "Error", "The target tab is no longer available.")
+                QMessageBox.warning(
+                    self, "Error", "The target tab is no longer available."
+                )
                 dialog.close()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -12974,7 +13713,13 @@ except Exception as e:
         layout.addWidget(buttons)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
         dialog.show()
 
@@ -13009,13 +13754,25 @@ except Exception as e:
         # Style group
         style_group = QGroupBox("Style")
         style_layout = QGridLayout(style_group)
-        
+
         # Color
         style_layout.addWidget(QLabel("Color:"), 0, 0)
         color_combo = QComboBox()
-        color_combo.addItems(["red", "yellow", "white", "cyan", "lime", "magenta", "orange", "blue", "black"])
+        color_combo.addItems(
+            [
+                "red",
+                "yellow",
+                "white",
+                "cyan",
+                "lime",
+                "magenta",
+                "orange",
+                "blue",
+                "black",
+            ]
+        )
         style_layout.addWidget(color_combo, 0, 1)
-        
+
         # Line width
         style_layout.addWidget(QLabel("Line Width:"), 0, 2)
         linewidth_spin = QDoubleSpinBox()
@@ -13023,14 +13780,14 @@ except Exception as e:
         linewidth_spin.setValue(2.0)
         linewidth_spin.setSingleStep(0.5)
         style_layout.addWidget(linewidth_spin, 0, 3)
-        
+
         # Head size
         style_layout.addWidget(QLabel("Head Size:"), 1, 0)
         headsize_spin = QSpinBox()
         headsize_spin.setRange(4, 30)
         headsize_spin.setValue(10)
         style_layout.addWidget(headsize_spin, 1, 1)
-        
+
         layout.addWidget(style_group)
 
         # Store tab reference for callback
@@ -13039,8 +13796,12 @@ except Exception as e:
         def on_accept():
             try:
                 # Check if tab still exists
-                if tab_ref not in [self.tab_widget.widget(i) for i in range(self.tab_widget.count())]:
-                    QMessageBox.warning(self, "Error", "The target tab has been closed.")
+                if tab_ref not in [
+                    self.tab_widget.widget(i) for i in range(self.tab_widget.count())
+                ]:
+                    QMessageBox.warning(
+                        self, "Error", "The target tab has been closed."
+                    )
                     dialog.close()
                     return
                 x1 = int(x1_pos.text())
@@ -13050,12 +13811,24 @@ except Exception as e:
                 color = color_combo.currentText()
                 linewidth = linewidth_spin.value()
                 head_width = headsize_spin.value()
-                tab_ref.add_arrow_annotation(x1, y1, x2, y2, color=color, linewidth=linewidth, head_width=head_width)
+                tab_ref.add_arrow_annotation(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    color=color,
+                    linewidth=linewidth,
+                    head_width=head_width,
+                )
                 dialog.close()
             except ValueError:
-                QMessageBox.warning(self, "Invalid Input", "Please enter valid numeric coordinates")
+                QMessageBox.warning(
+                    self, "Invalid Input", "Please enter valid numeric coordinates"
+                )
             except RuntimeError:
-                QMessageBox.warning(self, "Error", "The target tab is no longer available.")
+                QMessageBox.warning(
+                    self, "Error", "The target tab is no longer available."
+                )
                 dialog.close()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -13064,7 +13837,13 @@ except Exception as e:
         layout.addWidget(buttons)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
         dialog.show()
 
@@ -13079,7 +13858,13 @@ except Exception as e:
 
         dialog = UpdateDialog(self)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
         dialog.show()
 
@@ -13087,62 +13872,71 @@ except Exception as e:
         """Show a modern, professional about dialog."""
         from .styles import theme_manager
         from PyQt5.QtGui import QPixmap
+
         is_dark = theme_manager.is_dark
-        
+
         dialog = QDialog(self)
         dialog.setWindowTitle("About SolarViewer")
-        #dialog.setFixedSize(510, 580)
+        # dialog.setFixedSize(510, 580)
         dialog.resize(510, 580)
 
         layout = QVBoxLayout(dialog)
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # Header section with gradient background
         header = QFrame()
         if is_dark:
-            header.setStyleSheet("""
+            header.setStyleSheet(
+                """
                 QFrame {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                         stop:0 #4c1d95, stop:1 #7c3aed);
                     border-radius: 0px;
                 }
-            """)
+            """
+            )
         else:
-            header.setStyleSheet("""
+            header.setStyleSheet(
+                """
                 QFrame {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                         stop:0 #7c3aed, stop:1 #a78bfa);
                     border-radius: 0px;
                 }
-            """)
+            """
+            )
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(30, 25, 30, 20)
         header_layout.setSpacing(10)
-        
+
         icon_label = QLabel()
         try:
             icon_path = get_resource_path("assets/icon.png")
             pixmap = QPixmap(icon_path)
-            icon_label.setPixmap(pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            icon_label.setPixmap(
+                pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
         except Exception:
             icon_label.setText("☀️")
             icon_label.setStyleSheet("font-size: 48pt;")
         icon_label.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(icon_label)
-        
+
         # App title
         title = QLabel("SolarViewer")
         title.setStyleSheet("font-size: 26pt; font-weight: bold; color: white;")
         title.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(title)
-        
+
         # Version badge
         from . import __version__
+
         version_container = QHBoxLayout()
         version_container.addStretch()
         version_label = QLabel(f"v{__version__}")
-        version_label.setStyleSheet("""
+        version_label.setStyleSheet(
+            """
             QLabel {
                 background-color: rgba(255, 255, 255, 0.2);
                 color: white;
@@ -13151,31 +13945,32 @@ except Exception as e:
                 font-size: 11pt;
                 font-weight: bold;
             }
-        """)
+        """
+        )
         version_container.addWidget(version_label)
         version_container.addStretch()
         header_layout.addLayout(version_container)
-        
+
         layout.addWidget(header)
-        
+
         # Content section
         content = QFrame()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(30, 25, 30, 20)
         content_layout.setSpacing(16)
-        
+
         # Description
         desc = QLabel("A visualization tool for CASA and FITS solar radio images")
         desc.setWordWrap(True)
         desc.setAlignment(Qt.AlignCenter)
         desc.setStyleSheet("font-size: 12pt;")
         content_layout.addWidget(desc)
-        
+
         # Feature pills
         features_layout = QHBoxLayout()
         features_layout.setSpacing(10)
         features_layout.addStretch()
-        
+
         feature_style = f"""
             QLabel {{
                 background-color: {'rgba(124, 58, 237, 0.15)' if is_dark else 'rgba(124, 58, 237, 0.1)'};
@@ -13185,41 +13980,45 @@ except Exception as e:
                 font-size: 10pt;
             }}
         """
-        
+
         for feature in ["Multi-tab", "Stokes", "Fitting", "Contours", "Remote"]:
             pill = QLabel(feature)
             pill.setStyleSheet(feature_style)
             features_layout.addWidget(pill)
-        
+
         features_layout.addStretch()
         content_layout.addLayout(features_layout)
-        
+
         content_layout.addSpacing(12)
-        
+
         # Divider
         divider = QFrame()
         divider.setFixedHeight(1)
-        divider.setStyleSheet(f"background-color: {'#3a3a4a' if is_dark else '#e0e0e0'};")
+        divider.setStyleSheet(
+            f"background-color: {'#3a3a4a' if is_dark else '#e0e0e0'};"
+        )
         content_layout.addWidget(divider)
-        
+
         content_layout.addSpacing(8)
-        
+
         # Author section
         author_label = QLabel("Developed by")
         author_label.setAlignment(Qt.AlignCenter)
-        author_label.setStyleSheet(f"font-size: 11pt; color: {'#888' if is_dark else '#666'};")
+        author_label.setStyleSheet(
+            f"font-size: 11pt; color: {'#888' if is_dark else '#666'};"
+        )
         content_layout.addWidget(author_label)
-        
+
         author_name = QLabel("Soham Dey")
         author_name.setAlignment(Qt.AlignCenter)
         author_name.setStyleSheet("font-size: 15pt; font-weight: bold;")
         content_layout.addWidget(author_name)
-        
+
         # Contact links
         links_layout = QHBoxLayout()
         links_layout.setSpacing(20)
         links_layout.addStretch()
-        
+
         link_style = f"""
             QLabel {{
                 color: {'#a78bfa' if is_dark else '#7c3aed'};
@@ -13229,55 +14028,72 @@ except Exception as e:
                 text-decoration: underline;
             }}
         """
-        
+
         email_link = QLabel("📧 sohamd943@gmail.com")
         email_link.setStyleSheet(link_style)
         email_link.setCursor(Qt.PointingHandCursor)
         links_layout.addWidget(email_link)
-        
+
         links_layout.addStretch()
         content_layout.addLayout(links_layout)
-        
+
         content_layout.addSpacing(12)
-        
+
         # Keyboard shortcut hint
         hint = QLabel("Press F1 for keyboard shortcuts")
         hint.setAlignment(Qt.AlignCenter)
-        hint.setStyleSheet(f"font-size: 10pt; font-style: italic; color: {'#666' if is_dark else '#888'};")
+        hint.setStyleSheet(
+            f"font-size: 10pt; font-style: italic; color: {'#666' if is_dark else '#888'};"
+        )
         content_layout.addWidget(hint)
-        
+
         content_layout.addStretch()
-        
+
         # Close button
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         close_btn = QPushButton("Close")
         close_btn.setFixedWidth(100)
-        close_btn.setStyleSheet("""
+        close_btn.setStyleSheet(
+            """
             QPushButton {
                 padding: 8px 20px;
                 font-size: 11pt;
             }
-        """)
+        """
+        )
         close_btn.clicked.connect(dialog.accept)
         close_btn.setDefault(True)
         btn_layout.addWidget(close_btn)
         btn_layout.addStretch()
         content_layout.addLayout(btn_layout)
-        
+
         layout.addWidget(content, 1)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
         dialog.show()
 
     def show_tutorial(self):
         """Show the comprehensive tutorial dialog."""
         from .tutorial import TutorialDialog
+
         dialog = TutorialDialog(self)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
         dialog.show()
 
@@ -13294,36 +14110,38 @@ except Exception as e:
         main_layout = QVBoxLayout(dialog)
         main_layout.setSpacing(16)
         main_layout.setContentsMargins(24, 20, 24, 20)
-        
+
         # Header with search
         header_layout = QHBoxLayout()
-        
+
         title = QLabel("⌨️ Keyboard Shortcuts")
         title.setStyleSheet("font-size: 16pt; font-weight: bold;")
         header_layout.addWidget(title)
-        
+
         header_layout.addStretch()
-        
+
         # Search filter
         search_box = QLineEdit()
         search_box.setPlaceholderText("🔍 Filter shortcuts...")
         search_box.setFixedWidth(200)
-        search_box.setStyleSheet("""
+        search_box.setStyleSheet(
+            """
             QLineEdit {
                 padding: 6px 12px;
                 border-radius: 15px;
             }
-        """)
+        """
+        )
         header_layout.addWidget(search_box)
-        
+
         main_layout.addLayout(header_layout)
-        
+
         # Scroll area for content
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        
+
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(20)
@@ -13331,62 +14149,91 @@ except Exception as e:
 
         # Shortcut categories with icons
         categories = [
-            ("📁", "File Operations", [
-                ("Ctrl+O", "Open CASA Image"),
-                ("Ctrl+Shift+O", "Open FITS File"),
-                ("Ctrl+Shift+R", "Connect to Remote Server"),
-                ("Ctrl+E", "Export Figure"),
-                ("Ctrl+F", "Export as FITS"),
-                ("Ctrl+Shift+N", "Fast Viewer"),
-                ("Ctrl+Q", "Exit"),
-            ]),
-            ("🧭", "Navigation & View", [
-                ("R", "Reset View"),
-                ("1", "1°×1° Zoom"),
-                ("+  or  =", "Zoom In"),
-                ("-", "Zoom Out"),
-                ("Space  or  Enter", "Update Display"),
-                ("Ctrl+D", "Toggle Dark/Light Theme"),
-                ("Ctrl+L", "Log Console"),
-                ("F11", "Toggle Fullscreen"),
-            ]),
-            ("🎨", "Display Presets", [
-                ("F5", "Auto Min/Max"),
-                ("F6", "Auto Percentile (1-99%)"),
-                ("F7", "Median ± 3×RMS"),
-                ("F8", "AIA Presets"),
-                ("F9", "HMI Presets"),
-            ]),
-            ("🔧", "Tools & Analysis", [
-                ("Ctrl+P", "Phase Center Shift"),
-                ("Ctrl+M", "Image Metadata"),
-                ("Ctrl+G", "Fit 2D Gaussian"),
-                #("Ctrl+L", "Fit Ring Model"),
-            ]),
-            ("✂️", "Region & Annotation", [
-                ("Ctrl+S", "Export Sub-Image"),
-                ("Ctrl+R", "Export Region"),
-                ("Ctrl+T", "Add Text Annotation"),
-                ("Ctrl+A", "Add Arrow"),
-            ]),
-            ("📂", "File Navigation", [
-                ("[", "Previous File in Directory"),
-                ("]", "Next File in Directory"),
-                ("{", "First File"),
-                ("}", "Last File"),
-            ]),
-            ("📑", "Tab Management", [
-                ("Ctrl+N", "New Tab"),
-                ("Ctrl+W", "Close Current Tab"),
-                ("Ctrl+Tab", "Switch to Next Tab"),
-                ("Ctrl+Shift+Tab", "Switch to Previous Tab"),
-            ]),
+            (
+                "📁",
+                "File Operations",
+                [
+                    ("Ctrl+O", "Open CASA Image"),
+                    ("Ctrl+Shift+O", "Open FITS File"),
+                    ("Ctrl+Shift+R", "Connect to Remote Server"),
+                    ("Ctrl+E", "Export Figure"),
+                    ("Ctrl+F", "Export as FITS"),
+                    ("Ctrl+Shift+N", "Fast Viewer"),
+                    ("Ctrl+Q", "Exit"),
+                ],
+            ),
+            (
+                "🧭",
+                "Navigation & View",
+                [
+                    ("R", "Reset View"),
+                    ("1", "1°×1° Zoom"),
+                    ("+  or  =", "Zoom In"),
+                    ("-", "Zoom Out"),
+                    ("Space  or  Enter", "Update Display"),
+                    ("Ctrl+D", "Toggle Dark/Light Theme"),
+                    ("Ctrl+L", "Log Console"),
+                    ("F11", "Toggle Fullscreen"),
+                ],
+            ),
+            (
+                "🎨",
+                "Display Presets",
+                [
+                    ("F5", "Auto Min/Max"),
+                    ("F6", "Auto Percentile (1-99%)"),
+                    ("F7", "Median ± 3×RMS"),
+                    ("F8", "AIA Presets"),
+                    ("F9", "HMI Presets"),
+                ],
+            ),
+            (
+                "🔧",
+                "Tools & Analysis",
+                [
+                    ("Ctrl+P", "Phase Center Shift"),
+                    ("Ctrl+M", "Image Metadata"),
+                    ("Ctrl+G", "Fit 2D Gaussian"),
+                    # ("Ctrl+L", "Fit Ring Model"),
+                ],
+            ),
+            (
+                "✂️",
+                "Region & Annotation",
+                [
+                    ("Ctrl+S", "Export Sub-Image"),
+                    ("Ctrl+R", "Export Region"),
+                    ("Ctrl+T", "Add Text Annotation"),
+                    ("Ctrl+A", "Add Arrow"),
+                ],
+            ),
+            (
+                "📂",
+                "File Navigation",
+                [
+                    ("[", "Previous File in Directory"),
+                    ("]", "Next File in Directory"),
+                    ("{", "First File"),
+                    ("}", "Last File"),
+                ],
+            ),
+            (
+                "📑",
+                "Tab Management",
+                [
+                    ("Ctrl+N", "New Tab"),
+                    ("Ctrl+W", "Close Current Tab"),
+                    ("Ctrl+Tab", "Switch to Next Tab"),
+                    ("Ctrl+Shift+Tab", "Switch to Previous Tab"),
+                ],
+            ),
         ]
-        
+
         # Get theme for styling
         from .styles import theme_manager
+
         is_dark = theme_manager.is_dark
-        
+
         # Define theme-aware badge styles
         if is_dark:
             badge_style = """
@@ -13427,14 +14274,16 @@ except Exception as e:
             layout = QHBoxLayout(container)
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(4)
-            
+
             # Handle "or" alternatives first (like "+ or =")
             if "  or  " in key_text:
                 alternatives = key_text.split("  or  ")
                 for j, alt in enumerate(alternatives):
                     if j > 0:
                         or_label = QLabel("or")
-                        or_label.setStyleSheet(f"color: {separator_color}; font-size: 10pt; margin: 0 6px;")
+                        or_label.setStyleSheet(
+                            f"color: {separator_color}; font-size: 10pt; margin: 0 6px;"
+                        )
                         layout.addWidget(or_label)
                     badge = QLabel(alt.strip())
                     badge.setStyleSheet(badge_style)
@@ -13448,7 +14297,9 @@ except Exception as e:
                         continue
                     if i > 0:
                         plus = QLabel("+")
-                        plus.setStyleSheet(f"font-weight: bold; color: {separator_color}; font-size: 11pt;")
+                        plus.setStyleSheet(
+                            f"font-weight: bold; color: {separator_color}; font-size: 11pt;"
+                        )
                         layout.addWidget(plus)
                     badge = QLabel(part)
                     badge.setStyleSheet(badge_style)
@@ -13458,10 +14309,10 @@ except Exception as e:
                 badge = QLabel(key_text.strip())
                 badge.setStyleSheet(badge_style)
                 layout.addWidget(badge)
-            
+
             layout.addStretch()
             return container
-        
+
         # Store all shortcut widgets for filtering
         all_shortcut_widgets = []
 
@@ -13469,13 +14320,15 @@ except Exception as e:
             """Create a styled category section."""
             section = QFrame()
             if is_dark:
-                section.setStyleSheet("""
+                section.setStyleSheet(
+                    """
                     QFrame {
                         background-color: rgba(255, 255, 255, 0.03);
                         border-radius: 10px;
                         padding: 8px;
                     }
-                """)
+                """
+                )
                 header_style = """
                     font-size: 12pt;
                     font-weight: bold;
@@ -13484,13 +14337,15 @@ except Exception as e:
                     border-bottom: 1px solid rgba(167, 139, 250, 0.3);
                 """
             else:
-                section.setStyleSheet("""
+                section.setStyleSheet(
+                    """
                     QFrame {
                         background-color: rgba(0, 0, 0, 0.03);
                         border-radius: 10px;
                         padding: 8px;
                     }
-                """)
+                """
+                )
                 header_style = """
                     font-size: 12pt;
                     font-weight: bold;
@@ -13498,47 +14353,49 @@ except Exception as e:
                     padding-bottom: 6px;
                     border-bottom: 1px solid rgba(124, 58, 237, 0.3);
                 """
-            
+
             layout = QVBoxLayout(section)
             layout.setContentsMargins(16, 12, 16, 12)
             layout.setSpacing(10)
-            
+
             # Category header
             header = QLabel(f"{icon}  {name}")
             header.setStyleSheet(header_style)
             layout.addWidget(header)
-            
+
             # Shortcuts grid
             grid = QGridLayout()
             grid.setSpacing(8)
             grid.setColumnMinimumWidth(0, 200)
-            
+
             shortcut_rows = []
             for row, (key, action) in enumerate(shortcuts):
                 key_widget = create_key_badge(key)
                 action_label = QLabel(action)
                 # Use palette text color for theme compatibility
                 action_label.setStyleSheet("font-size: 10.5pt;")
-                
+
                 grid.addWidget(key_widget, row, 0)
                 grid.addWidget(action_label, row, 1)
-                
+
                 # Store for filtering
-                shortcut_rows.append((key_widget, action_label, key.lower(), action.lower()))
-            
+                shortcut_rows.append(
+                    (key_widget, action_label, key.lower(), action.lower())
+                )
+
             layout.addLayout(grid)
             return section, shortcut_rows
-        
+
         # Create all category sections
         for icon, name, shortcuts in categories:
             section, rows = create_category_section(icon, name, shortcuts)
             scroll_layout.addWidget(section)
             all_shortcut_widgets.extend([(section, rows)])
-        
+
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         main_layout.addWidget(scroll, 1)
-        
+
         # Filter function
         def filter_shortcuts(text):
             text = text.lower()
@@ -13551,25 +14408,27 @@ except Exception as e:
                     if visible:
                         visible_count += 1
                 section.setVisible(visible_count > 0)
-        
+
         search_box.textChanged.connect(filter_shortcuts)
 
         # Footer with close button
         footer = QHBoxLayout()
         footer.addStretch()
-        
+
         close_btn = QPushButton("Close")
         close_btn.setFixedWidth(100)
-        close_btn.setStyleSheet("""
+        close_btn.setStyleSheet(
+            """
             QPushButton {
                 padding: 8px 20px;
                 font-size: 11pt;
             }
-        """)
+        """
+        )
         close_btn.clicked.connect(dialog.accept)
         close_btn.setDefault(True)
         footer.addWidget(close_btn)
-        
+
         main_layout.addLayout(footer)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
@@ -13631,9 +14490,10 @@ except Exception as e:
         except:
             pass
         super().closeEvent(event)
-        
+
         # Ensure the entire application (including Log Console) quits
         from PyQt5.QtWidgets import QApplication
+
         QApplication.instance().quit()
 
     def launch_napari_viewer(self):
@@ -13666,6 +14526,7 @@ except Exception as e:
         """Launch the Solar Data Downloader GUI."""
         try:
             from .solar_data_downloader import launch_gui as launch_downloader_gui
+
             # Try to extract datetime from current tab
             initial_datetime = self._get_current_tab_datetime()
             launch_downloader_gui(self, initial_datetime=initial_datetime)
@@ -13681,6 +14542,7 @@ except Exception as e:
         """Launch the Radio Solar Data Downloader GUI."""
         try:
             from .radio_data_downloader import launch_gui as launch_radio_downloader_gui
+
             # Try to extract datetime from current tab
             initial_datetime = self._get_current_tab_datetime()
             launch_radio_downloader_gui(self, initial_datetime=initial_datetime)
@@ -13695,17 +14557,17 @@ except Exception as e:
     def _get_current_tab_datetime(self):
         """Extract observation datetime from the current tab's image, if available."""
         from datetime import datetime
-        
+
         try:
             # Get the current tab
             current_tab = self.tab_widget.currentWidget()
             if not current_tab:
                 return None
-            
+
             obs_datetime = None
-            
+
             # Method 1: Try FITS header
-            if hasattr(current_tab, 'current_header') and current_tab.current_header:
+            if hasattr(current_tab, "current_header") and current_tab.current_header:
                 header = current_tab.current_header
                 for key in ["DATE-OBS", "DATE_OBS", "DATE", "STARTOBS", "T_OBS"]:
                     if key in header:
@@ -13713,31 +14575,44 @@ except Exception as e:
                         try:
                             if "T" in date_str:
                                 # Clean the string: remove Z, timezone, and fractional seconds
-                                clean_str = date_str.replace("Z", "").split("+")[0].split(".")[0]
+                                clean_str = (
+                                    date_str.replace("Z", "")
+                                    .split("+")[0]
+                                    .split(".")[0]
+                                )
                                 if "-" in clean_str[11:]:
                                     clean_str = clean_str[:19]
                                 obs_datetime = datetime.fromisoformat(clean_str)
                                 break
                             elif "-" in date_str and len(date_str) >= 10:
-                                obs_datetime = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                                obs_datetime = datetime.strptime(
+                                    date_str[:10], "%Y-%m-%d"
+                                )
                                 break
                         except (ValueError, TypeError):
                             continue
-            
+
             # Method 2: Try CASA image metadata (if no FITS datetime found)
-            if not obs_datetime and hasattr(current_tab, 'imagename') and current_tab.imagename:
+            if (
+                not obs_datetime
+                and hasattr(current_tab, "imagename")
+                and current_tab.imagename
+            ):
                 imagename = current_tab.imagename
                 # Check if it's a CASA image (directory or non-FITS file)
-                if not (imagename.lower().endswith(".fits") or imagename.lower().endswith(".fts")):
+                if not (
+                    imagename.lower().endswith(".fits")
+                    or imagename.lower().endswith(".fts")
+                ):
                     try:
                         from casatools import image as IA
                         from astropy.time import Time
-                        
+
                         ia_tool = IA()
                         ia_tool.open(imagename)
                         csys_record = ia_tool.coordsys().torecord()
                         ia_tool.close()
-                        
+
                         if "obsdate" in csys_record:
                             obsdate = csys_record["obsdate"]
                             m0 = obsdate.get("m0", {})
@@ -13747,7 +14622,7 @@ except Exception as e:
                                 obs_datetime = t.datetime
                     except Exception:
                         pass  # CASA not available or failed
-            
+
             return obs_datetime
         except Exception:
             return None
@@ -13803,7 +14678,9 @@ read -p "Press Enter to close..."
                     except Exception:
                         continue
 
-                self.show_status_message(f"Found terminals: {', '.join(available_terminals)}")
+                self.show_status_message(
+                    f"Found terminals: {', '.join(available_terminals)}"
+                )
 
                 if not available_terminals:
                     raise Exception(
@@ -13838,7 +14715,9 @@ read -p "Press Enter to close..."
 
                 except Exception as term_error:
                     print(f"[ERROR] Error launching {terminal}: {str(term_error)}")
-                    self.show_status_message(f"Error launching {terminal}: {str(term_error)}")
+                    self.show_status_message(
+                        f"Error launching {terminal}: {str(term_error)}"
+                    )
                     raise Exception(f"Failed to launch {terminal}: {str(term_error)}")
 
             elif sys.platform == "darwin":  # macOS
@@ -13988,23 +14867,32 @@ read -p "Press Enter to close..."
         from .dialogs import PhaseShiftDialog
 
         dialog = PhaseShiftDialog(self, imagename)
-        
+
         # Store tab reference for callback
         tab_ref = current_tab
-        
+
         def on_finished(result):
             try:
                 # Check if tab still exists and refresh if accepted
                 if result == QDialog.Accepted and tab_ref:
-                    if tab_ref in [self.tab_widget.widget(i) for i in range(self.tab_widget.count())]:
+                    if tab_ref in [
+                        self.tab_widget.widget(i)
+                        for i in range(self.tab_widget.count())
+                    ]:
                         if tab_ref.imagename:
                             tab_ref.on_visualization_changed()
             except RuntimeError:
                 pass  # Tab was deleted, ignore
-        
+
         dialog.finished.connect(on_finished)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
-        dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+        dialog.destroyed.connect(
+            lambda: (
+                self._open_dialogs.remove(dialog)
+                if dialog in self._open_dialogs
+                else None
+            )
+        )
         self._open_dialogs.append(dialog)
         dialog.show()
 
@@ -14179,7 +15067,9 @@ read -p "Press Enter to close..."
                                 extracted_date = t.to_datetime().date()
                     except Exception as casa_err:
                         print(f"[ERROR] CASA date extraction failed: {casa_err}")
-                        self.show_status_message(f"CASA date extraction failed: {casa_err}")
+                        self.show_status_message(
+                            f"CASA date extraction failed: {casa_err}"
+                        )
 
             # Method 3: Filename parsing
             if extracted_date is None:
@@ -14248,7 +15138,13 @@ read -p "Press Enter to close..."
 
             dialog = HPCBatchConversionDialog(self, current_file)
             dialog.setAttribute(Qt.WA_DeleteOnClose)
-            dialog.destroyed.connect(lambda: self._open_dialogs.remove(dialog) if dialog in self._open_dialogs else None)
+            dialog.destroyed.connect(
+                lambda: (
+                    self._open_dialogs.remove(dialog)
+                    if dialog in self._open_dialogs
+                    else None
+                )
+            )
             self._open_dialogs.append(dialog)
             dialog.show()
         except Exception as e:
@@ -14299,7 +15195,7 @@ read -p "Press Enter to close..."
         try:
             current_theme = self._get_current_theme()
             # Launch as separate process to avoid casacore/casatasks conflicts
-            script = f'''
+            script = f"""
 import sys
 import os
 # Clear opencv Qt paths before importing PyQt5
@@ -14316,7 +15212,7 @@ apply_theme(app, "{current_theme}")
 window = MainWindow(theme="{current_theme}")
 window.show()
 sys.exit(app.exec_())
-'''
+"""
             env = self._get_clean_qt_env()
             subprocess.Popen(
                 [sys.executable, "-c", script],
@@ -14342,7 +15238,7 @@ sys.exit(app.exec_())
         try:
             current_theme = self._get_current_theme()
             # Launch as separate process to avoid casacore/casatasks conflicts
-            script = f'''
+            script = f"""
 import sys
 import os
 # Clear opencv Qt paths before importing PyQt5
@@ -14359,7 +15255,7 @@ apply_theme(app, "{current_theme}")
 window = VisualizationApp()
 window.show()
 sys.exit(app.exec_())
-'''
+"""
             env = self._get_clean_qt_env()
             subprocess.Popen(
                 [sys.executable, "-c", script],
@@ -14385,7 +15281,7 @@ sys.exit(app.exec_())
         try:
             current_theme = self._get_current_theme()
             # Launch as separate process for consistency
-            script = f'''
+            script = f"""
 import sys
 import os
 # Clear opencv Qt paths before importing PyQt5
@@ -14402,7 +15298,7 @@ apply_theme(app, "{current_theme}")
 window = PipelineLoggerGUI(theme="{current_theme}")
 window.show()
 sys.exit(app.exec_())
-'''
+"""
             env = self._get_clean_qt_env()
             subprocess.Popen(
                 [sys.executable, "-c", script],
@@ -14428,7 +15324,7 @@ sys.exit(app.exec_())
         try:
             current_theme = self._get_current_theme()
             # Launch as separate process to avoid casacore/casatasks conflicts
-            script = f'''
+            script = f"""
 import sys
 import os
 # Clear opencv Qt paths before importing PyQt5
@@ -14445,7 +15341,7 @@ apply_theme(app, "{current_theme}")
 dialog = DynamicSpectraDialog(theme="{current_theme}")
 dialog.show()
 sys.exit(app.exec_())
-'''
+"""
             env = self._get_clean_qt_env()
             subprocess.Popen(
                 [sys.executable, "-c", script],
@@ -14465,52 +15361,75 @@ sys.exit(app.exec_())
     # =========================================================================
     # Remote Mode Methods
     # =========================================================================
-    
+
     def show_remote_connection_dialog(self):
         """Show the SSH connection dialog."""
         try:
             from .remote import ConnectionDialog, RemoteFileCache
-            
+            from PyQt5.QtCore import Qt
+
+            # Check if dialog is already open
+            for dialog in self._open_dialogs:
+                if isinstance(dialog, ConnectionDialog):
+                    dialog.raise_()
+                    dialog.activateWindow()
+                    return
+
             dialog = ConnectionDialog(self)
             dialog.connectionEstablished.connect(self._on_remote_connected)
-            dialog.exec_()
-            
+
+            # Clean up when closed
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            dialog.setModal(
+                False
+            )  # Override default modality set in ConnectionDialog.__init__
+            dialog.destroyed.connect(
+                lambda: (
+                    self._open_dialogs.remove(dialog)
+                    if dialog in self._open_dialogs
+                    else None
+                )
+            )
+
+            self._open_dialogs.append(dialog)
+            dialog.show()
+
         except ImportError as e:
             QMessageBox.warning(
                 self,
                 "Missing Dependency",
-                f"Remote mode requires paramiko. Install it with:\n\npip install paramiko\n\nError: {e}"
+                f"Remote mode requires paramiko. Install it with:\n\npip install paramiko\n\nError: {e}",
             )
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to open connection dialog: {e}")
-    
+            QMessageBox.critical(
+                self, "Error", f"Failed to open connection dialog: {e}"
+            )
+
     def _on_remote_connected(self, connection):
         """Handle successful remote connection."""
         from .remote import RemoteFileCache
-        
+
         self.remote_connection = connection
         if self.remote_cache is None:
             self.remote_cache = RemoteFileCache()
-        
+
         self._update_remote_menu_state()
         self._update_remote_status_indicator()
-        
+
         # Start periodic health check
         self._start_connection_health_timer()
-    
+
     def show_remote_file_browser(self):
         """Show the remote file browser dialog."""
         if not self.remote_connection or not self.remote_connection.is_connected():
             QMessageBox.warning(
-                self,
-                "Not Connected",
-                "Please connect to a remote server first."
+                self, "Not Connected", "Please connect to a remote server first."
             )
             return
-        
+
         try:
             from .remote import RemoteFileBrowser
-            
+
             browser = RemoteFileBrowser(
                 self.remote_connection,
                 cache=self.remote_cache,
@@ -14518,21 +15437,22 @@ sys.exit(app.exec_())
             )
             browser.fileSelected.connect(self._on_remote_file_selected)
             browser.exec_()
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open remote browser: {e}")
-    
+
     def _on_remote_file_selected(self, local_path: str):
         """Handle file selected from remote browser (now downloaded locally)."""
         if not local_path or not os.path.exists(local_path):
             return
-        
+
         # Get the current tab and load the file
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
             import time
+
             start_time = time.time()
-            
+
             current_tab._reset_hpc_state()
             current_tab.imagename = local_path
             current_tab.dir_entry.setText(local_path)
@@ -14541,18 +15461,20 @@ sys.exit(app.exec_())
             current_tab.figure.clear()
             current_tab.on_visualization_changed(dir_load=True)
             current_tab.update_tab_name_from_path(local_path)
-            
+
             elapsed = time.time() - start_time
             basename = os.path.basename(local_path)
-            self.statusBar().showMessage(f"Loaded remote file: {basename} ({elapsed:.2f}s)", 5000)
-            
+            self.statusBar().showMessage(
+                f"Loaded remote file: {basename} ({elapsed:.2f}s)", 5000
+            )
+
             current_tab._scan_directory_files()
-    
+
     def disconnect_remote(self):
         """Disconnect from the remote server."""
         # Stop health check timer
         self._stop_connection_health_timer()
-        
+
         if self.remote_connection:
             try:
                 host_info = self.remote_connection.connection_info
@@ -14562,47 +15484,53 @@ sys.exit(app.exec_())
                 print(f"[WARNING] Error disconnecting: {e}")
             finally:
                 self.remote_connection = None
-        
+
         self._update_remote_menu_state()
         self._update_remote_status_indicator()
-    
+
     def _update_remote_menu_state(self):
         """Update the enabled state of remote menu items."""
         connected = (
-            self.remote_connection is not None 
-            and self.remote_connection.is_connected()
+            self.remote_connection is not None and self.remote_connection.is_connected()
         )
-        
+
         # Update menu actions
-        if hasattr(self, 'connect_remote_act'):
+        if hasattr(self, "connect_remote_act"):
             self.connect_remote_act.setEnabled(not connected)
             if connected:
-                self.connect_remote_act.setText(f"🌐 Connected: {self.remote_connection.connection_info}")
+                self.connect_remote_act.setText(
+                    f"🌐 Connected: {self.remote_connection.connection_info}"
+                )
             else:
                 self.connect_remote_act.setText("🌐 Connect to Remote Server...")
-        
-        if hasattr(self, 'browse_remote_act'):
+
+        if hasattr(self, "browse_remote_act"):
             self.browse_remote_act.setVisible(connected)
-        
-        if hasattr(self, 'disconnect_remote_act'):
+
+        if hasattr(self, "disconnect_remote_act"):
             self.disconnect_remote_act.setVisible(connected)
-    
+
     def _update_remote_status_indicator(self):
         """Update the permanent status bar indicator for remote connection."""
-        if hasattr(self, 'remote_status_btn'):
+        if hasattr(self, "remote_status_btn"):
             connected = self.remote_connection and self.remote_connection.is_connected()
             if connected:
-                self.remote_status_btn.setText(f"🌐 {self.remote_connection.connection_info}")
-                self.remote_status_btn.setToolTip("Click to disconnect from remote server")
+                self.remote_status_btn.setText(
+                    f"🌐 {self.remote_connection.connection_info}"
+                )
+                self.remote_status_btn.setToolTip(
+                    "Click to disconnect from remote server"
+                )
             else:
                 self.remote_status_btn.setText("🔌 Not Connected")
                 self.remote_status_btn.setToolTip("Click to connect to a remote server")
             self._apply_remote_status_style(connected)
-    
+
     def _apply_remote_status_style(self, connected: bool):
         """Apply styling to the remote status button based on connection state."""
         if connected:
-            self.remote_status_btn.setStyleSheet("""
+            self.remote_status_btn.setStyleSheet(
+                """
                 QPushButton {
                     color: #4CAF50;
                     font-weight: bold;
@@ -14618,9 +15546,11 @@ sys.exit(app.exec_())
                     border-color: #F44336;
                     color: #F44336;
                 }
-            """)
+            """
+            )
         else:
-            self.remote_status_btn.setStyleSheet("""
+            self.remote_status_btn.setStyleSheet(
+                """
                 QPushButton {
                     color: #9E9E9E;
                     font-weight: bold;
@@ -14636,8 +15566,9 @@ sys.exit(app.exec_())
                     border-color: #2196F3;
                     color: #2196F3;
                 }
-            """)
-    
+            """
+            )
+
     def _on_remote_status_clicked(self):
         """Handle click on the remote status button."""
         if self.remote_connection and self.remote_connection.is_connected():
@@ -14646,24 +15577,25 @@ sys.exit(app.exec_())
         else:
             # Not connected - show connection dialog
             self.show_remote_connection_dialog()
-    
+
     def _start_connection_health_timer(self):
         """Start a timer to periodically check connection health."""
-        if not hasattr(self, '_health_check_timer'):
+        if not hasattr(self, "_health_check_timer"):
             from PyQt5.QtCore import QTimer
+
             self._health_check_timer = QTimer(self)  # Parent to self
             self._health_check_timer.timeout.connect(self._check_connection_health)
-        
+
         # Check every 5 seconds
         self._health_check_timer.start(5000)
-        #print("[SSH] Health check timer started (5s interval)")
-    
+        # print("[SSH] Health check timer started (5s interval)")
+
     def _stop_connection_health_timer(self):
         """Stop the connection health check timer."""
-        if hasattr(self, '_health_check_timer'):
+        if hasattr(self, "_health_check_timer"):
             self._health_check_timer.stop()
-            #print("[SSH] Health check timer stopped")
-            
+            # print("[SSH] Health check timer stopped")
+
     def clear_remote_cache(self):
         """Clear cached remote files and directory listings."""
         # Confirm with user
@@ -14674,12 +15606,12 @@ sys.exit(app.exec_())
             "This action cannot be undone.\n\n"
             "Are you sure you want to clear the cache?",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.No,
         )
-        
+
         if reply != QMessageBox.Yes:
             return
-        
+
         try:
             # Clear file cache
             if self.remote_cache:
@@ -14687,38 +15619,88 @@ sys.exit(app.exec_())
             else:
                 # Initialize temporary cache just to clear it if main one not init yet
                 from .remote import RemoteFileCache
+
                 RemoteFileCache().clear_cache()
-            
+
             # Clear listing cache
             from .remote import RemoteFileBrowser
-            if hasattr(RemoteFileBrowser, '_listing_cache'):
+
+            if hasattr(RemoteFileBrowser, "_listing_cache"):
                 RemoteFileBrowser._listing_cache.clear()
-            
+
             # Show success message
             self.statusBar().showMessage("🗑️ Remote cache cleared successfully", 5000)
-            QMessageBox.information(self, "Cache Cleared", "Remote file cache has been cleared successfully.")
-            
+            QMessageBox.information(
+                self,
+                "Cache Cleared",
+                "Remote file cache has been cleared successfully.",
+            )
+
+            # Update menu item text manually after clearing
+            self._update_cache_menu_item()
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to clear cache: {str(e)}")
-    
+
+    def _format_size(self, size_bytes: int) -> str:
+        """Format bytes to human readable string."""
+        if size_bytes == 0:
+            return "0 B"
+
+        power = 1024
+        n = 0
+        power_labels = {0: "", 1: "K", 2: "M", 3: "G", 4: "T"}
+        while size_bytes >= power:
+            size_bytes /= power
+            n += 1
+
+        return f"{size_bytes:.1f} {power_labels[n]}B"
+
+    def _update_cache_menu_item(self):
+        """Update the Clear Cache menu item with current cache size."""
+        if not hasattr(self, "clear_cache_act"):
+            return
+
+        try:
+            # Initialize cache if needed (lazy init)
+            if self.remote_cache is None:
+                from .remote import RemoteFileCache
+
+                self.remote_cache = RemoteFileCache()
+
+            size, count = self.remote_cache.get_cache_size()
+            size_str = self._format_size(size)
+
+            self.clear_cache_act.setText(f"🗑️ Clear Remote Cache ({size_str})")
+
+        except Exception as e:
+            # Fallback if something goes wrong
+            print(f"[WARNING] Failed to update cache size: {e}")
+            self.clear_cache_act.setText("🗑️ Clear Remote Cache...")
+
     def _check_connection_health(self):
         """Periodically check connection health and auto-reconnect if needed."""
-        #print("[SSH] Health check running...")  # Debug
-        
+        # print("[SSH] Health check running...")  # Debug
+
         if not self.remote_connection:
-            #print("[SSH] Health check: No remote connection")
+            # print("[SSH] Health check: No remote connection")
             return
-        
+
         # Run ping in background thread to avoid blocking UI
         from PyQt5.QtCore import QThread, pyqtSignal
-        
+
         # If previous ping is still running after 10s, assume connection is dead
-        if hasattr(self, '_ping_thread') and self._ping_thread and self._ping_thread.isRunning():
-            if hasattr(self, '_ping_start_time'):
+        if (
+            hasattr(self, "_ping_thread")
+            and self._ping_thread
+            and self._ping_thread.isRunning()
+        ):
+            if hasattr(self, "_ping_start_time"):
                 import time
+
                 elapsed = time.time() - self._ping_start_time
                 if elapsed > 10:
-                    #print(f"[SSH] Health check: Ping stuck for {elapsed:.1f}s - connection appears dead")
+                    # print(f"[SSH] Health check: Ping stuck for {elapsed:.1f}s - connection appears dead")
                     # Connection is dead - the ping is stuck
                     try:
                         self._ping_thread.terminate()
@@ -14728,38 +15710,42 @@ sys.exit(app.exec_())
                     # Trigger reconnect
                     if self.remote_connection:
                         self.remote_connection._connected = False
-                        self.statusBar().showMessage("⚠️ Remote connection lost - click status to reconnect", 10000)
+                        self.statusBar().showMessage(
+                            "⚠️ Remote connection lost - click status to reconnect",
+                            10000,
+                        )
                         self._update_remote_status_indicator()
                         self._update_remote_menu_state()
                     return
-            #print("[SSH] Health check: Previous ping still running, skipping")
+            # print("[SSH] Health check: Previous ping still running, skipping")
             return
-        
+
         class PingThread(QThread):
             result = pyqtSignal(bool)
-            
+
             def __init__(self, connection):
                 super().__init__()
                 self.connection = connection
-            
+
             def run(self):
                 import socket
+
                 try:
                     # Quick passive check first
                     if not self.connection._connected or not self.connection._client:
                         self.result.emit(False)
                         return
-                    
+
                     transport = self.connection._client.get_transport()
                     if transport is None or not transport.is_active():
                         self.result.emit(False)
                         return
-                    
+
                     # Set socket timeout temporarily
                     sock = transport.sock
                     old_timeout = sock.gettimeout()
                     sock.settimeout(3.0)  # 3 second timeout
-                    
+
                     try:
                         # Try to open a new SFTP channel - this requires server response
                         # If network is down, this will timeout
@@ -14774,11 +15760,11 @@ sys.exit(app.exec_())
                         self.result.emit(False)
                     finally:
                         sock.settimeout(old_timeout)
-                        
+
                 except Exception as e:
                     print(f"[SSH] Ping error: {e}")
                     self.result.emit(False)
-        
+
         def on_ping_result(is_alive):
             if not is_alive:
                 print("[SSH] Health check: Connection lost, attempting reconnect...")
@@ -14787,15 +15773,17 @@ sys.exit(app.exec_())
                     self.statusBar().showMessage("🔄 Remote connection restored", 5000)
                 else:
                     print("[SSH] Health check: Reconnect failed")
-                    self.statusBar().showMessage("⚠️ Remote connection lost - click status to reconnect", 10000)
-                
+                    self.statusBar().showMessage(
+                        "⚠️ Remote connection lost - click status to reconnect", 10000
+                    )
+
                 self._update_remote_status_indicator()
                 self._update_remote_menu_state()
-        
-        #print("[SSH] Health check: Pinging connection in background...")
+
+        # print("[SSH] Health check: Pinging connection in background...")
         import time
+
         self._ping_start_time = time.time()
         self._ping_thread = PingThread(self.remote_connection)
         self._ping_thread.result.connect(on_ping_result)
         self._ping_thread.start()
-

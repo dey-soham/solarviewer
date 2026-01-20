@@ -101,7 +101,6 @@ def ensure_even_dimensions(image):
     return image
 
 
-
 def canvas_to_rgb_array(canvas):
     """
     Convert FigureCanvas to RGB numpy array, handling Matplotlib version differences.
@@ -120,53 +119,62 @@ def canvas_to_rgb_array(canvas):
         return img_data
 
 
-def create_error_frame(options, error_msg="Error loading frame", frame_idx=0, filename=""):
+def create_error_frame(
+    options, error_msg="Error loading frame", frame_idx=0, filename=""
+):
     """
     Create a blank frame with axis and error message when data loading fails.
-    
+
     This ensures the video continues with consistent frame count instead of
     showing weird plots or skipping frames entirely.
     """
     dpi = 100
-    
+
     # Use specified dimensions or default
     if options.get("width", 0) > 0 and options.get("height", 0) > 0:
         figsize = (options["width"] / dpi, options["height"] / dpi)
     else:
         figsize = (10, 10)
-    
+
     fig = Figure(figsize=figsize, dpi=dpi)
     canvas = FigureCanvas(fig)
     ax = fig.add_subplot(111)
-    
+
     # Create a blank image (gray background)
     blank_data = np.zeros((100, 100))
-    ax.imshow(blank_data, cmap='gray', vmin=0, vmax=1)
-    
+    ax.imshow(blank_data, cmap="gray", vmin=0, vmax=1)
+
     # Add error message in the center
-    ax.text(0.5, 0.5, error_msg, transform=ax.transAxes, 
-            ha='center', va='center', fontsize=12, color='red',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    
+    ax.text(
+        0.5,
+        0.5,
+        error_msg,
+        transform=ax.transAxes,
+        ha="center",
+        va="center",
+        fontsize=12,
+        color="red",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
+
     # Add frame info
     if filename:
         ax.set_title(f"Frame {frame_idx}: {filename}", fontsize=10)
     else:
         ax.set_title(f"Frame {frame_idx}", fontsize=10)
-    
+
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
-    
+
     # Render to image
     fig.tight_layout()
     canvas.draw()
-    
+
     # Convert to numpy array
     image = canvas_to_rgb_array(fig.canvas)
-    
 
     plt.close(fig)
-    
+
     return image
 
 
@@ -391,7 +399,9 @@ def get_norm(stretch_type, vmin, vmax, gamma=1.0):
         return Normalize(vmin=vmin, vmax=vmax)
 
 
-def process_image(file_path, options, global_stats=None, contour_processor=None, frame_idx=0):
+def process_image(
+    file_path, options, global_stats=None, contour_processor=None, frame_idx=0
+):
     """Process a FITS image and return a frame for the video"""
     try:
         # Load FITS data
@@ -399,18 +409,22 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
 
         if data is None:
             logger.warning(f"Could not load data from {file_path}")
-            return create_error_frame(options, "Could not load data", frame_idx, os.path.basename(file_path))
-        
+            return create_error_frame(
+                options, "Could not load data", frame_idx, os.path.basename(file_path)
+            )
+
         # Check for blank/all-NaN data
         if np.all(np.isnan(data)) or np.nanmax(data) == np.nanmin(data):
             logger.warning(f"Blank or constant data in {file_path}")
-            return create_error_frame(options, "Blank/constant data", frame_idx, os.path.basename(file_path))
+            return create_error_frame(
+                options, "Blank/constant data", frame_idx, os.path.basename(file_path)
+            )
 
         # Apply region selection if enabled
         if options.get("region_enabled", False):
             # Store original full shape BEFORE cropping for contour reprojection
             options["full_shape"] = data.shape
-            
+
             # Get region coordinates
             x_min = options.get("x_min", 0)
             x_max = options.get("x_max", data.shape[1] - 1)
@@ -468,24 +482,24 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
 
         fig = Figure(figsize=figsize, dpi=dpi)
         canvas = FigureCanvas(fig)
-        
+
         # Create axes - use WCS projection if enabled
         wcs_enabled = options.get("wcs_enabled", False)
         coord_info = options.get("coord_info", None)
-        
+
         # Check if timeline is enabled to use GridSpec layout
         timeline_enabled = options.get("minmax_timeline_enabled", False)
         timeline_ax = None
-        
+
         if timeline_enabled:
             # Use GridSpec for bottom dock panel layout: 88% image, 12% timeline
             gs = GridSpec(2, 1, height_ratios=[88, 12], hspace=0.25, figure=fig)
-            
+
             if wcs_enabled and coord_info and coord_info.get("wcs"):
                 ax = fig.add_subplot(gs[0], projection=coord_info["wcs"])
             else:
                 ax = fig.add_subplot(gs[0])
-            
+
             # Create timeline axes
             timeline_ax = fig.add_subplot(gs[1])
             # timeline_ax.set_facecolor('#1a1a2e')  # Removed to support dynamic themes
@@ -543,37 +557,45 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
         if contour_processor:
             try:
                 from astropy.wcs import WCS
+
                 c_data = None
                 c_wcs = None
                 c_levels = None
-                
-                if contour_processor.mode == 'A':
+
+                if contour_processor.mode == "A":
                     # Mode A: Fixed base, evolving contours
                     # Get contour data from contour_processor's cached data for this frame
                     contour_files = options.get("contour_files", [])
                     if frame_idx < len(contour_files):
-                        c_data, c_header = load_fits_data(contour_files[frame_idx], stokes=options.get("stokes", "I"))
+                        c_data, c_header = load_fits_data(
+                            contour_files[frame_idx], stokes=options.get("stokes", "I")
+                        )
                         if c_header:
                             c_wcs = WCS(c_header, naxis=2)
-                    
-                elif contour_processor.mode == 'B':
+
+                elif contour_processor.mode == "B":
                     # Mode B: Fixed contours, evolving colormap
                     c_data = contour_processor.fixed_contour_data
                     c_wcs = contour_processor.fixed_contour_wcs
                     c_levels = contour_processor.fixed_contour_levels
-                    
-                elif contour_processor.mode == 'C':
+
+                elif contour_processor.mode == "C":
                     # Mode C: Both evolve
                     contour_files = options.get("contour_files", [])
                     if frame_idx < len(contour_files):
-                        c_data, c_header = load_fits_data(contour_files[frame_idx], stokes=options.get("stokes", "I"))
+                        c_data, c_header = load_fits_data(
+                            contour_files[frame_idx], stokes=options.get("stokes", "I")
+                        )
                         if c_header:
                             c_wcs = WCS(c_header, naxis=2)
-                
+
                 if c_data is not None:
                     # Get target WCS for reprojection
                     target_wcs = None
-                    if contour_processor.mode == 'A' and contour_processor.base_image_wcs:
+                    if (
+                        contour_processor.mode == "A"
+                        and contour_processor.base_image_wcs
+                    ):
                         target_wcs = contour_processor.base_image_wcs
                     elif coord_info and coord_info.get("wcs"):
                         target_wcs = coord_info["wcs"]
@@ -582,26 +604,26 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
                             target_wcs = WCS(header, naxis=2)
                         except:
                             pass
-                    
+
                     # Build region_info if region was applied
                     region_info = None
                     if options.get("region_enabled", False):
                         region_info = {
-                            'x_min': options.get('x_min', 0),
-                            'y_min': options.get('y_min', 0),
-                            'x_max': options.get('x_max', data.shape[1] - 1),
-                            'y_max': options.get('y_max', data.shape[0] - 1),
-                            'full_shape': options.get('full_shape', data.shape)
+                            "x_min": options.get("x_min", 0),
+                            "y_min": options.get("y_min", 0),
+                            "x_max": options.get("x_max", data.shape[1] - 1),
+                            "y_max": options.get("y_max", data.shape[0] - 1),
+                            "full_shape": options.get("full_shape", data.shape),
                         }
-                    
+
                     contour_processor.draw_contours(
-                        ax, 
-                        c_data, 
-                        levels=c_levels, 
+                        ax,
+                        c_data,
+                        levels=c_levels,
                         target_wcs=target_wcs,
                         contour_wcs=c_wcs,
                         target_shape=data.shape,
-                        region_info=region_info
+                        region_info=region_info,
                     )
                 else:
                     logger.warning(f"Frame {frame_idx}: No contour data to draw")
@@ -618,7 +640,6 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
             # Turn off axis labels and ticks for pixel mode
             ax.set_xticks([])
             ax.set_yticks([])
-
 
         # Add overlays if requested
         overlay_text = []
@@ -652,9 +673,13 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
             if timestamp:
                 # Use "Colormap:" prefix in contour mode
                 if options.get("contour_video_enabled", False):
-                    overlay_text.append(f"Colormap: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+                    overlay_text.append(
+                        f"Colormap: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
                 else:
-                    overlay_text.append(f"Time: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+                    overlay_text.append(
+                        f"Time: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
             else:
                 # Use file modification time as fallback
                 mtime = os.path.getmtime(file_path)
@@ -668,7 +693,9 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
                     )
 
         # Add contour timestamp if in contour mode
-        if options.get("timestamp", False) and options.get("contour_video_enabled", False):
+        if options.get("timestamp", False) and options.get(
+            "contour_video_enabled", False
+        ):
             contour_files = options.get("contour_files", [])
             frame_idx = options.get("current_frame", 0)
             if frame_idx < len(contour_files):
@@ -680,10 +707,16 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
                             if key in c_header:
                                 c_date_str = c_header[key]
                                 if "T" in c_date_str:
-                                    c_ts = datetime.strptime(c_date_str, "%Y-%m-%dT%H:%M:%S.%f")
+                                    c_ts = datetime.strptime(
+                                        c_date_str, "%Y-%m-%dT%H:%M:%S.%f"
+                                    )
                                 else:
-                                    c_ts = datetime.strptime(c_date_str, "%Y-%m-%d %H:%M:%S.%f")
-                                overlay_text.append(f"Contour: {c_ts.strftime('%Y-%m-%d %H:%M:%S')}")
+                                    c_ts = datetime.strptime(
+                                        c_date_str, "%Y-%m-%d %H:%M:%S.%f"
+                                    )
+                                overlay_text.append(
+                                    f"Contour: {c_ts.strftime('%Y-%m-%d %H:%M:%S')}"
+                                )
                                 break
                 except Exception:
                     # Use contour filename as fallback
@@ -702,7 +735,7 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
                 overlay_text.append(f"Colormap: {filename}")
             else:
                 overlay_text.append(f"File: {filename}")
-            
+
             # Add contour filename if in contour mode
             if options.get("contour_video_enabled", False):
                 contour_files = options.get("contour_files", [])
@@ -728,10 +761,10 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
         # Add colorbar if requested
         if options.get("colorbar", False):
             import matplotlib.ticker as mticker
-            
+
             # Create colorbar with proper sizing that works with GridSpec
             cbar = fig.colorbar(img, ax=ax, shrink=0.9, aspect=30, pad=0.05)
-            
+
             # Format the colorbar nicely
             cbar.ax.tick_params(labelsize=12)
             formatter = mticker.ScalarFormatter(useMathText=True)
@@ -739,14 +772,18 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
             formatter.set_powerlimits((-2, 3))
             cbar.ax.yaxis.set_major_formatter(formatter)
             cbar.ax.yaxis.get_offset_text().set_fontsize(12)
-            
+
             # Add units if available
             if header and "BUNIT" in header:
                 cbar.set_label(header["BUNIT"], fontsize=12)
 
         # Draw min/max timeline if enabled (using the pre-created timeline_ax from GridSpec)
         timeline = options.get("minmax_timeline", None)
-        if timeline and options.get("minmax_timeline_enabled", False) and timeline_ax is not None:
+        if (
+            timeline
+            and options.get("minmax_timeline_enabled", False)
+            and timeline_ax is not None
+        ):
             current_frame = options.get("current_frame", 0)
             timeline.draw_timeline(fig, current_frame, ax=timeline_ax)
 
@@ -758,7 +795,6 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
         # Convert to numpy array
         img_data = canvas_to_rgb_array(canvas)
 
-
         # Clean up
         plt.close(fig)
 
@@ -766,7 +802,9 @@ def process_image(file_path, options, global_stats=None, contour_processor=None,
 
     except Exception as e:
         logger.error(f"Error processing image {file_path}: {e}")
-        return create_error_frame(options, f"Error: {str(e)[:30]}", frame_idx, os.path.basename(file_path))
+        return create_error_frame(
+            options, f"Error: {str(e)[:30]}", frame_idx, os.path.basename(file_path)
+        )
 
 
 def calculate_global_stats(files, options):
@@ -857,39 +895,50 @@ def process_image_wrapper(args):
         # (ContourVideoProcessor objects can't be pickled for multiprocessing)
         contour_processor = None
         if options_copy.get("contour_video_enabled", False):
-            mode_map = {0: 'A', 1: 'B', 2: 'C'}
-            mode = mode_map.get(options_copy.get("contour_mode", 0), 'A')
-            
+            mode_map = {0: "A", 1: "B", 2: "C"}
+            mode = mode_map.get(options_copy.get("contour_mode", 0), "A")
+
             contour_settings = {
-                'level_type': options_copy.get('level_type', 'fraction'),
-                'pos_levels': options_copy.get('pos_levels', [0.1, 0.3, 0.5, 0.7, 0.9]),
-                'neg_levels': options_copy.get('neg_levels', [0.1, 0.3, 0.5, 0.7, 0.9]),
-                'pos_color': options_copy.get('pos_color', 'white'),
-                'neg_color': options_copy.get('neg_color', 'cyan'),
-                'linewidth': options_copy.get('linewidth', 1.0),
-                'pos_linestyle': '-',
-                'neg_linestyle': '--',
+                "level_type": options_copy.get("level_type", "fraction"),
+                "pos_levels": options_copy.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
+                "neg_levels": options_copy.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
+                "pos_color": options_copy.get("pos_color", "white"),
+                "neg_color": options_copy.get("neg_color", "cyan"),
+                "linewidth": options_copy.get("linewidth", 1.0),
+                "pos_linestyle": "-",
+                "neg_linestyle": "--",
             }
-            
-            contour_processor = ContourVideoProcessor(mode=mode, contour_settings=contour_settings)
-            
+
+            contour_processor = ContourVideoProcessor(
+                mode=mode, contour_settings=contour_settings
+            )
+
             # Setup based on mode
-            if mode == 'A':
+            if mode == "A":
                 base_file = options_copy.get("base_file", "")
                 if base_file and os.path.exists(base_file):
-                    contour_processor.load_base_image(base_file, 
-                                                      stokes=options_copy.get("stokes", "I"),
-                                                      load_func=load_fits_data)
-            elif mode == 'B':
+                    contour_processor.load_base_image(
+                        base_file,
+                        stokes=options_copy.get("stokes", "I"),
+                        load_func=load_fits_data,
+                    )
+            elif mode == "B":
                 fixed_contour_file = options_copy.get("fixed_contour_file", "")
                 if fixed_contour_file and os.path.exists(fixed_contour_file):
-                    contour_processor.load_fixed_contour(fixed_contour_file,
-                                                         stokes=options_copy.get("stokes", "I"),
-                                                         load_func=load_fits_data)
+                    contour_processor.load_fixed_contour(
+                        fixed_contour_file,
+                        stokes=options_copy.get("stokes", "I"),
+                        load_func=load_fits_data,
+                    )
 
         # Process the frame with contour processor
-        result = process_image(file_path, options_copy, global_stats, 
-                               contour_processor=contour_processor, frame_idx=idx)
+        result = process_image(
+            file_path,
+            options_copy,
+            global_stats,
+            contour_processor=contour_processor,
+            frame_idx=idx,
+        )
         return idx, result
     except Exception as e:
         logger.error(f"Error processing frame {idx} ({file_path}): {e}")
@@ -1085,27 +1134,33 @@ def create_video(files, output_file, options, progress_callback=None):
             logger.info("Precomputing min/max statistics for timeline...")
             position_map = {
                 0: "bottom-left",
-                1: "bottom-right", 
+                1: "bottom-right",
                 2: "top-left",
-                3: "top-right"
+                3: "top-right",
             }
             position = position_map.get(
                 options.get("timeline_position", 0), "bottom-left"
             )
-            
+
             # Determine which files to use for timeline stats
-            timeline_source = options.get("timeline_source", 0)  # 0=Colormap, 1=Contours
+            timeline_source = options.get(
+                "timeline_source", 0
+            )  # 0=Colormap, 1=Contours
             timeline_files = files  # Default to colormap files
-            
+
             # In contour mode with source=1, use contour files instead
             if options.get("contour_video_enabled", False) and timeline_source == 1:
                 contour_files = options.get("contour_files", [])
                 if contour_files:
                     timeline_files = contour_files
-                    logger.info(f"Timeline will use contour files ({len(timeline_files)} files)")
-            
+                    logger.info(
+                        f"Timeline will use contour files ({len(timeline_files)} files)"
+                    )
+
             log_scale = options.get("timeline_log_scale", False)
-            timeline = MinMaxTimeline(total_frames=len(files), position=position, log_scale=log_scale)
+            timeline = MinMaxTimeline(
+                total_frames=len(files), position=position, log_scale=log_scale
+            )
             timeline.precompute_stats(timeline_files, options, load_fits_data)
             options["minmax_timeline"] = timeline
             logger.info("Timeline statistics computed")
@@ -1114,38 +1169,46 @@ def create_video(files, output_file, options, progress_callback=None):
         contour_processor = None
         if options.get("contour_video_enabled", False):
             logger.info("Initializing Contour Video Processor...")
-            mode_map = {0: 'A', 1: 'B', 2: 'C'}
-            mode = mode_map.get(options.get("contour_mode", 0), 'A')
-            
+            mode_map = {0: "A", 1: "B", 2: "C"}
+            mode = mode_map.get(options.get("contour_mode", 0), "A")
+
             # Construct contour settings using keys from video_dialog.py
             contour_settings = {
-                'level_type': options.get('level_type', 'fraction'),
-                'pos_levels': options.get('pos_levels', [0.1, 0.3, 0.5, 0.7, 0.9]),
-                'neg_levels': options.get('neg_levels', [0.1, 0.3, 0.5, 0.7, 0.9]),
-                'pos_color': options.get('pos_color', 'white'),
-                'neg_color': options.get('neg_color', 'cyan'),
-                'linewidth': options.get('linewidth', 1.0),
-                'pos_linestyle': '-',
-                'neg_linestyle': '--',
+                "level_type": options.get("level_type", "fraction"),
+                "pos_levels": options.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
+                "neg_levels": options.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
+                "pos_color": options.get("pos_color", "white"),
+                "neg_color": options.get("neg_color", "cyan"),
+                "linewidth": options.get("linewidth", 1.0),
+                "pos_linestyle": "-",
+                "neg_linestyle": "--",
             }
-            
-            contour_processor = ContourVideoProcessor(mode=mode, contour_settings=contour_settings)
-            
+
+            contour_processor = ContourVideoProcessor(
+                mode=mode, contour_settings=contour_settings
+            )
+
             # Setup based on mode
-            if mode == 'A':
+            if mode == "A":
                 # Mode A: Fixed base image, evolving contours
                 base_file = options.get("base_file", "")
                 if base_file and os.path.exists(base_file):
-                    contour_processor.load_base_image(base_file, load_func=load_fits_data)
+                    contour_processor.load_base_image(
+                        base_file, load_func=load_fits_data
+                    )
                     logger.info(f"Mode A: Using base image: {base_file}")
-            elif mode == 'B':
+            elif mode == "B":
                 # Mode B: Fixed contours, evolving colormap
                 fixed_contour_file = options.get("fixed_contour_file", "")
                 if fixed_contour_file and os.path.exists(fixed_contour_file):
-                    contour_processor.load_fixed_contour(fixed_contour_file, load_func=load_fits_data)
-                    logger.info(f"Mode B: Using fixed contour file: {fixed_contour_file}")
+                    contour_processor.load_fixed_contour(
+                        fixed_contour_file, load_func=load_fits_data
+                    )
+                    logger.info(
+                        f"Mode B: Using fixed contour file: {fixed_contour_file}"
+                    )
             # Mode C uses the same contour files as the base files list
-            
+
             options["contour_processor"] = contour_processor
             logger.info(f"Contour processor initialized in mode {mode}")
 
@@ -1264,8 +1327,13 @@ def create_video(files, output_file, options, progress_callback=None):
                     options["current_frame"] = i
 
                     # Process the image
-                    frame = process_image(file_path, options, global_stats, 
-                                          contour_processor=contour_processor, frame_idx=i)
+                    frame = process_image(
+                        file_path,
+                        options,
+                        global_stats,
+                        contour_processor=contour_processor,
+                        frame_idx=i,
+                    )
 
                     if frame is not None:
                         # Ensure image has even dimensions

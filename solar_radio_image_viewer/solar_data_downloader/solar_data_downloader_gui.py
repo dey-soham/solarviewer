@@ -100,59 +100,64 @@ class DownloadWorker(QThread):
         import time
         import select
         import os
-        
+
         try:
             # Create a temporary Python script to run the download
             script = self._generate_download_script()
-            
+
             # Run the download in a subprocess with real-time output
             self.progress.emit("Starting download...")
-            
+
             process = subprocess.Popen(
                 [sys.executable, "-u", "-c", script],  # -u for unbuffered output
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 bufsize=0,  # Unbuffered
             )
-            
+
             # Set non-blocking mode on stderr for progress reading
             import fcntl
+
             fl = fcntl.fcntl(process.stderr, fcntl.F_GETFL)
             fcntl.fcntl(process.stderr, fcntl.F_SETFL, fl | os.O_NONBLOCK)
             fl = fcntl.fcntl(process.stdout, fcntl.F_GETFL)
             fcntl.fcntl(process.stdout, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-            
+
             files = []
             stdout_buffer = ""
             stderr_buffer = ""
             total_files = 0
             last_progress_update = time.time()
-            
+
             # Read output in real-time
             while True:
                 if self._cancelled:
                     process.terminate()
                     self.error.emit("Download cancelled by user")
                     return
-                
+
                 # Use select to check for readable data
-                readable, _, _ = select.select([process.stdout, process.stderr], [], [], 0.1)
-                
+                readable, _, _ = select.select(
+                    [process.stdout, process.stderr], [], [], 0.1
+                )
+
                 # Read from stdout (main status messages)
                 if process.stdout in readable:
                     try:
                         chunk = process.stdout.read(4096)
                         if chunk:
-                            stdout_buffer += chunk.decode('utf-8', errors='replace')
-                            
+                            stdout_buffer += chunk.decode("utf-8", errors="replace")
+
                             # Process complete lines
-                            while '\n' in stdout_buffer:
-                                line, stdout_buffer = stdout_buffer.split('\n', 1)
+                            while "\n" in stdout_buffer:
+                                line, stdout_buffer = stdout_buffer.split("\n", 1)
                                 line = line.strip()
-                                
+
                                 if line.startswith("DOWNLOADED_FILES:"):
                                     try:
-                                        files_json = line.replace("DOWNLOADED_FILES:", "").strip()
+                                        files_json = line.replace(
+                                            "DOWNLOADED_FILES:", ""
+                                        ).strip()
                                         files = json.loads(files_json)
                                     except json.JSONDecodeError:
                                         pass
@@ -160,7 +165,7 @@ class DownloadWorker(QThread):
                                     self.progress.emit(line)
                                 elif line.startswith("Found"):
                                     self.progress.emit(line)
-                                    match = re.search(r'Found (\d+) files', line)
+                                    match = re.search(r"Found (\d+) files", line)
                                     if match:
                                         total_files = int(match.group(1))
                                 elif "Successfully" in line:
@@ -169,73 +174,84 @@ class DownloadWorker(QThread):
                                     self.progress.emit(line)
                     except (BlockingIOError, IOError):
                         pass
-                
+
                 # Read from stderr (parfive progress bars)
                 if process.stderr in readable:
                     try:
                         chunk = process.stderr.read(4096)
                         if chunk:
-                            stderr_buffer += chunk.decode('utf-8', errors='replace')
-                            
+                            stderr_buffer += chunk.decode("utf-8", errors="replace")
+
                             # Process carriage return separated updates
-                            while '\r' in stderr_buffer or '\n' in stderr_buffer:
+                            while "\r" in stderr_buffer or "\n" in stderr_buffer:
                                 # Split on either \r or \n
-                                sep = '\r' if '\r' in stderr_buffer else '\n'
+                                sep = "\r" if "\r" in stderr_buffer else "\n"
                                 line, stderr_buffer = stderr_buffer.split(sep, 1)
-                                
+
                                 # Clean ANSI escape codes
-                                clean_line = re.sub(r'\x1b\[[0-9;]*m', '', line).strip()
-                                
+                                clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+
                                 current_time = time.time()
-                                
+
                                 # Parse "Files Downloaded:" progress
                                 if "Files Downloaded:" in clean_line:
-                                    match = re.search(r'Files Downloaded:\s*(\d+)%.*?(\d+)/(\d+)', clean_line)
+                                    match = re.search(
+                                        r"Files Downloaded:\s*(\d+)%.*?(\d+)/(\d+)",
+                                        clean_line,
+                                    )
                                     if match:
                                         pct = match.group(1)
                                         completed = match.group(2)
                                         total = match.group(3)
                                         if current_time - last_progress_update > 0.5:
-                                            self.progress.emit(f"Downloading: {completed}/{total} files ({pct}%)")
+                                            self.progress.emit(
+                                                f"Downloading: {completed}/{total} files ({pct}%)"
+                                            )
                                             last_progress_update = current_time
                                     else:
-                                        match = re.search(r'(\d+)%', clean_line)
-                                        if match and current_time - last_progress_update > 0.5:
+                                        match = re.search(r"(\d+)%", clean_line)
+                                        if (
+                                            match
+                                            and current_time - last_progress_update
+                                            > 0.5
+                                        ):
                                             pct = match.group(1)
                                             self.progress.emit(f"Downloading... {pct}%")
                                             last_progress_update = current_time
                     except (BlockingIOError, IOError):
                         pass
-                
+
                 # Check if process has finished
                 if process.poll() is not None:
                     # Read any remaining buffered output
                     try:
                         remaining_stdout = process.stdout.read()
                         if remaining_stdout:
-                            stdout_buffer += remaining_stdout.decode('utf-8', errors='replace')
+                            stdout_buffer += remaining_stdout.decode(
+                                "utf-8", errors="replace"
+                            )
                     except:
                         pass
-                    
+
                     # Process remaining stdout
-                    for line in stdout_buffer.split('\n'):
+                    for line in stdout_buffer.split("\n"):
                         line = line.strip()
                         if line.startswith("DOWNLOADED_FILES:"):
                             try:
-                                files_json = line.replace("DOWNLOADED_FILES:", "").strip()
+                                files_json = line.replace(
+                                    "DOWNLOADED_FILES:", ""
+                                ).strip()
                                 files = json.loads(files_json)
                             except json.JSONDecodeError:
                                 pass
                     break
-            
+
             if process.returncode != 0:
                 self.error.emit("Download failed. Check console for details.")
                 return
-            
+
             self.progress.emit(f"Download complete! {len(files)} files")
             self.finished.emit(files)
-
-
 
         except Exception as e:
             self.error.emit(str(e))
@@ -243,10 +259,10 @@ class DownloadWorker(QThread):
     def _generate_download_script(self):
         """Generate a Python script to run the download."""
         import json
-        
+
         params = self.params
         instrument = params.get("instrument")
-        
+
         script_lines = [
             "import sys",
             "import json",
@@ -255,15 +271,16 @@ class DownloadWorker(QThread):
             "",
             "try:",
         ]
-        
+
         if instrument == "AIA":
             skip_cal = params.get("skip_calibration", False)
             apply_psf = params.get("apply_psf", False)
             apply_deg = params.get("apply_degradation", True)
             apply_exp = params.get("apply_exposure_norm", True)
-            
+
             if params.get("use_fido", True):
-                script_lines.append(f'''    files = sdd.download_aia_with_fido(
+                script_lines.append(
+                    f"""    files = sdd.download_aia_with_fido(
         wavelength="{params['wavelength']}",
         start_time="{params['start_time']}",
         end_time="{params['end_time']}",
@@ -272,10 +289,12 @@ class DownloadWorker(QThread):
         apply_psf={apply_psf},
         apply_degradation={apply_deg},
         apply_exposure_norm={apply_exp},
-    )''')
+    )"""
+                )
             else:
-                email = params.get('email') or 'None'
-                script_lines.append(f'''    files = sdd.download_aia(
+                email = params.get("email") or "None"
+                script_lines.append(
+                    f"""    files = sdd.download_aia(
         wavelength="{params['wavelength']}",
         cadence="{params['cadence']}",
         start_time="{params['start_time']}",
@@ -283,97 +302,114 @@ class DownloadWorker(QThread):
         output_dir="{params['output_dir']}",
         email={email!r},
         skip_calibration={skip_cal},
-    )''')
-        
+    )"""
+                )
+
         elif instrument == "HMI":
             skip_cal = params.get("skip_calibration", False)
             if params.get("use_fido", True):
-                script_lines.append(f'''    files = sdd.download_hmi_with_fido(
+                script_lines.append(
+                    f"""    files = sdd.download_hmi_with_fido(
         series="{params['series']}",
         start_time="{params['start_time']}",
         end_time="{params['end_time']}",
         output_dir="{params['output_dir']}",
         skip_calibration={skip_cal},
-    )''')
+    )"""
+                )
             else:
-                email = params.get('email') or 'None'
-                script_lines.append(f'''    files = sdd.download_hmi(
+                email = params.get("email") or "None"
+                script_lines.append(
+                    f"""    files = sdd.download_hmi(
         series="{params['series']}",
         start_time="{params['start_time']}",
         end_time="{params['end_time']}",
         output_dir="{params['output_dir']}",
         email={email!r},
         skip_calibration={skip_cal},
-    )''')
-        
+    )"""
+                )
+
         elif instrument == "IRIS":
-            wavelength = params.get('wavelength')
-            script_lines.append(f'''    files = sdd.download_iris(
+            wavelength = params.get("wavelength")
+            script_lines.append(
+                f"""    files = sdd.download_iris(
         start_time="{params['start_time']}",
         end_time="{params['end_time']}",
         output_dir="{params['output_dir']}",
         obs_type="{params['obs_type']}",
         wavelength={wavelength!r},
-    )''')
-        
+    )"""
+            )
+
         elif instrument == "SOHO":
-            wavelength = params.get('wavelength')
-            detector = params.get('detector')
-            script_lines.append(f'''    files = sdd.download_soho(
+            wavelength = params.get("wavelength")
+            detector = params.get("detector")
+            script_lines.append(
+                f"""    files = sdd.download_soho(
         instrument="{params['soho_instrument']}",
         start_time="{params['start_time']}",
         end_time="{params['end_time']}",
         output_dir="{params['output_dir']}",
         wavelength={wavelength!r},
         detector={detector!r},
-    )''')
-        
+    )"""
+            )
+
         elif instrument == "GOES SUVI":
-            wavelength = params.get('wavelength')
-            level = params.get('level', '2')
-            script_lines.append(f'''    files = sdd.download_goes_suvi(
+            wavelength = params.get("wavelength")
+            level = params.get("level", "2")
+            script_lines.append(
+                f"""    files = sdd.download_goes_suvi(
         start_time="{params['start_time']}",
         end_time="{params['end_time']}",
         output_dir="{params['output_dir']}",
         wavelength={wavelength!r},
         level="{level}",
-    )''')
-        
+    )"""
+            )
+
         elif instrument == "STEREO":
-            spacecraft = params.get('spacecraft', 'A')
-            stereo_inst = params.get('stereo_instrument', 'EUVI')
-            wavelength = params.get('wavelength')
-            script_lines.append(f'''    files = sdd.download_stereo(
+            spacecraft = params.get("spacecraft", "A")
+            stereo_inst = params.get("stereo_instrument", "EUVI")
+            wavelength = params.get("wavelength")
+            script_lines.append(
+                f"""    files = sdd.download_stereo(
         start_time="{params['start_time']}",
         end_time="{params['end_time']}",
         output_dir="{params['output_dir']}",
         spacecraft="{spacecraft}",
         instrument="{stereo_inst}",
         wavelength={wavelength!r},
-    )''')
-        
+    )"""
+            )
+
         elif instrument == "GONG":
-            script_lines.append(f'''    files = sdd.download_gong(
+            script_lines.append(
+                f"""    files = sdd.download_gong(
         start_time="{params['start_time']}",
         end_time="{params['end_time']}",
         output_dir="{params['output_dir']}",
-    )''')
-        
+    )"""
+            )
+
         # Add output section - flush to ensure real-time output
-        script_lines.extend([
-            "    sys.stdout.flush()",
-            "    if files:",
-            "        print('DOWNLOADED_FILES:' + json.dumps(files))",
-            "        sys.stdout.flush()",
-            "    else:",
-            "        print('DOWNLOADED_FILES:[]')",
-            "        sys.stdout.flush()",
-            "except Exception as e:",
-            "    import traceback",
-            "    traceback.print_exc()",
-            "    sys.exit(1)",
-        ])
-        
+        script_lines.extend(
+            [
+                "    sys.stdout.flush()",
+                "    if files:",
+                "        print('DOWNLOADED_FILES:' + json.dumps(files))",
+                "        sys.stdout.flush()",
+                "    else:",
+                "        print('DOWNLOADED_FILES:[]')",
+                "        sys.stdout.flush()",
+                "except Exception as e:",
+                "    import traceback",
+                "    traceback.print_exc()",
+                "    sys.exit(1)",
+            ]
+        )
+
         return "\n".join(script_lines)
 
 
@@ -385,7 +421,7 @@ class SolarDataViewerGUI(QMainWindow):
         self.setWindowTitle("Solar Data Downloader")
         self.setMinimumWidth(600)
         self.setMinimumHeight(800)
-        
+
         # Store initial datetime for time selection
         self.initial_datetime = initial_datetime
 
@@ -404,13 +440,13 @@ class SolarDataViewerGUI(QMainWindow):
 
         # Initialize the download worker
         self.download_worker = None
-        
+
         # Initial update for method visibility
         self.on_instrument_changed(0)
 
     def closeEvent(self, event):
         """Clean up download worker thread when window is closed."""
-        if hasattr(self, 'download_worker') and self.download_worker is not None:
+        if hasattr(self, "download_worker") and self.download_worker is not None:
             if self.download_worker.isRunning():
                 self.download_worker.cancel()
                 self.download_worker.quit()
@@ -467,7 +503,9 @@ class SolarDataViewerGUI(QMainWindow):
                 "4500 Å (Visible)",
             ]
         )
-        self.wavelength_combo.currentIndexChanged.connect(self.on_aia_wavelength_changed)
+        self.wavelength_combo.currentIndexChanged.connect(
+            self.on_aia_wavelength_changed
+        )
         wavelength_layout.addWidget(self.wavelength_combo)
         aia_layout.addLayout(wavelength_layout)
 
@@ -619,9 +657,15 @@ class SolarDataViewerGUI(QMainWindow):
         stereo_inst_layout.addWidget(QLabel("Instrument:"))
         self.stereo_inst_combo = QComboBox()
         self.stereo_inst_combo.addItems(
-            ["EUVI (EUV Imager)", "COR1 (Inner coronagraph)", "COR2 (Outer coronagraph)"]
+            [
+                "EUVI (EUV Imager)",
+                "COR1 (Inner coronagraph)",
+                "COR2 (Outer coronagraph)",
+            ]
         )
-        self.stereo_inst_combo.currentIndexChanged.connect(self.on_stereo_instrument_changed)
+        self.stereo_inst_combo.currentIndexChanged.connect(
+            self.on_stereo_instrument_changed
+        )
         stereo_inst_layout.addWidget(self.stereo_inst_combo)
         stereo_layout.addLayout(stereo_inst_layout)
 
@@ -631,9 +675,7 @@ class SolarDataViewerGUI(QMainWindow):
         euvi_layout.setContentsMargins(0, 0, 0, 0)
         euvi_layout.addWidget(QLabel("Wavelength:"))
         self.stereo_wavelength_combo = QComboBox()
-        self.stereo_wavelength_combo.addItems(
-            ["171 Å", "195 Å", "284 Å", "304 Å"]
-        )
+        self.stereo_wavelength_combo.addItems(["171 Å", "195 Å", "284 Å", "304 Å"])
         euvi_layout.addWidget(self.stereo_wavelength_combo)
         self.stereo_euvi_params.setLayout(euvi_layout)
         stereo_layout.addWidget(self.stereo_euvi_params)
@@ -643,7 +685,9 @@ class SolarDataViewerGUI(QMainWindow):
         # GONG parameters (minimal - just magnetograms)
         self.gong_params = QWidget()
         gong_layout = QVBoxLayout()
-        gong_label = QLabel("GONG provides magnetogram data.\nNo additional parameters needed.")
+        gong_label = QLabel(
+            "GONG provides magnetogram data.\nNo additional parameters needed."
+        )
         gong_label.setStyleSheet("color: gray; font-style: italic;")
         gong_layout.addWidget(gong_label)
         self.gong_params.setLayout(gong_layout)
@@ -681,13 +725,13 @@ class SolarDataViewerGUI(QMainWindow):
         self.start_datetime = QDateTimeEdit()
         self.start_datetime.setCalendarPopup(True)
         self.start_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
-        
+
         # Use initial_datetime if provided, otherwise current time
         if self.initial_datetime:
             self.start_datetime.setDateTime(QDateTime(self.initial_datetime))
         else:
             self.start_datetime.setDateTime(QDateTime.currentDateTime())
-        
+
         # Connect to sync end time when start time changes
         self.start_datetime.dateTimeChanged.connect(self.on_start_datetime_changed)
         start_layout.addWidget(self.start_datetime)
@@ -699,10 +743,11 @@ class SolarDataViewerGUI(QMainWindow):
         self.end_datetime = QDateTimeEdit()
         self.end_datetime.setCalendarPopup(True)
         self.end_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
-        
+
         # Use initial_datetime + 1 hour if provided, otherwise current time + 1 hour
         if self.initial_datetime:
             from datetime import timedelta
+
             end_dt = self.initial_datetime + timedelta(hours=1)
             self.end_datetime.setDateTime(QDateTime(end_dt))
         else:
@@ -760,7 +805,7 @@ class SolarDataViewerGUI(QMainWindow):
         self.drms_radio = QRadioButton("DRMS")
         self.method_group.addButton(self.drms_radio, 0)
         method_layout.addWidget(self.drms_radio)
-        
+
         self.method_group.buttonClicked.connect(self.on_method_changed)
         self.method_widget.setLayout(method_layout)
         layout.addWidget(self.method_widget)
@@ -946,7 +991,7 @@ class SolarDataViewerGUI(QMainWindow):
     def on_method_changed(self, button=None):
         """Handle download method changes."""
         use_fido = self.method_group.checkedId() == 1
-        
+
         if use_fido:
             self.email_widget.hide()
             self.cadence_widget.hide()  # Fido doesn't use cadence
@@ -960,14 +1005,14 @@ class SolarDataViewerGUI(QMainWindow):
     def on_aia_wavelength_changed(self, index=None):
         """Auto-select cadence based on AIA wavelength."""
         wavelength_text = self.wavelength_combo.currentText()
-        
+
         if "1600" in wavelength_text or "1700" in wavelength_text:
             self.cadence_combo.setCurrentIndex(1)  # 24s
         elif "4500" in wavelength_text:
             self.cadence_combo.setCurrentIndex(2)  # 1h
         else:
             self.cadence_combo.setCurrentIndex(0)  # 12s
-        
+
         self.update_cadence_info()
 
     def on_soho_instrument_changed(self, index):
@@ -979,7 +1024,7 @@ class SolarDataViewerGUI(QMainWindow):
             self.soho_eit_params.show()
         elif index == 1:  # LASCO
             self.soho_lasco_params.show()
-        
+
         self.update_cadence_info()
 
     def on_stereo_instrument_changed(self, index):
@@ -993,41 +1038,42 @@ class SolarDataViewerGUI(QMainWindow):
     def update_cadence_info(self):
         """Update the cadence info label based on selected instrument and parameters."""
         index = self.instrument_combo.currentIndex()
-        
+
         # Cadence info for each instrument
         cadence_info = {
             0: {  # AIA
                 "default": "12s (EUV), 24s (UV), 1h (4500Å)",
                 "wavelengths": {
-                    "94": "12s", "131": "12s", "171": "12s", "193": "12s",
-                    "211": "12s", "304": "12s", "335": "12s",
-                    "1600": "24s", "1700": "24s", "4500": "1 hour"
-                }
+                    "94": "12s",
+                    "131": "12s",
+                    "171": "12s",
+                    "193": "12s",
+                    "211": "12s",
+                    "304": "12s",
+                    "335": "12s",
+                    "1600": "24s",
+                    "1700": "24s",
+                    "4500": "1 hour",
+                },
             },
-            1: {  # HMI
-                "default": "45s (magnetogram), 45s (continuum), 45s (Doppler)"
-            },
+            1: {"default": "45s (magnetogram), 45s (continuum), 45s (Doppler)"},  # HMI
             2: {  # IRIS
                 "default": "Variable (depends on observing program, typically minutes)"
             },
             3: {  # SOHO
                 "EIT": "~12 min (synoptic), 1-6 min (campaign)",
                 "LASCO": "~12-30 min (C2/C3)",
-                "MDI": "1 min (discontinued 2011)"
+                "MDI": "1 min (discontinued 2011)",
             },
-            4: {  # GOES SUVI
-                "default": "4 min (Level 2 composites)"
-            },
+            4: {"default": "4 min (Level 2 composites)"},  # GOES SUVI
             5: {  # STEREO
                 "EUVI": "2.5-10 min (wavelength dependent)",
                 "COR1": "5 min",
-                "COR2": "15-30 min"
+                "COR2": "15-30 min",
             },
-            6: {  # GONG
-                "default": "1 min (magnetograms)"
-            }
+            6: {"default": "1 min (magnetograms)"},  # GONG
         }
-        
+
         if index == 0:  # AIA - show wavelength-specific cadence
             wl = self.wavelength_combo.currentText().split()[0]
             wl_cadences = cadence_info[0]["wavelengths"]
@@ -1049,7 +1095,6 @@ class SolarDataViewerGUI(QMainWindow):
         else:
             cadence = cadence_info.get(index, {}).get("default", "Variable")
             self.cadence_label.setText(f"ℹ️ Typical cadence: {cadence}")
-
 
     def get_download_parameters(self) -> dict:
         """Gather all parameters needed for the download."""
@@ -1102,20 +1147,28 @@ class SolarDataViewerGUI(QMainWindow):
             params.update({"instrument": "SOHO", "soho_instrument": soho_instrument})
 
             if soho_instrument == "EIT":
-                params["wavelength"] = self.eit_wavelength_combo.currentText().split()[0]
+                params["wavelength"] = self.eit_wavelength_combo.currentText().split()[
+                    0
+                ]
             elif soho_instrument == "LASCO":
                 params["detector"] = self.lasco_detector_combo.currentText().split()[0]
-                
+
         elif instrument_index == 4:  # GOES SUVI
             params.update(
                 {
                     "instrument": "GOES SUVI",
                     "wavelength": self.suvi_wavelength_combo.currentText().split()[0],
-                    "level": "2" if "Level 2" in self.suvi_level_combo.currentText() else "1b",
+                    "level": (
+                        "2"
+                        if "Level 2" in self.suvi_level_combo.currentText()
+                        else "1b"
+                    ),
                 }
             )
         elif instrument_index == 5:  # STEREO
-            spacecraft = "A" if "STEREO-A" in self.stereo_sc_combo.currentText() else "B"
+            spacecraft = (
+                "A" if "STEREO-A" in self.stereo_sc_combo.currentText() else "B"
+            )
             stereo_inst_text = self.stereo_inst_combo.currentText()
             if "EUVI" in stereo_inst_text:
                 stereo_inst = "EUVI"
@@ -1123,7 +1176,7 @@ class SolarDataViewerGUI(QMainWindow):
                 stereo_inst = "COR1"
             else:
                 stereo_inst = "COR2"
-            
+
             params.update(
                 {
                     "instrument": "STEREO",
@@ -1132,8 +1185,10 @@ class SolarDataViewerGUI(QMainWindow):
                 }
             )
             if stereo_inst == "EUVI":
-                params["wavelength"] = self.stereo_wavelength_combo.currentText().split()[0]
-                
+                params["wavelength"] = (
+                    self.stereo_wavelength_combo.currentText().split()[0]
+                )
+
         elif instrument_index == 6:  # GONG
             params.update({"instrument": "GONG"})
 

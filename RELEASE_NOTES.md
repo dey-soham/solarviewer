@@ -1,5 +1,13 @@
 # SolarViewer Release Notes
 
+## Version 1.2.1
+
+### Changes & Improvements
+*   **Remote Dialog**: Made the remote file dialog non-modal for better workflow.
+*   **Cache Display**: Added cache volume usage display in the menu.
+*   **CASA Support**: Fixed cache size calculation for CASA images (directory-based).
+*   **Contour RMS**: Fixed sigma contour RMS box logic to dynamically auto-calculate based on **source** contour data dimensions.
+
 ## Version 1.2.0
 
 ### Features & Infrastructure

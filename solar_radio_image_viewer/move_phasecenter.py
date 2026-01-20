@@ -3,6 +3,7 @@ import numpy as np
 import sys
 import glob
 from casatools import msmetadata, table, measures, quanta, image
+
 # casatasks are now run via subprocess to avoid memory issues
 import subprocess
 import json
@@ -22,8 +23,8 @@ def run_casatask_subprocess(task_name, **kwargs):
     """Generic wrapper to run any casatask in a subprocess."""
     # Convert kwargs to a JSON-safe format
     kwargs_str = json.dumps(kwargs)
-    
-    script = f'''
+
+    script = f"""
 import sys
 import json
 from casatasks import {task_name}
@@ -39,15 +40,13 @@ try:
 except Exception as e:
     print(json.dumps({{"success": False, "error": str(e)}}), file=sys.stderr)
     sys.exit(1)
-'''
+"""
     result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True
+        [sys.executable, "-c", script], capture_output=True, text=True
     )
     if result.returncode != 0:
         raise RuntimeError(f"{task_name} failed: {result.stderr}")
-    
+
     try:
         output = json.loads(result.stdout.strip())
         return output.get("result")
@@ -74,7 +73,7 @@ def imsmooth_subprocess(imagename, targetres, major, minor, pa, outfile):
         major=major,
         minor=minor,
         pa=pa,
-        outfile=outfile
+        outfile=outfile,
     )
 
 
@@ -94,7 +93,9 @@ def imfit_subprocess(imagename, box=None):
     return run_casatask_subprocess("imfit", **kwargs)
 
 
-def exportfits_subprocess(imagename, fitsimage, dropdeg=False, dropstokes=False, overwrite=True):
+def exportfits_subprocess(
+    imagename, fitsimage, dropdeg=False, dropstokes=False, overwrite=True
+):
     """Run exportfits in a subprocess."""
     return run_casatask_subprocess(
         "exportfits",
@@ -102,7 +103,7 @@ def exportfits_subprocess(imagename, fitsimage, dropdeg=False, dropstokes=False,
         fitsimage=fitsimage,
         dropdeg=dropdeg,
         dropstokes=dropstokes,
-        overwrite=overwrite
+        overwrite=overwrite,
     )
 
 
@@ -121,7 +122,7 @@ def fixvis_subprocess(vis, outputvis, phasecenter, datacolumn="all"):
         vis=vis,
         outputvis=outputvis,
         phasecenter=phasecenter,
-        datacolumn=datacolumn
+        datacolumn=datacolumn,
     )
 
 
@@ -180,61 +181,71 @@ class SolarPhaseCenter:
                 try:
                     ia = image()
                     ia.open(imagename)
-                    
+
                     # Get observation date from image miscinfo
                     misc = ia.miscinfo()
-                    for key in ['date-obs', 'DATE-OBS', 'obsdate', 'OBSDATE']:
+                    for key in ["date-obs", "DATE-OBS", "obsdate", "OBSDATE"]:
                         if key in misc and misc[key]:
                             obs_time = misc[key]
                             break
-                    
+
                     # Try to extract from the summary which has the observation date
                     if obs_time is None:
                         summary = ia.summary(list=False)  # Suppress output
                         if isinstance(summary, dict):
                             # Check for 'obsdate' key in summary
-                            if 'obsdate' in summary:
-                                date_dict = summary['obsdate']
-                                if isinstance(date_dict, dict) and 'm0' in date_dict:
+                            if "obsdate" in summary:
+                                date_dict = summary["obsdate"]
+                                if isinstance(date_dict, dict) and "m0" in date_dict:
                                     from astropy.time import Time
-                                    mjd = date_dict['m0']['value'] / 86400.0
-                                    obs_time = Time(mjd, format='mjd').isot
-                    
+
+                                    mjd = date_dict["m0"]["value"] / 86400.0
+                                    obs_time = Time(mjd, format="mjd").isot
+
                     ia.close()
-                    
+
                     # If we still don't have obs_time, try reading from the exported FITS
                     # since exportfits often preserves DATE-OBS correctly
-                    if obs_time is None and 'working_fits' in dir():
+                    if obs_time is None and "working_fits" in dir():
                         # Will be handled by FITS path below
                         pass
-                        
+
                 except Exception as e:
                     print(f"Error reading CASA image for observation time: {e}")
             else:
                 header = fits.getheader(imagename)
 
                 # Check common keywords for observation time
-                time_keywords = ['DATE-OBS', 'DATE_OBS', 'DATEOBS', 'DATE-BEG', 
-                                 'DATE-AVG', 'DATE-END', 'OBSDATE', 'OBS-DATE']
-                
+                time_keywords = [
+                    "DATE-OBS",
+                    "DATE_OBS",
+                    "DATEOBS",
+                    "DATE-BEG",
+                    "DATE-AVG",
+                    "DATE-END",
+                    "OBSDATE",
+                    "OBS-DATE",
+                ]
+
                 for key in time_keywords:
                     if key in header and header[key]:
                         obs_time = header[key]
                         break
 
                 # If only TIME-OBS is available separately, combine with DATE-OBS
-                if obs_time and 'T' not in obs_time:
-                    for time_key in ['TIME-OBS', 'TIME_OBS', 'TIMEOBS']:
+                if obs_time and "T" not in obs_time:
+                    for time_key in ["TIME-OBS", "TIME_OBS", "TIMEOBS"]:
                         if time_key in header and header[time_key]:
                             obs_time = f"{obs_time}T{header[time_key]}"
                             break
 
                 # Handle MJD format
                 if obs_time is None:
-                    for mjd_key in ['MJD-OBS', 'MJD_OBS', 'MJDOBS']:
+                    for mjd_key in ["MJD-OBS", "MJD_OBS", "MJDOBS"]:
                         if mjd_key in header and header[mjd_key]:
                             from astropy.time import Time
-                            obs_time = Time(header[mjd_key], format='mjd').isot
+
+                            obs_time = Time(header[mjd_key], format="mjd").isot
                             break
 
         except Exception as e:
@@ -265,15 +276,17 @@ class SolarPhaseCenter:
         from astropy.time import Time
 
         if not isinstance(obs_time, Time):
-            obs_time = Time(obs_time, scale='utc')
+            obs_time = Time(obs_time, scale="utc")
 
         sun = get_sun(obs_time)
-        
+
         ra_deg = sun.ra.deg
         dec_deg = sun.dec.deg
-        
-        print(f"True solar position (ephemeris): RA = {ra_deg:.6f} deg, DEC = {dec_deg:.6f} deg")
-        
+
+        print(
+            f"True solar position (ephemeris): RA = {ra_deg:.6f} deg, DEC = {dec_deg:.6f} deg"
+        )
+
         return ra_deg, dec_deg
 
     def setup_rms_boxes(self, imsize, cellsize):
@@ -567,17 +580,21 @@ class SolarPhaseCenter:
             - 'is_hpc': bool - Whether the image is in helioprojective coordinates
         """
         result = {
-            'true_ra': None, 'true_dec': None,
-            'apparent_pix_x': None, 'apparent_pix_y': None,
-            'apparent_ra': None, 'apparent_dec': None,
-            'needs_shift': False, 'is_hpc': False
+            "true_ra": None,
+            "true_dec": None,
+            "apparent_pix_x": None,
+            "apparent_pix_y": None,
+            "apparent_ra": None,
+            "apparent_dec": None,
+            "needs_shift": False,
+            "is_hpc": False,
         }
 
         # Convert CASA image to FITS at the start for unified processing
         is_casa_image = os.path.isdir(imagename)
         temp_fits_file = None
         working_fits = imagename
-        
+
         if is_casa_image:
             print("Converting CASA image to FITS for processing...")
             image_path = os.path.dirname(os.path.abspath(imagename))
@@ -588,7 +605,7 @@ class SolarPhaseCenter:
                     fitsimage=temp_fits_file,
                     dropdeg=False,
                     dropstokes=False,
-                    overwrite=True
+                    overwrite=True,
                 )
                 working_fits = temp_fits_file
             except Exception as e:
@@ -596,82 +613,88 @@ class SolarPhaseCenter:
                 return result
         # Now work exclusively with FITS file
         header = fits.getheader(working_fits)
-        
+
         # Auto-detect HPC if not specified
         if is_hpc is None:
-            ctype1 = header.get('CTYPE1', '').upper()
-            ctype2 = header.get('CTYPE2', '').upper()
-            if ('HPLN' in ctype1 or 'HPLT' in ctype2 or 
-                'SOLAR' in ctype1 or 'SOLAR' in ctype2):
+            ctype1 = header.get("CTYPE1", "").upper()
+            ctype2 = header.get("CTYPE2", "").upper()
+            if (
+                "HPLN" in ctype1
+                or "HPLT" in ctype2
+                or "SOLAR" in ctype1
+                or "SOLAR" in ctype2
+            ):
                 is_hpc = True
                 print("Detected helioprojective coordinates (Solar-X/Y)")
             else:
                 is_hpc = False
-        
-        result['is_hpc'] = is_hpc
-        
+
+        result["is_hpc"] = is_hpc
+
         # Get current phase center (reference RA/DEC)
         if self.msname:
             radec_str, radeg, decdeg = self.get_phasecenter()
         else:
-            radeg = header.get('CRVAL1', 0)
-            decdeg = header.get('CRVAL2', 0)
+            radeg = header.get("CRVAL1", 0)
+            decdeg = header.get("CRVAL2", 0)
 
         # Extract cell size and imsize from FITS header
         if self.cellsize is None or self.imsize is None:
             try:
-                cunit1 = header.get('CUNIT1', 'deg').lower()
-                cdelt1 = np.abs(header.get('CDELT1', 1))
-                
-                if 'arcsec' in cunit1:
+                cunit1 = header.get("CUNIT1", "deg").lower()
+                cdelt1 = np.abs(header.get("CDELT1", 1))
+
+                if "arcsec" in cunit1:
                     self.cellsize = cdelt1
                 else:
                     # Assume degrees
                     self.cellsize = cdelt1 * 3600.0
-                    
-                self.imsize = header.get('NAXIS1', 512)
+
+                self.imsize = header.get("NAXIS1", 512)
                 self.setup_rms_boxes(self.imsize, self.cellsize)
             except Exception as e:
                 print(f"Error extracting image properties: {e}")
-                result['true_ra'] = radeg
-                result['true_dec'] = decdeg
+                result["true_ra"] = radeg
+                result["true_dec"] = decdeg
                 return result
 
         # Step 1: Get TRUE solar position
         if is_hpc:
             # For HPC images, target position is (0,0) Solar-X/Y
             print("Target position: Solar-X = 0 arcsec, Solar-Y = 0 arcsec")
-            result['true_ra'] = 0.0
-            result['true_dec'] = 0.0
+            result["true_ra"] = 0.0
+            result["true_dec"] = 0.0
         else:
             # For RA/Dec images, get position from ephemeris
             obs_time = self.get_observation_time(working_fits)
             if obs_time:
                 try:
                     true_ra, true_dec = self.get_solar_position(obs_time)
-                    result['true_ra'] = true_ra
-                    result['true_dec'] = true_dec
+                    result["true_ra"] = true_ra
+                    result["true_dec"] = true_dec
                 except Exception as e:
                     print(f"Error getting solar position from ephemeris: {e}")
                     # Fall back to current phase center
-                    result['true_ra'] = radeg
-                    result['true_dec'] = decdeg
+                    result["true_ra"] = radeg
+                    result["true_dec"] = decdeg
             else:
-                print("Warning: No observation time found, using current phase center as true position")
-                result['true_ra'] = radeg
-                result['true_dec'] = decdeg
+                print(
+                    "Warning: No observation time found, using current phase center as true position"
+                )
+                result["true_ra"] = radeg
+                result["true_dec"] = decdeg
 
         # Step 2: Find APPARENT solar position using image-based methods
         apparent_ra = None
         apparent_dec = None
         apparent_pix_x = None
         apparent_pix_y = None
-        
+
         # Center of mass method using the working FITS file
         try:
             # Calculate RMS for thresholding from FITS data
             data = fits.getdata(working_fits)
-            
+
             # Get 2D data
             if data.ndim == 4:
                 data_2d = data[0, 0, :, :]
@@ -679,7 +702,7 @@ class SolarPhaseCenter:
                 data_2d = data[0, :, :]
             else:
                 data_2d = data
-            
+
             valid_data = data_2d[~np.isnan(data_2d)]
             rms = np.sqrt(np.mean(valid_data**2)) if valid_data.size > 0 else 1.0
 
@@ -701,53 +724,64 @@ class SolarPhaseCenter:
                 try:
                     from scipy.optimize import curve_fit
                     from scipy.ndimage import gaussian_filter
-                    
+
                     # Smooth the data slightly for better fitting
                     smoothed = gaussian_filter(data_2d, sigma=3)
-                    
+
                     # Find initial guess from max position
                     max_idx = np.unravel_index(np.nanargmax(smoothed), smoothed.shape)
                     y0, x0 = max_idx[0], max_idx[1]
-                    
+
                     # Define 2D Gaussian function
                     def gaussian_2d(xy, amplitude, x0, y0, sigma_x, sigma_y, offset):
                         x, y = xy
                         g = offset + amplitude * np.exp(
-                            -(((x - x0) ** 2) / (2 * sigma_x ** 2) + 
-                              ((y - y0) ** 2) / (2 * sigma_y ** 2))
+                            -(
+                                ((x - x0) ** 2) / (2 * sigma_x**2)
+                                + ((y - y0) ** 2) / (2 * sigma_y**2)
+                            )
                         )
                         return g.ravel()
-                    
+
                     # Create coordinate grids for fitting region
                     fit_size = 50  # Fit in a region around the max
                     y_min = max(0, y0 - fit_size)
                     y_max = min(data_2d.shape[0], y0 + fit_size)
                     x_min = max(0, x0 - fit_size)
                     x_max = min(data_2d.shape[1], x0 + fit_size)
-                    
+
                     y_grid, x_grid = np.mgrid[y_min:y_max, x_min:x_max]
                     data_region = smoothed[y_min:y_max, x_min:x_max]
-                    
+
                     # Initial parameters
-                    p0 = [np.nanmax(data_region), x0, y0, 20, 20, np.nanmin(data_region)]
-                    
+                    p0 = [
+                        np.nanmax(data_region),
+                        x0,
+                        y0,
+                        20,
+                        20,
+                        np.nanmin(data_region),
+                    ]
+
                     # Fit the Gaussian
                     popt, pcov = curve_fit(
                         gaussian_2d,
                         (x_grid, y_grid),
                         data_region.ravel(),
                         p0=p0,
-                        maxfev=5000
+                        maxfev=5000,
                     )
-                    
+
                     apparent_pix_x = int(popt[1])
                     apparent_pix_y = int(popt[2])
-                    print(f"Gaussian fit center: pixel ({apparent_pix_x}, {apparent_pix_y})")
-                    
+                    print(
+                        f"Gaussian fit center: pixel ({apparent_pix_x}, {apparent_pix_y})"
+                    )
+
                 except Exception as e:
                     print(f"Gaussian fitting failed: {e}, using center-of-mass")
                     fit_gaussian = False  # Fall back to center of mass
-            
+
             # Method 2: Center of mass (fallback or default)
             if apparent_pix_x is None:
                 cy, cx = ndi.center_of_mass(data_binary)
@@ -756,14 +790,14 @@ class SolarPhaseCenter:
 
             # Convert pixel position to world coordinates using WCS
             w = WCS(working_fits)
-            
+
             # If WCS has more than 2 dimensions, extract the celestial 2D WCS
             if w.naxis > 2:
                 try:
                     w = w.celestial
                 except:
                     pass
-            
+
             try:
                 # Use wcs_pix2world with 0-based pixel coordinates
                 world = w.wcs_pix2world([[apparent_pix_x, apparent_pix_y]], 0)[0]
@@ -773,39 +807,54 @@ class SolarPhaseCenter:
                 print(f"Error converting pixel to world coordinates: {e}")
 
             if apparent_ra is not None and apparent_dec is not None:
-                print(f"Apparent solar position: RA = {apparent_ra:.6f} deg, DEC = {apparent_dec:.6f} deg")
+                print(
+                    f"Apparent solar position: RA = {apparent_ra:.6f} deg, DEC = {apparent_dec:.6f} deg"
+                )
             print(f"Apparent pixel position: ({apparent_pix_x}, {apparent_pix_y})")
 
         except Exception as e:
             print(f"Error in apparent position calculation: {e}")
             import traceback
+
             traceback.print_exc()
-        
+
         finally:
             # Clean up temp FITS file if we created one
             if temp_fits_file and os.path.exists(temp_fits_file):
                 os.remove(temp_fits_file)
 
         # Store apparent position results
-        result['apparent_ra'] = apparent_ra
-        result['apparent_dec'] = apparent_dec
-        result['apparent_pix_x'] = apparent_pix_x
-        result['apparent_pix_y'] = apparent_pix_y
+        result["apparent_ra"] = apparent_ra
+        result["apparent_dec"] = apparent_dec
+        result["apparent_pix_x"] = apparent_pix_x
+        result["apparent_pix_y"] = apparent_pix_y
 
         # Determine if shift is needed
-        if result['true_ra'] is not None and apparent_ra is not None:
-            offset = np.sqrt((result['true_ra'] - apparent_ra) ** 2 + 
-                           (result['true_dec'] - apparent_dec) ** 2)
+        if result["true_ra"] is not None and apparent_ra is not None:
+            offset = np.sqrt(
+                (result["true_ra"] - apparent_ra) ** 2
+                + (result["true_dec"] - apparent_dec) ** 2
+            )
             # Shift is needed if offset is more than 1 cell
             if offset > (self.cellsize / 3600.0):
-                result['needs_shift'] = True
+                result["needs_shift"] = True
                 print(f"Phase shift needed: offset = {offset * 3600:.2f} arcsec")
             else:
-                print(f"No significant shift needed: offset = {offset * 3600:.2f} arcsec")
+                print(
+                    f"No significant shift needed: offset = {offset * 3600:.2f} arcsec"
+                )
 
         return result
 
-    def shift_phasecenter(self, imagename, ra=None, dec=None, stokes="I", process_id=None, phase_result=None):
+    def shift_phasecenter(
+        self,
+        imagename,
+        ra=None,
+        dec=None,
+        stokes="I",
+        process_id=None,
+        phase_result=None,
+    ):
         """
         Shift the image WCS so that the apparent solar position maps to the true solar coordinates.
 
@@ -839,11 +888,11 @@ class SolarPhaseCenter:
 
             # Handle new dict format or legacy arguments
             if phase_result is not None:
-                true_ra = phase_result.get('true_ra')
-                true_dec = phase_result.get('true_dec')
-                apparent_pix_x = phase_result.get('apparent_pix_x')
-                apparent_pix_y = phase_result.get('apparent_pix_y')
-                
+                true_ra = phase_result.get("true_ra")
+                true_dec = phase_result.get("true_dec")
+                apparent_pix_x = phase_result.get("apparent_pix_x")
+                apparent_pix_y = phase_result.get("apparent_pix_y")
+
                 if true_ra is None or true_dec is None:
                     print("Error: No true solar position available")
                     return 2
@@ -889,24 +938,31 @@ class SolarPhaseCenter:
                 # Extract stokes plane for coordinate calculation
                 if imagetype == "casa":
                     imsubimage_subprocess(
-                        imagename=imagename, outfile=temp_image, stokes=stokes, dropdeg=False
+                        imagename=imagename,
+                        outfile=temp_image,
+                        stokes=stokes,
+                        dropdeg=False,
                     )
                     exportfits_subprocess(
-                        imagename=temp_image, fitsimage=temp_fits, dropdeg=True, dropstokes=True
+                        imagename=temp_image,
+                        fitsimage=temp_fits,
+                        dropdeg=True,
+                        dropstokes=True,
                     )
                 else:
                     import shutil
+
                     shutil.copy(imagename, temp_fits)
 
                 # Calculate pixel position for the target RA/DEC
                 w = WCS(temp_fits)
-                
+
                 # Handle multi-dimensional WCS by using celestial part
-                if hasattr(w, 'celestial'):
+                if hasattr(w, "celestial"):
                     w_celest = w.celestial
                 else:
                     w_celest = w
-                    
+
                 try:
                     # Provide RA and Dec to celestial WCS
                     pix = w_celest.all_world2pix(np.array([[true_ra, true_dec]]), 0)
@@ -915,11 +971,11 @@ class SolarPhaseCenter:
                 except Exception as e:
                     print(f"Error calculating pixel position for RA/Dec: {e}")
                     # Fallback to image center if WCS conversion fails
-                    naxis1 = header.get('NAXIS1', 512)
-                    naxis2 = header.get('NAXIS2', 512)
+                    naxis1 = header.get("NAXIS1", 512)
+                    naxis2 = header.get("NAXIS2", 512)
                     apparent_pix_x = naxis1 // 2
                     apparent_pix_y = naxis2 // 2
-                
+
                 # Clean up temp files
                 os.system(f"rm -rf {temp_image} {temp_fits}")
 
@@ -930,37 +986,55 @@ class SolarPhaseCenter:
             if imagetype == "casa":
                 # Update CRPIX and CRVAL in CASA image (0-based)
                 imhead_subprocess(
-                    imagename=imagename, mode="put", hdkey="CRPIX1", hdvalue=str(apparent_pix_x)
+                    imagename=imagename,
+                    mode="put",
+                    hdkey="CRPIX1",
+                    hdvalue=str(apparent_pix_x),
                 )
                 imhead_subprocess(
-                    imagename=imagename, mode="put", hdkey="CRPIX2", hdvalue=str(apparent_pix_y)
+                    imagename=imagename,
+                    mode="put",
+                    hdkey="CRPIX2",
+                    hdvalue=str(apparent_pix_y),
                 )
                 # Also update CRVAL to true position (in radians for CASA)
                 imhead_subprocess(
-                    imagename=imagename, mode="put", hdkey="CRVAL1", hdvalue=str(np.deg2rad(true_ra))
+                    imagename=imagename,
+                    mode="put",
+                    hdkey="CRVAL1",
+                    hdvalue=str(np.deg2rad(true_ra)),
                 )
                 imhead_subprocess(
-                    imagename=imagename, mode="put", hdkey="CRVAL2", hdvalue=str(np.deg2rad(true_dec))
+                    imagename=imagename,
+                    mode="put",
+                    hdkey="CRVAL2",
+                    hdvalue=str(np.deg2rad(true_dec)),
                 )
             elif imagetype == "fits":
                 # Update CRPIX and CRVAL in FITS header
                 data = fits.getdata(imagename)
                 header = fits.getheader(imagename)
-                
+
                 # Set CRPIX to apparent pixel position (1-based for FITS)
                 # Add 1 because FITS CRPIX is 1-based but our pixel positions are 0-based
                 header["CRPIX1"] = float(apparent_pix_x + 1)
                 header["CRPIX2"] = float(apparent_pix_y + 1)
-                
+
                 # Set CRVAL to true solar position
                 header["CRVAL1"] = float(true_ra)
                 header["CRVAL2"] = float(true_dec)
-                
+
                 # Add HISTORY
-                header.add_history('Phase center shifted with SolarViewer (ephemeris-based)')
-                header.add_history(f'True solar RA={true_ra:.6f} deg, DEC={true_dec:.6f} deg')
-                header.add_history(f'Apparent pixel position (0-based): ({apparent_pix_x}, {apparent_pix_y})')
-                
+                header.add_history(
+                    "Phase center shifted with SolarViewer (ephemeris-based)"
+                )
+                header.add_history(
+                    f"True solar RA={true_ra:.6f} deg, DEC={true_dec:.6f} deg"
+                )
+                header.add_history(
+                    f"Apparent pixel position (0-based): ({apparent_pix_x}, {apparent_pix_y})"
+                )
+
                 fits.writeto(imagename, data=data, header=header, overwrite=True)
             else:
                 print("Image is not either fits or CASA format.")
@@ -968,13 +1042,16 @@ class SolarPhaseCenter:
 
             ra_hms = self.deg2hms(true_ra)
             dec_dms = self.deg2dms(true_dec)
-            print(f"Phase center shifted: CRVAL = ({ra_hms}, {dec_dms}), CRPIX = ({apparent_pix_x}, {apparent_pix_y})")
+            print(
+                f"Phase center shifted: CRVAL = ({ra_hms}, {dec_dms}), CRPIX = ({apparent_pix_x}, {apparent_pix_y})"
+            )
 
             return 0
 
         except Exception as e:
             print(f"Error in shift_phasecenter: {e}")
             import traceback
+
             traceback.print_exc()
             return 2
 
@@ -1000,29 +1077,29 @@ class SolarPhaseCenter:
         """
         try:
             temp_fits = None
-            
+
             # Handle CASA images by exporting to FITS first
             if os.path.isdir(imagename):
                 print("Input is CASA image - exporting to FITS for visual centering")
                 image_path = os.path.dirname(os.path.abspath(imagename))
                 temp_fits = f"{image_path}/temp_visual_center.fits"
-                
+
                 exportfits_subprocess(
                     imagename=imagename,
                     fitsimage=temp_fits,
                     dropdeg=False,
                     dropstokes=False,
-                    overwrite=True
+                    overwrite=True,
                 )
                 fits_file = temp_fits
-                
+
                 # Ensure output is FITS format for CASA input
-                if not output_file.endswith('.fits'):
-                    output_file = output_file + '.fits'
+                if not output_file.endswith(".fits"):
+                    output_file = output_file + ".fits"
                     print(f"Output changed to FITS format: {output_file}")
             else:
                 fits_file = imagename
-            
+
             # Load the FITS image
             hdul = fits.open(fits_file)
             header = hdul[0].header
@@ -1047,7 +1124,9 @@ class SolarPhaseCenter:
             print(f"Original image dimensions: {data.shape}")
             print(f"Sun at pixel (0-based): CRPIX1={crpix1}, CRPIX2={crpix2}")
             print(f"Image center: ({center_x}, {center_y})")
-            print(f"Shifting data by ({offset_x}, {offset_y}) pixels to visually center")
+            print(
+                f"Shifting data by ({offset_x}, {offset_y}) pixels to visually center"
+            )
 
             # Shift the data using numpy roll for efficiency
             if len(data.shape) == 2:
@@ -1062,7 +1141,7 @@ class SolarPhaseCenter:
 
             # Save the centered image
             hdul[0].data = new_data
-            hdul[0].header.add_history('Visually centered with SolarViewer')
+            hdul[0].header.add_history("Visually centered with SolarViewer")
             hdul.writeto(output_file, overwrite=True)
             hdul.close()
 
@@ -1071,12 +1150,15 @@ class SolarPhaseCenter:
                 os.remove(temp_fits)
 
             print(f"Created a visually centered image: {output_file}")
-            print(f"New reference pixel (1-based): CRPIX1={center_x + 1}, CRPIX2={center_y + 1}")
+            print(
+                f"New reference pixel (1-based): CRPIX1={center_x + 1}, CRPIX2={center_y + 1}"
+            )
             return True
 
         except Exception as e:
             print(f"Error creating visually centered image: {e}")
             import traceback
+
             traceback.print_exc()
             # Clean up temp file on error
             if temp_fits and os.path.exists(temp_fits):
@@ -1216,11 +1298,19 @@ class SolarPhaseCenter:
                 results = []
                 for i, file in enumerate(files):
                     print(f"Processing file {i+1}/{total_count}: {file}")
-                    
-                    file_info = (file, ra, dec, stokes, output_pattern, visual_center, phase_result)
+
+                    file_info = (
+                        file,
+                        ra,
+                        dec,
+                        stokes,
+                        output_pattern,
+                        visual_center,
+                        phase_result,
+                    )
                     res = self.process_single_file(file_info)
                     results.append(res)
-                    
+
                     if res[0]:
                         success_count += 1
                     elif res[2]:
@@ -1307,7 +1397,9 @@ class SolarPhaseCenter:
             Tuple containing (success, file_path, error_message)
         """
         if len(file_info) == 7:
-            file, ra, dec, stokes, output_pattern, visual_center, phase_result = file_info
+            file, ra, dec, stokes, output_pattern, visual_center, phase_result = (
+                file_info
+            )
         else:
             file, ra, dec, stokes, output_pattern, visual_center = file_info
             phase_result = None
@@ -1319,17 +1411,17 @@ class SolarPhaseCenter:
 
             # Determine input type
             is_casa = os.path.isdir(file)
-            
+
             # Determine final output FITS file path
             if output_pattern:
                 file_basename = os.path.basename(file)
                 file_name, file_ext = os.path.splitext(file_basename)
-                
+
                 # If it's a CASA image, the extension might be .image or .im - strip it
                 if is_casa:
-                    for ext in ['.image', '.im', '.ims']:
+                    for ext in [".image", ".im", ".ims"]:
                         if file_name.lower().endswith(ext):
-                            file_name = file_name[:-len(ext)]
+                            file_name = file_name[: -len(ext)]
                             break
 
                 # Replace wildcards in the output pattern
@@ -1348,56 +1440,66 @@ class SolarPhaseCenter:
             else:
                 # If no output pattern, we modify in-place or generate a fits next to the source
                 if is_casa:
-                    output_file = file.rstrip('/') + ".fits"
+                    output_file = file.rstrip("/") + ".fits"
                 else:
-                    output_file = file # In-place for FITS
+                    output_file = file  # In-place for FITS
 
             # Define temporary FITS file for processing
             temp_fits = output_file + f".tmp_{unique_id}.fits"
 
             # Step 1: Get a FITS file to work with
             if is_casa:
-                exportfits_subprocess(imagename=file, fitsimage=temp_fits, overwrite=True)
+                exportfits_subprocess(
+                    imagename=file, fitsimage=temp_fits, overwrite=True
+                )
             else:
                 shutil.copy(file, temp_fits)
 
             # Step 2: Apply the phase shift to the temp FITS
             result = self.shift_phasecenter(
-                imagename=temp_fits, ra=ra, dec=dec, stokes=stokes, 
-                process_id=process_id, phase_result=phase_result
+                imagename=temp_fits,
+                ra=ra,
+                dec=dec,
+                stokes=stokes,
+                process_id=process_id,
+                phase_result=phase_result,
             )
 
-            if result != 0 and result != 1: # 0: shifted, 1: not needed
-                 return (False, file, f"Error applying phase shift (code: {result})")
+            if result != 0 and result != 1:  # 0: shifted, 1: not needed
+                return (False, file, f"Error applying phase shift (code: {result})")
 
             # Step 3: Handle visual centering and Finalize Output
             if visual_center:
                 try:
                     # Get the reference pixel values from the shifted image
                     header = fits.getheader(temp_fits)
-                    
+
                     # Use values from phase_result if available, else from header
-                    if phase_result and 'apparent_pix_x' in phase_result:
-                        cpix1 = phase_result['apparent_pix_x']
-                        cpix2 = phase_result['apparent_pix_y']
+                    if phase_result and "apparent_pix_x" in phase_result:
+                        cpix1 = phase_result["apparent_pix_x"]
+                        cpix2 = phase_result["apparent_pix_y"]
                     else:
                         cpix1 = int(header["CRPIX1"])
                         cpix2 = int(header["CRPIX2"])
 
                     # Create the visually centered image directly as the final output
                     self.visually_center_image(temp_fits, output_file, cpix1, cpix2)
-                    
+
                     # Cleanup temp
                     if os.path.exists(temp_fits):
                         os.remove(temp_fits)
-                    
+
                     return (True, file, None)
                 except Exception as e:
                     # If centering fails, at least we have the shifted file
                     if os.path.exists(output_file) and output_file != file:
                         os.remove(output_file)
                     shutil.move(temp_fits, output_file)
-                    return (True, file, f"Warning: Shift applied but visual centering failed: {str(e)}")
+                    return (
+                        True,
+                        file,
+                        f"Warning: Shift applied but visual centering failed: {str(e)}",
+                    )
             else:
                 # Simply move the shifted temp file to the final output
                 if os.path.exists(output_file) and output_file != file:
@@ -1407,7 +1509,7 @@ class SolarPhaseCenter:
 
         except Exception as e:
             # Cleanup on failure
-            if 'temp_fits' in locals() and os.path.exists(temp_fits):
+            if "temp_fits" in locals() and os.path.exists(temp_fits):
                 os.remove(temp_fits)
             return (False, file, f"Error: {str(e)}")
 

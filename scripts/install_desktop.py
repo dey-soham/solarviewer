@@ -111,20 +111,20 @@ def install_desktop_integration():
     # Check if ~/.local/bin is in PATH
     if str(bin_dir) not in os.environ["PATH"]:
         print(f"\nWarning: {bin_dir} is not in your PATH.")
-        
+
         # Auto-configure PATH
         shell = os.environ.get("SHELL", "")
         config_file = None
-        
+
         if "zsh" in shell:
             config_file = home / ".zshrc"
         elif "bash" in shell:
             config_file = home / ".bashrc"
-        
+
         if config_file:
             print(f"Attempting to add to {config_file}...")
             export_cmd = 'export PATH="$HOME/.local/bin:$PATH"'
-            
+
             # Check if already present
             already_configured = False
             if config_file.exists():
@@ -134,17 +134,21 @@ def install_desktop_integration():
                             already_configured = True
                 except Exception:
                     pass
-            
+
             if not already_configured:
                 try:
                     with open(config_file, "a") as f:
                         f.write(f"\n# Added by SolarViewer installer\n{export_cmd}\n")
                     print(f"Successfully added ~/.local/bin to {config_file}")
-                    print(f"Please restart your shell or run 'source {config_file}' to apply changes.")
+                    print(
+                        f"Please restart your shell or run 'source {config_file}' to apply changes."
+                    )
                 except Exception as e:
                     print(f"Could not automatically update {config_file}: {e}")
             else:
-                print(f"Configuration already exists in {config_file} but is not active. Please restart your shell.")
+                print(
+                    f"Configuration already exists in {config_file} but is not active. Please restart your shell."
+                )
         else:
             print(
                 f"You may need to add it to run '{links[0]}' or '{links[1]}' from the terminal."

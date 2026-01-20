@@ -11,11 +11,11 @@ def uninstall_desktop_integration():
 
     # Destination paths (user specific)
     home = Path.home()
-    
+
     # 1. Remove Desktop File
     applications_dir = home / ".local" / "share" / "applications"
     desktop_file = applications_dir / "solarviewer.desktop"
-    
+
     if desktop_file.exists():
         desktop_file.unlink()
         print(f"Removed: {desktop_file}")
@@ -25,7 +25,7 @@ def uninstall_desktop_integration():
     # 2. Remove Icon
     icons_dir = home / ".local" / "share" / "icons" / "hicolor" / "128x128" / "apps"
     icon_file = icons_dir / "solarviewer.png"
-    
+
     if icon_file.exists():
         icon_file.unlink()
         print(f"Removed: {icon_file}")
@@ -35,7 +35,7 @@ def uninstall_desktop_integration():
     # 3. Remove Symlinks
     bin_dir = home / ".local" / "bin"
     links = ["solarviewer", "sv"]
-    
+
     for link_name in links:
         target_link = bin_dir / link_name
         if target_link.exists() or target_link.is_symlink():
@@ -63,10 +63,14 @@ def uninstall_desktop_integration():
 
     try:
         from subprocess import run, DEVNULL
-        
+
         icons_base = home / ".local" / "share" / "icons" / "hicolor"
         if icons_base.exists():
-            run(["gtk-update-icon-cache", str(icons_base)], stdout=DEVNULL, stderr=DEVNULL)
+            run(
+                ["gtk-update-icon-cache", str(icons_base)],
+                stdout=DEVNULL,
+                stderr=DEVNULL,
+            )
             print("Icon cache updated.")
     except Exception:
         pass

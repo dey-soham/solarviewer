@@ -63,11 +63,32 @@ from astropy.io import fits
 from astropy.time import Time
 
 from PyQt5.QtWidgets import (
-    QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QAction, QFileDialog, QMessageBox, QStatusBar, QMenuBar,
-    QLabel, QSlider, QComboBox, QFormLayout, QPushButton,
-    QDockWidget, QDoubleSpinBox, QSpinBox, QCheckBox, QInputDialog, QGroupBox,
-    QDialog, QTextEdit, QVBoxLayout as QVBoxLayoutDialog, QScrollArea
+    QMainWindow,
+    QApplication,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QSplitter,
+    QAction,
+    QFileDialog,
+    QMessageBox,
+    QStatusBar,
+    QMenuBar,
+    QLabel,
+    QSlider,
+    QComboBox,
+    QFormLayout,
+    QPushButton,
+    QDockWidget,
+    QDoubleSpinBox,
+    QSpinBox,
+    QCheckBox,
+    QInputDialog,
+    QGroupBox,
+    QDialog,
+    QTextEdit,
+    QVBoxLayout as QVBoxLayoutDialog,
+    QScrollArea,
 )
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt, pyqtSlot
@@ -77,7 +98,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, Normalize, PowerNorm
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
-    NavigationToolbar2QT as NavigationToolbar
+    NavigationToolbar2QT as NavigationToolbar,
 )
 from matplotlib.widgets import RectangleSelector
 from matplotlib.dates import date2num, DateFormatter
@@ -87,9 +108,11 @@ from matplotlib.dates import date2num, DateFormatter
 #                           RFI CLEANING UTILITIES                            #
 ###############################################################################
 
+
 def create_binary(data, thresh):
     """Create a binary DS: 0 where data < thresh, 1 where data >= thresh."""
     return np.where(data < thresh, 0.0, 1.0)
+
 
 def region_detection(original_image, binary_image, min_width=1, min_height=5):
     """
@@ -99,10 +122,14 @@ def region_detection(original_image, binary_image, min_width=1, min_height=5):
     binary_image_uint8 = np.uint8(binary_image * 255)
     kernel = np.ones((2, 2), np.uint8)
     closed_image = cv2.morphologyEx(binary_image_uint8, cv2.MORPH_CLOSE, kernel)
-    contours, _ = cv2.findContours(closed_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(
+        closed_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
 
     if len(original_image.shape) == 2:
-        overlay_image = cv2.cvtColor(original_image.astype(np.float32), cv2.COLOR_GRAY2BGR)
+        overlay_image = cv2.cvtColor(
+            original_image.astype(np.float32), cv2.COLOR_GRAY2BGR
+        )
     else:
         overlay_image = original_image.copy()
 
@@ -114,6 +141,7 @@ def region_detection(original_image, binary_image, min_width=1, min_height=5):
             cv2.rectangle(overlay_image, (x, y), (x + w, y + h), (255, 0, 0), 3)
     return closed_image, valid_contours, overlay_image
 
+
 def create_mask(original_binary, contours):
     """
     Create a mask with detected contours filled.
@@ -122,6 +150,7 @@ def create_mask(original_binary, contours):
     for contour in contours:
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
     return mask
+
 
 def subtract_contours(original_image, mask):
     """
@@ -136,37 +165,40 @@ def subtract_contours(original_image, mask):
 #              MATPLOTLIB CANVAS FOR DYNAMIC SPECTRUM DISPLAY                 #
 ###############################################################################
 
+
 class DynamicSpectrumCanvas(FigureCanvas):
     """
     A Matplotlib canvas for displaying a dynamic spectrum (time vs freq).
     """
+
     def __init__(self, parent=None):
         # Setup logging
         import logging
+
         self.logger = logging.getLogger("DynamicSpectrumCanvas")
         self.logger.setLevel(logging.DEBUG)
-        
+
         # Apply initial theme settings to matplotlib
         self._apply_initial_theme()
-        
+
         # Create figure with better DPI and constrained layout for better auto-resizing
         self.fig = plt.figure(figsize=(9, 6), dpi=100, constrained_layout=True)
         self.ax = self.fig.add_subplot(111)
         super().__init__(self.fig)
         self.setParent(parent)
-        
+
         # Set minimum size to avoid layout issues
         self.setMinimumSize(400, 300)
 
         self.ax.set_title("Dynamic Spectrum Viewer", fontsize=14)
         self.ax.set_xlabel("Time (UTC)", fontsize=12)
         self.ax.set_ylabel("Frequency (MHz)", fontsize=12)
-        
+
         # Apply theme to the newly created canvas
         self._apply_canvas_theme_colors()
 
         # Internal references
-        self._data = None               # Float array with NaNs
+        self._data = None  # Float array with NaNs
         self._time_axis = None
         self._freq_axis = None
         self._extent = None
@@ -175,12 +207,14 @@ class DynamicSpectrumCanvas(FigureCanvas):
         self._im = None
 
         # Visualization parameters
-        self._scale_mode = "Linear"     # Options: "Linear", "Log", "Sqrt", "Gamma"
+        self._scale_mode = "Linear"  # Options: "Linear", "Log", "Sqrt", "Gamma"
         self._gamma = 1.0
         self._vmin = None
         self._vmax = None
-        self._cmap = 'inferno'
-        self._smart_scale = "0.5-99.5%"     # Options: "0-100%", "0.1-99.9%", "0.5-99.5%", "1-99%"
+        self._cmap = "inferno"
+        self._smart_scale = (
+            "0.5-99.5%"  # Options: "0-100%", "0.1-99.9%", "0.5-99.5%", "1-99%"
+        )
 
         # Interactive ROI
         self.rect_selector = None
@@ -189,80 +223,84 @@ class DynamicSpectrumCanvas(FigureCanvas):
 
         # Cross-section mode
         self.cross_section_active = False
-        
+
         # Mouse hover info control
         self.hover_info_enabled = False  # Default disabled
         self._last_hover_text = ""  # Cache last hover text to avoid unnecessary redraws
         self._hover_throttle_counter = 0  # Throttle hover updates
         self._hover_throttle_limit = 3  # Update every N mouse events
-        
+
         # Store event connection IDs for reconnection
         self._event_connections = {}
         self._connect_events()
 
         # Mouse readout: text annotation on the axes for amplitude values (default to dark theme)
         self._hover_text = self.ax.text(
-            1.0, 1.05, "",
-            transform=self.ax.transAxes, ha="right", va="top",
-            fontsize=10, color="white",
-            bbox=dict(facecolor="black", alpha=0.8)
+            1.0,
+            1.05,
+            "",
+            transform=self.ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=10,
+            color="white",
+            bbox=dict(facecolor="black", alpha=0.8),
         )
-        
+
         self.fig.tight_layout()
 
     def _apply_initial_theme(self):
         """Apply dark theme as default for matplotlib."""
         import matplotlib.pyplot as plt
+
         # Set dark theme as default
-        plt.rcParams.update({
-            'figure.facecolor': '#2b2b2b',
-            'axes.facecolor': '#2b2b2b',
-            'axes.edgecolor': 'white',
-            'axes.labelcolor': 'white',
-            'xtick.color': 'white',
-            'ytick.color': 'white',
-            'text.color': 'white',
-            'axes.grid': True,
-            'grid.color': '#505050',
-            'grid.alpha': 0.3
-        })
+        plt.rcParams.update(
+            {
+                "figure.facecolor": "#2b2b2b",
+                "axes.facecolor": "#2b2b2b",
+                "axes.edgecolor": "white",
+                "axes.labelcolor": "white",
+                "xtick.color": "white",
+                "ytick.color": "white",
+                "text.color": "white",
+                "axes.grid": True,
+                "grid.color": "#505050",
+                "grid.alpha": 0.3,
+            }
+        )
 
     def _apply_canvas_theme_colors(self):
         """Apply theme colors to the canvas elements."""
         # Get parent window to access theme information
         parent = self.parent()
-        while parent is not None and not hasattr(parent, 'current_theme'):
+        while parent is not None and not hasattr(parent, "current_theme"):
             parent = parent.parent()
-            
+
         # Default to dark theme if no parent found
-        if parent is None or not hasattr(parent, 'themes'):
-            theme = {
-                'plot_bg': '#2b2b2b',
-                'plot_text': 'white',
-                'plot_grid': '#505050'
-            }
+        if parent is None or not hasattr(parent, "themes"):
+            theme = {"plot_bg": "#2b2b2b", "plot_text": "white", "plot_grid": "#505050"}
         else:
             theme = parent.themes[parent.current_theme]
-        
+
         # Set figure and axes background
-        self.fig.patch.set_facecolor(theme['plot_bg'])
-        self.ax.set_facecolor(theme['plot_bg'])
-        
+        self.fig.patch.set_facecolor(theme["plot_bg"])
+        self.ax.set_facecolor(theme["plot_bg"])
+
         # Set text colors
-        self.ax.tick_params(colors=theme['plot_text'])
-        self.ax.xaxis.label.set_color(theme['plot_text'])
-        self.ax.yaxis.label.set_color(theme['plot_text'])
-        self.ax.title.set_color(theme['plot_text'])
-        
+        self.ax.tick_params(colors=theme["plot_text"])
+        self.ax.xaxis.label.set_color(theme["plot_text"])
+        self.ax.yaxis.label.set_color(theme["plot_text"])
+        self.ax.title.set_color(theme["plot_text"])
+
         # Set border colors
         for spine in self.ax.spines.values():
-            spine.set_edgecolor(theme['plot_text'])
-        
+            spine.set_edgecolor(theme["plot_text"])
+
         # Enable grid with theme colors
-        self.ax.grid(True, color=theme['plot_grid'], alpha=0.3)
-        
+        self.ax.grid(True, color=theme["plot_grid"], alpha=0.3)
+
         # Update hover text colors
-        if hasattr(self, '_hover_text'):
+        if hasattr(self, "_hover_text"):
             if parent and parent.current_theme == "dark":
                 self._hover_text.set_color("white")
                 self._hover_text.set_bbox(dict(facecolor="black", alpha=0.8))
@@ -274,11 +312,15 @@ class DynamicSpectrumCanvas(FigureCanvas):
         """Connect all necessary event handlers"""
         # Disconnect existing connections if they exist
         self._disconnect_events()
-        
+
         # Connect mouse events
-        self._event_connections['button_press'] = self.mpl_connect("button_press_event", self.on_mouse_click)
-        self._event_connections['motion_notify'] = self.mpl_connect("motion_notify_event", self.on_mouse_move)
-        
+        self._event_connections["button_press"] = self.mpl_connect(
+            "button_press_event", self.on_mouse_click
+        )
+        self._event_connections["motion_notify"] = self.mpl_connect(
+            "motion_notify_event", self.on_mouse_move
+        )
+
         # If ROI selector is active, reconnect it
         if self.roi_active and self.roi_callback:
             self.enable_roi_selector(True, self.roi_callback)
@@ -298,31 +340,31 @@ class DynamicSpectrumCanvas(FigureCanvas):
         roi_was_active = self.roi_active
         roi_callback = self.roi_callback
         cross_was_active = self.cross_section_active
-        
+
         # Turn off rectangle selector before clearing
         if self.rect_selector is not None:
             try:
                 self.rect_selector.set_active(False)
                 self.rect_selector.set_visible(False)
                 # For Matplotlib 3.x, disconnect events
-                if hasattr(self.rect_selector, 'disconnect_events'):
+                if hasattr(self.rect_selector, "disconnect_events"):
                     self.rect_selector.disconnect_events()
                 # Invalidate the selector
                 self.rect_selector = None
             except Exception as e:
                 print(f"Error disabling selector: {e}")
-            
+
         # Disconnect existing events before clearing
         self._disconnect_events()
 
         # Clear the axis
         self.ax.clear()
-        
+
         # Reset basic axis properties
         self.ax.set_title(" ", fontsize=14)
         self.ax.set_xlabel("Time (UTC)", fontsize=12)
         self.ax.set_ylabel("Frequency (MHz)", fontsize=12)
-        
+
         # Handle colorbar removal
         if self._colorbar is not None:
             try:
@@ -331,43 +373,52 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 # Handle case where colorbar removal fails - recreate the figure
                 self.fig.clf()
                 self.ax = self.fig.add_subplot(111)
-                
+
                 # Reset basic axis properties
                 self.ax.set_title(" ", fontsize=14)
                 self.ax.set_xlabel("Time (UTC)", fontsize=12)
                 self.ax.set_ylabel("Frequency (MHz)", fontsize=12)
             self._colorbar = None
-            
+
         self._im = None
         self._extent = None
-        
+
         # Recreate hover text after clearing with theme-aware colors
         parent = self.parent()
-        while parent is not None and not hasattr(parent, 'current_theme'):
+        while parent is not None and not hasattr(parent, "current_theme"):
             parent = parent.parent()
-        
+
         # Set colors based on current theme
-        if parent and hasattr(parent, 'current_theme') and parent.current_theme == "light":
+        if (
+            parent
+            and hasattr(parent, "current_theme")
+            and parent.current_theme == "light"
+        ):
             text_color = "black"
             bg_color = "white"
         else:
             text_color = "white"
             bg_color = "black"
-            
+
         self._hover_text = self.ax.text(
-            1.0, 1.05, "",
-            transform=self.ax.transAxes, ha="right", va="top",
-            fontsize=10, color=text_color,
-            bbox=dict(facecolor=bg_color, alpha=0.8)
+            1.0,
+            1.05,
+            "",
+            transform=self.ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=10,
+            color=text_color,
+            bbox=dict(facecolor=bg_color, alpha=0.8),
         )
-        
+
         # Reconnect event handlers
         self._connect_events()
-        
+
         # Restore interactive features if they were active
         if roi_was_active and roi_callback:
             self.enable_roi_selector(True, roi_callback)
-        
+
         self.cross_section_active = cross_was_active
 
     def set_data(self, data, time_axis=None, freq_axis=None):
@@ -406,7 +457,6 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 p1 = np.percentile(data_flat, 1)
                 p99 = np.percentile(data_flat, 99)
                 self._vmin, self._vmax = p1, p99
-            
 
         if self._vmin == self._vmax:
             self._vmin -= 1e-9
@@ -422,28 +472,40 @@ class DynamicSpectrumCanvas(FigureCanvas):
             norm = Normalize(vmin=self._vmin, vmax=self._vmax)
 
         if (self._time_axis is None) or (self._freq_axis is None):
-            self._im = self.ax.imshow(data_ma.T, aspect='auto', origin='lower',
-                                     cmap=self._cmap, norm=norm)
+            self._im = self.ax.imshow(
+                data_ma.T, aspect="auto", origin="lower", cmap=self._cmap, norm=norm
+            )
             self.ax.set_xlabel("Time index")
             self.ax.set_ylabel("Frequency index")
         else:
             time_mjd = self._time_axis / 86400.0
-            utc_dt = Time(time_mjd, format='mjd', scale='utc').to_datetime()
+            utc_dt = Time(time_mjd, format="mjd", scale="utc").to_datetime()
             utc_num = np.array([date2num(dt) for dt in utc_dt])
-            self._extent = [utc_num[0], utc_num[-1], self._freq_axis[0], self._freq_axis[-1]]
-            self._im = self.ax.imshow(data_ma.T, aspect='auto', origin='lower',
-                                     extent=self._extent, cmap=self._cmap, norm=norm)
-            date_formatter = DateFormatter('%Y-%m-%d\n%H:%M:%S')
+            self._extent = [
+                utc_num[0],
+                utc_num[-1],
+                self._freq_axis[0],
+                self._freq_axis[-1],
+            ]
+            self._im = self.ax.imshow(
+                data_ma.T,
+                aspect="auto",
+                origin="lower",
+                extent=self._extent,
+                cmap=self._cmap,
+                norm=norm,
+            )
+            date_formatter = DateFormatter("%Y-%m-%d\n%H:%M:%S")
             self.ax.xaxis.set_major_formatter(date_formatter)
             self.fig.autofmt_xdate()
             self.ax.set_xlabel("Time (UTC)")
             self.ax.set_ylabel("Frequency (MHz)")
 
         self._colorbar = self.fig.colorbar(self._im, ax=self.ax, label="Amplitude")
-        
+
         # Apply theme colors to the newly created colorbar
         self._apply_colorbar_theme()
-        
+
         # Ensure the figure layout is updated
         self.fig.tight_layout()
         self.draw()
@@ -452,24 +514,24 @@ class DynamicSpectrumCanvas(FigureCanvas):
         """Apply theme colors to the colorbar."""
         if self._colorbar is None:
             return
-            
+
         # Get parent window to access theme information
         parent = self.parent()
-        while parent is not None and not hasattr(parent, 'current_theme'):
+        while parent is not None and not hasattr(parent, "current_theme"):
             parent = parent.parent()
-            
-        if parent is None or not hasattr(parent, 'themes'):
+
+        if parent is None or not hasattr(parent, "themes"):
             return
-            
+
         theme = parent.themes[parent.current_theme]
-        
+
         # Update colorbar text colors
-        self._colorbar.ax.tick_params(colors=theme['plot_text'])
-        self._colorbar.ax.yaxis.label.set_color(theme['plot_text'])
-        
+        self._colorbar.ax.tick_params(colors=theme["plot_text"])
+        self._colorbar.ax.yaxis.label.set_color(theme["plot_text"])
+
         # Update colorbar outline
         for spine in self._colorbar.ax.spines.values():
-            spine.set_edgecolor(theme['plot_text'])
+            spine.set_edgecolor(theme["plot_text"])
 
     def set_scale_mode(self, mode):
         self._scale_mode = mode
@@ -512,76 +574,90 @@ class DynamicSpectrumCanvas(FigureCanvas):
             # Disconnect any existing rectangle selector
             if self.rect_selector is not None:
                 try:
-                    if hasattr(self.rect_selector, 'disconnect_events'):
+                    if hasattr(self.rect_selector, "disconnect_events"):
                         self.rect_selector.disconnect_events()
                     self.rect_selector = None
                 except:
                     pass
-                    
+
             # Clear any existing rectangles
             self._clear_all_rects()
-            
+
             # Use direct event handling rather than RectangleSelector
             self.logger.info("Setting up direct ROI event handlers")
-            
+
             # Set up our own event handlers for more direct control
             self._roi_start_point = None
             self._roi_current_rect = None
-            
+
             # Connect direct mouse events for ROI selection
-            if 'roi_press' in self._event_connections:
-                self.mpl_disconnect(self._event_connections['roi_press'])
-            if 'roi_release' in self._event_connections:
-                self.mpl_disconnect(self._event_connections['roi_release'])
-            if 'roi_motion' in self._event_connections:
-                self.mpl_disconnect(self._event_connections['roi_motion'])
-                
-            self._event_connections['roi_press'] = self.mpl_connect('button_press_event', self._roi_on_press)
-            self._event_connections['roi_release'] = self.mpl_connect('button_release_event', self._roi_on_release)
-            self._event_connections['roi_motion'] = self.mpl_connect('motion_notify_event', self._roi_on_motion)
-            
+            if "roi_press" in self._event_connections:
+                self.mpl_disconnect(self._event_connections["roi_press"])
+            if "roi_release" in self._event_connections:
+                self.mpl_disconnect(self._event_connections["roi_release"])
+            if "roi_motion" in self._event_connections:
+                self.mpl_disconnect(self._event_connections["roi_motion"])
+
+            self._event_connections["roi_press"] = self.mpl_connect(
+                "button_press_event", self._roi_on_press
+            )
+            self._event_connections["roi_release"] = self.mpl_connect(
+                "button_release_event", self._roi_on_release
+            )
+            self._event_connections["roi_motion"] = self.mpl_connect(
+                "motion_notify_event", self._roi_on_motion
+            )
+
             # Add a highly visible message to indicate ROI selection is active
-            self._hover_text.set_text("ROI selection active: Click and drag to select a region")
-            self._hover_text.set_bbox(dict(facecolor='orange', alpha=0.9, boxstyle='round'))
-            self._hover_text.set_color('black')
+            self._hover_text.set_text(
+                "ROI selection active: Click and drag to select a region"
+            )
+            self._hover_text.set_bbox(
+                dict(facecolor="orange", alpha=0.9, boxstyle="round")
+            )
+            self._hover_text.set_color("black")
             self._hover_text.set_fontsize(12)
-            
+
             self.draw_idle()
         else:
             # Disable all ROI events
-            for event_name in ['roi_press', 'roi_release', 'roi_motion']:
+            for event_name in ["roi_press", "roi_release", "roi_motion"]:
                 if event_name in self._event_connections:
                     try:
                         self.mpl_disconnect(self._event_connections[event_name])
                         del self._event_connections[event_name]
                     except:
                         pass
-            
+
             # Clean up any remaining rectangles
             self._clear_all_rects()
-            
+
             # Reset hover text with theme-aware colors
             parent = self.parent()
-            while parent is not None and not hasattr(parent, 'current_theme'):
+            while parent is not None and not hasattr(parent, "current_theme"):
                 parent = parent.parent()
-            
-            if parent and hasattr(parent, 'current_theme') and parent.current_theme == "light":
+
+            if (
+                parent
+                and hasattr(parent, "current_theme")
+                and parent.current_theme == "light"
+            ):
                 text_color = "black"
                 bg_color = "white"
             else:
                 text_color = "white"
                 bg_color = "black"
-                
+
             self._hover_text.set_text("")
             self._hover_text.set_bbox(dict(facecolor=bg_color, alpha=0.8))
             self._hover_text.set_color(text_color)
             self._hover_text.set_fontsize(10)
-            
+
             self._roi_start_point = None
             self._roi_current_rect = None
-            
+
             self.draw_idle()
-    
+
     def _clear_all_rects(self):
         """Clear all rectangle patches from the axes."""
         try:
@@ -593,70 +669,85 @@ class DynamicSpectrumCanvas(FigureCanvas):
             self.draw_idle()
         except Exception as e:
             self.logger.error(f"Error clearing rectangles: {e}")
-    
+
     def _roi_on_press(self, event):
         """Handle mouse button press for ROI selection."""
         if not self.roi_active or event.inaxes != self.ax or event.button != 1:
             return
-            
+
         # Clear any existing rectangles
         self._clear_all_rects()
-        
+
         # Store the starting point
         self._roi_start_point = (event.xdata, event.ydata)
-        
+
         # Update status message
         self._hover_text.set_text("Dragging: release to confirm selection")
         self.draw_idle()
-    
+
     def _roi_on_motion(self, event):
         """Handle mouse motion for ROI selection."""
-        if not self.roi_active or self._roi_start_point is None or event.inaxes != self.ax:
+        if (
+            not self.roi_active
+            or self._roi_start_point is None
+            or event.inaxes != self.ax
+        ):
             return
-            
+
         # Remove the previous rectangle if it exists
         if self._roi_current_rect is not None:
             self._roi_current_rect.remove()
             self._roi_current_rect = None
-        
+
         # Create a new rectangle from start point to current position
         start_x, start_y = self._roi_start_point
         current_x, current_y = event.xdata, event.ydata
-        
+
         # Don't draw if we're outside the axes
         if None in (start_x, start_y, current_x, current_y):
             return
-            
+
         # Calculate rectangle parameters
         x = min(start_x, current_x)
         y = min(start_y, current_y)
         width = abs(current_x - start_x)
         height = abs(current_y - start_y)
-        
+
         # Create a very visible rectangle
         from matplotlib.patches import Rectangle
+
         self._roi_current_rect = Rectangle(
-            (x, y), width, height,
-            facecolor='red', edgecolor='yellow',
-            alpha=0.4, fill=True, linewidth=3.0,
-            zorder=1000  # Ensure it's on top of everything
+            (x, y),
+            width,
+            height,
+            facecolor="red",
+            edgecolor="yellow",
+            alpha=0.4,
+            fill=True,
+            linewidth=3.0,
+            zorder=1000,  # Ensure it's on top of everything
         )
-        
+
         # Add the rectangle to the plot
         self.ax.add_patch(self._roi_current_rect)
-        
+
         # Draw immediately
         self.draw_idle()
-    
+
     def _roi_on_release(self, event):
         """Handle mouse button release for ROI selection."""
-        if not self.roi_active or self._roi_start_point is None or event.inaxes != self.ax or event.button != 1:
+        if (
+            not self.roi_active
+            or self._roi_start_point is None
+            or event.inaxes != self.ax
+            or event.button != 1
+        ):
             return
-            
+
         # Get the final coordinates
         start_x, start_y = self._roi_start_point
         end_x, end_y = event.xdata, event.ydata
-        
+
         # Don't process if we're outside the axes
         if None in (start_x, start_y, end_x, end_y):
             self._roi_start_point = None
@@ -665,43 +756,49 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 self._roi_current_rect = None
             self.draw_idle()
             return
-            
+
         # Process the selection
         self.logger.info(f"ROI selection: ({start_x}, {start_y}) to ({end_x}, {end_y})")
-        
+
         # Keep the rectangle visible for feedback
         if self._roi_current_rect is not None:
             # Make it slightly transparent to show it's being processed
             self._roi_current_rect.set_alpha(0.6)
-            self._roi_current_rect.set_edgecolor('lime')  # Change color to indicate processing
+            self._roi_current_rect.set_edgecolor(
+                "lime"
+            )  # Change color to indicate processing
             self.draw_idle()
-        
+
         # Calculate indices from data coordinates
         try:
             nt, nf = self._data.shape
             if self._extent is not None:
                 x0, x1_, y0, y1_ = self._extent
-                
+
                 # Get selection bounds
                 xmin, xmax = sorted([start_x, end_x])
                 ymin, ymax = sorted([start_y, end_y])
-                
+
                 # Check for division by zero
                 if x1_ == x0 or y1_ == y0:
                     self.logger.warning("Invalid extent: division by zero")
                     return
-                
+
                 frac_xmin = (xmin - x0) / (x1_ - x0)
                 frac_xmax = (xmax - x0) / (x1_ - x0)
                 frac_ymin = (ymin - y0) / (y1_ - y0)
                 frac_ymax = (ymax - y0) / (y1_ - y0)
-                
+
                 # Check for values outside valid range
-                if (frac_xmin < 0 and frac_xmax < 0) or (frac_xmin > 1 and frac_xmax > 1) or \
-                   (frac_ymin < 0 and frac_ymax < 0) or (frac_ymin > 1 and frac_ymax > 1):
+                if (
+                    (frac_xmin < 0 and frac_xmax < 0)
+                    or (frac_xmin > 1 and frac_xmax > 1)
+                    or (frac_ymin < 0 and frac_ymax < 0)
+                    or (frac_ymin > 1 and frac_ymax > 1)
+                ):
                     self.logger.warning("Selection outside valid range")
                     return
-                
+
                 ixmin = int(max(0, min(1, frac_xmin)) * (nt - 1))
                 ixmax = int(max(0, min(1, frac_xmax)) * (nt - 1))
                 iymin = int(max(0, min(1, frac_ymin)) * (nf - 1))
@@ -712,27 +809,29 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 ymin, ymax = sorted([int(start_y), int(end_y)])
                 ixmin, ixmax = xmin, xmax
                 iymin, iymax = ymin, ymax
-            
+
             # Ensure indices are within valid range
             ixmin = max(0, min(ixmin, nt - 1))
             ixmax = max(0, min(ixmax, nt - 1))
             iymin = max(0, min(iymin, nf - 1))
             iymax = max(0, min(iymax, nf - 1))
-            
+
             # Call the callback function if defined
             if self.roi_callback and ixmin <= ixmax and iymin <= iymax:
                 self.roi_callback(ixmin, ixmax, iymin, iymax)
         except Exception as e:
             self.logger.error(f"Error processing ROI selection: {e}")
-        
+
         # Clean up for next selection
         self._roi_start_point = None
         if self._roi_current_rect is not None:
             self._roi_current_rect.remove()
             self._roi_current_rect = None
-        
+
         # Reset hover text
-        self._hover_text.set_text("ROI selection active: Click and drag to select a region")
+        self._hover_text.set_text(
+            "ROI selection active: Click and drag to select a region"
+        )
         self.draw_idle()
 
     # --------------------- Cross-Section Mode -----------------------------------
@@ -752,14 +851,14 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 # Ensure valid division
                 if x1 == x0 or y1 == y0:
                     return
-                    
+
                 frac_x = (event.xdata - x0) / (x1 - x0)
                 frac_y = (event.ydata - y0) / (y1 - y0)
-                
+
                 # Check if click is within valid data range
                 if not (0 <= frac_x <= 1) or not (0 <= frac_y <= 1):
                     return
-                    
+
                 time_idx = int(frac_x * (nt - 1))
                 freq_idx = int(frac_y * (nf - 1))
             else:
@@ -775,7 +874,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
 
             options = [
                 f"Time slice at freq_idx = {freq_idx}",
-                f"Freq slice at time_idx = {time_idx}"
+                f"Freq slice at time_idx = {time_idx}",
             ]
             choice, ok = QInputDialog.getItem(
                 None, "Cross Section", "Which slice to plot?", options, 0, False
@@ -791,47 +890,50 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 self._plot_1d_freq(data_slice, time_idx)
         except (ValueError, TypeError, IndexError) as e:
             # Handle any errors in coordinate conversion
-            QMessageBox.warning(None, "Cross Section Error", 
-                                f"Could not extract cross-section: {str(e)}")
+            QMessageBox.warning(
+                None,
+                "Cross Section Error",
+                f"Could not extract cross-section: {str(e)}",
+            )
 
     def _plot_1d_time(self, data_slice, freq_idx):
         nt = data_slice.shape[0]
-        
+
         # Get theme colors from parent window
         parent = self.parent()
-        while parent is not None and not hasattr(parent, 'current_theme'):
+        while parent is not None and not hasattr(parent, "current_theme"):
             parent = parent.parent()
-        
+
         # Determine colors based on theme
-        if parent and hasattr(parent, 'themes') and hasattr(parent, 'current_theme'):
+        if parent and hasattr(parent, "themes") and hasattr(parent, "current_theme"):
             theme = parent.themes[parent.current_theme]
-            plot_bg = theme['plot_bg']
-            plot_text = theme['plot_text']
+            plot_bg = theme["plot_bg"]
+            plot_text = theme["plot_text"]
             line_color = plot_text  # Use theme text color for line
         else:
             # Default to dark theme
-            plot_bg = '#2b2b2b'
-            plot_text = 'white'
-            line_color = 'white'
-        
+            plot_bg = "#2b2b2b"
+            plot_text = "white"
+            line_color = "white"
+
         fig, ax = plt.subplots(facecolor=plot_bg)
         ax.set_facecolor(plot_bg)
         yvals = np.ma.masked_invalid(data_slice)
 
         if self._time_axis is not None:
             time_mjd = self._time_axis / 86400.0
-            utc_dt = Time(time_mjd, format='mjd', scale='utc').to_datetime()
+            utc_dt = Time(time_mjd, format="mjd", scale="utc").to_datetime()
             xvals = np.array([date2num(dt) for dt in utc_dt])
             if np.any(np.diff(xvals) <= 0):
                 xvals = np.linspace(xvals[0], xvals[-1], nt)
-            ax.plot_date(xvals, yvals, '-', lw=1.5, color=line_color)
-            date_formatter = DateFormatter('%H:%M:%S')
+            ax.plot_date(xvals, yvals, "-", lw=1.5, color=line_color)
+            date_formatter = DateFormatter("%H:%M:%S")
             ax.xaxis.set_major_formatter(date_formatter)
             fig.autofmt_xdate()
             xlabel = "Time (UTC)"
         else:
             xvals = np.linspace(0, nt - 1, nt)
-            ax.plot(xvals, yvals, '-', lw=1.5, color=line_color)
+            ax.plot(xvals, yvals, "-", lw=1.5, color=line_color)
             xlabel = "Time index"
 
         # Apply theme colors to all text elements
@@ -839,45 +941,45 @@ class DynamicSpectrumCanvas(FigureCanvas):
         ax.set_xlabel(xlabel, color=plot_text)
         ax.set_ylabel("Amplitude", color=plot_text)
         ax.tick_params(colors=plot_text)
-        
+
         # Set spine colors
         for spine in ax.spines.values():
             spine.set_edgecolor(plot_text)
-        
+
         fig.tight_layout()
         fig.show()
 
     def _plot_1d_freq(self, data_slice, time_idx):
         nf = data_slice.shape[0]
-        
+
         # Get theme colors from parent window
         parent = self.parent()
-        while parent is not None and not hasattr(parent, 'current_theme'):
+        while parent is not None and not hasattr(parent, "current_theme"):
             parent = parent.parent()
-        
+
         # Determine colors based on theme
-        if parent and hasattr(parent, 'themes') and hasattr(parent, 'current_theme'):
+        if parent and hasattr(parent, "themes") and hasattr(parent, "current_theme"):
             theme = parent.themes[parent.current_theme]
-            plot_bg = theme['plot_bg']
-            plot_text = theme['plot_text']
+            plot_bg = theme["plot_bg"]
+            plot_text = theme["plot_text"]
             line_color = plot_text  # Use theme text color for line
         else:
             # Default to dark theme
-            plot_bg = '#2b2b2b'
-            plot_text = 'white'
-            line_color = 'white'
-        
+            plot_bg = "#2b2b2b"
+            plot_text = "white"
+            line_color = "white"
+
         fig, ax = plt.subplots(facecolor=plot_bg)
         ax.set_facecolor(plot_bg)
         yvals = np.ma.masked_invalid(data_slice)
 
         if self._freq_axis is not None:
             xvals = self._freq_axis
-            ax.plot(xvals, yvals, '-', lw=1.5, color=line_color)
+            ax.plot(xvals, yvals, "-", lw=1.5, color=line_color)
             xlabel = "Frequency (MHz)"
         else:
             xvals = np.linspace(0, nf - 1, nf)
-            ax.plot(xvals, yvals, '-', lw=1.5, color=line_color)
+            ax.plot(xvals, yvals, "-", lw=1.5, color=line_color)
             xlabel = "Frequency index"
 
         # Apply theme colors to all text elements
@@ -885,11 +987,11 @@ class DynamicSpectrumCanvas(FigureCanvas):
         ax.set_xlabel(xlabel, color=plot_text)
         ax.set_ylabel("Amplitude", color=plot_text)
         ax.tick_params(colors=plot_text)
-        
+
         # Set spine colors
         for spine in ax.spines.values():
             spine.set_edgecolor(plot_text)
-        
+
         fig.tight_layout()
         fig.show()
 
@@ -903,7 +1005,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 self._last_hover_text = ""
                 self.draw_idle()
             return
-            
+
         if event.inaxes != self.ax or self._data is None:
             # Only clear text and redraw if text was previously showing
             if self._last_hover_text:
@@ -938,13 +1040,13 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 msg = f"Time={time_idx}, Freq={freq_idx}, Amp=NaN"
             else:
                 msg = f"Time={time_idx}, Freq={freq_idx}, Amp={val:.3f}"
-            
+
             # Only update and redraw if the text has changed
             if msg != self._last_hover_text:
                 self._hover_text.set_text(msg)
                 self._last_hover_text = msg
                 self.draw_idle()
-                
+
         except (TypeError, ValueError, IndexError) as e:
             # Handle any errors in coordinate conversion - only clear if needed
             if self._last_hover_text:
@@ -957,6 +1059,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
 #                       MAIN WINDOW - PyQt5 APPLICATION                       #
 ###############################################################################
 
+
 class MainWindow(QMainWindow):
     def __init__(self, theme="dark"):
         super(MainWindow, self).__init__()
@@ -968,7 +1071,7 @@ class MainWindow(QMainWindow):
 
         # Data placeholders
         self._original_unmodified = None  # For revert
-        self._original_data = None        # Working data (float array with NaNs)
+        self._original_data = None  # Working data (float array with NaNs)
         self._time_axis = None
         self._freq_axis = None
 
@@ -980,48 +1083,52 @@ class MainWindow(QMainWindow):
         self.redo_stack = []
 
         # Theme management - use theme from constructor parameter
-        self.current_theme = self._external_theme if self._external_theme in ["dark", "light"] else "dark"
-        
+        self.current_theme = (
+            self._external_theme
+            if self._external_theme in ["dark", "light"]
+            else "dark"
+        )
+
         # Theme palettes matching solarviewer's styles.py for consistency
         self.themes = {
             "light": {
                 # Solarviewer LIGHT_PALETTE colors (updated to match viewer)
-                "main_bg": "#f5f3eb",        # window
-                "panel_bg": "#fafaf8",       # surface
-                "panel_border": "#d1d5db",   # border
-                "text_color": "#1f2937",     # text
-                "button_bg": "#e5e5e5",      # button
-                "button_hover": "#d4d4d4",   # button_hover
-                "button_pressed": "#c4c4c4", # button_pressed
-                "menubar_bg": "#ebebdf",     # toolbar_bg
-                "statusbar_bg": "#fafaf8",   # surface
-                "groupbox_bg": "#fafaf8",    # surface
-                "input_bg": "#ffffff",       # base
-                "input_border": "#d1d5db",   # border
-                "highlight": "#4f46e5",      # highlight (indigo)
-                "plot_bg": "#ffffff",        # plot_bg
-                "plot_text": "#1f2937",      # plot_text
-                "plot_grid": "#e5e7eb"       # plot_grid
+                "main_bg": "#f5f3eb",  # window
+                "panel_bg": "#fafaf8",  # surface
+                "panel_border": "#d1d5db",  # border
+                "text_color": "#1f2937",  # text
+                "button_bg": "#e5e5e5",  # button
+                "button_hover": "#d4d4d4",  # button_hover
+                "button_pressed": "#c4c4c4",  # button_pressed
+                "menubar_bg": "#ebebdf",  # toolbar_bg
+                "statusbar_bg": "#fafaf8",  # surface
+                "groupbox_bg": "#fafaf8",  # surface
+                "input_bg": "#ffffff",  # base
+                "input_border": "#d1d5db",  # border
+                "highlight": "#4f46e5",  # highlight (indigo)
+                "plot_bg": "#ffffff",  # plot_bg
+                "plot_text": "#1f2937",  # plot_text
+                "plot_grid": "#e5e7eb",  # plot_grid
             },
             "dark": {
                 # Solarviewer DARK_PALETTE colors (updated to match viewer)
-                "main_bg": "#0f0f1a",        # window
-                "panel_bg": "#16162a",       # surface
-                "panel_border": "#2d2d4a",   # border
-                "text_color": "#f0f0f5",     # text
-                "button_bg": "#252542",      # button
-                "button_hover": "#32325d",   # button_hover
-                "button_pressed": "#1a1a35", # button_pressed
-                "menubar_bg": "#0f0f1a",     # window
-                "statusbar_bg": "#16162a",   # surface
-                "groupbox_bg": "#16162a",    # surface
-                "input_bg": "#1a1a2e",       # base
-                "input_border": "#2d2d4a",   # border
-                "highlight": "#6366f1",      # highlight (indigo)
-                "plot_bg": "#1a1a2e",        # base
-                "plot_text": "#f0f0f5",      # text
-                "plot_grid": "#2d2d4a"       # border
-            }
+                "main_bg": "#0f0f1a",  # window
+                "panel_bg": "#16162a",  # surface
+                "panel_border": "#2d2d4a",  # border
+                "text_color": "#f0f0f5",  # text
+                "button_bg": "#252542",  # button
+                "button_hover": "#32325d",  # button_hover
+                "button_pressed": "#1a1a35",  # button_pressed
+                "menubar_bg": "#0f0f1a",  # window
+                "statusbar_bg": "#16162a",  # surface
+                "groupbox_bg": "#16162a",  # surface
+                "input_bg": "#1a1a2e",  # base
+                "input_border": "#2d2d4a",  # border
+                "highlight": "#6366f1",  # highlight (indigo)
+                "plot_bg": "#1a1a2e",  # base
+                "plot_text": "#f0f0f5",  # text
+                "plot_grid": "#2d2d4a",  # border
+            },
         }
 
         self._setupLogger()
@@ -1030,18 +1137,19 @@ class MainWindow(QMainWindow):
         self._createMainWidgets()
         self._createStatusBar()
         self._applyStyle()
-        
-        # Connect resize event 
+
+        # Connect resize event
         self.resizeTimer = None
 
     def _setupLogger(self):
         import logging
+
         self.logger = logging.getLogger("DynamicSpectrumViewer")
         self.logger.setLevel(logging.DEBUG)
         if not self.logger.handlers:
             ch = logging.StreamHandler()
             ch.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
             ch.setFormatter(formatter)
             self.logger.addHandler(ch)
 
@@ -1117,33 +1225,30 @@ class MainWindow(QMainWindow):
         # Left side: Matplotlib canvas and toolbar
         leftWidget = QWidget()
         leftLayout = QVBoxLayout(leftWidget)
-        
+
         self.canvas = DynamicSpectrumCanvas(self)
         self.navbar = NavigationToolbar(self.canvas, self)
 
         leftLayout.addWidget(self.canvas)
         leftLayout.addWidget(self.navbar)
-        
+
         # Connect canvas resize events to ensure proper redrawing
         self.canvas.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Expanding
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
         )
         self.canvas.updateGeometry()
-        
+
         # Right side: Control Panel
         rightWidget = QWidget()
         rightLayout = QVBoxLayout(rightWidget)
 
         # Set size policies for the left and right panels
         leftWidget.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Expanding
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
         )
         # Right panel: allow horizontal expansion to fill splitter space
         rightWidget.setSizePolicy(
-            QtWidgets.QSizePolicy.Preferred,
-            QtWidgets.QSizePolicy.Preferred
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Preferred
         )
         rightWidget.setMinimumWidth(250)
 
@@ -1170,8 +1275,23 @@ class MainWindow(QMainWindow):
         # (C) Colormap
         cmapLabel = QLabel("Colormap:")
         self.cmapCombo = QComboBox()
-        cmaps = ["viridis", "plasma", "inferno", "magma", "cividis",
-                 "jet", "gray", "bone", "turbo", "afmhot", "afmhot_r", "cubehelix", "Greens", "gist_heat", "gist_heat_r"]
+        cmaps = [
+            "viridis",
+            "plasma",
+            "inferno",
+            "magma",
+            "cividis",
+            "jet",
+            "gray",
+            "bone",
+            "turbo",
+            "afmhot",
+            "afmhot_r",
+            "cubehelix",
+            "Greens",
+            "gist_heat",
+            "gist_heat_r",
+        ]
         self.cmapCombo.addItems(cmaps)
         self.cmapCombo.setCurrentText("inferno")
         self.cmapCombo.currentTextChanged.connect(self.onCmapChanged)
@@ -1197,12 +1317,12 @@ class MainWindow(QMainWindow):
         # (F) Mouse Hover Info
         hoverGroup = QGroupBox("Mouse Hover Settings")
         hoverLayout = QVBoxLayout(hoverGroup)
-        
+
         self.hoverInfoBox = QCheckBox("Show Mouse Hover Info")
         self.hoverInfoBox.setChecked(False)  # Default disabled
         self.hoverInfoBox.toggled.connect(self.onHoverInfoToggled)
         hoverLayout.addWidget(self.hoverInfoBox)
-        
+
         # Hover update frequency (throttling)
         hoverFreqLayout = QHBoxLayout()
         hoverFreqLabel = QLabel("Update Rate:")
@@ -1210,12 +1330,14 @@ class MainWindow(QMainWindow):
         self.hoverFreqSpin.setRange(1, 20)
         self.hoverFreqSpin.setValue(3)  # Default: update every 3rd mouse event
         self.hoverFreqSpin.setSuffix(" events")
-        self.hoverFreqSpin.setToolTip("Higher values = less frequent updates = better performance")
+        self.hoverFreqSpin.setToolTip(
+            "Higher values = less frequent updates = better performance"
+        )
         self.hoverFreqSpin.valueChanged.connect(self.onHoverFrequencyChanged)
         hoverFreqLayout.addWidget(hoverFreqLabel)
         hoverFreqLayout.addWidget(self.hoverFreqSpin)
         hoverLayout.addLayout(hoverFreqLayout)
-        
+
         rightLayout.addWidget(hoverGroup)
 
         # (G) Theme Toggle
@@ -1258,21 +1380,21 @@ class MainWindow(QMainWindow):
         rightLayout.addWidget(self.bandpassBtn)
 
         rightLayout.addStretch()
-        
+
         # Wrap right widget in a scroll area for long control panels
         scrollArea = QScrollArea()
         scrollArea.setWidget(rightWidget)
         scrollArea.setWidgetResizable(True)
         scrollArea.setMinimumWidth(250)
-        
+
         # Use QSplitter for draggable resizable panels
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(leftWidget)
         splitter.addWidget(scrollArea)
         splitter.setStretchFactor(0, 1)  # Canvas gets more space
         splitter.setStretchFactor(1, 0)  # Control panel stays compact
-        splitter.setSizes([900, 300])    # Initial sizes
-        
+        splitter.setSizes([900, 300])  # Initial sizes
+
         layout.addWidget(splitter)
 
     # ---------------------------- Status Bar ------------------------------------
@@ -1300,7 +1422,7 @@ class MainWindow(QMainWindow):
     def _applyStyle(self):
         """Apply the current theme's styling to all UI elements."""
         theme = self.themes[self.current_theme]
-        
+
         style = f"""
             QMainWindow {{
                 background-color: {theme['main_bg']};
@@ -1460,70 +1582,73 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
             }}
         """
-        
+
         self.setStyleSheet(style)
-        
+
         # Apply theme to matplotlib canvas
         self._applyCanvasTheme()
 
     def _applyCanvasTheme(self):
         """Apply the current theme to the matplotlib canvas."""
-        if not hasattr(self, 'canvas'):
+        if not hasattr(self, "canvas"):
             return
-            
+
         theme = self.themes[self.current_theme]
-        
+
         # Set matplotlib style parameters
         import matplotlib.pyplot as plt
-        plt.rcParams.update({
-            'figure.facecolor': theme['plot_bg'],
-            'axes.facecolor': theme['plot_bg'],
-            'axes.edgecolor': theme['plot_text'],
-            'axes.labelcolor': theme['plot_text'],
-            'xtick.color': theme['plot_text'],
-            'ytick.color': theme['plot_text'],
-            'text.color': theme['plot_text'],
-            'axes.grid': True,
-            'grid.color': theme['plot_grid'],
-            'grid.alpha': 0.3
-        })
-        
+
+        plt.rcParams.update(
+            {
+                "figure.facecolor": theme["plot_bg"],
+                "axes.facecolor": theme["plot_bg"],
+                "axes.edgecolor": theme["plot_text"],
+                "axes.labelcolor": theme["plot_text"],
+                "xtick.color": theme["plot_text"],
+                "ytick.color": theme["plot_text"],
+                "text.color": theme["plot_text"],
+                "axes.grid": True,
+                "grid.color": theme["plot_grid"],
+                "grid.alpha": 0.3,
+            }
+        )
+
         # Always update the canvas theme, regardless of whether data is loaded
-        self.canvas.fig.patch.set_facecolor(theme['plot_bg'])
-        self.canvas.ax.set_facecolor(theme['plot_bg'])
-        
+        self.canvas.fig.patch.set_facecolor(theme["plot_bg"])
+        self.canvas.ax.set_facecolor(theme["plot_bg"])
+
         # Update axis colors and spines (borders)
-        self.canvas.ax.tick_params(colors=theme['plot_text'])
-        self.canvas.ax.xaxis.label.set_color(theme['plot_text'])
-        self.canvas.ax.yaxis.label.set_color(theme['plot_text'])
-        self.canvas.ax.title.set_color(theme['plot_text'])
-        
+        self.canvas.ax.tick_params(colors=theme["plot_text"])
+        self.canvas.ax.xaxis.label.set_color(theme["plot_text"])
+        self.canvas.ax.yaxis.label.set_color(theme["plot_text"])
+        self.canvas.ax.title.set_color(theme["plot_text"])
+
         # Update spine (border) colors
         for spine in self.canvas.ax.spines.values():
-            spine.set_edgecolor(theme['plot_text'])
-        
+            spine.set_edgecolor(theme["plot_text"])
+
         # Update grid
-        self.canvas.ax.grid(True, color=theme['plot_grid'], alpha=0.3)
-        
+        self.canvas.ax.grid(True, color=theme["plot_grid"], alpha=0.3)
+
         # Update colorbar if it exists
-        if hasattr(self.canvas, '_colorbar') and self.canvas._colorbar is not None:
+        if hasattr(self.canvas, "_colorbar") and self.canvas._colorbar is not None:
             # Update colorbar text colors
-            self.canvas._colorbar.ax.tick_params(colors=theme['plot_text'])
-            self.canvas._colorbar.ax.yaxis.label.set_color(theme['plot_text'])
-            
+            self.canvas._colorbar.ax.tick_params(colors=theme["plot_text"])
+            self.canvas._colorbar.ax.yaxis.label.set_color(theme["plot_text"])
+
             # Update colorbar outline
             for spine in self.canvas._colorbar.ax.spines.values():
-                spine.set_edgecolor(theme['plot_text'])
-        
+                spine.set_edgecolor(theme["plot_text"])
+
         # Update hover text colors if it exists
-        if hasattr(self.canvas, '_hover_text'):
+        if hasattr(self.canvas, "_hover_text"):
             if self.current_theme == "dark":
                 self.canvas._hover_text.set_color("white")
                 self.canvas._hover_text.set_bbox(dict(facecolor="black", alpha=0.8))
             else:
                 self.canvas._hover_text.set_color("black")
                 self.canvas._hover_text.set_bbox(dict(facecolor="white", alpha=0.8))
-        
+
         # Always redraw the canvas to show theme changes
         self.canvas.draw()
 
@@ -1535,10 +1660,10 @@ class MainWindow(QMainWindow):
         else:
             self.current_theme = "light"
             self.themeToggleBtn.setText("🌙 Dark Theme")
-            
+
         # Apply the new theme
         self._applyStyle()
-        
+
         # Update status message
         self.statusBar.showMessage(f"Switched to {self.current_theme} theme", 3000)
 
@@ -1557,7 +1682,7 @@ class MainWindow(QMainWindow):
             self._metadata = str(header)
             time_axis = None
             freq_axis = None
-            
+
             # First try to get axes from dedicated extensions (LOFAR/Learmonth format)
             for hdu in hdul:
                 if hdu.name.upper() == "TIME_AXIS":
@@ -1565,56 +1690,73 @@ class MainWindow(QMainWindow):
                     time_axis = time_mjd * 86400.0
                 if hdu.name.upper() == "FREQ_AXIS":
                     freq_axis = hdu.data["FREQ_MHz"]
-            
+
             # Fallback: try to extract from WCS headers if extensions not found
             if time_axis is None or freq_axis is None:
                 self.logger.info("No axis extensions found, trying WCS headers...")
                 try:
                     # Get data shape - shape is (freq, time) or (time, freq) depending on file
-                    naxis1 = header.get('NAXIS1', data.shape[1] if len(data.shape) > 1 else data.shape[0])
-                    naxis2 = header.get('NAXIS2', data.shape[0])
-                    
+                    naxis1 = header.get(
+                        "NAXIS1",
+                        data.shape[1] if len(data.shape) > 1 else data.shape[0],
+                    )
+                    naxis2 = header.get("NAXIS2", data.shape[0])
+
                     # Try to get frequency axis from CTYPE1/CRVAL1/CDELT1
-                    ctype1 = header.get('CTYPE1', '')
-                    if freq_axis is None and 'FREQ' in ctype1.upper():
-                        crval1 = header.get('CRVAL1', 0)
-                        cdelt1 = header.get('CDELT1', 1)
-                        crpix1 = header.get('CRPIX1', 1)
+                    ctype1 = header.get("CTYPE1", "")
+                    if freq_axis is None and "FREQ" in ctype1.upper():
+                        crval1 = header.get("CRVAL1", 0)
+                        cdelt1 = header.get("CDELT1", 1)
+                        crpix1 = header.get("CRPIX1", 1)
                         freq_axis = crval1 + (np.arange(naxis1) - (crpix1 - 1)) * cdelt1
-                        self.logger.info(f"Extracted freq_axis from WCS: {freq_axis[0]:.2f} to {freq_axis[-1]:.2f} MHz")
-                    
+                        self.logger.info(
+                            f"Extracted freq_axis from WCS: {freq_axis[0]:.2f} to {freq_axis[-1]:.2f} MHz"
+                        )
+
                     # Try to get time axis from CTYPE2/CRVAL2/CDELT2
-                    ctype2 = header.get('CTYPE2', '')
-                    if time_axis is None and 'TIME' in ctype2.upper():
+                    ctype2 = header.get("CTYPE2", "")
+                    if time_axis is None and "TIME" in ctype2.upper():
                         # Get start time from DATE-OBS
-                        date_obs = header.get('DATE-OBS', None)
-                        cdelt2 = header.get('CDELT2', 3.0)  # seconds between samples
+                        date_obs = header.get("DATE-OBS", None)
+                        cdelt2 = header.get("CDELT2", 3.0)  # seconds between samples
                         if date_obs:
                             from astropy.time import Time as AstroTime
+
                             t_start = AstroTime(date_obs)
                             # Create time array in MJD seconds
-                            time_axis = (t_start.mjd * 86400.0) + np.arange(naxis2) * cdelt2
-                            self.logger.info(f"Extracted time_axis from WCS: {naxis2} samples, dt={cdelt2}s")
-                    
+                            time_axis = (t_start.mjd * 86400.0) + np.arange(
+                                naxis2
+                            ) * cdelt2
+                            self.logger.info(
+                                f"Extracted time_axis from WCS: {naxis2} samples, dt={cdelt2}s"
+                            )
+
                     # Alternative: check if axes are swapped (CTYPE1=TIME, CTYPE2=FREQ)
-                    if freq_axis is None and 'FREQ' in ctype2.upper():
-                        crval2 = header.get('CRVAL2', 0)
-                        cdelt2 = header.get('CDELT2', 1)
-                        crpix2 = header.get('CRPIX2', 1)
+                    if freq_axis is None and "FREQ" in ctype2.upper():
+                        crval2 = header.get("CRVAL2", 0)
+                        cdelt2 = header.get("CDELT2", 1)
+                        crpix2 = header.get("CRPIX2", 1)
                         freq_axis = crval2 + (np.arange(naxis2) - (crpix2 - 1)) * cdelt2
-                        self.logger.info(f"Extracted freq_axis from WCS (CTYPE2): {freq_axis[0]:.2f} to {freq_axis[-1]:.2f} MHz")
-                    
-                    if time_axis is None and 'TIME' in ctype1.upper():
-                        date_obs = header.get('DATE-OBS', None)
-                        cdelt1 = header.get('CDELT1', 3.0)
+                        self.logger.info(
+                            f"Extracted freq_axis from WCS (CTYPE2): {freq_axis[0]:.2f} to {freq_axis[-1]:.2f} MHz"
+                        )
+
+                    if time_axis is None and "TIME" in ctype1.upper():
+                        date_obs = header.get("DATE-OBS", None)
+                        cdelt1 = header.get("CDELT1", 3.0)
                         if date_obs:
                             from astropy.time import Time as AstroTime
+
                             t_start = AstroTime(date_obs)
-                            time_axis = (t_start.mjd * 86400.0) + np.arange(naxis1) * cdelt1
-                            self.logger.info(f"Extracted time_axis from WCS (CTYPE1): {naxis1} samples")
+                            time_axis = (t_start.mjd * 86400.0) + np.arange(
+                                naxis1
+                            ) * cdelt1
+                            self.logger.info(
+                                f"Extracted time_axis from WCS (CTYPE1): {naxis1} samples"
+                            )
                 except Exception as wcs_err:
                     self.logger.warning(f"Could not extract axes from WCS: {wcs_err}")
-            
+
             hdul.close()
 
             data = np.array(data, dtype=np.float32)
@@ -1650,17 +1792,21 @@ class MainWindow(QMainWindow):
             hdul = fits.HDUList([hdu])
             if self._time_axis is not None:
                 from astropy.table import Table
+
                 t = Table()
                 t["TIME_MJD"] = self._time_axis / 86400.0
                 time_hdu = fits.BinTableHDU(t, name="TIME_AXIS")
                 hdul.append(time_hdu)
             if self._freq_axis is not None:
                 from astropy.table import Table
+
                 t = Table()
                 t["FREQ_MHz"] = self._freq_axis
                 freq_hdu = fits.BinTableHDU(t, name="FREQ_AXIS")
                 hdul.append(freq_hdu)
-            hdu.header.add_history('Cleaned/processed with SolarViewer Dynamic Spectrum Viewer')
+            hdu.header.add_history(
+                "Cleaned/processed with SolarViewer Dynamic Spectrum Viewer"
+            )
             hdul.writeto(fileName, overwrite=True)
             self.statusBar.showMessage(f"Saved cleaned data to {fileName}", 5000)
         except Exception as e:
@@ -1675,7 +1821,7 @@ class MainWindow(QMainWindow):
         axes[1].set_title("Current Cleaned")
         orig_ma = ma.masked_invalid(self._original_unmodified)
         cle_ma = ma.masked_invalid(self._original_data)
-        
+
         # Apply the same scaling as the current view
         if self.canvas._smart_scale == "0-100%":
             orig_vals = orig_ma.compressed()
@@ -1703,14 +1849,16 @@ class MainWindow(QMainWindow):
             orig_vmax = np.percentile(orig_vals, 99)
             cle_vmin = np.percentile(cle_vals, 1)
             cle_vmax = np.percentile(cle_vals, 99)
-        
+
         norm1 = self.canvas.get_normalization(orig_vmin, orig_vmax)
         norm2 = self.canvas.get_normalization(cle_vmin, cle_vmax)
-        im1 = axes[0].imshow(orig_ma.T, origin='lower', aspect='auto',
-                             norm=norm1, cmap=self.canvas._cmap)
+        im1 = axes[0].imshow(
+            orig_ma.T, origin="lower", aspect="auto", norm=norm1, cmap=self.canvas._cmap
+        )
         fig.colorbar(im1, ax=axes[0], label="Amplitude")
-        im2 = axes[1].imshow(cle_ma.T, origin='lower', aspect='auto',
-                             norm=norm2, cmap=self.canvas._cmap)
+        im2 = axes[1].imshow(
+            cle_ma.T, origin="lower", aspect="auto", norm=norm2, cmap=self.canvas._cmap
+        )
         fig.colorbar(im2, ax=axes[1], label="Amplitude")
         axes[0].set_xlabel("Time Index")
         axes[1].set_xlabel("Time Index")
@@ -1764,8 +1912,9 @@ class MainWindow(QMainWindow):
         med_band = np.nanmedian(data_T, axis=1, keepdims=True)
         normed_data = data_T / (med_band + 1e-20)
         binary_image = create_binary(normed_data, thresh=thresh)
-        _, valid_contours, _ = region_detection(normed_data, binary_image,
-                                                 min_width=min_w, min_height=min_h)
+        _, valid_contours, _ = region_detection(
+            normed_data, binary_image, min_width=min_w, min_height=min_h
+        )
         mask = create_mask(binary_image, valid_contours)
         rfi_map = subtract_contours(normed_data, mask=~mask)
         cleaned_data = rfi_map.T
@@ -1797,31 +1946,36 @@ class MainWindow(QMainWindow):
     def _mask_roi_values(self, ixmin, ixmax, iymin, iymax):
         """Mask a region of interest with NaN values."""
         try:
-            self.logger.info(f"Masking ROI: time=[{ixmin},{ixmax}], freq=[{iymin},{iymax}]")
-            
+            self.logger.info(
+                f"Masking ROI: time=[{ixmin},{ixmax}], freq=[{iymin},{iymax}]"
+            )
+
             # Validate indices
             if ixmax < ixmin or iymax < iymin:
                 self.logger.warning("Invalid ROI coordinates: Empty region")
                 return
-                
+
             # Validate against data dimensions
             if self._original_data is None:
                 self.logger.error("No data loaded")
                 return
-                
+
             # Save current state for undo
             self.undo_stack.append(self._original_data.copy())
             self.redo_stack.clear()
-            
+
             # Apply the mask
-            self._original_data[ixmin:ixmax+1, iymin:iymax+1] = np.nan
-            
+            self._original_data[ixmin : ixmax + 1, iymin : iymax + 1] = np.nan
+
             # Update the display
             self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
             self.canvas.draw_spectrum()
-            
+
             # Update status
-            self.statusBar.showMessage(f"ROI masked: time=[{ixmin},{ixmax}], freq=[{iymin},{iymax}] => NaN", 5000)
+            self.statusBar.showMessage(
+                f"ROI masked: time=[{ixmin},{ixmax}], freq=[{iymin},{iymax}] => NaN",
+                5000,
+            )
             self.logger.info("ROI masked successfully")
         except Exception as e:
             self.logger.exception(f"Error masking ROI: {e}")
@@ -1862,12 +2016,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Info", "No data loaded.")
             self.roiButton.setChecked(False)
             return
-        
+
         try:
             if checked:
                 self.logger.info("Enabling ROI selector...")
                 self.canvas.enable_roi_selector(True, self._mask_roi_values)
-                self.statusBar.showMessage("Mask Region ON: Click and drag to select an area to mask.")
+                self.statusBar.showMessage(
+                    "Mask Region ON: Click and drag to select an area to mask."
+                )
                 self.logger.info("ROI selector enabled successfully")
             else:
                 self.logger.info("Disabling ROI selector...")
@@ -1879,51 +2035,54 @@ class MainWindow(QMainWindow):
             error_msg = f"There was an error with the ROI selector: {str(e)}"
             self.logger.exception(error_msg)
             QMessageBox.warning(
-                self, 
-                "ROI Selection Error", 
+                self,
+                "ROI Selection Error",
                 f"{error_msg}\n\n"
                 "This may be due to compatibility issues with your Matplotlib version.\n"
-                "Please try updating Matplotlib or using a different selection method."
+                "Please try updating Matplotlib or using a different selection method.",
             )
-            
+
             # Reset button state
             self.roiButton.setChecked(False)
-            
+
             # Disable the selector and clean up
             try:
                 self.canvas.roi_active = False
-                if hasattr(self.canvas, 'rect_selector') and self.canvas.rect_selector is not None:
+                if (
+                    hasattr(self.canvas, "rect_selector")
+                    and self.canvas.rect_selector is not None
+                ):
                     self.canvas.rect_selector.set_active(False)
-                    if hasattr(self.canvas.rect_selector, 'disconnect_events'):
+                    if hasattr(self.canvas.rect_selector, "disconnect_events"):
                         self.canvas.rect_selector.disconnect_events()
                     self.canvas.rect_selector = None
             except Exception as cleanup_error:
                 self.logger.error(f"Error during cleanup: {cleanup_error}")
-            
+
             # Update the status bar
             self.statusBar.showMessage("ROI selection disabled due to an error", 5000)
 
     def onHoverInfoToggled(self, checked):
         """Toggle the mouse hover info display on/off."""
-        if hasattr(self.canvas, 'hover_info_enabled'):
+        if hasattr(self.canvas, "hover_info_enabled"):
             self.canvas.hover_info_enabled = checked
         else:
             # For backwards compatibility, set the attribute
             self.canvas.hover_info_enabled = checked
-        
+
         # Clear hover text and reset cache if disabled
-        if not checked and hasattr(self.canvas, '_hover_text'):
+        if not checked and hasattr(self.canvas, "_hover_text"):
             self.canvas._hover_text.set_text("")
-            if hasattr(self.canvas, '_last_hover_text'):
+            if hasattr(self.canvas, "_last_hover_text"):
                 self.canvas._last_hover_text = ""
             self.canvas.draw_idle()
 
     def onHoverFrequencyChanged(self, value):
         """Update the hover throttle limit for performance tuning."""
-        if hasattr(self.canvas, '_hover_throttle_limit'):
+        if hasattr(self.canvas, "_hover_throttle_limit"):
             self.canvas._hover_throttle_limit = value
             # Reset counter to apply change immediately
-            if hasattr(self.canvas, '_hover_throttle_counter'):
+            if hasattr(self.canvas, "_hover_throttle_counter"):
                 self.canvas._hover_throttle_counter = 0
 
     def onCrossSectionToggled(self, checked):
@@ -1943,34 +2102,39 @@ class MainWindow(QMainWindow):
         # Use a timer to avoid excessive redrawing during resize
         if self.resizeTimer is not None:
             self.resizeTimer.stop()
-            
+
         # Wait for resize to complete before redrawing
         from PyQt5.QtCore import QTimer
+
         self.resizeTimer = QTimer()
         self.resizeTimer.setSingleShot(True)
         self.resizeTimer.timeout.connect(self._delayed_redraw)
         self.resizeTimer.start(200)  # 200ms delay
-    
+
     def _delayed_redraw(self):
         """Redraw the canvas after resize is complete"""
-        if hasattr(self, 'canvas') and self.canvas._data is not None:
+        if hasattr(self, "canvas") and self.canvas._data is not None:
             self.canvas.draw_idle()
+
 
 ###############################################################################
 #                                  MAIN                                       #
 ###############################################################################
 
+
 def main():
     """Entry point for viewds command."""
     app = QApplication(sys.argv)
-    
+
     # Apply dark theme from solarviewer
     from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+
     apply_theme(app, "dark")
-    
+
     w = MainWindow(theme="dark")
     w.show()
     sys.exit(app.exec_())
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

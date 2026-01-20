@@ -8,7 +8,7 @@ from .remote_file_browser import RemoteFileBrowser
 
 __all__ = [
     "SSHConnection",
-    "SSHConnectionError", 
+    "SSHConnectionError",
     "RemoteFileCache",
     "ConnectionDialog",
     "RemoteFileBrowser",
