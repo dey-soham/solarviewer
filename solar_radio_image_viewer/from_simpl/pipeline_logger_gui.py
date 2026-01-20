@@ -1356,6 +1356,10 @@ def main():
     )
     args = parser.parse_args()
 
+    # Apply high DPI scaling
+    from solar_radio_image_viewer.from_simpl.simpl_theme import setup_high_dpi
+    setup_high_dpi()
+
     app = QApplication(sys.argv)
 
     # Set application style
@@ -1363,7 +1367,6 @@ def main():
 
     # Apply theme
     from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
-
     apply_theme(app, args.theme)
 
     # Create and show the main window with theme

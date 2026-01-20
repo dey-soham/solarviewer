@@ -15205,8 +15205,9 @@ for key in ['QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH']:
 
 from PyQt5.QtWidgets import QApplication
 from solar_radio_image_viewer.from_simpl.view_dynamic_spectra_GUI import MainWindow
-from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme, setup_high_dpi
 
+setup_high_dpi()
 app = QApplication(sys.argv)
 apply_theme(app, "{current_theme}")
 window = MainWindow(theme="{current_theme}")
@@ -15248,8 +15249,9 @@ for key in ['QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH']:
 
 from PyQt5.QtWidgets import QApplication
 from solar_radio_image_viewer.from_simpl.caltable_visualizer import VisualizationApp
-from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme, setup_high_dpi
 
+setup_high_dpi()
 app = QApplication(sys.argv)
 apply_theme(app, "{current_theme}")
 window = VisualizationApp()
@@ -15291,8 +15293,9 @@ for key in ['QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH']:
 
 from PyQt5.QtWidgets import QApplication
 from solar_radio_image_viewer.from_simpl.pipeline_logger_gui import PipelineLoggerGUI
-from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme, setup_high_dpi
 
+setup_high_dpi()
 app = QApplication(sys.argv)
 apply_theme(app, "{current_theme}")
 window = PipelineLoggerGUI(theme="{current_theme}")
@@ -15334,8 +15337,9 @@ for key in ['QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH']:
 
 from PyQt5.QtWidgets import QApplication
 from solar_radio_image_viewer.from_simpl.dynamic_spectra_dialog import DynamicSpectraDialog
-from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme, setup_high_dpi
 
+setup_high_dpi()
 app = QApplication(sys.argv)
 apply_theme(app, "{current_theme}")
 dialog = DynamicSpectraDialog(theme="{current_theme}")

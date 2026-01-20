@@ -7,6 +7,20 @@ to ensure visual consistency.
 """
 
 import sys
+import os
+from PyQt5.QtCore import Qt, QSettings
+from PyQt5.QtWidgets import QApplication
+
+def setup_high_dpi():
+    """Enable HiDPI scaling for high-resolution displays.
+    Must be called BEFORE creating a QApplication instance.
+    """
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    pre_settings = QSettings("SolarViewer", "SolarViewer")
+    ui_scale_factor = pre_settings.value("ui_scale_factor", 1.0, type=float)
+    if ui_scale_factor != 1.0:
+        os.environ["QT_SCALE_FACTOR"] = str(ui_scale_factor)
 
 # Try to import palettes from main viewer styles for consistency
 try:
