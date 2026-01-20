@@ -242,7 +242,7 @@ def download_aia_data():
         if not email.strip():
             print("Warning: No email provided. Download may fail for large requests.")
             email = None
-        
+
         # Get cadence for DRMS
         cadence_options = {"1": "12s", "2": "24s", "3": "1h"}
         print("\nAvailable cadences:")
@@ -258,8 +258,12 @@ def download_aia_data():
             default_cadence = "3"
 
         while True:
-            cadence_choice = input(f"\nSelect cadence (1-3) [default: {default_cadence}]: ")
-            cadence_choice = default_cadence if not cadence_choice.strip() else cadence_choice
+            cadence_choice = input(
+                f"\nSelect cadence (1-3) [default: {default_cadence}]: "
+            )
+            cadence_choice = (
+                default_cadence if not cadence_choice.strip() else cadence_choice
+            )
 
             if cadence_choice in cadence_options:
                 cadence = cadence_options[cadence_choice]
@@ -304,7 +308,9 @@ def download_aia_data():
                     email=email,
                 )
 
-            print(f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}")
+            print(
+                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
+            )
         except Exception as e:
             print(f"\nError during download: {str(e)}")
     else:
@@ -425,7 +431,9 @@ def download_hmi_data():
                     interval_seconds=interval_seconds,
                 )
 
-            print(f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}")
+            print(
+                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
+            )
         except Exception as e:
             print(f"\nError during download: {str(e)}")
     else:
@@ -476,7 +484,9 @@ def download_iris_data():
 
         while True:
             wavelength_choice = input("\nSelect wavelength (1-4) [default: 2]: ")
-            wavelength_choice = "2" if not wavelength_choice.strip() else wavelength_choice
+            wavelength_choice = (
+                "2" if not wavelength_choice.strip() else wavelength_choice
+            )
 
             if wavelength_choice in wavelength_options:
                 wavelength = wavelength_options[wavelength_choice]
@@ -513,7 +523,9 @@ def download_iris_data():
                 wavelength=wavelength,
             )
 
-            print(f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}")
+            print(
+                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
+            )
         except Exception as e:
             print(f"\nError during download: {str(e)}")
     else:
@@ -568,7 +580,9 @@ def download_soho_data():
 
         while True:
             wavelength_choice = input("\nSelect wavelength (1-4) [default: 2]: ")
-            wavelength_choice = "2" if not wavelength_choice.strip() else wavelength_choice
+            wavelength_choice = (
+                "2" if not wavelength_choice.strip() else wavelength_choice
+            )
 
             if wavelength_choice in wavelength_options:
                 wavelength = wavelength_options[wavelength_choice]
@@ -624,7 +638,9 @@ def download_soho_data():
                 detector=detector,
             )
 
-            print(f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}")
+            print(
+                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
+            )
         except Exception as e:
             print(f"\nError during download: {str(e)}")
     else:
@@ -702,7 +718,9 @@ def download_suvi_data():
                 level=level,
             )
 
-            print(f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}")
+            print(
+                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
+            )
         except Exception as e:
             print(f"\nError during download: {str(e)}")
     else:
@@ -763,7 +781,9 @@ def download_stereo_data():
 
         while True:
             wavelength_choice = input("\nSelect wavelength (1-4) [default: 2]: ")
-            wavelength_choice = "2" if not wavelength_choice.strip() else wavelength_choice
+            wavelength_choice = (
+                "2" if not wavelength_choice.strip() else wavelength_choice
+            )
 
             if wavelength_choice in wavelength_options:
                 wavelength = wavelength_options[wavelength_choice]
@@ -800,7 +820,9 @@ def download_stereo_data():
                 wavelength=wavelength,
             )
 
-            print(f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}")
+            print(
+                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
+            )
         except Exception as e:
             print(f"\nError during download: {str(e)}")
     else:
@@ -817,7 +839,9 @@ def download_gong_data():
     print("GONG Magnetogram Data Download")
     print("-------------------------------")
     print("Note: GONG data uses Fido (no email required)")
-    print("\nGONG provides ground-based magnetogram observations from a global network.")
+    print(
+        "\nGONG provides ground-based magnetogram observations from a global network."
+    )
 
     # Get time range
     start_time, end_time = get_datetime_range()
@@ -844,7 +868,9 @@ def download_gong_data():
                 output_dir=output_dir,
             )
 
-            print(f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}")
+            print(
+                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
+            )
         except Exception as e:
             print(f"\nError during download: {str(e)}")
     else:

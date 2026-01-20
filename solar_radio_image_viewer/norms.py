@@ -6,16 +6,17 @@ import warnings
 class SqrtNorm(Normalize):
     """
     Square root normalization for enhancing faint features.
-    
+
     Applies sqrt(x) scaling which compresses bright values and enhances faint ones.
     Commonly used in solar EUV imaging.
     """
+
     def __call__(self, value, clip=None):
         normed = super().__call__(value, clip)
         # Clip to avoid sqrt of negative values (can happen with edge cases)
         normed = np.clip(normed, 0, 1)
         # Handle masked arrays
-        if hasattr(normed, 'mask'):
+        if hasattr(normed, "mask"):
             result = np.ma.sqrt(normed)
         else:
             result = np.sqrt(normed)
@@ -25,16 +26,17 @@ class SqrtNorm(Normalize):
 class AsinhNorm(Normalize):
     """
     Inverse hyperbolic sine (arcsinh) normalization.
-    
+
     Similar to logarithmic scaling but handles zero and negative values gracefully.
     Excellent for high dynamic range solar images like AIA EUV channels.
-    
+
     Parameters
     ----------
     linear_width : float, optional
         Controls the transition between linear and logarithmic behavior.
         Smaller values = more compression of bright features. Default is 1e-3.
     """
+
     def __init__(self, vmin=None, vmax=None, clip=False, linear_width=1e-3):
         super().__init__(vmin, vmax, clip)
         # Validate linear_width
@@ -46,13 +48,13 @@ class AsinhNorm(Normalize):
     def __call__(self, value, clip=None):
         normed = super().__call__(value, clip)
         # Protect against division by zero
-        with np.errstate(invalid='ignore', divide='ignore'):
+        with np.errstate(invalid="ignore", divide="ignore"):
             denominator = np.arcsinh(1.0 / self.linear_width)
             if denominator == 0:
                 return normed  # Fall back to linear
             result = np.arcsinh(normed / self.linear_width) / denominator
         # Handle any NaN that might result
-        if hasattr(result, 'mask'):
+        if hasattr(result, "mask"):
             return result
         return np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)
 
@@ -60,16 +62,17 @@ class AsinhNorm(Normalize):
 class PowerNorm(Normalize):
     """
     Power-law (gamma) normalization.
-    
+
     Applies x^gamma scaling. Gamma < 1 enhances faint features,
     gamma > 1 enhances bright features.
-    
+
     Parameters
     ----------
     gamma : float, optional
         The power exponent. Default is 1.0 (linear).
         Common values: 0.5 (sqrt-like), 0.3 (strong faint enhancement)
     """
+
     def __init__(self, vmin=None, vmax=None, clip=False, gamma=1.0):
         super().__init__(vmin, vmax, clip)
         # Validate gamma
@@ -83,7 +86,7 @@ class PowerNorm(Normalize):
         # Clip to ensure non-negative values for power operation
         normed = np.clip(normed, 0, 1)
         # Use safe power operation
-        with np.errstate(invalid='ignore'):
+        with np.errstate(invalid="ignore"):
             result = np.power(normed, self.gamma)
         return np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)
 
@@ -91,10 +94,10 @@ class PowerNorm(Normalize):
 class ZScaleNorm(Normalize):
     """
     ZScale normalization using iterative sigma clipping (IRAF algorithm).
-    
+
     Automatically determines optimal display range by fitting a line to
     sorted pixel values and rejecting outliers. Widely used in astronomy.
-    
+
     Parameters
     ----------
     contrast : float, optional
@@ -138,16 +141,18 @@ class ZScaleNorm(Normalize):
             flat_data = np.asarray(data).flatten()
             mask = np.isfinite(flat_data)
             flat_data = flat_data[mask]
-            
+
             if flat_data.size == 0:
                 return 0, 1
-            
+
             if flat_data.size < self.min_npixels:
                 return float(np.min(flat_data)), float(np.max(flat_data))
 
             # Sample the data if necessary
             if flat_data.size > self.num_samples:
-                indices = np.linspace(0, flat_data.size - 1, self.num_samples).astype(int)
+                indices = np.linspace(0, flat_data.size - 1, self.num_samples).astype(
+                    int
+                )
                 samples = np.sort(flat_data[indices])
             else:
                 samples = np.sort(flat_data)
@@ -156,24 +161,24 @@ class ZScaleNorm(Normalize):
             for _ in range(self.max_iterations):
                 if len(samples) < self.min_npixels:
                     break
-                    
+
                 x = np.arange(len(samples))
                 try:
                     slope, intercept = np.polyfit(x, samples, 1)
                 except (np.linalg.LinAlgError, ValueError):
                     break
-                    
+
                 fitted = slope * x + intercept
                 residuals = samples - fitted
                 sigma = np.std(residuals)
-                
+
                 if sigma == 0:
                     break
-                    
+
                 mask = np.abs(residuals) < self.krej * sigma
                 if np.sum(mask) < self.min_npixels:
                     break
-                    
+
                 new_samples = samples[mask]
                 if new_samples.size == samples.size:
                     break
@@ -194,14 +199,14 @@ class ZScaleNorm(Normalize):
             # Ensure limits are within data range
             zmin = max(zmin, samples[0])
             zmax = min(zmax, samples[-1])
-            
+
             # Ensure zmin < zmax
             if zmin >= zmax:
                 zmin = samples[0]
                 zmax = samples[-1]
-                
+
             return float(zmin), float(zmax)
-            
+
         except Exception as e:
             warnings.warn(f"ZScale computation failed: {e}, using min/max")
             flat = np.asarray(data).flatten()
@@ -222,11 +227,11 @@ class ZScaleNorm(Normalize):
 class HistEqNorm(Normalize):
     """
     Histogram equalization normalization.
-    
+
     Enhances contrast by redistributing intensity values so that the
     cumulative distribution function becomes approximately linear.
     Useful for images with poor contrast or non-uniform intensity distribution.
-    
+
     Parameters
     ----------
     n_bins : int, optional
@@ -244,23 +249,23 @@ class HistEqNorm(Normalize):
         try:
             flat_data = np.asarray(data).flatten()
             flat_data = flat_data[np.isfinite(flat_data)]
-            
+
             if flat_data.size == 0:
                 return np.linspace(0, 1, self.n_bins), np.linspace(0, 1, self.n_bins)
 
             # Compute histogram and CDF
             hist, bin_edges = np.histogram(flat_data, bins=self.n_bins)
-            
+
             # Avoid division by zero
             hist_sum = hist.sum()
             if hist_sum == 0:
                 return np.linspace(0, 1, self.n_bins), np.linspace(0, 1, self.n_bins)
-                
+
             cdf = hist.cumsum() / hist_sum
             bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-            
+
             return bin_centers, cdf
-            
+
         except Exception as e:
             warnings.warn(f"Histogram equalization failed: {e}")
             return np.linspace(0, 1, self.n_bins), np.linspace(0, 1, self.n_bins)

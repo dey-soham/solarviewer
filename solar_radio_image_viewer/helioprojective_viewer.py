@@ -55,6 +55,7 @@ except ImportError:
 # Try to import CASA tools (casatasks run via subprocess)
 try:
     from casatools import image as IA
+
     # Note: casatasks (exportfits) is now run via subprocess - see convert_casaimage_to_fits()
 
     CASA_AVAILABLE = True
@@ -83,9 +84,9 @@ def convert_casaimage_to_fits(
 
         import subprocess
         import sys
-        
+
         # Run exportfits in a separate process to avoid segfault
-        script = f'''
+        script = f"""
 import sys
 from casatasks import exportfits
 try:
@@ -94,14 +95,12 @@ try:
 except Exception as e:
     print(f"ERROR: {{e}}", file=sys.stderr)
     sys.exit(1)
-'''
-        
+"""
+
         result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True
+            [sys.executable, "-c", script], capture_output=True, text=True
         )
-        
+
         if result.returncode != 0:
             print(f"Error in exportfits: {result.stderr}")
             return None
@@ -180,7 +179,7 @@ class HelioProjectiveViewer(QMainWindow):
 
         # Apply current theme stylesheet
         self.setStyleSheet(get_stylesheet(theme_manager.palette, theme_manager.is_dark))
-        
+
         # Register for theme changes
         theme_manager.register_callback(self._on_theme_changed)
 
@@ -698,15 +697,15 @@ class HelioProjectiveViewer(QMainWindow):
         """Handle theme change events."""
         # Update matplotlib rcParams
         update_hpc_matplotlib_theme()
-        
+
         # Update window stylesheet
         self.setStyleSheet(get_stylesheet(theme_manager.palette, theme_manager.is_dark))
-        
+
         # Refresh the plot with new theme colors
-        if hasattr(self, 'figure') and self.figure and self.helioprojective_map:
+        if hasattr(self, "figure") and self.figure and self.helioprojective_map:
             palette = theme_manager.palette
             is_dark = theme_manager.is_dark
-            
+
             # Use plot-specific colors for light mode
             if is_dark:
                 fig_bg = palette["window"]
@@ -716,7 +715,7 @@ class HelioProjectiveViewer(QMainWindow):
                 fig_bg = palette.get("plot_bg", "#ffffff")
                 axes_bg = palette.get("plot_bg", "#ffffff")
                 text_color = palette.get("plot_text", "#1a1a1a")
-            
+
             self.figure.set_facecolor(fig_bg)
             for ax in self.figure.get_axes():
                 ax.set_facecolor(axes_bg)
@@ -732,7 +731,7 @@ class HelioProjectiveViewer(QMainWindow):
         """Handle window close event"""
         # Unregister theme callback
         theme_manager.unregister_callback(self._on_theme_changed)
-        
+
         # Clean up temporary files
         if self.temp_fits_file and os.path.exists(self.temp_fits_file):
             try:

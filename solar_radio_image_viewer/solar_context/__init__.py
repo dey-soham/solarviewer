@@ -29,7 +29,7 @@ from .cme_alerts import (
 
 __all__ = [
     "ActiveRegion",
-    "fetch_and_parse_active_regions", 
+    "fetch_and_parse_active_regions",
     "get_ar_statistics",
     "KpIndexData",
     "F107FluxData",

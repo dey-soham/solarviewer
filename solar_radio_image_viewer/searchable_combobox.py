@@ -21,9 +21,11 @@ from .styles import get_icon_path, theme_manager
 # Package directory for fast resource loading
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
 def _get_resource_path(relative_path):
     """Get absolute path to a package resource file."""
     return os.path.join(_PACKAGE_DIR, relative_path)
+
 
 class SearchDialog(QDialog):
     """A dialog for searching and selecting colormaps"""
@@ -157,23 +159,19 @@ class ColormapSelector(QWidget):
         self.search_button.setIconSize(QSize(24, 24))
         self.search_button.clicked.connect(self.show_search_dialog)
         self.main_layout.addWidget(self.search_button)
-        
+
         # Register callback for theme changes
         theme_manager.register_callback(self._on_theme_changed)
 
         if self.preferred_items:
             self.combo.setCurrentText(self.preferred_items[0])
             self.current_colormap = self.preferred_items[0]
-    
+
     def _update_search_icon(self):
         """Update the search icon based on the current theme."""
         icon_filename = get_icon_path("search.png")
-        self.search_button.setIcon(
-            QIcon(
-                _get_resource_path(f"assets/{icon_filename}")
-            )
-        )
-    
+        self.search_button.setIcon(QIcon(_get_resource_path(f"assets/{icon_filename}")))
+
     def _on_theme_changed(self, theme):
         """Handle theme change by updating the search icon."""
         self._update_search_icon()

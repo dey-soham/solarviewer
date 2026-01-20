@@ -11,11 +11,12 @@ import sys
 # Try to import palettes from main viewer styles for consistency
 try:
     from ..styles import DARK_PALETTE, LIGHT_PALETTE, theme_manager
+
     _HAS_VIEWER_STYLES = True
 except ImportError:
     _HAS_VIEWER_STYLES = False
     theme_manager = None
-    
+
     # Fallback palettes matching solarviewer's styles.py
     DARK_PALETTE = {
         "window": "#0f0f1a",
@@ -80,15 +81,14 @@ def get_palette(theme_name):
     return DARK_PALETTE if theme_name == "dark" else LIGHT_PALETTE
 
 
-
 def get_stylesheet(theme_name):
     """Generate stylesheet for LOFAR tools matching solarviewer theme."""
     palette = get_palette(theme_name)
     is_dark = theme_name == "dark"
-    
+
     input_bg = palette["base"]
     input_text = palette.get("input_text", palette["text"])
-    
+
     return f"""
     QWidget {{
         font-family: 'Segoe UI', Arial, sans-serif;
@@ -314,7 +314,7 @@ def get_matplotlib_params(theme_name):
     """Get matplotlib rcParams for the given theme."""
     palette = get_palette(theme_name)
     is_dark = theme_name == "dark"
-    
+
     if is_dark:
         return {
             "figure.facecolor": palette["window"],
@@ -348,13 +348,13 @@ def apply_theme(app, theme_name="dark"):
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtGui import QPalette, QColor
     from matplotlib import rcParams
-    
+
     # Apply stylesheet
     app.setStyleSheet(get_stylesheet(theme_name))
-    
+
     # Apply matplotlib params
     rcParams.update(get_matplotlib_params(theme_name))
-    
+
     # Set palette for native widgets
     palette = get_palette(theme_name)
     qt_palette = QPalette()

@@ -8,9 +8,10 @@ RECORD_HEADER_SIZE = 24
 RECORD_ARRAY_SIZE = 401
 
 # verbosity values
-VERBOSITY_ALL = 2    # print warnings and errors  
-VERBOSITY_ERRORS = 1 # print errors
-VERBOSITY_NONE = 0   # print nothing
+VERBOSITY_ALL = 2  # print warnings and errors
+VERBOSITY_ERRORS = 1  # print errors
+VERBOSITY_NONE = 0  # print nothing
+
 
 class SRSRecord:
     """Holds one 826 byte SRS Record."""
@@ -55,26 +56,26 @@ class SRSRecord:
 
     def _parse_srs_file_header(self, header_bytes, verbosity=VERBOSITY_ALL):
         fields = unpack(
-            '>'  # big endian format
-            'B'  # Year (last 2 digits)
-            'B'  # Month
-            'B'  # Day
-            'B'  # Hour (UT)
-            'B'  # Minute
-            'B'  # Second
-            'B'  # Site Number
-            'B'  # Number of bands (should be 2)
-            'h'  # A-band start frequency (MHz)
-            'H'  # A-band end frequency (MHz)
-            'H'  # A-band number of bytes (should be 401)
-            'B'  # A-band analyser reference level
-            'B'  # A-band analyser attenuation (dB)
-            'H'  # B-band start frequency (MHz)
-            'H'  # B-band end frequency (MHz)
-            'H'  # B-band number of bytes (should be 401)
-            'B'  # B-band analyser reference level
-            'B', # B-band analyser attenuation (dB)
-            header_bytes
+            ">"  # big endian format
+            "B"  # Year (last 2 digits)
+            "B"  # Month
+            "B"  # Day
+            "B"  # Hour (UT)
+            "B"  # Minute
+            "B"  # Second
+            "B"  # Site Number
+            "B"  # Number of bands (should be 2)
+            "h"  # A-band start frequency (MHz)
+            "H"  # A-band end frequency (MHz)
+            "H"  # A-band number of bytes (should be 401)
+            "B"  # A-band analyser reference level
+            "B"  # A-band analyser attenuation (dB)
+            "H"  # B-band start frequency (MHz)
+            "H"  # B-band end frequency (MHz)
+            "H"  # B-band number of bytes (should be 401)
+            "B"  # B-band analyser reference level
+            "B",  # B-band analyser attenuation (dB)
+            header_bytes,
         )
 
         self.year = fields[0]
@@ -97,13 +98,18 @@ class SRSRecord:
 
         self.n_bands_per_record = fields[7]
         if self.n_bands_per_record != 2 and verbosity >= VERBOSITY_ERRORS:
-            print("Warning.. record has %s bands, expecting 2!" % self.n_bands_per_record)
+            print(
+                "Warning.. record has %s bands, expecting 2!" % self.n_bands_per_record
+            )
 
         self.a_start_freq = fields[8]
         self.a_end_freq = fields[9]
         self.a_num_bytes = fields[10]
         if self.a_num_bytes != 401 and verbosity >= VERBOSITY_ERRORS:
-            print("Warning.. record has %s bytes in the a array, expecting 401!" % self.a_num_bytes)
+            print(
+                "Warning.. record has %s bytes in the a array, expecting 401!"
+                % self.a_num_bytes
+            )
 
         self.a_analyser_reference_level = fields[11]
         self.a_analyser_attenuation = fields[12]
@@ -112,7 +118,10 @@ class SRSRecord:
         self.b_end_freq = fields[14]
         self.b_num_bytes = fields[15]
         if self.b_num_bytes != 401 and verbosity >= VERBOSITY_ERRORS:
-            print("Warning.. record has %s bytes in the b array, expecting 401!" % self.b_num_bytes)
+            print(
+                "Warning.. record has %s bytes in the b array, expecting 401!"
+                % self.b_num_bytes
+            )
 
         self.b_analyser_reference_level = fields[16]
         self.b_analyser_attenuation = fields[17]
@@ -123,14 +132,14 @@ class SRSRecord:
             # Calculate the frequency in MHz
             freq_a = 25 + 50 * i / 400.0
             # Use slicing (a_bytes[i:i+1]) to obtain a one-byte bytes object.
-            level_a = unpack('>B', a_bytes[i:i+1])[0]
+            level_a = unpack(">B", a_bytes[i : i + 1])[0]
             self.a_values[freq_a] = level_a
         return
 
     def _parse_srs_b_levels(self, b_bytes):
         for i in range(401):
             freq_b = 75 + 105 * i / 400.0
-            level_b = unpack('>B', b_bytes[i:i+1])[0]
+            level_b = unpack(">B", b_bytes[i : i + 1])[0]
             self.b_values[freq_b] = level_b
         return
 
@@ -159,8 +168,14 @@ def read_srs_file(fname):
             if len(record_data) == 0:
                 break
             header_bytes = record_data[:RECORD_HEADER_SIZE]
-            a_bytes = record_data[RECORD_HEADER_SIZE : RECORD_HEADER_SIZE + RECORD_ARRAY_SIZE]
-            b_bytes = record_data[RECORD_HEADER_SIZE + RECORD_ARRAY_SIZE : RECORD_HEADER_SIZE + 2 * RECORD_ARRAY_SIZE]
+            a_bytes = record_data[
+                RECORD_HEADER_SIZE : RECORD_HEADER_SIZE + RECORD_ARRAY_SIZE
+            ]
+            b_bytes = record_data[
+                RECORD_HEADER_SIZE
+                + RECORD_ARRAY_SIZE : RECORD_HEADER_SIZE
+                + 2 * RECORD_ARRAY_SIZE
+            ]
             record = SRSRecord()
             record._parse_srs_file_header(header_bytes, verbosity=VERBOSITY_ERRORS)
             record._parse_srs_a_levels(a_bytes)
@@ -182,11 +197,10 @@ def main(srs_file):
     return final_data
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python srs.py <srs_file>")
     else:
         srs_file = sys.argv[1]
         result = main(srs_file)
         print(result)
-

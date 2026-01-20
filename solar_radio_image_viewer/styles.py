@@ -9,29 +9,30 @@ from PyQt5.QtWidgets import QApplication
 _fonts_loaded = False
 _inter_font_family = "Inter"
 
+
 def load_bundled_fonts():
     """Load bundled Inter font from assets folder for consistent appearance."""
     global _fonts_loaded, _inter_font_family
-    
+
     if _fonts_loaded:
         return _inter_font_family
-    
+
     font_files = [
         "Inter-Regular.ttf",
-        "Inter-Medium.ttf", 
+        "Inter-Medium.ttf",
         "Inter-SemiBold.ttf",
         "Inter-Bold.ttf",
     ]
-    
+
     font_db = QFontDatabase()
     loaded_any = False
-    
+
     for font_file in font_files:
         try:
             # Use os.path instead of pkg_resources for speed
             base_dir = os.path.dirname(os.path.abspath(__file__))
             font_path = os.path.join(base_dir, "assets", font_file)
-            
+
             font_id = font_db.addApplicationFont(font_path)
             if font_id != -1:
                 families = font_db.applicationFontFamilies(font_id)
@@ -50,88 +51,92 @@ def load_bundled_fonts():
         print(f"Could not load emoji font: {e}")
 
     _fonts_loaded = True
-    
+
     if loaded_any:
         # Set Inter as the default application font
         app = QApplication.instance()
         if app:
             font = QFont(_inter_font_family, 10)
             app.setFont(font)
-    
+
     return _inter_font_family
 
 
 DARK_PALETTE = {
-    "window": "#0f0f1a",           # Deep space black with blue undertone
-    "base": "#1a1a2e",             # Rich dark navy for inputs
-    "text": "#f0f0f5",             # Soft bright white for readability
-    "text_secondary": "#a0a0b0",   # Muted text for secondary info
-    "highlight": "#6366f1",        # Modern indigo accent (primary)
+    "window": "#0f0f1a",  # Deep space black with blue undertone
+    "base": "#1a1a2e",  # Rich dark navy for inputs
+    "text": "#f0f0f5",  # Soft bright white for readability
+    "text_secondary": "#a0a0b0",  # Muted text for secondary info
+    "highlight": "#6366f1",  # Modern indigo accent (primary)
     "highlight_hover": "#818cf8",  # Lighter indigo for hover
     "highlight_glow": "rgba(99, 102, 241, 0.3)",  # Glow effect
-    "button": "#252542",           # Elevated button background
-    "button_hover": "#32325d",     # Button hover state
-    "button_pressed": "#1a1a35",   # Button pressed state
+    "button": "#252542",  # Elevated button background
+    "button_hover": "#32325d",  # Button hover state
+    "button_pressed": "#1a1a35",  # Button pressed state
     "button_gradient_start": "#3730a3",  # Gradient button start
-    "button_gradient_end": "#4f46e5",    # Gradient button end
-    "border": "#2d2d4a",           # Subtle visible border
-    "border_light": "#3d3d5c",     # Lighter border for separators
+    "button_gradient_end": "#4f46e5",  # Gradient button end
+    "border": "#2d2d4a",  # Subtle visible border
+    "border_light": "#3d3d5c",  # Lighter border for separators
     "disabled": "#4a4a6a",
-    "success": "#22c55e",          # Modern green
-    "warning": "#f59e0b",          # Warm amber
-    "error": "#ef4444",            # Bright red
-    "secondary": "#8b5cf6",        # Purple accent
-    "surface": "#16162a",          # Elevated surfaces (cards, groups)
-    "surface_elevated": "#1e1e3a", # More elevated surfaces
-    "shadow": "rgba(0, 0, 0, 0.4)", # Shadow color
+    "success": "#22c55e",  # Modern green
+    "warning": "#f59e0b",  # Warm amber
+    "error": "#ef4444",  # Bright red
+    "secondary": "#8b5cf6",  # Purple accent
+    "surface": "#16162a",  # Elevated surfaces (cards, groups)
+    "surface_elevated": "#1e1e3a",  # More elevated surfaces
+    "shadow": "rgba(0, 0, 0, 0.4)",  # Shadow color
 }
 
 LIGHT_PALETTE = {
-    "window": "#f5f3eb",           # Warm off-white background
-    "base": "#ffffff",             # Pure white for inputs
-    "text": "#1f2937",             # Rich dark gray for readability
-    "text_secondary": "#6b7280",   # Muted gray for secondary text
-    "input_text": "#1f2937",       # Dark text for inputs
-    "highlight": "#4f46e5",        # Modern indigo (matches dark theme)
+    "window": "#f5f3eb",  # Warm off-white background
+    "base": "#ffffff",  # Pure white for inputs
+    "text": "#1f2937",  # Rich dark gray for readability
+    "text_secondary": "#6b7280",  # Muted gray for secondary text
+    "input_text": "#1f2937",  # Dark text for inputs
+    "highlight": "#4f46e5",  # Modern indigo (matches dark theme)
     "highlight_hover": "#6366f1",  # Hover state
     "highlight_glow": "rgba(79, 70, 229, 0.2)",  # Glow effect
-    "button": "#e5e5e5",           # Subtle gray buttons
-    "button_hover": "#d4d4d4",     # Button hover
-    "button_pressed": "#c4c4c4",   # Button pressed
+    "button": "#e5e5e5",  # Subtle gray buttons
+    "button_hover": "#d4d4d4",  # Button hover
+    "button_pressed": "#c4c4c4",  # Button pressed
     "button_gradient_start": "#4f46e5",  # Gradient button start
-    "button_gradient_end": "#6366f1",    # Gradient button end
-    "border": "#d1d5db",           # Soft gray border
-    "border_light": "#e5e7eb",     # Lighter border for separators
+    "button_gradient_end": "#6366f1",  # Gradient button end
+    "border": "#d1d5db",  # Soft gray border
+    "border_light": "#e5e7eb",  # Lighter border for separators
     "disabled": "#9ca3af",
-    "success": "#16a34a",          # Forest green
-    "warning": "#d97706",          # Rich amber
-    "error": "#dc2626",            # Alert red
-    "secondary": "#7c3aed",        # Purple accent
-    "surface": "#fafaf8",          # Slightly elevated surface
-    "surface_elevated": "#ffffff", # Most elevated (cards)
-    "toolbar_bg": "#ebebdf",       # Warm toolbar
-    "plot_bg": "#ffffff",     
+    "success": "#16a34a",  # Forest green
+    "warning": "#d97706",  # Rich amber
+    "error": "#dc2626",  # Alert red
+    "secondary": "#7c3aed",  # Purple accent
+    "surface": "#fafaf8",  # Slightly elevated surface
+    "surface_elevated": "#ffffff",  # Most elevated (cards)
+    "toolbar_bg": "#ebebdf",  # Warm toolbar
+    "plot_bg": "#ffffff",
     "plot_text": "#1f2937",
     "plot_grid": "#e5e7eb",
-    "shadow": "rgba(0, 0, 0, 0.08)", # Subtle shadow for light theme
+    "shadow": "rgba(0, 0, 0, 0.08)",  # Subtle shadow for light theme
 }
 
 
 def get_stylesheet(palette, is_dark=True):
     """Generate the complete stylesheet for the given palette."""
-    
+
     # Get asset path for arrow images
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        suffix = '_light' if not is_dark else ''
-        
-        arrow_up = os.path.join(base_dir, "assets", f"spinbox_up{suffix}.png").replace('\\', '/')
-        arrow_down = os.path.join(base_dir, "assets", f"spinbox_down{suffix}.png").replace('\\', '/')
-        
+        suffix = "_light" if not is_dark else ""
+
+        arrow_up = os.path.join(base_dir, "assets", f"spinbox_up{suffix}.png").replace(
+            "\\", "/"
+        )
+        arrow_down = os.path.join(
+            base_dir, "assets", f"spinbox_down{suffix}.png"
+        ).replace("\\", "/")
+
     except Exception:
         arrow_up = ""
         arrow_down = ""
-    
+
     # Adjust some colors based on theme
     input_bg = palette["base"]
     input_text = palette.get("input_text", palette["text"])
@@ -142,7 +147,7 @@ def get_stylesheet(palette, is_dark=True):
     shadow = palette.get("shadow", "rgba(0,0,0,0.2)")
     text_secondary = palette.get("text_secondary", palette["disabled"])
     border_light = palette.get("border_light", palette["border"])
-    
+
     return f"""
     /* ===== GLOBAL STYLES ===== */
     QWidget {{
@@ -746,66 +751,66 @@ def get_matplotlib_params(palette, is_dark=True):
 
 class ThemeManager:
     """Manages theme switching for the application."""
-    
+
     DARK = "dark"
     LIGHT = "light"
-    
+
     def __init__(self):
         self._current_theme = self.DARK
         self._callbacks = []
         self._fonts_initialized = False
-    
+
     def initialize_fonts(self):
         """Initialize bundled fonts. Call after QApplication is created."""
         if not self._fonts_initialized:
             load_bundled_fonts()
             self._fonts_initialized = True
-    
+
     @property
     def current_theme(self):
         return self._current_theme
-    
+
     @property
     def is_dark(self):
         return self._current_theme == self.DARK
-    
+
     @property
     def palette(self):
         return DARK_PALETTE if self.is_dark else LIGHT_PALETTE
-    
+
     @property
     def stylesheet(self):
         return get_stylesheet(self.palette, self.is_dark)
-    
+
     @property
     def matplotlib_params(self):
         return get_matplotlib_params(self.palette, self.is_dark)
-    
+
     def set_theme(self, theme):
         """Set the current theme."""
         if theme not in (self.DARK, self.LIGHT):
             raise ValueError(f"Invalid theme: {theme}")
-        
+
         if theme != self._current_theme:
             self._current_theme = theme
             self._notify_callbacks()
-    
+
     def toggle_theme(self):
         """Toggle between dark and light themes."""
         new_theme = self.LIGHT if self.is_dark else self.DARK
         self.set_theme(new_theme)
         return new_theme
-    
+
     def register_callback(self, callback):
         """Register a callback to be called when theme changes."""
         if callback not in self._callbacks:
             self._callbacks.append(callback)
-    
+
     def unregister_callback(self, callback):
         """Unregister a theme change callback."""
         if callback in self._callbacks:
             self._callbacks.remove(callback)
-    
+
     def _notify_callbacks(self):
         """Notify all registered callbacks of theme change."""
         for callback in self._callbacks:
@@ -824,12 +829,12 @@ STYLESHEET = get_stylesheet(DARK_PALETTE, is_dark=True)
 
 def get_icon_path(icon_name):
     """Get the appropriate icon path based on current theme.
-    
+
     For light mode, returns the _light version of the icon if it exists.
-    
+
     Args:
         icon_name: Base icon filename (e.g., 'browse.png')
-    
+
     Returns:
         Icon filename to use (e.g., 'browse.png' or 'browse_light.png')
     """
@@ -837,5 +842,5 @@ def get_icon_path(icon_name):
         return icon_name
     else:
         # Use light version for light mode
-        name, ext = icon_name.rsplit('.', 1)
+        name, ext = icon_name.rsplit(".", 1)
         return f"{name}_light.{ext}"

@@ -81,6 +81,7 @@ OBSERVATORY_CODES = {
 @dataclass
 class SolarEvent:
     """Represents a single NOAA solar event."""
+
     event_id: str
     is_followup: bool  # Has '+' marker
     begin_time: Optional[str]  # HHMM format or None
@@ -93,22 +94,25 @@ class SolarEvent:
     particulars: str
     active_region: Optional[str]
     raw_line: str = ""
-    
+
     @property
     def type_info(self) -> Dict[str, Any]:
         """Get event type metadata."""
-        return EVENT_TYPES.get(self.event_type, {
-            "name": self.event_type,
-            "description": "Unknown event type",
-            "icon": "❓",
-            "category": "other",
-        })
-    
+        return EVENT_TYPES.get(
+            self.event_type,
+            {
+                "name": self.event_type,
+                "description": "Unknown event type",
+                "icon": "❓",
+                "category": "other",
+            },
+        )
+
     @property
     def observatory_name(self) -> str:
         """Get full observatory name."""
         return OBSERVATORY_CODES.get(self.observatory, self.observatory)
-    
+
     @property
     def begin_time_formatted(self) -> str:
         """Format begin time as HH:MM."""
@@ -119,7 +123,7 @@ class SolarEvent:
         if len(t) == 4:
             return f"{t[:2]}:{t[2:]}"
         return self.begin_time
-    
+
     @property
     def max_time_formatted(self) -> str:
         """Format max time as HH:MM."""
@@ -128,7 +132,7 @@ class SolarEvent:
         if len(self.max_time) == 4:
             return f"{self.max_time[:2]}:{self.max_time[2:]}"
         return self.max_time
-    
+
     @property
     def end_time_formatted(self) -> str:
         """Format end time as HH:MM."""
@@ -137,7 +141,7 @@ class SolarEvent:
         if len(self.end_time) == 4:
             return f"{self.end_time[:2]}:{self.end_time[2:]}"
         return self.end_time
-    
+
     @property
     def time_range(self) -> str:
         """Get formatted time range string."""
@@ -146,7 +150,7 @@ class SolarEvent:
         if begin == "—" and end == "—":
             return "—"
         return f"{begin} – {end}"
-    
+
     @property
     def duration_minutes(self) -> Optional[int]:
         """Calculate event duration in minutes."""
@@ -164,7 +168,7 @@ class SolarEvent:
             return end_mins - begin_mins
         except (ValueError, IndexError):
             return None
-    
+
     @property
     def flare_class(self) -> Optional[str]:
         """Extract flare class for XRA events (e.g., 'M1.9')."""
@@ -174,7 +178,7 @@ class SolarEvent:
             if parts:
                 return parts[0]
         return None
-    
+
     @property
     def flare_class_letter(self) -> Optional[str]:
         """Get just the letter class (A, B, C, M, X)."""
@@ -182,13 +186,13 @@ class SolarEvent:
         if fc and len(fc) > 0:
             return fc[0].upper()
         return None
-    
+
     @property
     def flare_class_color(self) -> str:
         """Get color for flare class."""
         letter = self.flare_class_letter
         return FLARE_CLASS_COLORS.get(letter, "#808080")
-    
+
     @property
     def optical_class(self) -> Optional[str]:
         """Extract optical flare class for FLA events (e.g., 'SF', '1N')."""
@@ -202,10 +206,10 @@ class SolarEvent:
 def fetch_events_raw(event_date: date) -> Optional[str]:
     """
     Fetch raw NOAA events text from solarmonitor.org.
-    
+
     Args:
         event_date: The date to fetch events for
-        
+
     Returns:
         Raw text content or None if fetch failed
     """
@@ -213,64 +217,63 @@ def fetch_events_raw(event_date: date) -> Optional[str]:
     month = event_date.strftime("%m")
     day = event_date.strftime("%d")
     date_str = event_date.strftime("%Y%m%d")
-    
+
     url = f"https://solarmonitor.org/data/{year}/{month}/{day}/meta/noaa_events_raw_{date_str}.txt"
-    
+
     try:
         from ..utils import get_global_session
     except ImportError:
         from solar_radio_image_viewer.utils import get_global_session
-        
+
     session = get_global_session()
-    
+
     try:
         response = session.get(url)
         return response.text
     except Exception as e:
         # Handle 404 or other errors
-        if hasattr(e, 'response') and e.response is not None:
+        if hasattr(e, "response") and e.response is not None:
             if e.response.status_code == 404:
                 return None  # No events file for this date
         print(f"Error fetching NOAA events: {e}")
         return None
 
 
-
 def parse_events(raw_text: str) -> List[SolarEvent]:
     """
     Parse raw NOAA events text into structured SolarEvent objects.
-    
+
     Args:
         raw_text: Raw text from NOAA events file
-        
+
     Returns:
         List of SolarEvent objects
     """
     events = []
-    
+
     for line in raw_text.split("\n"):
         # Skip comments and empty lines
         line = line.strip()
         if not line or line.startswith("#") or line.startswith(":"):
             continue
-        
+
         # Parse event line
         # Format: Event# +  Begin  Max    End   Obs  Q  Type  Loc/Frq  Particulars  Reg#
         # Example: 4470 +     1235   1246      1258  G16  5   XRA  1-8A      M1.9    1.5E-02   3455
-        
+
         try:
             # Event ID (first 4-5 chars)
             event_id = line[:5].strip()
-            
+
             # Check for '+' marker (follow-up event)
             is_followup = "+" in line[5:7]
-            
+
             # Times: positions 7-11, 14-18, 24-28 (approximate, use regex)
             # Use regex for more reliable parsing
             # Event ID can be 3-5 digits (e.g., 250, 4470)
             pattern = r"(\d{3,5})\s*\+?\s+([B]?\d{4}|////)\s+(\d{4}|////)\s+(\d{4}|////)\s+(\w{3})\s+(\S+)\s+(\w{3})\s+(\S+)\s+(.*)"
             match = re.match(pattern, line)
-            
+
             if match:
                 event_id = match.group(1)
                 begin_time = match.group(2) if match.group(2) != "////" else None
@@ -281,7 +284,7 @@ def parse_events(raw_text: str) -> List[SolarEvent]:
                 event_type = match.group(7)
                 location_or_freq = match.group(8)
                 rest = match.group(9).strip()
-                
+
                 # Split rest into particulars and region
                 parts = rest.split()
                 if parts and parts[-1].isdigit() and len(parts[-1]) == 4:
@@ -290,35 +293,37 @@ def parse_events(raw_text: str) -> List[SolarEvent]:
                 else:
                     active_region = None
                     particulars = rest
-                
-                events.append(SolarEvent(
-                    event_id=event_id,
-                    is_followup="+" in line[4:7],
-                    begin_time=begin_time,
-                    max_time=max_time,
-                    end_time=end_time,
-                    observatory=observatory,
-                    quality=quality,
-                    event_type=event_type,
-                    location_or_freq=location_or_freq,
-                    particulars=particulars,
-                    active_region=active_region,
-                    raw_line=line,
-                ))
+
+                events.append(
+                    SolarEvent(
+                        event_id=event_id,
+                        is_followup="+" in line[4:7],
+                        begin_time=begin_time,
+                        max_time=max_time,
+                        end_time=end_time,
+                        observatory=observatory,
+                        quality=quality,
+                        event_type=event_type,
+                        location_or_freq=location_or_freq,
+                        particulars=particulars,
+                        active_region=active_region,
+                        raw_line=line,
+                    )
+                )
         except Exception:
             # Skip malformed lines
             continue
-    
+
     return events
 
 
 def fetch_and_parse_events(event_date: date) -> Optional[List[SolarEvent]]:
     """
     Fetch and parse NOAA events for a given date.
-    
+
     Args:
         event_date: The date to fetch events for
-        
+
     Returns:
         List of SolarEvent objects or None if fetch failed
     """
@@ -331,7 +336,7 @@ def fetch_and_parse_events(event_date: date) -> Optional[List[SolarEvent]]:
 def categorize_events(events: List[SolarEvent]) -> Dict[str, List[SolarEvent]]:
     """
     Categorize events by type category.
-    
+
     Returns:
         Dict with keys: 'xray', 'optical', 'radio', 'cme', 'other'
     """
@@ -342,21 +347,21 @@ def categorize_events(events: List[SolarEvent]) -> Dict[str, List[SolarEvent]]:
         "cme": [],
         "other": [],
     }
-    
+
     for event in events:
         category = event.type_info.get("category", "other")
         if category in categories:
             categories[category].append(event)
         else:
             categories["other"].append(event)
-    
+
     return categories
 
 
 def get_event_statistics(events: List[SolarEvent]) -> Dict[str, Any]:
     """
     Calculate statistics for a list of events.
-    
+
     Returns:
         Dict with statistics like counts, max flare class, etc.
     """
@@ -367,19 +372,19 @@ def get_event_statistics(events: List[SolarEvent]) -> Dict[str, Any]:
         "max_xray_event": None,
         "active_regions": set(),
     }
-    
+
     max_class_order = {"A": 0, "B": 1, "C": 2, "M": 3, "X": 4}
     max_class_value = -1
-    
+
     for event in events:
         # Count by type
         t = event.event_type
         stats["by_type"][t] = stats["by_type"].get(t, 0) + 1
-        
+
         # Track active regions
         if event.active_region:
             stats["active_regions"].add(event.active_region)
-        
+
         # Find max X-ray class
         if event.event_type == "XRA":
             letter = event.flare_class_letter
@@ -399,7 +404,7 @@ def get_event_statistics(events: List[SolarEvent]) -> Dict[str, Any]:
                             stats["max_xray_event"] = event
                     except (ValueError, IndexError):
                         pass
-    
+
     stats["active_regions"] = list(stats["active_regions"])
     return stats
 
@@ -407,21 +412,23 @@ def get_event_statistics(events: List[SolarEvent]) -> Dict[str, Any]:
 if __name__ == "__main__":
     # Test with sample date
     from datetime import date
-    
+
     test_date = date(2023, 10, 2)
     print(f"Fetching events for {test_date}...")
-    
+
     events = fetch_and_parse_events(test_date)
     if events:
         print(f"Found {len(events)} events")
-        
+
         categories = categorize_events(events)
         for cat, cat_events in categories.items():
             if cat_events:
                 print(f"\n{cat.upper()} ({len(cat_events)} events):")
                 for e in cat_events[:3]:
-                    print(f"  {e.time_range} | {e.event_type} | {e.particulars} | AR {e.active_region}")
-        
+                    print(
+                        f"  {e.time_range} | {e.event_type} | {e.particulars} | AR {e.active_region}"
+                    )
+
         stats = get_event_statistics(events)
         print(f"\nStatistics:")
         print(f"  Max X-ray class: {stats['max_xray_class']}")

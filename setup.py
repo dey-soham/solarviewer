@@ -8,12 +8,14 @@ import sys
 with open("README.md") as f:
     long_description = f.read()
 
+
 def get_version():
     with open("solar_radio_image_viewer/version.py") as f:
         for line in f:
             if line.startswith("__version__"):
                 return line.split("=")[1].strip().strip('"').strip("'")
     raise RuntimeError("Unable to find version string.")
+
 
 setup(
     name="solarviewer",
