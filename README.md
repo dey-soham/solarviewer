@@ -321,6 +321,7 @@ This project builds on the excellent work of the solar physics and radio astrono
 
 ### Community
 - The solar physics group at the National Centre for Radio Astrophysics for feedback and testing
+- Deepan Patra for designing app icon and logo
 
 ---
 
