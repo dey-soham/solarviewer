@@ -1,6 +1,4 @@
 from setuptools import setup, find_packages
-from setuptools.command.install import install
-from setuptools.command.develop import develop
 import subprocess
 import sys
 
@@ -58,8 +56,6 @@ setup(
         "console_scripts": [
             "solarviewer=solar_radio_image_viewer.main:main",
             "sv=solar_radio_image_viewer.main:main",
-            # "heliosv=solar_radio_image_viewer.helioprojective_viewer:main",
-            # LOFAR/SIMPL tools
             "viewcaltable=solar_radio_image_viewer.from_simpl.caltable_visualizer:main",
             "viewds=solar_radio_image_viewer.from_simpl.view_dynamic_spectra_GUI:main",
             "viewlogs=solar_radio_image_viewer.from_simpl.pipeline_logger_gui:main",
