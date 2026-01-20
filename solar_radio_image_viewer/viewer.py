@@ -458,6 +458,8 @@ class SolarRadioImageTab(QWidget):
             "use_default_rms_region": True,
             "rms_box": (0, 200, 0, 130),
             "show_full_extent": False,  # If True, show full contour extent (Default: capped at 1.5x base image)
+            "dim_h": 0,
+            "dim_w": 0,
         }
 
         # Plot customization settings
@@ -2276,6 +2278,45 @@ class SolarRadioImageTab(QWidget):
             return False
         except Exception:
             return False
+
+    def _get_image_dimensions(self, imagepath):
+        """
+        Get dimensions (height, width) of an image file (FITS or CASA).
+        
+        Parameters
+        ----------
+        imagepath : str
+            Path to the image file or directory
+            
+        Returns
+        -------
+        tuple
+            (height, width) in pixels, or (0, 0) on failure
+        """
+        height, width = 0, 0
+        if not imagepath or not os.path.exists(imagepath):
+            return height, width
+            
+        try:
+            if os.path.isdir(imagepath):  # CASA image
+                ia_tool = IA()
+                ia_tool.open(imagepath)
+                shape = ia_tool.shape()
+                ia_tool.close()
+                # CASA shape is usually [width, height, stokes, freq]
+                if len(shape) >= 2:
+                    width, height = shape[0], shape[1]
+            else:  # FITS file
+                from astropy.io import fits
+                # Use headers to be fast, avoid loading full data
+                header = fits.getheader(imagepath)
+                # NAXIS1 is width (x), NAXIS2 is height (y)
+                width = header.get("NAXIS1", 0)
+                height = header.get("NAXIS2", 0)
+        except Exception as e:
+            print(f"[ERROR] Could not get image dimensions for {imagepath}: {e}")
+            
+        return height, width
 
     def _get_coordinate_system_from_image(self, imagepath):
         """
@@ -5535,6 +5576,9 @@ class SolarRadioImageTab(QWidget):
                     rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
                     rms = np.sqrt(np.nanmean(rms_region**2))
                 except Exception:
+                    print(
+                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                    )
                     rms = np.nanstd(I)
                 # Mask low signal
                 mask = np.abs(I) < 3 * rms
@@ -5549,6 +5593,9 @@ class SolarRadioImageTab(QWidget):
                     rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
                     rms = np.sqrt(np.nanmean(rms_region**2))
                 except Exception:
+                    print(
+                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                    )
                     rms = np.nanstd(I)
                 mask = np.abs(I) < 3 * rms
                 result = V / np.abs(I)
@@ -5562,6 +5609,9 @@ class SolarRadioImageTab(QWidget):
                     rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
                     rms = np.sqrt(np.nanmean(rms_region**2))
                 except Exception:
+                    print(
+                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                    )
                     rms = np.nanstd(I)
                 mask = np.abs(I) < 3 * rms
                 result = Q / np.abs(I)
@@ -5575,6 +5625,9 @@ class SolarRadioImageTab(QWidget):
                     rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
                     rms = np.sqrt(np.nanmean(rms_region**2))
                 except Exception:
+                    print(
+                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                    )
                     rms = np.nanstd(I)
                 mask = np.abs(I) < 3 * rms
                 result = U / np.abs(I)
@@ -7961,6 +8014,13 @@ class SolarRadioImageTab(QWidget):
                 if viewer.show_contours_checkbox.isChecked():
                     viewer.load_contour_data()
                     viewer.on_visualization_changed()
+                    
+                    # Update dialog with captured dimensions
+                    w = viewer.contour_settings.get("dim_w", 0)
+                    h = viewer.contour_settings.get("dim_h", 0)
+                    if hasattr(dialog, "update_dimensions_label"):
+                        dialog.update_dimensions_label(w, h)
+
                 viewer.show_status_message("Contour settings applied")
             except RuntimeError:
                 dialog.close()
@@ -8079,9 +8139,28 @@ class SolarRadioImageTab(QWidget):
 
     def load_contour_data(self):
         try:
-            rms_box = (0, 200, 0, 130)
-            if not self.contour_settings.get("use_default_rms_region", True):
-                rms_box = self.contour_settings.get("rms_box", rms_box)
+            if self.contour_settings["source"] == "external":
+                h, w = self._get_image_dimensions(self.contour_settings["external_image"])
+            else:
+                h, w = self._get_image_dimensions(self.imagename)
+            
+            if h >0 and w >0:
+                self.contour_settings["dim_h"] = h
+                self.contour_settings["dim_w"] = w
+                # use default region logic
+                rms_x1 = int(w * 0.05)
+                rms_y1 = int(h * 0.05)
+                rms_x2 = int(w * 0.95)
+                rms_y2 = int(h * 0.20)
+                rms_box = (rms_x1, rms_x2, rms_y1, rms_y2)
+
+                # Ensure valid region
+                if rms_x2 < rms_x1 or rms_y2 < rms_y1:
+                    print("[Warning] Invalid RMS region. Using default RMS region.")
+                    rms_box = (30, 200, 30, 130)
+            else:
+                print("[Warning] Invalid image dimensions. Using default RMS region.")
+                rms_box = (30, 200, 30, 130)
 
             # Calculate target size for fast load mode (must match load_data)
             target_size = 0  # 0 = no downsampling
@@ -8090,6 +8169,12 @@ class SolarRadioImageTab(QWidget):
                 and self.downsample_toggle.isChecked()
             ):
                 target_size = 800  # Smart downsampling to ~800px max dimension
+                rms_box = (40, 400, 40, 160)
+
+            if not self.contour_settings.get("use_default_rms_region", True):
+                rms_box = self.contour_settings.get("rms_box", rms_box)
+            else:
+                self.contour_settings["rms_box"] = rms_box
 
             contour_csys = None
 
@@ -8181,6 +8266,9 @@ class SolarRadioImageTab(QWidget):
                                 self.imagename, numerator_stokes, rms_box
                             )
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             num_rms = np.nanstd(numerator_pix)
 
                         # Create mask: pixels below threshold * RMS are masked out
@@ -8244,6 +8332,9 @@ class SolarRadioImageTab(QWidget):
                             u_rms = estimate_rms_near_Sun(self.imagename, "U", rms_box)
                             l_rms = np.sqrt(q_rms**2 + u_rms**2)
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             l_rms = np.nanstd(l_pix)
 
                         # Mask pixels below threshold
@@ -8283,6 +8374,9 @@ class SolarRadioImageTab(QWidget):
                             u_rms = estimate_rms_near_Sun(self.imagename, "U", rms_box)
                             l_rms = np.sqrt(q_rms**2 + u_rms**2)
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             l_rms = np.nanstd(l_pix)
 
                         # Polarization angle
@@ -8465,6 +8559,9 @@ class SolarRadioImageTab(QWidget):
                                 image_to_load, numerator_stokes, rms_box
                             )
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             num_rms = np.nanstd(numerator_pix)
 
                         # Create mask: pixels below threshold * RMS are masked out
@@ -8528,6 +8625,9 @@ class SolarRadioImageTab(QWidget):
                             u_rms = estimate_rms_near_Sun(image_to_load, "U", rms_box)
                             l_rms = np.sqrt(q_rms**2 + u_rms**2)
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             l_rms = np.nanstd(l_pix)
 
                         # Mask pixels below threshold
@@ -8567,6 +8667,9 @@ class SolarRadioImageTab(QWidget):
                             u_rms = estimate_rms_near_Sun(image_to_load, "U", rms_box)
                             l_rms = np.sqrt(q_rms**2 + u_rms**2)
                         except Exception:
+                            print(
+                                "[WARNING] Failed to estimate RMS, using standard deviation instead"
+                            )
                             l_rms = np.nanstd(l_pix)
 
                         # Polarization angle
@@ -8722,6 +8825,7 @@ class SolarRadioImageTab(QWidget):
                 # For sigma levels, calculate RMS from the RMS box region of the contour data
                 # This gives a proper noise estimate without source contamination
                 rms_box = self.contour_settings.get("rms_box", (0, 200, 0, 130))
+
                 try:
                     # Calculate RMS from the specified region
                     rms_region = contour_data[
@@ -11884,15 +11988,17 @@ class SolarRadioImageViewerApp(QMainWindow):
         shortcuts_act.setStatusTip("Show keyboard shortcuts")
         shortcuts_act.triggered.connect(self.show_keyboard_shortcuts)
         help_menu.addAction(shortcuts_act)
-        about_act = QAction("About", self)
-        about_act.setStatusTip("Show information about this application")
-        about_act.triggered.connect(self.show_about_dialog)
-        help_menu.addAction(about_act)
 
         update_act = QAction("Check for Updates...", self)
         update_act.setStatusTip("Check for application updates")
         update_act.triggered.connect(self.show_update_dialog)
         help_menu.addAction(update_act)
+
+        about_act = QAction("About", self)
+        about_act.setStatusTip("Show information about this application")
+        about_act.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_act)
+
 
         # Tools menu
         # tools_menu = self.menuBar().addMenu("&Tools")

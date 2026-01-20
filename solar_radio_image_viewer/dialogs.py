@@ -701,19 +701,19 @@ class ContourSettingsDialog(QDialog):
         options_row = QHBoxLayout()
         options_row.setSpacing(30)
 
-        self.show_labels_checkbox = QCheckBox("Show contour labels")
+        self.show_labels_checkbox = QCheckBox("Contour labels")
         self.show_labels_checkbox.setChecked(self.settings.get("show_labels", False))
         self.show_labels_checkbox.setToolTip(
             "Display level values on the contour lines"
         )
         options_row.addWidget(self.show_labels_checkbox)
 
-        self.show_full_extent_checkbox = QCheckBox("Show full extent")
+        self.show_full_extent_checkbox = QCheckBox("Full extent")
         self.show_full_extent_checkbox.setChecked(
             self.settings.get("show_full_extent", False)
         )
         self.show_full_extent_checkbox.setToolTip(
-            "Show contours beyond image boundaries (uses more memory)"
+            "Show contours beyond 1.5x image boundaries (uses more memory)"
         )
         options_row.addWidget(self.show_full_extent_checkbox)
 
@@ -786,6 +786,13 @@ class ContourSettingsDialog(QDialog):
         self.rms_ymax.setRange(0, 10000)
         self.rms_ymax.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[3])
         rms_grid.addWidget(self.rms_ymax, 1, 3)
+
+        w = self.settings.get("dim_w", 0)
+        h = self.settings.get("dim_h", 0)
+        dim_text = f"{w} x {h}" if w > 0 and h > 0 else "Unknown"
+        self.rms_dims_label = QLabel(f"Contour Dimensions: {dim_text}")
+        self.rms_dims_label.setStyleSheet(f"color: {text_secondary}; font-size: 9pt;")
+        rms_grid.addWidget(self.rms_dims_label, 2, 0, 1, 4, Qt.AlignLeft)
 
         rms_layout.addWidget(self.rms_inputs_container)
         rms_layout.addStretch()
@@ -1142,6 +1149,16 @@ class ContourSettingsDialog(QDialog):
             external_path = self.file_path_edit.text()
             if external_path:
                 self._update_stokes_combo_for_external(external_path)
+
+    def update_dimensions_label(self, w, h):
+        """Update the image dimensions label and settings."""
+        if hasattr(self, "rms_dims_label"):
+            dim_text = f"{w} x {h}" if w > 0 and h > 0 else "Unknown"
+            self.rms_dims_label.setText(f"Contour Dimensions: {dim_text}")
+            
+        # Also update internal settings to reflect current state
+        self.settings["dim_w"] = w
+        self.settings["dim_h"] = h
 
     def _update_threshold_visibility(self):
         """Show/hide threshold controls based on selected Stokes parameter."""
