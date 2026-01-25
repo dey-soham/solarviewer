@@ -86,12 +86,14 @@ class ProcessingThread(QThread):
             self.progress.emit("")
 
             # Run in subprocess (completely isolates casacore from Qt)
+            launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                cwd=launch_cwd,
             )
 
             # Stream output in real-time
@@ -358,14 +360,18 @@ class DynamicSpectraDialog(QDialog):
 
 def main():
     """Main entry point for standalone dialog."""
-    # Clear Qt environment variables to avoid opencv conflicts
     for key in ["QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH"]:
         if key in os.environ:
             del os.environ[key]
 
+    # Apply high DPI scaling
+    from .simpl_theme import setup_high_dpi
+    setup_high_dpi()
+
     app = QApplication(sys.argv)
 
     # Get theme from command line
+    from .simpl_theme import apply_theme, get_theme_from_args
     theme = get_theme_from_args()
     apply_theme(app, theme)
 

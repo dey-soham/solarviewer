@@ -78,6 +78,41 @@ sv --install
 *   **Linux**: Open your application launcher (Super/Windows key) and search for "SolarViewer".
 *   **macOS**: Open Spotlight (Cmd+Space) and search for "SolarViewer".
 
+## 3. Optimal CASA Configuration
+
+To prevent CASA from auto-updating and to disable telemetry/crash reporting, we recommend adding the following configurations to your home directory.
+
+### `~/.casa/config.py`
+Add or create this file with:
+```python
+datapath=["~/.casa/data"]
+measurespath="~/.casa/data"
+measures_auto_update=False
+data_auto_update=False
+nologfile=True
+telemetry_enabled = False
+crashreporter_enabled = False
+```
+
+### `~/.casa/casainit.py`
+Add or create this file with:
+```python
+# CASA Initialization script to bypass updates
+try:
+    from casatasks.private.testmodes import bypass_casa_updates
+    bypass_casa_updates(True)
+    print("CASA auto-updates have been disabled via casainit.py")
+except:
+    pass
+```
+
+### `~/.casarc`
+Add or create this file with:
+```
+logfile: /dev/null
+EnableTelemetry: False
+```
+
 ## Uninstallation
 
 To remove the desktop integration:
@@ -137,3 +172,36 @@ To make this permanent, add it to your shell configuration (`~/.bashrc` or `~/.z
 ```bash
 export OPENSSL_CONF=/dev/null
 ```
+
+### **Qt xcb error (WSL/Linux)**
+If you see the error: `Could not load the Qt platform plugin "xcb" even though it was found`, it usually means your Linux system is missing some low-level graphical libraries required by Qt.
+
+**Fix (Ubuntu/Debian-based WSL):**
+```bash
+sudo apt-get update && sudo apt-get install -y \
+    libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+    libxcb-render-util0 libxcb-xkb1 libxkbcommon-x11-0 libdbus-1-3 \
+    libxcb-cursor0 libgl1-mesa-glx libegl1 libx11-xcb1 \
+    libfontconfig1 libice6 libsm6 libxext6 libxrender1 libxtst6 libxcb-util1
+```
+
+**Fix (Fedora-based WSL):**
+```bash
+sudo dnf install libxcb-devel libxkbcommon-x11 libX11-xcb libxcb-util
+```
+
+#### **Still having issues?**
+The error can also occur if WSL cannot connect to your Windows display.
+
+1.  **Test if libraries are okay:**
+    Run with `offscreen` mode. If this doesn't crash, your libraries are fine, but your display setup is broken:
+    ```bash
+    QT_QPA_PLATFORM=offscreen solarviewer
+    ```
+
+2.  **Check Display Connection (for Windows 10 / No WSLg):**
+    If you are not on Windows 11 (or don't have WSLg enabled), you must run an X Server (like **VcXsrv**) on Windows and set your `DISPLAY` variable:
+    ```bash
+    export DISPLAY=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}'):0.0
+    export LIBGL_ALWAYS_INDIRECT=1
+    ```

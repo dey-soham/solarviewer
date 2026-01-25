@@ -7,15 +7,65 @@ to ensure visual consistency.
 """
 
 import sys
+import os
+from PyQt5.QtCore import Qt, QSettings
+from PyQt5.QtWidgets import QApplication
+
+def setup_high_dpi():
+    """Enable HiDPI scaling for high-resolution displays.
+    Must be called BEFORE creating a QApplication instance.
+    """
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    pre_settings = QSettings("SolarViewer", "SolarViewer")
+    ui_scale_factor = pre_settings.value("ui_scale_factor", 1.0, type=float)
+    if ui_scale_factor != 1.0:
+        os.environ["QT_SCALE_FACTOR"] = str(ui_scale_factor)
 
 # Try to import palettes from main viewer styles for consistency
 try:
-    from ..styles import DARK_PALETTE, LIGHT_PALETTE, theme_manager
+    from ..styles import DARK_PALETTE, LIGHT_PALETTE, theme_manager, load_bundled_fonts
 
     _HAS_VIEWER_STYLES = True
 except ImportError:
     _HAS_VIEWER_STYLES = False
     theme_manager = None
+
+    def load_bundled_fonts():
+        """Fallback font loader if main styles cannot be imported."""
+        from PyQt5.QtGui import QFontDatabase, QFont
+        
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        assets_dir = os.path.join(os.path.dirname(base_dir), "assets")
+        
+        if not os.path.exists(assets_dir):
+            return "Inter"
+
+        font_db = QFontDatabase()
+        inter_family = "Inter"
+        
+        font_files = [
+            "Inter-Regular.ttf",
+            "Inter-Medium.ttf",
+            "Inter-SemiBold.ttf",
+            "Inter-Bold.ttf",
+        ]
+
+        for f in font_files:
+            p = os.path.join(assets_dir, f)
+            if os.path.exists(p):
+                font_id = font_db.addApplicationFont(p)
+                if font_id != -1:
+                    families = font_db.applicationFontFamilies(font_id)
+                    if families:
+                        inter_family = families[0]
+        
+        # Load emoji fallback
+        emoji_p = os.path.join(assets_dir, "NotoEmoji-Regular.ttf")
+        if os.path.exists(emoji_p):
+            font_db.addApplicationFont(emoji_p)
+            
+        return inter_family
 
     # Fallback palettes matching solarviewer's styles.py
     DARK_PALETTE = {
@@ -88,96 +138,133 @@ def get_stylesheet(theme_name):
 
     input_bg = palette["base"]
     input_text = palette.get("input_text", palette["text"])
+    highlight = palette["highlight"]
+    surface = palette["surface"]
+    border = palette["border"]
 
     return f"""
     QWidget {{
-        font-family: 'Segoe UI', Arial, sans-serif;
+        font-family: 'Inter', 'Noto Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
         font-size: 11pt;
         color: {palette['text']};
     }}
     
-    QMainWindow, QDialog {{
+    QMainWindow, QDialog, QScrollArea {{
         background-color: {palette['window']};
     }}
     
+    QScrollArea > QWidget {{
+        background-color: transparent;
+    }}
+    
     QGroupBox {{
-        background-color: {palette['surface']};
-        border: 1px solid {palette['border']};
-        border-radius: 8px;
-        margin-top: 16px;
-        padding: 12px 8px 8px 8px;
+        background-color: {surface};
+        border: 1px solid {border};
+        border-radius: 10px;
+        margin-top: 12px;
+        padding: 16px 12px 12px 12px;
         font-weight: 600;
     }}
     
     QGroupBox::title {{
         subcontrol-origin: margin;
-        left: 14px;
-        padding: 0 6px;
-        color: {palette['text']};
+        left: 16px;
+        padding: 2px 10px;
+        color: {highlight};
+        background-color: {surface};
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 10pt;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
     }}
     
     QPushButton {{
         background-color: {palette['button']};
         color: {palette['text']};
-        border: 1px solid {palette['border']};
+        border: 1px solid {border};
         border-radius: 6px;
-        padding: 6px 14px;
+        padding: 5px 15px;
         min-width: 80px;
         min-height: 28px;
+        font-weight: 500;
     }}
     
     QPushButton:hover {{
         background-color: {palette['button_hover']};
-        border-color: {palette['highlight']};
+        border-color: {highlight};
     }}
     
-    QPushButton:pressed {{
-        background-color: {palette['button_pressed']};
+    QPushButton:pressed, QPushButton:checked {{
+        background-color: {highlight};
+        color: white;
+        border-color: {highlight};
     }}
     
     QPushButton:disabled {{
-        background-color: {palette['disabled']};
-        color: {'#666666' if is_dark else '#aaaaaa'};
-        border: 1px dashed {'#555555' if is_dark else '#cccccc'};
+        background-color: {palette['button']};
+        color: {palette['disabled']};
+        border-color: {palette['border']};
+        opacity: 0.6;
     }}
     
     QLineEdit, QSpinBox, QDoubleSpinBox {{
         background-color: {input_bg};
         color: {input_text};
-        border: 1px solid {palette['border']};
+        border: 1px solid {border};
         border-radius: 6px;
-        padding: 6px 10px;
-        min-height: 28px;
+        padding: 4px 8px;
+        min-height: 26px;
     }}
     
-    QLineEdit:focus, QSpinBox:focus {{
-        border-color: {palette['highlight']};
+    QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+        border-color: {highlight};
+        border-width: 2px;
+    }}
+    
+    QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
+        background-color: {surface};
+        color: {palette['disabled']};
+        opacity: 0.7;
     }}
     
     QComboBox {{
         background-color: {input_bg};
         color: {input_text};
-        border: 1px solid {palette['border']};
+        border: 1px solid {border};
         border-radius: 6px;
-        padding: 6px 10px;
-        min-height: 28px;
+        padding: 4px 8px;
+        min-height: 26px;
+    }}
+
+    QComboBox:hover {{
+        border-color: {highlight};
+    }}
+    
+    QComboBox:disabled {{
+        background-color: {surface};
+        color: {palette['disabled']};
+        opacity: 0.7;
     }}
     
     QComboBox QAbstractItemView {{
-        background-color: {palette['surface']};
+        background-color: {surface};
         color: {palette['text']};
-        selection-background-color: {palette['highlight']};
+        border: 1px solid {border};
+        selection-background-color: {highlight};
+        selection-color: #ffffff;
     }}
     
     QTableWidget {{
         background-color: {palette['base']};
-        alternate-background-color: {palette['surface']};
-        gridline-color: {palette['border']};
-        border: 1px solid {palette['border']};
+        alternate-background-color: {surface};
+        gridline-color: {border};
+        border: 1px solid {border};
+        border-radius: 8px;
     }}
     
     QTableWidget::item:selected {{
-        background-color: {palette['highlight']};
+        background-color: {highlight};
         color: #ffffff;
     }}
     
@@ -186,11 +273,23 @@ def get_stylesheet(theme_name):
         color: {palette['text']};
         padding: 8px;
         border: none;
-        border-bottom: 1px solid {palette['border']};
+        font-weight: bold;
+        border-bottom: 2px solid {highlight};
     }}
     
     QLabel {{
         color: {palette['text']};
+        font-size: 11pt;
+    }}
+    
+    QLabel:disabled {{
+        color: {palette['disabled']};
+    }}
+    
+    QLabel#SecondaryText {{
+        color: {palette['disabled']};
+        font-style: italic;
+        font-size: 10pt;
     }}
     
     QCheckBox {{
@@ -201,19 +300,26 @@ def get_stylesheet(theme_name):
     QCheckBox::indicator {{
         width: 18px;
         height: 18px;
-        border: 2px solid {palette['border']};
+        border: 2px solid {border};
         border-radius: 4px;
         background-color: {palette['base']};
     }}
     
     QCheckBox::indicator:checked {{
-        background-color: {palette['highlight']};
-        border-color: {palette['highlight']};
+        background-color: {highlight};
+        border-color: {highlight};
     }}
     
     QMenuBar {{
         background-color: {palette['window']};
         color: {palette['text']};
+        padding: 4px;
+        font-size: 11pt;
+    }}
+    
+    QMenuBar::item {{
+        padding: 6px 12px;
+        border-radius: 4px;
     }}
     
     QMenuBar::item:selected {{
@@ -221,20 +327,34 @@ def get_stylesheet(theme_name):
     }}
     
     QMenu {{
-        background-color: {palette['surface']};
+        background-color: {surface};
         color: {palette['text']};
-        border: 1px solid {palette['border']};
+        border: 1px solid {border};
+        border-radius: 8px;
+        padding: 6px;
+    }}
+    
+    QMenu::item {{
+        padding: 8px 32px 8px 16px;
+        border-radius: 4px;
     }}
     
     QMenu::item:selected {{
-        background-color: {palette['highlight']};
+        background-color: {highlight};
         color: #ffffff;
     }}
     
+    QMenu::separator {{
+        height: 1px;
+        background: {border};
+        margin: 6px 12px;
+    }}
+    
     QToolBar {{
-        background-color: {palette.get('toolbar_bg', palette['surface'])};
+        background-color: {palette.get('toolbar_bg', surface)};
         border: none;
         padding: 4px;
+        spacing: 4px;
     }}
     
     QToolButton {{
@@ -250,62 +370,90 @@ def get_stylesheet(theme_name):
     }}
     
     QToolButton:checked {{
-        background-color: {palette['highlight']};
+        background-color: {highlight};
     }}
     
     QStatusBar {{
-        background-color: {palette['surface']};
+        background-color: {surface};
         color: {palette['text']};
-        border-top: 1px solid {palette['border']};
+        border-top: 1px solid {border};
+        font-size: 10pt;
     }}
     
     QScrollBar:vertical {{
         background: {palette['window']};
         width: 12px;
+        border-radius: 6px;
     }}
     
     QScrollBar::handle:vertical {{
         background: {palette['button']};
         min-height: 30px;
         border-radius: 6px;
+        margin: 2px;
     }}
     
     QScrollBar:horizontal {{
         background: {palette['window']};
         height: 12px;
+        border-radius: 6px;
     }}
     
     QScrollBar::handle:horizontal {{
         background: {palette['button']};
         min-width: 30px;
         border-radius: 6px;
+        margin: 2px;
     }}
     
     QProgressBar {{
         background-color: {palette['base']};
-        border: 1px solid {palette['border']};
+        border: 1px solid {border};
         border-radius: 6px;
         text-align: center;
         color: {palette['text']};
+        font-weight: bold;
     }}
     
     QProgressBar::chunk {{
-        background-color: {palette['highlight']};
+        background-color: {highlight};
         border-radius: 5px;
+    }}
+    
+    QSlider {{
+        min-height: 28px;
     }}
     
     QSlider::groove:horizontal {{
         height: 6px;
-        background: {palette['border']};
+        background: {border};
         border-radius: 3px;
     }}
     
+    QSlider::groove:horizontal:disabled {{
+        background: {palette['surface']};
+    }}
+    
     QSlider::handle:horizontal {{
-        background: {palette['highlight']};
+        background: {highlight};
         width: 18px;
         height: 18px;
         margin: -6px 0;
         border-radius: 9px;
+    }}
+    
+    QSlider::handle:horizontal:disabled {{
+        background: {palette['disabled']};
+        border: 1px solid {palette['border']};
+    }}
+
+    QSlider::sub-page:horizontal {{
+        background: {highlight};
+        border-radius: 3px;
+    }}
+    
+    QSlider::sub-page:horizontal:disabled {{
+        background: {palette['disabled']};
     }}
     """
 
@@ -327,6 +475,9 @@ def get_matplotlib_params(theme_name):
             "text.color": palette["text"],
             "legend.facecolor": palette["base"],
             "legend.edgecolor": palette["border"],
+            "figure.edgecolor": palette["border"],
+            "axes.linewidth": 1.4,
+            "font.size": 12,
         }
     else:
         return {
@@ -340,6 +491,9 @@ def get_matplotlib_params(theme_name):
             "text.color": palette.get("plot_text", "#1a1a1a"),
             "legend.facecolor": palette.get("plot_bg", "#ffffff"),
             "legend.edgecolor": palette.get("border", "#b8b8bc"),
+            "figure.edgecolor": palette.get("border", "#b8b8bc"),
+            "axes.linewidth": 1.4,
+            "font.size": 12,
         }
 
 
@@ -349,10 +503,18 @@ def apply_theme(app, theme_name="dark"):
     from PyQt5.QtGui import QPalette, QColor
     from matplotlib import rcParams
 
+    # Load fonts first
+    try:
+        load_bundled_fonts()
+    except Exception as e:
+        print(f"Warning: Could not load bundled fonts: {e}")
+
     # Apply stylesheet
     app.setStyleSheet(get_stylesheet(theme_name))
 
     # Apply matplotlib params
+    import matplotlib.style as mplstyle
+    mplstyle.use("fast")
     rcParams.update(get_matplotlib_params(theme_name))
 
     # Set palette for native widgets

@@ -1,4 +1,5 @@
 import os
+import tempfile
 import numpy as np
 
 # Try to import CASA tools (casatasks now run via subprocess)
@@ -39,6 +40,9 @@ def run_immath_subprocess(imagename, outfile, mode="lpoli"):
     import subprocess
     import sys
 
+    imagename = os.path.abspath(imagename)
+    outfile = os.path.abspath(outfile)
+
     script = f"""
 import sys
 from casatasks import immath
@@ -50,7 +54,10 @@ except Exception as e:
     sys.exit(1)
 """
     result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
     )
     if result.returncode != 0:
         raise RuntimeError(f"immath failed: {result.stderr}")

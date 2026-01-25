@@ -27,14 +27,19 @@ from PyQt5.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QHeaderView,
+    QRubberBand,
+    QGridLayout,
+    QGraphicsOpacityEffect,
 )
-from PyQt5.QtCore import Qt, QDateTime, QThread, pyqtSignal, QTimer, QSize
-from PyQt5.QtGui import QPixmap, QImage, QIcon
+from PyQt5.QtCore import Qt, QDateTime, QThread, pyqtSignal, QTimer, QSize, QPoint, QRect
+from PyQt5.QtGui import QPixmap, QImage, QIcon, QColor
 from datetime import datetime, timedelta
 from collections import OrderedDict
 import requests
-from typing import List, Dict, Optional, Tuple
+import sys
 import os
+from urllib.parse import urlencode
+from typing import List, Dict, Optional, Tuple
 
 # Global list to keep threads alive if window is closed while they are running
 # This prevents "QThread: Destroyed while thread is still running"
@@ -347,101 +352,97 @@ class ImageDownloader(QThread):
                 self.error.emit(self.instrument_name, str(e))
 
 
-class FrameLoader(QThread):
-    """Thread to load all instruments for multiple frames in background."""
+class InteractiveImageLabel(QLabel):
+    """A QLabel that allows drawing a selection rectangle and panning."""
 
-    frame_loaded = pyqtSignal(int, dict)  # frame_index, {instrument: pixmap}
-    progress = pyqtSignal(int, int)  # current, total
+    def __init__(self, parent=None, scroll_area=None):
+        super().__init__(parent)
+        self.rubber_band = None
+        self.origin = QPoint()
+        self.selection_rect = QRect()
+        self.zoom_factor = 1.0
+        self.scroll_area = scroll_area
+        self.pan_last_pos = QPoint()
+        self.panning = False
+        self.crop_mode = False
 
-    def __init__(self, timestamps, instruments_data, width=1000, height=1000):
-        super().__init__()
-        self.timestamps = timestamps
-        self.instruments_data = (
-            instruments_data  # List of (name, layer_path, observatory, desc)
-        )
-        self.width = width
-        self.height = height
-        self.running = True
+    def mousePressEvent(self, event):
+        if self.crop_mode and event.button() == Qt.LeftButton:
+            # Selection mode
+            if not self.rubber_band:
+                self.rubber_band = QRubberBand(QRubberBand.Rectangle, self)
+            self.origin = event.pos()
+            self.rubber_band.setGeometry(QRect(self.origin, QSize()))
+            self.rubber_band.show()
+        elif event.button() == Qt.RightButton or (
+            event.button() == Qt.MiddleButton
+        ) or (not self.crop_mode and event.button() == Qt.LeftButton):
+            # Panning mode (Right click, Middle click, or Left click if not cropping)
+            self.panning = True
+            self.pan_last_pos = event.globalPos()
+            self.setCursor(Qt.ClosedHandCursor)
 
-    def run(self):
-        total_frames = len(self.timestamps)
-        for frame_idx, timestamp in enumerate(self.timestamps):
-            if not self.running:
-                break
+    def mouseMoveEvent(self, event):
+        if self.panning:
+            delta = event.globalPos() - self.pan_last_pos
+            self.pan_last_pos = event.globalPos()
 
-            frame_data = {}
-            for (
-                instrument_name,
-                layer_path,
-                observatory,
-                description,
-            ) in self.instruments_data:
-                if not self.running:
-                    break
+            if self.scroll_area:
+                h_bar = self.scroll_area.horizontalScrollBar()
+                v_bar = self.scroll_area.verticalScrollBar()
+                h_bar.setValue(h_bar.value() - delta.x())
+                v_bar.setValue(v_bar.value() - delta.y())
+        elif self.crop_mode and self.rubber_band and not self.origin.isNull():
+            self.rubber_band.setGeometry(QRect(self.origin, event.pos()).normalized())
 
-                try:
-                    # Determine base imageScale for 1000x1000
-                    inst_lower = instrument_name.lower()
+    def mouseReleaseEvent(self, event):
+        if self.crop_mode and event.button() == Qt.LeftButton:
+            if self.rubber_band:
+                self.selection_rect = self.rubber_band.geometry()
+        else:
+            self.panning = False
+            self.setCursor(Qt.ArrowCursor)
 
-                    # Solar disk instruments - tight fit
-                    if any(
-                        x in inst_lower for x in ["aia", "hmi", "eit", "euvi", "suvi"]
-                    ):
-                        if "hmi continuum" in inst_lower:
-                            base_image_scale = 3.0
-                        elif "hmi" in inst_lower:
-                            base_image_scale = 2.5
-                        else:
-                            base_image_scale = 2.5
+    def get_selection_rect(self):
+        """Return the selection rectangle relative to the ORIGINAL pixmap scale."""
+        if self.selection_rect.isEmpty() or not self.pixmap():
+            return QRect()
 
-                    # Coronagraphs
-                    elif "lasco" in inst_lower and "c2" in inst_lower:
-                        base_image_scale = 12.0
-                    elif "lasco" in inst_lower and "c3" in inst_lower:
-                        base_image_scale = 58.0
-                    elif any(x in inst_lower for x in ["cor1", "cor2"]):
-                        base_image_scale = 6.0 if "cor1" in inst_lower else 15.0
-                    else:
-                        base_image_scale = 4.0
+        # Map widget coordinates to current scaled pixmap coordinates
+        pixmap_size = self.pixmap().size()
+        widget_rect = self.rect()
 
-                    # Adjust imageScale to maintain FOV
-                    size_factor = 1000.0 / self.width
-                    image_scale = str(base_image_scale * size_factor)
+        x_offset = (widget_rect.width() - pixmap_size.width()) // 2
+        y_offset = (widget_rect.height() - pixmap_size.height()) // 2
 
-                    # Build URL
-                    from urllib.parse import urlencode
+        # Selection in screen (zoomed) pixels, relative to pixmap top-left
+        selection_zoomed = self.selection_rect.translated(-x_offset, -y_offset)
 
-                    base_url = "https://api.helioviewer.org/v2/takeScreenshot/"
-                    params = {
-                        "date": timestamp.toString("yyyy-MM-ddTHH:mm:ss") + "Z",
-                        "imageScale": image_scale,
-                        "layers": layer_path,
-                        "x0": "0",
-                        "y0": "0",
-                        "width": str(self.width),
-                        "height": str(self.height),
-                        "display": "true",
-                        "watermark": "false",
-                    }
-                    url = f"{base_url}?{urlencode(params)}"
+        # Scale selection back to original image resolution
+        x = int(selection_zoomed.x() / self.zoom_factor)
+        y = int(selection_zoomed.y() / self.zoom_factor)
+        w = int(selection_zoomed.width() / self.zoom_factor)
+        h = int(selection_zoomed.height() / self.zoom_factor)
 
-                    # Download
-                    response = requests.get(url, timeout=60)
-                    response.raise_for_status()
+        return QRect(x, y, w, h)
 
-                    # Convert to pixmap
-                    qimage = QImage()
-                    if qimage.loadFromData(response.content):
-                        frame_data[instrument_name] = QPixmap.fromImage(qimage)
 
-                except Exception as e:
-                    print(f"Error loading {instrument_name} for frame {frame_idx}: {e}")
+class ZoomOverlayFrame(QFrame):
+    """A floating toolbar frame that fades in on hover."""
 
-            self.frame_loaded.emit(frame_idx, frame_data)
-            self.progress.emit(frame_idx + 1, total_frames)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setOpacity(0.4)  # Default transparency
 
-    def stop(self):
-        self.running = False
+    def enterEvent(self, event):
+        self.opacity_effect.setOpacity(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.opacity_effect.setOpacity(0.4)
+        super().leaveEvent(event)
 
 
 class FullImageDialog(QDialog):
@@ -501,6 +502,19 @@ class HelioviewerBrowser(QMainWindow):
 
         # Flag to prevent updates during close
         self._closing = False
+
+        # Cropping state
+        self.crop_mode = False
+        self.selection_label = None
+
+        # Loading state
+        self._loading = False
+
+        # Zoom state
+        self.zoom_factor = 1.0
+
+        # Base difference state
+        self.diff_type = "None" # "None", "Base", "Running"
 
         self.init_ui()
 
@@ -737,7 +751,6 @@ class HelioviewerBrowser(QMainWindow):
             obs_item.setToolTip(0, full_name)
             obs_item.setFirstColumnSpanned(True)
 
-            # Make it bold
             font = obs_item.font(0)
             font.setBold(True)
             obs_item.setFont(0, font)
@@ -792,7 +805,7 @@ class HelioviewerBrowser(QMainWindow):
         instruments = []
         for item in selected_items:
             data = item.data(0, Qt.UserRole)
-            if data:  # Only instrument items have data, not observatory headers
+            if data:
                 instruments.append(data)
         return instruments
 
@@ -815,19 +828,25 @@ class HelioviewerBrowser(QMainWindow):
             self.interval_spin.setValue(int(cadence))
 
     def create_image_panel(self, parent_splitter):
-        """Create right panel with image grid."""
-        # Scroll area
-        scroll = QScrollArea()
+        """Create right panel with image grid and floating zoom controls."""
+        # Container to allow floating overlays
+        panel_container = QWidget()
+        layout = QGridLayout(panel_container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Scroll area (Base layer)
+        self.image_scroll = QScrollArea()
+        scroll = self.image_scroll
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setStyleSheet("border: none; background: transparent;")
 
-        # Container widget
+        # Container widget inside scroll area
         self.image_container = QWidget()
         self.image_grid = QVBoxLayout(self.image_container)
-        self.image_grid.setAlignment(
-            Qt.AlignTop | Qt.AlignHCenter
-        )  # Center horizontally
+        self.image_grid.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
         # Placeholder
         placeholder = QLabel("Load a time series to display images")
@@ -836,7 +855,82 @@ class HelioviewerBrowser(QMainWindow):
         self.image_grid.addWidget(placeholder)
 
         scroll.setWidget(self.image_container)
-        parent_splitter.addWidget(scroll)
+        layout.addWidget(scroll, 0, 0)
+
+        # --- Floating Zoom Toolbar ---
+        from .styles import theme_manager
+        is_dark = theme_manager.is_dark
+        bg_color = "rgba(40, 40, 40, 200)" if is_dark else "rgba(230, 230, 230, 200)"
+        text_color = "white" if is_dark else "black"
+        border_color = "rgba(255, 255, 255, 50)" if is_dark else "rgba(0, 0, 0, 50)"
+        hover_bg = "rgba(255, 255, 255, 40)" if is_dark else "rgba(0, 0, 0, 20)"
+
+        zoom_toolbar = ZoomOverlayFrame()
+        zoom_toolbar.setObjectName("zoomToolbar")
+        zoom_toolbar.setStyleSheet(f"""
+            #zoomToolbar {{
+                background-color: {bg_color};
+                border: 1px solid {border_color};
+                border-radius: 17px;
+            }}
+            QPushButton {{
+                background: transparent;
+                color: {text_color};
+                border: none;
+                padding: 0;
+                font-size: 14px;
+                border-radius: 14px;
+                text-align: center;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_bg};
+            }}
+        """)
+        
+        toolbar_layout = QHBoxLayout(zoom_toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(2)
+        toolbar_layout.setAlignment(Qt.AlignCenter)
+
+        btn_size = 28
+
+        # Zoom buttons with tooltips
+
+        z_in_btn = QPushButton("🔍+")
+        z_in_btn.setToolTip("Zoom In")
+        z_in_btn.clicked.connect(self.zoom_in)
+        z_in_btn.setFixedSize(btn_size, btn_size)
+        toolbar_layout.addWidget(z_in_btn)
+
+        z_out_btn = QPushButton("🔍−")
+        z_out_btn.setToolTip("Zoom Out")
+        z_out_btn.clicked.connect(self.zoom_out)
+        z_out_btn.setFixedSize(btn_size, btn_size)
+        toolbar_layout.addWidget(z_out_btn)
+
+        # Vertical separator
+        '''sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep_color = "rgba(255, 255, 255, 30)" if is_dark else "rgba(0, 0, 0, 30)"
+        sep.setStyleSheet(f"background-color: {sep_color}; width: 1px; margin: 6px 4px;")
+        toolbar_layout.addWidget(sep)'''
+
+        reset_z_btn = QPushButton("↺")
+        reset_z_btn.setToolTip("Reset Zoom")
+        reset_z_btn.clicked.connect(self.reset_zoom)
+        reset_z_btn.setFixedSize(btn_size, btn_size)
+        toolbar_layout.addWidget(reset_z_btn)
+
+        # Container for alignment (Small wrapper to provide 20px floating offset)
+        toolbar_wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(toolbar_wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 20, 20)
+        wrapper_layout.addWidget(zoom_toolbar)
+        
+        # Add wrapper to grid - it will overlay the scroll area but only in its own small bounding box
+        layout.addWidget(toolbar_wrapper, 0, 0, Qt.AlignBottom | Qt.AlignRight)
+
+        parent_splitter.addWidget(panel_container)
 
     def create_animation_controls(self, parent_layout):
         """Create bottom panel with animation controls."""
@@ -896,12 +990,41 @@ class HelioviewerBrowser(QMainWindow):
 
         layout.addStretch()
 
+        # Difference mode selection
+        self.diff_label = QLabel("Diff:")
+        layout.addWidget(self.diff_label)
+        self.diff_combo = QComboBox()
+        self.diff_combo.addItems(["None", "Base", "Running"])
+        self.diff_combo.setToolTip("Select difference map mode")
+        self.diff_combo.currentIndexChanged.connect(self.on_diff_mode_changed)
+        self.diff_combo.setEnabled(False)
+        self.diff_label.setEnabled(False)
+        self.diff_combo.setFixedWidth(100)
+        layout.addWidget(self.diff_combo)
+        
+        # Crop tool
+        self.crop_btn = QPushButton("✂️ Crop")
+        self.crop_btn.setToolTip("Select a region to crop all frames")
+        self.crop_btn.clicked.connect(self.toggle_crop_mode)
+        self.crop_btn.setEnabled(False)
+        layout.addWidget(self.crop_btn)
+
+        self.confirm_crop_btn = QPushButton("✅ Confirm")
+        self.confirm_crop_btn.clicked.connect(self.confirm_crop)
+        self.confirm_crop_btn.setVisible(False)
+        layout.addWidget(self.confirm_crop_btn)
+
+        self.cancel_crop_btn = QPushButton("❌ Cancel")
+        self.cancel_crop_btn.clicked.connect(self.cancel_crop)
+        self.cancel_crop_btn.setVisible(False)
+        layout.addWidget(self.cancel_crop_btn)
+
         # Save current frame
         save_frame_btn = QPushButton("💾 Save Frame")
         save_frame_btn.clicked.connect(self.save_current_frame)
         layout.addWidget(save_frame_btn)
 
-        # Export animation
+       # Export animation
         export_btn = QPushButton("🎬 Export Animation")
         export_btn.clicked.connect(self.export_animation)
         layout.addWidget(export_btn)
@@ -973,59 +1096,23 @@ class HelioviewerBrowser(QMainWindow):
         self.progress_bar.setRange(0, len(self.timestamps))
         self.progress_bar.setValue(0)
         self.load_button.setEnabled(False)
+        self.crop_btn.setEnabled(False)
+        self.diff_combo.setEnabled(False)
+        self.diff_label.setEnabled(False)
+        self.diff_combo.setCurrentIndex(0) # Reset to "None"
+        self._loading = True
 
-        # Load first frame immediately (synchronously)
-        self.load_frame_sync(0, selected_instruments)
+        # Queue ALL frames for parallel download
+        for frame_idx in range(len(self.timestamps)):
+            for inst_data in selected_instruments:
+                self.download_queue.append((frame_idx, inst_data))
 
-        # Queue remaining frames for parallel download
-        if len(self.timestamps) > 1:
-            for frame_idx in range(1, len(self.timestamps)):
-                for inst_data in selected_instruments:
-                    self.download_queue.append((frame_idx, inst_data))
+        # Start initial batch of downloads
+        self._process_frame_download_queue()
 
-            # Start initial batch of downloads
-            self._process_frame_download_queue()
-        else:
-            self.on_loading_finished()
-
-    def load_frame_sync(self, frame_idx, instruments):
-        """Load a frame synchronously (for first frame)."""
-        frame_data = {}
-        timestamp = self.timestamps[frame_idx]
-
-        for nickname, layer_path, observatory, description in instruments:
-            downloader = ImageDownloader(nickname, layer_path, timestamp)
-            downloader.run()  # Run synchronously
-            # Note: This won't emit signals, need to handle differently
-
-        # For now, start async download for first frame too
-        self.frames[frame_idx] = {}
-        downloaders = []
-
-        for nickname, layer_path, observatory, description in instruments:
-            downloader = ImageDownloader(
-                nickname,
-                layer_path,
-                timestamp,
-                width=self.image_size_spin.value(),
-                height=self.image_size_spin.value(),
-            )
-            downloader.finished.connect(
-                lambda inst, pix, idx=frame_idx: self.on_image_downloaded(
-                    idx, inst, pix
-                )
-            )
-            downloader.error.connect(
-                lambda inst, err, idx=frame_idx: self.on_parallel_download_error(
-                    idx, inst, err
-                )
-            )
-            downloaders.append(downloader)
-            self.frame_loaders.append(downloader)  # Track for cleanup on close
-            downloader.start()
-
-        # Enable controls
+        # Enable controls (navigation etc) - images will appear as they load
         self.enable_controls()
+
 
     def _process_frame_download_queue(self):
         """Start next frame downloads if under concurrent limit."""
@@ -1099,36 +1186,15 @@ class HelioviewerBrowser(QMainWindow):
         if self.active_downloads == 0 and len(self.download_queue) == 0:
             self.on_loading_finished()
 
-    def on_image_downloaded(self, frame_idx, instrument, pixmap):
-        """Handle single image download completion."""
-        if self._closing:
-            return
-
-        if frame_idx not in self.frames:
-            self.frames[frame_idx] = {}
-
-        self.frames[frame_idx][instrument] = pixmap
-
-        # If this is the current frame, update display
-        if frame_idx == self.current_frame:
-            self.display_current_frame()
-
-    def on_background_frame_loaded(self, frame_idx, frame_data):
-        """Handle background frame loading."""
-        # Adjust index (background loader starts from index 1)
-        actual_idx = frame_idx + 1
-        self.frames[actual_idx] = frame_data
-
-    def on_loading_progress(self, current, total):
-        """Update progress bar."""
-        self.progress_bar.setValue(
-            current + 1
-        )  # +1 for the first frame loaded synchronously
 
     def on_loading_finished(self):
         """Handle loading completion."""
+        self._loading = False
         self.progress_bar.setVisible(False)
         self.load_button.setEnabled(True)
+        self.crop_btn.setEnabled(True)  # Enable crop after all loaded
+        self.diff_combo.setEnabled(True)  # Enable diff after all loaded
+        self.diff_label.setEnabled(True)
         QMessageBox.information(
             self,
             "Loading Complete",
@@ -1186,18 +1252,41 @@ class HelioviewerBrowser(QMainWindow):
         # Fullscreen image
         pixmap = frame_data.get(nickname)
 
-        img_label = QLabel()
+        # Apply difference map if active
+        if self.diff_type != "None" and pixmap:
+            if self.current_frame > 0:
+                # Difference for subsequent frames
+                ref_idx = 0 if self.diff_type == "Base Diff" else self.current_frame - 1
+                ref_data = self.frames.get(ref_idx, {})
+                ref_pixmap = ref_data.get(nickname)
+                if ref_pixmap:
+                    pixmap = self._calculate_difference(pixmap, ref_pixmap)
+            else:
+                # Neutral Gray for first frame (representing zero change)
+                gray_pixmap = QPixmap(pixmap.size())
+                gray_pixmap.fill(QColor(128, 128, 128))
+                pixmap = gray_pixmap
+
+        img_label = InteractiveImageLabel(scroll_area=self.image_scroll)
+        img_label.crop_mode = self.crop_mode
+        self.selection_label = img_label if self.crop_mode else None
+
         img_label.setAlignment(Qt.AlignCenter)
 
         if pixmap:
-            # Display at original size (1000x1000)
-            img_label.setPixmap(pixmap)
-            img_label.setCursor(Qt.PointingHandCursor)
-            img_label.mousePressEvent = (
-                lambda e, p=pixmap, n=nickname: self.show_full_image(p, n)
+            # Display scaled pixmap
+            scaled_size = pixmap.size() * self.zoom_factor
+            scaled_pixmap = pixmap.scaled(
+                scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
+            img_label.setPixmap(scaled_pixmap)
+            img_label.zoom_factor = self.zoom_factor
+
         else:
-            img_label.setText("Loading...")
+            if self._loading:
+                img_label.setText("Loading...")
+            else:
+                img_label.setText("No data loaded for this instrument")
             img_label.setStyleSheet("color: #666; padding: 100px;")
 
         # Add with stretch to center vertically
@@ -1241,22 +1330,18 @@ class HelioviewerBrowser(QMainWindow):
                 250, 250, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             img_label.setPixmap(scaled)
-            img_label.setCursor(Qt.PointingHandCursor)
-            img_label.mousePressEvent = (
-                lambda e, p=pixmap, n=instrument_name: self.show_full_image(p, n)
-            )
         else:
-            img_label.setText("Loading...")
+            img_label.setText("No data")
             img_label.setStyleSheet("background: #000; color: #666;")
 
         layout.addWidget(img_label)
 
         return card
 
-    def show_full_image(self, pixmap, title):
+    '''def show_full_image(self, pixmap, title):
         """Show full resolution image in dialog."""
         dialog = FullImageDialog(self, pixmap, title)
-        dialog.exec_()
+        dialog.exec_()'''
 
     # Animation controls
     def first_frame(self):
@@ -1308,6 +1393,82 @@ class HelioviewerBrowser(QMainWindow):
         self.play_btn.setToolTip("Play")
         self.animation_timer.stop()
 
+    # Difference methods
+    def on_diff_mode_changed(self):
+        """Handle difference mode change and refresh display."""
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.diff_type = self.diff_combo.currentText()
+            self.display_current_frame()
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _calculate_difference(self, current_pixmap, reference_pixmap):
+        """Calculate pixel-wise grayscale difference between two pixmaps."""
+        if not current_pixmap or not reference_pixmap:
+            return current_pixmap
+
+        # Convert to QImage
+        curr_img = current_pixmap.toImage().convertToFormat(QImage.Format_RGB888)
+        ref_img = reference_pixmap.toImage().convertToFormat(QImage.Format_RGB888)
+
+        # Basic size check (should match as per API usage)
+        if curr_img.size() != ref_img.size():
+            return current_pixmap
+
+        width = curr_img.width()
+        height = curr_img.height()
+        
+        # Get pixels via numpy for speed
+        import numpy as np
+        
+        # Current
+        curr_ptr = curr_img.bits()
+        curr_ptr.setsize(curr_img.byteCount())
+        arr_curr = np.frombuffer(curr_ptr, np.uint8).reshape((height, curr_img.bytesPerLine()))
+        arr_curr = arr_curr[:, :width * 3].reshape((height, width, 3)).astype(np.int16)
+        
+        # Reference
+        ref_ptr = ref_img.bits()
+        ref_ptr.setsize(ref_img.byteCount())
+        arr_ref = np.frombuffer(ref_ptr, np.uint8).reshape((height, ref_img.bytesPerLine()))
+        arr_ref = arr_ref[:, :width * 3].reshape((height, width, 3)).astype(np.int16)
+
+        # Difference math: (Current - Reference)
+        # We add 128 to show "no change" as mid-gray
+        diff = arr_curr - arr_ref
+        
+        # Enhance contrast for visibility: Multiply by 2.5 (increased for grayscale)
+        diff = (diff * 2.5 + 128).clip(0, 255)
+        
+        # Convert to Grayscale (Average of channels)
+        import numpy as np
+        gray_arr = np.mean(diff, axis=2).astype(np.uint8)
+
+        # Convert back to QImage/QPixmap
+        result_img = QImage(gray_arr.data, width, height, width, QImage.Format_Grayscale8)
+        return QPixmap.fromImage(result_img.copy()) # copy() ensures memory safety
+
+    # Zoom controls
+    def zoom_in(self):
+        """Increase zoom factor."""
+        self.zoom_factor *= 1.25
+        if self.zoom_factor > 10.0:
+            self.zoom_factor = 10.0
+        self.display_current_frame()
+
+    def zoom_out(self):
+        """Decrease zoom factor."""
+        self.zoom_factor /= 1.25
+        if self.zoom_factor < 0.1:
+            self.zoom_factor = 0.1
+        self.display_current_frame()
+
+    def reset_zoom(self):
+        """Reset zoom factor to 1.0."""
+        self.zoom_factor = 1.0
+        self.display_current_frame()
+
     # Export/Save functions
     def save_current_frame(self):
         """Save current frame as PNG."""
@@ -1356,6 +1517,52 @@ class HelioviewerBrowser(QMainWindow):
                     )
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Error saving frame:\n{str(e)}")
+
+    def toggle_crop_mode(self):
+        """Enable/disable crop mode and update UI."""
+        if not self.frames:
+            return
+
+        self.crop_mode = not self.crop_mode
+        self.crop_btn.setVisible(not self.crop_mode)
+        self.confirm_crop_btn.setVisible(self.crop_mode)
+        self.cancel_crop_btn.setVisible(self.crop_mode)
+
+        # Pause animation while cropping
+        if self.crop_mode and self.playing:
+            self.pause_animation()
+
+        self.display_current_frame()
+
+    def confirm_crop(self):
+        """Apply the crop to all loaded frames."""
+        if not self.selection_label:
+            return
+
+        crop_rect = self.selection_label.get_selection_rect()
+        if crop_rect.isEmpty():
+            QMessageBox.warning(self, "No Selection", "Please draw a rectangle to crop.")
+            return
+
+        # Apply crop to all frames
+        cropped_count = 0
+        for frame_idx in self.frames.keys():
+            for inst_name in self.frames[frame_idx].keys():
+                pixmap = self.frames[frame_idx][inst_name]
+                if pixmap:
+                    self.frames[frame_idx][inst_name] = pixmap.copy(crop_rect)
+                    cropped_count += 1
+
+        QMessageBox.information(
+            self, "Crop Applied", f"Cropped {len(self.frames)} frames."
+        )
+
+        # Exit crop mode
+        self.toggle_crop_mode()
+
+    def cancel_crop(self):
+        """Exit crop mode without changes."""
+        self.toggle_crop_mode()
 
     def export_animation(self):
         """Export animation as GIF or MP4."""
@@ -1468,7 +1675,7 @@ class HelioviewerBrowser(QMainWindow):
         finally:
             progress.close()
 
-    def _add_timestamp_to_pixmap(self, pixmap, timestamp_text):
+    def _add_timestamp_to_pixmap(self, pixmap, timestamp_text, show_bg=True):
         """Add timestamp overlay to a pixmap."""
         from PyQt5.QtGui import QPainter, QFont, QColor, QPen
         from PyQt5.QtCore import Qt, QRect
@@ -1492,7 +1699,8 @@ class HelioviewerBrowser(QMainWindow):
         )
 
         # Semi-transparent black background
-        painter.fillRect(bg_rect, QColor(0, 0, 0, 180))
+        if show_bg:
+            painter.fillRect(bg_rect, QColor(0, 0, 0, 180))
 
         # Draw white text
         painter.setPen(QPen(QColor(255, 255, 255)))
@@ -1523,12 +1731,27 @@ class HelioviewerBrowser(QMainWindow):
                 return
             progress.setValue(i)
 
+            # Apply difference map if mode is on
+            if self.diff_type != "None":
+                if i > 0:
+                    ref_idx = 0 if self.diff_type == "Base Diff" else i - 1
+                    ref_pixmap = frames[ref_idx]
+                    pixmap = self._calculate_difference(pixmap, ref_pixmap)
+                else:
+                    # Neutral Gray for first frame
+                    gray_pixmap = QPixmap(pixmap.size())
+                    gray_pixmap.fill(QColor(128, 128, 128))
+                    pixmap = gray_pixmap
+
             # Add timestamp if requested
             if include_timestamp and i < len(self.timestamps):
                 timestamp_text = (
                     self.timestamps[i].toString("yyyy-MM-dd HH:mm:ss") + " UTC"
                 )
-                pixmap = self._add_timestamp_to_pixmap(pixmap, timestamp_text)
+                # Remove background in diff mode to avoid artifacts
+                pixmap = self._add_timestamp_to_pixmap(
+                    pixmap, timestamp_text, show_bg=(self.diff_type == "None")
+                )
 
             # Convert QPixmap to PIL Image via QImage
             qimage = pixmap.toImage()
@@ -1537,11 +1760,16 @@ class HelioviewerBrowser(QMainWindow):
             width = qimage.width()
             height = qimage.height()
             ptr = qimage.bits()
-            ptr.setsize(height * width * 3)
+            ptr.setsize(qimage.byteCount())
 
             import numpy as np
 
-            arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 3))
+            # Handle scanline stride (bytesPerLine) to avoid skewing
+            bytes_per_line = qimage.bytesPerLine()
+            arr = np.frombuffer(ptr, np.uint8).reshape((height, bytes_per_line))
+            # Slice out the padding bytes at the end of each scanline
+            arr = arr[:, : width * 3].reshape((height, width, 3))
+
             pil_img = Image.fromarray(arr, "RGB")
             pil_images.append(pil_img)
 
@@ -1581,12 +1809,27 @@ class HelioviewerBrowser(QMainWindow):
                     return
                 progress.setValue(i)
 
+                # Apply difference map if mode is on
+                if self.diff_type != "None":
+                    if i > 0:
+                        ref_idx = 0 if self.diff_type == "Base Diff" else i - 1
+                        ref_pixmap = frames[ref_idx]
+                        pixmap = self._calculate_difference(pixmap, ref_pixmap)
+                    else:
+                        # Neutral Gray for first frame
+                        gray_pixmap = QPixmap(pixmap.size())
+                        gray_pixmap.fill(QColor(128, 128, 128))
+                        pixmap = gray_pixmap
+
                 # Add timestamp if requested
                 if include_timestamp and i < len(self.timestamps):
                     timestamp_text = (
                         self.timestamps[i].toString("yyyy-MM-dd HH:mm:ss") + " UTC"
                     )
-                    pixmap = self._add_timestamp_to_pixmap(pixmap, timestamp_text)
+                    # Remove background in diff mode to avoid artifacts
+                    pixmap = self._add_timestamp_to_pixmap(
+                        pixmap, timestamp_text, show_bg=(self.diff_type == "None")
+                    )
 
                 # Convert QPixmap to numpy array
                 qimage = pixmap.toImage()
@@ -1595,8 +1838,13 @@ class HelioviewerBrowser(QMainWindow):
                 width = qimage.width()
                 height = qimage.height()
                 ptr = qimage.bits()
-                ptr.setsize(height * width * 3)
-                arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 3))
+                ptr.setsize(qimage.byteCount())
+
+                # Handle scanline stride (bytesPerLine) to avoid skewing
+                bytes_per_line = qimage.bytesPerLine()
+                arr = np.frombuffer(ptr, np.uint8).reshape((height, bytes_per_line))
+                # Slice out the padding bytes at the end of each scanline
+                arr = arr[:, : width * 3].reshape((height, width, 3))
 
                 # OpenCV uses BGR, Qt uses RGB
                 arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
@@ -1725,7 +1973,7 @@ class HelioviewerBrowser(QMainWindow):
         # Clear download queue first to prevent new downloads from starting
         self.download_queue.clear()
 
-        # Stop all loaders (both ImageDownloader and FrameLoader)
+        # Stop all loaders (ImageDownloader)
         for loader in self.frame_loaders:
             if hasattr(loader, "stop"):
                 loader.stop()

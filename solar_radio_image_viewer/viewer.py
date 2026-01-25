@@ -1,5 +1,7 @@
 import sys
 import os
+import tempfile
+
 import numpy as np
 from importlib import resources as importlib_resources
 import matplotlib
@@ -632,6 +634,7 @@ class SolarRadioImageTab(QWidget):
         file_layout.setSpacing(8)
         self.dir_entry = QLineEdit()
         self.dir_entry.setPlaceholderText("Select image directory or FITS file...")
+        self.dir_entry.setReadOnly(True)
         self.browse_btn = QPushButton()
         self.browse_btn.setObjectName("IconOnlyNBGButton")
         self.browse_btn.setIcon(QIcon(get_resource_path("assets/browse.png")))
@@ -1079,6 +1082,7 @@ class SolarRadioImageTab(QWidget):
         self.gamma_slider.setRange(1, 100)
         self.gamma_slider.setValue(20)
         self.gamma_slider.valueChanged.connect(self.update_gamma_value)
+        self.gamma_slider.sliderReleased.connect(self._apply_gamma_change)
         self.gamma_entry = QLineEdit("1.0")
         self.gamma_entry.setFixedWidth(60)
         self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
@@ -1167,6 +1171,7 @@ class SolarRadioImageTab(QWidget):
         self.gamma_slider.setRange(1, 100)
         self.gamma_slider.setValue(20)
         self.gamma_slider.valueChanged.connect(self.update_gamma_value)
+        self.gamma_slider.sliderReleased.connect(self._apply_gamma_change)
         self.gamma_entry = QLineEdit("1.0")
         self.gamma_entry.setFixedWidth(60)
         self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
@@ -3669,8 +3674,11 @@ class SolarRadioImageTab(QWidget):
                 self._gamma_debounce_timer.setSingleShot(True)
                 self._gamma_debounce_timer.timeout.connect(self._apply_gamma_change)
 
-            # Restart the timer (150ms delay)
-            self._gamma_debounce_timer.start(150)
+            # Only update the plot immediately if NOT dragging (e.g. keyboard or track click)
+            # If dragging, we wait for sliderReleased
+            if not self.gamma_slider.isSliderDown():
+                # Restart the timer (30ms delay)
+                self._gamma_debounce_timer.start(30)
 
     def _apply_gamma_change(self):
         """Actually apply the gamma change after debounce delay."""
@@ -3747,38 +3755,9 @@ class SolarRadioImageTab(QWidget):
             self.gamma_slider.setStyleSheet("")
             self.gamma_entry.setStyleSheet("")
         else:
-            # Use theme-aware colors for disabled state
-            palette = theme_manager.palette
-            disabled_bg = palette.get("surface", "#16162a")
-            disabled_text = palette.get("disabled", "#4a4a6a")
-            border_color = palette.get("border", "#2d2d4a")
-
-            self.gamma_slider.setStyleSheet(
-                f"""
-                QSlider {{
-                    background-color: transparent;
-                }}
-                QSlider::groove:horizontal {{
-                    background: {border_color};
-                    opacity: 0.5;
-                }}
-                QSlider::handle:horizontal {{
-                    background: {disabled_text};
-                }}
-                QSlider::sub-page:horizontal {{
-                    background: {disabled_text};
-                }}
-            """
-            )
-            self.gamma_entry.setStyleSheet(
-                f"""
-                QLineEdit {{
-                    background-color: {disabled_bg};
-                    color: {disabled_text};
-                    border-color: {border_color};
-                }}
-            """
-            )
+            # Use global :disabled styles from styles.py
+            self.gamma_slider.setStyleSheet("")
+            self.gamma_entry.setStyleSheet("")
 
     def show_roi_stats(self, roi, ra_dec_info=""):
         if roi.size == 0:
@@ -11607,11 +11586,11 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.disconnect_remote_act.setVisible(False)  # Hidden until connected
         file_menu.addAction(self.disconnect_remote_act)
 
-        self.clear_cache_act = QAction("🗑️ Clear Remote Cache...", self)
+        self.clear_cache_act = QAction("🗑️ Manage Cache...", self)
         self.clear_cache_act.setStatusTip(
-            "Clear cached remote files to free up disk space"
+            "View and manage cached data (remote files, NOAA events, etc.)"
         )
-        self.clear_cache_act.triggered.connect(self.clear_remote_cache)
+        self.clear_cache_act.triggered.connect(self.show_cache_manager)
         file_menu.addAction(self.clear_cache_act)
 
         # Update cache size when menu shows
@@ -12377,18 +12356,24 @@ class SolarRadioImageViewerApp(QMainWindow):
                     import sys
 
                     # Run exportfits in subprocess with stokes='all'
+                    source_image_abs = os.path.abspath(source_image)
+                    path_abs = os.path.abspath(path)
+
                     script = f"""
 import sys
 from casatasks import exportfits
 try:
-    exportfits(imagename="{source_image}", fitsimage="{path}", overwrite=True, stokeslast=True)
+    exportfits(imagename="{source_image_abs}", fitsimage="{path_abs}", overwrite=True, stokeslast=True)
     print("SUCCESS")
 except Exception as e:
     print(f"ERROR: {{e}}", file=sys.stderr)
     sys.exit(1)
 """
                     result = subprocess.run(
-                        [sys.executable, "-c", script], capture_output=True, text=True
+                        [sys.executable, "-c", script],
+                        capture_output=True,
+                        text=True,
+                        cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
                     )
 
                     if result.returncode != 0:
@@ -12621,18 +12606,24 @@ except Exception as e:
                     pass  # If we can't check, proceed anyway
 
                 # Run importfits
+                fits_to_import_abs = os.path.abspath(fits_to_import)
+                output_image_abs = os.path.abspath(output_image)
+
                 script = f"""
 import sys
 from casatasks import importfits
 try:
-    importfits(fitsimage="{fits_to_import}", imagename="{output_image}", overwrite=True)
+    importfits(fitsimage="{fits_to_import_abs}", imagename="{output_image_abs}", overwrite=True)
     print("SUCCESS")
 except Exception as e:
     print(f"ERROR: {{e}}", file=sys.stderr)
     sys.exit(1)
 """
                 result = subprocess.run(
-                    [sys.executable, "-c", script], capture_output=True, text=True
+                    [sys.executable, "-c", script],
+                    capture_output=True,
+                    text=True,
+                    cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
                 )
 
                 # Clean up temp file if we created one
@@ -13149,12 +13140,19 @@ except Exception as e:
                 if key in env:
                     del env[key]
 
+            imagename_abs = os.path.abspath(imagename)
+            result_file_abs = os.path.abspath(result_file)
+
+            script = script.replace(f'imagename = "{imagename}"', f'imagename = "{imagename_abs}"')
+            script = script.replace(f'result_file = "{result_file}"', f'result_file = "{result_file_abs}"')
+
             process = subprocess.run(
                 [sys.executable, "-c", script],
                 capture_output=True,
                 text=True,
                 env=env,
                 timeout=120,  # 2 minute timeout
+                cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
             )
 
             # Check if subprocess had errors
@@ -14652,8 +14650,11 @@ except Exception as e:
 
             self.show_status_message("Launching Radio Data Downloader CLI...")
 
-            # Create a shell script to activate venv and run the CLI
-            temp_script = os.path.join(cli_dir, "run_cli.sh")
+            # Check if package directory is writable for the shell script
+            if os.access(cli_dir, os.W_OK):
+                temp_script = os.path.join(cli_dir, "run_cli.sh")
+            else:
+                temp_script = os.path.join(os.path.expanduser("~"), f".run_solar_cli_{os.getpid()}.sh")
             with open(temp_script, "w") as f:
                 f.write(
                     f"""#!/bin/bash
@@ -14700,7 +14701,8 @@ read -p "Press Enter to close..."
                         cmd = [terminal, "-e", f"bash {temp_script}"]
 
                     self.show_status_message(f"Launching in {terminal}...")
-                    process = subprocess.Popen(cmd)
+                    launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
+                    process = subprocess.Popen(cmd, cwd=launch_cwd)
 
                     # Wait a bit to see if the process starts successfully
                     try:
@@ -15205,8 +15207,9 @@ for key in ['QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH']:
 
 from PyQt5.QtWidgets import QApplication
 from solar_radio_image_viewer.from_simpl.view_dynamic_spectra_GUI import MainWindow
-from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme, setup_high_dpi
 
+setup_high_dpi()
 app = QApplication(sys.argv)
 apply_theme(app, "{current_theme}")
 window = MainWindow(theme="{current_theme}")
@@ -15214,11 +15217,12 @@ window.show()
 sys.exit(app.exec_())
 """
             env = self._get_clean_qt_env()
+            launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             subprocess.Popen(
                 [sys.executable, "-c", script],
                 start_new_session=True,
                 env=env,
-                cwd=os.getcwd(),
+                cwd=launch_cwd,
             )
             self.statusBar().showMessage("Dynamic Spectrum Viewer launched", 3000)
         except Exception as e:
@@ -15248,8 +15252,9 @@ for key in ['QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH']:
 
 from PyQt5.QtWidgets import QApplication
 from solar_radio_image_viewer.from_simpl.caltable_visualizer import VisualizationApp
-from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme, setup_high_dpi
 
+setup_high_dpi()
 app = QApplication(sys.argv)
 apply_theme(app, "{current_theme}")
 window = VisualizationApp()
@@ -15257,11 +15262,12 @@ window.show()
 sys.exit(app.exec_())
 """
             env = self._get_clean_qt_env()
+            launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             subprocess.Popen(
                 [sys.executable, "-c", script],
                 start_new_session=True,
                 env=env,
-                cwd=os.getcwd(),
+                cwd=launch_cwd,
             )
             self.statusBar().showMessage("Calibration Table Visualizer launched", 3000)
         except Exception as e:
@@ -15291,8 +15297,9 @@ for key in ['QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH']:
 
 from PyQt5.QtWidgets import QApplication
 from solar_radio_image_viewer.from_simpl.pipeline_logger_gui import PipelineLoggerGUI
-from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme, setup_high_dpi
 
+setup_high_dpi()
 app = QApplication(sys.argv)
 apply_theme(app, "{current_theme}")
 window = PipelineLoggerGUI(theme="{current_theme}")
@@ -15300,11 +15307,12 @@ window.show()
 sys.exit(app.exec_())
 """
             env = self._get_clean_qt_env()
+            launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             subprocess.Popen(
                 [sys.executable, "-c", script],
                 start_new_session=True,
                 env=env,
-                cwd=os.getcwd(),
+                cwd=launch_cwd,
             )
             self.statusBar().showMessage("Log Viewer launched", 3000)
         except Exception as e:
@@ -15334,8 +15342,9 @@ for key in ['QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH']:
 
 from PyQt5.QtWidgets import QApplication
 from solar_radio_image_viewer.from_simpl.dynamic_spectra_dialog import DynamicSpectraDialog
-from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme, setup_high_dpi
 
+setup_high_dpi()
 app = QApplication(sys.argv)
 apply_theme(app, "{current_theme}")
 dialog = DynamicSpectraDialog(theme="{current_theme}")
@@ -15343,11 +15352,12 @@ dialog.show()
 sys.exit(app.exec_())
 """
             env = self._get_clean_qt_env()
+            launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             subprocess.Popen(
                 [sys.executable, "-c", script],
                 start_new_session=True,
                 env=env,
-                cwd=os.getcwd(),
+                cwd=launch_cwd,
             )
             self.statusBar().showMessage("Dynamic Spectra Creator launched", 3000)
         except Exception as e:
@@ -15596,51 +15606,252 @@ sys.exit(app.exec_())
             self._health_check_timer.stop()
             # print("[SSH] Health check timer stopped")
 
-    def clear_remote_cache(self):
-        """Clear cached remote files and directory listings."""
-        # Confirm with user
-        reply = QMessageBox.question(
-            self,
-            "Clear Remote Cache",
-            "This will delete all locally cached files from remote servers.\n"
-            "This action cannot be undone.\n\n"
-            "Are you sure you want to clear the cache?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-
-        if reply != QMessageBox.Yes:
+    def show_cache_manager(self):
+        """Show cache management dialog with options to clear different cache types."""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QCheckBox
+        from pathlib import Path
+        import shutil
+        
+        # Check if dialog is already open
+        if hasattr(self, "_cache_manager_dialog") and self._cache_manager_dialog:
+            self._cache_manager_dialog.raise_()
+            self._cache_manager_dialog.activateWindow()
             return
 
+        dialog = QDialog(self)
+        self._cache_manager_dialog = dialog  # Keep reference
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.finished.connect(lambda: setattr(self, "_cache_manager_dialog", None))
+        
+        dialog.setWindowTitle("Cache Manager")
+        dialog.setMinimumWidth(500)
+        layout = QVBoxLayout(dialog)
+        
+        # Header
+        header = QLabel("<h3>🗑️ Cache Manager</h3>")
+        header.setStyleSheet("color: #2196F3;")
+        layout.addWidget(header)
+        
+        desc = QLabel("Select which caches to clear. This action cannot be undone.")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #666; margin-bottom: 10px;")
+        layout.addWidget(desc)
+        
+        # Calculate cache sizes
+        cache_info = []
+        
+        # 1. Remote Cache
+        remote_size = 0
+        remote_count = 0
         try:
-            # Clear file cache
-            if self.remote_cache:
-                self.remote_cache.clear_cache()
-            else:
-                # Initialize temporary cache just to clear it if main one not init yet
+            if self.remote_cache is None:
                 from .remote import RemoteFileCache
+                self.remote_cache = RemoteFileCache()
+            remote_size, remote_count = self.remote_cache.get_cache_size()
+        except Exception:
+            pass
+        cache_info.append(("remote", "📁 Remote Files Cache", remote_size, remote_count, 
+                          "Downloaded files from remote SSH servers"))
+        
+        # 2. NOAA Events Cache
+        noaa_size = 0
+        noaa_count = 0
+        try:
+            noaa_cache_dir = Path.home() / ".cache" / "solarviewer" / "noaa_events"
+            if noaa_cache_dir.exists():
+                for f in noaa_cache_dir.rglob("*"):
+                    if f.is_file():
+                        noaa_size += f.stat().st_size
+                        noaa_count += 1
+        except Exception:
+            pass
+        cache_info.append(("noaa", "🌞 Solar Activity Cache", noaa_size, noaa_count,
+                          "Solar events, active regions, conditions, and spectrographs"))
 
-                RemoteFileCache().clear_cache()
+        # 3. Helioviewer / API JSON Cache
+        json_size = 0
+        json_count = 0
+        try:
+            root_cache = Path.home() / ".cache" / "solarviewer"
+            if root_cache.exists():
+                for f in root_cache.glob("*.json"):
+                    if f.is_file():
+                        json_size += f.stat().st_size
+                        json_count += 1
+        except Exception:
+            pass
+        if json_size > 0:
+            cache_info.append(("json", "📄 API Metadata Cache", json_size, json_count,
+                              "Cached JSON responses from Helioviewer and other APIs"))
 
-            # Clear listing cache
-            from .remote import RemoteFileBrowser
-
-            if hasattr(RemoteFileBrowser, "_listing_cache"):
-                RemoteFileBrowser._listing_cache.clear()
-
-            # Show success message
-            self.statusBar().showMessage("🗑️ Remote cache cleared successfully", 5000)
-            QMessageBox.information(
+        # 4. Sunpy Data
+        sunpy_size = 0
+        sunpy_count = 0
+        try:
+            # Check both ~/sunpy and ~/.sunpy
+            for p in [Path.home() / "sunpy", Path.home() / ".sunpy"]:
+                if p.exists():
+                    for f in p.rglob("*"):
+                        if f.is_file():
+                            sunpy_size += f.stat().st_size
+                            sunpy_count += 1
+        except Exception:
+            pass
+        if sunpy_size > 0:
+            cache_info.append(("sunpy", "🛰️ Sunpy Data Cache", sunpy_size, sunpy_count,
+                              "Downloaded AIA pointing tables, .nc files, etc."))
+        
+        # 5. Old solarviewer_cache (if exists)
+        old_cache_size = 0
+        old_cache_count = 0
+        try:
+            old_cache_dir = Path.home() / ".solarviewer_cache"
+            if old_cache_dir.exists():
+                for f in old_cache_dir.rglob("*"):
+                    if f.is_file():
+                        old_cache_size += f.stat().st_size
+                        old_cache_count += 1
+        except Exception:
+            pass
+        if old_cache_size > 0:
+            cache_info.append(("old", "📦 Legacy Cache", old_cache_size, old_cache_count,
+                              "Old cache location (~/.solarviewer_cache)"))
+        
+        # Create checkboxes for each cache type
+        checkboxes = {}
+        total_size = 0
+        
+        for key, name, size, count, description in cache_info:
+            if size > 0:  # Only show categories that have data
+                group = QGroupBox()
+                group.setStyleSheet("QGroupBox { border: 1px solid #444; border-radius: 4px; padding: 10px; margin-top: 8px; }")
+                group_layout = QVBoxLayout(group)
+                
+                # Checkbox with name and size
+                cb = QCheckBox(f"{name} ({self._format_size(size)}, {count} files)")
+                cb.setChecked(False)
+                checkboxes[key] = cb
+                group_layout.addWidget(cb)
+                
+                # Description
+                desc_label = QLabel(description)
+                desc_label.setStyleSheet("color: #888; font-size: 11px; margin-left: 20px;")
+                group_layout.addWidget(desc_label)
+                
+                layout.addWidget(group)
+                total_size += size
+        
+        if not checkboxes:
+            no_cache = QLabel("All caches are currently empty.")
+            no_cache.setStyleSheet("color: #888; font-style: italic; margin: 20px;")
+            no_cache.setAlignment(Qt.AlignCenter)
+            layout.addWidget(no_cache)
+        else:
+            # Total size
+            total_label = QLabel(f"<b>Total: {self._format_size(total_size)}</b>")
+            total_label.setStyleSheet("margin-top: 10px; font-size: 14px;")
+            layout.addWidget(total_label)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.clicked.connect(lambda: [cb.setChecked(True) for cb in checkboxes.values() if cb.isEnabled()])
+        btn_layout.addWidget(select_all_btn)
+        
+        btn_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        clear_btn = QPushButton("🗑️ Clear Selected")
+        clear_btn.setStyleSheet("background-color: #F44336; color: white; font-weight: bold; padding: 6px 16px;")
+        
+        def do_clear():
+            # Get list of selected cache keys
+            selected_keys = [k for k, cb in checkboxes.items() if cb.isChecked()]
+            
+            if not selected_keys:
+                self.statusBar().showMessage("⚠️ No cache categories selected to clear", 5000)
+                return
+            
+            # Confirm before clearing
+            reply = QMessageBox.question(
                 self,
-                "Cache Cleared",
-                "Remote file cache has been cleared successfully.",
+                "Confirm Clear",
+                f"Are you sure you want to clear the selected caches ({len(selected_keys)})?\n\nThis action cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
             )
+            
+            if reply != QMessageBox.Yes:
+                return
+            
+            cleared = []
+            
+            if "remote" in selected_keys:
+                try:
+                    if self.remote_cache:
+                        self.remote_cache.clear_cache()
+                    else:
+                        from .remote import RemoteFileCache
+                        RemoteFileCache().clear_cache()
+                    
+                    from .remote import RemoteFileBrowser
+                    if hasattr(RemoteFileBrowser, "_listing_cache"):
+                        RemoteFileBrowser._listing_cache.clear()
+                    cleared.append("Remote Files")
+                except Exception as e: print(f"[Cache] Error clearing remote: {e}")
+            
+            if "noaa" in selected_keys:
+                try:
+                    noaa_cache_dir = Path.home() / ".cache" / "solarviewer" / "noaa_events"
+                    if noaa_cache_dir.exists():
+                        shutil.rmtree(noaa_cache_dir)
+                    cleared.append("Solar Activity")
+                except Exception as e: print(f"[Cache] Error clearing NOAA: {e}")
 
-            # Update menu item text manually after clearing
-            self._update_cache_menu_item()
+            if "json" in selected_keys:
+                try:
+                    root_cache = Path.home() / ".cache" / "solarviewer"
+                    if root_cache.exists():
+                        for f in root_cache.glob("*.json"):
+                            f.unlink()
+                    cleared.append("API Metadata")
+                except Exception as e: print(f"[Cache] Error clearing JSON: {e}")
 
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to clear cache: {str(e)}")
+            if "sunpy" in selected_keys:
+                try:
+                    for p in [Path.home() / "sunpy", Path.home() / ".sunpy"]:
+                        if p.exists():
+                            shutil.rmtree(p)
+                    cleared.append("Sunpy Data")
+                except Exception as e: print(f"[Cache] Error clearing Sunpy: {e}")
+            
+            if "old" in selected_keys:
+                try:
+                    old_cache_dir = Path.home() / ".solarviewer_cache"
+                    if old_cache_dir.exists():
+                        shutil.rmtree(old_cache_dir)
+                    cleared.append("Legacy Cache")
+                except Exception as e: print(f"[Cache] Error clearing legacy: {e}")
+            
+            if cleared:
+                self.statusBar().showMessage(f"🗑️ Cleared: {', '.join(cleared)}", 5000)
+                QMessageBox.information(self, "Cache Cleared", f"Successfully cleared:\n• " + "\n• ".join(cleared))
+                self._update_cache_menu_item()
+                dialog.accept() 
+            else:
+                QMessageBox.warning(self, "Error", "Failed to clear selected caches.")
+        
+        clear_btn.clicked.connect(do_clear)
+        btn_layout.addWidget(clear_btn)
+        
+        layout.addLayout(btn_layout)
+        dialog.show()  # Non-modal
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _format_size(self, size_bytes: int) -> str:
         """Format bytes to human readable string."""
@@ -15657,26 +15868,49 @@ sys.exit(app.exec_())
         return f"{size_bytes:.1f} {power_labels[n]}B"
 
     def _update_cache_menu_item(self):
-        """Update the Clear Cache menu item with current cache size."""
+        """Update the Manage Cache menu item with current total cache size."""
         if not hasattr(self, "clear_cache_act"):
             return
 
         try:
-            # Initialize cache if needed (lazy init)
-            if self.remote_cache is None:
-                from .remote import RemoteFileCache
+            from pathlib import Path
+            total_size = 0
+            
+            # 1. Main solarviewer cache (~/.cache/solarviewer)
+            # This includes remote files, noaa events, and json metadata
+            try:
+                root_cache = Path.home() / ".cache" / "solarviewer"
+                if root_cache.exists():
+                    for f in root_cache.rglob("*"):
+                        if f.is_file():
+                            total_size += f.stat().st_size
+            except Exception: pass
 
-                self.remote_cache = RemoteFileCache()
+            # 2. Sunpy cache
+            try:
+                for p in [Path.home() / "sunpy", Path.home() / ".sunpy"]:
+                    if p.exists():
+                        for f in p.rglob("*"):
+                            if f.is_file():
+                                total_size += f.stat().st_size
+            except Exception: pass
 
-            size, count = self.remote_cache.get_cache_size()
-            size_str = self._format_size(size)
-
-            self.clear_cache_act.setText(f"🗑️ Clear Remote Cache ({size_str})")
+            # 3. Legacy cache
+            try:
+                old_cache = Path.home() / ".solarviewer_cache"
+                if old_cache.exists():
+                    for f in old_cache.rglob("*"):
+                        if f.is_file():
+                            total_size += f.stat().st_size
+            except Exception: pass
+            
+            size_str = self._format_size(total_size)
+            self.clear_cache_act.setText(f"🗑️ Manage Cache ({size_str})")
 
         except Exception as e:
             # Fallback if something goes wrong
             print(f"[WARNING] Failed to update cache size: {e}")
-            self.clear_cache_act.setText("🗑️ Clear Remote Cache...")
+            self.clear_cache_act.setText("🗑️ Manage Cache...")
 
     def _check_connection_health(self):
         """Periodically check connection health and auto-reconnect if needed."""

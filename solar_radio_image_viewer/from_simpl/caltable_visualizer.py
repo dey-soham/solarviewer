@@ -35,6 +35,8 @@ def read_caltable_safe(table_path, read_spectral_window=False):
     Read a caltable using a completely separate subprocess to avoid casacore/Qt conflicts.
     Uses subprocess.run + pickle for complete isolation - no shared Python state.
     """
+    table_path = str(Path(table_path).absolute())
+
     # Create a script that reads the caltable and outputs pickled data
     script = f"""
 import pickle
@@ -61,7 +63,10 @@ sys.stdout.buffer.write(pickle.dumps(result))
 
     # Run in completely separate process
     result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, check=True
+        [sys.executable, "-c", script],
+        capture_output=True,
+        check=True,
+        cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~"),
     )
 
     # Unpickle the result
@@ -1170,6 +1175,9 @@ class VisualizationApp(QMainWindow):
 
 def main():
     """Entry point for viewcaltable command."""
+    # Apply high DPI scaling
+    from solar_radio_image_viewer.from_simpl.simpl_theme import setup_high_dpi
+    setup_high_dpi()
 
     app = QApplication(sys.argv)
     app.setStyle(QStyleFactory.create("Fusion"))

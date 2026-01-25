@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 
 # Only set QT_QPA_PLATFORM to offscreen when running this script directly
 # This prevents issues when importing this module from other scripts
@@ -22,6 +23,9 @@ import sys
 
 def run_immath_subprocess(imagename, outfile, mode="lpoli"):
     """Run immath in a subprocess to avoid memory issues with casatasks."""
+    imagename = os.path.abspath(imagename)
+    outfile = os.path.abspath(outfile)
+
     script = f"""
 import sys
 from casatasks import immath
@@ -33,7 +37,10 @@ except Exception as e:
     sys.exit(1)
 """
     result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
     )
     if result.returncode != 0:
         raise RuntimeError(f"immath failed: {result.stderr}")
@@ -658,6 +665,10 @@ def convert_casaimage_to_fits(
 
     import subprocess
     import sys
+    import tempfile
+
+    imagename = os.path.abspath(imagename)
+    fitsname = os.path.abspath(fitsname)
 
     # Run exportfits in a separate process to avoid segfault
     script = f"""
@@ -672,7 +683,10 @@ except Exception as e:
 """
 
     result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
     )
 
     if result.returncode != 0:
@@ -853,8 +867,9 @@ def convert_and_save_hpc(
 
         # Fix: use AND instead of OR to check if NOT a FITS file
         if not (input_fits_file.endswith(".fits") or input_fits_file.endswith(".fts")):
-            # Create unique temp filename with provided suffix
-            temp_filename = f"temp{temp_suffix}.fits"
+            temp_filename = os.path.join(
+                tempfile.gettempdir(), f"temp_hpc{temp_suffix}_{os.getpid()}.fits"
+            )
             input_fits_file = convert_casaimage_to_fits(
                 imagename=input_fits_file, fitsname=temp_filename
             )
@@ -884,8 +899,8 @@ def convert_and_save_hpc(
         )
         if not_fits_flag:
             # Remove the unique temp file
-            temp_filename = f"temp{temp_suffix}.fits"
-            os.system(f"rm {temp_filename}")
+            if os.path.exists(input_fits_file):
+                os.remove(input_fits_file)
 
         if map_obj is None:
             print("[ERROR] Failed to convert to helioprojective coordinates")
@@ -969,8 +984,10 @@ def convert_and_save_hpc_all_stokes(
         if not input_fits_file.endswith(".fits") and not input_fits_file.endswith(
             ".fts"
         ):
-            # Create unique temp filename with provided suffix
-            temp_filename = f"temp{temp_suffix}.fits"
+            # Create unique temp filename with provided suffix in a writable directory
+            temp_filename = os.path.join(
+                tempfile.gettempdir(), f"temp_hpc_all{temp_suffix}_{os.getpid()}.fits"
+            )
             input_fits_file = convert_casaimage_to_fits(
                 imagename=input_fits_file, fitsname=temp_filename
             )
@@ -1049,8 +1066,8 @@ def convert_and_save_hpc_all_stokes(
 
         if not_fits_flag:
             # Remove the temp file
-            temp_filename = f"temp{temp_suffix}.fits"
-            os.system(f"rm {temp_filename}")
+            if os.path.exists(input_fits_file):
+                os.remove(input_fits_file)
 
         if not stokes_maps:
             print("[ERROR] No Stokes maps were successfully converted")

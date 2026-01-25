@@ -143,7 +143,44 @@ To remove the desktop integration later:
 ```bash
 solarviewer --uninstall
 ```
-
+ 
+#### 💡 Optimal CASA Configuration
+ 
+To prevent CASA from auto-updating and to disable telemetry, we recommend adding these configurations:
+ 
+<details>
+<summary>Click to view recommended settings</summary>
+ 
+**`~/.casa/config.py`**
+```python
+datapath=["~/.casa/data"]
+measurespath="~/.casa/data"
+measures_auto_update=False
+data_auto_update=False
+nologfile=True
+telemetry_enabled = False
+crashreporter_enabled = False
+```
+ 
+**`~/.casa/casainit.py`**
+```python
+# CASA Initialization script to bypass updates
+try:
+    from casatasks.private.testmodes import bypass_casa_updates
+    bypass_casa_updates(True)
+    print("CASA auto-updates have been disabled via casainit.py")
+except:
+    pass
+```
+ 
+**`~/.casarc`**
+```
+logfile: /dev/null
+EnableTelemetry: False
+```
+ 
+</details>
+ 
 ### Dependencies
 
 <details>
