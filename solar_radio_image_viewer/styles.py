@@ -347,6 +347,12 @@ def get_stylesheet(palette, is_dark=True):
         border-color: {palette['highlight']};
     }}
     
+    QComboBox:disabled {{
+        background-color: {palette['surface']};
+        color: {palette['disabled']};
+        opacity: 0.7;
+    }}
+    
     QComboBox:focus {{
         border-color: {palette['highlight']};
         border-width: 2px;
@@ -455,6 +461,10 @@ def get_stylesheet(palette, is_dark=True):
         font-size: 11pt;
         color: {palette['text']};
     }}
+
+    QLabel:disabled {{
+        color: {palette['disabled']};
+    }}
     
     /* Status label - for displaying status messages */
     QLabel#StatusLabel {{
@@ -526,12 +536,21 @@ def get_stylesheet(palette, is_dark=True):
         border-radius: 3px;
     }}
     
+    QSlider::groove:horizontal:disabled {{
+        background: {palette['surface']};
+    }}
+    
     QSlider::handle:horizontal {{
         background: {palette['highlight']};
         width: 18px;
         height: 18px;
         margin: -6px 0;
         border-radius: 9px;
+    }}
+    
+    QSlider::handle:horizontal:disabled {{
+        background: {palette['disabled']};
+        border: 1px solid {palette['border']};
     }}
     
     QSlider::handle:horizontal:hover {{
@@ -541,6 +560,10 @@ def get_stylesheet(palette, is_dark=True):
     QSlider::sub-page:horizontal {{
         background: {palette['highlight']};
         border-radius: 3px;
+    }}
+    
+    QSlider::sub-page:horizontal:disabled {{
+        background: {palette['disabled']};
     }}
     
     /* ===== MENU BAR ===== */
@@ -731,6 +754,8 @@ def get_matplotlib_params(palette, is_dark=True):
             "legend.facecolor": palette["base"],
             "legend.edgecolor": palette["border"],
             "figure.edgecolor": palette["border"],
+            "axes.linewidth": 1.4,
+            "font.size": 12,
         }
     else:
         # Light mode - use white background, dark text
@@ -746,6 +771,8 @@ def get_matplotlib_params(palette, is_dark=True):
             "legend.facecolor": palette.get("plot_bg", "#ffffff"),
             "legend.edgecolor": palette.get("border", "#b8b8bc"),
             "figure.edgecolor": palette.get("border", "#b8b8bc"),
+            "axes.linewidth": 1.4,
+            "font.size": 12,
         }
 
 

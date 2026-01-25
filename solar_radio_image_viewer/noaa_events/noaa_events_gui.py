@@ -59,6 +59,336 @@ except ImportError:
     from solar_radio_image_viewer.noaa_events import noaa_events as ne
     from solar_radio_image_viewer.styles import theme_manager
 import requests
+import json
+from pathlib import Path
+
+
+def _serialize_obj(obj):
+    """Serialize an object to a JSON-compatible dict."""
+    if hasattr(obj, '__dict__'):
+        d = {}
+        for k, v in obj.__dict__.items():
+            if isinstance(v, datetime):
+                d[k] = v.isoformat()
+            elif isinstance(v, date):
+                d[k] = v.isoformat()
+            elif isinstance(v, list):
+                d[k] = [_serialize_obj(item) for item in v]
+            elif hasattr(v, '__dict__'):
+                d[k] = _serialize_obj(v)
+            else:
+                d[k] = v
+        d['__class__'] = type(obj).__name__
+        return d
+    return obj
+
+
+class NOAAEventsCache:
+    """
+    Cache manager for NOAA events data.
+    
+    Stores all fetched data in ~/.cache/solarviewer/noaa_events/YYYY/MM/DD/
+    organized by date. Uses JSON for structured data with proper object reconstruction.
+    """
+    
+    DEFAULT_CACHE_DIR = Path.home() / ".cache" / "solarviewer" / "noaa_events"
+    
+    def __init__(self, cache_dir: Optional[Path] = None):
+        self.cache_dir = cache_dir or self.DEFAULT_CACHE_DIR
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    def get_date_cache_dir(self, event_date: date) -> Path:
+        """Get cache directory for a specific date."""
+        date_dir = self.cache_dir / str(event_date.year) / f"{event_date.month:02d}" / f"{event_date.day:02d}"
+        date_dir.mkdir(parents=True, exist_ok=True)
+        return date_dir
+    
+    def _get_cache_path(self, event_date: date, filename: str) -> Path:
+        """Get full path for a cached file."""
+        return self.get_date_cache_dir(event_date) / filename
+    
+    # === Events ===
+    def save_events(self, event_date: date, events: list):
+        """Save solar events to cache."""
+        path = self._get_cache_path(event_date, "events.json")
+        with open(path, "w") as f:
+            json.dump([_serialize_obj(e) for e in events], f, default=str)
+    
+    def load_events(self, event_date: date) -> Optional[list]:
+        """Load solar events from cache and reconstruct SolarEvent objects."""
+        path = self._get_cache_path(event_date, "events.json")
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            # Reconstruct SolarEvent objects
+            events = []
+            for d in data:
+                if isinstance(d, dict):
+                    d.pop('__class__', None)  # Remove class marker
+                    events.append(ne.SolarEvent(**d))
+                else:
+                    events.append(d)
+            return events
+        except Exception as e:
+            print(f"Error loading events cache: {e}")
+            return None
+    
+    # === Active Regions ===
+    def save_active_regions(self, event_date: date, active_regions: list):
+        """Save active regions to cache."""
+        path = self._get_cache_path(event_date, "active_regions.json")
+        with open(path, "w") as f:
+            json.dump([_serialize_obj(ar) for ar in active_regions], f, default=str)
+    
+    def load_active_regions(self, event_date: date) -> Optional[list]:
+        """Load active regions from cache and reconstruct ActiveRegion objects."""
+        path = self._get_cache_path(event_date, "active_regions.json")
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            from ..solar_context import active_regions as ar_module
+            regions = []
+            for d in data:
+                if isinstance(d, dict):
+                    d.pop('__class__', None)
+                    regions.append(ar_module.ActiveRegion(**d))
+                else:
+                    regions.append(d)
+            return regions
+        except Exception as e:
+            print(f"Error loading active regions cache: {e}")
+            return None
+    
+    # === Conditions ===
+    def save_conditions(self, event_date: date, conditions):
+        """Save solar conditions to cache."""
+        path = self._get_cache_path(event_date, "conditions.json")
+        with open(path, "w") as f:
+            json.dump(_serialize_obj(conditions), f, default=str)
+    
+    def load_conditions(self, event_date: date):
+        """Load solar conditions from cache and reconstruct SolarConditions object."""
+        path = self._get_cache_path(event_date, "conditions.json")
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            from ..solar_context import realtime_data as rt
+            
+            # Reconstruct nested objects
+            kp_index = None
+            if data.get('kp_index'):
+                kp_data = data['kp_index']
+                kp_data.pop('__class__', None)
+                kp_data['event_date'] = date.fromisoformat(kp_data['event_date']) if isinstance(kp_data.get('event_date'), str) else kp_data.get('event_date')
+                kp_index = rt.KpIndexData(**kp_data)
+            
+            f107_flux = None
+            if data.get('f107_flux'):
+                f107_data = data['f107_flux']
+                f107_data.pop('__class__', None)
+                f107_data['event_date'] = date.fromisoformat(f107_data['event_date']) if isinstance(f107_data.get('event_date'), str) else f107_data.get('event_date')
+                f107_flux = rt.F107FluxData(**f107_data)
+            
+            solar_wind = None
+            if data.get('solar_wind'):
+                sw_data = data['solar_wind']
+                sw_data.pop('__class__', None)
+                sw_data['timestamp'] = datetime.fromisoformat(sw_data['timestamp']) if isinstance(sw_data.get('timestamp'), str) else sw_data.get('timestamp')
+                solar_wind = rt.SolarWindData(**sw_data)
+            
+            data.pop('__class__', None)
+            cond_date = date.fromisoformat(data['event_date']) if isinstance(data.get('event_date'), str) else data.get('event_date')
+            
+            return rt.SolarConditions(
+                event_date=cond_date,
+                kp_index=kp_index,
+                f107_flux=f107_flux,
+                is_historical=data.get('is_historical', True),
+                data_source=data.get('data_source', 'Cache'),
+                solar_wind=solar_wind
+            )
+        except Exception as e:
+            print(f"Error loading conditions cache: {e}")
+            return None
+    
+    # === CMEs ===
+    def save_cmes(self, event_date: date, cmes: list):
+        """Save CME events to cache."""
+        path = self._get_cache_path(event_date, "cmes.json")
+        with open(path, "w") as f:
+            json.dump([_serialize_obj(c) for c in cmes], f, default=str)
+    
+    def load_cmes(self, event_date: date) -> Optional[list]:
+        """Load CME events from cache and reconstruct CMEEvent objects."""
+        path = self._get_cache_path(event_date, "cmes.json")
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            from ..solar_context import cme_alerts as cme_module
+            cmes = []
+            for d in data:
+                if isinstance(d, dict):
+                    d.pop('__class__', None)
+                    # Convert datetime strings back to datetime objects
+                    if isinstance(d.get('start_time'), str):
+                        d['start_time'] = datetime.fromisoformat(d['start_time'])
+                    if d.get('earth_arrival_time') and isinstance(d['earth_arrival_time'], str):
+                        d['earth_arrival_time'] = datetime.fromisoformat(d['earth_arrival_time'])
+                    cmes.append(cme_module.CMEEvent(**d))
+                else:
+                    cmes.append(d)
+            return cmes
+        except Exception as e:
+            print(f"Error loading CMEs cache: {e}")
+            return None
+
+    # === e-CALLISTO Bursts ===
+    def save_ecallisto_bursts(self, event_date: date, bursts: list):
+        """Save e-CALLISTO bursts to cache."""
+        path = self._get_cache_path(event_date, "ecallisto_bursts.json")
+        with open(path, "w") as f:
+            json.dump([_serialize_obj(b) for b in bursts], f, default=str)
+
+    def load_ecallisto_bursts(self, event_date: date) -> Optional[list]:
+        """Load e-CALLISTO bursts from cache and reconstruct ECallistoBurst objects."""
+        path = self._get_cache_path(event_date, "ecallisto_bursts.json")
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            bursts = []
+            for d in data:
+                if isinstance(d, dict):
+                    d.pop('__class__', None)
+                    bursts.append(ne.ECallistoBurst(**d))
+                else:
+                    bursts.append(d)
+            return bursts
+        except Exception as e:
+            print(f"Error loading e-CALLISTO bursts cache: {e}")
+            return None
+
+    # === Context Images ===
+    def save_images(self, event_date: date, images: list):
+        """Save context image metadata to cache."""
+        path = self._get_cache_path(event_date, "images.json")
+        with open(path, "w") as f:
+            json.dump([_serialize_obj(img) for img in images], f, default=str)
+    
+    def load_images(self, event_date: date) -> Optional[list]:
+        """Load context image metadata from cache and reconstruct ContextImage objects."""
+        path = self._get_cache_path(event_date, "images.json")
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            from ..solar_context import context_images as ci_module
+            images = []
+            for d in data:
+                if isinstance(d, dict):
+                    d.pop('__class__', None)
+                    images.append(ci_module.ContextImage(**d))
+                else:
+                    images.append(d)
+            return images
+        except Exception as e:
+            print(f"Error loading images cache: {e}")
+            return None
+    
+    # === Context Image Thumbnails ===
+    def get_thumbnail_path(self, event_date: date, image_title: str) -> Path:
+        """Get local path for a cached thumbnail."""
+        safe_name = image_title.replace(" ", "_").replace("/", "_")
+        return self._get_cache_path(event_date, f"thumb_{safe_name}.png")
+    
+    def save_thumbnail(self, event_date: date, image_title: str, data: bytes) -> Path:
+        """Save a thumbnail image to cache."""
+        path = self.get_thumbnail_path(event_date, image_title)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+    
+    def load_thumbnail(self, event_date: date, image_title: str) -> Optional[Path]:
+        """Check if thumbnail is cached and return path."""
+        path = self.get_thumbnail_path(event_date, image_title)
+        return path if path.exists() else None
+    
+    # === Radio Spectra ===
+    def get_spectra_path(self, event_date: date, source: str) -> Path:
+        """Get the cache path for a spectra image."""
+        ext = "jpg" if source == "wind" else "png"
+        return self._get_cache_path(event_date, f"spectra_{source}.{ext}")
+    
+    def save_spectra(self, event_date: date, source: str, data: bytes) -> Path:
+        """Save spectra image to cache."""
+        path = self.get_spectra_path(event_date, source)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+    
+    def load_spectra(self, event_date: date, source: str) -> Optional[Path]:
+        """Check if spectra is cached and return path."""
+        path = self.get_spectra_path(event_date, source)
+        return path if path.exists() else None
+    
+    # === Check what's cached ===
+    def get_cached_status(self, event_date: date) -> dict:
+        """Check what data is cached for a date."""
+        cache_dir = self.get_date_cache_dir(event_date)
+        return {
+            'events': (cache_dir / "events.json").exists(),
+            'active_regions': (cache_dir / "active_regions.json").exists(),
+            'conditions': (cache_dir / "conditions.json").exists(),
+            'cmes': (cache_dir / "cmes.json").exists(),
+            'images': (cache_dir / "images.json").exists(),
+            'spectra_wind': self.get_spectra_path(event_date, 'wind').exists(),
+            'spectra_stereo_a': self.get_spectra_path(event_date, 'stereo_a').exists(),
+            'spectra_stereo_b': self.get_spectra_path(event_date, 'stereo_b').exists(),
+            'spectra_orfees': self.get_spectra_path(event_date, 'orfees').exists(),
+            'spectra_nda': self.get_spectra_path(event_date, 'nda').exists(),
+            'spectra_yamagawa': self.get_spectra_path(event_date, 'yamagawa').exists(),
+            'spectra_hiras': self.get_spectra_path(event_date, 'hiras').exists(),
+            'ecallisto_bursts': (cache_dir / "ecallisto_bursts.json").exists()
+        }
+    
+    def has_any_spectra(self, event_date: date) -> bool:
+        """Check if any radio spectra are cached for this date."""
+        status = self.get_cached_status(event_date)
+        return any([
+            status.get('spectra_wind'),
+            status.get('spectra_stereo_a'),
+            status.get('spectra_stereo_b'),
+            status.get('spectra_orfees'),
+            status.get('spectra_nda'),
+            status.get('spectra_yamagawa'),
+            status.get('spectra_hiras')
+        ])
+    
+    def is_fully_cached(self, event_date: date) -> bool:
+        """Check if all main data is cached (events, active_regions, conditions, cmes, images)."""
+        status = self.get_cached_status(event_date)
+        # Core data (not including spectra which is fetched separately)
+        return all([
+            status['events'],
+            status['active_regions'],
+            status['conditions'],
+            status['cmes'],
+            status['images'],
+        ])
+
+
+# Global cache instance
+_noaa_cache = NOAAEventsCache()
 
 
 class ClickableLabel(QLabel):
@@ -240,59 +570,132 @@ class ImageLoader(QThread):
 
 
 class FetchWorker(QThread):
-    """Worker thread for fetching events, active regions, conditions, CMEs, and images."""
+    """Worker thread for fetching events, active regions, conditions, CMEs, and images.
+    
+    Uses cache when available - only fetches missing data from network.
+    """
 
     finished = pyqtSignal(
-        object, object, object, object, object
-    )  # (events, active_regions, conditions, cmes, images) tuple
+        object, object, object, object, object, object
+    )  # (events, active_regions, conditions, cmes, images, ecallisto_bursts) tuple
     error = pyqtSignal(str)
+    progress = pyqtSignal(str)  # Progress messages
 
-    def __init__(self, event_date: date):
+    def __init__(self, event_date: date, force_refresh: bool = False):
         super().__init__()
         self.event_date = event_date
+        self.force_refresh = force_refresh
 
     def run(self):
         try:
-            # Fetch solar events
-            events = ne.fetch_and_parse_events(self.event_date)
+            cache = _noaa_cache
+            
+            # Check cache status
+            cached_status = cache.get_cached_status(self.event_date)
+            
+            # === Events ===
+            events = None
+            if not self.force_refresh and cached_status['events']:
+                self.progress.emit("Loading events from cache...")
+                events = cache.load_events(self.event_date)
+            
+            if events is None:
+                self.progress.emit("Fetching solar events...")
+                events = ne.fetch_and_parse_events(self.event_date)
+                if events:
+                    cache.save_events(self.event_date, events)
 
-            # Fetch active regions
+            # === Active Regions ===
             active_regions = None
-            try:
-                from ..solar_context import active_regions as ar
+            if not self.force_refresh and cached_status['active_regions']:
+                self.progress.emit("Loading active regions from cache...")
+                active_regions = cache.load_active_regions(self.event_date)
+            
+            if active_regions is None:
+                try:
+                    self.progress.emit("Fetching active regions...")
+                    from ..solar_context import active_regions as ar
+                    active_regions = ar.fetch_and_parse_active_regions(self.event_date)
+                    if active_regions:
+                        cache.save_active_regions(self.event_date, active_regions)
+                except Exception as ar_err:
+                    print(f"Active regions fetch failed: {ar_err}")
 
-                active_regions = ar.fetch_and_parse_active_regions(self.event_date)
-            except Exception as ar_err:
-                print(f"Active regions fetch failed: {ar_err}")
-
-            # Fetch solar conditions for the selected date
+            # === Conditions ===
             conditions = None
-            try:
-                from ..solar_context import realtime_data as rt
+            if not self.force_refresh and cached_status['conditions']:
+                self.progress.emit("Loading conditions from cache...")
+                conditions = cache.load_conditions(self.event_date)
+            
+            if conditions is None:
+                try:
+                    self.progress.emit("Fetching solar conditions...")
+                    from ..solar_context import realtime_data as rt
+                    conditions = rt.fetch_conditions_for_date(self.event_date)
+                    if conditions:
+                        cache.save_conditions(self.event_date, conditions)
+                except Exception as cond_err:
+                    print(f"Solar conditions fetch failed: {cond_err}")
 
-                conditions = rt.fetch_conditions_for_date(self.event_date)
-            except Exception as cond_err:
-                print(f"Solar conditions fetch failed: {cond_err}")
-
-            # Fetch CME alerts
+            # === CMEs ===
             cmes = None
-            try:
-                from ..solar_context import cme_alerts as cme
+            if not self.force_refresh and cached_status['cmes']:
+                self.progress.emit("Loading CMEs from cache...")
+                cmes = cache.load_cmes(self.event_date)
+            
+            if cmes is None:
+                try:
+                    self.progress.emit("Fetching CME alerts...")
+                    from ..solar_context import cme_alerts as cme
+                    cmes = cme.fetch_and_parse_cme_events(self.event_date)
+                    if cmes:
+                        cache.save_cmes(self.event_date, cmes)
+                except Exception as cme_err:
+                    print(f"CME fetch failed: {cme_err}")
 
-                cmes = cme.fetch_and_parse_cme_events(self.event_date)
-            except Exception as cme_err:
-                print(f"CME fetch failed: {cme_err}")
+            # === Context Images ===
+            images = None
+            if not self.force_refresh and cached_status['images']:
+                self.progress.emit("Loading context images from cache...")
+                images = cache.load_images(self.event_date)
+            
+            if images is None:
+                try:
+                    self.progress.emit("Fetching context images...")
+                    from ..solar_context import context_images as ci
+                    images = ci.fetch_context_images(self.event_date)
+                    if images:
+                        cache.save_images(self.event_date, images)
+                except Exception as img_err:
+                    print(f"Context images fetch failed: {img_err}")
+            
+            if images is None:
+                images = []
 
-            # Fetch Context Images URLs
-            images = []
-            try:
-                from ..solar_context import context_images as ci
+            # === e-CALLISTO Bursts ===
+            ecallisto_bursts = None
+            if not self.force_refresh and cached_status.get('ecallisto_bursts'):
+                self.progress.emit("Loading e-CALLISTO bursts from cache...")
+                ecallisto_bursts = cache.load_ecallisto_bursts(self.event_date)
+            
+            if ecallisto_bursts is None:
+                try:
+                    # Check if within supported range (2010, 2011, 2020+)
+                    if self.event_date.year in [2010, 2011] or self.event_date.year >= 2020:
+                        self.progress.emit("Fetching e-CALLISTO radio bursts...")
+                        ecallisto_bursts = ne.fetch_and_parse_ecallisto_bursts(self.event_date)
+                        if ecallisto_bursts:
+                            cache.save_ecallisto_bursts(self.event_date, ecallisto_bursts)
+                    else:
+                        ecallisto_bursts = []
+                except Exception as eb_err:
+                    print(f"e-CALLISTO bursts fetch failed: {eb_err}")
+                    ecallisto_bursts = []
 
-                images = ci.fetch_context_images(self.event_date)
-            except Exception as img_err:
-                print(f"Context images fetch failed: {img_err}")
+            if ecallisto_bursts is None:
+                ecallisto_bursts = []
 
-            self.finished.emit(events, active_regions, conditions, cmes, images)
+            self.finished.emit(events, active_regions, conditions, cmes, images, ecallisto_bursts)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -366,6 +769,543 @@ class GOESPlotWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+
+
+class DHSpectraWorker(QThread):
+    """Worker thread for fetching DH-band dynamic spectra from CDAW NASA.
+    
+    Fetches WIND/WAVES (24h full-day, calibrated) and STEREO A/B (7h) spectrograms for the selected date.
+    Uses unified cache system - checks cache first before downloading.
+    """
+
+    progress = pyqtSignal(str)
+    result_ready = pyqtSignal(str, str)  # Emits (source_key, file_path)
+    finished = pyqtSignal(dict, list)  # Emits (results_dict, error_list)
+    # Removing error signal as we now accumulate errors in a list
+
+    # CDAW server URLs
+    # Primary: calibrated L2 daily spectrograms (well calibrated)
+    WAVES_CALIBRATED_URL = 'https://cdaw.gsfc.nasa.gov/images/wind/waves/test_daily/'
+    # Fallback: 24h full-day spectrograms
+    WAVES_URL_24H = 'https://cdaw.gsfc.nasa.gov/images/wind/waves_h2M_24h/'
+    SWAVES_URL = 'https://cdaw.gsfc.nasa.gov/images/stereo/swaves/'
+    SWAVES_URL_NEW = 'https://cdaw.gsfc.nasa.gov/images/stereo/swaves_new/'
+
+    def __init__(self, event_datetime: datetime, force_refresh: bool = False):
+        super().__init__()
+        self.event_datetime = event_datetime
+        self.force_refresh = force_refresh
+
+    def run(self):
+        """Fetch spectra from CDAW servers, using cache when available."""
+        import urllib.request
+        import urllib.error
+        from datetime import datetime as dt
+        import re
+        
+        try:
+            cache = _noaa_cache
+            event_date = self.event_datetime.date()
+            results = {
+                'wind': None, 'stereo_a': None, 'stereo_b': None, 
+                'combined': None, 'norp': None, 'orfees': None, 
+                'nda': None, 'yamagawa': None, 'hiras': None
+            }
+            errors = []
+            dt_obj = self.event_datetime
+            date_path = f"{dt_obj.year}/{dt_obj.month:02d}/{dt_obj.day:02d}"
+            date_str = dt_obj.strftime('%Y%m%d')
+            
+            # STEREO URL based on date
+            swaves_url = self.SWAVES_URL_NEW if dt_obj.year >= 2018 else self.SWAVES_URL
+            
+            # === WIND/WAVES ===
+            # Check cache first
+            cached_wind = cache.load_spectra(event_date, 'wind')
+            if not self.force_refresh and cached_wind:
+                self.progress.emit("Loading WIND/WAVES from cache...")
+                results['wind'] = str(cached_wind)
+                self.result_ready.emit('wind', str(cached_wind))
+            else:
+                # Try calibrated L2 source first (test_daily)
+                wind_found = False
+                self.progress.emit("Searching for calibrated WIND/WAVES data...")
+                
+                try:
+                    # Calibrated source: test_daily/YYYY/YYYYMMDD_windwaves__scale_2to6sfu_l2_cdf_v1.jpg
+                    calibrated_filename = f"{date_str}_windwaves__scale_2to6sfu_l2_cdf_v1.jpg"
+                    calibrated_url = f"{self.WAVES_CALIBRATED_URL}{dt_obj.year}/{calibrated_filename}"
+                    
+                    # Try to fetch the calibrated file directly
+                    req = urllib.request.urlopen(calibrated_url, timeout=15)
+                    data = req.read()
+                    wind_file = cache.save_spectra(event_date, 'wind', data)
+                    results['wind'] = str(wind_file)
+                    self.result_ready.emit('wind', str(wind_file))
+                    wind_found = True
+                    self.progress.emit("Calibrated WIND/WAVES data found!")
+                    
+                except Exception as e:
+                    self.progress.emit(f"Calibrated source unavailable, trying fallback...")
+                
+                # Fallback to 24h source if calibrated not found
+                if not wind_found:
+                    try:
+                        wind_dir_url = f"{self.WAVES_URL_24H}{date_path}/"
+                        req = urllib.request.urlopen(wind_dir_url, timeout=15)
+                        html = req.read().decode('utf-8')
+                        
+                        # Parse for 24h windwaves PNG files (prefer h2M over h2hk)
+                        pattern = re.compile(r'href="([^"]*windwaves_h2M_sfu_24h\.png)"', re.IGNORECASE)
+                        matches = pattern.findall(html)
+                        
+                        if not matches:
+                            # Fallback to h2hk if h2M not available
+                            pattern = re.compile(r'href="([^"]*windwaves_h2hk_sfu_24h\.png)"', re.IGNORECASE)
+                            matches = pattern.findall(html)
+                        
+                        if matches:
+                            # Get the latest 24h image (last one in the day)
+                            best_match = self._find_latest_image(matches)
+                            if best_match:
+                                wind_url = f"{wind_dir_url}{best_match}"
+                                req = urllib.request.urlopen(wind_url, timeout=30)
+                                data = req.read()
+                                wind_file = cache.save_spectra(event_date, 'wind', data)
+                                results['wind'] = str(wind_file)
+                                self.result_ready.emit('wind', str(wind_file))
+                                wind_found = True
+                                self.progress.emit("WIND/WAVES 24h data found!")
+                        
+                        if not wind_found:
+                            self.progress.emit("No WIND/WAVES data for this date")
+                    except Exception as e:
+                        err_msg = f"WIND/WAVES: {str(e)[:50]}"
+                        self.progress.emit(err_msg)
+                        errors.append(err_msg)
+            
+            # Check if date is before STEREO mission
+            if dt_obj.year < 2007:
+                self.progress.emit("Date predates STEREO mission (launched Oct 2006)")
+                self.finished.emit(results)
+                return
+            
+            # === STEREO-A ===
+            cached_sta = cache.load_spectra(event_date, 'stereo_a')
+            if not self.force_refresh and cached_sta:
+                self.progress.emit("Loading STEREO-A from cache...")
+                results['stereo_a'] = str(cached_sta)
+                self.result_ready.emit('stereo_a', str(cached_sta))
+            else:
+                self.progress.emit("Searching for STEREO-A data...")
+                try:
+                    stereo_dir_url = f"{swaves_url}{date_path}/"
+                    req = urllib.request.urlopen(stereo_dir_url, timeout=15)
+                    html = req.read().decode('utf-8')
+                    
+                    if swaves_url == self.SWAVES_URL:
+                        # Old format (2007-2017): swaves2A (2 = 7h plot)
+                        pattern_a = re.compile(r'href="([^"]*swaves2A\.png)"', re.IGNORECASE)
+                    else:
+                        # New format (2018+): sta_waves_7h (7-hour coverage)
+                        pattern_a = re.compile(r'href="([^"]*sta_waves_7h[^"]*\.png)"', re.IGNORECASE)
+                    
+                    matches_a = sorted(pattern_a.findall(html))
+                    
+                    if matches_a:
+                        self.progress.emit(f"Stitching STEREO-A images...")
+                        stitched_data = self._stitch_images(stereo_dir_url, matches_a)
+                        if stitched_data:
+                            sta_file = cache.save_spectra(event_date, 'stereo_a', stitched_data)
+                            results['stereo_a'] = str(sta_file)
+                            self.result_ready.emit('stereo_a', str(sta_file))
+                            self.progress.emit("STEREO-A stitched data saved!")
+                        else:
+                            # Fallback to single image if stitching fails
+                            best_a = self._find_latest_image(matches_a)
+                            if best_a:
+                                sta_url = f"{stereo_dir_url}{best_a}"
+                                req = urllib.request.urlopen(sta_url, timeout=30)
+                                data = req.read()
+                                sta_file = cache.save_spectra(event_date, 'stereo_a', data)
+                                results['stereo_a'] = str(sta_file)
+                                self.result_ready.emit('stereo_a', str(sta_file))
+                                self.progress.emit("STEREO-A 7h data found (stitching failed)!")
+                            
+                except Exception as e:
+                    err_msg = f"STEREO-A: {str(e)[:50]}"
+                    self.progress.emit(err_msg)
+                    errors.append(err_msg)
+            
+            # === STEREO-B (only for dates before 2014) ===
+            if dt_obj.year <= 2014:
+                cached_stb = cache.load_spectra(event_date, 'stereo_b')
+                if not self.force_refresh and cached_stb:
+                    self.progress.emit("Loading STEREO-B from cache...")
+                    results['stereo_b'] = str(cached_stb)
+                    self.result_ready.emit('stereo_b', str(cached_stb))
+                else:
+                    try:
+                        stereo_dir_url = f"{swaves_url}{date_path}/"
+                        req = urllib.request.urlopen(stereo_dir_url, timeout=15)
+                        html = req.read().decode('utf-8')
+                        
+                        # Old format: swaves2B (2 = 7h plot)
+                        pattern_b = re.compile(r'href="([^"]*swaves2B\.png)"', re.IGNORECASE)
+                        matches_b = sorted(pattern_b.findall(html))
+                        
+                        if matches_b:
+                            self.progress.emit(f"Stitching STEREO-B images...")
+                            stitched_data = self._stitch_images(stereo_dir_url, matches_b)
+                            if stitched_data:
+                                stb_file = cache.save_spectra(event_date, 'stereo_b', stitched_data)
+                                results['stereo_b'] = str(stb_file)
+                                self.result_ready.emit('stereo_b', str(stb_file))
+                                self.progress.emit("STEREO-B stitched data saved!")
+                            else:
+                                # Fallback to single image
+                                best_b = self._find_latest_image(matches_b)
+                                if best_b:
+                                    stb_url = f"{stereo_dir_url}{best_b}"
+                                    req = urllib.request.urlopen(stb_url, timeout=30)
+                                    data = req.read()
+                                    stb_file = cache.save_spectra(event_date, 'stereo_b', data)
+                                    results['stereo_b'] = str(stb_file)
+                                    self.result_ready.emit('stereo_b', str(stb_file))
+                                    self.progress.emit("STEREO-B 7h data found (stitching failed)!")
+                                
+                    except Exception as e:
+                        err_msg = f"STEREO-B: {str(e)[:50]}"
+                        self.progress.emit(err_msg)
+                        errors.append(err_msg)
+            
+            # === Nobeyama (NORP) ===
+            cached_norp = cache.load_spectra(event_date, 'norp')
+            if not self.force_refresh and cached_norp:
+                self.progress.emit("Loading Nobeyama (NORP) from cache...")
+                results['norp'] = str(cached_norp)
+                self.result_ready.emit('norp', str(cached_norp))
+            else:
+                self.progress.emit("Searching for Nobeyama (NORP) data...")
+                try:
+                    # https://solar.nro.nao.ac.jp/norp/html/daily/YYYY/MM/plYYMMDD.png
+                    year4 = dt_obj.strftime('%Y')
+                    month = dt_obj.strftime('%m')
+                    year2 = dt_obj.strftime('%y')
+                    date_str2 = dt_obj.strftime('%y%m%d')
+                    norp_url = f"https://solar.nro.nao.ac.jp/norp/html/daily/{year4}/{month}/pl{date_str2}.png"
+                    
+                    req = urllib.request.urlopen(norp_url, timeout=15)
+                    data = req.read()
+                    norp_file = cache.save_spectra(event_date, 'norp', data)
+                    results['norp'] = str(norp_file)
+                    self.result_ready.emit('norp', str(norp_file))
+                    self.progress.emit("Nobeyama (NORP) data found!")
+                except Exception as e:
+                    err_msg = f"Nobeyama (NORP): {str(e)[:50]}"
+                    self.progress.emit(err_msg)
+                    errors.append(err_msg)
+
+            # === ORFEES (Nancay) ===
+            cached_orfees = cache.load_spectra(event_date, 'orfees')
+            if not self.force_refresh and cached_orfees:
+                self.progress.emit("Loading ORFEES from cache...")
+                results['orfees'] = str(cached_orfees)
+                self.result_ready.emit('orfees', str(cached_orfees))
+            else:
+                self.progress.emit("Searching for ORFEES data...")
+                try:
+                    # https://rsdb.obs-nancay.fr/QL/Orfees/orfeesYYYYMMDD.png
+                    url = f"https://rsdb.obs-nancay.fr/QL/Orfees/orfees{event_date.strftime('%Y%m%d')}.png"
+                    import ssl
+                    context = ssl._create_unverified_context()
+                    req = urllib.request.urlopen(url, timeout=15, context=context)
+                    data = req.read()
+                    orfees_file = cache.save_spectra(event_date, 'orfees', data)
+                    results['orfees'] = str(orfees_file)
+                    self.result_ready.emit('orfees', str(orfees_file))
+                    self.progress.emit("ORFEES data found!")
+                except Exception as e:
+                    err_msg = f"ORFEES: {str(e)[:50]}"
+                    self.progress.emit(err_msg)
+                    errors.append(err_msg)
+
+            # === NDA (Nancay) ===
+            cached_nda = cache.load_spectra(event_date, 'nda')
+            if not self.force_refresh and cached_nda:
+                self.progress.emit("Loading NDA from cache...")
+                results['nda'] = str(cached_nda)
+                self.result_ready.emit('nda', str(cached_nda))
+            else:
+                self.progress.emit("Searching for NDA data...")
+                try:
+                    # https://rsdb.obs-nancay.fr/QL/Nda/NdaP1FYYYYMMDD.png
+                    url = f"https://rsdb.obs-nancay.fr/QL/Nda/NdaP1F{event_date.strftime('%Y%m%d')}.png"
+                    import ssl
+                    context = ssl._create_unverified_context()
+                    req = urllib.request.urlopen(url, timeout=15, context=context)
+                    data = req.read()
+                    nda_file = cache.save_spectra(event_date, 'nda', data)
+                    results['nda'] = str(nda_file)
+                    self.result_ready.emit('nda', str(nda_file))
+                    self.progress.emit("NDA data found!")
+                except Exception as e:
+                    err_msg = f"NDA: {str(e)[:50]}"
+                    self.progress.emit(err_msg)
+                    errors.append(err_msg)
+            # === NICT (Yamagawa or HiRAS) ===
+            from datetime import date
+            NICT_TRANSITION_DATE = date(2016, 7, 11)
+            
+            if event_date >= NICT_TRANSITION_DATE:
+                # Yamagawa
+                cached_yamagawa = cache.load_spectra(event_date, 'yamagawa')
+                if not self.force_refresh and cached_yamagawa:
+                    self.progress.emit("Loading Yamagawa from cache...")
+                    results['yamagawa'] = str(cached_yamagawa)
+                    self.result_ready.emit('yamagawa', str(cached_yamagawa))
+                else:
+                    self.progress.emit("Fetching and stitching Yamagawa data...")
+                    try:
+                        yamagawa_data = self._fetch_nict_spectra('yamagawa', event_date)
+                        if yamagawa_data:
+                            yamagawa_file = cache.save_spectra(event_date, 'yamagawa', yamagawa_data)
+                            results['yamagawa'] = str(yamagawa_file)
+                            self.result_ready.emit('yamagawa', str(yamagawa_file))
+                            self.progress.emit("Yamagawa data stitched!")
+                    except Exception as e:
+                        err_msg = f"Yamagawa: {str(e)[:50]}"
+                        self.progress.emit(err_msg)
+                        errors.append(err_msg)
+            else:
+                # HiRAS
+                cached_hiras = cache.load_spectra(event_date, 'hiras')
+                if not self.force_refresh and cached_hiras:
+                    self.progress.emit("Loading HiRAS from cache...")
+                    results['hiras'] = str(cached_hiras)
+                    self.result_ready.emit('hiras', str(cached_hiras))
+                else:
+                    self.progress.emit("Fetching and stitching HiRAS data...")
+                    try:
+                        hiras_data = self._fetch_nict_spectra('hiras', event_date)
+                        if hiras_data:
+                            hiras_file = cache.save_spectra(event_date, 'hiras', hiras_data)
+                            results['hiras'] = str(hiras_file)
+                            self.result_ready.emit('hiras', str(hiras_file))
+                            self.progress.emit("HiRAS data stitched!")
+                    except Exception as e:
+                        err_msg = f"HiRAS: {str(e)[:50]}"
+                        self.progress.emit(err_msg)
+                        errors.append(err_msg)
+            
+            self.finished.emit(results, errors)
+        except Exception as e:
+            # Final safety net for the entire worker run
+            if 'results' not in locals():
+                results = {}
+            if 'errors' not in locals():
+                errors = [f"Critical worker error: {str(e)}"]
+            else:
+                errors.append(f"Critical worker error: {str(e)}")
+            self.finished.emit(results, errors)
+            
+    def _fetch_nict_spectra(self, station: str, event_date: date) -> Optional[bytes]:
+        """Fetch hourly strips, legend, and range from NICT and stitch them horizontally.
+        
+        Follows the logic from yamagawa.py precisely.
+        """
+        import requests
+        from PIL import Image
+        import io
+        
+        referer = "https://solobs.nict.go.jp/radio/cgi-bin/MainDisplay.pl"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': referer
+        }
+        
+        base_url = f"https://solobs.nict.go.jp/radio/data/img/{station}"
+        fixed_url = f"{base_url}/fixed"
+        
+        if station == 'yamagawa':
+            prefix = "YAMAGAWA"
+        else:
+            prefix = "HiRAS"
+
+        def download_pil_image(url):
+            try:
+                r = requests.get(url, headers=headers, timeout=10)
+                if r.status_code == 200:
+                    return Image.open(io.BytesIO(r.content))
+            except Exception as e:
+                print(f"Error downloading {url}: {e}")
+            return None
+
+        # 1. Download legend and range
+        cb = download_pil_image(f"{fixed_url}/{prefix}_FIXTMIMG_legend.png")
+        ax = download_pil_image(f"{fixed_url}/{prefix}_FIXTMIMG_range.png")
+
+        if not cb or not ax:
+            return None
+
+        # 2. Download 24 hourly images
+        hourly_images = []
+        target_size = (450, 600) 
+        
+        year = event_date.strftime("%Y")
+        month = event_date.strftime("%m")
+        day = event_date.strftime("%d")
+        date_compact = event_date.strftime("%Y%m%d")
+
+        for h in range(24):
+            hour_str = f"{h:02d}"
+            url = f"{base_url}/{year}/{month}/{day}/{prefix}_{date_compact}{hour_str}.png"
+            img = download_pil_image(url)
+            
+            if not img:
+                fallback_url = f"{fixed_url}/{prefix}_FIXTMIMG{hour_str}.png"
+                img = download_pil_image(fallback_url)
+                if img:
+                    img = img.resize(target_size, Image.Resampling.LANCZOS)
+                else:
+                    img = Image.new('RGB', target_size, (0, 0, 0))
+            else:
+                if img.size != target_size:
+                    target_size = img.size
+            
+            hourly_images.append(img)
+
+        # 3. Stitch
+        max_height = max(cb.height, ax.height, max(img.height for img in hourly_images))
+        total_width = cb.width + ax.width + sum(img.width for img in hourly_images)
+
+        stitched_img = Image.new('RGB', (total_width, max_height), (255, 255, 255))
+        
+        x_offset = 0
+        # Paste Colorbar
+        stitched_img.paste(cb, (x_offset, 0))
+        x_offset += cb.width
+        
+        # Paste Axis
+        stitched_img.paste(ax, (x_offset, 0))
+        x_offset += ax.width
+        
+        # Paste Hourly Plots
+        for img in hourly_images:
+            stitched_img.paste(img, (x_offset, 0))
+            x_offset += img.width
+
+        img_byte_arr = io.BytesIO()
+        stitched_img.save(img_byte_arr, format='PNG')
+        return img_byte_arr.getvalue()
+
+    def _find_latest_image(self, filenames: list) -> str:
+        """Find the image file with the latest timestamp for full-day coverage."""
+        from datetime import datetime as dt
+        import re
+        
+        if not filenames:
+            return None
+        
+        best_file = None
+        max_time = None
+        
+        for fname in filenames:
+            # Try to extract timestamp from filename (format: YYYYMMDD_HHMMSS)
+            match = re.search(r'(\d{8})_(\d{6})', fname)
+            if match:
+                try:
+                    file_dt = dt.strptime(f"{match.group(1)}_{match.group(2)}", "%Y%m%d_%H%M%S")
+                    if max_time is None or file_dt > max_time:
+                        max_time = file_dt
+                        best_file = fname
+                except ValueError:
+                    continue
+        
+        # If no timestamp found, return the last file (usually latest in sorted order)
+        return best_file if best_file else filenames[-1]
+
+    def _stitch_images(self, base_url: str, filenames: list) -> Optional[bytes]:
+        """Download multiple images (7 hours apart) and stitch them horizontally."""
+        from PIL import Image
+        import io
+        import urllib.request
+        from datetime import datetime as dt
+        import re
+        
+        if not filenames:
+            return None
+            
+        # Parse timestamps and sort
+        file_times = []
+        for fname in filenames:
+            match = re.search(r'(\d{8})_(\d{6})', fname)
+            if match:
+                try:
+                    file_dt = dt.strptime(f"{match.group(1)}_{match.group(2)}", "%Y%m%d_%H%M%S")
+                    file_times.append((file_dt, fname))
+                except ValueError:
+                    continue
+        
+        file_times.sort() # Ensure chronological order
+        
+        # Select files approximately 7 hours apart to cover the day without redundancy
+        selected_filenames = []
+        if file_times:
+            last_time = None
+            for ftime, fname in file_times:
+                # Use slightly less than 7h (e.g. 6.5h) to ensure we don't miss a segment 
+                # due to slightly varied start times (7h plots often start at 00, 07, 14, 21)
+                if last_time is None or (ftime - last_time).total_seconds() >= 6.5 * 3600:
+                    selected_filenames.append(fname)
+                    last_time = ftime
+        else:
+            # Fallback for old formats without timestamps (unlikely for multi-file)
+            selected_filenames = sorted(list(set(filenames)))[:4]
+            
+        if not selected_filenames:
+            return None
+            
+        images = []
+        try:
+            # Limit to 5 images to avoid excessive memory usage
+            for fname in selected_filenames[:5]:
+                img_url = f"{base_url}{fname}"
+                req = urllib.request.urlopen(img_url, timeout=20)
+                img_data = req.read()
+                img = Image.open(io.BytesIO(img_data))
+                images.append(img)
+                
+            if not images:
+                return None
+                
+            if len(images) == 1:
+                # Still return bytes for consistent interface
+                img_byte_arr = io.BytesIO()
+                images[0].save(img_byte_arr, format='PNG')
+                return img_byte_arr.getvalue()
+                
+            # Stitch horizontally
+            widths, heights = zip(*(i.size for i in images))
+            total_width = sum(widths)
+            max_height = max(heights)
+            
+            new_im = Image.new('RGB', (total_width, max_height))
+            
+            x_offset = 0
+            for im in images:
+                # Align to top (y=0)
+                new_im.paste(im, (x_offset, 0))
+                x_offset += im.size[0]
+                
+            # Convert back to bytes
+            img_byte_arr = io.BytesIO()
+            new_im.save(img_byte_arr, format='PNG')
+            return img_byte_arr.getvalue()
+            
+        except Exception as e:
+            print(f"Stitching failed: {e}")
+            return None
 
 
 class CollapsibleSection(QWidget):
@@ -489,8 +1429,8 @@ class EventTable(QTableWidget):
         # Modern table styling handled by global stylesheet
         pass
 
-    def add_event_row(self, values: list, colors: dict = None):
-        """Add a row with optional cell coloring."""
+    def add_event_row(self, values: list, colors: dict = None, tooltips: dict = None):
+        """Add a row with optional cell coloring and tooltips."""
         # Temporarily disable sorting to prevent row movement during insertion
         sorting_enabled = self.isSortingEnabled()
         self.setSortingEnabled(False)
@@ -502,6 +1442,8 @@ class EventTable(QTableWidget):
             item.setTextAlignment(Qt.AlignCenter)
             if colors and col in colors:
                 item.setForeground(QColor(colors[col]))
+            if tooltips and col in tooltips:
+                item.setToolTip(str(tooltips[col]))
             self.setItem(row, col, item)
 
         # Re-enable sorting
@@ -715,8 +1657,8 @@ class NOAAEventsViewer(QMainWindow):
 
         # Solar Events credits label
         events_credits_label = QLabel(
-            'Data Source: <a href="https://solarmonitor.org/">SolarMonitor.org</a> '
-            "(NOAA/SWPC Solar Events Archive)"
+            'Data Sources: <a href="https://solarmonitor.org/">SolarMonitor.org</a> (NOAA/SWPC), '
+            '<a href="https://soleil.i4ds.ch/solarradio/">e-CALLISTO</a> (C. Monstein)'
         )
         events_credits_label.setOpenExternalLinks(True)
         events_credits_label.setStyleSheet(
@@ -1053,6 +1995,514 @@ class NOAAEventsViewer(QMainWindow):
 
         self.tabs.addTab(images_tab, "📷 Context Images")
 
+        # Tab 6: Radio Spectra (DH-band)
+        spectra_tab = QWidget()
+        spectra_layout = QVBoxLayout(spectra_tab)
+        spectra_layout.setContentsMargins(16, 12, 16, 12)
+        spectra_layout.setSpacing(12)
+
+        # Fetch button and progress
+        spectra_controls = QHBoxLayout()
+        self.fetch_spectra_btn = QPushButton("📻 Fetch Spectra")
+        self.fetch_spectra_btn.setToolTip(
+            "Download WIND/WAVES and STEREO dynamic spectra for this date"
+        )
+        self.fetch_spectra_btn.clicked.connect(self.fetch_dh_spectra)
+        spectra_controls.addWidget(self.fetch_spectra_btn)
+
+        self.spectra_progress = QProgressBar()
+        self.spectra_progress.setRange(0, 0)  # Indeterminate
+        self.spectra_progress.hide()
+        spectra_controls.addWidget(self.spectra_progress)
+
+        spectra_controls.addStretch()
+        spectra_layout.addLayout(spectra_controls)
+
+        # Status label
+        self.spectra_status_label = QLabel(
+            "Click 'Fetch Spectra' to download radio spectra."
+        )
+        self.spectra_status_label.setWordWrap(True)
+        self.spectra_status_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']}; font-style: italic;"
+        )
+        spectra_layout.addWidget(self.spectra_status_label)
+
+        # Scrollable content area for spectra images
+        spectra_scroll = QScrollArea()
+        spectra_scroll.setWidgetResizable(True)
+        spectra_scroll.setFrameShape(QFrame.NoFrame)
+
+        spectra_content = QWidget()
+        spectra_content_layout = QVBoxLayout(spectra_content)
+        spectra_content_layout.setSpacing(16)
+
+        # WIND/WAVES image
+        wind_card = QFrame()
+        if self.is_dark_theme:
+            wind_card.setStyleSheet(
+                """
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(99, 102, 241, 0.12),
+                        stop:1 rgba(99, 102, 241, 0.06));
+                    border-radius: 12px;
+                    border: 1px solid rgba(99, 102, 241, 0.25);
+                }
+            """
+            )
+        else:
+            wind_card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 12px;
+                    border: 1px solid {palette['border']};
+                }}
+            """
+            )
+        wind_layout = QVBoxLayout(wind_card)
+        wind_layout.setContentsMargins(12, 12, 12, 12)
+
+        wind_header = QHBoxLayout()
+        wind_title = QLabel("🛰️ WIND/WAVES 24h Calibrated (14 kHz - 14 MHz)")
+        wind_title.setStyleSheet("font-weight: bold;")
+        wind_header.addWidget(wind_title)
+        wind_header.addStretch()
+        self.wind_save_btn = QPushButton("💾 Save")
+        self.wind_save_btn.setToolTip("Save WIND/WAVES image as PNG")
+        self.wind_save_btn.clicked.connect(lambda checked: self.save_spectra_image('wind'))
+        self.wind_save_btn.setEnabled(False)
+        wind_header.addWidget(self.wind_save_btn)
+        wind_layout.addLayout(wind_header)
+
+        self.wind_image_label = ClickableLabel("No data loaded")
+        self.wind_image_label.setAlignment(Qt.AlignCenter)
+        self.wind_image_label.setMinimumHeight(200)
+        self.wind_image_label.setScaledContents(False)
+        self.wind_image_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']};"
+        )
+        self.wind_image_label.setCursor(Qt.PointingHandCursor)
+        self.wind_image_label.setToolTip("Click to view full resolution")
+        self.wind_image_label.clicked.connect(lambda: self.show_local_image('wind', 'WIND/WAVES'))
+        wind_layout.addWidget(self.wind_image_label)
+
+        spectra_content_layout.addWidget(wind_card)
+
+        # STEREO-A image
+        stereo_a_card = QFrame()
+        if self.is_dark_theme:
+            stereo_a_card.setStyleSheet(
+                """
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(16, 185, 129, 0.12),
+                        stop:1 rgba(16, 185, 129, 0.06));
+                    border-radius: 12px;
+                    border: 1px solid rgba(16, 185, 129, 0.25);
+                }
+            """
+            )
+        else:
+            stereo_a_card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 12px;
+                    border: 1px solid {palette['border']};
+                }}
+            """
+            )
+        stereo_a_layout = QVBoxLayout(stereo_a_card)
+        stereo_a_layout.setContentsMargins(12, 12, 12, 12)
+
+        stereo_a_header = QHBoxLayout()
+        stereo_a_title = QLabel("🛰️ STEREO-A S/WAVES (10 kHz - 16 MHz)")
+        stereo_a_title.setStyleSheet("font-weight: bold;")
+        stereo_a_header.addWidget(stereo_a_title)
+        stereo_a_header.addStretch()
+        self.stereo_a_save_btn = QPushButton("💾 Save")
+        self.stereo_a_save_btn.setToolTip("Save STEREO-A image as PNG")
+        self.stereo_a_save_btn.clicked.connect(lambda checked: self.save_spectra_image('stereo_a'))
+        self.stereo_a_save_btn.setEnabled(False)
+        stereo_a_header.addWidget(self.stereo_a_save_btn)
+        stereo_a_layout.addLayout(stereo_a_header)
+
+        self.stereo_a_image_label = ClickableLabel("No data loaded")
+        self.stereo_a_image_label.setAlignment(Qt.AlignCenter)
+        self.stereo_a_image_label.setMinimumHeight(200)
+        self.stereo_a_image_label.setScaledContents(False)
+        self.stereo_a_image_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']};"
+        )
+        self.stereo_a_image_label.setCursor(Qt.PointingHandCursor)
+        self.stereo_a_image_label.setToolTip("Click to view full resolution")
+        self.stereo_a_image_label.clicked.connect(lambda: self.show_local_image('stereo_a', 'STEREO-A'))
+        stereo_a_layout.addWidget(self.stereo_a_image_label)
+
+        spectra_content_layout.addWidget(stereo_a_card)
+
+        # STEREO-B image (hidden by default, only available for older dates)
+        self.stereo_b_card = QFrame()
+        if self.is_dark_theme:
+            self.stereo_b_card.setStyleSheet(
+                """
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(251, 146, 60, 0.12),
+                        stop:1 rgba(251, 146, 60, 0.06));
+                    border-radius: 12px;
+                    border: 1px solid rgba(251, 146, 60, 0.25);
+                }
+            """
+            )
+        else:
+            self.stereo_b_card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 12px;
+                    border: 1px solid {palette['border']};
+                }}
+            """
+            )
+        stereo_b_layout = QVBoxLayout(self.stereo_b_card)
+        stereo_b_layout.setContentsMargins(12, 12, 12, 12)
+
+        stereo_b_header = QHBoxLayout()
+        stereo_b_title = QLabel("🛰️ STEREO-B S/WAVES (10 kHz - 16 MHz)")
+        stereo_b_title.setStyleSheet("font-weight: bold;")
+        stereo_b_header.addWidget(stereo_b_title)
+        stereo_b_header.addStretch()
+        self.stereo_b_save_btn = QPushButton("💾 Save")
+        self.stereo_b_save_btn.setToolTip("Save STEREO-B image as PNG")
+        self.stereo_b_save_btn.clicked.connect(lambda checked: self.save_spectra_image('stereo_b'))
+        self.stereo_b_save_btn.setEnabled(False)
+        stereo_b_header.addWidget(self.stereo_b_save_btn)
+        stereo_b_layout.addLayout(stereo_b_header)
+
+        self.stereo_b_image_label = ClickableLabel("No data loaded")
+        self.stereo_b_image_label.setAlignment(Qt.AlignCenter)
+        self.stereo_b_image_label.setMinimumHeight(200)
+        self.stereo_b_image_label.setScaledContents(False)
+        self.stereo_b_image_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']};"
+        )
+        self.stereo_b_image_label.setCursor(Qt.PointingHandCursor)
+        self.stereo_b_image_label.setToolTip("Click to view full resolution")
+        self.stereo_b_image_label.clicked.connect(lambda: self.show_local_image('stereo_b', 'STEREO-B'))
+        stereo_b_layout.addWidget(self.stereo_b_image_label)
+
+        self.stereo_b_card.hide()  # STEREO-B lost contact in 2014
+        spectra_content_layout.addWidget(self.stereo_b_card)
+
+        # Nobeyama (NORP) image
+        norp_card = QFrame()
+        if self.is_dark_theme:
+            norp_card.setStyleSheet(
+                """
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(59, 130, 246, 0.12),
+                        stop:1 rgba(59, 130, 246, 0.06));
+                    border-radius: 12px;
+                    border: 1px solid rgba(59, 130, 246, 0.25);
+                }
+            """
+            )
+        else:
+            norp_card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 12px;
+                    border: 1px solid {palette['border']};
+                }}
+            """
+            )
+        norp_layout = QVBoxLayout(norp_card)
+        norp_layout.setContentsMargins(12, 12, 12, 12)
+
+        norp_header = QHBoxLayout()
+        norp_title = QLabel("📡 Nobeyama Radio Polarimeter (NORP) Full-Day")
+        norp_title.setStyleSheet("font-weight: bold;")
+        norp_header.addWidget(norp_title)
+        norp_header.addStretch()
+        self.norp_save_btn = QPushButton("💾 Save")
+        self.norp_save_btn.setToolTip("Save Nobeyama image as PNG")
+        self.norp_save_btn.clicked.connect(lambda checked: self.save_spectra_image('norp'))
+        self.norp_save_btn.setEnabled(False)
+        norp_header.addWidget(self.norp_save_btn)
+        norp_layout.addLayout(norp_header)
+
+        self.norp_image_label = ClickableLabel("\n\n\n\n\n\n\n\n\n\nNo data loaded")
+        self.norp_image_label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        self.norp_image_label.setMinimumHeight(400)
+        self.norp_image_label.setScaledContents(False)
+        self.norp_image_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']};"
+        )
+        self.norp_image_label.setCursor(Qt.PointingHandCursor)
+        self.norp_image_label.setToolTip("Click to view full resolution")
+        self.norp_image_label.clicked.connect(lambda: self.show_local_image('norp', 'Nobeyama NORP'))
+        norp_layout.addWidget(self.norp_image_label)
+
+        spectra_content_layout.addWidget(norp_card)
+
+        # Yamagawa (NICT) card
+        self.yamagawa_card = QFrame()
+        yamagawa_card = self.yamagawa_card
+        if self.is_dark_theme:
+            yamagawa_card.setStyleSheet(
+                """
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(20, 184, 166, 0.12),
+                        stop:1 rgba(20, 184, 166, 0.06));
+                    border-radius: 12px;
+                    border: 1px solid rgba(20, 184, 166, 0.25);
+                }
+            """
+            )
+        else:
+            yamagawa_card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 12px;
+                    border: 1px solid {palette['border']};
+                }}
+            """
+            )
+        yamagawa_layout = QVBoxLayout(yamagawa_card)
+        yamagawa_layout.setContentsMargins(12, 12, 12, 12)
+
+        yamagawa_header = QHBoxLayout()
+        yamagawa_title = QLabel("🛰️ NICT Yamagawa Spectrograph")
+        yamagawa_title.setStyleSheet("font-weight: bold;")
+        yamagawa_header.addWidget(yamagawa_title)
+        yamagawa_header.addStretch()
+        self.yamagawa_save_btn = QPushButton("💾 Save")
+        self.yamagawa_save_btn.setToolTip("Save Yamagawa image as PNG")
+        self.yamagawa_save_btn.clicked.connect(lambda checked: self.save_spectra_image('yamagawa'))
+        self.yamagawa_save_btn.setEnabled(False)
+        yamagawa_header.addWidget(self.yamagawa_save_btn)
+        yamagawa_layout.addLayout(yamagawa_header)
+
+        # Scroll area for Yamagawa
+        self.yamagawa_scroll = QScrollArea()
+        self.yamagawa_scroll.setWidgetResizable(True)
+        self.yamagawa_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.yamagawa_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.yamagawa_scroll.setMinimumHeight(180) # Sufficient for scaled image + scrollbar
+        self.yamagawa_scroll.setFrameShape(QFrame.NoFrame)
+        self.yamagawa_scroll.setStyleSheet("background: transparent;")
+        
+        self.yamagawa_image_label = ClickableLabel("No data loaded")
+        self.yamagawa_image_label.setAlignment(Qt.AlignCenter)
+        self.yamagawa_image_label.setScaledContents(False)
+        self.yamagawa_image_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']};"
+        )
+        self.yamagawa_image_label.setCursor(Qt.PointingHandCursor)
+        self.yamagawa_image_label.setToolTip("Click to view full resolution")
+        self.yamagawa_image_label.clicked.connect(lambda: self.show_local_image('yamagawa', 'Yamagawa'))
+        
+        self.yamagawa_scroll.setWidget(self.yamagawa_image_label)
+        yamagawa_layout.addWidget(self.yamagawa_scroll)
+
+        spectra_content_layout.addWidget(yamagawa_card)
+
+        # HiRAS (NICT) card
+        self.hiras_card = QFrame()
+        hiras_card = self.hiras_card
+        if self.is_dark_theme:
+            hiras_card.setStyleSheet(
+                """
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(14, 165, 233, 0.12),
+                        stop:1 rgba(14, 165, 233, 0.06));
+                    border-radius: 12px;
+                    border: 1px solid rgba(14, 165, 233, 0.25);
+                }
+            """
+            )
+        else:
+            hiras_card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 12px;
+                    border: 1px solid {palette['border']};
+                }}
+            """
+            )
+        hiras_layout = QVBoxLayout(hiras_card)
+        hiras_layout.setContentsMargins(12, 12, 12, 12)
+
+        hiras_header = QHBoxLayout()
+        hiras_title = QLabel("🛰️ NICT HiRAS Spectrograph")
+        hiras_title.setStyleSheet("font-weight: bold;")
+        hiras_header.addWidget(hiras_title)
+        hiras_header.addStretch()
+        self.hiras_save_btn = QPushButton("💾 Save")
+        self.hiras_save_btn.setToolTip("Save HiRAS image as PNG")
+        self.hiras_save_btn.clicked.connect(lambda checked: self.save_spectra_image('hiras'))
+        self.hiras_save_btn.setEnabled(False)
+        hiras_header.addWidget(self.hiras_save_btn)
+        hiras_layout.addLayout(hiras_header)
+
+        # Scroll area for HiRAS
+        self.hiras_scroll = QScrollArea()
+        self.hiras_scroll.setWidgetResizable(True)
+        self.hiras_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.hiras_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.hiras_scroll.setMinimumHeight(180)
+        self.hiras_scroll.setFrameShape(QFrame.NoFrame)
+        self.hiras_scroll.setStyleSheet("background: transparent;")
+        
+        self.hiras_image_label = ClickableLabel("No data loaded")
+        self.hiras_image_label.setAlignment(Qt.AlignCenter)
+        self.hiras_image_label.setScaledContents(False)
+        self.hiras_image_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']};"
+        )
+        self.hiras_image_label.setCursor(Qt.PointingHandCursor)
+        self.hiras_image_label.setToolTip("Click to view full resolution")
+        self.hiras_image_label.clicked.connect(lambda: self.show_local_image('hiras', 'HiRAS'))
+        
+        self.hiras_scroll.setWidget(self.hiras_image_label)
+        hiras_layout.addWidget(self.hiras_scroll)
+
+        spectra_content_layout.addWidget(hiras_card)
+
+        # ORFEES (Nancay) image
+        orfees_card = QFrame()
+        if self.is_dark_theme:
+            orfees_card.setStyleSheet(
+                """
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(168, 85, 247, 0.12),
+                        stop:1 rgba(168, 85, 247, 0.06));
+                    border-radius: 12px;
+                    border: 1px solid rgba(168, 85, 247, 0.25);
+                }
+            """
+            )
+        else:
+            orfees_card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 12px;
+                    border: 1px solid {palette['border']};
+                }}
+            """
+            )
+        orfees_layout = QVBoxLayout(orfees_card)
+        orfees_layout.setContentsMargins(12, 12, 12, 12)
+
+        orfees_header = QHBoxLayout()
+        orfees_title = QLabel("📡 ORFEES (Nançay) Spectrograph")
+        orfees_title.setStyleSheet("font-weight: bold;")
+        orfees_header.addWidget(orfees_title)
+        orfees_header.addStretch()
+        self.orfees_save_btn = QPushButton("💾 Save")
+        self.orfees_save_btn.setToolTip("Save ORFEES image as PNG")
+        self.orfees_save_btn.clicked.connect(lambda checked: self.save_spectra_image('orfees'))
+        self.orfees_save_btn.setEnabled(False)
+        orfees_header.addWidget(self.orfees_save_btn)
+        orfees_layout.addLayout(orfees_header)
+
+        self.orfees_image_label = ClickableLabel("No data loaded")
+        self.orfees_image_label.setAlignment(Qt.AlignCenter)
+        self.orfees_image_label.setMinimumHeight(200)
+        self.orfees_image_label.setScaledContents(False)
+        self.orfees_image_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']};"
+        )
+        self.orfees_image_label.setCursor(Qt.PointingHandCursor)
+        self.orfees_image_label.setToolTip("Click to view full resolution")
+        self.orfees_image_label.clicked.connect(lambda: self.show_local_image('orfees', 'ORFEES'))
+        orfees_layout.addWidget(self.orfees_image_label)
+
+        spectra_content_layout.addWidget(orfees_card)
+
+        # NDA (Nancay) image
+        nda_card = QFrame()
+        if self.is_dark_theme:
+            nda_card.setStyleSheet(
+                """
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba(236, 72, 153, 0.12),
+                        stop:1 rgba(236, 72, 153, 0.06));
+                    border-radius: 12px;
+                    border: 1px solid rgba(236, 72, 153, 0.25);
+                }
+            """
+            )
+        else:
+            nda_card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 12px;
+                    border: 1px solid {palette['border']};
+                }}
+            """
+            )
+        nda_layout = QVBoxLayout(nda_card)
+        nda_layout.setContentsMargins(12, 12, 12, 12)
+
+        nda_header = QHBoxLayout()
+        nda_title = QLabel("📡 NDA (Nançay) Spectrograph")
+        nda_title.setStyleSheet("font-weight: bold;")
+        nda_header.addWidget(nda_title)
+        nda_header.addStretch()
+        self.nda_save_btn = QPushButton("💾 Save")
+        self.nda_save_btn.setToolTip("Save NDA image as PNG")
+        self.nda_save_btn.clicked.connect(lambda checked: self.save_spectra_image('nda'))
+        self.nda_save_btn.setEnabled(False)
+        nda_header.addWidget(self.nda_save_btn)
+        nda_layout.addLayout(nda_header)
+
+        self.nda_image_label = ClickableLabel("No data loaded")
+        self.nda_image_label.setAlignment(Qt.AlignCenter)
+        self.nda_image_label.setMinimumHeight(200)
+        self.nda_image_label.setScaledContents(False)
+        self.nda_image_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']};"
+        )
+        self.nda_image_label.setCursor(Qt.PointingHandCursor)
+        self.nda_image_label.setToolTip("Click to view full resolution")
+        self.nda_image_label.clicked.connect(lambda: self.show_local_image('nda', 'NDA'))
+        nda_layout.addWidget(self.nda_image_label)
+
+        spectra_content_layout.addWidget(nda_card)
+
+        spectra_content_layout.addStretch()
+        spectra_scroll.setWidget(spectra_content)
+        spectra_layout.addWidget(spectra_scroll)
+
+        # Credits label
+        spectra_credits_label = QLabel(
+            'Data Sources: <a href="https://cdaw.gsfc.nasa.gov/">CDAW NASA</a>, '
+            '<a href="https://solar.nro.nao.ac.jp/norp/">NoRP</a>, '
+            '<a href="https://rsdb.obs-nancay.fr/">Nançay</a>, '
+            '<a href="https://solobs.nict.go.jp/radio/cgi-bin/MainDisplay.pl">NICT</a>'
+        )
+        spectra_credits_label.setOpenExternalLinks(True)
+        spectra_credits_label.setStyleSheet(
+            f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;"
+        )
+        spectra_layout.addWidget(spectra_credits_label)
+
+        self.tabs.addTab(spectra_tab, "📻 Radio Spectra")
+
         layout.addWidget(self.tabs)
 
     def update_events_layout_logic(self, *args):
@@ -1073,6 +2523,9 @@ class NOAAEventsViewer(QMainWindow):
         # Ensure imports are available for whole scope
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtCore import Qt
+
+        # Clear radio spectra UI immediately on new fetch
+        self.clear_dh_spectra_ui()
 
         if self.worker and self.worker.isRunning():
             return
@@ -1105,7 +2558,11 @@ class NOAAEventsViewer(QMainWindow):
         self.worker.error.connect(self.on_fetch_error)
         self.worker.start()
 
-    def on_fetch_finished(self, events, active_regions, conditions, cmes, images):
+        # [AUTO-FETCH SPECTRA] If radio spectra are already cached, load them automatically
+        if _noaa_cache.has_any_spectra(selected_date):
+            self.fetch_dh_spectra()
+
+    def on_fetch_finished(self, events, active_regions, conditions, cmes, images, ecallisto_bursts=[]):
         """Handle fetched data."""
         try:
             # Check for validity
@@ -1124,7 +2581,7 @@ class NOAAEventsViewer(QMainWindow):
             self.events = events
 
             # Display events
-            self.display_events(events)
+            self.display_events(events, ecallisto_bursts)
 
             # Display active regions
             self.display_active_regions(active_regions)
@@ -1226,7 +2683,7 @@ class NOAAEventsViewer(QMainWindow):
         self.optical_section.set_count(0)
         self.radio_section.set_count(0)
 
-    def display_events(self, events):
+    def display_events(self, events, ecallisto_bursts=[]):
         """Display events in categorized tables."""
         self.clear_tables()
 
@@ -1240,7 +2697,7 @@ class NOAAEventsViewer(QMainWindow):
         # Update summary - MOVED to _update_comprehensive_summary
         xray_count = len(categories["xray"])
         optical_count = len(categories["optical"])
-        radio_count = len(categories["radio"])
+        radio_count = len(categories["radio"]) + len(ecallisto_bursts)
         # max_class = stats.get("max_xray_class", "—")
 
         # summary_parts = []
@@ -1308,21 +2765,50 @@ class NOAAEventsViewer(QMainWindow):
 
         # Populate Radio table
         self.radio_section.set_count(radio_count)
-        for event in sorted(categories["radio"], key=lambda e: e.begin_time or "9999"):
-            type_name = ne.EVENT_TYPES.get(event.event_type, {}).get(
-                "name", event.event_type
-            )
+        
+        # Combine and sort radio events
+        all_radio_events = []
+        for e in categories["radio"]:
+            all_radio_events.append({
+                'type': e.event_type,
+                'time': e.time_range,
+                'freq': e.location_or_freq,
+                'particulars': e.particulars,
+                'region': e.active_region or "—",
+                'obs': e.observatory_name,
+                'sort_time': e.begin_time or "9999"
+            })
+            
+        for b in ecallisto_bursts:
+            all_radio_events.append({
+                'type': 'RBR',
+                'time': b.time_range,
+                'freq': "—",
+                'particulars': b.burst_type,
+                'region': "—",
+                'obs': b.stations,
+                'sort_time': b.begin_time.replace(":", "") or "9999"
+            })
+            
+        for event in sorted(all_radio_events, key=lambda x: x['sort_time']):
+            tooltips = {}
+            display_values = [
+                event['type'],
+                event['time'],
+                event['freq'],
+                event['particulars'],
+                event['region'],
+                event['obs'],
+            ]
+            
+            # Truncate long station lists for display and show full in tooltip
+            if event['obs'] and len(event['obs']) > 30 and ',' in event['obs']:
+                stations = [s.strip() for s in event['obs'].split(',')]
+                if len(stations) > 2:
+                    display_values[5] = f"{stations[0]}, {stations[1]} ..."
+                    tooltips[5] = event['obs']  # Full list in tooltip
 
-            self.radio_table.add_event_row(
-                [
-                    event.event_type,
-                    event.time_range,
-                    event.location_or_freq,
-                    event.particulars,
-                    event.active_region or "—",
-                    event.observatory_name,
-                ]
-            )
+            self.radio_table.add_event_row(display_values, tooltips=tooltips)
 
         # Resize columns to fit contents and scroll to top
         self.xray_table.resizeColumnsToContents()
@@ -1868,6 +3354,294 @@ class NOAAEventsViewer(QMainWindow):
             self, "GOES Error", f"Failed to fetch GOES data:\n{error_msg}"
         )
 
+    def clear_dh_spectra_ui(self):
+        """Reset the radio spectra UI labels to initial state."""
+        labels = [
+            self.wind_image_label, self.stereo_a_image_label, self.stereo_b_image_label,
+            self.norp_image_label, self.orfees_image_label, self.nda_image_label,
+            self.yamagawa_image_label, self.hiras_image_label
+        ]
+        buttons = [
+            self.wind_save_btn, self.stereo_a_save_btn, self.stereo_b_save_btn,
+            self.norp_save_btn, self.orfees_save_btn, self.nda_save_btn,
+            self.yamagawa_save_btn, self.hiras_save_btn
+        ]
+        
+        for label in labels:
+            label.clear()
+            if label is self.norp_image_label:
+                label.setText("\n\n\n\n\n\n\n\n\n\nNo data loaded")
+            else:
+                label.setText("No data loaded")
+            label.setToolTip("Click 'Fetch Spectra' to load")
+            
+        for btn in buttons:
+            btn.setEnabled(False)
+            
+        self.spectra_status_label.setText("Click 'Fetch Spectra' to load radio spectra.")
+        self.spectra_status_label.setToolTip("")
+
+    def fetch_dh_spectra(self):
+        """Fetch DH-band dynamic spectra (WIND/WAVES & STEREO) for the selected date."""
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import Qt
+
+        if hasattr(self, "dh_worker") and self.dh_worker and self.dh_worker.isRunning():
+            return
+
+        # Get selected date
+        qdate = self.date_edit.date()
+        selected_date = datetime(qdate.year(), qdate.month(), qdate.day(), 12, 0, 0)
+
+        # Update UI
+        self.fetch_spectra_btn.setEnabled(False)
+        self.spectra_progress.show()
+        self.spectra_status_label.setText(f"Fetching DH spectra for {qdate.toString('yyyy-MM-dd')}...")
+
+        # Clear previous images
+        self.wind_image_label.setText("Loading...")
+        self.stereo_a_image_label.setText("Loading...")
+        self.stereo_b_image_label.setText("Loading...")
+        self.norp_image_label.setText("\n\n\n\n\n\n\n\n\n\nLoading...")
+        self.orfees_image_label.setText("Loading...")
+        self.nda_image_label.setText("Loading...")
+        self.yamagawa_image_label.setText("Loading...")
+        self.hiras_image_label.setText("Loading...")
+        
+        # Hide irrelevant NICT card immediately
+        from datetime import date
+        NICT_TRANSITION_DATE = date(2016, 7, 11)
+        if selected_date.date() >= NICT_TRANSITION_DATE:
+            self.yamagawa_card.show()
+            self.hiras_card.hide()
+        else:
+            self.yamagawa_card.hide()
+            self.hiras_card.show()
+
+        # Show/Hide STEREO-B based on mission timeline (lost contact Oct 2014)
+        if qdate.year() <= 2014:
+            self.stereo_b_card.show()
+        else:
+            self.stereo_b_card.hide()
+
+        # Start worker
+        self.dh_worker = DHSpectraWorker(selected_date)
+        self.dh_worker.progress.connect(self.on_dh_spectra_progress)
+        self.dh_worker.result_ready.connect(self.on_dh_partial_ready)
+        self.dh_worker.finished.connect(self.on_dh_spectra_ready)
+        self._spectra_paths = {}  # Initialize/Reset
+        self.dh_worker.start()
+
+    def on_dh_spectra_progress(self, message: str):
+        """Handle progress updates from DH spectra worker."""
+        self.spectra_status_label.setText(message)
+
+    def on_dh_partial_ready(self, source: str, path: str):
+        """Display a single spectrograph as soon as it's ready."""
+        from PyQt5.QtGui import QPixmap
+        import os
+
+        if not path or not os.path.exists(path):
+            return
+
+        self._spectra_paths[source] = path
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return
+
+        # Map source to its UI components
+        ui_map = {
+            'wind': (self.wind_image_label, self.wind_save_btn),
+            'stereo_a': (self.stereo_a_image_label, self.stereo_a_save_btn),
+            'stereo_b': (self.stereo_b_image_label, self.stereo_b_save_btn),
+            'norp': (self.norp_image_label, self.norp_save_btn),
+            'orfees': (self.orfees_image_label, self.orfees_save_btn),
+            'nda': (self.nda_image_label, self.nda_save_btn),
+            'yamagawa': (self.yamagawa_image_label, self.yamagawa_save_btn),
+            'hiras': (self.hiras_image_label, self.hiras_save_btn),
+        }
+        
+        label, btn = ui_map.get(source, (None, None))
+        
+        if label:
+            if source in ['yamagawa', 'hiras']:
+                # Zoom in: fit to the available height in the card and allow horizontal scrolling
+                # The scroll area minimum height is 180, so we scale to ~150 to stay within it without vertical scroll
+                scaled = pixmap.scaledToHeight(150, Qt.SmoothTransformation)
+            else:
+                parent = label.parent()
+                if parent:
+                    available_width = parent.width() - 40
+                    if available_width < 600 or available_width > 1000:
+                        available_width = 848
+                else:
+                    available_width = 848 # Fallback
+                
+                scaled = pixmap.scaledToWidth(
+                    max(400, min(available_width, pixmap.width())),
+                    Qt.SmoothTransformation
+                )
+            label.setPixmap(scaled)
+            if btn:
+                btn.setEnabled(True)
+
+    def on_dh_spectra_ready(self, results: dict, errors: list):
+        """Handle completed DH spectra fetch - final cleanup."""
+        self.fetch_spectra_btn.setEnabled(True)
+        self.spectra_progress.hide()
+
+        # Update labels for any missing data
+        sources = ['wind', 'stereo_a', 'norp', 'orfees', 'nda']
+        # Handle station-specific NICT
+        qdate = self.date_edit.date()
+        from datetime import date
+        if date(qdate.year(), qdate.month(), qdate.day()) >= date(2016, 7, 11):
+            sources.append('yamagawa')
+        else:
+            sources.append('hiras')
+        
+        # Stero-B check
+        if qdate.year() <= 2014:
+            sources.append('stereo_b')
+
+        found_count = 0
+        for s in sources:
+            if results.get(s) and os.path.exists(results[s]):
+                found_count += 1
+            else:
+                # If it's not ready, set the "No data" text
+                label_map = {
+                    'wind': (self.wind_image_label, "No WIND/WAVES data"),
+                    'stereo_a': (self.stereo_a_image_label, "No STEREO-A data"),
+                    'stereo_b': (self.stereo_b_image_label, "No STEREO-B data"),
+                    'norp': (self.norp_image_label, "\n\n\n\n\n\n\n\n\n\nNo Nobeyama data"),
+                    'orfees': (self.orfees_image_label, "No ORFEES data"),
+                    'nda': (self.nda_image_label, "No NDA data"),
+                    'yamagawa': (self.yamagawa_image_label, "No Yamagawa data"),
+                    'hiras': (self.hiras_image_label, "No HiRAS data"),
+                }
+                label, text = label_map.get(s, (None, ""))
+                if label and not label.pixmap():
+                    label.setText(f"{text} available for this date")
+
+        status_text = f"Loaded {found_count} spectrograph(s)"
+        if errors:
+            status_text += f" ({len(errors)} errors)"
+            self.spectra_status_label.setToolTip("\n".join(errors))
+        else:
+            self.spectra_status_label.setToolTip("")
+            
+        self.spectra_status_label.setText(status_text)
+
+    def on_dh_spectra_error(self, error_msg: str):
+        """Handle DH spectra fetch error."""
+        self.fetch_spectra_btn.setEnabled(True)
+        self.spectra_progress.hide()
+        self.spectra_status_label.setText(f"Error: {error_msg}")
+        self.wind_image_label.setText("Error fetching data")
+        self.stereo_a_image_label.setText("Error fetching data")
+        self.wind_save_btn.setEnabled(False)
+        self.stereo_a_save_btn.setEnabled(False)
+        self.stereo_b_save_btn.setEnabled(False)
+        self.norp_save_btn.setEnabled(False)
+
+    def save_spectra_image(self, source: str):
+        """Save the spectrogram image to a user-selected location."""
+        from PyQt5.QtWidgets import QFileDialog
+        
+        if not hasattr(self, '_spectra_paths') or not self._spectra_paths.get(source):
+            QMessageBox.warning(self, "Error", "No image available to save.")
+            return
+
+        source_path = self._spectra_paths[source]
+        if not os.path.exists(source_path):
+            QMessageBox.warning(self, "Error", "Source image file not found.")
+            return
+
+        # Suggest a filename based on source and date
+        qdate = self.date_edit.date()
+        date_str = qdate.toString("yyyyMMdd")
+        source_names = {
+            'wind': 'WIND_WAVES', 
+            'stereo_a': 'STEREO_A', 
+            'stereo_b': 'STEREO_B', 
+            'norp': 'Nobeyama_NORP',
+            'orfees': 'Nancay_ORFEES',
+            'nda': 'Nancay_NDA',
+            'yamagawa': 'NICT_Yamagawa',
+            'hiras': 'NICT_HiRAS'
+        }
+        suggested_name = f"{source_names.get(source, source)}_{date_str}.png"
+
+        # Open save dialog
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Spectrogram",
+            suggested_name,
+            "PNG Images (*.png);;All Files (*)"
+        )
+
+        if save_path:
+            import shutil
+            try:
+                shutil.copy2(source_path, save_path)
+                QMessageBox.information(self, "Saved", f"Image saved to:\n{save_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save image:\n{str(e)}")
+
+    def show_local_image(self, source: str, title: str):
+        """Open a local spectra image in a full-resolution dialog viewer."""
+        if not hasattr(self, '_spectra_paths') or not self._spectra_paths.get(source):
+            return  # No image available
+
+        image_path = self._spectra_paths[source]
+        if not os.path.exists(image_path):
+            return
+
+        # Create a dialog to show the full image
+        dialog = QDialog(None)  # Use None as parent for independent window
+        dialog.setWindowTitle(f"{title} - Full Resolution")
+        dialog.setWindowFlags(
+            Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
+        )
+        dialog.resize(1280, 900)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+
+        layout = QVBoxLayout(dialog)
+
+        # Scrollable image
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("background-color: #222;")
+
+        img_label = QLabel()
+        img_label.setAlignment(Qt.AlignCenter)
+
+        # Load the full-resolution image
+        pixmap = QPixmap(image_path)
+        if not pixmap.isNull():
+            img_label.setPixmap(pixmap)
+            img_label.adjustSize()
+        else:
+            img_label.setText("Failed to load image")
+            img_label.setStyleSheet("color: #ccc;")
+
+        scroll.setWidget(img_label)
+        layout.addWidget(scroll)
+
+        # Close button
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+        # Keep reference and show
+        self.image_viewers.append(dialog)
+        dialog.finished.connect(lambda result, d=dialog: self._cleanup_viewer(d))
+        dialog.show()
+
     def _parse_date_string(self, date_str: str) -> Optional[date]:
         """Parse various date string formats."""
         if not date_str:
@@ -2048,7 +3822,8 @@ class NOAAEventsViewer(QMainWindow):
             self.images_grid.addWidget(card)
 
             # Add to download queue instead of starting immediately
-            self.download_queue.append((img.thumb_url, img_label, img.page_url))
+            # Include image title for thumbnail caching
+            self.download_queue.append((img.thumb_url, img_label, img.page_url, img.title))
 
         self.images_grid.addStretch()
 
@@ -2129,14 +3904,35 @@ class NOAAEventsViewer(QMainWindow):
         MAX_CONCURRENT = 4
 
         while self.active_downloads < MAX_CONCURRENT and self.download_queue:
-            url, label, page_url = self.download_queue.pop(0)
+            url, label, page_url, title = self.download_queue.pop(0)
             self.active_downloads += 1
+            
+            # Check cache for thumbnail first
+            qdate = self.date_edit.date()
+            event_date = date(qdate.year(), qdate.month(), qdate.day())
+            cached_path = _noaa_cache.load_thumbnail(event_date, title)
+            
+            if cached_path:
+                # Load from cache
+                label.setText("Loading cached...")
+                try:
+                    pixmap = QPixmap(str(cached_path))
+                    if not pixmap.isNull():
+                        label.setPixmap(
+                            pixmap.scaled(QSize(320, 320), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        )
+                        label.setText("")
+                        self.active_downloads -= 1
+                        continue
+                except Exception:
+                    pass
+            
             label.setText("Loading...")
-            self._start_download(url, label, page_url)
+            self._start_download(url, label, page_url, title)
 
-    def _start_download(self, url, label, page_url):
+    def _start_download(self, url, label, page_url, title):
         loader = ImageLoader(url, page_url)
-        loader.loaded.connect(lambda data, l=label: self._on_image_loaded(data, l))
+        loader.loaded.connect(lambda data, l=label, t=title: self._on_image_loaded(data, l, t))
         loader.error.connect(lambda err, l=label: self._on_image_error(err, l))
 
         # Cleanup and process next on finish
@@ -2165,8 +3961,8 @@ class NOAAEventsViewer(QMainWindow):
         except RuntimeError:
             pass
 
-    def _on_image_loaded(self, data, label):
-        """Handle image download completion."""
+    def _on_image_loaded(self, data, label, title=""):
+        """Handle image download completion and cache thumbnail."""
         try:
             # Check if label is still valid (not deleted c++ object)
             if not label:
@@ -2180,6 +3976,15 @@ class NOAAEventsViewer(QMainWindow):
                     )
                 )
                 label.setText("")
+                
+                # Save thumbnail to cache
+                if title:
+                    try:
+                        qdate = self.date_edit.date()
+                        event_date = date(qdate.year(), qdate.month(), qdate.day())
+                        _noaa_cache.save_thumbnail(event_date, title, data)
+                    except Exception as e:
+                        print(f"Failed to cache thumbnail: {e}")
             else:
                 label.setText("Format Error")
         except RuntimeError:

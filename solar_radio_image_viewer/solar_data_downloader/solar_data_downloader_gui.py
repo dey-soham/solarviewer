@@ -100,6 +100,7 @@ class DownloadWorker(QThread):
         import time
         import select
         import os
+        import sys
 
         try:
             # Create a temporary Python script to run the download
@@ -108,11 +109,13 @@ class DownloadWorker(QThread):
             # Run the download in a subprocess with real-time output
             self.progress.emit("Starting download...")
 
+            launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             process = subprocess.Popen(
                 [sys.executable, "-u", "-c", script],  # -u for unbuffered output
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 bufsize=0,  # Unbuffered
+                cwd=launch_cwd,
             )
 
             # Set non-blocking mode on stderr for progress reading
@@ -152,6 +155,10 @@ class DownloadWorker(QThread):
                             while "\n" in stdout_buffer:
                                 line, stdout_buffer = stdout_buffer.split("\n", 1)
                                 line = line.strip()
+                                
+                                # Print ALL subprocess output to parent terminal
+                                if line:
+                                    print(line, flush=True)
 
                                 if line.startswith("DOWNLOADED_FILES:"):
                                     try:
@@ -172,6 +179,19 @@ class DownloadWorker(QThread):
                                     self.progress.emit(line)
                                 elif "Processing" in line:
                                     self.progress.emit(line)
+                                # New diagnostic messages for better visibility
+                                elif "Calibration:" in line:
+                                    self.progress.emit(line)
+                                elif "NO DATA FOUND" in line:
+                                    self.progress.emit("❌ No data found for this query")
+                                elif "Retrying" in line:
+                                    self.progress.emit(line)
+                                elif "WARNING:" in line:
+                                    self.progress.emit(line)
+                                elif "Starting download" in line:
+                                    self.progress.emit(line)
+                                elif "Troubleshooting" in line or "Check VSO" in line:
+                                    self.progress.emit(line)
                     except (BlockingIOError, IOError):
                         pass
 
@@ -180,6 +200,10 @@ class DownloadWorker(QThread):
                     try:
                         chunk = process.stderr.read(4096)
                         if chunk:
+                            # Write raw output to terminal for live progress bars
+                            sys.stderr.write(chunk.decode("utf-8", errors="replace"))
+                            sys.stderr.flush()
+                            
                             stderr_buffer += chunk.decode("utf-8", errors="replace")
 
                             # Process carriage return separated updates

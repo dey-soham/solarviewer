@@ -9,7 +9,7 @@ import re
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict, Any
 
 
@@ -202,6 +202,33 @@ class SolarEvent:
                 return parts[0]
         return None
 
+@dataclass
+class ECallistoBurst:
+    """Represents a single e-CALLISTO radio burst event."""
+    date: str  # YYYYMMDD
+    time_range: str  # HH:MM-HH:MM
+    burst_type: str  # II, III, IV, etc.
+    stations: str  # Comma-separated list of stations
+    raw_line: str = ""
+
+    @property
+    def begin_time(self) -> str:
+        """Get begin time in HH:MM format."""
+        if "-" in self.time_range:
+            return self.time_range.split("-")[0]
+        return self.time_range
+
+    @property
+    def end_time(self) -> str:
+        """Get end time in HH:MM format."""
+        if "-" in self.time_range:
+            return self.time_range.split("-")[1]
+        return self.time_range
+
+    @property
+    def stations_list(self) -> List[str]:
+        """Get stations as a list."""
+        return [s.strip() for s in self.stations.split(",")]
 
 def fetch_events_raw(event_date: date) -> Optional[str]:
     """
@@ -407,6 +434,116 @@ def get_event_statistics(events: List[SolarEvent]) -> Dict[str, Any]:
 
     stats["active_regions"] = list(stats["active_regions"])
     return stats
+
+def fetch_ecallisto_bursts_raw(event_date: date) -> Optional[str]:
+    """
+    Fetch raw e-CALLISTO burst list text for the month of the given date.
+    
+    Source: https://soleil.i4ds.ch/solarradio/data/BurstLists/2010-yyyy_Monstein/{YYYY}/e-CALLISTO_{YYYY}_{MM}.txt
+    """
+    year = event_date.strftime("%Y")
+    month = event_date.strftime("%m")
+    
+    # 2012-2019 are missing or in a different format according to user
+    # Link: https://soleil.i4ds.ch/solarradio/data/BurstLists/2010-yyyy_Monstein/
+    if 2012 <= event_date.year <= 2019:
+        return None
+
+    url = f"https://soleil.i4ds.ch/solarradio/data/BurstLists/2010-yyyy_Monstein/{year}/e-CALLISTO_{year}_{month}.txt"
+
+    try:
+        from ..utils import get_global_session
+    except ImportError:
+        try:
+            from solar_radio_image_viewer.utils import get_global_session
+        except ImportError:
+            import requests
+            session = requests.Session()
+            response = session.get(url, timeout=10)
+            return response.text
+
+    session = get_global_session()
+
+    try:
+        response = session.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.text
+        return None
+    except Exception as e:
+        print(f"Error fetching e-CALLISTO bursts: {e}")
+        return None
+
+
+def parse_ecallisto_bursts(raw_text: str, event_date: date) -> List[ECallistoBurst]:
+    """
+    Parse e-CALLISTO burst list text into structured ECallistoBurst objects for a specific date.
+    """
+    bursts = []
+    target_date_str = event_date.strftime("%Y%m%d")
+    
+    # Header skip logic
+    lines = raw_text.split("\n")
+    data_started = False
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        if "Date" in line and "Time" in line and "Type" in line:
+            data_started = True
+            continue
+            
+        if line.startswith("---") or line.startswith("#---"):
+            data_started = True
+            continue
+
+        if line.startswith("#"):
+            continue
+
+        if data_started:
+            # Format: YYYYMMDD        HH:MM-HH:MM     Type    Stations
+            # Example: 20241201        02:36-02:37     III     Australia-ASSA, INDIA-GAURI
+            
+            # Use regex to handle variable whitespace
+            # Date is 8 digits, Time is HH:MM-HH:MM or HH:MM
+            pattern = r"^(\d{8})\s+(\d{2}:\d{2}-\d{2}:\d{2}|\d{2}:\d{2})\s+(\S+)\s+(.*)$"
+            match = re.match(pattern, line)
+            
+            if match:
+                b_date = match.group(1)
+                if b_date == target_date_str:
+                    bursts.append(ECallistoBurst(
+                        date=b_date,
+                        time_range=match.group(2),
+                        burst_type=match.group(3),
+                        stations=match.group(4),
+                        raw_line=line
+                    ))
+            elif line.startswith(target_date_str):
+                # Fallback simple split if regex fails but date matches
+                parts = line.split(None, 3)
+                if len(parts) >= 4:
+                    bursts.append(ECallistoBurst(
+                        date=parts[0],
+                        time_range=parts[1],
+                        burst_type=parts[2],
+                        stations=parts[3],
+                        raw_line=line
+                    ))
+                    
+    return bursts
+
+
+def fetch_and_parse_ecallisto_bursts(event_date: date) -> List[ECallistoBurst]:
+    """
+    Fetch and parse e-CALLISTO bursts for a given date.
+    """
+    raw_text = fetch_ecallisto_bursts_raw(event_date)
+    if not raw_text:
+        return []
+    return parse_ecallisto_bursts(raw_text, event_date)
+
 
 
 if __name__ == "__main__":

@@ -86,12 +86,14 @@ class ProcessingThread(QThread):
             self.progress.emit("")
 
             # Run in subprocess (completely isolates casacore from Qt)
+            launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                cwd=launch_cwd,
             )
 
             # Stream output in real-time

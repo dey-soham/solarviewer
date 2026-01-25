@@ -1,4 +1,5 @@
 import os
+import tempfile
 import numpy as np
 import sys
 import glob
@@ -21,6 +22,22 @@ import hashlib
 # Subprocess wrappers for casatasks to avoid segfaults
 def run_casatask_subprocess(task_name, **kwargs):
     """Generic wrapper to run any casatask in a subprocess."""
+    # Ensure common path keywords are absolute before passing to subprocess
+    path_keywords = [
+        "imagename",
+        "outfile",
+        "fitsimage",
+        "vis",
+        "outputvis",
+        "fitsname",
+        "infile",
+        "filename",
+        "mask",
+    ]
+    for key in path_keywords:
+        if key in kwargs and kwargs[key] and isinstance(kwargs[key], str):
+            kwargs[key] = os.path.abspath(kwargs[key])
+
     # Convert kwargs to a JSON-safe format
     kwargs_str = json.dumps(kwargs)
 
@@ -42,7 +59,10 @@ except Exception as e:
     sys.exit(1)
 """
     result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
     )
     if result.returncode != 0:
         raise RuntimeError(f"{task_name} failed: {result.stderr}")

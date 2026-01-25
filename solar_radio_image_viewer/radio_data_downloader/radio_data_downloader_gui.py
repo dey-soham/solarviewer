@@ -69,9 +69,15 @@ class DownloadWorker(QThread):
     def run(self):
         """Execute the download and conversion."""
         try:
-            # Extract site name from the instrument combo text (e.g., "Learmonth (Australia)" -> "Learmonth")
+            # Extract site name from the instrument combo text
             instrument = self.params.get("instrument", "Learmonth")
-            # Map GUI display names to internal site names
+            
+            # Check if this is e-CALLISTO
+            if instrument == "e-CALLISTO":
+                self._run_ecallisto()
+                return
+            
+            # Map GUI display names to internal site names for RSTN
             site_map = {
                 "Learmonth (Australia)": "Learmonth",
                 "San Vito (Italy)": "San Vito",
@@ -115,7 +121,59 @@ class DownloadWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+    
+    def _run_ecallisto(self):
+        """Handle e-CALLISTO download and conversion."""
+        try:
+            observatory = self.params.get("ecallisto_observatory")
+            start_datetime = self.params.get("start_datetime")
+            end_datetime = self.params.get("end_datetime")
+            output_dir = self.params.get("output_dir")
+            
+            # Download and convert e-CALLISTO data
+            results = rdd.download_and_convert_ecallisto(
+                start_time=start_datetime,
+                end_time=end_datetime,
+                observatory=observatory if observatory and observatory != "All Observatories" else None,
+                output_dir=output_dir,
+                progress_callback=self.progress.emit,
+            )
+            
+            if results:
+                # Return the first file or a summary
+                if len(results) == 1:
+                    self.finished.emit(results[0])
+                else:
+                    self.finished.emit(f"{len(results)} files created in {output_dir}")
+            else:
+                self.error.emit(
+                    f"Download or conversion failed for e-CALLISTO. Check if data is available for this date/time."
+                )
+        except Exception as e:
+            self.error.emit(str(e))
 
+
+class ObservatoryRefreshWorker(QThread):
+    """Worker thread for fetching available observatories without blocking the UI."""
+
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(list)  # Emits list of observatory names
+    error = pyqtSignal(str)
+
+    def __init__(self, date: str):
+        super().__init__()
+        self.date = date
+
+    def run(self):
+        """Fetch observatories from the server."""
+        try:
+            observatories = rdd.fetch_ecallisto_observatories(
+                self.date,
+                progress_callback=self.progress.emit,
+            )
+            self.finished.emit(observatories)
+        except Exception as e:
+            self.error.emit(str(e))
 
 class RadioDataDownloaderGUI(QMainWindow):
     """Main window for the Radio Data Downloader GUI."""
@@ -139,8 +197,8 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.create_time_selection()
         self.create_output_selection()
         self.create_processing_options()
-        self.create_download_section()
         self.create_log_section()
+        self.create_download_section()
 
         # Initialize worker
         self.download_worker = None
@@ -166,33 +224,68 @@ class RadioDataDownloaderGUI(QMainWindow):
                 "San Vito (Italy)",
                 "Palehua (Hawaii, USA)",
                 "Holloman (New Mexico, USA)",
+                "e-CALLISTO",
             ]
         )
         self.instrument_combo.currentTextChanged.connect(self.on_instrument_changed)
 
         # Info label - dynamically updated based on selection
         self.info_label = QLabel(
-            "RSTN Solar Spectrographs: 25-180 MHz dynamic spectra."
+            "Learmonth Solar Observatory, Western Australia.\nFrequency: 25-180 MHz | Data from BOM Australia or NOAA NCEI."
         )
         self.info_label.setStyleSheet("color: gray; font-style: italic;")
         self.info_label.setWordWrap(True)
 
         layout.addWidget(self.instrument_combo)
         layout.addWidget(self.info_label)
+        
+        # e-CALLISTO observatory selector (initially hidden)
+        self.ecallisto_widget = QWidget()
+        ecallisto_layout = QHBoxLayout(self.ecallisto_widget)
+        ecallisto_layout.setContentsMargins(0, 10, 0, 0)
+        ecallisto_layout.addWidget(QLabel("Observatory:"))
+        self.ecallisto_combo = QComboBox()
+        # Add "All Observatories" option plus common observatories
+        self.ecallisto_combo.addItems(
+            ["All Observatories"] + rdd.ECALLISTO_OBSERVATORIES
+        )
+        ecallisto_layout.addWidget(self.ecallisto_combo)
+        
+        # Refresh button to fetch observatories for selected date
+        self.refresh_obs_button = QPushButton("🔄")
+        self.refresh_obs_button.setToolTip("Refresh observatory list for selected date")
+        self.refresh_obs_button.setMaximumWidth(40)
+        self.refresh_obs_button.clicked.connect(self.refresh_observatories)
+        ecallisto_layout.addWidget(self.refresh_obs_button)
+        
+        self.ecallisto_widget.hide()  # Hidden by default
+        layout.addWidget(self.ecallisto_widget)
+        
         group.setLayout(layout)
         self.layout.addWidget(group)
 
     def on_instrument_changed(self, text):
-        """Update info label when instrument selection changes."""
+        """Update info label and show/hide e-CALLISTO options when instrument selection changes."""
         site_info = {
             "Learmonth (Australia)": "Learmonth Solar Observatory, Western Australia.\nFrequency: 25-180 MHz | Data from BOM Australia or NOAA NCEI.",
             "San Vito (Italy)": "San Vito dei Normanni, Southern Italy.\nFrequency: 25-180 MHz | Data from NOAA NCEI archive.",
             "Palehua (Hawaii, USA)": "Palehua, Hawaii.\nFrequency: 25-180 MHz | Data from NOAA NCEI archive.",
             "Holloman (New Mexico, USA)": "Holloman AFB, New Mexico.\nFrequency: 25-180 MHz | ⚠️ Limited data: Apr 2000 - Jul 2004 only.",
+            "e-CALLISTO": "e-CALLISTO Network: Global network of solar radio spectrometers.\nFrequency: 45-870 MHz typical | Select observatory or search all.",
         }
         self.info_label.setText(
             site_info.get(text, "RSTN Solar Spectrograph: 25-180 MHz")
         )
+        
+        # Show/hide e-CALLISTO observatory selector and processing options
+        if text == "e-CALLISTO":
+            self.ecallisto_widget.show()
+            # Hide RSTN-specific processing options (they don't apply to e-CALLISTO)
+            self.processing_group.hide()
+        else:
+            self.ecallisto_widget.hide()
+            # Show RSTN processing options
+            self.processing_group.show()
 
     def create_time_selection(self):
         """Create the time range selection section."""
@@ -300,6 +393,55 @@ class RadioDataDownloaderGUI(QMainWindow):
             self.start_layout_widget.show()
             self.end_layout_widget.show()
 
+    def refresh_observatories(self):
+        """Fetch available observatories for the selected date."""
+        # Get the date from the appropriate widget
+        if self.full_day_checkbox.isChecked():
+            date = self.date_only_edit.dateTime().toString("yyyy-MM-dd")
+        else:
+            date = self.start_datetime.dateTime().toString("yyyy-MM-dd")
+        
+        # Disable refresh button while fetching
+        self.refresh_obs_button.setEnabled(False)
+        self.refresh_obs_button.setText("...")
+        self.log_message(f"Fetching observatories for {date}...")
+        
+        # Start worker thread
+        self.obs_refresh_worker = ObservatoryRefreshWorker(date)
+        self.obs_refresh_worker.progress.connect(self.log_message)
+        self.obs_refresh_worker.finished.connect(self.on_observatory_refresh_finished)
+        self.obs_refresh_worker.error.connect(self.on_observatory_refresh_error)
+        self.obs_refresh_worker.start()
+
+    def on_observatory_refresh_finished(self, observatories: list):
+        """Handle successful observatory fetch."""
+        self.refresh_obs_button.setEnabled(True)
+        self.refresh_obs_button.setText("🔄")
+        
+        # Update the combobox
+        current_selection = self.ecallisto_combo.currentText()
+        self.ecallisto_combo.clear()
+        self.ecallisto_combo.addItem("All Observatories")
+        
+        if observatories:
+            self.ecallisto_combo.addItems(observatories)
+            self.log_message(f"Found {len(observatories)} observatories")
+            
+            # Try to restore previous selection
+            index = self.ecallisto_combo.findText(current_selection)
+            if index >= 0:
+                self.ecallisto_combo.setCurrentIndex(index)
+        else:
+            # Fall back to default list
+            self.ecallisto_combo.addItems(rdd.ECALLISTO_OBSERVATORIES)
+            self.log_message("No observatories found, using default list")
+
+    def on_observatory_refresh_error(self, error_message: str):
+        """Handle observatory fetch error."""
+        self.refresh_obs_button.setEnabled(True)
+        self.refresh_obs_button.setText("🔄")
+        self.log_message(f"Error refreshing observatories: {error_message}")
+
     def on_start_date_changed(self, new_date):
         """Sync end date when start date is changed."""
         from PyQt5.QtCore import QTime
@@ -337,7 +479,7 @@ class RadioDataDownloaderGUI(QMainWindow):
 
     def create_processing_options(self):
         """Create the processing options section."""
-        group = QGroupBox("Processing Options")
+        self.processing_group = QGroupBox("Processing Options (RSTN only)")
         layout = QVBoxLayout()
 
         self.flag_checkbox = QCheckBox("Flag known bad frequency channels")
@@ -361,24 +503,24 @@ class RadioDataDownloaderGUI(QMainWindow):
         )
         layout.addWidget(self.bkg_sub_checkbox)
 
-        group.setLayout(layout)
-        self.layout.addWidget(group)
+        self.processing_group.setLayout(layout)
+        self.layout.addWidget(self.processing_group)
 
     def create_download_section(self):
         """Create the download button and progress section."""
         layout = QHBoxLayout()
-
-        self.download_button = QPushButton("Download && Convert to FITS")
-        self.download_button.clicked.connect(self.start_download)
-        self.download_button.setMinimumHeight(40)
-        self.download_button.setStyleSheet("font-weight: bold;")
-        layout.addWidget(self.download_button)
 
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.cancel_download)
         self.cancel_button.setEnabled(False)
         self.cancel_button.setMinimumHeight(40)
         layout.addWidget(self.cancel_button)
+
+        self.download_button = QPushButton("Download && Convert to FITS")
+        self.download_button.clicked.connect(self.start_download)
+        self.download_button.setMinimumHeight(40)
+        self.download_button.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.download_button)
 
         self.layout.addLayout(layout)
 
@@ -396,7 +538,7 @@ class RadioDataDownloaderGUI(QMainWindow):
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(150)
+        #self.log_text.setMaximumHeight(350)
         self.log_text.setPlaceholderText("Download status will appear here...")
 
         layout.addWidget(self.log_text)
@@ -426,40 +568,82 @@ class RadioDataDownloaderGUI(QMainWindow):
             QMessageBox.warning(self, "Error", "Please specify an output directory.")
             return
 
-        # Check if full day mode or time range mode
-        if self.full_day_checkbox.isChecked():
-            # Full day mode - no time filtering
-            date = self.date_only_edit.dateTime().toString("yyyy-MM-dd")
-            start_time = None
-            end_time = None
-            log_msg = f"Starting download for {date} (full day observation)..."
+        instrument = self.instrument_combo.currentText()
+        
+        # Handle e-CALLISTO differently
+        if instrument == "e-CALLISTO":
+            observatory = self.ecallisto_combo.currentText()
+            
+            # Check if full day mode
+            if self.full_day_checkbox.isChecked():
+                # Full day mode - use 00:00:00 to 23:59:59
+                date = self.date_only_edit.dateTime().toString("yyyy-MM-dd")
+                start_datetime_str = f"{date} 00:00:00"
+                end_datetime_str = f"{date} 23:59:59"
+                log_msg = f"Starting e-CALLISTO download (full day)..."
+            else:
+                # Time range mode
+                start_dt = self.start_datetime.dateTime()
+                end_dt = self.end_datetime.dateTime()
+                
+                # Validate time range
+                if start_dt >= end_dt:
+                    QMessageBox.warning(
+                        self, "Error", "Start time must be before end time."
+                    )
+                    return
+                
+                # Format as 'YYYY-MM-DD HH:MM:SS' for e-CALLISTO
+                start_datetime_str = start_dt.toString("yyyy-MM-dd HH:mm:ss")
+                end_datetime_str = end_dt.toString("yyyy-MM-dd HH:mm:ss")
+                log_msg = f"Starting e-CALLISTO download..."
+            
+            log_msg += f"\nObservatory: {observatory}"
+            log_msg += f"\nTime range: {start_datetime_str} to {end_datetime_str}"
+            
+            params = {
+                "instrument": instrument,
+                "ecallisto_observatory": observatory,
+                "start_datetime": start_datetime_str,
+                "end_datetime": end_datetime_str,
+                "output_dir": output_dir,
+            }
         else:
-            # Time range mode
-            start_dt = self.start_datetime.dateTime()
-            end_dt = self.end_datetime.dateTime()
+            # RSTN instruments
+            # Check if full day mode or time range mode
+            if self.full_day_checkbox.isChecked():
+                # Full day mode - no time filtering
+                date = self.date_only_edit.dateTime().toString("yyyy-MM-dd")
+                start_time = None
+                end_time = None
+                log_msg = f"Starting download for {date} (full day observation)..."
+            else:
+                # Time range mode
+                start_dt = self.start_datetime.dateTime()
+                end_dt = self.end_datetime.dateTime()
 
-            # Validate time range
-            if start_dt >= end_dt:
-                QMessageBox.warning(
-                    self, "Error", "Start time must be before end time."
-                )
-                return
+                # Validate time range
+                if start_dt >= end_dt:
+                    QMessageBox.warning(
+                        self, "Error", "Start time must be before end time."
+                    )
+                    return
 
-            date = start_dt.toString("yyyy-MM-dd")
-            start_time = start_dt.toString("HH:mm:ss")
-            end_time = end_dt.toString("HH:mm:ss")
-            log_msg = f"Starting download for {date}...\nTime range: {start_time} to {end_time}"
+                date = start_dt.toString("yyyy-MM-dd")
+                start_time = start_dt.toString("HH:mm:ss")
+                end_time = end_dt.toString("HH:mm:ss")
+                log_msg = f"Starting download for {date}...\nTime range: {start_time} to {end_time}"
 
-        params = {
-            "instrument": self.instrument_combo.currentText(),
-            "date": date,
-            "start_time": start_time,
-            "end_time": end_time,
-            "output_dir": output_dir,
-            "background_subtract": self.bkg_sub_checkbox.isChecked(),
-            "flag_bad_channels": self.flag_checkbox.isChecked(),
-            "flag_cal_time": self.flag_cal_checkbox.isChecked(),
-        }
+            params = {
+                "instrument": instrument,
+                "date": date,
+                "start_time": start_time,
+                "end_time": end_time,
+                "output_dir": output_dir,
+                "background_subtract": self.bkg_sub_checkbox.isChecked(),
+                "flag_bad_channels": self.flag_checkbox.isChecked(),
+                "flag_cal_time": self.flag_cal_checkbox.isChecked(),
+            }
 
         # Update UI
         self.download_button.setEnabled(False)

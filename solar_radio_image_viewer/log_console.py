@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, QSize
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QTextCursor
 
 
 # Thread-safe signal emitter for logging
@@ -146,6 +146,10 @@ class LogConsole(QDialog):
 
         # Track auto-scroll state
         self.auto_scroll = True
+        
+        # For handling carriage returns (progress bar updates)
+        # Track if last output was a progress line that should be overwritten
+        self._last_line_is_progress = False
 
     def toggle_autoscroll(self):
         self.auto_scroll = self.auto_scroll_btn.isChecked()
@@ -160,16 +164,42 @@ class LogConsole(QDialog):
         if len(text) > 1000000:
             text = text[:1000000] + "\n... [truncated massive log chunk] ...\n"
 
-        cursor = self.text_edit.textCursor()
-        cursor.movePosition(cursor.End)
-        cursor.insertText(text)
+        # Handle carriage returns for progress bar updates
+        # If text starts with \r, it's meant to overwrite the current line
+        if '\r' in text and '\n' not in text:
+            # This is a progress update - overwrite last line
+            self._overwrite_last_line(text.replace('\r', ''))
+            self._last_line_is_progress = True
+        elif text == '\n' and self._last_line_is_progress:
+            # Newline after progress - just mark that progress is done
+            self._last_line_is_progress = False
+        else:
+            # Normal text - just append
+            # If last was progress and this has content, add newline first
+            cursor = self.text_edit.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertText(text)
+            self._last_line_is_progress = False
 
+            if self.auto_scroll:
+                self.text_edit.setTextCursor(cursor)
+                self.text_edit.ensureCursorVisible()
+    
+    def _overwrite_last_line(self, text):
+        """Overwrite the last line in the text edit (for progress bars)."""
+        cursor = self.text_edit.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertText(text)
+        
         if self.auto_scroll:
             self.text_edit.setTextCursor(cursor)
             self.text_edit.ensureCursorVisible()
 
     def clear_logs(self):
         self.text_edit.clear()
+        self._last_line_is_progress = False
 
     def copy_logs(self):
         self.text_edit.selectAll()

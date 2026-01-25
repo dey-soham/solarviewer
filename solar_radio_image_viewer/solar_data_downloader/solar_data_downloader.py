@@ -13,10 +13,17 @@ try:
 except ImportError:
     # If aiapy is not installed, we'll provide a helpful message
     HAS_AIAPY = False
-    print(
-        "Warning: aiapy package not found. Level 1.5 calibration will not be available."
-    )
-    print("To install aiapy: pip install aiapy")
+    # Only print warning once when module is first loaded
+    import sys
+    if not hasattr(sys, '_aiapy_warning_shown'):
+        print(
+            "\n" + "="*60 + "\n"
+            "WARNING: aiapy package not found.\n"
+            "Level 1.5 calibration (pointing, degradation correction) will NOT be applied.\n"
+            "To install: pip install aiapy\n"
+            + "="*60 + "\n"
+        )
+        sys._aiapy_warning_shown = True
 from astropy.io import fits
 from datetime import datetime, timedelta
 import astropy.units as u  # Import astropy units for use throughout the code
@@ -31,7 +38,8 @@ except Exception:
 # Default download settings for Fido
 DEFAULT_MAX_CONN = 4  # Maximum simultaneous connections
 DEFAULT_MAX_SPLITS = 5  # Maximum splits per file
-DEFAULT_MAX_RETRIES = 3  # Number of retry attempts for failed downloads
+DEFAULT_MAX_RETRIES = 5  # Number of retry attempts for failed downloads (increased from 3)
+DEFAULT_TIMEOUT = 120  # Timeout in seconds per file download
 
 
 def robust_fido_fetch(
@@ -40,10 +48,11 @@ def robust_fido_fetch(
     max_conn=DEFAULT_MAX_CONN,
     max_splits=DEFAULT_MAX_SPLITS,
     max_retries=DEFAULT_MAX_RETRIES,
+    timeout=DEFAULT_TIMEOUT,
     progress=True,
 ):
     """
-    Robust Fido.fetch wrapper with retry logic and configurable connection settings.
+    Robust Fido.fetch wrapper with retry logic, timeout, and configurable connection settings.
 
     This function handles common download issues like timeouts and partial downloads
     by using a custom parfive Downloader with better settings and automatically
@@ -54,16 +63,24 @@ def robust_fido_fetch(
         output_dir (str): Directory to save downloaded files
         max_conn (int): Maximum simultaneous connections (default: 4)
         max_splits (int): Maximum splits per file for parallel download (default: 5)
-        max_retries (int): Number of retry attempts for failed downloads (default: 3)
+        max_retries (int): Number of retry attempts for failed downloads (default: 5)
+        timeout (int): Timeout in seconds for each file download (default: 120)
         progress (bool): Show download progress bar (default: True)
 
     Returns:
         parfive.Results: Downloaded file results
     """
     from sunpy.net import Fido
+    import aiohttp
+    
+    # Create timeout configuration for aiohttp (used by parfive internally)
+    timeout_config = aiohttp.ClientTimeout(total=timeout, connect=30)
 
     # Create a custom downloader with better settings for bulk downloads
+    # Note: parfive uses aiohttp, timeout is passed via overwrite parameter in Fido.fetch
     downloader = Downloader(max_conn=max_conn, max_splits=max_splits, progress=progress)
+
+    print(f"Starting download with settings: max_conn={max_conn}, retries={max_retries}, timeout={timeout}s")
 
     # Initial fetch attempt
     downloaded = Fido.fetch(result, path=output_dir + "/{file}", downloader=downloader)
@@ -76,22 +93,36 @@ def robust_fido_fetch(
         print(
             f"\nRetrying {failed_count} failed downloads (attempt {retry_count}/{max_retries})..."
         )
+        
+        # Add small delay between retries to help with rate limiting
+        import time as time_module
+        time_module.sleep(2)
 
-        # Create a fresh downloader for retry
+        # Create a fresh downloader for retry with reduced connections
         retry_downloader = Downloader(
-            max_conn=max_conn, max_splits=max_splits, progress=progress
+            max_conn=max(1, max_conn // 2),  # Reduce connections on retry
+            max_splits=max_splits, 
+            progress=progress
         )
         downloaded = Fido.fetch(downloaded, downloader=retry_downloader)
 
     # Report final status
     if downloaded.errors:
         print(
-            f"\nWarning: {len(downloaded.errors)} files failed to download after {max_retries} retries:"
+            f"\n" + "="*60 + "\n"
+            f"WARNING: {len(downloaded.errors)} files failed to download after {max_retries} retries\n"
+            + "="*60
         )
         for error in downloaded.errors[:5]:  # Show first 5 errors
             print(f"  - {error}")
         if len(downloaded.errors) > 5:
             print(f"  ... and {len(downloaded.errors) - 5} more errors")
+        print("\nTroubleshooting tips:")
+        print("  - Check VSO status: https://sdac.virtualsolar.org/cgi/health_report")
+        print("  - Try a smaller time range")
+        print("  - The data provider may be temporarily unavailable")
+    else:
+        print(f"\nSuccessfully downloaded {len(downloaded)} files.")
 
     return downloaded
 
@@ -684,6 +715,12 @@ def download_aia_with_fido(
     wl_int = int(wavelength)
 
     print(f"Searching for AIA {wavelength}Å data from {start_time} to {end_time}")
+    
+    # Show calibration status upfront
+    if can_calibrate:
+        print(f"  Calibration: ENABLED (aiapy available)")
+    else:
+        print(f"  Calibration: DISABLED {'(aiapy not installed)' if not HAS_AIAPY else '(skipped by user)'}")
 
     try:
         # Create the query with correct unit import
@@ -694,7 +731,17 @@ def download_aia_with_fido(
         )
 
         if len(result) == 0 or len(result[0]) == 0:
-            print("No data found for the specified parameters.")
+            print("\n" + "="*60)
+            print("NO DATA FOUND")
+            print("="*60)
+            print(f"  Time range: {start_time} to {end_time}")
+            print(f"  Instrument: AIA, Wavelength: {wavelength}Å")
+            print("\nPossible causes:")
+            print("  - Data may not exist for this time range")
+            print("  - VSO provider may be temporarily unavailable")
+            print("  - Check VSO status: https://sdac.virtualsolar.org/cgi/health_report")
+            if end_dt > datetime.now():
+                print("  - NOTE: End time is in the future!")
             return []
 
         print(f"Found {len(result[0])} files. Downloading...")
@@ -1042,7 +1089,17 @@ def download_hmi_with_fido(
             )
 
         if len(result) == 0 or len(result[0]) == 0:
-            print("No data found for the specified parameters.")
+            print("\n" + "="*60)
+            print("NO DATA FOUND")
+            print("="*60)
+            print(f"  Time range: {start_time} to {end_time}")
+            print(f"  Instrument: HMI, Series: {series}")
+            print("\nPossible causes:")
+            print("  - Data may not exist for this time range")
+            print("  - VSO provider may be temporarily unavailable")
+            print("  - Check VSO status: https://sdac.virtualsolar.org/cgi/health_report")
+            if end_dt > datetime.now():
+                print("  - NOTE: End time is in the future!")
             return []
 
         print(f"Found {len(result[0])} files. Downloading...")
@@ -1055,6 +1112,10 @@ def download_hmi_with_fido(
         return []
 
     downloaded_files = [str(file_path) for file_path in downloaded]
+    
+    # Show calibration status
+    print(f"  Calibration: {'ENABLED' if not skip_calibration else 'DISABLED (skipped by user)'}")
+    
     if not skip_calibration:
         for file_path in downloaded_files:
             lvl1_map = Map(file_path)

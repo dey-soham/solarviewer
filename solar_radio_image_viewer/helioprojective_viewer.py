@@ -3,6 +3,7 @@
 
 import os
 import sys
+import tempfile
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -77,10 +78,19 @@ def convert_casaimage_to_fits(
     if imagename is None:
         print("Error: No input image specified")
         return None
-
+    
     try:
+        imagename = os.path.abspath(imagename)
+        if fitsname is not None:
+            fitsname = os.path.abspath(fitsname)
+
         if fitsname is None:
-            fitsname = "temp_" + os.path.basename(imagename) + ".fits"
+            # Create absolute path for default temp fits in writable directory
+            import tempfile
+
+            fitsname = os.path.join(
+                tempfile.gettempdir(), f"temp_{os.getpid()}_{os.path.basename(imagename)}.fits"
+            )
 
         import subprocess
         import sys
@@ -98,7 +108,10 @@ except Exception as e:
 """
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
         )
 
         if result.returncode != 0:

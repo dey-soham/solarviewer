@@ -453,6 +453,7 @@ class ContourSettingsDialog(QDialog):
 
         self.file_path_edit = QLineEdit(self.settings.get("external_image", ""))
         self.file_path_edit.setPlaceholderText("Select file or directory...")
+        self.file_path_edit.setReadOnly(True)
         path_row.addWidget(self.file_path_edit, 1)
 
         self.browse_button = QPushButton("Browse...")
@@ -4908,6 +4909,7 @@ class UpdateDialog(QDialog):
                     print(f"[INFO] Executing: {cmd}")
 
                     # Use Popen to capture and print output in real-time
+                    launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
                     process = subprocess.Popen(
                         cmd,
                         shell=True,
@@ -4915,6 +4917,7 @@ class UpdateDialog(QDialog):
                         stderr=subprocess.STDOUT,
                         text=True,
                         bufsize=1,
+                        cwd=launch_cwd,
                     )
 
                     # Stream output to main stdout (which Log Console captures)
@@ -4938,12 +4941,14 @@ class UpdateDialog(QDialog):
                     ]
                     print(f"[INFO] Executing: {' '.join(cmd)}")
 
+                    launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
                     process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
                         bufsize=1,
+                        cwd=launch_cwd,
                     )
 
                     for line in process.stdout:
