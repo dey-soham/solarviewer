@@ -10,11 +10,6 @@ casatasks>=6.4.0
 sunpy[image,map,net,timeseries,visualization]>=5.0.0
 reproject>=0.10.0
 
-# Napari viewer dependencies
-napari>=0.4.16
-napari-console>=0.0.8
-napari-svg>=0.1.6
-vispy>=0.11.0
 dask>=2022.1.0
 zarr>=2.11.0
 drms

@@ -82,6 +82,8 @@ sv --install
 
 To prevent CASA from auto-updating and to disable telemetry/crash reporting, we recommend adding the following configurations to your home directory.
 
+> **⚠️ Important**: If these configurations are not set, `solarviewer` may take a long time to load as CASA attempts to perform background updates.
+
 ### `~/.casa/config.py`
 Add or create this file with:
 ```python
@@ -140,11 +142,33 @@ rm -rf ~/.sv
 ### **Build Error: `Failed to build python-casacore` (macOS)**
 If you see an error like `Call to scikit_build_core.build.build_wheel failed` or `Casacore: unable to find the header file casa/aips.h`, it means the wrapper cannot find the underlying C++ libraries. This is common on Apple Silicon Macs.
 
-**Fix:** Install the C++ `casacore` libraries via Homebrew:
+**Fix 1: Install via Conda (Recommended)**
+This is the most reliable method as it installs pre-compiled binaries, avoiding all compilation issues.
 ```bash
-brew install casacore
+conda install -c conda-forge python-casacore
 ```
-Then try installing SolarViewer again.
+
+**Fix 2: Install via Homebrew**
+If you prefer Homebrew, you must manually install all dependencies and set compiler search paths. This is common on Apple Silicon.
+
+1. Install Homebrew (if not already installed):
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+2. Tap repository and install dependencies:
+   ```bash
+   brew tap ska-sa/tap
+   brew install casacore boost boost-python3 cfitsio wcslib
+   ```
+3. Set environment variables to help the compiler find headers and libraries:
+   ```bash
+   export CPLUS_INCLUDE_PATH="$(brew --prefix)/include:$(brew --prefix boost)/include:$(brew --prefix boost-python3)/include"
+   export LIBRARY_PATH="$(brew --prefix)/lib:$(brew --prefix boost)/lib:$(brew --prefix boost-python3)/lib"
+   ```
+4. Re-install forcing a source build:
+   ```bash
+   pip install --no-binary python-casacore solarviewer
+   ```
 
 ### **Command `solarviewer` or `sv` not found?**
 *   Ensure your virtual environment is active:

@@ -74,15 +74,12 @@ class LoaderThread(QThread):
     finished_loading = pyqtSignal(object)  # Returns the created window
     error = pyqtSignal(str)  # Signal for loading errors
 
-    def __init__(self, imagename, args_fast):
+    def __init__(self, imagename):
         super().__init__()
         self.imagename = imagename
-        self.args_fast = args_fast
 
     def run(self):
         try:
-            if self.args_fast:
-                return  # Fast mode handled separately
 
             self.message.emit("Loading core libraries...")
             self.progress.emit(90)
@@ -113,31 +110,19 @@ class LoaderThread(QThread):
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
-        description="Solar Radio Image Viewer - A tool for visualizing and analyzing solar radio images",
+        description="SolarViewer - A tool for visualizing and analyzing solar radio images and more.. ",
         epilog="""
-Viewer Types:
-  Standard Viewer: Full-featured viewer with comprehensive analysis tools, 
+  Full-featured viewer with comprehensive analysis tools, 
                   coordinate systems, region selection, and statistical analysis.
-  
-  Napari Viewer:   Lightweight, fast viewer for quick visualization of images.
-                  Offers basic functionality with faster loading times.
 
 Examples:
   solarviewer                      # Launch standard viewer
   solarviewer image.fits           # Open image.fits in standard viewer
-  solarviewer -f                   # Launch fast Napari viewer
-  solarviewer -f image.fits        # Open image.fits in Napari viewer
-  sv --fast image.fits             # Same as above using short command
+  sv image.fits                    # Same as above using short command
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    parser.add_argument(
-        "-f",
-        "--fast",
-        action="store_true",
-        help="Launch the fast Napari viewer instead of the standard viewer",
-    )
     parser.add_argument(
         "imagename",
         nargs="?",
@@ -223,12 +208,6 @@ Examples:
 
     log_console = LogConsole.get_instance()
 
-    # Handle Fast Mode (Napari) - Skip complex loading
-    if args.fast:
-        from .napari_viewer import main as napari_main
-
-        napari_main(args.imagename)
-        return
 
     # === STANDARD VIEWER LAUNCH SEQUENCE ===
 
@@ -240,7 +219,7 @@ Examples:
     app.processEvents()
 
     # 2. Setup Loading Thread
-    loader = LoaderThread(args.imagename, args.fast)
+    loader = LoaderThread(args.imagename)
 
     # Container for the window (to be populated by thread callback)
     window_container = {"window": None}

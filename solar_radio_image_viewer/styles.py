@@ -3,7 +3,8 @@
 
 import os
 from PyQt5.QtGui import QFontDatabase, QFont
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QAbstractButton, QComboBox, QTabBar, QMenu, QMenuBar, QWidget
 
 # Global flag to track if fonts are loaded
 _fonts_loaded = False
@@ -201,8 +202,11 @@ def get_stylesheet(palette, is_dark=True):
         border-color: {palette['highlight']};
     }}
 
-    QPushButton:pressed {{
-        background-color: {palette['button_pressed']};
+    QPushButton:pressed, QPushButton:checked {{
+        background-color: {palette['highlight']};
+        /*background-color: {palette['button_pressed']};*/
+        color: #ffffff;
+        border-color: {palette['highlight']};
     }}
     
     QPushButton:disabled {{
@@ -438,6 +442,15 @@ def get_stylesheet(palette, is_dark=True):
         border-bottom: 2px solid {palette['highlight']};
     }}
     
+    QTableWidget QHeaderView::section:vertical {{
+        background-color: {palette['button']};
+        color: {palette['text']};
+        padding: 8px;
+        border: none;
+        border-right: 1px solid {palette['border']};
+        border-bottom: 1px solid {palette['border']};
+    }}
+    
     QTableWidget QHeaderView::section:hover {{
         background-color: {palette['button_hover']};
     }}
@@ -618,7 +631,7 @@ def get_stylesheet(palette, is_dark=True):
     
     QToolButton {{
         background-color: transparent;
-        color: {"#ffffff" if not is_dark and 'toolbar_bg' in palette else palette['text']};
+        color: {palette['text']};
         border: none;
         border-radius: 4px;
         padding: 4px;
@@ -871,3 +884,21 @@ def get_icon_path(icon_name):
         # Use light version for light mode
         name, ext = icon_name.rsplit(".", 1)
         return f"{name}_light.{ext}"
+
+def set_hand_cursor(widget):
+    """
+    Recursively set PointingHandCursor for all buttons and interactive widgets.
+    
+    Args:
+        widget: The root widget (e.g., a QDialog or QMainWindow)
+    """
+    from PyQt5.QtWidgets import QAbstractButton, QComboBox, QMenu, QMenuBar, QTabBar, QHeaderView, QSlider, QAbstractSpinBox
+    
+    # Check if this widget should have a hand cursor
+    if isinstance(widget, (QAbstractButton, QComboBox, QMenu, QMenuBar, QTabBar, QHeaderView, QSlider, QAbstractSpinBox)):
+        widget.setCursor(Qt.PointingHandCursor)
+    
+    # Recurse into children
+    for child in widget.children():
+        if isinstance(child, QWidget):
+            set_hand_cursor(child)

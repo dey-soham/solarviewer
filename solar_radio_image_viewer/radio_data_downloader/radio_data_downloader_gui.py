@@ -39,6 +39,7 @@ except ImportError:
 # Import the radio data downloader module
 try:
     from . import radio_data_downloader as rdd
+    from ..styles import set_hand_cursor
 except ImportError:
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -199,6 +200,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.create_processing_options()
         self.create_log_section()
         self.create_download_section()
+        set_hand_cursor(self)
 
         # Initialize worker
         self.download_worker = None

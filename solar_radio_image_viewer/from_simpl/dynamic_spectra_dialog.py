@@ -29,6 +29,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from .simpl_theme import apply_theme, get_theme_from_args
+from ..styles import set_hand_cursor
 
 
 class ProcessingThread(QThread):
@@ -122,6 +123,7 @@ class DynamicSpectraDialog(QDialog):
         self.theme = theme
         self.processing_thread = None
         self._setup_ui()
+        set_hand_cursor(self)
 
     def _setup_ui(self):
         self.setWindowTitle("Create Dynamic Spectra")
@@ -372,6 +374,7 @@ def main():
 
     # Get theme from command line
     from .simpl_theme import apply_theme, get_theme_from_args
+    from ..styles import set_hand_cursor
     theme = get_theme_from_args()
     apply_theme(app, theme)
 

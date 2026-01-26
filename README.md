@@ -24,14 +24,7 @@
 
 ## ✨ Features
 
-**SolarViewer** is a feature-rich desktop application designed for solar physics research. It supports FITS and CASA image formats with specialized tools for radio astronomy.
-
-### 🔭 Multiple Viewer Modes
-
-| Viewer | Description |
-|--------|-------------|
-| **Standard Viewer** | Full-featured multi-tab interface with comprehensive analysis tools, including helioprojective coordinate support |
-| **Napari Viewer** | Lightweight, fast viewer for quick visualization |
+**SolarViewer** is a feature-rich desktop application designed for solar physics research. It provides a full-featured multi-tab interface with comprehensive analysis tools, including helioprojective coordinate support for FITS and CASA image formats with specialized tools for radio astronomy.
 
 ### 📊 Analysis & Visualization
 
@@ -40,6 +33,7 @@
 - **Elliptical Ring Fitting** — Model ring-shaped emission features
 - **Region Selection** — Rectangle and ellipse tools for region-of-interest analysis
 - **Multiple Colormaps** — Choose from scientific colormaps with linear, log, sqrt, and custom stretches
+- **Contour Overlays** — Overlay multi-wavelength contours (e.g., radio on EUV) with automatic coordinate reprojection
 - **Stokes Parameters** — Full polarization support (I, Q, U, V, L, Lfrac, Vfrac, PANG)
 
 ### 🌐 Data Access & Downloads
@@ -48,7 +42,7 @@
 - **Helioviewer Browser** — Browse and download images from NASA's Helioviewer API with time-series playback
 - **Solar Data Downloader** — Download data from SDO/AIA, IRIS, SOHO, GOES SUVI, STEREO, and GONG
 - **Radio Data Downloader** — Access solar radio observation archives
-- **Solar Activity Viewer** — Browse solar events (flares, CMEs, active regions) with real-time data
+- **Solar Activity Viewer** — Browse solar events (flares, CMEs, active regions), view context images and radio spectra, and plot GOES X-ray light curves
  
 ### 🎬 Video Creation
  
@@ -60,7 +54,8 @@
 ### 🔧 Advanced Tools
  
 - **Log Console** — Internal console to view application logs and debugging information
-- **LOFAR/SIMPL Support** — Calibration table visualizer, dynamic spectra viewer, pipeline log viewer
+- **Dynamic Spectra Viewer** — Advanced viewer for radio spectra with RFI masking (ROI/Global), bandpass normalization, and cross-section analysis
+- **LOFAR/SIMPL Support** — Calibration table visualizer and pipeline log viewer
 - **Coordinate Transformations** — Convert between RA/Dec and helioprojective coordinates
 - **Phase Center Tool** — Shift image phase centers for radio interferometry data
 - **Export Options** — Export to FITS, CASA image, PNG, and region files
@@ -196,7 +191,6 @@ EnableTelemetry: False
 | sunpy | ≥5.0.0 | Solar physics tools |
 | casatools | ≥6.4.0 | CASA image support |
 | casatasks | ≥6.4.0 | CASA tasks |
-| napari | ≥0.4.16 | Fast image viewer |
 
 </details>
 
@@ -204,26 +198,21 @@ EnableTelemetry: False
 
 ## 🚀 Quick Start
 
-### Launch the Viewer
+### Launch SolarViewer
 
 ```bash
-# Standard viewer
 solarviewer
 # or
 sv
 
 # Open a specific file
 solarviewer path/to/image.fits
-
-# Fast Napari viewer
-solarviewer -f path/to/image.fits
 ```
 
 ### LOFAR Tools
 
 ```bash
 viewcaltable       # Calibration table visualizer
-viewds             # Dynamic spectra viewer
 viewlogs           # Pipeline log viewer
 ```
 
@@ -232,18 +221,18 @@ viewlogs           # Pipeline log viewer
 ```bash
 viewsolaractivity  # Solar events browser
 heliobrowser       # Helioviewer browser
+viewds             # Dynamic spectra viewer
 ```
 ---
 
 ## 💻 Command Line Interface
 
-### Standard Viewer (`solarviewer` / `sv`)
+### Command Line Interface (`solarviewer` / `sv`)
 
 ```bash
 solarviewer [OPTIONS] [IMAGEFILE]
 
 Options:
-  -f, --fast        Launch fast Napari viewer
   --install         Install desktop integration
   --uninstall       Uninstall desktop integration
   --light           Start with light theme
@@ -258,7 +247,7 @@ Options:
 ### User Interface Overview
 
 <details>
-<summary><b>Standard Viewer Controls</b></summary>
+<summary><b>SolarViewer Controls</b></summary>
 
 #### File Controls
 - **Open Directory** — Load a folder of solar radio images
@@ -299,7 +288,6 @@ solarviewer/
 │   ├── helioprojective.py      # Coordinate conversions
 │   ├── helioprojective_viewer.py
 │   ├── helioviewer_browser.py  # Helioviewer API browser
-│   ├── napari_viewer.py        # Fast viewer
 │   ├── video_dialog.py         # Video creation UI
 │   ├── create_video.py         # Video rendering
 │   ├── video_utils.py          # Video utilities
@@ -357,7 +345,6 @@ This project builds on the excellent work of the solar physics and radio astrono
 - [**SunPy**](https://sunpy.org/) — Solar physics data analysis in Python
 - [**Astropy**](https://www.astropy.org/) — Core astronomy library for FITS, coordinates, and units
 - [**CASA**](https://casa.nrao.edu/) — Common Astronomy Software Applications for radio astronomy
-- [**Napari**](https://napari.org/) — Fast n-dimensional image viewer
 
 ### GUI & Visualization
 - [**PyQt5**](https://www.riverbankcomputing.com/software/pyqt/) — Python bindings for Qt GUI framework
@@ -376,6 +363,7 @@ This project builds on the excellent work of the solar physics and radio astrono
 ### Community
 - The solar physics group at the National Centre for Radio Astrophysics for feedback and testing
 - Deepan Patra for designing app icon and logo
+- Atul Mohan for contributing to the download codebase and providing helpful feedback
 
 ---
 

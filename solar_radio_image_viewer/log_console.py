@@ -135,6 +135,12 @@ class LogConsole(QDialog):
         sys.stderr = StreamRedirector(self.stderr_orig, self.log_signal)
 
         self.apply_theme()
+        
+        try:
+            from .styles import set_hand_cursor
+            set_hand_cursor(self)
+        except ImportError:
+            pass
 
         # Register for theme updates
         try:

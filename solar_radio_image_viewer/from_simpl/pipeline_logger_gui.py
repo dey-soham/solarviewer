@@ -27,6 +27,10 @@ import logging
 from queue import Queue, Empty
 from datetime import datetime
 import threading
+try:
+    from ..styles import set_hand_cursor
+except ImportError:
+    from styles import set_hand_cursor
 
 from PyQt5.QtWidgets import (
     QApplication,
@@ -59,6 +63,8 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QShortcut,
     QDialog,
+    QFrame,
+    QScrollArea,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -80,6 +86,18 @@ from PyQt5.QtGui import (
     QBrush,
     QKeySequence,
 )
+
+
+class LogTableWidget(QTableWidget):
+    """Custom QTableWidget that prevents horizontal auto-scrolling during navigation."""
+
+    def scrollTo(self, index, hint=QAbstractItemView.EnsureVisible):
+        # Capture current horizontal scroll position
+        h_val = self.horizontalScrollBar().value()
+        # Perform standard scroll (handles vertical positioning smoothly)
+        super().scrollTo(index, hint)
+        # Force horizontal scrollbar back to its original position
+        self.horizontalScrollBar().setValue(h_val)
 
 
 # Local LogRecord class - compatible with any log format
@@ -244,15 +262,25 @@ class LogLevelDelegate(QStyledItemDelegate):
         if level in self.level_colors:
             bg_color, text_color = self.level_colors[level]
 
-            # Fill background with level color
-            painter.fillRect(option.rect, bg_color)
+            # Fill background
+            if option.state & QStyle.State_Selected:
+                # When selected, blend the level color with the selection color or just use selection
+                # For high contrast, we use the selection color
+                painter.fillRect(option.rect, option.palette.highlight())
+                painter.setPen(option.palette.highlightedText().color())
+                
+                # Draw a small indicator of the level color on the left
+                indicator_rect = QRect(option.rect.left(), option.rect.top(), 4, option.rect.height())
+                painter.fillRect(indicator_rect, bg_color)
+            else:
+                painter.fillRect(option.rect, bg_color)
+                painter.setPen(text_color)
 
             # Set up rect for text with padding
             text_rect = QRect(option.rect)
             text_rect.setLeft(text_rect.left() + 4)
 
-            # Draw text with appropriate color
-            painter.setPen(text_color)
+            # Draw text
             painter.drawText(text_rect, Qt.AlignVCenter, level)
         else:
             # Fall back to default for unknown levels
@@ -481,11 +509,10 @@ class MessageDelegate(QStyledItemDelegate):
 
         # Set text color based on selection state
         if option.state & QStyle.State_Selected:
-            # When selected, use plain text (no colors) for readability
-            doc.setPlainText(text)
-            doc.setDefaultStyleSheet(
-                f"body {{ color: {option.palette.highlightedText().color().name()}; }}"
-            )
+            # When selected, use plain text with explicit selection color for readability
+            import html
+            color = option.palette.highlightedText().color().name()
+            doc.setHtml(f'<div style="color: {color}">{html.escape(text)}</div>')
         else:
             # Normal state: use syntax-highlighted HTML
             html_content = self._text_to_html(text)
@@ -568,7 +595,10 @@ class LogTableModel:
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
 
         # Prevent auto-scrolling horizontally when selecting rows
-        self.table.setAutoScroll(False)
+        # self.table.setAutoScroll(False)
+
+        # Enable auto-scrolling (LogTableWidget will handle horizontal constraint)
+        self.table.setAutoScroll(True)
 
         # Selection behavior
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -710,6 +740,7 @@ class PipelineLoggerGUI(QMainWindow):
     def __init__(self, theme="dark"):
         super().__init__()
         self.theme = theme
+        self.help_dialog = None
 
         # Initialize empty queue for logs
         self.log_queue = Queue()
@@ -723,6 +754,7 @@ class PipelineLoggerGUI(QMainWindow):
 
         # Set up keyboard shortcuts
         self._setup_shortcuts()
+        set_hand_cursor(self)
 
         # Set up log monitor with no initial log file
         self.log_monitor = LogMonitorThread(self.log_queue)
@@ -753,14 +785,14 @@ class PipelineLoggerGUI(QMainWindow):
         main_layout.addLayout(filter_layout)
 
         # Create log table
-        self.log_table = QTableWidget()
+        self.log_table = LogTableWidget()
         self.log_model = LogTableModel(self.log_table, theme=self.theme)
         main_layout.addWidget(self.log_table)
 
         # Context menu for table
         self.log_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.log_table.customContextMenuRequested.connect(self._show_context_menu)
-
+        
         # Create status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -959,70 +991,181 @@ class PipelineLoggerGUI(QMainWindow):
             self._update_status()
 
     def _show_help_dialog(self):
-        """Show help dialog with keyboard shortcuts."""
+        """Show help dialog."""
+        is_dark = self.theme == "dark"
+        
         dialog = QDialog(self)
         dialog.setWindowTitle("Help - Pipeline Logger")
-        dialog.resize(500, 500)
+        dialog.resize(550, 650)
+        
+        main_layout = QVBoxLayout(dialog)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Check if already open
+        if self.help_dialog is not None:
+            self.help_dialog.raise_()
+            self.help_dialog.activateWindow()
+            return
 
-        layout = QVBoxLayout(dialog)
+        # Header section with gradient
+        header = QFrame()
+        if is_dark:
+            header.setStyleSheet("""
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #312e81, stop:1 #4338ca);
+                    border-top-left-radius: 2px;
+                    border-top-right-radius: 2px;
+                }
+            """)
+        else:
+            header.setStyleSheet("""
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #4f46e5, stop:1 #6366f1);
+                    border-top-left-radius: 2px;
+                    border-top-right-radius: 2px;
+                }
+            """)
+        
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(25, 20, 25, 20)
+        header_layout.setSpacing(8)
+        
+        title = QLabel("LOFAR Pipeline Log Viewer")
+        title.setStyleSheet("font-size: 18pt; font-weight: bold; color: white;")
+        header_layout.addWidget(title)
+        
+        subtitle = QLabel("Real-time monitoring and analysis of pipeline logs")
+        subtitle.setStyleSheet("font-size: 11pt; color: rgba(255, 255, 255, 0.85);")
+        header_layout.addWidget(subtitle)
+        
+        main_layout.addWidget(header)
+        
+        # Scrollable content area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(25, 20, 25, 20)
+        content_layout.setSpacing(20)
+        
+        def add_section(title_text):
+            label = QLabel(title_text)
+            label.setStyleSheet(f"""
+                font-size: 12pt; 
+                font-weight: bold; 
+                letter-spacing: 0.5px;
+                color: {'#818cf8' if is_dark else '#4f46e5'};
+                margin-top: 5px;
+            """)
+            content_layout.addWidget(label)
+            
+            line = QFrame()
+            line.setFixedHeight(1)
+            line.setStyleSheet(f"background-color: {'#2d2d4a' if is_dark else '#e0e0e0'};")
+            content_layout.addWidget(line)
 
-        text = QTextEdit()
-        text.setReadOnly(True)
-        text.setHtml(
-            """
-        <h2>LOFAR Pipeline Log Viewer</h2>
-        <p>View and analyze pipeline log files.</p>
+        # Features section
+        add_section("FEATURES")
+        features = [
+            ("📊 Real-time Log Monitoring", "Automatic updates as pipeline runs"),
+            ("🔍 Advanced Filtering", "Filter by level and source"),
+            ("⌨️ Search & Regex", "Fast search with regular expression support"),
+            ("📜 Tail Mode", "Keep view focused on the latest N log entries"),
+            ("🚨 Error Navigation", "Quickly jump between errors and critical logs"),
+            ("📤 Data Export", "Save log history to CSV for external analysis")
+        ]
         
-        <h3>Features</h3>
-        <ul>
-            <li>Real-time log monitoring</li>
-            <li>Filter by log level</li>
-            <li>Search with text or regex</li>
-            <li>Tail mode (show last N lines)</li>
-            <li>Jump to next/previous error</li>
-            <li>Export logs to CSV</li>
-        </ul>
+        feat_grid = QGridLayout()
+        feat_grid.setSpacing(12)
+        for i, (f_title, f_desc) in enumerate(features):
+            f_item = QLabel(f"<b>{f_title}</b>: {f_desc}")
+            f_item.setWordWrap(True)
+            f_item.setStyleSheet("font-size: 10.5pt;")
+            feat_grid.addWidget(f_item, i // 2, i % 2)
+        content_layout.addLayout(feat_grid)
         
-        <hr>
-        <h2>Keyboard Shortcuts</h2>
+        # Keyboard Shortcuts
+        add_section("KEYBOARD SHORTCUTS")
         
-        <h3>File Operations</h3>
-        <table>
-            <tr><td width="100"><b>Ctrl+O</b></td><td>Open log file</td></tr>
-            <tr><td><b>Ctrl+E</b></td><td>Export logs to CSV</td></tr>
-            <tr><td><b>Ctrl+Q</b></td><td>Quit application</td></tr>
-            <tr><td><b>F5</b></td><td>Refresh log file</td></tr>
-        </table>
+        shortcuts = [
+            ("Ctrl+O", "Open log file"), ("F5", "Refresh log"),
+            ("Ctrl+F", "Focus search"), ("Escape", "Clear filters"),
+            ("Ctrl+T", "Toggle tail mode"), ("Ctrl+E", "Export to CSV"),
+            ("Home", "Scroll to top"), ("End", "Scroll to bottom"),
+            ("Ctrl+.", "Next error"), ("Ctrl+,", "Previous error")
+        ]
         
-        <h3>Navigation</h3>
-        <table>
-            <tr><td width="100"><b>Home</b></td><td>Scroll to top</td></tr>
-            <tr><td><b>End</b></td><td>Scroll to bottom</td></tr>
-            <tr><td><b>PageUp</b></td><td>Page up</td></tr>
-            <tr><td><b>PageDown</b></td><td>Page down</td></tr>
-            <tr><td><b>Ctrl+.</b></td><td>Jump to next error</td></tr>
-            <tr><td><b>Ctrl+,</b></td><td>Jump to previous error</td></tr>
-        </table>
+        shot_grid = QGridLayout()
+        shot_grid.setColumnStretch(1, 1)
+        shot_grid.setColumnStretch(3, 1)
+        shot_grid.setSpacing(15)
         
-        <h3>Search & Filters</h3>
-        <table>
-            <tr><td width="100"><b>Ctrl+F</b></td><td>Focus search box</td></tr>
-            <tr><td><b>Escape</b></td><td>Clear filters</td></tr>
-            <tr><td><b>Ctrl+T</b></td><td>Toggle tail mode</td></tr>
-        </table>
+        key_bg = "#2d2d4a" if is_dark else "#f3f4f6"
+        key_text = "#e2e8f0" if is_dark else "#4b5563"
+        key_border = "#4338ca" if is_dark else "#d1d5db"
         
-        <h3>Help</h3>
-        <table>
-            <tr><td width="100"><b>F1</b></td><td>Show this dialog</td></tr>
-        </table>
+        for i, (key, desc) in enumerate(shortcuts):
+            row, col = i % 5, (i // 5) * 2
+            
+            key_pill = QLabel(key)
+            key_pill.setAlignment(Qt.AlignCenter)
+            key_pill.setStyleSheet(f"""
+                background-color: {key_bg};
+                color: {key_text};
+                border: 1px solid {key_border};
+                border-radius: 4px;
+                padding: 3px 8px;
+                font-family: 'Courier New', monospace;
+                font-weight: bold;
+                font-size: 10pt;
+            """)
+            
+            desc_label = QLabel(desc)
+            desc_label.setStyleSheet("font-size: 10.5pt;")
+            
+            shot_grid.addWidget(key_pill, row, col)
+            shot_grid.addWidget(desc_label, row, col + 1)
         
-        <hr>
-        <p><i>Part of Solar Radio Image Viewer LOFAR Tools</i></p>
-        """
-        )
-        layout.addWidget(text)
-
-        dialog.exec_()
+        content_layout.addLayout(shot_grid)
+        
+        content_layout.addStretch()
+        
+        scroll.setWidget(content_widget)
+        main_layout.addWidget(scroll)
+        
+        # Bottom bar
+        bottom_bar = QFrame()
+        bottom_bar.setFixedHeight(50)
+        bottom_bar.setStyleSheet(f"background-color: {'#16162a' if is_dark else '#f9fafb'}; border-top: 1px solid {'#2d2d4a' if is_dark else '#e5e7eb'};")
+        bottom_layout = QHBoxLayout(bottom_bar)
+        
+        footer = QLabel("SolarViewer Log Utilities • v1.0.0")
+        footer.setStyleSheet(f"color: {'#888' if is_dark else '#666'}; font-size: 9pt;")
+        bottom_layout.addWidget(footer)
+        bottom_layout.addStretch()
+        
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(dialog.close)
+        bottom_layout.addWidget(close_btn)
+        
+        main_layout.addWidget(bottom_bar)
+        
+        # Make non-modal
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        def on_close():
+            self.help_dialog = None
+        dialog.destroyed.connect(on_close)
+        
+        self.help_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _create_filter_controls(self):
         """Create controls for filtering logs."""

@@ -27,10 +27,11 @@ class TutorialDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        from .styles import theme_manager
+        from .styles import theme_manager, set_hand_cursor
 
         self.is_dark = theme_manager.is_dark
         self._setup_ui()
+        set_hand_cursor(self)
 
     def _setup_ui(self):
         self.setWindowTitle("SolarViewer Tutorial")

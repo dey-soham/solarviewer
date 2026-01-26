@@ -44,7 +44,7 @@ except ImportError:
 try:
     # Try relative imports (when run as module)
     from . import noaa_events as ne
-    from ..styles import theme_manager
+    from ..styles import theme_manager, set_hand_cursor
 except ImportError:
     # Fallback for standalone execution
     # Add project root to path to allow absolute imports
@@ -57,7 +57,7 @@ except ImportError:
         sys.path.insert(0, project_root)
 
     from solar_radio_image_viewer.noaa_events import noaa_events as ne
-    from solar_radio_image_viewer.styles import theme_manager
+    from solar_radio_image_viewer.styles import theme_manager, set_hand_cursor
 import requests
 import json
 from pathlib import Path
@@ -411,6 +411,7 @@ class FullImageViewer(QDialog):
         )
         self.resize(1920, 1080)
         self.page_url = page_url
+        set_hand_cursor(self)
 
         layout = QVBoxLayout(self)
 
@@ -1507,6 +1508,8 @@ class NOAAEventsViewer(QMainWindow):
             # Default to yesterday
             yesterday = QDate.currentDate().addDays(-1)
             self.date_edit.setDate(yesterday)
+            
+        set_hand_cursor(self)
 
     def closeEvent(self, event):
         """Clean up worker threads when window is closed."""
