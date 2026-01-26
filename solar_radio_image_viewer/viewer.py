@@ -1073,7 +1073,7 @@ class SolarRadioImageTab(QWidget):
         # Gamma control
         gamma_layout = QHBoxLayout()
         self.gamma_slider = QSlider(Qt.Horizontal)
-        self.gamma_slider.setRange(1, 100)
+        self.gamma_slider.setRange(1, 60)
         self.gamma_slider.setValue(20)
         self.gamma_slider.valueChanged.connect(self.update_gamma_value)
         self.gamma_slider.sliderReleased.connect(self._apply_gamma_change)
@@ -1162,7 +1162,7 @@ class SolarRadioImageTab(QWidget):
         range_layout.addWidget(self.vmax_entry)
         gamma_layout = QHBoxLayout()
         self.gamma_slider = QSlider(Qt.Horizontal)
-        self.gamma_slider.setRange(1, 100)
+        self.gamma_slider.setRange(1, 60)
         self.gamma_slider.setValue(20)
         self.gamma_slider.valueChanged.connect(self.update_gamma_value)
         self.gamma_slider.sliderReleased.connect(self._apply_gamma_change)
@@ -3691,7 +3691,7 @@ class SolarRadioImageTab(QWidget):
     def update_gamma_slider(self):
         try:
             gamma = float(self.gamma_entry.text())
-            if 0.1 <= gamma <= 5.0:
+            if 0.1 <= gamma <= 3.0:
                 self.gamma_slider.blockSignals(True)
                 self.gamma_slider.setValue(int(gamma * 20))
                 self.gamma_slider.blockSignals(False)

@@ -1304,6 +1304,10 @@ class MainWindow(QMainWindow):
         self._pending_page = -1 # Track page undergoing full-res load
         self._full_lowres_data = None # Downsampled full spectrum in RAM
         self._lowres_skip = 1 # Skip factor for lowres data
+        
+        # Mask persistence
+        self._pending_user_mask = None # Temporary storage for user mask during bandpass toggle
+        self._global_masked_freq_indices = set() # Set of freq indices to be masked globally (Extend Mask)
 
         # Metadata storage (list of (name, header) for all HDUs)
         self._all_headers = []
@@ -1563,22 +1567,60 @@ class MainWindow(QMainWindow):
         toolsLayout = QVBoxLayout(toolsGroup)
         toolsLayout.setSpacing(10)
         
-        self.roiButton = QPushButton("✂️ Mask Region (ROI)")
+        # --- RFI Masking Section ---
+        maskLabel = QLabel("RFI Masking")
+        maskLabel.setStyleSheet("color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;")
+        toolsLayout.addWidget(maskLabel)
+        
+        self.roiButton = QPushButton("✂️ Draw Mask Region")
         self.roiButton.setCheckable(True)
+        self.roiButton.setToolTip("Click and drag to mask a region (time & frequency).")
         self.roiButton.toggled.connect(self.onRoiToggled)
         toolsLayout.addWidget(self.roiButton)
         
-        self.crossBtn = QPushButton("➕ Cross Section")
-        self.crossBtn.setCheckable(True)
-        self.crossBtn.toggled.connect(self.onCrossSectionToggled)
-        toolsLayout.addWidget(self.crossBtn)
+        # Mask Extensions
+        maskToolsLayout = QHBoxLayout()
+        maskToolsLayout.setSpacing(10)
         
+        self.extendMaskBtn = QPushButton("↔️ Extend")
+        self.extendMaskBtn.setToolTip("Mask the currently flagged frequencies across all time.")
+        self.extendMaskBtn.clicked.connect(self.onExtendMask)
+        
+        self.clearMaskBtn = QPushButton("🗑️ Clear")
+        self.clearMaskBtn.setToolTip("Clear all manual masks and global frequency masks.")
+        self.clearMaskBtn.clicked.connect(self.onClearMasks)
+        
+        maskToolsLayout.addWidget(self.extendMaskBtn)
+        maskToolsLayout.addWidget(self.clearMaskBtn)
+        toolsLayout.addLayout(maskToolsLayout)
+
         '''self.detectBtn = QPushButton("🔍 Auto-Detect RFI")
+        self.detectBtn.setToolTip("Auto-detect RFI.")
         self.detectBtn.clicked.connect(self.onCleanRFIRegionDetect)
         toolsLayout.addWidget(self.detectBtn)'''
         
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        #sep.setStyleSheet("background-color: rgba(128, 128, 128, 0.2); margin-top: 5px; margin-bottom: 5px;")
+        sep.setStyleSheet("background-color: transparent; margin-top: 5px; margin-bottom: 5px;")
+        toolsLayout.addWidget(sep)
+
+        # --- Analysis Section ---
+        analysisLabel = QLabel("Analysis")
+        analysisLabel.setStyleSheet("color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;")
+        toolsLayout.addWidget(analysisLabel)
+         
+        self.crossBtn = QPushButton("➕  Cross Section")
+        self.crossBtn.setCheckable(True)
+        self.crossBtn.setToolTip("Click on the plot to view 1D time or frequency profiles.")
+        self.crossBtn.toggled.connect(self.onCrossSectionToggled)
+        toolsLayout.addWidget(self.crossBtn)
+       
         self.normBtn = QPushButton("📊 Bandpass Norm")
         self.normBtn.setCheckable(True)
+        self.normBtn.setToolTip("Normalize spectrum by time-averaged frequency profile.")
         self.normBtn.toggled.connect(self.onBandpassNorm)
         toolsLayout.addWidget(self.normBtn)
         
@@ -1812,7 +1854,7 @@ class MainWindow(QMainWindow):
             h_header = table.horizontalHeader()
             h_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
             h_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-            h_header.setSectionResizeMode(2, QHeaderView.Stretch)
+            h_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
             h_header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             
             cards = hdu_header.cards
@@ -2290,6 +2332,33 @@ class MainWindow(QMainWindow):
             data_to_show = data.copy()
             
         self._original_data = data_to_show
+        
+        # Apply pending user mask if it exists (e.g. from bandpass toggle)
+        if hasattr(self, '_pending_user_mask') and self._pending_user_mask is not None:
+             # Ensure shapes match (e.g. skip if fast preview has different shape)
+             if self._original_data.shape == self._pending_user_mask.shape:
+                 self._original_data[self._pending_user_mask] = np.nan
+             
+             # Clear the pending mask only after the full load (not fast preview)
+             if not fast:
+                 self._pending_user_mask = None
+
+
+
+        # Apply Global Frequency Mask (Extend Mask feature)
+        if self._global_masked_freq_indices and self._original_data is not None:
+             # Mask these frequency indices across all time
+             nt, nf = self._original_data.shape
+             
+             # Convert set to list for indexing
+             bad_freqs = list(self._global_masked_freq_indices)
+             
+             if len(self._freq_axis) == nf:
+                 # Shape is (time, freq)
+                 self._original_data[:, bad_freqs] = np.nan
+             elif len(self._freq_axis) == nt:
+                 self._original_data[bad_freqs, :] = np.nan
+             
         self._time_axis = time_axis
         self._freq_axis = freq_axis
         
@@ -2558,21 +2627,36 @@ class MainWindow(QMainWindow):
                 self.normBtn.blockSignals(False)
             return
 
+        # Capture user mask before changing state
+        # The mask is the difference between current data and what the data SHOULD be (baseline)
+        # We need to compute baseline based on the CURRENT state (before toggle)
+        if self._is_bandpass_enabled:
+             baseline = self._apply_bandpass_to_data(self._original_unmodified)
+        else:
+             baseline = self._original_unmodified
+        
+        # Identify manual edits: where data is NaN but baseline is NOT NaN
+        if self._original_data is not None and baseline is not None and self._original_data.shape == baseline.shape:
+             user_mask = np.isnan(self._original_data) & (~np.isnan(baseline))
+        else:
+             user_mask = None
+
         self._is_bandpass_enabled = checked
         self.logger.info(f"Bandpass Normalization toggled to: {checked}")
         
         # Clear cache to force re-processing of all pages
         self._data_cache.clear()
         
-        # Reload the current page with the new setting
-        if self._is_large_file:
-            with self.wait_cursor():
-                self.loadSlice() # This will trigger _display_data which applies the toggle
-        else:
-            # For small files, update the whole thing in memory
-            self._original_data = self._apply_bandpass_to_data(self._original_unmodified) if checked else self._original_unmodified.copy()
-            self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
-            self.canvas.draw_spectrum()
+        # Store mask for re-application
+        self._pending_user_mask = user_mask
+        
+        with self.wait_cursor():
+            if self._is_large_file:
+                # Reload from file (async)
+                self.loadSlice() 
+            else:
+                # For small files, just refresh the view using the immutable data
+                self._display_data(self._original_unmodified, self._time_axis, self._freq_axis)
             
         self.statusBar().showMessage(f"Bandpass normalization {'enabled' if checked else 'disabled'}.", 5000)
 
@@ -2783,6 +2867,50 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Cross-section mode ON. Click on data.")
         else:
             self.statusBar().clearMessage()
+
+    def onExtendMask(self):
+        """Extend the current mask across frequency (i.e. Global Frequency Masking)."""
+        if self._original_data is None: return
+        
+        with self.wait_cursor():
+            # Identify frequencies that have ANY masking in the current view
+            # self._original_data is usually (time, freq) but checked via axis lengths
+            
+            data = self._original_data
+            mask = np.isnan(data)
+            
+            if not np.any(mask):
+                self.statusBar().showMessage("No mask to extend.", 3000)
+                return
+                
+            nt, nf = data.shape
+            if self._freq_axis is not None and len(self._freq_axis) == nf:
+                 masked_cols = np.where(np.any(mask, axis=0))[0]
+                 self._global_masked_freq_indices.update(masked_cols)
+            elif self._freq_axis is not None and len(self._freq_axis) == nt:
+                 masked_rows = np.where(np.any(mask, axis=1))[0]
+                 self._global_masked_freq_indices.update(masked_rows)
+            
+            # Apply immediately to current view
+            self._display_data(self._original_unmodified, self._time_axis, self._freq_axis)
+            self.statusBar().showMessage(f"Extended mask to {len(self._global_masked_freq_indices)} channels globally.", 5000)
+
+    def onClearMasks(self):
+        """Clear all masks: local manual masks, global extended masks, and undo history."""
+        reply = QMessageBox.question(self, "Clear Masks", 
+                                     "Clear ALL masks (including extended frequency masks)?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            self._global_masked_freq_indices.clear()
+            self._pending_user_mask = None
+            
+            # Revert current view to raw
+            if self._original_unmodified is not None:
+                self._original_data = self._original_unmodified.copy()
+                self._display_data(self._original_unmodified, self._time_axis, self._freq_axis)
+            
+            self.statusBar().showMessage("All masks cleared.", 5000)
 
     def resizeEvent(self, event):
         """Handle window resize events to ensure canvas redraws properly"""
