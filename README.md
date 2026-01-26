@@ -24,14 +24,7 @@
 
 ## ✨ Features
 
-**SolarViewer** is a feature-rich desktop application designed for solar physics research. It supports FITS and CASA image formats with specialized tools for radio astronomy.
-
-### 🔭 Multiple Viewer Modes
-
-| Viewer | Description |
-|--------|-------------|
-| **Standard Viewer** | Full-featured multi-tab interface with comprehensive analysis tools, including helioprojective coordinate support |
-| **Napari Viewer** | Lightweight, fast viewer for quick visualization |
+**SolarViewer** is a feature-rich desktop application designed for solar physics research. It provides a full-featured multi-tab interface with comprehensive analysis tools, including helioprojective coordinate support for FITS and CASA image formats with specialized tools for radio astronomy.
 
 ### 📊 Analysis & Visualization
 
@@ -196,7 +189,6 @@ EnableTelemetry: False
 | sunpy | ≥5.0.0 | Solar physics tools |
 | casatools | ≥6.4.0 | CASA image support |
 | casatasks | ≥6.4.0 | CASA tasks |
-| napari | ≥0.4.16 | Fast image viewer |
 
 </details>
 
@@ -204,26 +196,21 @@ EnableTelemetry: False
 
 ## 🚀 Quick Start
 
-### Launch the Viewer
+### Launch SolarViewer
 
 ```bash
-# Standard viewer
 solarviewer
 # or
 sv
 
 # Open a specific file
 solarviewer path/to/image.fits
-
-# Fast Napari viewer
-solarviewer -f path/to/image.fits
 ```
 
 ### LOFAR Tools
 
 ```bash
 viewcaltable       # Calibration table visualizer
-viewds             # Dynamic spectra viewer
 viewlogs           # Pipeline log viewer
 ```
 
@@ -232,18 +219,18 @@ viewlogs           # Pipeline log viewer
 ```bash
 viewsolaractivity  # Solar events browser
 heliobrowser       # Helioviewer browser
+viewds             # Dynamic spectra viewer
 ```
 ---
 
 ## 💻 Command Line Interface
 
-### Standard Viewer (`solarviewer` / `sv`)
+### Command Line Interface (`solarviewer` / `sv`)
 
 ```bash
 solarviewer [OPTIONS] [IMAGEFILE]
 
 Options:
-  -f, --fast        Launch fast Napari viewer
   --install         Install desktop integration
   --uninstall       Uninstall desktop integration
   --light           Start with light theme
@@ -258,7 +245,7 @@ Options:
 ### User Interface Overview
 
 <details>
-<summary><b>Standard Viewer Controls</b></summary>
+<summary><b>SolarViewer Controls</b></summary>
 
 #### File Controls
 - **Open Directory** — Load a folder of solar radio images
@@ -299,7 +286,6 @@ solarviewer/
 │   ├── helioprojective.py      # Coordinate conversions
 │   ├── helioprojective_viewer.py
 │   ├── helioviewer_browser.py  # Helioviewer API browser
-│   ├── napari_viewer.py        # Fast viewer
 │   ├── video_dialog.py         # Video creation UI
 │   ├── create_video.py         # Video rendering
 │   ├── video_utils.py          # Video utilities
@@ -357,7 +343,6 @@ This project builds on the excellent work of the solar physics and radio astrono
 - [**SunPy**](https://sunpy.org/) — Solar physics data analysis in Python
 - [**Astropy**](https://www.astropy.org/) — Core astronomy library for FITS, coordinates, and units
 - [**CASA**](https://casa.nrao.edu/) — Common Astronomy Software Applications for radio astronomy
-- [**Napari**](https://napari.org/) — Fast n-dimensional image viewer
 
 ### GUI & Visualization
 - [**PyQt5**](https://www.riverbankcomputing.com/software/pyqt/) — Python bindings for Qt GUI framework

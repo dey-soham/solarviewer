@@ -57,6 +57,12 @@ class ConnectionDialog(QDialog):
 
         self._setup_ui()
         self._apply_styles()
+        
+        try:
+            from ..styles import set_hand_cursor
+            set_hand_cursor(self)
+        except ImportError:
+            pass
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)

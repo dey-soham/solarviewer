@@ -49,7 +49,8 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QCheckBox,
     QGridLayout,
-    # QStatusBar,
+    QStatusBar,
+    QMenuBar,
     QGroupBox,
     QToolBar,
     QHeaderView,
@@ -87,6 +88,7 @@ from .styles import (
     theme_manager,
     get_stylesheet,
     get_icon_path,
+    set_hand_cursor,
 )
 from .dialogs import UpdateDialog
 from .searchable_combobox import ColormapSelector
@@ -527,16 +529,8 @@ class SolarRadioImageTab(QWidget):
         # fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
 
     def _set_button_cursors(self):
-        """Set pointing hand cursor on all buttons for better UX"""
-        from PyQt5.QtGui import QCursor
-
-        # Find all QPushButton widgets and set cursor
-        for button in self.findChildren(QPushButton):
-            button.setCursor(Qt.PointingHandCursor)
-
-        # Also set cursor for QToolButton (toolbar icons)
-        for button in self.findChildren(QToolButton):
-            button.setCursor(Qt.PointingHandCursor)
+        """Set pointing hand cursor on all buttons and interactive widgets for better UX"""
+        set_hand_cursor(self)
 
     def show_status_message(self, message):
         """Helper method to show messages in the status bar"""
@@ -3806,6 +3800,7 @@ class SolarRadioImageTab(QWidget):
         # Create dialog - resizable
         dialog = QDialog(self)
         dialog.setWindowTitle("ROI Histogram")
+        set_hand_cursor(dialog)
         dialog.resize(800, 650)
         dialog.setMinimumSize(600, 400)
         layout = QVBoxLayout(dialog)
@@ -7336,6 +7331,7 @@ class SolarRadioImageTab(QWidget):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Solar Disk Settings")
+        set_hand_cursor(dialog)
         dialog.setMinimumWidth(400)
         layout = QVBoxLayout(dialog)
 
@@ -10158,7 +10154,7 @@ except Exception:
             "Enter glob pattern to filter files:\n(e.g., *-image.fits, chunk_*.fits, *.image)",
             text=self._file_filter_pattern,
         )
-
+        
         if ok:
             self._file_filter_pattern = pattern if pattern else "*"
 
@@ -10226,6 +10222,7 @@ except Exception:
 
         dialog = QDialog(self)
         dialog.setWindowTitle("File List")
+        set_hand_cursor(dialog)
         dialog.setMinimumSize(550, 700)
 
         # Store reference to prevent garbage collection
@@ -10639,6 +10636,7 @@ except Exception:
         """Show a dialog for configuring the RMS box settings"""
         dialog = QDialog(self)
         dialog.setWindowTitle("RMS Box Settings")
+        set_hand_cursor(dialog)
         dialog.setMinimumWidth(400)
 
         # Create layout
@@ -11085,6 +11083,9 @@ except Exception:
 
         # Insert at same position
         layout.insertWidget(toolbar_index, self.nav_toolbar)
+        
+        # Ensure hand cursor is applied to the new toolbar buttons
+        self._set_button_cursors()
 
 
 class CustomTabBar(QTabBar):
@@ -11398,6 +11399,9 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         self.statusBar().showMessage("Ready")
         self.create_menus()
+        
+        # Set hand cursor for all interactive elements programmatically
+        self._set_hand_cursor_recursive(self)
 
         first_tab = self.add_new_tab("Tab1")
         if imagename and os.path.exists(imagename):
@@ -11698,13 +11702,16 @@ class SolarRadioImageViewerApp(QMainWindow):
         phase_shift_act.setShortcut("Ctrl+P")
         phase_shift_act.setStatusTip("Shift solar center to phase center")
         phase_shift_act.triggered.connect(self.show_phase_shift_dialog)
-        tools_menu.addAction(phase_shift_act)
-
-        napari_act = QAction("Fast Viewer (Napari)", self)
-        napari_act.setShortcut("Ctrl+Shift+N")
-        napari_act.setStatusTip("Launch the Napari-based fast image viewer")
-        napari_act.triggered.connect(self.launch_napari_viewer)
-        tools_menu.addAction(napari_act)
+        tools_menu.addAction(phase_shift_act)        
+        
+        # Add Batch HPC Conversion option
+        from .dialogs import HPCBatchConversionDialog
+        batch_hpc_act = QAction("Batch HPC Conversion", self)
+        batch_hpc_act.setStatusTip(
+            "Convert multiple files to helioprojective coordinates"
+        )
+        batch_hpc_act.triggered.connect(self.show_batch_hpc_dialog)
+        tools_menu.addAction(batch_hpc_act)
 
         # Add Create Video action
         create_video_act = QAction("Create &Video", self)
@@ -11724,7 +11731,13 @@ class SolarRadioImageViewerApp(QMainWindow):
         helioviewer_action = QAction("Helioviewer Browser", self)
         helioviewer_action.setStatusTip("Browse solar images from Helioviewer")
         helioviewer_action.triggered.connect(self.open_helioviewer_browser)
-        tools_menu.addAction(helioviewer_action)
+        tools_menu.addAction(helioviewer_action)        
+        
+        # Dynamic Spectrum Viewer
+        dynamic_spectrum_act = QAction("Dynamic Spectrum Viewer", self)
+        dynamic_spectrum_act.setStatusTip("View and clean dynamic spectra FITS files")
+        dynamic_spectrum_act.triggered.connect(self._launch_dynamic_spectrum_viewer)
+        tools_menu.addAction(dynamic_spectrum_act)
 
         region_menu = menubar.addMenu("&Region")
         subimg_act = QAction("Export Sub-Image (ROI)", self)
@@ -11989,24 +12002,10 @@ class SolarRadioImageViewerApp(QMainWindow):
         # tools_menu.addAction(create_video_action)
 
         # Add Batch HPC Conversion option
-        from .dialogs import HPCBatchConversionDialog
-
-        batch_hpc_act = QAction("Batch HPC Conversion", self)
-        batch_hpc_act.setStatusTip(
-            "Convert multiple files to helioprojective coordinates"
-        )
-        batch_hpc_act.triggered.connect(self.show_batch_hpc_dialog)
-        tools_menu.addAction(batch_hpc_act)
 
         # Add LOFAR Tools submenu
         tools_menu.addSeparator()
         lofar_menu = QMenu("LOFAR Tools", self)
-
-        # Dynamic Spectrum Viewer
-        dynamic_spectrum_act = QAction("Dynamic Spectrum Viewer", self)
-        dynamic_spectrum_act.setStatusTip("View and clean dynamic spectra FITS files")
-        dynamic_spectrum_act.triggered.connect(self._launch_dynamic_spectrum_viewer)
-        lofar_menu.addAction(dynamic_spectrum_act)
 
         # Calibration Table Visualizer
         caltable_act = QAction("Calibration Table Visualizer", self)
@@ -12045,6 +12044,9 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Refresh icons to match current theme
         new_tab.refresh_icons()
+        
+        # Apply hand cursors to the new tab
+        self._set_hand_cursor_recursive(new_tab)
 
         # Ensure add button is visible after adding a new tab
         QTimer.singleShot(100, self.ensureAddButtonVisible)
@@ -12118,6 +12120,13 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Refresh all matplotlib plots
         self.refresh_all_plots()
+
+        # Re-apply hand cursors to any recreated or theme-affected widgets
+        self._set_hand_cursor_recursive(self)
+
+    def _set_hand_cursor_recursive(self, widget):
+        """Recursively set PointingHandCursor for all buttons and interactive widgets."""
+        set_hand_cursor(widget)
 
         # Update notification button style
         self._update_update_btn_style()
@@ -12754,8 +12763,9 @@ except Exception as e:
         try:
             metadata = get_image_metadata(current_tab.imagename)
             from .dialogs import ImageInfoDialog
-
-            dialog = ImageInfoDialog(self, metadata=metadata)
+            dialog = ImageInfoDialog(
+                self, metadata=metadata, imagename=current_tab.imagename
+            )
             dialog.setAttribute(Qt.WA_DeleteOnClose)
             dialog.destroyed.connect(
                 lambda: (
@@ -13590,6 +13600,7 @@ except Exception as e:
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Add Text Annotation")
+        set_hand_cursor(dialog)
         dialog.setMinimumWidth(350)
         layout = QVBoxLayout(dialog)
 
@@ -13729,6 +13740,7 @@ except Exception as e:
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Add Arrow Annotation")
+        set_hand_cursor(dialog)
         dialog.setMinimumWidth(350)
         layout = QVBoxLayout(dialog)
 
@@ -14494,31 +14506,6 @@ except Exception as e:
 
         QApplication.instance().quit()
 
-    def launch_napari_viewer(self):
-        """Launch the Napari-based fast image viewer"""
-        try:
-            from .napari_viewer import NapariViewer
-
-            # Get the current tab and check if it has an image loaded
-            current_tab = self.tab_widget.currentWidget()
-            imagename = None
-            if (
-                current_tab
-                and hasattr(current_tab, "imagename")
-                and current_tab.imagename
-            ):
-                imagename = current_tab.imagename
-
-            # Create and show the Napari viewer with the current image if available
-            self.napari_viewer = NapariViewer(imagename)
-
-            self.statusBar().showMessage("Napari viewer launched", 3000)
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to launch Napari viewer: {str(e)}",
-            )
 
     def launch_data_downloader_gui(self):
         """Launch the Solar Data Downloader GUI."""
@@ -15624,6 +15611,7 @@ sys.exit(app.exec_())
         dialog.finished.connect(lambda: setattr(self, "_cache_manager_dialog", None))
         
         dialog.setWindowTitle("Cache Manager")
+        set_hand_cursor(dialog)
         dialog.setMinimumWidth(500)
         layout = QVBoxLayout(dialog)
         

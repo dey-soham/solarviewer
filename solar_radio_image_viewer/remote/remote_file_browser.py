@@ -346,8 +346,13 @@ class RemoteFileBrowser(QDialog):
 
         self._setup_ui()
         self._apply_styles()
-
-        # Load initial directory - use last path if available
+        
+        try:
+            from ..styles import set_hand_cursor
+            set_hand_cursor(self)
+        except ImportError:
+            pass
+# Load initial directory - use last path if available
         QTimer.singleShot(100, self._load_initial_directory)
 
     def _setup_ui(self):

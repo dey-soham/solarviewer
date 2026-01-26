@@ -22,9 +22,16 @@ def setup_high_dpi():
     if ui_scale_factor != 1.0:
         os.environ["QT_SCALE_FACTOR"] = str(ui_scale_factor)
 
-# Try to import palettes from main viewer styles for consistency
+# Try to import palettes and stylesheet from main viewer styles for consistency
 try:
-    from ..styles import DARK_PALETTE, LIGHT_PALETTE, theme_manager, load_bundled_fonts
+    from ..styles import (
+        DARK_PALETTE,
+        LIGHT_PALETTE,
+        theme_manager,
+        load_bundled_fonts,
+        get_stylesheet as get_viewer_stylesheet,
+        get_matplotlib_params as get_viewer_matplotlib_params,
+    )
 
     _HAS_VIEWER_STYLES = True
 except ImportError:
@@ -34,16 +41,16 @@ except ImportError:
     def load_bundled_fonts():
         """Fallback font loader if main styles cannot be imported."""
         from PyQt5.QtGui import QFontDatabase, QFont
-        
+
         base_dir = os.path.dirname(os.path.abspath(__file__))
         assets_dir = os.path.join(os.path.dirname(base_dir), "assets")
-        
+
         if not os.path.exists(assets_dir):
             return "Inter"
 
         font_db = QFontDatabase()
         inter_family = "Inter"
-        
+
         font_files = [
             "Inter-Regular.ttf",
             "Inter-Medium.ttf",
@@ -126,23 +133,37 @@ except ImportError:
 
 def get_palette(theme_name):
     """Get palette dict for the given theme name."""
-    # Always use the theme_name argument to determine which palette to return
-    # The palettes are already imported from styles.py if available, so we get consistent colors
     return DARK_PALETTE if theme_name == "dark" else LIGHT_PALETTE
 
 
 def get_stylesheet(theme_name):
     """Generate stylesheet for LOFAR tools matching solarviewer theme."""
+    if _HAS_VIEWER_STYLES:
+        return get_viewer_stylesheet(get_palette(theme_name), is_dark=(theme_name == "dark"))
+
     palette = get_palette(theme_name)
     is_dark = theme_name == "dark"
+
+    # Minimal fallback logic mirrored from styles.py if import fails
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        suffix = "_light" if not is_dark else ""
+        arrow_up = os.path.join(os.path.dirname(base_dir), "assets", f"spinbox_up{suffix}.png").replace("\\", "/")
+        arrow_down = os.path.join(os.path.dirname(base_dir), "assets", f"spinbox_down{suffix}.png").replace("\\", "/")
+    except:
+        arrow_up = arrow_down = ""
 
     input_bg = palette["base"]
     input_text = palette.get("input_text", palette["text"])
     highlight = palette["highlight"]
     surface = palette["surface"]
     border = palette["border"]
+    border_light = palette.get("border_light", palette["border"])
+    surface_elevated = palette.get("surface_elevated", palette["surface"])
+    text_secondary = palette.get("text_secondary", palette["disabled"])
 
     return f"""
+    /* ===== GLOBAL STYLES ===== */
     QWidget {{
         font-family: 'Inter', 'Noto Emoji', 'Segoe UI Emoji', 'Apple Color Emoji', 'Segoe UI', 'SF Pro Display', -apple-system, Arial, sans-serif;
         font-size: 11pt;
@@ -157,12 +178,13 @@ def get_stylesheet(theme_name):
         background-color: transparent;
     }}
     
+    /* ===== GROUP BOXES ===== */
     QGroupBox {{
-        background-color: {surface};
+        background-color: {palette['surface']};
         border: 1px solid {border};
         border-radius: 10px;
-        margin-top: 12px;
-        padding: 16px 12px 12px 12px;
+        margin-top: 10px;
+        padding: 12px 12px 12px 12px;
         font-weight: 600;
     }}
     
@@ -171,7 +193,7 @@ def get_stylesheet(theme_name):
         left: 16px;
         padding: 2px 10px;
         color: {highlight};
-        background-color: {surface};
+        background-color: {palette['surface']};
         border-radius: 4px;
         font-weight: 700;
         font-size: 10pt;
@@ -179,14 +201,16 @@ def get_stylesheet(theme_name):
         text-transform: uppercase;
     }}
     
+    /* ===== BUTTONS ===== */
     QPushButton {{
         background-color: {palette['button']};
         color: {palette['text']};
-        border: 1px solid {border};
+        border: 1px solid {palette['border']};
         border-radius: 6px;
-        padding: 5px 15px;
-        min-width: 80px;
-        min-height: 28px;
+        padding: 4px 12px;
+        min-width: 60px;
+        min-height: 26px;
+        font-size: 10pt;
         font-weight: 500;
     }}
     
@@ -208,182 +232,95 @@ def get_stylesheet(theme_name):
         opacity: 0.6;
     }}
     
+    /* ===== INPUT FIELDS ===== */
     QLineEdit, QSpinBox, QDoubleSpinBox {{
         background-color: {input_bg};
         color: {input_text};
-        border: 1px solid {border};
-        border-radius: 6px;
+        border: 1px solid {palette['border']};
+        border-radius: 5px;
         padding: 4px 8px;
-        min-height: 26px;
+        min-height: 24px;
+        font-size: 11pt;
     }}
     
     QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
         border-color: {highlight};
         border-width: 2px;
+        background-color: {surface_elevated};
     }}
     
-    QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
-        background-color: {surface};
-        color: {palette['disabled']};
-        opacity: 0.7;
+    /* ===== TAB WIDGET ===== */
+    QTabWidget::pane {{
+        border: 1px solid {palette['border']};
+        border-radius: 10px;
+        background-color: {palette['surface']};
+        padding: 4px;
     }}
     
-    QComboBox {{
-        background-color: {input_bg};
-        color: {input_text};
-        border: 1px solid {border};
-        border-radius: 6px;
-        padding: 4px 8px;
-        min-height: 26px;
+    QTabBar::tab {{
+        background: {palette['button']};
+        color: {palette['text']};
+        padding: 10px 24px;
+        border-top-left-radius: 10px;
+        border-top-right-radius: 10px;
+        margin-right: 3px;
+        font-size: 10pt;
+        font-weight: 500;
+        border: 1px solid {palette['border']};
+        border-bottom: none;
     }}
-
-    QComboBox:hover {{
+    
+    QTabBar::tab:selected {{
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 {highlight}, stop:1 {palette.get('button_gradient_start', highlight)});
+        color: #ffffff;
+        font-weight: 600;
         border-color: {highlight};
     }}
     
-    QComboBox:disabled {{
-        background-color: {surface};
-        color: {palette['disabled']};
-        opacity: 0.7;
+    QTabBar::tab:hover:!selected {{
+        background: {palette['button_hover']};
+        border-color: {highlight};
     }}
-    
-    QComboBox QAbstractItemView {{
-        background-color: {surface};
-        color: {palette['text']};
-        border: 1px solid {border};
-        selection-background-color: {highlight};
-        selection-color: #ffffff;
-    }}
-    
+
+    /* ===== TABLE WIDGET ===== */
     QTableWidget {{
+        font-size: 11pt;
         background-color: {palette['base']};
-        alternate-background-color: {surface};
-        gridline-color: {border};
-        border: 1px solid {border};
-        border-radius: 8px;
+        alternate-background-color: {palette['surface']};
+        gridline-color: {border_light};
+        border: 1px solid {palette['border']};
+        border-radius: 10px;
+        selection-background-color: {highlight};
     }}
     
-    QTableWidget::item:selected {{
-        background-color: {highlight};
-        color: #ffffff;
+    QTableWidget QHeaderView::section:horizontal {{
+        background-color: {palette['button']};
+        color: {palette['text']};
+        font-size: 10pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        padding: 10px 8px;
+        border: none;
+        border-bottom: 2px solid {highlight};
     }}
     
-    QHeaderView::section {{
+    QTableWidget QHeaderView::section:vertical {{
         background-color: {palette['button']};
         color: {palette['text']};
         padding: 8px;
         border: none;
-        font-weight: bold;
-        border-bottom: 2px solid {highlight};
+        border-right: 1px solid {palette['border']};
+        border-bottom: 1px solid {palette['border']};
     }}
     
-    QLabel {{
-        color: {palette['text']};
-        font-size: 11pt;
-    }}
-    
-    QLabel:disabled {{
-        color: {palette['disabled']};
-    }}
-    
-    QLabel#SecondaryText {{
-        color: {palette['disabled']};
-        font-style: italic;
-        font-size: 10pt;
-    }}
-    
-    QCheckBox {{
-        color: {palette['text']};
-        spacing: 8px;
-    }}
-    
-    QCheckBox::indicator {{
-        width: 18px;
-        height: 18px;
-        border: 2px solid {border};
-        border-radius: 4px;
-        background-color: {palette['base']};
-    }}
-    
-    QCheckBox::indicator:checked {{
-        background-color: {highlight};
-        border-color: {highlight};
-    }}
-    
-    QMenuBar {{
-        background-color: {palette['window']};
-        color: {palette['text']};
-        padding: 4px;
-        font-size: 11pt;
-    }}
-    
-    QMenuBar::item {{
-        padding: 6px 12px;
-        border-radius: 4px;
-    }}
-    
-    QMenuBar::item:selected {{
-        background-color: {palette['button_hover']};
-    }}
-    
-    QMenu {{
-        background-color: {surface};
-        color: {palette['text']};
-        border: 1px solid {border};
-        border-radius: 8px;
-        padding: 6px;
-    }}
-    
-    QMenu::item {{
-        padding: 8px 32px 8px 16px;
-        border-radius: 4px;
-    }}
-    
-    QMenu::item:selected {{
-        background-color: {highlight};
-        color: #ffffff;
-    }}
-    
-    QMenu::separator {{
-        height: 1px;
-        background: {border};
-        margin: 6px 12px;
-    }}
-    
-    QToolBar {{
-        background-color: {palette.get('toolbar_bg', surface)};
-        border: none;
-        padding: 4px;
-        spacing: 4px;
-    }}
-    
-    QToolButton {{
-        background-color: transparent;
-        color: {palette['text']};
-        border: none;
-        border-radius: 6px;
-        padding: 6px;
-    }}
-    
-    QToolButton:hover {{
-        background-color: {palette['button_hover']};
-    }}
-    
-    QToolButton:checked {{
-        background-color: {highlight};
-    }}
-    
-    QStatusBar {{
-        background-color: {surface};
-        color: {palette['text']};
-        border-top: 1px solid {border};
-        font-size: 10pt;
-    }}
-    
+    /* ===== SCROLL BARS ===== */
     QScrollBar:vertical {{
         background: {palette['window']};
         width: 12px;
         border-radius: 6px;
+        margin: 0;
     }}
     
     QScrollBar::handle:vertical {{
@@ -393,10 +330,19 @@ def get_stylesheet(theme_name):
         margin: 2px;
     }}
     
+    QScrollBar::handle:vertical:hover {{
+        background: {palette['button_hover']};
+    }}
+    
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0;
+    }}
+    
     QScrollBar:horizontal {{
         background: {palette['window']};
         height: 12px;
         border-radius: 6px;
+        margin: 0;
     }}
     
     QScrollBar::handle:horizontal {{
@@ -406,60 +352,55 @@ def get_stylesheet(theme_name):
         margin: 2px;
     }}
     
-    QProgressBar {{
-        background-color: {palette['base']};
-        border: 1px solid {border};
-        border-radius: 6px;
-        text-align: center;
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+        width: 0;
+    }}
+    
+    /* ===== TOOLBAR ===== */
+    QToolBar {{
+        background-color: {palette.get('toolbar_bg', palette['surface'])};
+        border: none;
+        padding: 2px;
+        spacing: 2px;
+        max-height: 32px;
+    }}
+    
+    QToolButton {{
+        background-color: transparent;
         color: {palette['text']};
-        font-weight: bold;
+        border: none;
+        border-radius: 4px;
+        padding: 4px;
+        max-height: 24px;
     }}
     
-    QProgressBar::chunk {{
-        background-color: {highlight};
-        border-radius: 5px;
+    QToolButton:hover {{
+        background-color: {palette['button_hover']};
     }}
     
-    QSlider {{
-        min-height: 28px;
+    QToolButton:pressed {{
+        background-color: {palette['button_pressed']};
     }}
     
-    QSlider::groove:horizontal {{
-        height: 6px;
-        background: {border};
-        border-radius: 3px;
+    QToolButton:checked {{
+        background-color: {palette['highlight']};
     }}
     
-    QSlider::groove:horizontal:disabled {{
-        background: {palette['surface']};
-    }}
-    
-    QSlider::handle:horizontal {{
-        background: {highlight};
-        width: 18px;
-        height: 18px;
-        margin: -6px 0;
-        border-radius: 9px;
-    }}
-    
-    QSlider::handle:horizontal:disabled {{
-        background: {palette['disabled']};
-        border: 1px solid {palette['border']};
-    }}
-
-    QSlider::sub-page:horizontal {{
-        background: {highlight};
-        border-radius: 3px;
-    }}
-    
-    QSlider::sub-page:horizontal:disabled {{
-        background: {palette['disabled']};
+    /* ===== STATUS BAR ===== */
+    QStatusBar {{
+        background-color: {surface};
+        color: {palette['text']};
+        border-top: 1px solid {border};
+        font-size: 10pt;
     }}
     """
 
 
 def get_matplotlib_params(theme_name):
     """Get matplotlib rcParams for the given theme."""
+    if _HAS_VIEWER_STYLES:
+        return get_viewer_matplotlib_params(get_palette(theme_name), is_dark=(theme_name == "dark"))
+
     palette = get_palette(theme_name)
     is_dark = theme_name == "dark"
 

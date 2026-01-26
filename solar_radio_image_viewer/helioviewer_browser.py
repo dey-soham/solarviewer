@@ -30,9 +30,21 @@ from PyQt5.QtWidgets import (
     QRubberBand,
     QGridLayout,
     QGraphicsOpacityEffect,
+    QSlider,
+    QShortcut,
 )
-from PyQt5.QtCore import Qt, QDateTime, QThread, pyqtSignal, QTimer, QSize, QPoint, QRect
-from PyQt5.QtGui import QPixmap, QImage, QIcon, QColor
+from PyQt5.QtCore import (
+    Qt,
+    QDateTime,
+    QThread,
+    pyqtSignal,
+    QTimer,
+    QSize,
+    QPoint,
+    QRect,
+    QVariantAnimation,
+)
+from PyQt5.QtGui import QPixmap, QImage, QIcon, QColor, QKeySequence
 from datetime import datetime, timedelta
 from collections import OrderedDict
 import requests
@@ -40,6 +52,7 @@ import sys
 import os
 from urllib.parse import urlencode
 from typing import List, Dict, Optional, Tuple
+from .styles import set_hand_cursor
 
 # Global list to keep threads alive if window is closed while they are running
 # This prevents "QThread: Destroyed while thread is still running"
@@ -244,10 +257,50 @@ def fetch_all_instruments() -> List[Tuple[str, str, str, str]]:
         import traceback
 
         traceback.print_exc()
-        # Fallback to essential instruments
-        from .solar_context.context_images import ESSENTIAL_INSTRUMENTS
+        # Transform VERIFIED_INSTRUMENTS to (name, layer_path, observatory, cadence)
+        fallback = []
+        for name in VERIFIED_INSTRUMENTS:
+            # Format: [observatory,instrument,detector,measurement,visible,opacity]
+            
+            obs = ""
+            inst = ""
+            det = ""
+            meas = ""
+            
+            if name.startswith("AIA"):
+                obs, inst, det = "SDO", "AIA", "AIA"
+                meas = name.split(" ")[1]
+            elif name.startswith("HMI"):
+                obs, inst, det = "SDO", "HMI", "HMI"
+                meas = name.split(" ")[1]
+            elif name.startswith("EIT"):
+                obs, inst, det = "SOHO", "EIT", "EIT"
+                meas = name.split(" ")[1]
+            elif name.startswith("LASCO"):
+                obs, inst, det = "SOHO", "LASCO", name.split(" ")[1]
+                meas = "white-light"
+            elif "EUVI" in name:
+                # Default to STEREO_A for fallback if not specified
+                obs = "STEREO_A"
+                inst = "SECCHI"
+                det = "EUVI"
+                meas = name.split(" ")[1]
+            elif "COR" in name:
+                obs = "STEREO_A"
+                inst = "SECCHI"
+                det = name.split(" ")[1] if "/" not in name else name.split("/")[1].split(" ")[0]
+                meas = "white-light"
+            elif name.startswith("SUVI"):
+                obs, inst, det = "GOES-16", "SUVI", "SUVI" # Default to GOES-16
+                meas = name.split(" ")[1]
+            else:
+                continue
+                
+            layer = f"[{obs},{inst},{det},{meas},1,100]"
+            cadence = INSTRUMENT_CADENCES.get(name, 60)
+            fallback.append((name, layer, obs, cadence))
 
-        return ESSENTIAL_INSTRUMENTS
+        return fallback
 
 
 class ImageDownloader(QThread):
@@ -365,9 +418,11 @@ class InteractiveImageLabel(QLabel):
         self.pan_last_pos = QPoint()
         self.panning = False
         self.crop_mode = False
+        self.setCursor(Qt.ArrowCursor)
 
     def mousePressEvent(self, event):
         if self.crop_mode and event.button() == Qt.LeftButton:
+            self.setCursor(Qt.CrossCursor)
             # Selection mode
             if not self.rubber_band:
                 self.rubber_band = QRubberBand(QRubberBand.Rectangle, self)
@@ -445,7 +500,7 @@ class ZoomOverlayFrame(QFrame):
         super().leaveEvent(event)
 
 
-class FullImageDialog(QDialog):
+'''class FullImageDialog(QDialog):
     """Dialog to show full resolution image."""
 
     def __init__(self, parent, pixmap, title):
@@ -469,7 +524,7 @@ class FullImageDialog(QDialog):
         # Close button
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
+        layout.addWidget(close_btn)'''
 
 
 class HelioviewerBrowser(QMainWindow):
@@ -490,7 +545,7 @@ class HelioviewerBrowser(QMainWindow):
         # Download queue management for parallel loading
         self.download_queue = []  # Queue of (frame_idx, instrument_data)
         self.active_downloads = 0
-        self.max_concurrent_downloads = 4
+        self.max_concurrent_downloads = 8
 
         # Store initial times
         self.initial_start = initial_start
@@ -499,6 +554,10 @@ class HelioviewerBrowser(QMainWindow):
         # Animation timer
         self.animation_timer = QTimer()
         self.animation_timer.timeout.connect(self.next_frame)
+
+        # Seekbar animation for smooth sliding during playback
+        self.seekbar_anim = QVariantAnimation()
+        self.seekbar_anim.valueChanged.connect(self._update_seekbar_smoothly)
 
         # Flag to prevent updates during close
         self._closing = False
@@ -517,13 +576,15 @@ class HelioviewerBrowser(QMainWindow):
         self.diff_type = "None" # "None", "Base", "Running"
 
         self.init_ui()
+        self.setup_shortcuts()
+        set_hand_cursor(self)
 
     def init_ui(self):
         """Initialize the user interface."""
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(10, 6, 10, 6)
 
         # Top panel - Time range controls
         self.create_time_controls(main_layout)
@@ -552,6 +613,8 @@ class HelioviewerBrowser(QMainWindow):
         """Create time range input controls."""
         group = QGroupBox("Time Range")
         layout = QHBoxLayout(group)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(10)
 
         # Start time
         layout.addWidget(QLabel("Start:"))
@@ -601,7 +664,7 @@ class HelioviewerBrowser(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #2196F3, stop:1 #1976D2);
                 color: white;
-                padding: 8px 16px;
+                padding: 4px 12px;
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
@@ -614,6 +677,29 @@ class HelioviewerBrowser(QMainWindow):
         )
         layout.addWidget(self.load_button)
 
+        # Cancel button (initially hidden)
+        self.cancel_button = QPushButton("❌ Cancel")
+        self.cancel_button.clicked.connect(self.cancel_loading)
+        self.cancel_button.setVisible(False)
+        self.cancel_button.setStyleSheet(
+            """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #f44336, stop:1 #d32f2f);
+                color: white;
+                padding: 4px 12px;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ef5350, stop:1 #f44336);
+            }
+        """
+        )
+        layout.addWidget(self.cancel_button)
+
         parent_layout.addWidget(group)
 
     def create_instrument_panel(self, parent_splitter):
@@ -623,10 +709,10 @@ class HelioviewerBrowser(QMainWindow):
         layout.setContentsMargins(5, 5, 5, 5)
 
         # Header with icon
-        header = QLabel("Select Instrument 🛰️")
+        '''header = QLabel("Select Instrument 🛰️")
         header.setStyleSheet("padding: 5px;")
         header.setAlignment(Qt.AlignCenter)
-        layout.addWidget(header)
+        layout.addWidget(header)'''
 
         # Load all instruments button
         """refresh_btn = QPushButton("🔄 Refresh")
@@ -694,10 +780,27 @@ class HelioviewerBrowser(QMainWindow):
         size_layout.addWidget(self.image_size_spin)
         layout.addWidget(size_group)
 
+        # Concurrent downloads control
+        layout.addSpacing(10)
+        concurrent_group = QGroupBox("🚀 Download Speed")
+        concurrent_layout = QHBoxLayout(concurrent_group)
+        concurrent_layout.setContentsMargins(8, 8, 8, 8)
+        self.concurrent_spin = QSpinBox()
+        self.concurrent_spin.setRange(1, 32)
+        self.concurrent_spin.setValue(self.max_concurrent_downloads)
+        self.concurrent_spin.setToolTip("Maximum concurrent downloads (1-32)")
+        self.concurrent_spin.valueChanged.connect(self.on_concurrent_changed)
+        concurrent_layout.addWidget(self.concurrent_spin)
+        layout.addWidget(concurrent_group)
+
         parent_splitter.addWidget(panel)
 
         # Keep reference for compatibility
         self.instrument_list = self.instrument_tree
+
+    def on_concurrent_changed(self, value):
+        """Update maximum concurrent downloads."""
+        self.max_concurrent_downloads = value
 
     def load_all_instruments(self):
         """Load all available instruments from Helioviewer, grouped by observatory."""
@@ -897,13 +1000,13 @@ class HelioviewerBrowser(QMainWindow):
         # Zoom buttons with tooltips
 
         z_in_btn = QPushButton("🔍+")
-        z_in_btn.setToolTip("Zoom In")
+        z_in_btn.setToolTip("Zoom In (+)")
         z_in_btn.clicked.connect(self.zoom_in)
         z_in_btn.setFixedSize(btn_size, btn_size)
         toolbar_layout.addWidget(z_in_btn)
 
         z_out_btn = QPushButton("🔍−")
-        z_out_btn.setToolTip("Zoom Out")
+        z_out_btn.setToolTip("Zoom Out (-)")
         z_out_btn.clicked.connect(self.zoom_out)
         z_out_btn.setFixedSize(btn_size, btn_size)
         toolbar_layout.addWidget(z_out_btn)
@@ -916,7 +1019,7 @@ class HelioviewerBrowser(QMainWindow):
         toolbar_layout.addWidget(sep)'''
 
         reset_z_btn = QPushButton("↺")
-        reset_z_btn.setToolTip("Reset Zoom")
+        reset_z_btn.setToolTip("Reset Zoom (R)")
         reset_z_btn.clicked.connect(self.reset_zoom)
         reset_z_btn.setFixedSize(btn_size, btn_size)
         toolbar_layout.addWidget(reset_z_btn)
@@ -935,39 +1038,51 @@ class HelioviewerBrowser(QMainWindow):
     def create_animation_controls(self, parent_layout):
         """Create bottom panel with animation controls."""
         group = QGroupBox("Animation Controls")
-        layout = QHBoxLayout(group)
+        v_layout = QVBoxLayout(group)
+        
+        # Seekbar
+        self.seekbar = QSlider(Qt.Horizontal)
+        self.seekbar.setRange(0, 0)
+        self.seekbar.setEnabled(False)
+        self.seekbar.setToolTip("Seek through frames")
+        self.seekbar.sliderMoved.connect(self.on_seek)
+        # We also connect valueChanged but only handle it when NOT playing to avoid recursion
+        self.seekbar.valueChanged.connect(self.on_seekbar_value_changed)
+        v_layout.addWidget(self.seekbar)
+
+        layout = QHBoxLayout()
 
         # First button
         self.first_btn = QPushButton("|◄")
-        self.first_btn.setToolTip("First Frame")
+        self.first_btn.setToolTip("First Frame (Shift+[)")
         self.first_btn.clicked.connect(self.first_frame)
         self.first_btn.setEnabled(False)
         layout.addWidget(self.first_btn)
 
         # Previous button
         self.prev_btn = QPushButton("◄")
-        self.prev_btn.setToolTip("Previous Frame")
+        self.prev_btn.setToolTip("Previous Frame ([)")
         self.prev_btn.clicked.connect(self.prev_frame)
         self.prev_btn.setEnabled(False)
         layout.addWidget(self.prev_btn)
 
         # Play/Pause button
         self.play_btn = QPushButton("▶")
-        self.play_btn.setToolTip("Play")
+        self.play_btn.setToolTip("Play (P / Space)")
         self.play_btn.clicked.connect(self.toggle_play)
         self.play_btn.setEnabled(False)
         layout.addWidget(self.play_btn)
 
         # Next button
         self.next_btn = QPushButton("►")
-        self.next_btn.setToolTip("Next Frame")
+        self.next_btn.setToolTip("Next Frame (])")
         self.next_btn.clicked.connect(self.next_frame)
         self.next_btn.setEnabled(False)
         layout.addWidget(self.next_btn)
 
         # Last button
         self.last_btn = QPushButton("►|")
-        self.last_btn.setToolTip("Last Frame")
+        self.last_btn.setToolTip("Last Frame (Shift+])")
         self.last_btn.clicked.connect(self.last_frame)
         self.last_btn.setEnabled(False)
         layout.addWidget(self.last_btn)
@@ -983,6 +1098,7 @@ class HelioviewerBrowser(QMainWindow):
         # Speed control
         layout.addWidget(QLabel("Speed:"))
         self.speed_combo = QComboBox()
+        self.speed_combo.setToolTip("Playback Speed (>/<)")
         self.speed_combo.addItems(["0.25x", "0.5x", "1x", "2x", "4x", "8x", "16x"])
         self.speed_combo.setCurrentText("1x")
         self.speed_combo.currentIndexChanged.connect(self.on_speed_changed)
@@ -995,7 +1111,7 @@ class HelioviewerBrowser(QMainWindow):
         layout.addWidget(self.diff_label)
         self.diff_combo = QComboBox()
         self.diff_combo.addItems(["None", "Base", "Running"])
-        self.diff_combo.setToolTip("Select difference map mode")
+        self.diff_combo.setToolTip("Select difference map mode (D)")
         self.diff_combo.currentIndexChanged.connect(self.on_diff_mode_changed)
         self.diff_combo.setEnabled(False)
         self.diff_label.setEnabled(False)
@@ -1021,11 +1137,13 @@ class HelioviewerBrowser(QMainWindow):
 
         # Save current frame
         save_frame_btn = QPushButton("💾 Save Frame")
+        save_frame_btn.setToolTip("Save Current Frame (Ctrl+S)")
         save_frame_btn.clicked.connect(self.save_current_frame)
         layout.addWidget(save_frame_btn)
 
        # Export animation
         export_btn = QPushButton("🎬 Export Animation")
+        export_btn.setToolTip("Export Animation (Ctrl+E)")
         export_btn.clicked.connect(self.export_animation)
         layout.addWidget(export_btn)
 
@@ -1034,7 +1152,43 @@ class HelioviewerBrowser(QMainWindow):
         batch_btn.clicked.connect(self.batch_download)
         layout.addWidget(batch_btn)
 
+        v_layout.addLayout(layout)
         parent_layout.addWidget(group)
+
+    def on_seek(self, value):
+        """Handle seekbar manual scrubbing."""
+        if not self.timestamps:
+            return
+        
+        # Map 0-10000 to frame index
+        total_frames = len(self.timestamps)
+        if total_frames > 1:
+            frame_idx = round(value * (total_frames - 1) / 10000)
+        else:
+            frame_idx = 0
+            
+        if frame_idx != self.current_frame:
+            self.current_frame = frame_idx
+            self.display_current_frame()
+
+    def on_seekbar_value_changed(self, value):
+        """Handle seekbar value change (e.g. from clicking)."""
+        if not self.playing and self.timestamps:
+            total_frames = len(self.timestamps)
+            if total_frames > 1:
+                frame_idx = round(value * (total_frames - 1) / 10000)
+            else:
+                frame_idx = 0
+                
+            if frame_idx != self.current_frame:
+                self.current_frame = frame_idx
+                self.display_current_frame()
+
+    def _update_seekbar_smoothly(self, value):
+        """Helper for QVariantAnimation to update seekbar without triggering loops."""
+        self.seekbar.blockSignals(True)
+        self.seekbar.setValue(value)
+        self.seekbar.blockSignals(False)
 
     def on_speed_changed(self):
         """Handle speed change - update animation timer if playing."""
@@ -1070,14 +1224,18 @@ class HelioviewerBrowser(QMainWindow):
             self.timestamps.append(current)
             current = current.addSecs(interval_sec)
 
-        # Limit to 4000 frames
-        if len(self.timestamps) > 4000:
-            QMessageBox.warning(
+        # Check for large frame count
+        if len(self.timestamps) > 5000:
+            reply = QMessageBox.question(
                 self,
-                "Too Many Frames",
-                f"Time range generates {len(self.timestamps)} frames. Limiting to first 4000.",
+                "Large Request",
+                f"This time range will generate {len(self.timestamps)} frames, which may take a long time to load and consumes significant memory.\n\n"
+                "Do you want to limit it to the first 5000 frames?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
             )
-            self.timestamps = self.timestamps[:4000]
+            if reply == QMessageBox.Yes:
+                self.timestamps = self.timestamps[:5000]
 
         # Clear old data
         self.frames.clear()
@@ -1096,6 +1254,7 @@ class HelioviewerBrowser(QMainWindow):
         self.progress_bar.setRange(0, len(self.timestamps))
         self.progress_bar.setValue(0)
         self.load_button.setEnabled(False)
+        self.cancel_button.setVisible(True)
         self.crop_btn.setEnabled(False)
         self.diff_combo.setEnabled(False)
         self.diff_label.setEnabled(False)
@@ -1109,6 +1268,16 @@ class HelioviewerBrowser(QMainWindow):
 
         # Start initial batch of downloads
         self._process_frame_download_queue()
+
+        #self.seekbar.setRange(0, len(self.timestamps) - 1)
+        # Update seekbar range (High resolution for continuous animation)
+        if len(self.timestamps) > 1:
+            self.seekbar.setRange(0, 10000)
+            self.seekbar.setEnabled(True)
+        else:
+            self.seekbar.setRange(0, 0)
+            self.seekbar.setEnabled(False)
+        self.seekbar.setValue(0)
 
         # Enable controls (navigation etc) - images will appear as they load
         self.enable_controls()
@@ -1142,13 +1311,14 @@ class HelioviewerBrowser(QMainWindow):
                     idx, inst, err
                 )
             )
+            downloader.error.connect(self._on_frame_download_finished)
             downloader.finished.connect(self._on_frame_download_finished)
             self.frame_loaders.append(downloader)
             downloader.start()
 
     def on_parallel_image_downloaded(self, frame_idx, instrument, pixmap):
         """Handle parallel image download completion."""
-        if self._closing:
+        if self._closing or not self._loading:
             return
 
         if frame_idx not in self.frames:
@@ -1166,7 +1336,7 @@ class HelioviewerBrowser(QMainWindow):
 
     def on_parallel_download_error(self, frame_idx, instrument, error):
         """Handle parallel download error."""
-        if self._closing:
+        if self._closing or not self._loading:
             return
         print(f"Error downloading {instrument} for frame {frame_idx}: {error}")
 
@@ -1184,22 +1354,59 @@ class HelioviewerBrowser(QMainWindow):
 
         # Check if all downloads are complete
         if self.active_downloads == 0 and len(self.download_queue) == 0:
-            self.on_loading_finished()
+            if self._loading: # Only call if not already canceled
+                self.on_loading_finished()
 
+    def cancel_loading(self):
+        """Cancel current loading process gracefully."""
+        if not self._loading:
+            return
 
-    def on_loading_finished(self):
-        """Handle loading completion."""
+        self._loading = False
+        self.download_queue = []
+        
+        # Safely clear loaders and disconnect signals to prevent race conditions
+        loaders = self.frame_loaders[:]
+        self.frame_loaders = []
+        
+        for loader in loaders:
+            try:
+                # Disconnect all signals to ensure no UI updates are triggered
+                loader.finished.disconnect()
+                loader.error.disconnect()
+            except Exception:
+                pass
+                
+            if loader.isRunning():
+                loader.stop()
+                # Move to global list to keep reference alive until thread actually exits
+                _active_threads.append(loader)
+        
+        self.active_downloads = 0
+        self.on_loading_finished(canceled=True)
+
+    def on_loading_finished(self, canceled=False):
+        """Handle loading completion or cancellation."""
         self._loading = False
         self.progress_bar.setVisible(False)
         self.load_button.setEnabled(True)
+        self.cancel_button.setVisible(False)
         self.crop_btn.setEnabled(True)  # Enable crop after all loaded
         self.diff_combo.setEnabled(True)  # Enable diff after all loaded
         self.diff_label.setEnabled(True)
-        QMessageBox.information(
-            self,
-            "Loading Complete",
-            f"Loaded {len(self.frames)} frames with selected instruments.",
-        )
+        
+        if canceled:
+            QMessageBox.information(
+                self,
+                "Loading Canceled",
+                f"Loaded {len(self.frames)} frames with selected instruments.",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Loading Complete",
+                f"Loaded {len(self.frames)} frames with selected instruments.",
+            )
 
     def enable_controls(self):
         """Enable animation controls."""
@@ -1209,6 +1416,7 @@ class HelioviewerBrowser(QMainWindow):
         self.play_btn.setEnabled(has_frames)
         self.next_btn.setEnabled(has_frames)
         self.last_btn.setEnabled(has_frames)
+        self.seekbar.setEnabled(has_frames)
 
         if has_frames:
             self.display_current_frame()
@@ -1241,12 +1449,13 @@ class HelioviewerBrowser(QMainWindow):
         # Title with timestamp and instrument
         title = QLabel(f"<h2>{nickname} ({observatory})</h2>")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: #2196F3; padding: 5px;")
+        title.setStyleSheet("color: #2196F3; padding: 1px;")
         self.image_grid.addWidget(title)
 
         time_label = QLabel(f"<h3>{timestamp.toString('yyyy-MM-dd HH:mm:ss')} UTC</h3>")
         time_label.setAlignment(Qt.AlignCenter)
-        time_label.setStyleSheet("color: #666; padding: 5px;")
+        #time_label.setStyleSheet("color: #666; padding: 5px;")
+        time_label.setStyleSheet("color: #666;")
         self.image_grid.addWidget(time_label)
 
         # Fullscreen image
@@ -1296,8 +1505,35 @@ class HelioviewerBrowser(QMainWindow):
         self.frame_label.setText(
             f"Frame: {self.current_frame + 1}/{len(self.timestamps)}"
         )
+        
+        # Update seekbar position
+        if self.timestamps and len(self.timestamps) > 1:
+            target_val = round(self.current_frame * 10000 / (len(self.timestamps) - 1))
+            
+            if self.playing:
+                # Smooth slide animation during playback
+                self.seekbar_anim.stop()
+                
+                # Get current interval for duration
+                speed_text = self.speed_combo.currentText()
+                speed = float(speed_text.replace("x", ""))
+                interval_ms = int(0.5 * 1000 / speed)
+                
+                # If we just looped back to 0, jump instantly to avoid slow reverse slide
+                if self.current_frame == 0:
+                    self._update_seekbar_smoothly(0)
+                else:
+                    self.seekbar_anim.setDuration(interval_ms)
+                    self.seekbar_anim.setStartValue(self.seekbar.value())
+                    self.seekbar_anim.setEndValue(target_val)
+                    self.seekbar_anim.start()
+            else:
+                # Instant jump if manually seeking or not playing
+                self._update_seekbar_smoothly(target_val)
+        else:
+            self._update_seekbar_smoothly(0)
 
-    def create_image_card(self, instrument_name, pixmap, timestamp):
+    '''def create_image_card(self, instrument_name, pixmap, timestamp):
         """Create a card widget for an image."""
         card = QFrame()
         card.setFrameStyle(QFrame.Box | QFrame.Raised)
@@ -1336,7 +1572,7 @@ class HelioviewerBrowser(QMainWindow):
 
         layout.addWidget(img_label)
 
-        return card
+        return card'''
 
     '''def show_full_image(self, pixmap, title):
         """Show full resolution image in dialog."""
@@ -1375,7 +1611,7 @@ class HelioviewerBrowser(QMainWindow):
         if not self.playing:
             self.playing = True
             self.play_btn.setText("❚❚")
-            self.play_btn.setToolTip("Pause")
+            self.play_btn.setToolTip("Pause (P / Space)")
 
             # Get speed
             speed_text = self.speed_combo.currentText()
@@ -1390,7 +1626,7 @@ class HelioviewerBrowser(QMainWindow):
         """Pause animation."""
         self.playing = False
         self.play_btn.setText("▶")
-        self.play_btn.setToolTip("Play")
+        self.play_btn.setToolTip("Play (P / Space)")
         self.animation_timer.stop()
 
     # Difference methods
@@ -1402,6 +1638,56 @@ class HelioviewerBrowser(QMainWindow):
             self.display_current_frame()
         finally:
             QApplication.restoreOverrideCursor()
+
+    def cycle_diff_mode(self):
+        """Cycle through difference modes."""
+        count = self.diff_combo.count()
+        idx = (self.diff_combo.currentIndex() + 1) % count
+        self.diff_combo.setCurrentIndex(idx)
+
+    def increase_speed(self):
+        """Increase animation speed."""
+        idx = self.speed_combo.currentIndex()
+        if idx < self.speed_combo.count() - 1:
+            self.speed_combo.setCurrentIndex(idx + 1)
+
+    def decrease_speed(self):
+        """Decrease animation speed."""
+        idx = self.speed_combo.currentIndex()
+        if idx > 0:
+            self.speed_combo.setCurrentIndex(idx - 1)
+
+    def setup_shortcuts(self):
+        """Define keyboard shortcuts for common actions."""
+        # Playback
+        QShortcut(QKeySequence("P"), self).activated.connect(self.toggle_play)
+        QShortcut(QKeySequence("Space"), self).activated.connect(self.toggle_play)
+        
+        # Navigation
+        QShortcut(QKeySequence("]"), self).activated.connect(self.next_frame)
+        QShortcut(QKeySequence("["), self).activated.connect(self.prev_frame)
+        QShortcut(QKeySequence("Shift+]"), self).activated.connect(self.last_frame)
+        QShortcut(QKeySequence("Shift+["), self).activated.connect(self.first_frame)
+        
+        # Zoom
+        QShortcut(QKeySequence("+"), self).activated.connect(self.zoom_in)
+        QShortcut(QKeySequence("="), self).activated.connect(self.zoom_in)
+        QShortcut(QKeySequence("-"), self).activated.connect(self.zoom_out)
+        QShortcut(QKeySequence("R"), self).activated.connect(self.reset_zoom)
+        
+        # Speed
+        QShortcut(QKeySequence(">"), self).activated.connect(self.increase_speed)
+        QShortcut(QKeySequence("."), self).activated.connect(self.increase_speed)
+        QShortcut(QKeySequence("<"), self).activated.connect(self.decrease_speed)
+        QShortcut(QKeySequence(","), self).activated.connect(self.decrease_speed)
+        
+        # Image / Diff
+        QShortcut(QKeySequence("D"), self).activated.connect(self.cycle_diff_mode)
+        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.save_current_frame)
+        QShortcut(QKeySequence("Ctrl+E"), self).activated.connect(self.export_animation)
+
+        # Close
+        QShortcut(QKeySequence("Ctrl+Q"), self).activated.connect(self.close)
 
     def _calculate_difference(self, current_pixmap, reference_pixmap):
         """Calculate pixel-wise grayscale difference between two pixmaps."""
@@ -1676,36 +1962,52 @@ class HelioviewerBrowser(QMainWindow):
             progress.close()
 
     def _add_timestamp_to_pixmap(self, pixmap, timestamp_text, show_bg=True):
-        """Add timestamp overlay to a pixmap."""
+        """Add timestamp overlay to a pixmap with adaptive sizing."""
         from PyQt5.QtGui import QPainter, QFont, QColor, QPen
         from PyQt5.QtCore import Qt, QRect
 
         # Create a copy to avoid modifying original
         result = QPixmap(pixmap)
         painter = QPainter(result)
+        
+        # Enable anti-aliasing for smoother text and shapes
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
 
-        # Set up font
-        font = QFont("Arial", 12, QFont.Bold)
+        # Set up font based on image height
+        # Scale font size with height, but keep it within readable range (6 to 22)
+        font_size = max(6, min(22, int(result.height() * 0.030)))
+        font = QFont("Arial", font_size, QFont.Bold)
         painter.setFont(font)
 
-        # Draw background rectangle for text
-        text_rect = painter.fontMetrics().boundingRect(timestamp_text)
-        padding = 15
+        # Calculate metrics with the scaled font
+        metrics = painter.fontMetrics()
+        text_rect = metrics.boundingRect(timestamp_text)
+
+        # Scale padding and margins with font size
+        padding_h = max(4, font_size)
+        padding_v = max(2, font_size // 2)
+        margin = max(4, font_size // 2)
+
+        # Define background rectangle
+        bg_width = text_rect.width() + padding_h * 2
+        bg_height = text_rect.height() + padding_v * 2
+
         bg_rect = QRect(
-            10,
-            result.height() - text_rect.height() - padding * 2 - 10,
-            text_rect.width() + padding * 2,
-            text_rect.height() + padding * 2,
+            margin,
+            result.height() - bg_height - margin,
+            bg_width,
+            bg_height,
         )
 
         # Semi-transparent black background
         if show_bg:
-            painter.fillRect(bg_rect, QColor(0, 0, 0, 180))
+            painter.fillRect(bg_rect, QColor(0, 0, 0, 100))
 
         # Draw white text
         painter.setPen(QPen(QColor(255, 255, 255)))
         painter.drawText(
-            bg_rect.adjusted(padding, padding, -padding, -padding),
+            bg_rect.adjusted(padding_h, padding_v, -padding_h, -padding_v),
             Qt.AlignLeft | Qt.AlignVCenter,
             timestamp_text,
         )

@@ -44,6 +44,7 @@ except ImportError:
 try:
     # First try relative import (when used as part of package)
     from . import solar_data_downloader as sdd
+    from ..styles import set_hand_cursor
 except ImportError:
     try:
         # Then try importing from the same directory (when run as script)
@@ -467,6 +468,11 @@ class SolarDataViewerGUI(QMainWindow):
 
         # Initial update for method visibility
         self.on_instrument_changed(0)
+        
+        try:
+            set_hand_cursor(self)
+        except:
+            pass
 
     def closeEvent(self, event):
         """Clean up download worker thread when window is closed."""

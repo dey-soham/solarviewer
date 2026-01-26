@@ -198,6 +198,7 @@ class HelioProjectiveViewer(QMainWindow):
 
         # Set up the UI
         self.setup_ui()
+        set_hand_cursor(self)
 
         # Load and display the image if provided
         if imagename:

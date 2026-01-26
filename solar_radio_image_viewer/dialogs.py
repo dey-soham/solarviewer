@@ -39,6 +39,7 @@ import glob
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from .utils.update_checker import check_for_updates
 from .version import __version__
+from .styles import theme_manager, set_hand_cursor
 import subprocess
 
 
@@ -319,6 +320,7 @@ class ContourSettingsDialog(QDialog):
         self._pressed_bg = button_pressed
 
         self.setup_ui()
+        set_hand_cursor(self)
 
     def setup_ui(self):
         from PyQt5.QtGui import QPixmap, QColor
@@ -1279,6 +1281,7 @@ class BatchProcessDialog(QDialog):
         self.add_button.clicked.connect(self.add_image)
         self.remove_button.clicked.connect(self.remove_image)
         self.run_button.clicked.connect(self.run_process)
+        set_hand_cursor(self)
 
     def add_image(self):
         directory = QFileDialog.getExistingDirectory(
@@ -1310,19 +1313,43 @@ class BatchProcessDialog(QDialog):
 class ImageInfoDialog(QDialog):
     """Professional metadata display dialog with organized sections."""
 
-    def __init__(self, parent=None, info_text="", metadata=None):
+    def __init__(self, parent=None, info_text="", metadata=None, imagename=None):
         super().__init__(parent)
         self.setWindowTitle("Image Metadata")
-        self.setMinimumSize(700, 500)
+        self.setMinimumSize(700, 600)
         self.metadata = metadata
         self.info_text = info_text
+        self.imagename = imagename
 
         self.setup_ui()
+        set_hand_cursor(self)
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
         layout.setContentsMargins(15, 15, 15, 15)
+
+        # Source Info
+        if hasattr(self, "imagename") and self.imagename:
+            source_container = QWidget()
+            source_layout = QHBoxLayout(source_container)
+            source_layout.setContentsMargins(0, 5, 0, 10)
+            
+            from .styles import theme_manager
+            palette = theme_manager.palette
+            
+            source_label = QLabel(f"📄 {os.path.basename(self.imagename)}")
+            source_label.setStyleSheet(f"""
+                font-size: 11pt; 
+                font-weight: 600; 
+                color: {palette.get('text_secondary', '#888888')};
+                background: {palette.get('button', '#444444')};
+                padding: 4px 12px;
+                border-radius: 6px;
+            """)
+            source_layout.addWidget(source_label)
+            source_layout.addStretch()
+            layout.addWidget(source_container)
 
         # Check if we have structured metadata (dict) or plain text
         if isinstance(self.metadata, dict) and self.metadata:
@@ -1535,6 +1562,7 @@ class PhaseShiftDialog(QDialog):
             )"""
 
         self.setup_ui()
+        set_hand_cursor(self)
 
     def setup_ui(self):
         from .move_phasecenter import SolarPhaseCenter
@@ -2675,6 +2703,7 @@ class HPCBatchConversionDialog(QDialog):
         self._text_secondary = text_secondary
 
         self.setup_ui()
+        set_hand_cursor(self)
 
     def setup_ui(self):
         """Set up the dialog UI with a modern tabbed layout."""
@@ -3587,6 +3616,7 @@ class PlotCustomizationDialog(QDialog):
         self.setMaximumHeight(1280)
         self.settings = settings.copy() if settings else {}
         self.setup_ui()
+        set_hand_cursor(self)
 
     def setup_ui(self):
         from PyQt5.QtWidgets import QTabWidget
@@ -4171,6 +4201,7 @@ class BeamSettingsDialog(QDialog):
         self.beam_style = beam_style or {}
         self.parent_viewer = parent
         self.setup_ui()
+        set_hand_cursor(self)
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -4282,6 +4313,7 @@ class GridSettingsDialog(QDialog):
         self.grid_style = grid_style or {}
         self.parent_viewer = parent
         self.setup_ui()
+        set_hand_cursor(self)
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -4403,6 +4435,7 @@ class PreferencesDialog(QDialog):
         self.settings = QSettings("SolarViewer", "SolarViewer")
 
         self.setup_ui()
+        set_hand_cursor(self)
 
     def setup_ui(self):
         layout = QVBoxLayout(self)

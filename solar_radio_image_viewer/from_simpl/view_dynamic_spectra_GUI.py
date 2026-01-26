@@ -96,9 +96,15 @@ from PyQt5.QtWidgets import (
     QFrame,
     QGridLayout,
     QLineEdit,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
+    QTabWidget,
 )
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QFont, QColor
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -1299,8 +1305,10 @@ class MainWindow(QMainWindow):
         self._full_lowres_data = None # Downsampled full spectrum in RAM
         self._lowres_skip = 1 # Skip factor for lowres data
 
-        # Metadata string (FITS header)
-        self._metadata = ""
+        # Metadata storage (list of (name, header) for all HDUs)
+        self._all_headers = []
+        self._metadata = "" # Keep for compatibility, but _all_headers is primary
+        self._metadata_dialog = None # Track the non-modal metadata window
 
         # Undo/Redo stacks (store copies of working data)
         self.undo_stack = []
@@ -1707,18 +1715,174 @@ class MainWindow(QMainWindow):
 
     # --------------------- View Metadata Dialog ---------------------------------
     def viewMetadata(self):
-        if not self._metadata:
+        """Show all FITS HDU metadata."""
+        if not self._all_headers:
             QMessageBox.information(self, "Metadata", "No metadata available.")
             return
-        dlg = QDialog(self)
+
+        # If a dialog is already open, raise it and return
+        if self._metadata_dialog is not None:
+            self._metadata_dialog.raise_()
+            self._metadata_dialog.activateWindow()
+            return
+
+        # Fetch authoritative palette from simpl_theme
+        palette = get_palette(self.current_theme)
+        
+        # Create a non-modal dialog 
+        dlg = QDialog(self, Qt.Window)
+        self._metadata_dialog = dlg
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        
+        def on_close():
+            self._metadata_dialog = None
+        dlg.finished.connect(on_close)
         dlg.setWindowTitle("FITS File Metadata")
-        dlg.resize(600, 400)
-        layout = QVBoxLayout(dlg)
-        textEdit = QTextEdit(dlg)
-        textEdit.setReadOnly(True)
-        textEdit.setPlainText(self._metadata)
-        layout.addWidget(textEdit)
-        dlg.exec_()
+        dlg.setMinimumSize(750, 750)
+        
+        # We rely on the global stylesheet applied in __init__ via apply_theme.
+        # Minimal dialog-specific tweaks for layout spacing
+        dlg.setStyleSheet(dlg.styleSheet() + f"""
+            QDialog {{ background-color: {palette['window']}; }}
+            QTableWidget {{ border: none; }}
+        """)
+
+        main_layout = QVBoxLayout(dlg)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Compact Aesthetic Source Info
+        source_container = QWidget()
+        source_layout = QHBoxLayout(source_container)
+        source_layout.setContentsMargins(35, 20, 35, 0)
+        
+        source_label = QLabel(f"📄 {os.path.basename(self.current_filename)}")
+        source_label.setStyleSheet(f"""
+            font-size: 11pt; 
+            font-weight: 600; 
+            color: {palette['text_secondary']};
+            background: {palette['button']};
+            padding: 4px 12px;
+            border-radius: 6px;
+        """)
+        source_layout.addWidget(source_label)
+        source_layout.addStretch()
+        main_layout.addWidget(source_container)
+        
+        # Search area - Styled precisely like SolarViewer
+        search_widget = QWidget()
+        search_layout = QHBoxLayout(search_widget)
+        search_layout.setContentsMargins(35, 15, 35, 20) 
+        search_layout.setSpacing(15)
+        
+        search_label = QLabel("🔍 Search:")
+        search_label.setStyleSheet(f"font-weight: 600; font-size: 11.5pt; color: {palette['text_secondary']};")
+        search_layout.addWidget(search_label)
+        
+        search_input = QLineEdit()
+        search_input.setPlaceholderText("Filter headers across all columns...")
+        search_layout.addWidget(search_input)
+        main_layout.addWidget(search_widget)
+        
+        # Tab Widget Container
+        tab_container = QWidget()
+        tab_container_layout = QVBoxLayout(tab_container)
+        tab_container_layout.setContentsMargins(35, 0, 35, 20)
+        
+        tab_widget = QTabWidget()
+        tab_container_layout.addWidget(tab_widget)
+        main_layout.addWidget(tab_container)
+        
+        # Typography for technical data
+        mono_font = QFont("Monospace", 11)
+        mono_font.setStyleHint(QFont.TypeWriter)
+        bold_mono = QFont(mono_font)
+        bold_mono.setBold(True)
+        
+        for hdu_name, hdu_header in self._all_headers:
+            table = QTableWidget()
+            table.setColumnCount(3)
+            table.setHorizontalHeaderLabels(["Keyword", "Value", "Comment"])
+            table.verticalHeader().setVisible(False)
+            table.setSelectionBehavior(QAbstractItemView.SelectRows)
+            table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            table.setAlternatingRowColors(True)
+            table.setShowGrid(False)
+            
+            h_header = table.horizontalHeader()
+            h_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            h_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            h_header.setSectionResizeMode(2, QHeaderView.Stretch)
+            h_header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            
+            cards = hdu_header.cards
+            table.setRowCount(len(cards))
+            for i, card in enumerate(cards):
+                k = QTableWidgetItem(str(card.keyword))
+                k.setFont(bold_mono)
+                
+                v = QTableWidgetItem(str(card.value) if card.value is not None else "")
+                v.setFont(mono_font)
+                
+                c = QTableWidgetItem(str(card.comment) if card.comment else "")
+                c.setFont(mono_font)
+                c.setForeground(QColor(palette['text_secondary']))
+                
+                table.setItem(i, 0, k)
+                table.setItem(i, 1, v)
+                table.setItem(i, 2, c)
+            
+            table.setViewportMargins(5, 5, 5, 5)
+            tab_widget.addTab(table, hdu_name)
+        
+        def filter_active_tab(text):
+            text = text.lower()
+            tbl = tab_widget.currentWidget()
+            if not tbl: return
+            for i in range(tbl.rowCount()):
+                match = any(text in (tbl.item(i, j).text().lower() if tbl.item(i, j) else "") 
+                           for j in range(tbl.columnCount()))
+                tbl.setRowHidden(i, not match)
+        
+        search_input.textChanged.connect(filter_active_tab)
+        tab_widget.currentChanged.connect(lambda: filter_active_tab(search_input.text()))
+        
+        # Bottom Bar
+        bottom_bar = QFrame()
+        bottom_bar.setFixedHeight(95)
+        bottom_bar.setStyleSheet(f"border-top: 1px solid {palette['border']};")
+        b_layout = QHBoxLayout(bottom_bar)
+        b_layout.setContentsMargins(35, 0, 35, 0)
+        b_layout.setSpacing(20)
+        
+        copy_btn = QPushButton("📋 Copy to Clipboard")
+        copy_btn.clicked.connect(self._copy_metadata_to_clipboard)
+        b_layout.addWidget(copy_btn)
+        
+        b_layout.addStretch()
+        
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(140)
+        close_btn.setStyleSheet("font-weight: bold;")
+        close_btn.clicked.connect(dlg.close)
+        b_layout.addWidget(close_btn)
+        
+        main_layout.addWidget(bottom_bar)
+        dlg.show()
+
+    def _copy_metadata_to_clipboard(self):
+        """Format and copy all metadata to clipboard."""
+        if not self._all_headers: return
+        
+        lines = []
+        for hdu_name, hdu_header in self._all_headers:
+            lines.append(f"=== HDU: {hdu_name} ===")
+            lines.append(str(hdu_header))
+            lines.append("\n")
+            
+        text = "\n".join(lines)
+        QApplication.clipboard().setText(text)
+        self.statusBar().showMessage("Metadata copied to clipboard", 3000)
 
     def _applyStyle(self):
         """Apply the global application theme."""
@@ -1794,6 +1958,13 @@ class MainWindow(QMainWindow):
                 self.hdul = fits.open(fileName, memmap=True)
                 header = self.hdul[0].header
                 data_ref = self.hdul[0].data
+                
+                # Capture metadata from all HDUs
+                self._all_headers = []
+                for i, hdu in enumerate(self.hdul):
+                    name = hdu.name if hdu.name else f"HDU {i}"
+                    self._all_headers.append((name, hdu.header))
+                
                 self._metadata = str(header)
                 
                 # Detect if large (e.g., > 10^7 pixels)

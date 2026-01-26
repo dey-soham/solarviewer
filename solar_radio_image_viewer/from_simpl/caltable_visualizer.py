@@ -28,6 +28,11 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 import subprocess
 import tempfile
 import pickle
+import os
+try:
+    from ..styles import set_hand_cursor
+except ImportError:
+    from styles import set_hand_cursor
 
 
 def read_caltable_safe(table_path, read_spectral_window=False):
@@ -125,6 +130,7 @@ class VisualizationApp(QMainWindow):
         # Create GUI elements
         self.create_widgets()
         self.setup_shortcuts()
+        set_hand_cursor(self)
 
     def setup_shortcuts(self):
         """Setup keyboard shortcuts for navigation and actions."""

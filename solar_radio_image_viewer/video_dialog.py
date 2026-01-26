@@ -152,8 +152,13 @@ class VideoCreationDialog(QDialog):
         self.setWindowTitle("Create Video")
         self.resize(650, 700)
 
-        # Set up the UI
+        try:
+            from .styles import set_hand_cursor
+        except ImportError:
+            from styles import set_hand_cursor
+
         self.setup_ui()
+        set_hand_cursor(self)
 
         # Initialize the separate preview window FIRST (before any methods that access figure)
         self._preview_window = PreviewWindow(self)
