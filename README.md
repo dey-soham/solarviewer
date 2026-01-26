@@ -33,6 +33,7 @@
 - **Elliptical Ring Fitting** — Model ring-shaped emission features
 - **Region Selection** — Rectangle and ellipse tools for region-of-interest analysis
 - **Multiple Colormaps** — Choose from scientific colormaps with linear, log, sqrt, and custom stretches
+- **Contour Overlays** — Overlay multi-wavelength contours (e.g., radio on EUV) with automatic coordinate reprojection
 - **Stokes Parameters** — Full polarization support (I, Q, U, V, L, Lfrac, Vfrac, PANG)
 
 ### 🌐 Data Access & Downloads
@@ -41,7 +42,7 @@
 - **Helioviewer Browser** — Browse and download images from NASA's Helioviewer API with time-series playback
 - **Solar Data Downloader** — Download data from SDO/AIA, IRIS, SOHO, GOES SUVI, STEREO, and GONG
 - **Radio Data Downloader** — Access solar radio observation archives
-- **Solar Activity Viewer** — Browse solar events (flares, CMEs, active regions) with real-time data
+- **Solar Activity Viewer** — Browse solar events (flares, CMEs, active regions), view context images and radio spectra, and plot GOES X-ray light curves
  
 ### 🎬 Video Creation
  
@@ -53,7 +54,8 @@
 ### 🔧 Advanced Tools
  
 - **Log Console** — Internal console to view application logs and debugging information
-- **LOFAR/SIMPL Support** — Calibration table visualizer, dynamic spectra viewer, pipeline log viewer
+- **Dynamic Spectra Viewer** — Advanced viewer for radio spectra with RFI masking (ROI/Global), bandpass normalization, and cross-section analysis
+- **LOFAR/SIMPL Support** — Calibration table visualizer and pipeline log viewer
 - **Coordinate Transformations** — Convert between RA/Dec and helioprojective coordinates
 - **Phase Center Tool** — Shift image phase centers for radio interferometry data
 - **Export Options** — Export to FITS, CASA image, PNG, and region files
@@ -361,6 +363,7 @@ This project builds on the excellent work of the solar physics and radio astrono
 ### Community
 - The solar physics group at the National Centre for Radio Astrophysics for feedback and testing
 - Deepan Patra for designing app icon and logo
+- Atul Mohan for contributing to the download codebase and providing helpful feedback
 
 ---
 

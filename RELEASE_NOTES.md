@@ -1,5 +1,36 @@
 # SolarViewer Release Notes
 
+## Version 1.2.2
+
+### Dynamic Spectra Viewer
+*   **Advanced Masking**: Added **Extend Mask** (Global Frequency Masking) and **Clear Masks** features for effective RFI mitigation across time steps.
+*   **UI Redesign**: Overhauled the user interface to enhance workflow and visual clarity.
+*   **Large File Support**: Optimized handling of large FITS files for smoother performance.
+*   **Metadata Viewer**: Enhanced the FITS header viewer layout for improved readability.
+*   **Fix**: Resolved an issue where manual masks were stripped when toggling bandpass normalization.
+
+### Helioviewer Browser
+*   **Enhanced Visualization**: Added **Crop**, **Zoom**, and **Diff Map** (Base and Running) capabilities for detailed event analysis.
+*   **Navigation**: Added a seekbar for intuitive time navigation.
+*   **Export Fix**: Corrected timestamp sizing in exported GIF and MP4 videos to automatically adjust to frame size.
+*   **Keyboard Shortcuts**: Implemented keyboard shortcuts for improved accessibility and faster navigation.
+
+### Data Access & Caching
+*   **Solar Activity**:
+    *   Added **Radio Spectra** support for Wind/WAVES, STEREO, ORFEES, NDA, HIRAS, and YAMAGAWA instruments.
+    *   Implemented robust **Caching Support** to accelerate subsequent data loads.
+    *   Added smart **Cache Management** with policy-based retention.
+*   **Radio Downloader**: Added support for downloading **e-Callisto** FITS files.
+
+### Infrastructure & Platform
+*   **Python 3.11 Compatibility**: Resolved Numpy warnings and SSL errors for compatibility with upcoming Python versions.
+*   **MacOS Support**: Fixed working directory resolution to ensure temporary operations use correct writable locations.
+*   **LOFAR Tools**: Added **HiDPI** support for crisp rendering on high-resolution displays.
+*   **General**: Deprecated and removed the legacy Napari viewer.
+
+### General Improvements
+*   **Quality of Life**: Implemented various bug fixes and performance enhancements.
+
 ## Version 1.2.1
 
 ### Changes & Improvements

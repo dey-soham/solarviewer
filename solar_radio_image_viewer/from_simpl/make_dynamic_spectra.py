@@ -13,7 +13,7 @@ This script:
        - The primary HDU contains the dynamic spectrum.
        - A BinTableHDU contains the time axis in MJD and a second column with UTC strings.
        - A second BinTableHDU contains the subband frequencies in MHz.
-  6. Optionally saves and/or displays a plot. The plot's x-axis is in UTC.
+  6. Optionally saves and/or displays a plot.
 
 Usage:
   python create_dynamic_spectra.py --indir /path/to/msfiles --outfits dynamic_spectra.fits --binwidth 1.0 --ncpu 10 --saveplot False --showplot False
