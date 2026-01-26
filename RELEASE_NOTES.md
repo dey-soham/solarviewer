@@ -1,5 +1,11 @@
 # SolarViewer Release Notes
 
+## Version 1.2.3
+
+### Radio Data Downloader
+*   **Metadata Fix**: Corrected a bug in Learmonth/RSTN data conversion where FITS headers were generated with swapped Frequency/Time labels.
+*   **Automated Cleanup**: Intermediate data files (.srs, .fit, .fit.gz) are now automatically removed after successful FITS conversion.
+
 ## Version 1.2.2
 
 ### Dynamic Spectra Viewer

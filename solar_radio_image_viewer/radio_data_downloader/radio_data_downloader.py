@@ -998,8 +998,14 @@ def download_and_convert_ecallisto(
     if progress_callback:
         progress_callback(f"Converted {len(fits_files)} files to FITS format")
         progress_callback(f"Deleting {len(downloaded_files)} .fit/.fit.gz files")
-        for f in downloaded_files:
+        
+    for f in downloaded_files:
+        try:
             os.remove(f)
+        except Exception:
+            pass
+            
+    if progress_callback:
         progress_callback(f"Deleted {len(downloaded_files)} .fit/.fit.gz files")
 
     return fits_files
@@ -1195,10 +1201,7 @@ def dataframe_to_fits(
         progress_callback("Creating FITS file...")
 
     # Get data array (time x frequency)
-    data = df.to_numpy().astype(np.float32)
-
-    # Transpose to (frequency x time) for standard dynamic spectrum format
-    data = data.T
+    data = df.to_numpy().astype(np.float32) # df has row time and column freq
 
     # Create primary HDU with the data
     hdu = fits.PrimaryHDU(data)
@@ -1426,6 +1429,16 @@ def download_and_convert_rstn(
     result = dataframe_to_fits(
         df, freqs, timestamps, fits_file, site, progress_callback
     )
+
+    # Clean up SRS file if conversion succeeded
+    if result and os.path.exists(srs_file):
+        if progress_callback:
+            progress_callback(f"Cleaning up intermediate SRS file: {os.path.basename(srs_file)}")
+        try:
+            os.remove(srs_file)
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"Warning: Could not delete SRS file: {e}")
 
     return result
 

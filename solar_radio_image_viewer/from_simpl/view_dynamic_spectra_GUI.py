@@ -464,7 +464,8 @@ class DynamicSpectrumCanvas(FigureCanvas):
         Set fast=True to skip expensive layout/colorbar updates for fluid navigation.
         """
         if fast and hasattr(self, '_im') and self._im is not None:
-            # Faster update: just update data/extent and redraw
+            # Fast update: we expect self._data to be (Time, Freq), 
+            # so we always transpose for imshow(Freq, Time)
             data_ma = ma.masked_invalid(self._data)
             self._im.set_data(data_ma.T)
             
@@ -478,7 +479,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
                     utc_dt = Time(time_mjd, format="mjd", scale="utc").to_datetime()
                     utc_num = np.array([date2num(dt) for dt in utc_dt])
                     self._date_cache[t_hash] = utc_num
-                
+
                 self._extent = [utc_num[0], utc_num[-1], self._freq_axis[0], self._freq_axis[-1]]
                 self._im.set_extent(self._extent)
                 self.ax.set_xlim(self._extent[0], self._extent[1])
@@ -560,6 +561,9 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 self._freq_axis[0],
                 self._freq_axis[-1],
             ]
+            
+            # Internal normalized orientation is always (Time, Freq)
+            # We transpose for imshow to get (Freq on Y, Time on X)
             self._im = self.ax.imshow(
                 data_ma.T,
                 aspect="auto",
@@ -568,6 +572,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 cmap=self._cmap,
                 norm=norm,
             )
+            
             #date_formatter = DateFormatter("%Y-%m-%d\n%H:%M:%S")
             date_formatter = DateFormatter("%H:%M:%S")
             self.ax.xaxis.set_major_formatter(date_formatter)
@@ -757,26 +762,21 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 frac_ymin = (ymin - y0) / (y1_ - y0)
                 frac_ymax = (ymax - y0) / (y1_ - y0)
 
-                ixmin = int(frac_xmin * (nt - 1))
-                ixmax = int(frac_xmax * (nt - 1))
-                iymin = int(frac_ymin * (nf - 1))
-                iymax = int(frac_ymax * (nf - 1))
-            else:
-                # Direct pixel coordinates
-                xmin, xmax = sorted([start_x, end_x])
-                ymin, ymax = sorted([start_y, end_y])
-                ixmin, ixmax = int(xmin), int(xmax)
-                iymin, iymax = int(ymin), int(ymax)
+            # nt, nf should be aligned with X, Y
+            # In our normalized (Time, Freq) data:
+            # Axis 0 (nt) is Time (X), Axis 1 (nf) is Freq (Y)
+            # Internal data is normalized to (Time, Freq)
+            # Axis 0 is Time (mapped to X), Axis 1 is Freq (mapped to Y)
+            n_time, n_freq = self._data.shape
+            
+            idx_time_min = max(0, min(int(frac_xmin * (n_time - 1)), n_time - 1))
+            idx_time_max = max(0, min(int(frac_xmax * (n_time - 1)), n_time - 1))
+            idx_freq_min = max(0, min(int(frac_ymin * (n_freq - 1)), n_freq - 1))
+            idx_freq_max = max(0, min(int(frac_ymax * (n_freq - 1)), n_freq - 1))
 
-            # FINAL SAFETY CLIPPING
-            ixmin = max(0, min(ixmin, nt - 1))
-            ixmax = max(0, min(ixmax, nt - 1))
-            iymin = max(0, min(iymin, nf - 1))
-            iymax = max(0, min(iymax, nf - 1))
-
-            # Trigger the actual masking
-            if self.roi_callback and ixmin <= ixmax and iymin <= iymax:
-                self.roi_callback(ixmin, ixmax, iymin, iymax)
+            # Trigger the actual masking with (Axis 0 [Time], Axis 1 [Freq]) indices
+            if self.roi_callback and idx_time_min <= idx_time_max and idx_freq_min <= idx_freq_max:
+                self.roi_callback(idx_time_min, idx_time_max, idx_freq_min, idx_freq_max)
                 
             # Clear selector for next use
             if self.rect_selector:
@@ -2065,14 +2065,19 @@ class MainWindow(QMainWindow):
                 
                 # Slicing the memmapped data carefully
                 if data_ref.shape[0] == total_samples:
+                    # (time, freq)
                     mini_data = data_ref[::skip, :]
-                    mini_data_for_display = mini_data.T # imshow expects (freq, time)
+                    mini_data_for_display = mini_data.T
+                    # RAM overview normalized to (time, freq)
+                    self._full_lowres_data = np.array(mini_data, dtype=np.float32)
                 else:
+                    # (freq, time)
                     mini_data = data_ref[:, ::skip]
                     mini_data_for_display = mini_data
+                    # RAM overview normalized to (time, freq)
+                    self._full_lowres_data = np.array(mini_data.T, dtype=np.float32)
                 
                 # Convert to RAM for minimap and instant preview
-                self._full_lowres_data = np.array(mini_data, dtype=np.float32)
                 self._full_lowres_data[np.isnan(self._full_lowres_data)] = np.nan
                 self._full_lowres_data[np.isinf(self._full_lowres_data)] = np.nan
                 
@@ -2200,17 +2205,18 @@ class MainWindow(QMainWindow):
             if raw_data.shape[0] == total_samples:
                 # (time, freq)
                 data_slice = raw_data[start_idx:end_idx:step, :]
-                time_slice = self._full_time_axis[start_idx:end_idx:step]
             else:
-                # (freq, time)
-                data_slice = raw_data[:, start_idx:end_idx:step]
-                time_slice = self._full_time_axis[start_idx:end_idx:step]
+                # (freq, time) -> (time, freq)
+                data_slice = raw_data[:, start_idx:end_idx:step].T
+            
+            time_slice = self._full_time_axis[start_idx:end_idx:step]
             
             # Convert to RAM and handle NaNs/Infs
             data = np.array(data_slice, dtype=np.float32)
             data[np.isnan(data)] = np.nan
             data[np.isinf(data)] = np.nan
             return data, time_slice, self._full_freq_axis
+
         except Exception as e:
             self.logger.error(f"Error extracting slice at page {page_idx}: {e}")
             return None, None, None
@@ -2235,18 +2241,12 @@ class MainWindow(QMainWindow):
             # Re-check shape logic based on orientation in openFile
             pass
 
-        # Robust slicing based on where the 'time' dimension is
-        # From openFile: mini_data = data_ref[::skip, :] if shape[0]==total else data_ref[:, ::skip]
+        # Robust slicing: _full_lowres_data is now guaranteed to be (time, freq)
         try:
-            if self._full_lowres_data.shape[0] == (total_samples + self._lowres_skip - 1) // self._lowres_skip:
-                # (time, freq)
-                data_slice = self._full_lowres_data[low_start:low_end, :]
-            else:
-                # (freq, time)
-                data_slice = self._full_lowres_data[:, low_start:low_end]
-            
+            data_slice = self._full_lowres_data[low_start:low_end, :]
             time_slice = self._full_time_axis[start_idx:end_idx:self._lowres_skip]
-            return data_slice, time_slice, self._full_freq_axis
+            return data_slice.copy(), time_slice, self._full_freq_axis
+
         except Exception as e:
             self.logger.error(f"Fast slice error: {e}")
             return None, None, None
@@ -2347,17 +2347,9 @@ class MainWindow(QMainWindow):
 
         # Apply Global Frequency Mask (Extend Mask feature)
         if self._global_masked_freq_indices and self._original_data is not None:
-             # Mask these frequency indices across all time
-             nt, nf = self._original_data.shape
-             
-             # Convert set to list for indexing
+             # Standardized: self._original_data is always (Time, Freq)
              bad_freqs = list(self._global_masked_freq_indices)
-             
-             if len(self._freq_axis) == nf:
-                 # Shape is (time, freq)
-                 self._original_data[:, bad_freqs] = np.nan
-             elif len(self._freq_axis) == nt:
-                 self._original_data[bad_freqs, :] = np.nan
+             self._original_data[:, bad_freqs] = np.nan
              
         self._time_axis = time_axis
         self._freq_axis = freq_axis
@@ -2385,7 +2377,11 @@ class MainWindow(QMainWindow):
             
             # Load full data into RAM (subject to memory limits)
             with self.wait_cursor():
-                data = np.array(self.hdul[0].data, dtype=np.float32)
+                raw_data = self.hdul[0].data
+                if raw_data.shape[0] == len(self._full_time_axis):
+                    data = np.array(raw_data, dtype=np.float32)
+                else:
+                    data = np.array(raw_data.T, dtype=np.float32)
                 self._display_data(data, self._full_time_axis, self._full_freq_axis)
             return
 
@@ -2877,19 +2873,11 @@ class MainWindow(QMainWindow):
             # self._original_data is usually (time, freq) but checked via axis lengths
             
             data = self._original_data
-            mask = np.isnan(data)
-            
-            if not np.any(mask):
-                self.statusBar().showMessage("No mask to extend.", 3000)
-                return
-                
-            nt, nf = data.shape
-            if self._freq_axis is not None and len(self._freq_axis) == nf:
-                 masked_cols = np.where(np.any(mask, axis=0))[0]
-                 self._global_masked_freq_indices.update(masked_cols)
-            elif self._freq_axis is not None and len(self._freq_axis) == nt:
-                 masked_rows = np.where(np.any(mask, axis=1))[0]
-                 self._global_masked_freq_indices.update(masked_rows)
+            # Identify frequencies that have ANY masking in the current view
+            # Standardized orientation is always (Time, Freq)
+            # Axis 1 is Frequency
+            masked_freqs = np.where(np.any(mask, axis=0))[0]
+            self._global_masked_freq_indices.update(masked_freqs)
             
             # Apply immediately to current view
             self._display_data(self._original_unmodified, self._time_axis, self._freq_axis)
