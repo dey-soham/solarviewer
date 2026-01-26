@@ -21,7 +21,7 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     package_data={
-        "solar_radio_image_viewer": ["assets/*.png", "assets/*.fits", "assets/*.ttf"],
+        "solar_radio_image_viewer.assets": ["*.png", "*.fits", "*.ttf"],
     },
     install_requires=[
         "setuptools<81",
@@ -66,11 +66,11 @@ setup(
     author="Soham Dey",
     author_email="sohamd943@gmail.com",
     url="https://github.com/dey-soham/solarviewer/",
+    license="MIT",
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Science/Research",
         "Topic :: Scientific/Engineering :: Astronomy",
-        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
