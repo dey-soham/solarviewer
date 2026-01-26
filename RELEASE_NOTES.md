@@ -1,5 +1,12 @@
 # SolarViewer Release Notes
 
+## Version 1.2.4
+
+### Dynamic Spectra Viewer
+*   **Fix**: Standardized internal data orientation to ensure correct axis mapping (Time vs Frequency).
+*   **Fix**: Resolved a crash (`NameError`) when using the **Extend Mask** feature.
+
+
 ## Version 1.2.3
 
 ### Radio Data Downloader

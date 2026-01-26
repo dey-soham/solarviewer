@@ -2873,6 +2873,7 @@ class MainWindow(QMainWindow):
             # self._original_data is usually (time, freq) but checked via axis lengths
             
             data = self._original_data
+            mask = np.isnan(data)
             # Identify frequencies that have ANY masking in the current view
             # Standardized orientation is always (Time, Freq)
             # Axis 1 is Frequency
