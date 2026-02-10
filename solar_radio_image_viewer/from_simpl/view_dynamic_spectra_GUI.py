@@ -1369,10 +1369,36 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 self.main_window.vmaxEntry.setText(f"{self._vmax:.4g}")
 
         # Handle NaN data - replace with vmin for display
-        data_display = np.where(np.isnan(self._data), self._vmin, self._data)
+        # data_display = np.where(np.isnan(self._data), self._vmin, self._data)
+
+        # Create NaN mask before scaling
+        nan_mask = np.isnan(self._data)
+
+        # Replace NaN with vmin for scaling (they'll be overwritten afterward)
+        data_display = np.where(nan_mask, self._vmin, self._data)
 
         # Apply scaling transformation to get [0, 255] for LUT
+        # data_scaled = self._apply_scaling(data_display)
+
+        # Apply scaling transformation to get [1, 255] for LUT
+        # (reserve index 0 for transparent NaN pixels)
         data_scaled = self._apply_scaling(data_display)
+        # Remap from [0, 255] to [1, 255] so index 0 is free for NaN
+        data_scaled = (data_scaled * (254.0 / 255.0) + 1).astype(np.uint8)
+        # Set NaN pixels to index 0 (transparent)
+        data_scaled[nan_mask] = 0
+
+        # Build display LUT: index 0 = transparent, 1-255 = colormap
+        display_lut = np.zeros((256, 4), dtype=np.ubyte)
+        display_lut[0] = [0, 0, 0, 0]  # Transparent for NaN
+        if self._current_lut is not None:
+            for i in range(1, 256):
+                # Map LUT index i (range 1-255) back to colormap position (0-255)
+                cmap_idx = int((i - 1) * 255.0 / 254.0)
+                display_lut[i] = self._current_lut[cmap_idx]
+        else:
+            for i in range(1, 256):
+                display_lut[i] = [i, i, i, 255]
 
         # Data orientation: input is (time, freq) with shape (nt, nf)
         # PyQtGraph ImageItem expects data[x, y] where x is horizontal, y is vertical
@@ -1384,7 +1410,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         # Set image with LUT
         self.image_item.setImage(image_data, autoLevels=False)
-        self.image_item.setLookupTable(self._current_lut)
+        # self.image_item.setLookupTable(self._current_lut)
+        self.image_item.setLookupTable(display_lut)
         self.image_item.setLevels([0, 255])
 
         # Set the correct axis ranges (rect defines the bounding box)
@@ -2979,6 +3006,9 @@ class MainWindow(QMainWindow):
                     self.hdul.close()
                 self._data_cache.clear()
                 self._cached_bandpass_profile = None  # Invalidate bandpass cache
+                self._global_masked_freq_indices.clear()  # Clear stale masks
+                self._pending_user_mask = None
+                self.undo_stack.clear()
                 gc.collect()  # Force memory release
 
                 self.logger.info(f"Opening FITS file: {fileName}")
@@ -3816,6 +3846,11 @@ class MainWindow(QMainWindow):
                 time_slice = slice(ixmin, ixmax + 1)
                 freq_slice = slice(iymin, iymax + 1)
                 self._push_undo_delta(time_slice, freq_slice)
+
+                # Copy-on-write: ensure we don't modify _original_unmodified
+                # (they can share a reference when no bandpass/global mask is active)
+                if self._original_data is self._original_unmodified:
+                    self._original_data = self._original_data.copy()
 
                 # Apply the mask
                 self._original_data[ixmin : ixmax + 1, iymin : iymax + 1] = np.nan
