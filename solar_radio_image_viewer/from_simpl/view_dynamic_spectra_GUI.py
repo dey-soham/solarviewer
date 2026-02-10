@@ -55,8 +55,11 @@ Notes:
 
 import sys
 import os
+import gc
 import numpy as np
 import numpy.ma as ma
+from datetime import datetime, timedelta
+
 try:
     import cv2
 except ImportError:
@@ -116,6 +119,10 @@ from matplotlib.backends.backend_qt5agg import (
     NavigationToolbar2QT as NavigationToolbar,
 )
 from matplotlib.widgets import RectangleSelector
+
+# PyQtGraph for GPU-accelerated rendering
+import pyqtgraph as pg
+from pyqtgraph import ColorMap
 
 
 ###############################################################################
@@ -201,7 +208,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
         self.ax = self.fig.add_subplot(111)
         super().__init__(self.fig)
         self.setParent(parent)
-        
+
         # Ensure canvas background matches theme to avoid white gaps when scaling
         self.setStyleSheet("background-color: transparent;")
 
@@ -223,8 +230,8 @@ class DynamicSpectrumCanvas(FigureCanvas):
 
         self._colorbar = None
         self._im = None
-        self._date_cache = {} # Cache for time_axis -> utc_num mapping
-        self._filename = "" 
+        self._date_cache = {}  # Cache for time_axis -> utc_num mapping
+        self._filename = ""
 
         # Visualization parameters
         self._scale_mode = "Linear"  # Options: "Linear", "Log", "Sqrt", "Gamma"
@@ -276,10 +283,10 @@ class DynamicSpectrumCanvas(FigureCanvas):
             va="top",
             fontsize=11,
             fontweight="bold",
-            visible=False
+            visible=False,
         )
 
-        #self.fig.tight_layout()
+        # self.fig.tight_layout()
 
     def _apply_initial_theme(self):
         """Apply dark theme as default for matplotlib."""
@@ -299,7 +306,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
 
         # Default to dark theme if no parent found
         theme_name = getattr(parent, "current_theme", "dark")
-        
+
         # Get centralized params and palette
         params = get_matplotlib_params(theme_name)
         palette = get_palette(theme_name)
@@ -329,14 +336,21 @@ class DynamicSpectrumCanvas(FigureCanvas):
         if hasattr(self, "_hover_text"):
             bg_color = palette["window"]
             self._hover_text.set_color(text_color)
-            self._hover_text.set_bbox(dict(facecolor=bg_color, alpha=0.8, edgecolor=palette["border"]))
+            self._hover_text.set_bbox(
+                dict(facecolor=bg_color, alpha=0.8, edgecolor=palette["border"])
+            )
 
         # Update mode text colors
         if hasattr(self, "_mode_text"):
             self._mode_text.set_color(palette.get("highlight", text_color))
-            self._mode_text.set_bbox(dict(facecolor=palette["window"], alpha=0.9, edgecolor=palette["highlight"], pad=5))
-
-
+            self._mode_text.set_bbox(
+                dict(
+                    facecolor=palette["window"],
+                    alpha=0.9,
+                    edgecolor=palette["highlight"],
+                    pad=5,
+                )
+            )
 
     def _connect_events(self):
         """Connect all necessary event handlers"""
@@ -391,7 +405,9 @@ class DynamicSpectrumCanvas(FigureCanvas):
         self.ax.clear()
 
         # Reset basic axis properties
-        self.ax.set_title(os.path.basename(self._filename) if self._filename else " ", fontsize=14)
+        self.ax.set_title(
+            os.path.basename(self._filename) if self._filename else " ", fontsize=14
+        )
         self.ax.set_xlabel("Time (UTC)", fontsize=12)
         self.ax.set_ylabel("Frequency (MHz)", fontsize=12)
 
@@ -405,7 +421,10 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 self.ax = self.fig.add_subplot(111)
 
                 # Reset basic axis properties
-                self.ax.set_title(os.path.basename(self._filename) if self._filename else " ", fontsize=14)
+                self.ax.set_title(
+                    os.path.basename(self._filename) if self._filename else " ",
+                    fontsize=14,
+                )
                 self.ax.set_xlabel("Time (UTC)", fontsize=12)
                 self.ax.set_ylabel("Frequency (MHz)", fontsize=12)
             self._colorbar = None
@@ -463,12 +482,12 @@ class DynamicSpectrumCanvas(FigureCanvas):
         """Plot the dynamic spectrum using the current visualization parameters.
         Set fast=True to skip expensive layout/colorbar updates for fluid navigation.
         """
-        if fast and hasattr(self, '_im') and self._im is not None:
-            # Fast update: we expect self._data to be (Time, Freq), 
+        if fast and hasattr(self, "_im") and self._im is not None:
+            # Fast update: we expect self._data to be (Time, Freq),
             # so we always transpose for imshow(Freq, Time)
             data_ma = ma.masked_invalid(self._data)
             self._im.set_data(data_ma.T)
-            
+
             if self._time_axis is not None and self._freq_axis is not None:
                 # Use cached dates if possible to avoid expensive processing
                 t_hash = hash(self._time_axis.tobytes())
@@ -480,10 +499,15 @@ class DynamicSpectrumCanvas(FigureCanvas):
                     utc_num = np.array([date2num(dt) for dt in utc_dt])
                     self._date_cache[t_hash] = utc_num
 
-                self._extent = [utc_num[0], utc_num[-1], self._freq_axis[0], self._freq_axis[-1]]
+                self._extent = [
+                    utc_num[0],
+                    utc_num[-1],
+                    self._freq_axis[0],
+                    self._freq_axis[-1],
+                ]
                 self._im.set_extent(self._extent)
                 self.ax.set_xlim(self._extent[0], self._extent[1])
-            
+
             self.draw_idle()
             return
 
@@ -527,10 +551,16 @@ class DynamicSpectrumCanvas(FigureCanvas):
                     self._vmin, self._vmax = np.nanmin(data_flat), np.nanmax(data_flat)
 
         # Push limits to UI if in auto mode or just loaded
-        if hasattr(self.main_window, "vminEntry") and not self.main_window.vminEntry.hasFocus():
-             self.main_window.vminEntry.setText(f"{self._vmin:.4g}")
-        if hasattr(self.main_window, "vmaxEntry") and not self.main_window.vmaxEntry.hasFocus():
-             self.main_window.vmaxEntry.setText(f"{self._vmax:.4g}")
+        if (
+            hasattr(self.main_window, "vminEntry")
+            and not self.main_window.vminEntry.hasFocus()
+        ):
+            self.main_window.vminEntry.setText(f"{self._vmin:.4g}")
+        if (
+            hasattr(self.main_window, "vmaxEntry")
+            and not self.main_window.vmaxEntry.hasFocus()
+        ):
+            self.main_window.vmaxEntry.setText(f"{self._vmax:.4g}")
 
         if self._vmin == self._vmax:
             self._vmin -= 1e-9
@@ -561,7 +591,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 self._freq_axis[0],
                 self._freq_axis[-1],
             ]
-            
+
             # Internal normalized orientation is always (Time, Freq)
             # We transpose for imshow to get (Freq on Y, Time on X)
             self._im = self.ax.imshow(
@@ -572,21 +602,25 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 cmap=self._cmap,
                 norm=norm,
             )
-            
-            #date_formatter = DateFormatter("%Y-%m-%d\n%H:%M:%S")
+
+            # date_formatter = DateFormatter("%Y-%m-%d\n%H:%M:%S")
             date_formatter = DateFormatter("%H:%M:%S")
             self.ax.xaxis.set_major_formatter(date_formatter)
             self.fig.autofmt_xdate()
-            
-            # Add date to the label 
+
+            # Add date to the label
             start_date = utc_dt[0].strftime("%Y-%m-%d")
             self.ax.set_xlabel(f"Time (UTC) [{start_date}]")
             self.ax.set_ylabel("Frequency (MHz)")
-            
-            title = os.path.basename(self._filename) if self._filename else "Dynamic Spectrum"
+
+            title = (
+                os.path.basename(self._filename)
+                if self._filename
+                else "Dynamic Spectrum"
+            )
             self.ax.set_title(title)
 
-        #self._colorbar = self.fig.colorbar(self._im, ax=self.ax, label="Amplitude")
+        # self._colorbar = self.fig.colorbar(self._im, ax=self.ax, label="Amplitude")
         self._colorbar = self.fig.colorbar(self._im, ax=self.ax)
 
         # Apply theme colors to the newly created colorbar
@@ -685,7 +719,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
         """
         self.roi_active = enable
         self.roi_callback = callback
-        
+
         # Update cursor and overlay
         if enable:
             self.setCursor(Qt.CrossCursor)
@@ -693,7 +727,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
         else:
             self.setCursor(Qt.ArrowCursor)
             self._update_mode_overlay("")
-        
+
         # Force immediate update of cursor if mouse is over canvas
         self._force_cursor_update()
 
@@ -705,8 +739,20 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 useblit=True,
                 button=[1],
                 interactive=True,
-                props=dict(facecolor="#ff4d4d", edgecolor="#ff4d4d", alpha=0.4, fill=True, linewidth=1.5),
-                handle_props=dict(marker='o', markersize=6, markerfacecolor="white", markeredgecolor="#ff4d4d", markeredgewidth=1.5)
+                props=dict(
+                    facecolor="#ff4d4d",
+                    edgecolor="#ff4d4d",
+                    alpha=0.4,
+                    fill=True,
+                    linewidth=1.5,
+                ),
+                handle_props=dict(
+                    marker="o",
+                    markersize=6,
+                    markerfacecolor="white",
+                    markeredgecolor="#ff4d4d",
+                    markeredgewidth=1.5,
+                ),
             )
 
             self.draw_idle()
@@ -717,13 +763,10 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 self.rect_selector.disconnect_events()
                 self.rect_selector = None
 
-
             self._roi_start_point = None
             self._roi_current_rect = None
 
             self.draw_idle()
-
-
 
     def _roi_on_select(self, eclick, erelease):
         """Callback for RectangleSelector."""
@@ -734,28 +777,29 @@ class DynamicSpectrumCanvas(FigureCanvas):
             # Get Selection bounds
             start_x, start_y = eclick.xdata, eclick.ydata
             end_x, end_y = erelease.xdata, erelease.ydata
-            
+
             # Edge case handling: Ensure we have data
             if None in [start_x, start_y, end_x, end_y]:
                 return
 
             nt, nf = self._data.shape
-            
+
             # Logic for data coordinate calculation based on extent
             if self._extent is not None:
                 x0, x1_, y0, y1_ = self._extent
-                
+
                 # Selection bounds safely clipped to extent
                 xmin, xmax = sorted([start_x, end_x])
                 ymin, ymax = sorted([start_y, end_y])
-                
+
                 # Clip to plot boundaries
                 xmin = max(x0, min(x1_, xmin))
                 xmax = max(x0, min(x1_, xmax))
                 ymin = max(y0, min(y1_, ymin))
                 ymax = max(y0, min(y1_, ymax))
-                
-                if x1_ == x0 or y1_ == y0: return
+
+                if x1_ == x0 or y1_ == y0:
+                    return
 
                 frac_xmin = (xmin - x0) / (x1_ - x0)
                 frac_xmax = (xmax - x0) / (x1_ - x0)
@@ -768,20 +812,26 @@ class DynamicSpectrumCanvas(FigureCanvas):
             # Internal data is normalized to (Time, Freq)
             # Axis 0 is Time (mapped to X), Axis 1 is Freq (mapped to Y)
             n_time, n_freq = self._data.shape
-            
+
             idx_time_min = max(0, min(int(frac_xmin * (n_time - 1)), n_time - 1))
             idx_time_max = max(0, min(int(frac_xmax * (n_time - 1)), n_time - 1))
             idx_freq_min = max(0, min(int(frac_ymin * (n_freq - 1)), n_freq - 1))
             idx_freq_max = max(0, min(int(frac_ymax * (n_freq - 1)), n_freq - 1))
 
             # Trigger the actual masking with (Axis 0 [Time], Axis 1 [Freq]) indices
-            if self.roi_callback and idx_time_min <= idx_time_max and idx_freq_min <= idx_freq_max:
-                self.roi_callback(idx_time_min, idx_time_max, idx_freq_min, idx_freq_max)
-                
+            if (
+                self.roi_callback
+                and idx_time_min <= idx_time_max
+                and idx_freq_min <= idx_freq_max
+            ):
+                self.roi_callback(
+                    idx_time_min, idx_time_max, idx_freq_min, idx_freq_max
+                )
+
             # Clear selector for next use
             if self.rect_selector:
                 self.rect_selector.set_visible(False)
-            
+
             self.draw_idle()
 
         except Exception as e:
@@ -791,7 +841,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
     def enable_cross_section(self, enable):
         """Enable or disable the cross-section interactive mode."""
         self.cross_section_active = enable
-        
+
         # Update cursor and overlay
         if enable:
             self.setCursor(Qt.CrossCursor)
@@ -799,9 +849,9 @@ class DynamicSpectrumCanvas(FigureCanvas):
         else:
             self.setCursor(Qt.ArrowCursor)
             self._update_mode_overlay("")
-            
+
         self.draw_idle()
-        
+
         # Force immediate update of cursor if mouse is over canvas
         self._force_cursor_update()
 
@@ -822,6 +872,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
         """Force Qt to refresh the cursor under the mouse immediately."""
         try:
             from PyQt5.QtWidgets import QApplication
+
             app = QApplication.instance()
             if app:
                 # Momentarily override and restore to force recalculation
@@ -835,7 +886,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
         """Update the on-canvas mode indicator text."""
         if not hasattr(self, "_mode_text"):
             return
-            
+
         if text:
             self._mode_text.set_text(text)
             self._mode_text.set_visible(True)
@@ -936,7 +987,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
         # Apply theme colors to all text elements
         ax.set_title(f"Time Slice @ freq_idx={freq_idx}", color=text_color)
         ax.set_xlabel(xlabel, color=text_color)
-        #ax.set_ylabel("Amplitude", color=text_color)
+        # ax.set_ylabel("Amplitude", color=text_color)
         ax.tick_params(colors=text_color)
 
         # Set spine colors
@@ -984,7 +1035,7 @@ class DynamicSpectrumCanvas(FigureCanvas):
         # Apply theme colors to all text elements
         ax.set_title(f"Freq Slice @ time_idx={time_idx}", color=text_color)
         ax.set_xlabel(xlabel, color=text_color)
-        #ax.set_ylabel("Amplitude", color=text_color)
+        # ax.set_ylabel("Amplitude", color=text_color)
         ax.tick_params(colors=text_color)
 
         # Set spine colors
@@ -1062,42 +1113,860 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 self.draw_idle()
 
 
+###############################################################################
+#              PYQTGRAPH CANVAS FOR GPU-ACCELERATED SPECTRUM DISPLAY          #
+###############################################################################
+
+
+class PyQtGraphSpectrumCanvas(QWidget):
+    """
+    A PyQtGraph-based canvas for GPU-accelerated dynamic spectrum display.
+    Replaces DynamicSpectrumCanvas for much faster pan/zoom/rendering.
+    """
+
+    # Signal for cross-section clicks
+    crossSectionClicked = pyqtSignal(int, int)  # (time_idx, freq_idx)
+    # Signal emitted when cursor moves over the plot: (time_str, freq_str, intensity_val)
+    hoverChanged = pyqtSignal(str, str, float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_window = parent
+
+        import logging
+        self.logger = logging.getLogger("PyQtGraphSpectrumCanvas")
+        self.logger.setLevel(logging.DEBUG)
+
+        # Internal data references
+        self._data = None  # Float array with NaNs
+        self._time_axis = None
+        self._freq_axis = None
+        self._filename = ""
+
+        # Visualization parameters
+        self._scale_mode = "Linear"
+        self._gamma = 1.0
+        self._vmin = None
+        self._vmax = None
+        self._vmin_manual = None
+        self._vmax_manual = None
+        self._cmap = "inferno"
+        self._smart_scale = "0.5-99.5%"
+
+        # Mode flags
+        self.roi_active = False
+        self.roi_callback = None
+        self.cross_section_active = False
+        self.hover_info_enabled = False
+
+        # Setup PyQtGraph
+        self._setup_pyqtgraph()
+        self._setup_layout()
+
+    def _setup_pyqtgraph(self):
+        """Configure PyQtGraph settings for optimal performance."""
+        pg.setConfigOptions(
+            antialias=False,  # Faster rendering
+            useOpenGL=True,   # GPU acceleration
+            enableExperimental=False,
+        )
+
+    def _setup_layout(self):
+        """Create the plot widget and image item."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Create graphics layout widget for plot + colorbar
+        self.graphics_widget = pg.GraphicsLayoutWidget()
+        self.graphics_widget.setBackground('#1e1e2e')  # Dark theme bg
+
+        # Main plot with custom time axis
+        self.plot_item = self.graphics_widget.addPlot(row=0, col=0)
+        self.plot_item.setLabel('bottom', 'Time (UTC)')
+        self.plot_item.setLabel('left', 'Frequency (MHz)')
+        self.plot_item.showGrid(x=True, y=True, alpha=0.3)
+        #self.plot_item.setClipToView(True)  # Optimize rendering
+
+        # Image item for the spectrum data
+        self.image_item = pg.ImageItem()
+        #self.image_item.setAutoDownsample(True) # Improve zoom performance
+        self.plot_item.addItem(self.image_item)
+
+        # Store the current LUT
+        self._current_lut = None
+        self._build_lut(self._cmap)
+
+        # Add colorbar as a separate ViewBox in column 1
+        self.colorbar_vb = self.graphics_widget.addViewBox(row=0, col=1)
+        self.colorbar_vb.setMaximumWidth(20)
+        self.colorbar_vb.setMinimumWidth(15)
+        self.colorbar_vb.setMouseEnabled(x=False, y=False)
+        
+        # Create vertical gradient image for colorbar
+        self.colorbar_image = pg.ImageItem()
+        self.colorbar_vb.addItem(self.colorbar_image)
+        
+        # Initialize colorbar gradient immediately
+        # Use (1, 256) shape - ImageItem displays rows as X and cols as Y
+        gradient_data = np.arange(256, dtype=np.uint8).reshape(1, 256)
+        self.colorbar_image.setImage(gradient_data, autoLevels=False)
+        self.colorbar_image.setLookupTable(self._current_lut)
+        self.colorbar_image.setLevels([0, 255])
+        
+        # Set initial auto range
+        self.colorbar_vb.autoRange()
+        
+        # Colorbar axis labels
+        self.colorbar_axis = pg.AxisItem('right')
+        self.graphics_widget.addItem(self.colorbar_axis, row=0, col=2)
+        self.colorbar_axis.linkToView(self.colorbar_vb)
+
+        # ROI for masking
+        self.roi_rect = None
+
+        # Hover text
+        self.hover_label = pg.TextItem(anchor=(1, 0), color='white')
+        self.hover_label.setParentItem(self.plot_item.getViewBox())
+        self.hover_label.hide()
+
+        # Mode overlay text
+        self.mode_label = pg.TextItem(anchor=(0.5, 0), color='#ff6b6b')
+        self.mode_label.setParentItem(self.plot_item.getViewBox())
+        self.mode_label.hide()
+
+        # Connect mouse events
+        self.image_item.scene().sigMouseMoved.connect(self._on_mouse_move)
+        self.image_item.scene().sigMouseClicked.connect(self._on_mouse_click)
+
+        layout.addWidget(self.graphics_widget)
+
+    def _build_lut(self, cmap_name):
+        """Build a 256-color LUT from a matplotlib colormap."""
+        try:
+            import matplotlib.cm as cm
+            mpl_cmap = cm.get_cmap(cmap_name)
+            lut = np.zeros((256, 4), dtype=np.ubyte)
+            for i in range(256):
+                r, g, b, a = mpl_cmap(i / 255.0)
+                lut[i] = [int(r * 255), int(g * 255), int(b * 255), int(a * 255)]
+            self._current_lut = lut
+        except Exception as e:
+            self.logger.warning(f"Failed to build LUT for {cmap_name}: {e}")
+            # Fallback to grayscale
+            self._current_lut = np.array([[i, i, i, 255] for i in range(256)], dtype=np.ubyte)
+
+    def _get_colormap(self, cmap_name):
+        """Get a PyQtGraph colormap from a matplotlib colormap name."""
+        try:
+            import matplotlib.cm as cm
+            mpl_cmap = cm.get_cmap(cmap_name)
+            colors = [mpl_cmap(i) for i in np.linspace(0, 1, 256)]
+            colors_255 = [(int(c[0]*255), int(c[1]*255), int(c[2]*255), int(c[3]*255)) for c in colors]
+            return ColorMap(pos=np.linspace(0, 1, 256), color=colors_255)
+        except Exception as e:
+            self.logger.warning(f"Failed to load colormap {cmap_name}: {e}")
+            return pg.colormap.get('viridis')
+
+    def _update_colorbar(self):
+        """Update the colorbar gradient."""
+        if not hasattr(self, 'colorbar_image') or self._current_lut is None:
+            return
+        try:
+            # Use (1, 256) shape - ImageItem displays rows as X and cols as Y
+            gradient_data = np.arange(256, dtype=np.uint8).reshape(1, 256)
+            self.colorbar_image.setImage(gradient_data, autoLevels=False)
+            self.colorbar_image.setLookupTable(self._current_lut)
+            self.colorbar_image.setLevels([0, 255])
+        except Exception as e:
+            self.logger.warning(f"Failed to update colorbar: {e}")
+
+    def _update_colorbar_labels(self):
+        """Update colorbar Y axis to show vmin/vmax range with correct scale."""
+        if not hasattr(self, 'colorbar_vb') or self._vmin is None:
+            return
+        try:
+            vmin, vmax = self._vmin, self._vmax
+            
+            # Generate tick values based on scale mode
+            if self._scale_mode == "Log":
+                # For log scale, use log-spaced ticks
+                if vmin > 0:
+                    log_min = np.log10(max(vmin, 1e-10))
+                    log_max = np.log10(vmax)
+                    log_ticks = np.linspace(log_min, log_max, 3)
+                    tick_values = 10 ** log_ticks
+                else:
+                    # If vmin <= 0, fallback to linear
+                    tick_values = np.linspace(vmin, vmax, 5)
+            elif self._scale_mode == "Sqrt":
+                # For sqrt scale, use sqrt-spaced ticks
+                sqrt_ticks = np.linspace(np.sqrt(max(0, vmin)), np.sqrt(vmax), 5)
+                tick_values = sqrt_ticks ** 2
+            elif self._scale_mode == "Gamma":
+                # For gamma scale, use gamma-spaced ticks
+                gamma_ticks = np.linspace(0, 1, 5) ** (1 / max(self._gamma, 0.1))
+                tick_values = vmin + gamma_ticks * (vmax - vmin)
+            else:  # Linear
+                tick_values = np.linspace(vmin, vmax, 5)
+            
+            # Create custom tick labels for the colorbar axis
+            ticks = [(float(v), f"{v:.3g}") for v in tick_values]
+            self.colorbar_axis.setTicks([ticks])
+            
+            # Set the colorbar rect and range
+            self.colorbar_image.setRect(pg.QtCore.QRectF(0, vmin, 1, vmax - vmin))
+            self.colorbar_vb.setYRange(vmin, vmax, padding=0)
+        except Exception as e:
+            self.logger.warning(f"Failed to update colorbar labels: {e}")
+
+    def set_data(self, data, time_axis=None, freq_axis=None, filename=""):
+        """Set data and optional time and frequency axes."""
+        self._data = data
+        self._time_axis = time_axis
+        self._freq_axis = freq_axis
+        if filename:
+            self._filename = filename
+
+    def draw_spectrum(self, fast=False):
+        """Render the dynamic spectrum using PyQtGraph (GPU accelerated)."""
+        if self._data is None:
+            return
+
+        # Calculate vmin/vmax based on scaling option
+        data_flat = self._data[~np.isnan(self._data)]
+        if len(data_flat) == 0:
+            self._vmin, self._vmax = 0, 1
+        else:
+            if self._smart_scale == "0-100%":
+                self._vmin, self._vmax = np.nanmin(data_flat), np.nanmax(data_flat)
+            elif self._smart_scale == "0.1-99.9%":
+                self._vmin = np.percentile(data_flat, 0.1)
+                self._vmax = np.percentile(data_flat, 99.9)
+            elif self._smart_scale == "0.5-99.5%":
+                self._vmin = np.percentile(data_flat, 0.5)
+                self._vmax = np.percentile(data_flat, 99.5)
+            elif self._smart_scale == "1-99%":
+                self._vmin = np.percentile(data_flat, 1)
+                self._vmax = np.percentile(data_flat, 99)
+            elif self._smart_scale == "5-95%":
+                self._vmin = np.percentile(data_flat, 5)
+                self._vmax = np.percentile(data_flat, 95)
+            elif self._smart_scale == "Manual":
+                if self._vmin_manual is not None and self._vmax_manual is not None:
+                    self._vmin, self._vmax = self._vmin_manual, self._vmax_manual
+                else:
+                    self._vmin, self._vmax = np.nanmin(data_flat), np.nanmax(data_flat)
+
+        # Push limits to UI
+        if hasattr(self.main_window, 'vminEntry') and self.main_window is not None:
+            if not self.main_window.vminEntry.hasFocus():
+                self.main_window.vminEntry.setText(f"{self._vmin:.4g}")
+            if not self.main_window.vmaxEntry.hasFocus():
+                self.main_window.vmaxEntry.setText(f"{self._vmax:.4g}")
+
+        # Handle NaN data - replace with vmin for display
+        data_display = np.where(np.isnan(self._data), self._vmin, self._data)
+
+        # Apply scaling transformation to get [0, 255] for LUT
+        data_scaled = self._apply_scaling(data_display)
+
+        # Data orientation: input is (time, freq) with shape (nt, nf)
+        # PyQtGraph ImageItem expects data[x, y] where x is horizontal, y is vertical
+        # We want: time on X-axis (horizontal), freq on Y-axis (vertical)
+        # So the image should be (nf, nt) for display - but using setRect handles orientation
+        # We DON'T transpose - setImage interprets data as (rows, cols) which maps to (Y, X)
+        # The setRect then maps these pixels to data coordinates correctly.
+        image_data = data_scaled  # No transpose - setRect handles mapping
+
+        # Set image with LUT
+        self.image_item.setImage(image_data, autoLevels=False)
+        self.image_item.setLookupTable(self._current_lut)
+        self.image_item.setLevels([0, 255])
+
+        # Set the correct axis ranges (rect defines the bounding box)
+        if self._time_axis is not None and self._freq_axis is not None:
+            t0 = self._time_axis[0]
+            t1 = self._time_axis[-1]
+            f0 = self._freq_axis[0]
+            f1 = self._freq_axis[-1]
+
+            # setRect(x, y, width, height) - position and size in data coordinates
+            self.image_item.setRect(pg.QtCore.QRectF(t0, f0, t1 - t0, f1 - f0))
+
+            # Set zoom limits to prevent zooming beyond data
+            self.plot_item.setLimits(
+                xMin=t0, xMax=t1,
+                yMin=f0, yMax=f1,
+                minXRange=1,  # Minimum visible range (1 second)
+                minYRange=1   # Minimum visible range (1 MHz)
+            )
+
+            # Format time axis with UTC labels
+            self._setup_time_axis()
+        else:
+            # Use pixel coordinates
+            nt, nf = self._data.shape
+            self.image_item.setRect(pg.QtCore.QRectF(0, 0, nt, nf))
+
+        # Update colorbar with current colormap and values
+        self._update_colorbar()
+        self._update_colorbar_labels()
+
+        # Update title and apply theme colors
+        title = os.path.basename(self._filename) if self._filename else "Dynamic Spectrum"
+        self.plot_item.setTitle(title)
+        self._apply_canvas_theme_colors()
+
+    def _apply_scaling(self, data):
+        """Apply intensity scaling (Linear/Log/Sqrt/Gamma) and normalize to [0, 255] for LUT."""
+        vmin, vmax = self._vmin, self._vmax
+        if vmax == vmin:
+            vmax = vmin + 1e-9
+
+        # Clip and normalize to [0, 1]
+        data_clipped = np.clip(data, vmin, vmax)
+        data_norm = (data_clipped - vmin) / (vmax - vmin)
+
+        if self._scale_mode == "Log":
+            # Avoid log(0)
+            data_norm = np.clip(data_norm, 1e-10, 1)
+            data_norm = np.log10(data_norm * 9 + 1) / np.log10(10)
+        elif self._scale_mode == "Sqrt":
+            data_norm = np.sqrt(data_norm)
+        elif self._scale_mode == "Gamma":
+            data_norm = np.power(data_norm, self._gamma)
+
+        # Scale to [0, 255] for LUT indexing
+        return (data_norm * 255).astype(np.uint8)
+
+    def _setup_time_axis(self):
+        """Configure time axis with UTC tick labels."""
+        if self._time_axis is None or len(self._time_axis) < 2:
+            return
+
+        try:
+            # Get axis range
+            t0 = self._time_axis[0]
+            t1 = self._time_axis[-1]
+            t_range = t1 - t0
+
+            # Convert MJD seconds to datetime for tick formatting
+            time_mjd = self._time_axis / 86400.0
+            utc_times = Time(time_mjd, format='mjd', scale='utc').to_datetime()
+            start_date = utc_times[0].strftime('%Y-%m-%d')
+
+            # Create tick values at regular intervals
+            num_ticks = min(8, len(self._time_axis))
+            tick_indices = np.linspace(0, len(self._time_axis) - 1, num_ticks, dtype=int)
+
+            ticks = []
+            for idx in tick_indices:
+                t_val = self._time_axis[idx]
+                t_str = utc_times[idx].strftime('%H:%M:%S')
+                ticks.append((t_val, t_str))
+
+            # Set custom ticks on the bottom axis
+            ax = self.plot_item.getAxis('bottom')
+            ax.setTicks([ticks])
+            ax.enableAutoSIPrefix(False)  # Disable scientific notation
+            self.plot_item.setLabel('bottom', f'Time (UTC) [{start_date}]')
+
+        except Exception as e:
+            self.logger.warning(f"Failed to setup time axis: {e}")
+
+    def set_scale_mode(self, mode):
+        """Set the intensity scaling mode."""
+        self._scale_mode = mode
+        self.draw_spectrum()
+
+    def set_gamma(self, gamma):
+        """Set gamma value for Gamma scaling."""
+        self._gamma = gamma
+        if self._scale_mode == "Gamma":
+            self.draw_spectrum()
+
+    def set_cmap(self, cmap_name):
+        """Set the colormap."""
+        self._cmap = cmap_name
+        self._build_lut(cmap_name)  # Rebuild LUT
+        self._update_colorbar()  # Update colorbar gradient
+        if self._data is not None:
+            # Re-apply LUT to current image
+            self.image_item.setLookupTable(self._current_lut)
+
+    def set_smart_scale(self, scale_option):
+        """Set the percentile scale option."""
+        self._smart_scale = scale_option
+        self.draw_spectrum()
+
+    def set_manual_range(self, vmin, vmax):
+        """Set manual vmin/vmax values."""
+        self._vmin_manual = vmin
+        self._vmax_manual = vmax
+        if self._smart_scale == "Manual":
+            self.draw_spectrum()
+
+    def get_normalization(self, vmin, vmax):
+        """Compatibility method - returns normalize object for comparison plots."""
+        if self._scale_mode == "Log":
+            return LogNorm(vmin=max(vmin, 1e-12), vmax=vmax)
+        elif self._scale_mode == "Sqrt":
+            return PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax)
+        elif self._scale_mode == "Gamma":
+            return PowerNorm(gamma=self._gamma, vmin=vmin, vmax=vmax)
+        else:
+            return Normalize(vmin=vmin, vmax=vmax)
+
+    # -------------------------- ROI Selector ------------------------------------
+    def enable_roi_selector(self, enable, callback=None):
+        """Enable or disable ROI selection mode."""
+        self.roi_active = enable
+        self.roi_callback = callback
+
+        if enable:
+            self.setCursor(Qt.CrossCursor)
+            self._update_mode_overlay("MODE: MASK REGION (Click & Drag)")
+            
+            # Disable default pan/zoom so drag creates ROI instead
+            self.plot_item.vb.setMouseEnabled(x=False, y=False)
+            
+            # Initialize selection state
+            self._roi_start = None
+            self._roi_rect_item = None
+            
+            # Save original handlers before overriding
+            self._orig_mousePressEvent = self.plot_item.vb.mousePressEvent
+            self._orig_mouseMoveEvent = self.plot_item.vb.mouseMoveEvent
+            self._orig_mouseReleaseEvent = self.plot_item.vb.mouseReleaseEvent
+            
+            # Connect mouse events for custom drag selection
+            try:
+                self.plot_item.scene().sigMouseClicked.disconnect(self._on_mouse_click)
+            except:
+                pass
+            self.plot_item.vb.mousePressEvent = self._roi_mouse_press
+            self.plot_item.vb.mouseMoveEvent = self._roi_mouse_drag
+            self.plot_item.vb.mouseReleaseEvent = self._roi_mouse_release
+        else:
+            self.setCursor(Qt.ArrowCursor)
+            self._update_mode_overlay("")
+            
+            # Re-enable pan/zoom
+            self.plot_item.vb.setMouseEnabled(x=True, y=True)
+            
+            # Restore normal mouse behavior
+            try:
+                self.plot_item.scene().sigMouseClicked.connect(self._on_mouse_click)
+            except:
+                pass
+            
+            # Restore saved original handlers
+            if hasattr(self, '_orig_mousePressEvent'):
+                self.plot_item.vb.mousePressEvent = self._orig_mousePressEvent
+            if hasattr(self, '_orig_mouseMoveEvent'):
+                self.plot_item.vb.mouseMoveEvent = self._orig_mouseMoveEvent
+            if hasattr(self, '_orig_mouseReleaseEvent'):
+                self.plot_item.vb.mouseReleaseEvent = self._orig_mouseReleaseEvent
+            
+            # Remove visual rect if exists
+            if hasattr(self, '_roi_rect_item') and self._roi_rect_item is not None:
+                self.plot_item.removeItem(self._roi_rect_item)
+                self._roi_rect_item = None
+
+    def _roi_mouse_press(self, event):
+        """Handle mouse press for ROI selection."""
+        if not self.roi_active:
+            return
+        
+        pos = self.plot_item.vb.mapSceneToView(event.scenePos())
+        self._roi_start = (pos.x(), pos.y())
+        
+        # Create visual rectangle
+        if self._roi_rect_item is not None:
+            self.plot_item.removeItem(self._roi_rect_item)
+        
+        self._roi_rect_item = QtWidgets.QGraphicsRectItem(pos.x(), pos.y(), 0, 0)
+        self._roi_rect_item.setPen(pg.mkPen('r', width=2))
+        self._roi_rect_item.setBrush(pg.mkBrush(255, 0, 0, 50))
+        self.plot_item.addItem(self._roi_rect_item)
+        event.accept()
+
+    def _roi_mouse_drag(self, event):
+        """Handle mouse drag for ROI selection."""
+        if not self.roi_active or self._roi_start is None:
+            return
+        
+        pos = self.plot_item.vb.mapSceneToView(event.scenePos())
+        x0, y0 = self._roi_start
+        x1, y1 = pos.x(), pos.y()
+        
+        # Update rectangle (handle any drag direction)
+        rx = min(x0, x1)
+        ry = min(y0, y1)
+        rw = abs(x1 - x0)
+        rh = abs(y1 - y0)
+        
+        if self._roi_rect_item is not None:
+            self._roi_rect_item.setRect(rx, ry, rw, rh)
+        event.accept()
+
+    def _roi_mouse_release(self, event):
+        """Handle mouse release for ROI selection."""
+        if not self.roi_active or self._roi_start is None:
+            return
+        
+        pos = self.plot_item.vb.mapSceneToView(event.scenePos())
+        x0, y0 = self._roi_start
+        x1, y1 = pos.x(), pos.y()
+        
+        # Ensure proper order
+        if x0 > x1:
+            x0, x1 = x1, x0
+        if y0 > y1:
+            y0, y1 = y1, y0
+        
+        self._roi_start = None
+        
+        # Remove visual rect
+        if self._roi_rect_item is not None:
+            self.plot_item.removeItem(self._roi_rect_item)
+            self._roi_rect_item = None
+        
+        # Process selection
+        self._process_roi_selection(x0, x1, y0, y1)
+        event.accept()
+
+    def _process_roi_selection(self, x0, x1, y0, y1):
+        """Process the ROI selection and call callback."""
+        if self._data is None or self.roi_callback is None:
+            return
+        
+        try:
+            nt, nf = self._data.shape
+
+            if self._time_axis is not None and self._freq_axis is not None:
+                t_start, t_end = self._time_axis[0], self._time_axis[-1]
+                f_start, f_end = self._freq_axis[0], self._freq_axis[-1]
+
+                # Clip to valid range
+                x0 = np.clip(x0, t_start, t_end)
+                x1 = np.clip(x1, t_start, t_end)
+                y0 = np.clip(y0, f_start, f_end)
+                y1 = np.clip(y1, f_start, f_end)
+
+                # Convert to indices
+                frac_t0 = (x0 - t_start) / (t_end - t_start) if t_end != t_start else 0
+                frac_t1 = (x1 - t_start) / (t_end - t_start) if t_end != t_start else 1
+                frac_f0 = (y0 - f_start) / (f_end - f_start) if f_end != f_start else 0
+                frac_f1 = (y1 - f_start) / (f_end - f_start) if f_end != f_start else 1
+
+                idx_time_min = int(frac_t0 * (nt - 1))
+                idx_time_max = int(frac_t1 * (nt - 1))
+                idx_freq_min = int(frac_f0 * (nf - 1))
+                idx_freq_max = int(frac_f1 * (nf - 1))
+            else:
+                idx_time_min = int(x0)
+                idx_time_max = int(x1)
+                idx_freq_min = int(y0)
+                idx_freq_max = int(y1)
+
+            # Clip to data bounds
+            idx_time_min = max(0, min(nt - 1, idx_time_min))
+            idx_time_max = max(0, min(nt - 1, idx_time_max))
+            idx_freq_min = max(0, min(nf - 1, idx_freq_min))
+            idx_freq_max = max(0, min(nf - 1, idx_freq_max))
+
+            # Trigger callback
+            self.roi_callback(idx_time_min, idx_time_max, idx_freq_min, idx_freq_max)
+
+        except Exception as e:
+            self.logger.error(f"ROI selection error: {e}")
+
+    # --------------------- Cross-Section Mode -----------------------------------
+    def enable_cross_section(self, enable):
+        """Enable or disable cross-section mode."""
+        self.cross_section_active = enable
+
+        if enable:
+            self.setCursor(Qt.CrossCursor)
+            self._update_mode_overlay("MODE: CROSS SECTION")
+        else:
+            self.setCursor(Qt.ArrowCursor)
+            self._update_mode_overlay("")
+
+    def _on_mouse_click(self, event):
+        """Handle mouse clicks for cross-section mode."""
+        if not self.cross_section_active or self._data is None:
+            return
+
+        try:
+            pos = event.scenePos()
+            mouse_point = self.plot_item.vb.mapSceneToView(pos)
+            x, y = mouse_point.x(), mouse_point.y()
+
+            nt, nf = self._data.shape
+
+            if self._time_axis is not None and self._freq_axis is not None:
+                t_start, t_end = self._time_axis[0], self._time_axis[-1]
+                f_start, f_end = self._freq_axis[0], self._freq_axis[-1]
+
+                frac_t = (x - t_start) / (t_end - t_start) if t_end != t_start else 0
+                frac_f = (y - f_start) / (f_end - f_start) if f_end != f_start else 0
+
+                time_idx = int(np.clip(frac_t * (nt - 1), 0, nt - 1))
+                freq_idx = int(np.clip(frac_f * (nf - 1), 0, nf - 1))
+            else:
+                time_idx = int(np.clip(x, 0, nt - 1))
+                freq_idx = int(np.clip(y, 0, nf - 1))
+
+            # Show cross-section dialog
+            options = [
+                f"Time slice at freq_idx = {freq_idx}",
+                f"Freq slice at time_idx = {time_idx}",
+            ]
+            choice, ok = QInputDialog.getItem(
+                None, "Cross Section", "Which slice to plot?", options, 0, False
+            )
+            if not ok:
+                return
+
+            if choice.startswith("Time slice"):
+                self._plot_1d_time(self._data[:, freq_idx], freq_idx)
+            else:
+                self._plot_1d_freq(self._data[time_idx, :], time_idx)
+
+        except Exception as e:
+            self.logger.error(f"Cross-section click error: {e}")
+
+    def _plot_1d_time(self, data_slice, freq_idx):
+        """Plot 1D time slice using PyQtGraph popup."""
+        theme_name = getattr(self.main_window, 'current_theme', 'dark')
+        palette = get_palette(theme_name)
+        bg_color = palette.get('base', '#1e1e2e')
+        text_color = palette.get('text', 'white')
+
+        win = pg.plot(title=f"Time Slice @ freq_idx={freq_idx}")
+        win.setBackground(bg_color)
+        win.setLabel('left', 'Amplitude', color=text_color)
+        win.setLabel('bottom', 'Time index', color=text_color)
+        win.getAxis('left').setPen(text_color)
+        win.getAxis('left').setTextPen(text_color)
+        win.getAxis('bottom').setPen(text_color)
+        win.getAxis('bottom').setTextPen(text_color)
+        
+        # Use a nice color for the plot line
+        line_color = palette.get('highlight', '#6366f1')
+        win.plot(data_slice, pen=pg.mkPen(line_color, width=1.8))
+
+    def _plot_1d_freq(self, data_slice, time_idx):
+        """Plot 1D frequency slice using PyQtGraph popup."""
+        theme_name = getattr(self.main_window, 'current_theme', 'dark')
+        palette = get_palette(theme_name)
+        bg_color = palette.get('base', '#1e1e2e')
+        text_color = palette.get('text', 'white')
+
+        win = pg.plot(title=f"Freq Slice @ time_idx={time_idx}")
+        win.setBackground(bg_color)
+        win.setLabel('left', 'Amplitude', color=text_color)
+        win.getAxis('left').setPen(text_color)
+        win.getAxis('left').setTextPen(text_color)
+        win.getAxis('bottom').setPen(text_color)
+        win.getAxis('bottom').setTextPen(text_color)
+
+        line_color = palette.get('highlight', '#6366f1')
+        if self._freq_axis is not None:
+            win.setLabel('bottom', 'Frequency (MHz)', color=text_color)
+            win.plot(self._freq_axis, data_slice, pen=pg.mkPen(line_color, width=1.8))
+        else:
+            win.setLabel('bottom', 'Frequency index', color=text_color)
+            win.plot(data_slice, pen=pg.mkPen(line_color, width=1.8))
+
+    # ------------------ Mouse Hover: Display Amplitude --------------------------
+    def _on_mouse_move(self, pos):
+        """Handle mouse movement for hover info."""
+        if self._data is None:
+            return
+
+        try:
+            mouse_point = self.plot_item.vb.mapSceneToView(pos)
+            x, y = mouse_point.x(), mouse_point.y()
+
+            nt, nf = self._data.shape
+            
+            # Check bounds
+            time_idx, freq_idx = 0, 0
+            time_str, freq_str = "", ""
+            
+            if self._time_axis is not None and self._freq_axis is not None:
+                t_start, t_end = self._time_axis[0], self._time_axis[-1]
+                f_start, f_end = self._freq_axis[0], self._freq_axis[-1]
+
+                if not (t_start <= x <= t_end and f_start <= y <= f_end):
+                    self.hoverChanged.emit("", "", float('nan'))
+                    return
+
+                frac_t = (x - t_start) / (t_end - t_start)
+                frac_f = (y - f_start) / (f_end - f_start)
+
+                time_idx = int(frac_t * (nt - 1))
+                freq_idx = int(frac_f * (nf - 1))
+                
+                # Format time as UTC HH:MM:SS
+                try:
+                    # Use faster datetime arithmetic (MJD 0 = 1858-11-17)
+                    utc_time = datetime(1858, 11, 17) + timedelta(seconds=x)
+                    time_str = utc_time.strftime('%H:%M:%S')
+                except Exception:
+                    time_str = f"{x:.2f}"
+                
+                # Frequency in MHz
+                freq_str = f"{y:.2f} MHz"
+            else:
+                time_idx = int(x)
+                freq_idx = int(y)
+                time_str = f"idx {time_idx}"
+                freq_str = f"idx {freq_idx}"
+                
+                if not (0 <= time_idx < nt and 0 <= freq_idx < nf):
+                     self.hoverChanged.emit("", "", float('nan'))
+                     return
+
+            time_idx = max(0, min(time_idx, nt - 1))
+            freq_idx = max(0, min(freq_idx, nf - 1))
+
+            val = self._data[time_idx, freq_idx]
+            
+            # Emit signal for UI update
+            self.hoverChanged.emit(time_str, freq_str, val)
+
+            # Update internal text item if enabled
+            if self.hover_info_enabled:
+                 if np.isnan(val):
+                     msg = f"T: {time_str} | F: {freq_str} | I: NaN"
+                 else:
+                     msg = f"T: {time_str} | F: {freq_str} | I: {val:.4g}"
+                 self.hover_label.setText(msg)
+                 self.hover_label.setPos(x, y)
+                 self.hover_label.show()
+            else:
+                 self.hover_label.hide()
+
+        except Exception as e:
+            # self.logger.error(f"Hover error: {e}")
+            pass
+
+            self.hover_label.setText(msg)
+            vb = self.plot_item.getViewBox()
+            self.hover_label.setPos(vb.viewRect().right(), vb.viewRect().top())
+            self.hover_label.show()
+
+        except Exception:
+            self.hover_label.hide()
+
+    def _update_mode_overlay(self, text):
+        """Update the mode indicator text."""
+        if text:
+            self.mode_label.setText(text)
+            vb = self.plot_item.getViewBox()
+            self.mode_label.setPos(vb.viewRect().center().x(), vb.viewRect().top())
+            self.mode_label.show()
+        else:
+            self.mode_label.hide()
+
+    # Compatibility methods for MainWindow
+    def clear_plot(self):
+        """Clear the plot."""
+        self.image_item.clear()
+
+    def draw_idle(self):
+        """Compatibility method - PyQtGraph updates automatically."""
+        pass
+
+    def draw(self):
+        """Compatibility method - PyQtGraph updates automatically."""
+        pass
+
+    def _apply_canvas_theme_colors(self):
+        """Apply theme colors to the canvas."""
+        parent = self.parent()
+        while parent is not None and not hasattr(parent, 'current_theme'):
+            parent = parent.parent()
+
+        theme_name = getattr(parent, 'current_theme', 'dark')
+        palette = get_palette(theme_name)
+
+        bg_color = palette.get('base', '#1e1e2e')
+        text_color = palette.get('text', 'white')
+
+        # Background
+        self.graphics_widget.setBackground(bg_color)
+
+        # Define font size for axis labels (slightly larger)
+        axis_label_style = {'color': text_color, 'font-size': '11pt'}
+        tick_font = QFont()
+        tick_font.setPointSize(11)
+
+        # Apply to main plot axes
+        for axis_name in ['bottom', 'left']:
+            axis = self.plot_item.getAxis(axis_name)
+            axis.setPen(text_color)
+            axis.setTextPen(text_color)
+            axis.setTickFont(tick_font)
+            # Update label with new style
+            current_label = axis.labelText
+            current_units = axis.labelUnits
+            if current_label:
+                axis.setLabel(text=current_label, units=current_units, **axis_label_style)
+
+        # Apply to title
+        title_label = self.plot_item.titleLabel
+        if title_label and title_label.text:
+            self.plot_item.setTitle(title_label.text, color=text_color, size='11pt')
+
+        # Apply to colorbar axis
+        if hasattr(self, 'colorbar_axis') and self.colorbar_axis is not None:
+            self.colorbar_axis.setPen(text_color)
+            self.colorbar_axis.setTextPen(text_color)
+            self.colorbar_axis.setTickFont(tick_font)
+
 
 ###############################################################################
 #                           MINIMAP CANVAS                                    #
 ###############################################################################
 
+
 class MinimapCanvas(FigureCanvas):
     """A thin Matplotlib canvas for displaying the full-spectrum overview."""
-    
-    seekRequested = pyqtSignal(float) # Emits the target MJD offset / index
+
+    seekRequested = pyqtSignal(float)  # Emits the target MJD offset / index
 
     def __init__(self, parent=None):
         self.fig, self.ax = plt.subplots(figsize=(10, 0.8))
         super(MinimapCanvas, self).__init__(self.fig)
         self.setParent(parent)
-        
+
         # Ensure canvas background matches theme to avoid white gaps when scaling
         self.setStyleSheet("background-color: transparent;")
-        
+
         self.ax.set_axis_off()
         self.fig.subplots_adjust(left=0.01, right=0.99, top=0.9, bottom=0.1)
-        
+
         # Apply initial theme
         self._apply_theme()
-        
+
         self._current_rect = None
         self._total_samples = 0
-        self._view_width_pct = 1.0 # Current width of the highlight in percent
-        self._bg_cache = None # Background cache for blitting
-        self._last_cursor_is_hand = False 
-        self._page_markers = [] # Store dashed line markers
-        
+        self._view_width_pct = 1.0  # Current width of the highlight in percent
+        self._bg_cache = None  # Background cache for blitting
+        self._last_cursor_is_hand = False
+        self._page_markers = []  # Store dashed line markers
+
         # Connect events
-        self.mpl_connect('button_press_event', self._on_click)
-        self.mpl_connect('motion_notify_event', self._on_drag)
-        self.mpl_connect('button_release_event', self._on_release)
-        self.mpl_connect('draw_event', self._on_draw)
+        self.mpl_connect("button_press_event", self._on_click)
+        self.mpl_connect("motion_notify_event", self._on_drag)
+        self.mpl_connect("button_release_event", self._on_release)
+        self.mpl_connect("draw_event", self._on_draw)
 
     def _apply_theme(self):
         """Apply theme colors to the minimap."""
@@ -1108,10 +1977,10 @@ class MinimapCanvas(FigureCanvas):
         theme_name = getattr(parent, "current_theme", "dark")
         params = get_matplotlib_params(theme_name)
         palette = get_palette(theme_name)
-        
+
         # Use figure facecolor for background consistency
-        bg_color = palette.get('base', '#2d2d4a')
-        #bg_color = params["figure.facecolor"]
+        bg_color = palette.get("base", "#2d2d4a")
+        # bg_color = params["figure.facecolor"]
         self.fig.patch.set_facecolor(bg_color)
         self.ax.set_facecolor(bg_color)
 
@@ -1119,7 +1988,7 @@ class MinimapCanvas(FigureCanvas):
         """Render the downsampled full spectrum with linear scale, 1-99 percentile, and bandpass normalization."""
         self.ax.clear()
         self.ax.set_axis_off()
-        
+
         if data_downsampled is not None:
             # 1. Bandpass normalization (normalize by median of each channel across time)
             # data_downsampled is typically (freq, time)
@@ -1136,20 +2005,32 @@ class MinimapCanvas(FigureCanvas):
                 vmax = np.percentile(data_flat, 99)
             else:
                 vmin, vmax = 0, 1
-            
+
             # 3. Always use Linear Scale for minimap
             norm = Normalize(vmin=vmin, vmax=vmax)
-            
-            self.ax.imshow(data_normed, aspect='auto', cmap='inferno', 
-                           interpolation='nearest', origin='lower', norm=norm)
+
+            self.ax.imshow(
+                data_normed,
+                aspect="auto",
+                cmap="inferno",
+                interpolation="nearest",
+                origin="lower",
+                norm=norm,
+            )
             self._total_samples = data_downsampled.shape[1]
-            
+
         self._current_rect = matplotlib.patches.Rectangle(
-            (0, 0), 0, 1, transform=self.ax.get_xaxis_transform(),
-            facecolor='red', alpha=0.3, edgecolor='red', animated=True
+            (0, 0),
+            0,
+            1,
+            transform=self.ax.get_xaxis_transform(),
+            facecolor="red",
+            alpha=0.3,
+            edgecolor="red",
+            animated=True,
         )
         self.ax.add_patch(self._current_rect)
-        
+
         # Clear existing markers on data reset
         self._page_markers = []
 
@@ -1157,19 +2038,21 @@ class MinimapCanvas(FigureCanvas):
         """Draw vertical dashed lines at page boundaries using absolute sample indices."""
         # 1. Clear existing marker artists
         for line in self._page_markers:
-            try: line.remove()
-            except Exception: pass
+            try:
+                line.remove()
+            except Exception:
+                pass
         self._page_markers = []
-        
+
         # 2. Don't draw if mode is Full or data not loaded
         if window_samples >= total_samples or total_samples == 0:
             self.draw_idle()
             return
-            
+
         # 3. Calculate boundary positions
         xlim = self.ax.get_xlim()
         width = xlim[1] - xlim[0]
-        
+
         total_pages = int(np.ceil(total_samples / window_samples))
         max_markers = 80
         step_pages = 1
@@ -1179,12 +2062,15 @@ class MinimapCanvas(FigureCanvas):
         # Start from first boundary
         for i in range(step_pages, total_pages, step_pages):
             sample_idx = i * window_samples
-            if sample_idx >= total_samples: break
-            
+            if sample_idx >= total_samples:
+                break
+
             x = xlim[0] + (sample_idx / total_samples) * width
-            line = self.ax.axvline(x=x, color='white', linestyle='--', alpha=0.4, linewidth=0.8)
+            line = self.ax.axvline(
+                x=x, color="white", linestyle="--", alpha=0.4, linewidth=0.8
+            )
             self._page_markers.append(line)
-        
+
         self.draw_idle()
         self.draw()
         # Capture background after initial draw
@@ -1194,38 +2080,40 @@ class MinimapCanvas(FigureCanvas):
         """Update the position of the highlight rectangle."""
         if self._current_rect is None or self._total_samples == 0:
             return
-            
+
         pass
 
     def update_view_percent(self, start_pct, end_pct):
         """Update highlight using 0.0-1.0 range."""
         if self._current_rect is None:
             return
-        
+
         xlim = self.ax.get_xlim()
         width = xlim[1] - xlim[0]
         x = xlim[0] + start_pct * width
         w = (end_pct - start_pct) * width
-        
-        self._view_width_pct = (end_pct - start_pct)
+
+        self._view_width_pct = end_pct - start_pct
         self._current_rect.set_xy((x, 0))
         self._current_rect.set_width(w)
-        
+
         # Trigger a full redraw which will call _on_draw and refresh the cache
         self.draw_idle()
 
     def _on_draw(self, event):
         """Handle standard redraws by refreshing bg cache and manually drawing animated artist."""
-        if self._current_rect is None: return
-        
+        if self._current_rect is None:
+            return
+
         # 1. Capture background BEFORE drawing the animated artist
         self._bg_cache = self.fig.canvas.copy_from_bbox(self.ax.bbox)
-        
+
         # 2. Manually draw the animated artist so it appears in standard draws
         self.ax.draw_artist(self._current_rect)
 
     def _on_click(self, event):
-        if event.inaxes != self.ax: return
+        if event.inaxes != self.ax:
+            return
         # Move rectangle immediately
         self._on_drag(event)
 
@@ -1245,28 +2133,32 @@ class MinimapCanvas(FigureCanvas):
         rect_x = self._current_rect.get_x()
         rect_w = self._current_rect.get_width()
         is_over_rect = rect_x <= event.xdata <= rect_x + rect_w
-        
+
         if is_over_rect != self._last_cursor_is_hand:
             self.setCursor(Qt.PointingHandCursor if is_over_rect else Qt.ArrowCursor)
             self._last_cursor_is_hand = is_over_rect
 
         if event.button == 1:
-            if self._bg_cache is None: return
-            
+            if self._bg_cache is None:
+                return
+
             # Move the rectangle locally for instant visual feedback
             xlim = self.ax.get_xlim()
             width = xlim[1] - xlim[0]
-            
+
             # Center the window on the mouse
             center_pct = (event.xdata - xlim[0]) / width
-            start_pct = max(0, min(1.0 - self._view_width_pct, center_pct - self._view_width_pct/2))
-            
+            start_pct = max(
+                0,
+                min(1.0 - self._view_width_pct, center_pct - self._view_width_pct / 2),
+            )
+
             x = xlim[0] + start_pct * width
             w = self._view_width_pct * width
-            
+
             self._current_rect.set_xy((x, 0))
             self._current_rect.set_width(w)
-            
+
             # BLITTING: Restore bg, redraw artist only, blit to screen
             self.fig.canvas.restore_region(self._bg_cache)
             self.ax.draw_artist(self._current_rect)
@@ -1290,33 +2182,40 @@ class MainWindow(QMainWindow):
         self._freq_axis = None
 
         # Navigation / Paging state
-        self._nav_mode = "Full" # "Full" or "Windowed"
+        self._nav_mode = "Full"  # "Full" or "Windowed"
         self._current_page = 0
         self._total_pages = 1
-        self._window_duration_min = 20.0
-        self._full_time_axis = None # Store the full time axis for indexing
-        self._full_freq_axis = None # Store the full freq axis
+        self._window_duration_min = 15.0
+        self._full_time_axis = None  # Store the full time axis for indexing
+        self._full_freq_axis = None  # Store the full freq axis
         self._is_large_file = False
 
         # Performance / Smoothness state
-        self._data_cache = {} # cache of {page_index: (data, time_axis)}
-        self._cache_limit = 10 # Number of windows to keep in RAM
-        self._pending_page = -1 # Track page undergoing full-res load
-        self._full_lowres_data = None # Downsampled full spectrum in RAM
-        self._lowres_skip = 1 # Skip factor for lowres data
-        
+        self._data_cache = {}  # cache of {page_index: (data, time_axis)}
+        self._cache_limit = 2  # Reduced from 10 for memory efficiency
+        self._pending_page = -1  # Track page undergoing full-res load
+        self._full_lowres_data = None  # Downsampled full spectrum in RAM
+        self._lowres_skip = 1  # Skip factor for lowres data
+
         # Mask persistence
-        self._pending_user_mask = None # Temporary storage for user mask during bandpass toggle
-        self._global_masked_freq_indices = set() # Set of freq indices to be masked globally (Extend Mask)
+        self._pending_user_mask = (
+            None  # Temporary storage for user mask during bandpass toggle
+        )
+        self._global_masked_freq_indices = (
+            set()
+        )  # Set of freq indices to be masked globally (Extend Mask)
 
         # Metadata storage (list of (name, header) for all HDUs)
         self._all_headers = []
-        self._metadata = "" # Keep for compatibility, but _all_headers is primary
-        self._metadata_dialog = None # Track the non-modal metadata window
+        self._metadata = ""  # Keep for compatibility, but _all_headers is primary
+        self._metadata_dialog = None  # Track the non-modal metadata window
 
-        # Undo/Redo stacks (store copies of working data)
+        # Undo/Redo stacks (store deltas, not full copies)
+        # Delta format: {"slices": (time_slice, freq_slice), "old_values": array}
         self.undo_stack = []
         self.redo_stack = []
+        self.MAX_UNDO_STACK_SIZE = 10  # Limit stack size for memory efficiency
+
 
         # Theme management
         self.current_theme = (
@@ -1325,7 +2224,8 @@ class MainWindow(QMainWindow):
             else "dark"
         )
 
-        self._is_bandpass_enabled = False # Persistent bandpass toggle
+        self._is_bandpass_enabled = False  # Persistent bandpass toggle
+        self._cached_bandpass_profile = None  # Cached median for bandpass normalization
 
         self._setupLogger()
         self._createActions()
@@ -1334,7 +2234,7 @@ class MainWindow(QMainWindow):
         self._createStatusBar()
 
         self._applyStyle()
-        self._updateNavigationStats() # Ensure initial navigation state is correct
+        self._updateNavigationStats()  # Ensure initial navigation state is correct
 
         # Gamma debouncer
         self._gamma_timer = QTimer()
@@ -1404,9 +2304,9 @@ class MainWindow(QMainWindow):
         self.viewMetaAct.triggered.connect(self.viewMetadata)
 
         # Theme toggle action
-        #self.toggleThemeAct = QAction("Toggle &Dark/Light Theme", self)
-        #self.toggleThemeAct.setShortcut("Ctrl+T")
-        #self.toggleThemeAct.triggered.connect(self.toggleTheme)
+        # self.toggleThemeAct = QAction("Toggle &Dark/Light Theme", self)
+        # self.toggleThemeAct.setShortcut("Ctrl+T")
+        # self.toggleThemeAct.triggered.connect(self.toggleTheme)
 
     def _createMenuBar(self):
         menubar = QMenuBar(self)
@@ -1424,8 +2324,8 @@ class MainWindow(QMainWindow):
 
         viewMenu = menubar.addMenu("&View")
         viewMenu.addAction(self.viewMetaAct)
-        #viewMenu.addSeparator()
-        #viewMenu.addAction(self.toggleThemeAct)
+        # viewMenu.addSeparator()
+        # viewMenu.addAction(self.toggleThemeAct)
 
         toolsMenu = menubar.addMenu("&Tools")
         toolsMenu.addAction(self.compareAct)
@@ -1442,36 +2342,36 @@ class MainWindow(QMainWindow):
         # Use a splitter for a responsive left/right layout
         self.mainSplitter = QSplitter(Qt.Horizontal)
         self.mainSplitter.setHandleWidth(5)
-        
+
         # --- LEFT SIDE: CANVAS AND NAVIGATION ---
         leftWidget = QWidget()
         leftLayout = QVBoxLayout(leftWidget)
         leftLayout.setContentsMargins(0, 0, 0, 0)
         leftLayout.setSpacing(10)
 
-        self.canvas = DynamicSpectrumCanvas(self)
+        # Use PyQtGraph for GPU-accelerated rendering
+        self.canvas = PyQtGraphSpectrumCanvas(self)
         self.current_filename = ""
-        
+
         # Minimap Container
         self.minimap_container = QFrame()
         self.minimap_container.setObjectName("MinimapContainer")
         self.minimap_layout = QVBoxLayout(self.minimap_container)
         self.minimap_layout.setContentsMargins(0, 0, 0, 0)
         self.minimap_layout.setSpacing(0)
-        
+
         self.minimap = MinimapCanvas(self)
         self.minimap.setFixedHeight(80)
         self.minimap.seekRequested.connect(self.onMinimapSeek)
-        
+
         self.minimap_layout.addWidget(self.minimap)
-        
-        # Navigation Toolbar
-        self.navbar = NavigationToolbar(self.canvas, self)
-        
+
+        # PyQtGraph has built-in navigation - no separate toolbar needed
+        # self.navbar = NavigationToolbar(self.canvas, self)
+
         # Add canvas components
         leftLayout.addWidget(self.canvas, 1)
         leftLayout.addWidget(self.minimap_container)
-        leftLayout.addWidget(self.navbar)
 
         # --- RIGHT SIDE: CONTROL PANEL ---
         rightScroll = QScrollArea()
@@ -1479,12 +2379,12 @@ class MainWindow(QMainWindow):
         rightScroll.setFrameShape(QFrame.NoFrame)
         rightScroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         rightScroll.setMinimumWidth(320)
-        
+
         controlPanel = QWidget()
         rightLayout = QVBoxLayout(controlPanel)
         rightLayout.setContentsMargins(10, 0, 5, 0)
         rightLayout.setSpacing(15)
-        
+
         # 1. Visualization Settings Group
         visGroup = QGroupBox("Visualization")
         visLayout = QVBoxLayout(visGroup)
@@ -1492,7 +2392,7 @@ class MainWindow(QMainWindow):
 
         scaleForm = QFormLayout()
         scaleForm.setSpacing(10)
-        
+
         self.scaleCombo = QComboBox()
         self.scaleCombo.addItems(["Linear", "Log", "Sqrt", "Gamma"])
         self.scaleCombo.setCurrentText("Linear")
@@ -1500,31 +2400,47 @@ class MainWindow(QMainWindow):
         scaleForm.addRow("Intensity Scale:", self.scaleCombo)
 
         self.cmapCombo = QComboBox()
-        cmaps = ["inferno", "viridis", "plasma", "magma", "cividis", "turbo", "jet", "gray", "bone", "afmhot", "cubehelix", "Greens", "gist_heat"]
+        cmaps = [
+            "inferno",
+            "viridis",
+            "plasma",
+            "magma",
+            "cividis",
+            "turbo",
+            "jet",
+            "gray",
+            "bone",
+            "afmhot",
+            "cubehelix",
+            "Greens",
+            "gist_heat",
+        ]
         self.cmapCombo.addItems(cmaps)
         self.cmapCombo.setCurrentText("inferno")
         self.cmapCombo.currentTextChanged.connect(self.onCmapChanged)
         scaleForm.addRow("Colormap:", self.cmapCombo)
 
         self.scaleRangeCombo = QComboBox()
-        self.scaleRangeCombo.addItems(["0-100%", "0.1-99.9%", "0.5-99.5%", "1-99%", "5-95%", "Manual"])
+        self.scaleRangeCombo.addItems(
+            ["0-100%", "0.1-99.9%", "0.5-99.5%", "1-99%", "5-95%", "Manual"]
+        )
         self.scaleRangeCombo.setCurrentText("0.5-99.5%")
         self.scaleRangeCombo.currentTextChanged.connect(self.onScaleRangeChanged)
         scaleForm.addRow("Intensity Range:", self.scaleRangeCombo)
-        
+
         # Min/Max Manual Controls
         self.vminEntry = QLineEdit()
-        #self.vminEntry.setFixedWidth(60)
+        # self.vminEntry.setFixedWidth(60)
         self.vminEntry.setMinimumWidth(50)
         self.vminEntry.setPlaceholderText("Min")
         self.vminEntry.editingFinished.connect(self.onManualRangeChanged)
-        
+
         self.vmaxEntry = QLineEdit()
-        #self.vmaxEntry.setFixedWidth(60)
+        # self.vmaxEntry.setFixedWidth(60)
         self.vmaxEntry.setMinimumWidth(50)
         self.vmaxEntry.setPlaceholderText("Max")
         self.vmaxEntry.editingFinished.connect(self.onManualRangeChanged)
-        
+
         rangeInputLayout = QHBoxLayout()
         rangeInputLayout.addStretch()
         rangeInputLayout.addWidget(self.vminEntry)
@@ -1534,13 +2450,12 @@ class MainWindow(QMainWindow):
         self.manualLimitsLabel = QLabel("Manual Limits:")
         scaleForm.addRow(self.manualLimitsLabel, rangeInputLayout)
 
-        
         self.vminEntry.setEnabled(False)
         self.vmaxEntry.setEnabled(False)
         self.manualLimitsLabel.setEnabled(False)
-        
+
         visLayout.addLayout(scaleForm)
-        
+
         self.gammaLabel = QLabel("Gamma:")
         self.gammaSlider = QSlider(Qt.Horizontal)
         self.gammaSlider.setObjectName("GammaSlider")
@@ -1553,114 +2468,128 @@ class MainWindow(QMainWindow):
 
         # Gamma section wrapped in its own layout for tight spacing
         gammaControlLayout = QVBoxLayout()
-        gammaControlLayout.setSpacing(4) 
+        gammaControlLayout.setSpacing(4)
         gammaControlLayout.setContentsMargins(0, 0, 0, 0)
         gammaControlLayout.addWidget(self.gammaLabel)
         gammaControlLayout.addWidget(self.gammaSlider)
-        
+
         visLayout.addLayout(gammaControlLayout)
-        
+
         rightLayout.addWidget(visGroup)
 
         # 2. Tools Group
         toolsGroup = QGroupBox("Processing")
         toolsLayout = QVBoxLayout(toolsGroup)
         toolsLayout.setSpacing(10)
-        
+
         # --- RFI Masking Section ---
         maskLabel = QLabel("RFI Masking")
-        maskLabel.setStyleSheet("color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;")
+        maskLabel.setStyleSheet(
+            "color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;"
+        )
         toolsLayout.addWidget(maskLabel)
-        
+
         self.roiButton = QPushButton("✂️ Draw Mask Region")
         self.roiButton.setCheckable(True)
         self.roiButton.setToolTip("Click and drag to mask a region (time & frequency).")
         self.roiButton.toggled.connect(self.onRoiToggled)
         toolsLayout.addWidget(self.roiButton)
-        
+
         # Mask Extensions
         maskToolsLayout = QHBoxLayout()
         maskToolsLayout.setSpacing(10)
-        
+
         self.extendMaskBtn = QPushButton("↔️ Extend")
-        self.extendMaskBtn.setToolTip("Mask the currently flagged frequencies across all time.")
+        self.extendMaskBtn.setToolTip(
+            "Mask the currently flagged frequencies across all time."
+        )
         self.extendMaskBtn.clicked.connect(self.onExtendMask)
-        
+
         self.clearMaskBtn = QPushButton("🗑️ Clear")
-        self.clearMaskBtn.setToolTip("Clear all manual masks and global frequency masks.")
+        self.clearMaskBtn.setToolTip(
+            "Clear all manual masks and global frequency masks."
+        )
         self.clearMaskBtn.clicked.connect(self.onClearMasks)
-        
+
         maskToolsLayout.addWidget(self.extendMaskBtn)
         maskToolsLayout.addWidget(self.clearMaskBtn)
         toolsLayout.addLayout(maskToolsLayout)
 
-        '''self.detectBtn = QPushButton("🔍 Auto-Detect RFI")
-        self.detectBtn.setToolTip("Auto-detect RFI.")
-        self.detectBtn.clicked.connect(self.onCleanRFIRegionDetect)
-        toolsLayout.addWidget(self.detectBtn)'''
-        
+        # self.detectBtn = QPushButton("🔍 Auto-Detect RFI")
+        # self.detectBtn.setToolTip("Auto-detect RFI.")
+        # self.detectBtn.clicked.connect(self.onCleanRFIRegionDetect)
+        # toolsLayout.addWidget(self.detectBtn)
+
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setFrameShadow(QFrame.Sunken)
-        #sep.setStyleSheet("background-color: rgba(128, 128, 128, 0.2); margin-top: 5px; margin-bottom: 5px;")
-        sep.setStyleSheet("background-color: transparent; margin-top: 5px; margin-bottom: 5px;")
+        # sep.setStyleSheet("background-color: rgba(128, 128, 128, 0.2); margin-top: 5px; margin-bottom: 5px;")
+        sep.setStyleSheet(
+            "background-color: transparent; margin-top: 5px; margin-bottom: 5px;"
+        )
         toolsLayout.addWidget(sep)
 
         # --- Analysis Section ---
         analysisLabel = QLabel("Analysis")
-        analysisLabel.setStyleSheet("color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;")
+        analysisLabel.setStyleSheet(
+            "color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;"
+        )
         toolsLayout.addWidget(analysisLabel)
-         
+
         self.crossBtn = QPushButton("➕  Cross Section")
         self.crossBtn.setCheckable(True)
-        self.crossBtn.setToolTip("Click on the plot to view 1D time or frequency profiles.")
+        self.crossBtn.setToolTip(
+            "Click on the plot to view 1D time or frequency profiles."
+        )
         self.crossBtn.toggled.connect(self.onCrossSectionToggled)
         toolsLayout.addWidget(self.crossBtn)
-       
+
         self.normBtn = QPushButton("📊 Bandpass Norm")
         self.normBtn.setCheckable(True)
-        self.normBtn.setToolTip("Normalize spectrum by time-averaged frequency profile.")
+        self.normBtn.setToolTip(
+            "Normalize spectrum by time-averaged frequency profile."
+        )
         self.normBtn.toggled.connect(self.onBandpassNorm)
         toolsLayout.addWidget(self.normBtn)
-        
-        '''self.hoverCheck = QCheckBox("Show Hover Info")
+
+        """self.hoverCheck = QCheckBox("Show Hover Info")
         self.hoverCheck.setChecked(True)
         self.hoverCheck.toggled.connect(self.onHoverInfoToggled)
-        toolsLayout.addWidget(self.hoverCheck)'''
-        
+        toolsLayout.addWidget(self.hoverCheck)"""
+
         rightLayout.addWidget(toolsGroup)
 
         # 3. Navigation Group
         self.navGroup = QGroupBox("Time Navigation")
         navLayout = QVBoxLayout(self.navGroup)
         navLayout.setSpacing(10)
-        
+
         modeForm = QFormLayout()
         self.navModeCombo = QComboBox()
         self.navModeCombo.addItems(["Full Spectrum", "Windowed"])
         self.navModeCombo.currentTextChanged.connect(self.onNavModeChanged)
         modeForm.addRow("View Mode:", self.navModeCombo)
-        
+
         self.navDurationSpin = QDoubleSpinBox()
         self.navDurationSpin.setRange(1.0, 1440.0)
-        self.navDurationSpin.setValue(20.0)
+        self.navDurationSpin.setValue(15.0)
         self.navDurationSpin.setSuffix(" min")
         self.navDurationSpin.valueChanged.connect(self.onNavDurationChanged)
         self.navDurationLabel = QLabel("Window Size:")
         modeForm.addRow(self.navDurationLabel, self.navDurationSpin)
-        
+
         navLayout.addLayout(modeForm)
-        
+
         navBtnLayout = QHBoxLayout()
         navBtnLayout.setSpacing(8)
         navBtnLayout.setAlignment(Qt.AlignCenter)
-        
+
         # Get palette for consistent styling
         palette = get_palette(self.current_theme)
         disabled_color = palette["disabled"]
         highlight = palette["highlight"]
-        
+
         # Premium style for navigation buttons
         nav_btn_style = f"""
             QPushButton {{
@@ -1692,22 +2621,22 @@ class MainWindow(QMainWindow):
         self.firstBtn.setToolTip("First Page")
         self.firstBtn.setStyleSheet(nav_btn_style)
         self.firstBtn.clicked.connect(self.onFirstPage)
-        
+
         self.prevBtn = QPushButton("‹")
         self.prevBtn.setToolTip("Previous Page")
         self.prevBtn.setStyleSheet(nav_btn_style)
         self.prevBtn.clicked.connect(self.onPrevPage)
-        
+
         self.nextBtn = QPushButton("›")
         self.nextBtn.setToolTip("Next Page")
         self.nextBtn.setStyleSheet(nav_btn_style)
         self.nextBtn.clicked.connect(self.onNextPage)
-        
+
         self.lastBtn = QPushButton("»")
         self.lastBtn.setToolTip("Last Page")
         self.lastBtn.setStyleSheet(nav_btn_style)
         self.lastBtn.clicked.connect(self.onLastPage)
-        
+
         # Arrange in a single row: [First] [Prev]  Page X of Y  [Next] [Last]
         self.pageLabel = QLabel("1/1")
         self.pageLabel.setAlignment(Qt.AlignCenter)
@@ -1716,13 +2645,13 @@ class MainWindow(QMainWindow):
                 font-size: 10pt;
                 font-weight: 500;
                 min-width: 25px;
-                color: {palette['text']};
+                color: {palette["text"]};
             }}
             QLabel:disabled {{
                 color: {disabled_color};
             }}
         """)
-        
+
         navBtnLayout.addWidget(self.firstBtn)
         navBtnLayout.addWidget(self.prevBtn)
         navBtnLayout.addSpacing(10)
@@ -1730,30 +2659,56 @@ class MainWindow(QMainWindow):
         navBtnLayout.addSpacing(10)
         navBtnLayout.addWidget(self.nextBtn)
         navBtnLayout.addWidget(self.lastBtn)
+
+        navLayout.addLayout(navBtnLayout)
+        
+        rightLayout.addWidget(self.navGroup)
         
         navLayout.addLayout(navBtnLayout)
         
         rightLayout.addWidget(self.navGroup)
-        #self.navGroup.hide() # Hidden until data loaded
+        
+        # Connect canvas hover signal
+        self.canvas.hoverChanged.connect(self.updateHoverInfo)
 
         rightLayout.addStretch()
-        
+
+
         rightScroll.setWidget(controlPanel)
-        
+
         # Add widgets to splitter
         self.mainSplitter.addWidget(leftWidget)
         self.mainSplitter.addWidget(rightScroll)
-        
+
         # Initial proportions
         self.mainSplitter.setStretchFactor(0, 4)
         self.mainSplitter.setStretchFactor(1, 1)
-        
+
         mainLayout.addWidget(self.mainSplitter)
+
+    def updateHoverInfo(self, time_str, freq_str, val):
+        """Update the hover info in the status bar."""
+        if not time_str and not freq_str:
+            self.cursorInfoLabel.setText("")
+            return
+
+        val_str = "NaN"
+        if val is not None and not np.isnan(val):
+            val_str = f"{val:.4g}"
+
+        # Compact format for status bar
+        msg = f"Time: {time_str}  |  Freq: {freq_str}  |  Intensity: {val_str}"
+        self.cursorInfoLabel.setText(msg)
+
+
+
 
     # ---------------------------- Status Bar ------------------------------------
     def _createStatusBar(self):
-        self.amplitudeLabel = QLabel("")
-        self.statusBar().addPermanentWidget(self.amplitudeLabel)
+        self.cursorInfoLabel = QLabel("")
+        self.cursorInfoLabel.setStyleSheet("font-family: monospace; font-weight: bold; margin-right: 15px;")
+        self.statusBar().addPermanentWidget(self.cursorInfoLabel)
+
 
     # --------------------- View Metadata Dialog ---------------------------------
     def viewMetadata(self):
@@ -1770,77 +2725,83 @@ class MainWindow(QMainWindow):
 
         # Fetch authoritative palette from simpl_theme
         palette = get_palette(self.current_theme)
-        
-        # Create a non-modal dialog 
+
+        # Create a non-modal dialog
         dlg = QDialog(self, Qt.Window)
         self._metadata_dialog = dlg
         dlg.setAttribute(Qt.WA_DeleteOnClose)
-        
+
         def on_close():
             self._metadata_dialog = None
+
         dlg.finished.connect(on_close)
         dlg.setWindowTitle("FITS File Metadata")
         dlg.setMinimumSize(750, 750)
-        
+
         # We rely on the global stylesheet applied in __init__ via apply_theme.
         # Minimal dialog-specific tweaks for layout spacing
-        dlg.setStyleSheet(dlg.styleSheet() + f"""
-            QDialog {{ background-color: {palette['window']}; }}
+        dlg.setStyleSheet(
+            dlg.styleSheet()
+            + f"""
+            QDialog {{ background-color: {palette["window"]}; }}
             QTableWidget {{ border: none; }}
-        """)
+        """
+        )
 
         main_layout = QVBoxLayout(dlg)
         main_layout.setSpacing(0)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # Compact Aesthetic Source Info
         source_container = QWidget()
         source_layout = QHBoxLayout(source_container)
         source_layout.setContentsMargins(35, 20, 35, 0)
-        
+
         source_label = QLabel(f"📄 {os.path.basename(self.current_filename)}")
         source_label.setStyleSheet(f"""
             font-size: 11pt; 
             font-weight: 600; 
-            color: {palette['text_secondary']};
-            background: {palette['button']};
+            color: {palette["text_secondary"]};
+            background: {palette["button"]};
             padding: 4px 12px;
             border-radius: 6px;
         """)
         source_layout.addWidget(source_label)
         source_layout.addStretch()
         main_layout.addWidget(source_container)
-        
+
         # Search area - Styled precisely like SolarViewer
         search_widget = QWidget()
         search_layout = QHBoxLayout(search_widget)
-        search_layout.setContentsMargins(35, 15, 35, 20) 
+        search_layout.setContentsMargins(35, 15, 35, 20)
         search_layout.setSpacing(15)
-        
+
         search_label = QLabel("🔍 Search:")
-        search_label.setStyleSheet(f"font-weight: 600; font-size: 11.5pt; color: {palette['text_secondary']};")
+        search_label.setStyleSheet(
+            f"font-weight: 600; font-size: 11.5pt; color: {palette['text_secondary']};"
+        )
         search_layout.addWidget(search_label)
-        
+
         search_input = QLineEdit()
         search_input.setPlaceholderText("Filter headers across all columns...")
         search_layout.addWidget(search_input)
         main_layout.addWidget(search_widget)
-        
+
         # Tab Widget Container
         tab_container = QWidget()
         tab_container_layout = QVBoxLayout(tab_container)
         tab_container_layout.setContentsMargins(35, 0, 35, 20)
-        
+
         tab_widget = QTabWidget()
         tab_container_layout.addWidget(tab_widget)
         main_layout.addWidget(tab_container)
-        
+
         # Typography for technical data
         mono_font = QFont("Monospace", 11)
         mono_font.setStyleHint(QFont.TypeWriter)
         bold_mono = QFont(mono_font)
         bold_mono.setBold(True)
-        
+
         for hdu_name, hdu_header in self._all_headers:
             table = QTableWidget()
             table.setColumnCount(3)
@@ -1850,45 +2811,50 @@ class MainWindow(QMainWindow):
             table.setEditTriggers(QAbstractItemView.NoEditTriggers)
             table.setAlternatingRowColors(True)
             table.setShowGrid(False)
-            
+
             h_header = table.horizontalHeader()
             h_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
             h_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
             h_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
             h_header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            
+
             cards = hdu_header.cards
             table.setRowCount(len(cards))
             for i, card in enumerate(cards):
                 k = QTableWidgetItem(str(card.keyword))
                 k.setFont(bold_mono)
-                
+
                 v = QTableWidgetItem(str(card.value) if card.value is not None else "")
                 v.setFont(mono_font)
-                
+
                 c = QTableWidgetItem(str(card.comment) if card.comment else "")
                 c.setFont(mono_font)
-                c.setForeground(QColor(palette['text_secondary']))
-                
+                c.setForeground(QColor(palette["text_secondary"]))
+
                 table.setItem(i, 0, k)
                 table.setItem(i, 1, v)
                 table.setItem(i, 2, c)
-            
+
             table.setViewportMargins(5, 5, 5, 5)
             tab_widget.addTab(table, hdu_name)
-        
+
         def filter_active_tab(text):
             text = text.lower()
             tbl = tab_widget.currentWidget()
-            if not tbl: return
+            if not tbl:
+                return
             for i in range(tbl.rowCount()):
-                match = any(text in (tbl.item(i, j).text().lower() if tbl.item(i, j) else "") 
-                           for j in range(tbl.columnCount()))
+                match = any(
+                    text in (tbl.item(i, j).text().lower() if tbl.item(i, j) else "")
+                    for j in range(tbl.columnCount())
+                )
                 tbl.setRowHidden(i, not match)
-        
+
         search_input.textChanged.connect(filter_active_tab)
-        tab_widget.currentChanged.connect(lambda: filter_active_tab(search_input.text()))
-        
+        tab_widget.currentChanged.connect(
+            lambda: filter_active_tab(search_input.text())
+        )
+
         # Bottom Bar
         bottom_bar = QFrame()
         bottom_bar.setFixedHeight(95)
@@ -1896,32 +2862,33 @@ class MainWindow(QMainWindow):
         b_layout = QHBoxLayout(bottom_bar)
         b_layout.setContentsMargins(35, 0, 35, 0)
         b_layout.setSpacing(20)
-        
+
         copy_btn = QPushButton("📋 Copy to Clipboard")
         copy_btn.clicked.connect(self._copy_metadata_to_clipboard)
         b_layout.addWidget(copy_btn)
-        
+
         b_layout.addStretch()
-        
+
         close_btn = QPushButton("Close")
         close_btn.setFixedWidth(140)
         close_btn.setStyleSheet("font-weight: bold;")
         close_btn.clicked.connect(dlg.close)
         b_layout.addWidget(close_btn)
-        
+
         main_layout.addWidget(bottom_bar)
         dlg.show()
 
     def _copy_metadata_to_clipboard(self):
         """Format and copy all metadata to clipboard."""
-        if not self._all_headers: return
-        
+        if not self._all_headers:
+            return
+
         lines = []
         for hdu_name, hdu_header in self._all_headers:
             lines.append(f"=== HDU: {hdu_name} ===")
             lines.append(str(hdu_header))
             lines.append("\n")
-            
+
         text = "\n".join(lines)
         QApplication.clipboard().setText(text)
         self.statusBar().showMessage("Metadata copied to clipboard", 3000)
@@ -1931,22 +2898,22 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app:
             apply_theme(app, self.current_theme)
-        
+
         # Redraw canvas if it exists to pick up matplotlib theme changes
         if hasattr(self, "canvas"):
             self.canvas._apply_canvas_theme_colors()
             self.canvas.draw()
-        
+
         # Also update minimap theme
         if hasattr(self, "minimap"):
             self.minimap._apply_theme()
-            
+
             # Apply border to the container
             palette = get_palette(self.current_theme)
             if self.current_theme == "dark":
-                border_color = palette.get('border_light', palette['border'])
+                border_color = palette.get("border_light", palette["border"])
             else:
-                border_color = palette.get('border', palette['border'])
+                border_color = palette.get("border", palette["border"])
             self.minimap_container.setStyleSheet(f"""
                 QFrame#MinimapContainer {{
                     border: 1px solid {border_color};
@@ -1965,15 +2932,15 @@ class MainWindow(QMainWindow):
     def _setHandCursorRecursive(self, widget):
         """Recursively set PointingHandCursor for all buttons and interactive widgets."""
         from PyQt5.QtWidgets import QAbstractButton, QComboBox, QTabBar, QMenu, QMenuBar
-        
+
         # Check if this widget should have a hand cursor
         if isinstance(widget, (QAbstractButton, QComboBox, QMenu, QMenuBar)):
             widget.setCursor(Qt.PointingHandCursor)
-        
+
         # For QTabWidget, we need to set it on the bar
         if isinstance(widget, QTabBar):
             widget.setCursor(Qt.PointingHandCursor)
-            
+
         # Recurse into children
         for child in widget.children():
             if isinstance(child, QtWidgets.QWidget):
@@ -1986,33 +2953,35 @@ class MainWindow(QMainWindow):
         )
         if not fileName:
             return
-        
+
         with self.wait_cursor():
             self.current_filename = fileName
-                
+
             try:
                 # Close previous file handle if any
                 if hasattr(self, "hdul") and self.hdul:
                     self.hdul.close()
                 self._data_cache.clear()
+                self._cached_bandpass_profile = None  # Invalidate bandpass cache
+                gc.collect()  # Force memory release
 
                 self.logger.info(f"Opening FITS file: {fileName}")
                 self.hdul = fits.open(fileName, memmap=True)
                 header = self.hdul[0].header
                 data_ref = self.hdul[0].data
-                
+
                 # Capture metadata from all HDUs
                 self._all_headers = []
                 for i, hdu in enumerate(self.hdul):
                     name = hdu.name if hdu.name else f"HDU {i}"
                     self._all_headers.append((name, hdu.header))
-                
+
                 self._metadata = str(header)
-                
+
                 # Detect if large (e.g., > 10^7 pixels)
                 num_pixels = data_ref.size
                 self._is_large_file = num_pixels > 1e7 or data_ref.shape[0] > 10000
-                
+
                 time_axis = None
                 freq_axis = None
 
@@ -2025,7 +2994,10 @@ class MainWindow(QMainWindow):
 
                 if time_axis is None or freq_axis is None:
                     try:
-                        naxis1 = header.get("NAXIS1", data_ref.shape[1] if len(data_ref.shape) > 1 else 0)
+                        naxis1 = header.get(
+                            "NAXIS1",
+                            data_ref.shape[1] if len(data_ref.shape) > 1 else 0,
+                        )
                         naxis2 = header.get("NAXIS2", data_ref.shape[0])
                         for ax_idx in [1, 2]:
                             ctype = str(header.get(f"CTYPE{ax_idx}", "")).upper()
@@ -2036,53 +3008,69 @@ class MainWindow(QMainWindow):
                             naxis = naxis1 if ax_idx == 1 else naxis2
                             if "FREQ" in ctype:
                                 freqs = crval + (np.arange(naxis) - (crpix - 1)) * cdelt
-                                if cunit == "hz": freqs /= 1e6
-                                elif cunit == "khz": freqs /= 1000.0
-                                elif cunit == "ghz": freqs *= 1000.0
+                                if cunit == "hz":
+                                    freqs /= 1e6
+                                elif cunit == "khz":
+                                    freqs /= 1000.0
+                                elif cunit == "ghz":
+                                    freqs *= 1000.0
                                 freq_axis = freqs
                             elif "TIME" in ctype:
                                 start_mjd = 0
-                                if crval > 2400000.5: start_mjd = crval - 2400000.5
-                                elif 30000 < crval < 100000: start_mjd = crval
+                                if crval > 2400000.5:
+                                    start_mjd = crval - 2400000.5
+                                elif 30000 < crval < 100000:
+                                    start_mjd = crval
                                 else:
                                     date_obs = header.get("DATE-OBS", None)
                                     if date_obs:
                                         from astropy.time import Time as AstroTime
+
                                         start_mjd = AstroTime(date_obs).mjd
-                                cdelt_s = cdelt * (86400.0 if cunit == "d" else 3600.0 if cunit == "h" else 60.0 if cunit == "min" else 0.001 if cunit == "ms" else 1.0)
-                                time_axis = (start_mjd * 86400.0) + (np.arange(naxis) - (crpix - 1)) * cdelt_s
+                                cdelt_s = cdelt * (
+                                    86400.0
+                                    if cunit == "d"
+                                    else 3600.0
+                                    if cunit == "h"
+                                    else 60.0
+                                    if cunit == "min"
+                                    else 0.001
+                                    if cunit == "ms"
+                                    else 1.0
+                                )
+                                time_axis = (start_mjd * 86400.0) + (
+                                    np.arange(naxis) - (crpix - 1)
+                                ) * cdelt_s
                     except Exception as wcs_err:
                         self.logger.warning(f"Axis extraction error: {wcs_err}")
 
                 self._full_time_axis = time_axis
                 self._full_freq_axis = freq_axis
-                
+
                 # Feature 2: Load Minimap (Full spectrum overview) - Always load for all files
                 # Downsample significantly (e.g., 2000 points wide)
                 total_samples = len(self._full_time_axis)
                 self._lowres_skip = max(1, total_samples // 2000)
                 skip = self._lowres_skip
-                
+
                 # Slicing the memmapped data carefully
                 if data_ref.shape[0] == total_samples:
                     # (time, freq)
                     mini_data = data_ref[::skip, :]
-                    mini_data_for_display = mini_data.T
-                    # RAM overview normalized to (time, freq)
                     self._full_lowres_data = np.array(mini_data, dtype=np.float32)
+                    mini_data_for_display = self._full_lowres_data.T
                 else:
                     # (freq, time)
                     mini_data = data_ref[:, ::skip]
-                    mini_data_for_display = mini_data
-                    # RAM overview normalized to (time, freq)
-                    self._full_lowres_data = np.array(mini_data.T, dtype=np.float32)
-                
-                # Convert to RAM for minimap and instant preview
-                self._full_lowres_data[np.isnan(self._full_lowres_data)] = np.nan
+                    mini_data_for_display = np.array(mini_data, dtype=np.float32)
+                    self._full_lowres_data = mini_data_for_display.T
+
+                # Handle infinities (NaN stays NaN naturally)
                 self._full_lowres_data[np.isinf(self._full_lowres_data)] = np.nan
-                
-                self.minimap.set_full_data(np.array(mini_data_for_display, dtype=np.float32))
-                
+
+                # Minimap makes its own copy internally, so pass view directly
+                self.minimap.set_full_data(mini_data_for_display)
+
                 # Initialize Navigation
                 if self._is_large_file:
                     self._nav_mode = "Windowed"
@@ -2099,23 +3087,45 @@ class MainWindow(QMainWindow):
                 self._updateNavigationStats()
 
                 if self._nav_mode == "Windowed":
-                    self.loadSlice() # Initial load
+                    self.loadSlice()  # Initial load
                 else:
                     # Load everything (copy to RAM)
                     data = np.array(data_ref, dtype=np.float32)
-                    data[np.isnan(data)] = np.nan
+                    # Handle infinities (NaN stays NaN naturally)
                     data[np.isinf(data)] = np.nan
-                    
+
                     # Use centralized display logic to honor persistent toggles (Bandpass, etc.)
                     self._display_data(data, self._full_time_axis, self._full_freq_axis)
 
                 self.undo_stack.clear()
                 self.redo_stack.clear()
-                self.statusBar().showMessage(f"Loaded {os.path.basename(fileName)}", 5000)
+                gc.collect()  # Force memory release
+                self.statusBar().showMessage(
+                    f"Loaded {os.path.basename(fileName)}", 5000
+                )
 
             except Exception as e:
                 self.logger.exception(f"Failed to open or plot FITS file: {e}")
                 QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{e}")
+
+    def _calculate_window_samples(self):
+        """Safely calculate window samples from time axis and duration."""
+        if self._full_time_axis is None or len(self._full_time_axis) < 2:
+            return 1
+
+        dt = abs(self._full_time_axis[1] - self._full_time_axis[0])
+        if dt == 0:
+            self.logger.warning("Zero time delta detected in time axis. Using total samples as window.")
+            # Return total samples to avoid infinite pages/invalid windowing
+            return len(self._full_time_axis)
+
+        try:
+            val = (self._window_duration_min * 60.0) / dt
+            if np.isinf(val) or np.isnan(val):
+                return len(self._full_time_axis)
+            return max(1, int(val))
+        except (ZeroDivisionError, OverflowError, ValueError):
+            return len(self._full_time_axis)
 
     # -------------------------- Paging & Navigation -----------------------------
     def _updateNavigationStats(self):
@@ -2127,52 +3137,50 @@ class MainWindow(QMainWindow):
             self.prevBtn.setEnabled(False)
             self.nextBtn.setEnabled(False)
             self.lastBtn.setEnabled(False)
-            
+
             # Initial disabling based on default "Full" mode
-            is_windowed = (self._nav_mode == "Windowed")
+            is_windowed = self._nav_mode == "Windowed"
             self.navDurationSpin.setEnabled(is_windowed)
             self.navDurationLabel.setEnabled(is_windowed)
             self.pageLabel.setEnabled(is_windowed)
             return
-            
+
         total_samples = len(self._full_time_axis)
-        dt = abs(self._full_time_axis[1] - self._full_time_axis[0])
-        window_samples = int((self._window_duration_min * 60.0) / dt)
-        
+        window_samples = self._calculate_window_samples()
+
         if self._nav_mode == "Full":
             self._total_pages = 1
         else:
             self._total_pages = max(1, int(np.ceil(total_samples / window_samples)))
-        
+
         if self._current_page >= self._total_pages:
             self._current_page = self._total_pages - 1
-        
+
         self.pageLabel.setText(f"{self._current_page + 1}/{self._total_pages}")
-        
+
         # Keep navGroup enabled even for 1 page, so user can switch View Mode
         self.navGroup.setEnabled(True)
-        
+
         self.firstBtn.setEnabled(self._current_page > 0)
         self.prevBtn.setEnabled(self._current_page > 0)
         self.nextBtn.setEnabled(self._current_page < self._total_pages - 1)
         self.lastBtn.setEnabled(self._current_page < self._total_pages - 1)
-        
+
         # Visually disable "Window Size" and "Page Number" in Full mode
-        is_windowed = (self._nav_mode == "Windowed")
+        is_windowed = self._nav_mode == "Windowed"
         self.navDurationSpin.setEnabled(is_windowed)
         self.navDurationLabel.setEnabled(is_windowed)
         self.pageLabel.setEnabled(is_windowed)
-        
+
         # Feature 2: Update Minimap Highlight & Markers
         if self._full_time_axis is not None:
             total_samples = len(self._full_time_axis)
-            dt = abs(self._full_time_axis[1] - self._full_time_axis[0])
-            window_samples = int((self._window_duration_min * 60.0) / dt)
-            
+            window_samples = self._calculate_window_samples()
+
             if self._nav_mode == "Windowed":
                 start_idx = self._current_page * window_samples
                 end_idx = min(start_idx + window_samples, total_samples)
-                
+
                 start_pct = start_idx / total_samples
                 end_pct = end_idx / total_samples
                 self.minimap.update_view_percent(start_pct, end_pct)
@@ -2185,22 +3193,21 @@ class MainWindow(QMainWindow):
         """Helper to extract a data slice from the FITS handle."""
         if not self.hdul or self._full_time_axis is None:
             return None, None, None
-            
+
         total_samples = len(self._full_time_axis)
-        dt = abs(self._full_time_axis[1] - self._full_time_axis[0])
-        window_samples = int((self._window_duration_min * 60.0) / dt)
-        
+        window_samples = self._calculate_window_samples()
+
         start_idx = page_idx * window_samples
         end_idx = min(start_idx + window_samples, total_samples)
-        
+
         if start_idx >= total_samples or start_idx < 0:
             return None, None, None
 
         raw_data = self.hdul[0].data
-        
+
         # Apply downsampling for fast preview if requested
         step = max(1, downsample)
-        
+
         try:
             if raw_data.shape[0] == total_samples:
                 # (time, freq)
@@ -2208,12 +3215,11 @@ class MainWindow(QMainWindow):
             else:
                 # (freq, time) -> (time, freq)
                 data_slice = raw_data[:, start_idx:end_idx:step].T
-            
+
             time_slice = self._full_time_axis[start_idx:end_idx:step]
-            
-            # Convert to RAM and handle NaNs/Infs
+
+            # Convert to RAM and handle infinities (NaN stays NaN naturally)
             data = np.array(data_slice, dtype=np.float32)
-            data[np.isnan(data)] = np.nan
             data[np.isinf(data)] = np.nan
             return data, time_slice, self._full_freq_axis
 
@@ -2225,26 +3231,35 @@ class MainWindow(QMainWindow):
         """Ultra-fast extraction of low-res data from RAM-cached overview."""
         if self._full_lowres_data is None or self._full_time_axis is None:
             return None, None, None
-            
+
         total_samples = len(self._full_time_axis)
-        dt = abs(self._full_time_axis[1] - self._full_time_axis[0])
-        window_samples = int((self._window_duration_min * 60.0) / dt)
-        
+        window_samples = self._calculate_window_samples()
+
         start_idx = page_idx * window_samples
         end_idx = min(start_idx + window_samples, total_samples)
-        
+
         # Map to low-res indices
         low_start = start_idx // self._lowres_skip
         low_end = end_idx // self._lowres_skip
-        
-        if low_start >= self._full_lowres_data.shape[0 if self._full_lowres_data.ndim == 2 and self._full_lowres_data.shape[0] == (total_samples//self._lowres_skip) else 1] or low_start < 0:
+
+        if (
+            low_start
+            >= self._full_lowres_data.shape[
+                0
+                if self._full_lowres_data.ndim == 2
+                and self._full_lowres_data.shape[0]
+                == (total_samples // self._lowres_skip)
+                else 1
+            ]
+            or low_start < 0
+        ):
             # Re-check shape logic based on orientation in openFile
             pass
 
         # Robust slicing: _full_lowres_data is now guaranteed to be (time, freq)
         try:
             data_slice = self._full_lowres_data[low_start:low_end, :]
-            time_slice = self._full_time_axis[start_idx:end_idx:self._lowres_skip]
+            time_slice = self._full_time_axis[start_idx : end_idx : self._lowres_skip]
             return data_slice.copy(), time_slice, self._full_freq_axis
 
         except Exception as e:
@@ -2257,7 +3272,7 @@ class MainWindow(QMainWindow):
             return
 
         page_to_load = self._current_page
-        
+
         # 1. Instant Preview from RAM (Feature 5 Optimized)
         # We do this FIRST even if cached, to provide instantaneous visual feedback of the button press.
         if self._is_large_file and self._full_lowres_data is not None:
@@ -2273,7 +3288,9 @@ class MainWindow(QMainWindow):
             self.logger.info(f"Loaded page {page_to_load} from cache")
             # Schedule the high-res update to allow the fast-preview to be drawn first
             self._pending_page = page_to_load
-            QTimer.singleShot(10, lambda: self._completeLoad(page_to_load, data, time_axis, freq_axis))
+            QTimer.singleShot(
+                10, lambda: self._completeLoad(page_to_load, data, time_axis, freq_axis)
+            )
             return
 
         # 3. Schedule Full-res Data (Async Load from file)
@@ -2282,99 +3299,141 @@ class MainWindow(QMainWindow):
 
     def _completeLoad(self, page_idx, data, time_axis, freq_axis):
         """Final display of high-res data for both cache hits and file loads."""
-        if not self.hdul or page_idx != self._current_page or page_idx != self._pending_page:
+        if (
+            not self.hdul
+            or page_idx != self._current_page
+            or page_idx != self._pending_page
+        ):
             return
         with self.wait_cursor():
             self._display_data(data, time_axis, freq_axis)
-            self._pending_page = -1 # Completed
+            self._pending_page = -1  # Completed
 
     def _loadFullRes(self, page_idx):
         """Perform the actual high-resolution load scheduled by loadSlice."""
         # Ensure we are still on the same page and not cleared
-        if not self.hdul or page_idx != self._current_page or page_idx != self._pending_page:
+        if (
+            not self.hdul
+            or page_idx != self._current_page
+            or page_idx != self._pending_page
+        ):
             return
-            
+
         with self.wait_cursor():
             self.logger.info(f"Performing full-res load for page {page_idx}")
             data, time_axis, freq_axis = self._get_slice_data(page_idx, downsample=1)
-            
+
             if data is not None:
                 # Update cache
                 self._data_cache[page_idx] = (data, time_axis, freq_axis)
                 if len(self._data_cache) > self._cache_limit:
                     keys = sorted(self._data_cache.keys())
-                    furthest = keys[0] if abs(keys[0] - page_idx) > abs(keys[-1] - page_idx) else keys[-1]
+                    furthest = (
+                        keys[0]
+                        if abs(keys[0] - page_idx) > abs(keys[-1] - page_idx)
+                        else keys[-1]
+                    )
                     del self._data_cache[furthest]
-                
+
                 # Use shared completion logic (handles page check and _pending_page)
                 self._completeLoad(page_idx, data, time_axis, freq_axis)
 
     def _apply_bandpass_to_data(self, data):
-        """Helper to apply bandpass normalization to a 2D data array."""
-        if data is None: return None
-        # normalize by median of each channel (freq) across time
-        freq_profile = np.nanmedian(data, axis=0) # Axis 0 is time
+        """Helper to apply bandpass normalization to a 2D data array.
+        
+        Calculates median profile for the current window (per user request).
+        """
+        if data is None:
+            return None
+        
+        # Compute median profile for THIS window
+        # (We do not cache across windows to ensure local normalization)
+        freq_profile = np.nanmedian(data, axis=0)  # Axis 0 is time
+        
+        # Avoid division by zero
         freq_profile[freq_profile == 0] = 1e-20
         freq_profile[np.isnan(freq_profile)] = 1e-20
+        
+        # Apply normalization
         normed = data / freq_profile
         normed[np.isnan(normed)] = np.nan
         return normed
 
     def _display_data(self, data, time_axis, freq_axis, fast=False):
-        """Shared logic to update canvas and stats."""
-        # Keep raw for revert
-        self._original_unmodified = data.copy()
+        """Shared logic to update canvas and stats.
         
+        Memory optimized: Uses references where possible, copies only when needed.
+        """
+        # Keep reference to raw data for revert (no copy - source is from file/cache)
+        self._original_unmodified = data
+
         # Apply persistent bandpass if enabled
         if self._is_bandpass_enabled:
+            # _apply_bandpass_to_data creates a new array
             data_to_show = self._apply_bandpass_to_data(data)
         else:
-            data_to_show = data.copy()
+            # No bandpass - we need a copy only if we will modify it later
+            # Check if modifications are pending
+            has_pending_mask = hasattr(self, "_pending_user_mask") and self._pending_user_mask is not None
+            has_global_mask = bool(self._global_masked_freq_indices)
             
+            if has_pending_mask or has_global_mask:
+                data_to_show = data.copy()  # Need copy since we'll modify
+            else:
+                data_to_show = data  # Safe to use reference
+
         self._original_data = data_to_show
-        
+
         # Apply pending user mask if it exists (e.g. from bandpass toggle)
-        if hasattr(self, '_pending_user_mask') and self._pending_user_mask is not None:
-             # Ensure shapes match (e.g. skip if fast preview has different shape)
-             if self._original_data.shape == self._pending_user_mask.shape:
-                 self._original_data[self._pending_user_mask] = np.nan
-             
-             # Clear the pending mask only after the full load (not fast preview)
-             if not fast:
-                 self._pending_user_mask = None
+        if hasattr(self, "_pending_user_mask") and self._pending_user_mask is not None:
+            # Ensure shapes match (e.g. skip if fast preview has different shape)
+            if self._original_data.shape == self._pending_user_mask.shape:
+                self._original_data[self._pending_user_mask] = np.nan
 
-
+            # Clear the pending mask only after the full load (not fast preview)
+            if not fast:
+                self._pending_user_mask = None
 
         # Apply Global Frequency Mask (Extend Mask feature)
         if self._global_masked_freq_indices and self._original_data is not None:
-             # Standardized: self._original_data is always (Time, Freq)
-             bad_freqs = list(self._global_masked_freq_indices)
-             self._original_data[:, bad_freqs] = np.nan
-             
+            # Standardized: self._original_data is always (Time, Freq)
+            bad_freqs = list(self._global_masked_freq_indices)
+            self._original_data[:, bad_freqs] = np.nan
+
         self._time_axis = time_axis
         self._freq_axis = freq_axis
-        
-        self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis, filename=self.current_filename)
+
+        self.canvas.set_data(
+            self._original_data,
+            self._time_axis,
+            self._freq_axis,
+            filename=self.current_filename,
+        )
         self.canvas.draw_spectrum(fast=fast)
         self._updateNavigationStats()
 
     def onNavModeChanged(self, mode):
-        if not self.hdul: return
+        if not self.hdul:
+            return
         self._nav_mode = "Windowed" if "Windowed" in mode else "Full"
-        
+
         if self._nav_mode == "Full":
             # Warning for very large files
             if self._is_large_file:
-                reply = QMessageBox.warning(self, "Large Data Warning", 
+                reply = QMessageBox.warning(
+                    self,
+                    "Large Data Warning",
                     "Loading the full spectrum for a very large file may consume significant memory. Continue?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
                 if reply == QMessageBox.No:
                     self.navModeCombo.blockSignals(True)
                     self.navModeCombo.setCurrentText("Windowed")
                     self.navModeCombo.blockSignals(False)
                     self._nav_mode = "Windowed"
                     return
-            
+
             # Load full data into RAM (subject to memory limits)
             with self.wait_cursor():
                 raw_data = self.hdul[0].data
@@ -2392,26 +3451,28 @@ class MainWindow(QMainWindow):
             self.loadSlice()
 
     def onNavDurationChanged(self, val):
-        if not self.hdul: return
+        if not self.hdul:
+            return
         self._window_duration_min = val
-        self._current_page = 0 # Reset to start when duration changes
-        
+        self._current_page = 0  # Reset to start when duration changes
+
         # Invalidate cache
         with self.wait_cursor():
             self._data_cache.clear()
-        
+
             # Recalculate total pages based on new duration
             if self._full_time_axis is not None:
                 total_samples = len(self._full_time_axis)
-                dt = abs(self._full_time_axis[1] - self._full_time_axis[0])
-                window_samples = int((self._window_duration_min * 60.0) / dt)
+                window_samples = self._calculate_window_samples()
                 if window_samples > 0:
-                    self._total_pages = (total_samples + window_samples - 1) // window_samples
+                    self._total_pages = (
+                        total_samples + window_samples - 1
+                    ) // window_samples
                 else:
                     self._total_pages = 1
-        
+
             self.loadSlice()
-            self._updateNavigationStats() # Ensure button states and minimap rectangle update
+            self._updateNavigationStats()  # Ensure button states and minimap rectangle update
 
     def onPrevPage(self):
         if self._current_page > 0:
@@ -2439,27 +3500,27 @@ class MainWindow(QMainWindow):
 
     def onMinimapSeek(self, x_data):
         """Handle seek request from minimap click/drag."""
-        if self._full_time_axis is None: return
-        
+        if self._full_time_axis is None:
+            return
+
         with self.wait_cursor():
             total_samples = len(self._full_time_axis)
-            
+
             # x_data is coordinate in the axes
             xlim = self.minimap.ax.get_xlim()
             pct = (x_data - xlim[0]) / (xlim[1] - xlim[0])
             pct = max(0, min(0.999, pct))
-            
+
             # Map percentage directly to sample index
             target_idx = int(pct * total_samples)
-            
+
             # Determine which page contains this sample
-            dt = abs(self._full_time_axis[1] - self._full_time_axis[0])
-            window_samples = int((self._window_duration_min * 60.0) / dt)
-            
+            window_samples = self._calculate_window_samples()
+
             new_page = target_idx // window_samples
             if new_page >= self._total_pages:
                 new_page = self._total_pages - 1
-                
+
             if new_page != self._current_page:
                 self._current_page = new_page
                 self.loadSlice()
@@ -2566,50 +3627,102 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Reverted to original data.", 5000)
 
     # ----------------------- Undo/Redo Functionality ----------------------------
+    def _push_undo_delta(self, time_slice, freq_slice):
+        """Push a delta to the undo stack (memory-efficient)."""
+        if self._original_data is None:
+            return
+        
+        delta = {
+            "slices": (time_slice, freq_slice),
+            "old_values": self._original_data[time_slice, freq_slice].copy(),
+        }
+        
+        # Limit stack size
+        if len(self.undo_stack) >= self.MAX_UNDO_STACK_SIZE:
+            self.undo_stack.pop(0)  # Remove oldest
+        
+        self.undo_stack.append(delta)
+        self.redo_stack.clear()
+
     def undo(self):
-        if self.undo_stack:
-            self.redo_stack.append(self._original_data.copy())
-            self._original_data = self.undo_stack.pop()
-            self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
-            self.canvas.draw_spectrum()
-        else:
+        if not self.undo_stack:
             QMessageBox.information(self, "Undo", "No more actions to undo.")
+            return
+        
+        delta = self.undo_stack.pop()
+        time_slice, freq_slice = delta["slices"]
+        
+        # Save current state for redo
+        redo_delta = {
+            "slices": delta["slices"],
+            "old_values": self._original_data[time_slice, freq_slice].copy(),
+        }
+        self.redo_stack.append(redo_delta)
+        
+        # Restore old values
+        self._original_data[time_slice, freq_slice] = delta["old_values"]
+        
+        # Update display
+        self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
+        self.canvas.draw_spectrum()
 
     def redo(self):
-        if self.redo_stack:
-            self.undo_stack.append(self._original_data.copy())
-            self._original_data = self.redo_stack.pop()
-            self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
-            self.canvas.draw_spectrum()
-        else:
+        if not self.redo_stack:
             QMessageBox.information(self, "Redo", "No more actions to redo.")
+            return
+        
+        delta = self.redo_stack.pop()
+        time_slice, freq_slice = delta["slices"]
+        
+        # Save current state for undo
+        undo_delta = {
+            "slices": delta["slices"],
+            "old_values": self._original_data[time_slice, freq_slice].copy(),
+        }
+        self.undo_stack.append(undo_delta)
+        
+        # Apply redo values
+        self._original_data[time_slice, freq_slice] = delta["old_values"]
+        
+        # Update display
+        self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
+        self.canvas.draw_spectrum()
+
 
     # In each modifying operation, push current state to undo stack and clear redo stack.
     def onCleanRFIRegionDetect(self):
         if self._original_data is None:
             QMessageBox.information(self, "Info", "No data loaded.")
             return
-        
+
         with self.wait_cursor():
+            # Save full state for undo (RFI detection modifies entire array)
             self.undo_stack.append(self._original_data.copy())
             self.redo_stack.clear()
+            
             thresh = self.threshSpin.value()
             min_w = self.minWidthSpin.value()
             min_h = self.minHeightSpin.value()
-            data_2d = self._original_data.copy()
-            data_2d[np.isnan(data_2d)] = 0
+            
+            # Create working copy with NaN replaced by 0 for detection
+            data_2d = np.where(np.isnan(self._original_data), 0, self._original_data)
+            
+            # Transpose for band-wise processing (uses view, not copy)
             data_T = data_2d.T
             med_band = np.nanmedian(data_T, axis=1, keepdims=True)
             normed_data = data_T / (med_band + 1e-20)
+            
+            # Detect RFI regions
             binary_image = create_binary(normed_data, thresh=thresh)
             _, valid_contours, _ = region_detection(
                 normed_data, binary_image, min_width=min_w, min_height=min_h
             )
             mask = create_mask(binary_image, valid_contours)
-            rfi_map = subtract_contours(normed_data, mask=~mask)
-            cleaned_data = rfi_map.T
-            cleaned_data[np.isnan(cleaned_data)] = np.nan
-            self._original_data = cleaned_data
+            
+            # Apply mask in-place to original data (transpose mask back)
+            rfi_mask = (~mask).T  # Invert mask and transpose
+            self._original_data[rfi_mask] = np.nan
+            
             self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
             self.canvas.draw_spectrum()
             self.statusBar().showMessage("Region detection done.", 5000)
@@ -2627,34 +3740,43 @@ class MainWindow(QMainWindow):
         # The mask is the difference between current data and what the data SHOULD be (baseline)
         # We need to compute baseline based on the CURRENT state (before toggle)
         if self._is_bandpass_enabled:
-             baseline = self._apply_bandpass_to_data(self._original_unmodified)
+            baseline = self._apply_bandpass_to_data(self._original_unmodified)
         else:
-             baseline = self._original_unmodified
-        
+            baseline = self._original_unmodified
+
         # Identify manual edits: where data is NaN but baseline is NOT NaN
-        if self._original_data is not None and baseline is not None and self._original_data.shape == baseline.shape:
-             user_mask = np.isnan(self._original_data) & (~np.isnan(baseline))
+        if (
+            self._original_data is not None
+            and baseline is not None
+            and self._original_data.shape == baseline.shape
+        ):
+            user_mask = np.isnan(self._original_data) & (~np.isnan(baseline))
         else:
-             user_mask = None
+            user_mask = None
 
         self._is_bandpass_enabled = checked
         self.logger.info(f"Bandpass Normalization toggled to: {checked}")
-        
+
         # Clear cache to force re-processing of all pages
         self._data_cache.clear()
-        
+        gc.collect()  # Force memory release
+
         # Store mask for re-application
         self._pending_user_mask = user_mask
-        
+
         with self.wait_cursor():
-            if self._is_large_file:
-                # Reload from file (async)
-                self.loadSlice() 
+            if self._nav_mode == "Windowed" and self._is_large_file:
+                # In windowed mode for large files, reload from file
+                self.loadSlice()
             else:
-                # For small files, just refresh the view using the immutable data
-                self._display_data(self._original_unmodified, self._time_axis, self._freq_axis)
-            
-        self.statusBar().showMessage(f"Bandpass normalization {'enabled' if checked else 'disabled'}.", 5000)
+                # In full spectrum mode or for small files, use stored data
+                self._display_data(
+                    self._original_unmodified, self._time_axis, self._freq_axis
+                )
+
+        self.statusBar().showMessage(
+            f"Bandpass normalization {'enabled' if checked else 'disabled'}.", 5000
+        )
 
     def _mask_roi_values(self, ixmin, ixmax, iymin, iymax):
         """Mask a region of interest with NaN values."""
@@ -2674,15 +3796,18 @@ class MainWindow(QMainWindow):
                     self.logger.error("No data loaded")
                     return
 
-                # Save current state for undo
-                self.undo_stack.append(self._original_data.copy())
-                self.redo_stack.clear()
+                # Save delta for undo (memory-efficient)
+                time_slice = slice(ixmin, ixmax + 1)
+                freq_slice = slice(iymin, iymax + 1)
+                self._push_undo_delta(time_slice, freq_slice)
 
                 # Apply the mask
                 self._original_data[ixmin : ixmax + 1, iymin : iymax + 1] = np.nan
 
                 # Update the display
-                self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
+                self.canvas.set_data(
+                    self._original_data, self._time_axis, self._freq_axis
+                )
                 self.canvas.draw_spectrum()
 
                 # Update status
@@ -2714,10 +3839,10 @@ class MainWindow(QMainWindow):
     def onGammaChanged(self, sliderValue):
         """Update gamma value - continuous label, deferred plot update on drag."""
         self._pending_gamma = sliderValue / 100.0
-        
+
         # Immediate UI feedback for the label
         self.gammaLabel.setText(f"Gamma: {self._pending_gamma:.2f}")
-        
+
         # Only update the plot immediately if NOT dragging (e.g. keyboard or track click)
         # If dragging, we wait for sliderReleased
         if not self.gammaSlider.isSliderDown():
@@ -2735,7 +3860,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def onScaleRangeChanged(self, scale_option):
         """Handle changes to the scale range dropdown."""
-        is_manual = (scale_option == "Manual")
+        is_manual = scale_option == "Manual"
         self.vminEntry.setEnabled(is_manual)
         self.vmaxEntry.setEnabled(is_manual)
         self.manualLimitsLabel.setEnabled(is_manual)
@@ -2766,14 +3891,14 @@ class MainWindow(QMainWindow):
                 # Mutual exclusivity: disable cross section if active
                 if self.crossBtn.isChecked():
                     self.crossBtn.setChecked(False)
-                
+
                 # Deactivate Pan/Zoom in toolbar to avoid cursor conflicts
                 if hasattr(self, "navbar"):
-                    if self.navbar.mode == 'zoom':
+                    if self.navbar.mode == "zoom":
                         self.navbar.zoom()
-                    elif self.navbar.mode == 'pan':
+                    elif self.navbar.mode == "pan":
                         self.navbar.pan()
-                        
+
                 self.logger.info("Enabling ROI selector...")
                 self.canvas.enable_roi_selector(True, self._mask_roi_values)
                 self.statusBar().showMessage(
@@ -2845,19 +3970,19 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Info", "No data loaded.")
             self.crossBtn.setChecked(False)
             return
-            
+
         if checked:
             # Mutual exclusivity: disable ROI if active
             if self.roiButton.isChecked():
                 self.roiButton.setChecked(False)
-            
+
             # Deactivate Pan/Zoom in toolbar to avoid cursor conflicts
             if hasattr(self, "navbar"):
-                if self.navbar.mode == 'zoom':
+                if self.navbar.mode == "zoom":
                     self.navbar.zoom()
-                elif self.navbar.mode == 'pan':
+                elif self.navbar.mode == "pan":
                     self.navbar.pan()
-                
+
         self.canvas.enable_cross_section(checked)
         if checked:
             self.statusBar().showMessage("Cross-section mode ON. Click on data.")
@@ -2866,12 +3991,13 @@ class MainWindow(QMainWindow):
 
     def onExtendMask(self):
         """Extend the current mask across frequency (i.e. Global Frequency Masking)."""
-        if self._original_data is None: return
-        
+        if self._original_data is None:
+            return
+
         with self.wait_cursor():
             # Identify frequencies that have ANY masking in the current view
             # self._original_data is usually (time, freq) but checked via axis lengths
-            
+
             data = self._original_data
             mask = np.isnan(data)
             # Identify frequencies that have ANY masking in the current view
@@ -2879,26 +4005,37 @@ class MainWindow(QMainWindow):
             # Axis 1 is Frequency
             masked_freqs = np.where(np.any(mask, axis=0))[0]
             self._global_masked_freq_indices.update(masked_freqs)
-            
+
             # Apply immediately to current view
-            self._display_data(self._original_unmodified, self._time_axis, self._freq_axis)
-            self.statusBar().showMessage(f"Extended mask to {len(self._global_masked_freq_indices)} channels globally.", 5000)
+            self._display_data(
+                self._original_unmodified, self._time_axis, self._freq_axis
+            )
+            self.statusBar().showMessage(
+                f"Extended mask to {len(self._global_masked_freq_indices)} channels globally.",
+                5000,
+            )
 
     def onClearMasks(self):
         """Clear all masks: local manual masks, global extended masks, and undo history."""
-        reply = QMessageBox.question(self, "Clear Masks", 
-                                     "Clear ALL masks (including extended frequency masks)?",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        
+        reply = QMessageBox.question(
+            self,
+            "Clear Masks",
+            "Clear ALL masks (including extended frequency masks)?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
         if reply == QMessageBox.Yes:
             self._global_masked_freq_indices.clear()
             self._pending_user_mask = None
-            
+
             # Revert current view to raw
             if self._original_unmodified is not None:
                 self._original_data = self._original_unmodified.copy()
-                self._display_data(self._original_unmodified, self._time_axis, self._freq_axis)
-            
+                self._display_data(
+                    self._original_unmodified, self._time_axis, self._freq_axis
+                )
+
             self.statusBar().showMessage("All masks cleared.", 5000)
 
     def resizeEvent(self, event):
@@ -2931,6 +4068,7 @@ def main():
     """Entry point for viewds command."""
     # Apply high DPI scaling
     from solar_radio_image_viewer.from_simpl.simpl_theme import setup_high_dpi
+
     setup_high_dpi()
 
     app = QApplication(sys.argv)

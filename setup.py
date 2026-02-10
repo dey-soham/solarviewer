@@ -47,6 +47,7 @@ setup(
         "aiapy>=0.1.0",
         "imageio[ffmpeg]",
         "paramiko>=3.0.0",
+        "pyqtgraph",
     ],
     entry_points={
         "console_scripts": [

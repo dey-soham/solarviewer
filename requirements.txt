@@ -32,3 +32,6 @@ imageio[ffmpeg]
 
 # Remote mode (SSH/SFTP access)
 paramiko>=3.0.0
+
+# Dynamic spectrum viewer dependencies
+pyqtgraph
