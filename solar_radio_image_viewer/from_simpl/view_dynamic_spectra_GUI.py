@@ -1172,8 +1172,11 @@ class PyQtGraphSpectrumCanvas(QWidget):
         )
 
     def _setup_layout(self):
-        """Create the plot widget and image item."""
-        layout = QVBoxLayout(self)
+        # Reuse existing layout if the widget already has one (avoids
+        # "QLayout already has a parent" warning on re-open)
+        layout = self.layout()
+        if layout is None:
+            layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
@@ -1527,155 +1530,175 @@ class PyQtGraphSpectrumCanvas(QWidget):
         if enable:
             self.setCursor(Qt.CrossCursor)
             self._update_mode_overlay("MODE: MASK REGION (Click & Drag)")
-            
+
             # Disable default pan/zoom so drag creates ROI instead
             self.plot_item.vb.setMouseEnabled(x=False, y=False)
-            
+
             # Initialize selection state
             self._roi_start = None
             self._roi_rect_item = None
-            
-            # Save original handlers before overriding
-            self._orig_mousePressEvent = self.plot_item.vb.mousePressEvent
-            self._orig_mouseMoveEvent = self.plot_item.vb.mouseMoveEvent
-            self._orig_mouseReleaseEvent = self.plot_item.vb.mouseReleaseEvent
-            
-            # Connect mouse events for custom drag selection
+
+            # Save original mouseDragEvent before overriding
+            self._orig_mouseDragEvent = self.plot_item.vb.mouseDragEvent
+
+            # Disconnect cross-section click handler during ROI mode
             try:
                 self.plot_item.scene().sigMouseClicked.disconnect(self._on_mouse_click)
             except:
                 pass
-            self.plot_item.vb.mousePressEvent = self._roi_mouse_press
-            self.plot_item.vb.mouseMoveEvent = self._roi_mouse_drag
-            self.plot_item.vb.mouseReleaseEvent = self._roi_mouse_release
+
+            # Override mouseDragEvent — this is what PyQtGraph actually calls
+            # during click-and-drag operations (not mouseMoveEvent)
+            self.plot_item.vb.mouseDragEvent = self._roi_drag_event
         else:
             self.setCursor(Qt.ArrowCursor)
             self._update_mode_overlay("")
-            
+
             # Re-enable pan/zoom
             self.plot_item.vb.setMouseEnabled(x=True, y=True)
-            
+
             # Restore normal mouse behavior
             try:
                 self.plot_item.scene().sigMouseClicked.connect(self._on_mouse_click)
             except:
                 pass
-            
-            # Restore saved original handlers
-            if hasattr(self, '_orig_mousePressEvent'):
-                self.plot_item.vb.mousePressEvent = self._orig_mousePressEvent
-            if hasattr(self, '_orig_mouseMoveEvent'):
-                self.plot_item.vb.mouseMoveEvent = self._orig_mouseMoveEvent
-            if hasattr(self, '_orig_mouseReleaseEvent'):
-                self.plot_item.vb.mouseReleaseEvent = self._orig_mouseReleaseEvent
-            
-            # Remove visual rect if exists
+
+            # Restore saved original handler
+            if hasattr(self, '_orig_mouseDragEvent'):
+                self.plot_item.vb.mouseDragEvent = self._orig_mouseDragEvent
+
+            # Remove visual rects if exist
             if hasattr(self, '_roi_rect_item') and self._roi_rect_item is not None:
-                self.plot_item.removeItem(self._roi_rect_item)
+                self.plot_item.vb.removeItem(self._roi_rect_item)
                 self._roi_rect_item = None
+            if hasattr(self, '_roi_border_item') and self._roi_border_item is not None:
+                self.plot_item.vb.removeItem(self._roi_border_item)
+                self._roi_border_item = None
 
-    def _roi_mouse_press(self, event):
-        """Handle mouse press for ROI selection."""
+    def _roi_drag_event(self, ev, axis=None):
+        """Handle the full drag lifecycle for ROI selection.
+
+        PyQtGraph's ViewBox calls mouseDragEvent (not mouseMoveEvent) for
+        click-and-drag operations.  The event has:
+          - ev.isStart()  → first call of the drag
+          - ev.isFinish() → final call (button released)
+          - ev.scenePos() → current scene position
+          - ev.buttonDownScenePos() → scene position where button was pressed
+        """
         if not self.roi_active:
+            ev.ignore()
             return
-        
-        pos = self.plot_item.vb.mapSceneToView(event.scenePos())
-        self._roi_start = (pos.x(), pos.y())
-        
-        # Create visual rectangle
-        if self._roi_rect_item is not None:
-            self.plot_item.removeItem(self._roi_rect_item)
-        
-        self._roi_rect_item = QtWidgets.QGraphicsRectItem(pos.x(), pos.y(), 0, 0)
-        self._roi_rect_item.setPen(pg.mkPen('r', width=2))
-        self._roi_rect_item.setBrush(pg.mkBrush(255, 0, 0, 50))
-        self.plot_item.addItem(self._roi_rect_item)
-        event.accept()
 
-    def _roi_mouse_drag(self, event):
-        """Handle mouse drag for ROI selection."""
-        if not self.roi_active or self._roi_start is None:
+        ev.accept()
+
+        # Current mouse position in data (view) coordinates
+        pos = self.plot_item.vb.mapSceneToView(ev.scenePos())
+
+        if ev.isStart():
+            # Use buttonDownScenePos to get the *exact* click location.
+            # isStart() fires only after the mouse has moved past a drag
+            # threshold, so ev.scenePos() would be offset from the click.
+            start_pos = self.plot_item.vb.mapSceneToView(
+                ev.buttonDownScenePos()
+            )
+            self._roi_start = (start_pos.x(), start_pos.y())
+
+            # Remove any stale rect
+            if self._roi_rect_item is not None:
+                self.plot_item.vb.removeItem(self._roi_rect_item)
+
+            # Create two rects for a "Neon Cyan" effect
+            self._roi_border_item = QtWidgets.QGraphicsRectItem(
+                start_pos.x(), start_pos.y(), 0, 0
+            )
+            # Deep navy thick border for glow/contrast
+            self._roi_border_item.setPen(pg.mkPen('#001133', width=4.5))
+
+            self._roi_rect_item = QtWidgets.QGraphicsRectItem(
+                start_pos.x(), start_pos.y(), 0, 0
+            )
+            # Neon Cyan main line
+            self._roi_rect_item.setPen(pg.mkPen('#00f2ff', width=2.5))
+            
+            # Clip the ViewBox so child items don't paint outside
+            from PyQt5.QtWidgets import QGraphicsItem
+            self.plot_item.vb.setFlag(
+                QGraphicsItem.ItemClipsChildrenToShape, True
+            )
+
+            self.plot_item.vb.addItem(self._roi_border_item)
+            self.plot_item.vb.addItem(self._roi_rect_item)
+
+        if self._roi_start is None:
             return
-        
-        pos = self.plot_item.vb.mapSceneToView(event.scenePos())
+
         x0, y0 = self._roi_start
         x1, y1 = pos.x(), pos.y()
-        
-        # Update rectangle (handle any drag direction)
+
+        # Clip coordinates to the current view range so the rect
+        # never extends beyond the axes
+        view_range = self.plot_item.vb.viewRange()
+        x1 = max(view_range[0][0], min(view_range[0][1], x1))
+        y1 = max(view_range[1][0], min(view_range[1][1], y1))
+
+        # Update visual rectangle (handles any drag direction)
         rx = min(x0, x1)
         ry = min(y0, y1)
         rw = abs(x1 - x0)
         rh = abs(y1 - y0)
-        
+
         if self._roi_rect_item is not None:
             self._roi_rect_item.setRect(rx, ry, rw, rh)
-        event.accept()
+        if hasattr(self, '_roi_border_item') and self._roi_border_item is not None:
+            self._roi_border_item.setRect(rx, ry, rw, rh)
 
-    def _roi_mouse_release(self, event):
-        """Handle mouse release for ROI selection."""
-        if not self.roi_active or self._roi_start is None:
-            return
-        
-        pos = self.plot_item.vb.mapSceneToView(event.scenePos())
-        x0, y0 = self._roi_start
-        x1, y1 = pos.x(), pos.y()
-        
-        # Ensure proper order
-        if x0 > x1:
-            x0, x1 = x1, x0
-        if y0 > y1:
-            y0, y1 = y1, y0
-        
-        self._roi_start = None
-        
-        # Remove visual rect
-        if self._roi_rect_item is not None:
-            self.plot_item.removeItem(self._roi_rect_item)
-            self._roi_rect_item = None
-        
-        # Process selection
-        self._process_roi_selection(x0, x1, y0, y1)
-        event.accept()
+        if ev.isFinish():
+            # --- Drag finished: process the selection ---
+            self._roi_start = None
+
+            # Remove visual rects
+            if self._roi_rect_item is not None:
+                self.plot_item.vb.removeItem(self._roi_rect_item)
+                self._roi_rect_item = None
+            if hasattr(self, '_roi_border_item') and self._roi_border_item is not None:
+                self.plot_item.vb.removeItem(self._roi_border_item)
+                self._roi_border_item = None
+
+            # Ensure proper order
+            if x0 > x1:
+                x0, x1 = x1, x0
+            if y0 > y1:
+                y0, y1 = y1, y0
+
+            self._process_roi_selection(x0, x1, y0, y1)
 
     def _process_roi_selection(self, x0, x1, y0, y1):
         """Process the ROI selection and call callback."""
         if self._data is None or self.roi_callback is None:
             return
-        
+
         try:
             nt, nf = self._data.shape
 
             if self._time_axis is not None and self._freq_axis is not None:
-                t_start, t_end = self._time_axis[0], self._time_axis[-1]
-                f_start, f_end = self._freq_axis[0], self._freq_axis[-1]
+                t0, t1 = float(self._time_axis[0]), float(self._time_axis[-1])
+                f0, f1 = float(self._freq_axis[0]), float(self._freq_axis[-1])
 
-                # Clip to valid range
-                x0 = np.clip(x0, t_start, t_end)
-                x1 = np.clip(x1, t_start, t_end)
-                y0 = np.clip(y0, f_start, f_end)
-                y1 = np.clip(y1, f_start, f_end)
+                # Fractional position inverts setRect(t0, f0, t1-t0, f1-f0)
+                frac_x0 = (x0 - t0) / (t1 - t0) if t1 != t0 else 0.0
+                frac_x1 = (x1 - t0) / (t1 - t0) if t1 != t0 else 1.0
+                frac_y0 = (y0 - f0) / (f1 - f0) if f1 != f0 else 0.0
+                frac_y1 = (y1 - f0) / (f1 - f0) if f1 != f0 else 1.0
 
-                # Convert to indices
-                frac_t0 = (x0 - t_start) / (t_end - t_start) if t_end != t_start else 0
-                frac_t1 = (x1 - t_start) / (t_end - t_start) if t_end != t_start else 1
-                frac_f0 = (y0 - f_start) / (f_end - f_start) if f_end != f_start else 0
-                frac_f1 = (y1 - f_start) / (f_end - f_start) if f_end != f_start else 1
-
-                idx_time_min = int(frac_t0 * (nt - 1))
-                idx_time_max = int(frac_t1 * (nt - 1))
-                idx_freq_min = int(frac_f0 * (nf - 1))
-                idx_freq_max = int(frac_f1 * (nf - 1))
+                idx_time_min = int(np.clip(frac_x0 * nt, 0, nt - 1))
+                idx_time_max = int(np.clip(frac_x1 * nt, 0, nt - 1))
+                idx_freq_min = int(np.clip(frac_y0 * nf, 0, nf - 1))
+                idx_freq_max = int(np.clip(frac_y1 * nf, 0, nf - 1))
             else:
-                idx_time_min = int(x0)
-                idx_time_max = int(x1)
-                idx_freq_min = int(y0)
-                idx_freq_max = int(y1)
-
-            # Clip to data bounds
-            idx_time_min = max(0, min(nt - 1, idx_time_min))
-            idx_time_max = max(0, min(nt - 1, idx_time_max))
-            idx_freq_min = max(0, min(nf - 1, idx_freq_min))
-            idx_freq_max = max(0, min(nf - 1, idx_freq_max))
+                idx_time_min = int(np.clip(x0, 0, nt - 1))
+                idx_time_max = int(np.clip(x1, 0, nt - 1))
+                idx_freq_min = int(np.clip(y0, 0, nf - 1))
+                idx_freq_max = int(np.clip(y1, 0, nf - 1))
 
             # Trigger callback
             self.roi_callback(idx_time_min, idx_time_max, idx_freq_min, idx_freq_max)
@@ -1793,47 +1816,40 @@ class PyQtGraphSpectrumCanvas(QWidget):
             x, y = mouse_point.x(), mouse_point.y()
 
             nt, nf = self._data.shape
-            
-            # Check bounds
-            time_idx, freq_idx = 0, 0
             time_str, freq_str = "", ""
-            
-            if self._time_axis is not None and self._freq_axis is not None:
-                t_start, t_end = self._time_axis[0], self._time_axis[-1]
-                f_start, f_end = self._freq_axis[0], self._freq_axis[-1]
 
-                if not (t_start <= x <= t_end and f_start <= y <= f_end):
+            if self._time_axis is not None and self._freq_axis is not None:
+                t0, t1 = float(self._time_axis[0]), float(self._time_axis[-1])
+                f0, f1 = float(self._freq_axis[0]), float(self._freq_axis[-1])
+
+                # Bounds check in view (data) coordinates
+                if not (t0 <= x <= t1 and f0 <= y <= f1):
                     self.hoverChanged.emit("", "", float('nan'))
                     return
 
-                frac_t = (x - t_start) / (t_end - t_start)
-                frac_f = (y - f_start) / (f_end - f_start)
+                # Fractional position inverts setRect(t0, f0, t1-t0, f1-f0)
+                frac_x = (x - t0) / (t1 - t0) if t1 != t0 else 0.0
+                frac_y = (y - f0) / (f1 - f0) if f1 != f0 else 0.0
 
-                time_idx = int(frac_t * (nt - 1))
-                freq_idx = int(frac_f * (nf - 1))
-                
+                time_idx = int(np.clip(frac_x * nt, 0, nt - 1))
+                freq_idx = int(np.clip(frac_y * nf, 0, nf - 1))
+
                 # Format time as UTC HH:MM:SS
                 try:
-                    # Use faster datetime arithmetic (MJD 0 = 1858-11-17)
                     utc_time = datetime(1858, 11, 17) + timedelta(seconds=x)
                     time_str = utc_time.strftime('%H:%M:%S')
                 except Exception:
                     time_str = f"{x:.2f}"
-                
-                # Frequency in MHz
                 freq_str = f"{y:.2f} MHz"
             else:
-                time_idx = int(x)
-                freq_idx = int(y)
+                # Pixel coordinates mode
+                time_idx = int(np.clip(x, 0, nt - 1))
+                freq_idx = int(np.clip(y, 0, nf - 1))
+                if not (0 <= time_idx < nt and 0 <= freq_idx < nf):
+                    self.hoverChanged.emit("", "", float('nan'))
+                    return
                 time_str = f"idx {time_idx}"
                 freq_str = f"idx {freq_idx}"
-                
-                if not (0 <= time_idx < nt and 0 <= freq_idx < nf):
-                     self.hoverChanged.emit("", "", float('nan'))
-                     return
-
-            time_idx = max(0, min(time_idx, nt - 1))
-            freq_idx = max(0, min(freq_idx, nf - 1))
 
             val = self._data[time_idx, freq_idx]
             
@@ -2706,7 +2722,7 @@ class MainWindow(QMainWindow):
     # ---------------------------- Status Bar ------------------------------------
     def _createStatusBar(self):
         self.cursorInfoLabel = QLabel("")
-        self.cursorInfoLabel.setStyleSheet("font-family: monospace; font-weight: bold; margin-right: 15px;")
+        self.cursorInfoLabel.setStyleSheet("font-family: monospace; font-weight: normal; font-size: 12px; margin-right: 12px;")
         self.statusBar().addPermanentWidget(self.cursorInfoLabel)
 
 
@@ -3927,15 +3943,7 @@ class MainWindow(QMainWindow):
 
             # Disable the selector and clean up
             try:
-                self.canvas.roi_active = False
-                if (
-                    hasattr(self.canvas, "rect_selector")
-                    and self.canvas.rect_selector is not None
-                ):
-                    self.canvas.rect_selector.set_active(False)
-                    if hasattr(self.canvas.rect_selector, "disconnect_events"):
-                        self.canvas.rect_selector.disconnect_events()
-                    self.canvas.rect_selector = None
+                self.canvas.enable_roi_selector(False)
             except Exception as cleanup_error:
                 self.logger.error(f"Error during cleanup: {cleanup_error}")
 
@@ -3995,15 +4003,27 @@ class MainWindow(QMainWindow):
             return
 
         with self.wait_cursor():
-            # Identify frequencies that have ANY masking in the current view
-            # self._original_data is usually (time, freq) but checked via axis lengths
+            # Identify only USER-INTRODUCED NaN values by comparing against
+            # the original unmodified data.  Pre-existing NaN (e.g. from the
+            # FITS file itself) must NOT be treated as user masks.
+            if self._original_unmodified is not None:
+                user_mask = np.isnan(self._original_data) & ~np.isnan(
+                    self._original_unmodified
+                )
+            else:
+                # Fallback: treat all NaN as user mask
+                user_mask = np.isnan(self._original_data)
 
-            data = self._original_data
-            mask = np.isnan(data)
-            # Identify frequencies that have ANY masking in the current view
             # Standardized orientation is always (Time, Freq)
-            # Axis 1 is Frequency
-            masked_freqs = np.where(np.any(mask, axis=0))[0]
+            # Axis 0 is Time → any() over time gives per-freq flag
+            masked_freqs = np.where(np.any(user_mask, axis=0))[0]
+
+            if len(masked_freqs) == 0:
+                self.statusBar().showMessage(
+                    "No user-masked frequencies found to extend.", 5000
+                )
+                return
+
             self._global_masked_freq_indices.update(masked_freqs)
 
             # Apply immediately to current view
