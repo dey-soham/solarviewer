@@ -1113,6 +1113,20 @@ class DynamicSpectrumCanvas(FigureCanvas):
                 self.draw_idle()
 
 
+class TimeAxisItem(pg.AxisItem):
+    """A custom AxisItem that formats MJD seconds into UTC HH:MM:SS strings."""
+    def tickStrings(self, values, scale, spacing):
+        strings = []
+        for v in values:
+            try:
+                # MJD 0 = 1858-11-17
+                utc = datetime(1858, 11, 17) + timedelta(seconds=float(v))
+                strings.append(utc.strftime('%H:%M:%S'))
+            except Exception:
+                strings.append(f"{v:.0f}")
+        return strings
+
+
 ###############################################################################
 #              PYQTGRAPH CANVAS FOR GPU-ACCELERATED SPECTRUM DISPLAY          #
 ###############################################################################
@@ -1198,6 +1212,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         # Store the current LUT
         self._current_lut = None
+        self._transparent_lut = None
         self._build_lut(self._cmap)
 
         # Add colorbar as a separate ViewBox in column 1
@@ -1248,16 +1263,36 @@ class PyQtGraphSpectrumCanvas(QWidget):
         """Build a 256-color LUT from a matplotlib colormap."""
         try:
             import matplotlib.cm as cm
+            from pyqtgraph.colormap import ColorMap
+            import numpy as np
             mpl_cmap = cm.get_cmap(cmap_name)
             lut = np.zeros((256, 4), dtype=np.ubyte)
             for i in range(256):
                 r, g, b, a = mpl_cmap(i / 255.0)
                 lut[i] = [int(r * 255), int(g * 255), int(b * 255), int(a * 255)]
             self._current_lut = lut
+            
+            # Pre-calculate transparent LUT: index 0 is transparent, 1-255 is colormap
+            trans_lut = np.zeros((256, 4), dtype=np.ubyte)
+            trans_lut[0] = [0, 0, 0, 0]  # Transparent
+            for i in range(1, 256):
+                # Map 1-255 to colormap indices 0-255
+                idx = int((i - 1) * 255.0 / 254.0)
+                trans_lut[i] = lut[idx]
+            self._transparent_lut = trans_lut
+            
         except Exception as e:
             self.logger.warning(f"Failed to build LUT for {cmap_name}: {e}")
             # Fallback to grayscale
-            self._current_lut = np.array([[i, i, i, 255] for i in range(256)], dtype=np.ubyte)
+            gray = np.array([[i, i, i, 255] for i in range(256)], dtype=np.ubyte)
+            self._current_lut = gray
+            
+            trans_gray = np.zeros((256, 4), dtype=np.ubyte)
+            trans_gray[0] = [0, 0, 0, 0]
+            for i in range(1, 256):
+                idx = int((i - 1) * 255.0 / 254.0)
+                trans_gray[i] = gray[idx]
+            self._transparent_lut = trans_gray
 
     def _get_colormap(self, cmap_name):
         """Get a PyQtGraph colormap from a matplotlib colormap name."""
@@ -1314,12 +1349,19 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 tick_values = np.linspace(vmin, vmax, 5)
             
             # Create custom tick labels for the colorbar axis
-            ticks = [(float(v), f"{v:.3g}") for v in tick_values]
+            # Map raw values (vmin..vmax) to normalized positions (0..255)
+            ticks = []
+            for v in tick_values:
+                # Calculate the position in normalized [0, 255] space
+                norm_pos = float((v - vmin) / (vmax - vmin) * 255.0) if vmax != vmin else 0.0
+                ticks.append((norm_pos, f"{v:.3g}"))
+            
             self.colorbar_axis.setTicks([ticks])
             
-            # Set the colorbar rect and range
-            self.colorbar_image.setRect(pg.QtCore.QRectF(0, vmin, 1, vmax - vmin))
-            self.colorbar_vb.setYRange(vmin, vmax, padding=0)
+            # Set the colorbar rect and range in NORMALIZED [0, 255] space
+            # This prevents overflow in ViewBox if vmin/vmax are very large
+            self.colorbar_image.setRect(pg.QtCore.QRectF(0, 0, 1, 255))
+            self.colorbar_vb.setYRange(0, 255, padding=0)
         except Exception as e:
             self.logger.warning(f"Failed to update colorbar labels: {e}")
 
@@ -1377,41 +1419,19 @@ class PyQtGraphSpectrumCanvas(QWidget):
         # Replace NaN with vmin for scaling (they'll be overwritten afterward)
         data_display = np.where(nan_mask, self._vmin, self._data)
 
-        # Apply scaling transformation to get [0, 255] for LUT
-        # data_scaled = self._apply_scaling(data_display)
-
-        # Apply scaling transformation to get [1, 255] for LUT
-        # (reserve index 0 for transparent NaN pixels)
-        data_scaled = self._apply_scaling(data_display)
-        # Remap from [0, 255] to [1, 255] so index 0 is free for NaN
-        data_scaled = (data_scaled * (254.0 / 255.0) + 1).astype(np.uint8)
+        # Apply scaling transformation to get normalized float [0, 1]
+        data_norm = self._apply_scaling(data_display)
+        
+        # Scale to [1, 255] for LUT indexing (reserve 0 for NaN)
+        # Using float math before convert to uint8 for precision
+        data_scaled = (data_norm * 254.0 + 1.5).astype(np.uint8)
+        
         # Set NaN pixels to index 0 (transparent)
         data_scaled[nan_mask] = 0
 
-        # Build display LUT: index 0 = transparent, 1-255 = colormap
-        display_lut = np.zeros((256, 4), dtype=np.ubyte)
-        display_lut[0] = [0, 0, 0, 0]  # Transparent for NaN
-        if self._current_lut is not None:
-            for i in range(1, 256):
-                # Map LUT index i (range 1-255) back to colormap position (0-255)
-                cmap_idx = int((i - 1) * 255.0 / 254.0)
-                display_lut[i] = self._current_lut[cmap_idx]
-        else:
-            for i in range(1, 256):
-                display_lut[i] = [i, i, i, 255]
-
-        # Data orientation: input is (time, freq) with shape (nt, nf)
-        # PyQtGraph ImageItem expects data[x, y] where x is horizontal, y is vertical
-        # We want: time on X-axis (horizontal), freq on Y-axis (vertical)
-        # So the image should be (nf, nt) for display - but using setRect handles orientation
-        # We DON'T transpose - setImage interprets data as (rows, cols) which maps to (Y, X)
-        # The setRect then maps these pixels to data coordinates correctly.
-        image_data = data_scaled  # No transpose - setRect handles mapping
-
-        # Set image with LUT
-        self.image_item.setImage(image_data, autoLevels=False)
-        # self.image_item.setLookupTable(self._current_lut)
-        self.image_item.setLookupTable(display_lut)
+        # Set image with the cached transparent LUT
+        self.image_item.setImage(data_scaled, autoLevels=False)
+        self.image_item.setLookupTable(self._transparent_lut)
         self.image_item.setLevels([0, 255])
 
         # Set the correct axis ranges (rect defines the bounding box)
@@ -1425,11 +1445,12 @@ class PyQtGraphSpectrumCanvas(QWidget):
             self.image_item.setRect(pg.QtCore.QRectF(t0, f0, t1 - t0, f1 - f0))
 
             # Set zoom limits to prevent zooming beyond data
+            # Use explicit float casting to avoid numpy.float64 issues in Py3.13
             self.plot_item.setLimits(
-                xMin=t0, xMax=t1,
-                yMin=f0, yMax=f1,
-                minXRange=1,  # Minimum visible range (1 second)
-                minYRange=1   # Minimum visible range (1 MHz)
+                xMin=float(t0), xMax=float(t1),
+                yMin=float(f0), yMax=float(f1),
+                minXRange=1.0,  # Minimum visible range (1 second)
+                minYRange=1.0   # Minimum visible range (1 MHz)
             )
 
             # Format time axis with UTC labels
@@ -1449,7 +1470,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._apply_canvas_theme_colors()
 
     def _apply_scaling(self, data):
-        """Apply intensity scaling (Linear/Log/Sqrt/Gamma) and normalize to [0, 255] for LUT."""
+        """Apply intensity scaling (Linear/Log/Sqrt/Gamma) and return normalized float [0, 1]."""
         vmin, vmax = self._vmin, self._vmax
         if vmax == vmin:
             vmax = vmin + 1e-9
@@ -1467,41 +1488,29 @@ class PyQtGraphSpectrumCanvas(QWidget):
         elif self._scale_mode == "Gamma":
             data_norm = np.power(data_norm, self._gamma)
 
-        # Scale to [0, 255] for LUT indexing
-        return (data_norm * 255).astype(np.uint8)
+        return data_norm
 
     def _setup_time_axis(self):
-        """Configure time axis with UTC tick labels."""
+        """Configure time axis with custom TimeAxisItem for automatic UTC labels."""
         if self._time_axis is None or len(self._time_axis) < 2:
             return
 
         try:
-            # Get axis range
-            t0 = self._time_axis[0]
-            t1 = self._time_axis[-1]
-            t_range = t1 - t0
-
-            # Convert MJD seconds to datetime for tick formatting
-            time_mjd = self._time_axis / 86400.0
-            utc_times = Time(time_mjd, format='mjd', scale='utc').to_datetime()
-            start_date = utc_times[0].strftime('%Y-%m-%d')
-
-            # Create tick values at regular intervals
-            num_ticks = min(8, len(self._time_axis))
-            tick_indices = np.linspace(0, len(self._time_axis) - 1, num_ticks, dtype=int)
-
-            ticks = []
-            for idx in tick_indices:
-                t_val = self._time_axis[idx]
-                t_str = utc_times[idx].strftime('%H:%M:%S')
-                ticks.append((t_val, t_str))
-
-            # Set custom ticks on the bottom axis
+            # Check if we already have a TimeAxisItem
             ax = self.plot_item.getAxis('bottom')
-            ax.setTicks([ticks])
-            ax.enableAutoSIPrefix(False)  # Disable scientific notation
-            self.plot_item.setLabel('bottom', f'Time (UTC) [{start_date}]')
+            if not isinstance(ax, TimeAxisItem):
+                time_axis = TimeAxisItem(orientation='bottom')
+                self.plot_item.setAxisItems({'bottom': time_axis})
+                ax = time_axis
 
+            # Format the label with the reference date
+            time_mjd = self._time_axis[0] / 86400.0
+            dt = datetime(1858, 11, 17) + timedelta(seconds=float(self._time_axis[0]))
+            start_date = dt.strftime('%Y-%m-%d')
+            
+            ax.setLabel(f'Time (UTC) [{start_date}]')
+            ax.enableAutoSIPrefix(False)
+            
         except Exception as e:
             self.logger.warning(f"Failed to setup time axis: {e}")
 
@@ -1523,7 +1532,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._update_colorbar()  # Update colorbar gradient
         if self._data is not None:
             # Re-apply LUT to current image
-            self.image_item.setLookupTable(self._current_lut)
+            self.image_item.setLookupTable(self._transparent_lut)
 
     def set_smart_scale(self, scale_option):
         """Set the percentile scale option."""
@@ -1764,16 +1773,26 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 frac_t = (x - t_start) / (t_end - t_start) if t_end != t_start else 0
                 frac_f = (y - f_start) / (f_end - f_start) if f_end != f_start else 0
 
-                time_idx = int(np.clip(frac_t * (nt - 1), 0, nt - 1))
-                freq_idx = int(np.clip(frac_f * (nf - 1), 0, nf - 1))
+                time_idx = int(np.clip(frac_t * nt, 0, nt - 1))
+                freq_idx = int(np.clip(frac_f * nf, 0, nf - 1))
+
+                # Build human-readable labels matching the status bar's continuous coordinates
+                try:
+                    utc_time = datetime(1858, 11, 17) + timedelta(seconds=x)
+                    time_label = utc_time.strftime('%H:%M:%S')
+                except Exception:
+                    time_label = f"{x:.2f}"
+                freq_label = f"{y:.2f} MHz"
             else:
                 time_idx = int(np.clip(x, 0, nt - 1))
                 freq_idx = int(np.clip(y, 0, nf - 1))
+                time_label = f"idx {time_idx}"
+                freq_label = f"idx {freq_idx}"
 
             # Show cross-section dialog
             options = [
-                f"Time slice at freq_idx = {freq_idx}",
-                f"Freq slice at time_idx = {time_idx}",
+                f"Time slice at {freq_label}",
+                f"Freq slice at {time_label}",
             ]
             choice, ok = QInputDialog.getItem(
                 None, "Cross Section", "Which slice to plot?", options, 0, False
@@ -1782,43 +1801,60 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 return
 
             if choice.startswith("Time slice"):
-                self._plot_1d_time(self._data[:, freq_idx], freq_idx)
+                self._plot_1d_time(self._data[:, freq_idx], freq_label)
             else:
-                self._plot_1d_freq(self._data[time_idx, :], time_idx)
+                self._plot_1d_freq(self._data[time_idx, :], time_label)
 
         except Exception as e:
             self.logger.error(f"Cross-section click error: {e}")
 
-    def _plot_1d_time(self, data_slice, freq_idx):
+    def _plot_1d_time(self, data_slice, freq_label):
         """Plot 1D time slice using PyQtGraph popup."""
         theme_name = getattr(self.main_window, 'current_theme', 'dark')
         palette = get_palette(theme_name)
         bg_color = palette.get('base', '#1e1e2e')
         text_color = palette.get('text', 'white')
 
-        win = pg.plot(title=f"Time Slice @ freq_idx={freq_idx}")
+        title = f"Time Slice @ {freq_label}"
+        win = pg.plot(title=title)
+        win.setWindowTitle(title)
         win.setBackground(bg_color)
-        win.setLabel('left', 'Amplitude', color=text_color)
-        win.setLabel('bottom', 'Time index', color=text_color)
+        win.setLabel('left', 'Intensity', color=text_color)
         win.getAxis('left').setPen(text_color)
         win.getAxis('left').setTextPen(text_color)
         win.getAxis('bottom').setPen(text_color)
         win.getAxis('bottom').setTextPen(text_color)
-        
-        # Use a nice color for the plot line
-        line_color = palette.get('highlight', '#6366f1')
-        win.plot(data_slice, pen=pg.mkPen(line_color, width=1.8))
 
-    def _plot_1d_freq(self, data_slice, time_idx):
+        line_color = palette.get('highlight', '#6366f1')
+
+        if self._time_axis is not None:
+            win.setLabel('bottom', 'Time (UTC)', color=text_color)
+            # Use time axis as x-values and format tick labels as HH:MM:SS
+            x_vals = np.array(self._time_axis, dtype=np.float64)
+            win.plot(x_vals, data_slice, pen=pg.mkPen(line_color, width=1.8))
+
+            time_axis_item = TimeAxisItem(orientation='bottom')
+            time_axis_item.setPen(text_color)
+            time_axis_item.setTextPen(text_color)
+            win.setAxisItems({'bottom': time_axis_item})
+            # Re-plot with the custom axis
+            win.plot(x_vals, data_slice, pen=pg.mkPen(line_color, width=1.8))
+        else:
+            win.setLabel('bottom', 'Time index', color=text_color)
+            win.plot(data_slice, pen=pg.mkPen(line_color, width=1.8))
+
+    def _plot_1d_freq(self, data_slice, time_label):
         """Plot 1D frequency slice using PyQtGraph popup."""
         theme_name = getattr(self.main_window, 'current_theme', 'dark')
         palette = get_palette(theme_name)
         bg_color = palette.get('base', '#1e1e2e')
         text_color = palette.get('text', 'white')
 
-        win = pg.plot(title=f"Freq Slice @ time_idx={time_idx}")
+        title = f"Freq Slice @ {time_label}"
+        win = pg.plot(title=title)
+        win.setWindowTitle(title)
         win.setBackground(bg_color)
-        win.setLabel('left', 'Amplitude', color=text_color)
+        win.setLabel('left', 'Intensity', color=text_color)
         win.getAxis('left').setPen(text_color)
         win.getAxis('left').setTextPen(text_color)
         win.getAxis('bottom').setPen(text_color)
@@ -2707,10 +2743,6 @@ class MainWindow(QMainWindow):
         
         rightLayout.addWidget(self.navGroup)
         
-        navLayout.addLayout(navBtnLayout)
-        
-        rightLayout.addWidget(self.navGroup)
-        
         # Connect canvas hover signal
         self.canvas.hoverChanged.connect(self.updateHoverInfo)
 
@@ -3136,7 +3168,12 @@ class MainWindow(QMainWindow):
                     self.loadSlice()  # Initial load
                 else:
                     # Load everything (copy to RAM)
-                    data = np.array(data_ref, dtype=np.float32)
+                    raw_data = self.hdul[0].data
+                    if raw_data.shape[0] == len(self._full_time_axis):
+                        data = np.array(raw_data, dtype=np.float32)
+                    else:
+                        data = np.array(raw_data.T, dtype=np.float32)
+
                     # Handle infinities (NaN stays NaN naturally)
                     data[np.isinf(data)] = np.nan
 
@@ -3394,7 +3431,11 @@ class MainWindow(QMainWindow):
         
         # Compute median profile for THIS window
         # (We do not cache across windows to ensure local normalization)
-        freq_profile = np.nanmedian(data, axis=0)  # Axis 0 is time
+        import warnings
+        # Suppress "All-NaN slice encountered" warning for empty/noisy channels
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            freq_profile = np.nanmedian(data, axis=0)  # Axis 0 is time
         
         # Avoid division by zero
         freq_profile[freq_profile == 0] = 1e-20
@@ -3570,6 +3611,13 @@ class MainWindow(QMainWindow):
             if new_page != self._current_page:
                 self._current_page = new_page
                 self.loadSlice()
+            else:
+                # Snap the minimap rectangle back to the current page position
+                start_idx = self._current_page * window_samples
+                end_idx = min(start_idx + window_samples, total_samples)
+                self.minimap.update_view_percent(
+                    start_idx / total_samples, end_idx / total_samples
+                )
 
     def saveCleanedData(self):
         if self._original_data is None:
@@ -3668,9 +3716,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "No original data to revert to.")
             return
         self._original_data = self._original_unmodified.copy()
+        
+        # Also clear any extended frequency masks and undo history
+        self._global_masked_freq_indices.clear()
+        self.undo_stack.clear()
+        
         self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
         self.canvas.draw_spectrum()
-        self.statusBar().showMessage("Reverted to original data.", 5000)
+        self.statusBar().showMessage("Reverted to original data (all masks cleared).", 5000)
 
     # ----------------------- Undo/Redo Functionality ----------------------------
     def _push_undo_delta(self, time_slice, freq_slice):
