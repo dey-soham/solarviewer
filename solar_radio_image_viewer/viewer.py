@@ -545,7 +545,7 @@ class SolarRadioImageTab(QWidget):
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(0)  # Splitter handles spacing
+        main_layout.setSpacing(0)
 
         # Create splitter for resizable panels
         splitter = QSplitter(Qt.Horizontal)
@@ -595,7 +595,7 @@ class SolarRadioImageTab(QWidget):
     def create_file_controls(self, parent_layout):
         group = QGroupBox("Image Selection")
         layout = QVBoxLayout(group)
-        layout.setSpacing(8)  # Tighter spacing for compact layout
+        layout.setSpacing(8)
 
         # Modern segmented control for file type selection
         toggle_layout = QHBoxLayout()
@@ -4055,12 +4055,12 @@ class SolarRadioImageTab(QWidget):
         self._ruler_mode = checked
         if checked:
             self.show_status_message(
-                "Ruler mode: Click first point, then click second point to measure"
+                "Ruler mode: Click first point, then click second point to measure (Shift for H/V snap)"
             )
             # Disconnect ROI selector temporarily
             if self.roi_selector:
                 self.roi_selector.set_active(False)
-            # Connect mouse events for ruler (only click, no motion/release for drag)
+            # Connect mouse events for ruler
             self._ruler_click_cid = self.canvas.mpl_connect(
                 "button_press_event", self._ruler_on_click
             )
@@ -4072,6 +4072,9 @@ class SolarRadioImageTab(QWidget):
             # Disconnect ruler events
             if hasattr(self, "_ruler_click_cid"):
                 self.canvas.mpl_disconnect(self._ruler_click_cid)
+            if hasattr(self, "_ruler_motion_cid") and self._ruler_motion_cid:
+                self.canvas.mpl_disconnect(self._ruler_motion_cid)
+                self._ruler_motion_cid = None
             # Clear ruler graphics
             self._clear_ruler()
 
@@ -4089,6 +4092,13 @@ class SolarRadioImageTab(QWidget):
             except:
                 pass
             self._ruler_text = None
+        if hasattr(self, '_ruler_preview_line') and self._ruler_preview_line is not None:
+            try:
+                self._ruler_preview_line.remove()
+            except:
+                pass
+            self._ruler_preview_line = None
+        self._ruler_blit_bg = None
         self._ruler_start = None
         self.canvas.draw_idle()
 
@@ -4096,6 +4106,10 @@ class SolarRadioImageTab(QWidget):
         """Handle mouse click for ruler - two clicks to measure"""
         if event.inaxes is None or event.button != 1:
             return
+
+        from PyQt5.QtWidgets import QApplication
+        modifiers = QApplication.keyboardModifiers()
+        shift_held = bool(modifiers & Qt.ShiftModifier)
 
         if self._ruler_start is None:
             # First click - clear previous measurement first, then set start point
@@ -4123,13 +4137,37 @@ class SolarRadioImageTab(QWidget):
             )
             self.canvas.draw_idle()
 
+            # Connect motion for live preview
+            self._ruler_preview_line = None
+            self._ruler_blit_bg = None
+            self._ruler_motion_cid = self.canvas.mpl_connect(
+                "motion_notify_event", self._ruler_on_motion
+            )
+
             self.show_status_message(
-                f"Start point set at ({event.xdata:.1f}, {event.ydata:.1f}) - click second point"
+                f"Start point set at ({event.xdata:.1f}, {event.ydata:.1f}) - click second point (Shift for H/V snap)"
             )
         else:
             # Second click - set end point and calculate distance
             x1, y1 = self._ruler_start
             x2, y2 = event.xdata, event.ydata
+
+            if shift_held:
+                x2, y2 = self._snap_to_axis(x1, y1, x2, y2)
+
+            # Disconnect motion handler
+            if hasattr(self, '_ruler_motion_cid') and self._ruler_motion_cid:
+                self.canvas.mpl_disconnect(self._ruler_motion_cid)
+                self._ruler_motion_cid = None
+
+            # Clean up preview line
+            if hasattr(self, '_ruler_preview_line') and self._ruler_preview_line is not None:
+                try:
+                    self._ruler_preview_line.remove()
+                except:
+                    pass
+                self._ruler_preview_line = None
+            self._ruler_blit_bg = None
 
             ax = event.inaxes
 
@@ -4165,6 +4203,48 @@ class SolarRadioImageTab(QWidget):
             # Reset for next measurement
             self._ruler_start = None
 
+    def _ruler_on_motion(self, event):
+        """Handle mouse motion for ruler live preview line with blitting"""
+        if self._ruler_start is None or event.inaxes is None:
+            return
+
+        from PyQt5.QtWidgets import QApplication
+        modifiers = QApplication.keyboardModifiers()
+        shift_held = bool(modifiers & Qt.ShiftModifier)
+
+        x1, y1 = self._ruler_start
+        x2, y2 = event.xdata, event.ydata
+
+        if shift_held:
+            x2, y2 = self._snap_to_axis(x1, y1, x2, y2)
+
+        ax = event.inaxes
+
+        # Update or create preview line
+        if self._ruler_preview_line is None:
+            (self._ruler_preview_line,) = ax.plot(
+                [x1, x2], [y1, y2], "r--", linewidth=1.5, alpha=0.7
+            )
+            # Capture background for blitting
+            self.canvas.draw()
+            self._ruler_blit_bg = self.canvas.copy_from_bbox(ax.bbox)
+        else:
+            self._ruler_preview_line.set_data([x1, x2], [y1, y2])
+
+        # Use blitting for fast updates
+        if self._ruler_blit_bg is not None:
+            self.canvas.restore_region(self._ruler_blit_bg)
+            ax.draw_artist(self._ruler_preview_line)
+            self.canvas.blit(ax.bbox)
+        else:
+            self.canvas.draw_idle()
+
+        # Show distance in status bar
+        pixel_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        self.show_status_message(
+            f"Distance: {pixel_dist:.1f} px | Shift for H/V snap | Click to confirm"
+        )
+
     def _calculate_angular_distance(self, x1, y1, x2, y2):
         """Calculate angular distance between two pixel coordinates using WCS"""
         # Pixel distance
@@ -4176,9 +4256,15 @@ class SolarRadioImageTab(QWidget):
             try:
                 # Get pixel scale from WCS
                 increment = self.current_wcs.increment()["numeric"][0:2]
-                # Convert from radians to arcsec
-                scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
-                scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
+                # Check if image uses SOLAR-X/Y (increment is already in arcsec)
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    scale_x = abs(increment[0])  # already arcsec/pixel
+                    scale_y = abs(increment[1])
+                else:
+                    scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
+                    scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
 
                 # Calculate angular distance
                 dx_arcsec = dx_px * scale_x
@@ -4188,10 +4274,39 @@ class SolarRadioImageTab(QWidget):
                 # Get world coordinates for both points
                 world1 = self.current_wcs.toworld([x1, y1, 0, 0])["numeric"]
                 world2 = self.current_wcs.toworld([x2, y2, 0, 0])["numeric"]
-                ra1_deg = world1[0] * 180 / np.pi if world1[0] else None
-                dec1_deg = world1[1] * 180 / np.pi if world1[1] else None
-                ra2_deg = world2[0] * 180 / np.pi if world2[0] else None
-                dec2_deg = world2[1] * 180 / np.pi if world2[1] else None
+                # Check if SOLAR-X (toworld returns arcsec, not radians)
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    ra1_deg = world1[0] / 3600.0 if world1[0] else None
+                    dec1_deg = world1[1] / 3600.0 if world1[1] else None
+                    ra2_deg = world2[0] / 3600.0 if world2[0] else None
+                    dec2_deg = world2[1] / 3600.0 if world2[1] else None
+                else:
+                    ra1_deg = world1[0] * 180 / np.pi if world1[0] else None
+                    dec1_deg = world1[1] * 180 / np.pi if world1[1] else None
+                    ra2_deg = world2[0] * 180 / np.pi if world2[0] else None
+                    dec2_deg = world2[1] * 180 / np.pi if world2[1] else None
+
+                # Determine coordinate label names
+                _hdr_lbl = getattr(self, '_cached_fits_header', None) or {}
+                _ctype1_lbl = str(_hdr_lbl.get('CTYPE1', '')).upper()
+                if 'SOLAR' in _ctype1_lbl:
+                    _coord1_name, _coord2_name = 'SOLAR-X (")', 'SOLAR-Y (")'
+                    # Convert deg back to arcsec for display
+                    if ra1_deg is not None: ra1_deg = ra1_deg * 3600.0
+                    if dec1_deg is not None: dec1_deg = dec1_deg * 3600.0
+                    if ra2_deg is not None: ra2_deg = ra2_deg * 3600.0
+                    if dec2_deg is not None: dec2_deg = dec2_deg * 3600.0
+                elif 'HPLN' in _ctype1_lbl:
+                    _coord1_name, _coord2_name = 'HPLN (")', 'HPLT (")'
+                    # Unwrap helioprojective degrees to [-180, 180] then convert to arcsec
+                    if ra1_deg is not None: ra1_deg = ((ra1_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                    if dec1_deg is not None: dec1_deg = ((dec1_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                    if ra2_deg is not None: ra2_deg = ((ra2_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                    if dec2_deg is not None: dec2_deg = ((dec2_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                else:
+                    _coord1_name, _coord2_name = 'RA (deg)', 'Dec (deg)'
 
                 # Professional terminal output
                 print("\n" + "=" * 60)
@@ -4200,12 +4315,12 @@ class SolarRadioImageTab(QWidget):
                 print(f'  Coordinate System: WCS (scale: {scale_x:.4f}"/px)')
                 print("-" * 60)
                 print(
-                    f"  {'Point':<12} {'X (px)':<12} {'Y (px)':<12} {'RA (deg)':<15} {'Dec (deg)':<15}"
+                    f"  {'Point':<12} {'X (px)':<12} {'Y (px)':<12} {_coord1_name:<15} {_coord2_name:<15}"
                 )
                 print("-" * 60)
                 if ra1_deg is not None and dec1_deg is not None:
                     print(
-                        f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {ra1_deg:<15.6f} {dec1_deg:<15.6f}"
+                        f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {ra1_deg:<15.4f} {dec1_deg:<15.4f}"
                     )
                 else:
                     print(
@@ -4213,7 +4328,7 @@ class SolarRadioImageTab(QWidget):
                     )
                 if ra2_deg is not None and dec2_deg is not None:
                     print(
-                        f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {ra2_deg:<15.6f} {dec2_deg:<15.6f}"
+                        f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {ra2_deg:<15.4f} {dec2_deg:<15.4f}"
                     )
                 else:
                     print(
@@ -4704,6 +4819,7 @@ class SolarRadioImageTab(QWidget):
             except:
                 pass
             self._profile_preview_line = None
+        self._profile_blit_bg = None
 
     def _profile_line_on_click(self, event):
         """Handle click for line profile mode"""
@@ -4769,16 +4885,25 @@ class SolarRadioImageTab(QWidget):
             (self._profile_preview_line,) = ax.plot(
                 [x1, x2], [y1, y2], "g--", linewidth=1.5, alpha=0.7
             )
+            # Capture background for blitting
+            self.canvas.draw()
+            self._profile_blit_bg = self.canvas.copy_from_bbox(ax.bbox)
         else:
             self._profile_preview_line.set_data([x1, x2], [y1, y2])
+
+        # Use blitting for fast updates instead of full canvas redraw
+        if hasattr(self, '_profile_blit_bg') and self._profile_blit_bg is not None:
+            self.canvas.restore_region(self._profile_blit_bg)
+            ax.draw_artist(self._profile_preview_line)
+            self.canvas.blit(ax.bbox)
+        else:
+            self.canvas.draw_idle()
 
         # Calculate and show distance
         pixel_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
         self.show_status_message(
             f"Distance: {pixel_dist:.1f} px | Shift for H/V snap | Click to confirm"
         )
-
-        self.canvas.draw_idle()
 
     def _snap_to_axis(self, x1, y1, x2, y2):
         """Snap end point to horizontal or vertical based on which is closer"""
@@ -5138,7 +5263,13 @@ class SolarRadioImageTab(QWidget):
         if self.current_wcs:
             try:
                 increment = self.current_wcs.increment()["numeric"][0:2]
-                scale = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
+                # Check if image uses SOLAR-X/Y (increment is already in arcsec)
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    scale = abs(increment[0])  # already arcsec/pixel
+                else:
+                    scale = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
 
                 if is_radial:
                     # Radial mode: center at 0, from -half_dist to +half_dist
@@ -5154,9 +5285,15 @@ class SolarRadioImageTab(QWidget):
                 world_coords = []
                 for px, py in zip(x_coords, y_coords):
                     world = self.current_wcs.toworld([px, py, 0, 0])["numeric"]
-                    # world[0] and world[1] are RA, Dec in radians
-                    ra_deg = world[0] * 180 / np.pi
-                    dec_deg = world[1] * 180 / np.pi
+                    # world[0] and world[1] are RA, Dec in radians (or arcsec for SOLAR-X)
+                    _hdr_chk = getattr(self, '_cached_fits_header', None) or {}
+                    _is_solar_chk = 'SOLAR-X' in str(_hdr_chk.get('CTYPE1', '')).upper()
+                    if _is_solar_chk:
+                        ra_deg = world[0] / 3600.0
+                        dec_deg = world[1] / 3600.0
+                    else:
+                        ra_deg = world[0] * 180 / np.pi
+                        dec_deg = world[1] * 180 / np.pi
                     world_coords.append((ra_deg, dec_deg))
                 world_coords = np.array(world_coords)
                 wcs_available = True
@@ -5348,17 +5485,36 @@ class SolarRadioImageTab(QWidget):
         if wcs_available and world_coords is not None:
             ax2 = ax.twiny()  # Create twin axis sharing y-axis
 
-            # Use RA or Dec based on which varies more
+            # Determine axis labels based on coordinate type
+            _hdr_ax = getattr(self, '_cached_fits_header', None) or {}
+            _ctype1_ax = str(_hdr_ax.get('CTYPE1', '')).upper()
+
+            # Use coord1 or coord2 based on which varies more
             ra_range = abs(world_coords[-1, 0] - world_coords[0, 0])
             dec_range = abs(world_coords[-1, 1] - world_coords[0, 1])
 
             if ra_range >= dec_range:
-                wcs_vals = world_coords[:, 0]  # RA in degrees
-                # Format as hours:min:sec for RA
-                ax2.set_xlabel("RA (deg)")
+                wcs_vals = world_coords[:, 0]
+                if 'SOLAR' in _ctype1_ax:
+                    # Convert deg to arcsec for SOLAR-X
+                    wcs_vals = wcs_vals * 3600.0
+                    ax2.set_xlabel('SOLAR-X (arcsec)')
+                elif 'HPLN' in _ctype1_ax:
+                    # Unwrap helioprojective to [-180, 180] then to arcsec
+                    wcs_vals = ((wcs_vals + 180.0) % 360.0 - 180.0) * 3600.0
+                    ax2.set_xlabel('HPLN (arcsec)')
+                else:
+                    ax2.set_xlabel("RA (deg)")
             else:
-                wcs_vals = world_coords[:, 1]  # Dec in degrees
-                ax2.set_xlabel("Dec (deg)")
+                wcs_vals = world_coords[:, 1]
+                if 'SOLAR' in _ctype1_ax:
+                    wcs_vals = wcs_vals * 3600.0
+                    ax2.set_xlabel('SOLAR-Y (arcsec)')
+                elif 'HPLN' in _ctype1_ax:
+                    wcs_vals = ((wcs_vals + 180.0) % 360.0 - 180.0) * 3600.0
+                    ax2.set_xlabel('HPLT (arcsec)')
+                else:
+                    ax2.set_xlabel("Dec (deg)")
 
             # Set the same data limits as main axis but mapped to WCS values
             ax2.set_xlim(wcs_vals[0], wcs_vals[-1])
@@ -5746,7 +5902,25 @@ class SolarRadioImageTab(QWidget):
 
         if pix is not None:
             height, width = pix.shape
-            self.solar_disk_center = (width // 2, height // 2)
+            # For HPC/SOLAR-X or HPLN images, disk center is at world (0,0)
+            _is_hpc = self._is_already_hpc()
+            if _is_hpc and self.current_wcs:
+                try:
+                    # Use CASA coordsys to find pixel of world (0,0)
+                    # Use reference values for non-spatial axes (freq, Stokes)
+                    ref_world = list(self.current_wcs.referencevalue()["numeric"])
+                    ref_world[0] = 0.0  # SOLAR-X / HPLN = 0
+                    ref_world[1] = 0.0  # SOLAR-Y / HPLT = 0
+                    pix_origin = self.current_wcs.topixel(ref_world)["numeric"]
+                    cx, cy = float(pix_origin[0]), float(pix_origin[1])
+                    # Clamp to image bounds
+                    cx = max(0.0, min(float(width - 1), cx))
+                    cy = max(0.0, min(float(height - 1), cy))
+                    self.solar_disk_center = (cx, cy)
+                except Exception:
+                    self.solar_disk_center = (width // 2, height // 2)
+            else:
+                self.solar_disk_center = (width // 2, height // 2)
 
             # Make sure RMS box is within image bounds
             if self.current_rms_box[1] > height:
@@ -6221,7 +6395,7 @@ class SolarRadioImageTab(QWidget):
                     ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
                     increment = self.current_wcs.increment()["numeric"][0:2]
                     self._cached_wcs_obj = WCS(naxis=2)
-                    self._cached_wcs_obj.wcs.crpix = ref_pix
+                    self._cached_wcs_obj.wcs.crpix = [ref_pix[0] + 1, ref_pix[1] + 1]  # CASA 0-indexed -> FITS 1-indexed
                     temp_flag = False
                     if fits_flag:
                         if (
@@ -6779,7 +6953,12 @@ class SolarRadioImageTab(QWidget):
                     cdelt = self.current_wcs.increment()["numeric"][0:2]
                     if isinstance(cdelt, list):
                         cdelt = [float(c) for c in cdelt]
-                    cdelt = np.array(cdelt) * 180 / np.pi
+                    _hdr = getattr(self, '_cached_fits_header', None) or {}
+                    _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                    if _is_solar:
+                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
+                    else:
+                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
                     dx_deg = abs(cdelt[0])
                 else:
                     dx_deg = 1.0 / 3600
@@ -6824,9 +7003,40 @@ class SolarRadioImageTab(QWidget):
             and self.show_solar_disk_checkbox.isChecked()
         ):
             try:
+                # Remove old solar disk patches/lines before drawing new ones
+                patches_to_remove = [p for p in ax.patches if getattr(p, '_solar_disk', False)]
+                for p in patches_to_remove:
+                    p.remove()
+                lines_to_remove = [l for l in ax.lines if getattr(l, '_solar_disk', False)]
+                for l in lines_to_remove:
+                    l.remove()
                 if self.solar_disk_center is None:
                     height, width = data.shape
-                    self.solar_disk_center = (width // 2, height // 2)
+                    # For HPC/SOLAR-X or HPLN images, disk center is at world (0,0)
+                    _is_hpc = self._is_already_hpc()
+                    if _is_hpc and self.current_wcs:
+                        try:
+                            ref_world = list(self.current_wcs.referencevalue()["numeric"])
+                            ref_world[0] = 0.0  # SOLAR-X / HPLN = 0
+                            ref_world[1] = 0.0  # SOLAR-Y / HPLT = 0
+                            pix_origin = self.current_wcs.topixel(ref_world)["numeric"]
+                            cx, cy = float(pix_origin[0]), float(pix_origin[1])
+                            cx = max(0.0, min(float(width - 1), cx))
+                            cy = max(0.0, min(float(height - 1), cy))
+                            self.solar_disk_center = (cx, cy)
+                        except Exception:
+                            self.solar_disk_center = (width // 2, height // 2)
+                    elif _is_hpc and hasattr(self, '_cached_wcs_obj') and self._cached_wcs_obj is not None:
+                        try:
+                            px, py = self._cached_wcs_obj.wcs_world2pix(0.0, 0.0, 0)
+                            cx, cy = float(px), float(py)
+                            cx = max(0.0, min(float(width - 1), cx))
+                            cy = max(0.0, min(float(height - 1), cy))
+                            self.solar_disk_center = (cx, cy)
+                        except Exception:
+                            self.solar_disk_center = (width // 2, height // 2)
+                    else:
+                        self.solar_disk_center = (width // 2, height // 2)
 
                 center_x, center_y = self.solar_disk_center
 
@@ -6835,7 +7045,13 @@ class SolarRadioImageTab(QWidget):
                     cdelt = self.current_wcs.increment()["numeric"][0:2]
                     if isinstance(cdelt, list):
                         cdelt = [float(c) for c in cdelt]
-                    cdelt = np.array(cdelt) * 180 / np.pi
+                    # Check if image uses SOLAR-X/Y (increment is in arcsec, not radians)
+                    _hdr = getattr(self, '_cached_fits_header', None) or {}
+                    _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                    if _is_solar:
+                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
+                    else:
+                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
                     dx_deg = abs(cdelt[0])
                     radius_pix = radius_deg / dx_deg
                 else:
@@ -6850,25 +7066,28 @@ class SolarRadioImageTab(QWidget):
                     linewidth=self.solar_disk_style["linewidth"],
                     alpha=self.solar_disk_style["alpha"],
                 )
+                circle._solar_disk = True
                 ax.add_patch(circle)
 
                 # Only draw the center marker if show_center is True
                 if self.solar_disk_style.get("show_center", True):
                     cross_size = radius_pix / 20
-                    ax.plot(
+                    line1, = ax.plot(
                         [center_x - cross_size, center_x + cross_size],
                         [center_y, center_y],
                         color=self.solar_disk_style["color"],
                         linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
-                    ax.plot(
+                    line1._solar_disk = True
+                    line2, = ax.plot(
                         [center_x, center_x],
                         [center_y - cross_size, center_y + cross_size],
                         color=self.solar_disk_style["color"],
                         linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
+                    line2._solar_disk = True
             except Exception as e:
                 print(f"[ERROR] Error drawing solar disk: {e}")
                 self.show_status_message(f"Error drawing solar disk: {e}")
@@ -6964,13 +7183,26 @@ class SolarRadioImageTab(QWidget):
             and self.show_solar_disk_checkbox.isChecked()
         ):
             try:
+                # Remove old solar disk patches/lines before drawing new ones
+                patches_to_remove = [p for p in ax.patches if getattr(p, '_solar_disk', False)]
+                for p in patches_to_remove:
+                    p.remove()
+                lines_to_remove = [l for l in ax.lines if getattr(l, '_solar_disk', False)]
+                for l in lines_to_remove:
+                    l.remove()
+
                 center_x, center_y = self.solar_disk_center
                 if self.current_wcs:
                     radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
                     cdelt = self.current_wcs.increment()["numeric"][0:2]
                     if isinstance(cdelt, list):
                         cdelt = [float(c) for c in cdelt]
-                    cdelt = np.array(cdelt) * 180 / np.pi
+                    _hdr = getattr(self, '_cached_fits_header', None) or {}
+                    _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                    if _is_solar:
+                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
+                    else:
+                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
                     dx_deg = abs(cdelt[0])
                     radius_pix = radius_deg / dx_deg
                 else:
@@ -6985,24 +7217,27 @@ class SolarRadioImageTab(QWidget):
                     linewidth=self.solar_disk_style["linewidth"],
                     alpha=self.solar_disk_style["alpha"],
                 )
+                circle._solar_disk = True
                 ax.add_patch(circle)
 
                 if self.solar_disk_style.get("show_center", True):
                     cross_size = radius_pix / 20
-                    ax.plot(
+                    line1, = ax.plot(
                         [center_x - cross_size, center_x + cross_size],
                         [center_y, center_y],
                         color=self.solar_disk_style["color"],
                         linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
-                    ax.plot(
+                    line1._solar_disk = True
+                    line2, = ax.plot(
                         [center_x, center_x],
                         [center_y - cross_size, center_y + cross_size],
                         color=self.solar_disk_style["color"],
                         linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
+                    line2._solar_disk = True
             except Exception as e:
                 print(f"[ERROR] Error drawing solar disk: {e}")
                 self.show_status_message(f"Error drawing solar disk: {e}")
@@ -7432,7 +7667,7 @@ class SolarRadioImageTab(QWidget):
         x_spinbox = QSpinBox()
         x_spinbox.setRange(0, width - 1)
         if self.solar_disk_center is not None:
-            x_spinbox.setValue(self.solar_disk_center[0])
+            x_spinbox.setValue(int(round(self.solar_disk_center[0])))
         else:
             x_spinbox.setValue(width // 2)
         center_layout.addWidget(x_label)
@@ -7442,7 +7677,7 @@ class SolarRadioImageTab(QWidget):
         y_spinbox = QSpinBox()
         y_spinbox.setRange(0, height - 1)
         if self.solar_disk_center is not None:
-            y_spinbox.setValue(self.solar_disk_center[1])
+            y_spinbox.setValue(int(round(self.solar_disk_center[1])))
         else:
             y_spinbox.setValue(height // 2)
         center_layout.addWidget(y_label)
@@ -7491,7 +7726,10 @@ class SolarRadioImageTab(QWidget):
                     show_center_checkbox.isChecked()
                 )
 
-                viewer.schedule_plot()
+                # Directly update solar disk without full replot for instant feedback
+                ax = viewer.figure.gca()
+                viewer._update_solar_disk_position(ax)
+                viewer.canvas.draw_idle()
                 viewer.show_status_message("Solar disk settings applied")
             except RuntimeError:
                 dialog.close()
@@ -7671,7 +7909,12 @@ class SolarRadioImageTab(QWidget):
             cdelt = self.current_wcs.increment()["numeric"][0:2]
             if isinstance(cdelt, list):
                 cdelt = [float(c) for c in cdelt]
-            cdelt = np.array(cdelt) * 180 / np.pi
+            _hdr = getattr(self, '_cached_fits_header', None) or {}
+            _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+            if _is_solar:
+                cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
+            else:
+                cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
             arcmin_60_deg = 60.0 / 60.0
             pixels_x = arcmin_60_deg / abs(cdelt[0])
             pixels_y = arcmin_60_deg / abs(cdelt[1])
@@ -7741,35 +7984,56 @@ class SolarRadioImageTab(QWidget):
                 increment = self.current_wcs.increment()["numeric"][0:2]
 
                 w = WCS(naxis=2)
-                w.wcs.crpix = ref_pix
-                w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
-                w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
+                w.wcs.crpix = [ref_pix[0] + 1, ref_pix[1] + 1]  # CASA 0-indexed -> FITS 1-indexed
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    w.wcs.crval = [ref_val[0] / 3600.0, ref_val[1] / 3600.0]
+                    w.wcs.cdelt = [increment[0] / 3600.0, increment[1] / 3600.0]
+                else:
+                    w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
+                    w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
 
-                ra1, dec1 = w.wcs_pix2world(xlow, ylow, 0)
-                ra2, dec2 = w.wcs_pix2world(xhigh, yhigh, 0)
+                w1x, w1y = w.wcs_pix2world(xlow, ylow, 0)
+                w2x, w2y = w.wcs_pix2world(xhigh, yhigh, 0)
 
-                coord1 = SkyCoord(ra=ra1 * u.degree, dec=dec1 * u.degree)
-                coord2 = SkyCoord(ra=ra2 * u.degree, dec=dec2 * u.degree)
+                center_wx = (w1x + w2x) / 2
+                center_wy = (w1y + w2y) / 2
 
-                center_ra = (ra1 + ra2) / 2
-                center_dec = (dec1 + dec2) / 2
-                center_coord = SkyCoord(
-                    ra=center_ra * u.degree, dec=center_dec * u.degree
-                )
-
-                width = abs(ra2 - ra1) * u.degree
-                height = abs(dec2 - dec1) * u.degree
-
-                ra_dec_info = (
-                    f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
-                    f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
-                    f"\nSize: {width.to(u.arcsec):.1f} × {height.to(u.arcsec):.1f}"
-                    # f"\nCorners: "
-                    # f"\n  Bottom-Left: RA={coord1.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
-                    # f"Dec={coord1.dec.to_string(sep=':', precision=2)}"
-                    # f"\n  Top-Right: RA={coord2.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
-                    # f"Dec={coord2.dec.to_string(sep=':', precision=2)}"
-                )
+                ctype1_roi = str(_hdr.get('CTYPE1', '')).upper()
+                if 'SOLAR' in ctype1_roi:
+                    # SOLAR-X/Y: WCS values are in arcsec (crval was set directly)
+                    sx = center_wx * 3600.0  # degrees -> arcsec
+                    sy = center_wy * 3600.0
+                    w_arcsec = abs(w2x - w1x) * 3600.0
+                    h_arcsec = abs(w2y - w1y) * 3600.0
+                    ra_dec_info = (
+                        f'Center: SOLAR-X={sx:.1f}", SOLAR-Y={sy:.1f}"'
+                        f'\nSize: {w_arcsec:.1f}" × {h_arcsec:.1f}"'
+                    )
+                elif 'HPLN' in ctype1_roi:
+                    # Unwrap helioprojective to [-180, 180]
+                    center_wx = ((center_wx + 180.0) % 360.0) - 180.0
+                    center_wy = ((center_wy + 180.0) % 360.0) - 180.0
+                    hx = center_wx * 3600.0
+                    hy = center_wy * 3600.0
+                    w_arcsec = abs(w2x - w1x) * 3600.0
+                    h_arcsec = abs(w2y - w1y) * 3600.0
+                    ra_dec_info = (
+                        f'Center: HPLN={hx:.1f}", HPLT={hy:.1f}"'
+                        f'\nSize: {w_arcsec:.1f}" × {h_arcsec:.1f}"'
+                    )
+                else:
+                    center_coord = SkyCoord(
+                        ra=center_wx * u.degree, dec=center_wy * u.degree
+                    )
+                    width = abs(w2x - w1x) * u.degree
+                    height = abs(w2y - w1y) * u.degree
+                    ra_dec_info = (
+                        f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                        f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
+                        f"\nSize: {width.to(u.arcsec):.1f} × {height.to(u.arcsec):.1f}"
+                    )
             except Exception as e:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
 
@@ -7843,28 +8107,57 @@ class SolarRadioImageTab(QWidget):
                 increment = self.current_wcs.increment()["numeric"][0:2]
 
                 wcs = WCS(naxis=2)
-                wcs.wcs.crpix = ref_pix
-                wcs.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
-                wcs.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
+                wcs.wcs.crpix = [ref_pix[0] + 1, ref_pix[1] + 1]  # CASA 0-indexed -> FITS 1-indexed
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    wcs.wcs.crval = [ref_val[0] / 3600.0, ref_val[1] / 3600.0]
+                    wcs.wcs.cdelt = [increment[0] / 3600.0, increment[1] / 3600.0]
+                else:
+                    wcs.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
+                    wcs.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
 
                 # Convert display coordinates to world coordinates
                 # center_x, center_y are in display coordinates (used for WCS)
-                ra_center, dec_center = wcs.wcs_pix2world(center_x, center_y, 0)
-                center_coord = SkyCoord(
-                    ra=ra_center * u.degree, dec=dec_center * u.degree
-                )
+                wx_c, wy_c = wcs.wcs_pix2world(center_x, center_y, 0)
 
                 # Angular size of ellipse (display width/height)
-                angular_width = abs(width * increment[0] * 180 / np.pi) * 3600  # arcsec
-                angular_height = (
-                    abs(height * increment[1] * 180 / np.pi) * 3600
-                )  # arcsec
+                if _is_solar:
+                    angular_width = abs(width * increment[0])  # already arcsec
+                    angular_height = abs(height * increment[1])  # already arcsec
+                else:
+                    angular_width = abs(width * increment[0] * 180 / np.pi) * 3600  # arcsec
+                    angular_height = (
+                        abs(height * increment[1] * 180 / np.pi) * 3600
+                    )  # arcsec
 
-                ra_dec_info = (
-                    f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
-                    f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
-                    f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
-                )
+                ctype1_ell = str(_hdr.get('CTYPE1', '')).upper()
+                if 'SOLAR' in ctype1_ell:
+                    sx = wx_c * 3600.0
+                    sy = wy_c * 3600.0
+                    ra_dec_info = (
+                        f'Center: SOLAR-X={sx:.1f}", SOLAR-Y={sy:.1f}"'
+                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
+                    )
+                elif 'HPLN' in ctype1_ell:
+                    # Unwrap helioprojective to [-180, 180]
+                    wx_c = ((wx_c + 180.0) % 360.0) - 180.0
+                    wy_c = ((wy_c + 180.0) % 360.0) - 180.0
+                    hx = wx_c * 3600.0
+                    hy = wy_c * 3600.0
+                    ra_dec_info = (
+                        f'Center: HPLN={hx:.1f}", HPLT={hy:.1f}"'
+                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
+                    )
+                else:
+                    center_coord = SkyCoord(
+                        ra=wx_c * u.degree, dec=wy_c * u.degree
+                    )
+                    ra_dec_info = (
+                        f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                        f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
+                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
+                    )
             except Exception as e:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
 
@@ -7885,40 +8178,79 @@ class SolarRadioImageTab(QWidget):
         wcs_obj = getattr(self, "_cached_wcs_obj", None)
         if wcs_obj is not None:
             try:
-                from astropy.coordinates import SkyCoord
                 import astropy.units as u
 
-                ra, dec = wcs_obj.wcs_pix2world(event.xdata, event.ydata, 0)
-                coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
-                ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
-                dec_str = coord.dec.to_string(sep=":", precision=1)
+                wx, wy = wcs_obj.wcs_pix2world(event.xdata, event.ydata, 0)
 
-                coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
+                # Detect coordinate type from cached header or WCS ctype
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                ctype1 = str(_hdr.get('CTYPE1', '')).upper()
+                if not ctype1 and hasattr(wcs_obj, 'wcs') and hasattr(wcs_obj.wcs, 'ctype'):
+                    ctype1 = str(wcs_obj.wcs.ctype[0]).upper()
+
+                if 'SOLAR' in ctype1:
+                    # SOLAR-X/Y: values are in arcsec from CASA
+                    coord_info = (
+                        f"{pixel_info}<br><b>World:</b> "
+                        f"SOLAR-X={wx:.1f}\", SOLAR-Y={wy:.1f}\""
+                    )
+                elif 'HPLN' in ctype1:
+                    # Helioprojective: WCS returns degrees, display in arcsec
+                    # Unwrap both HPLN and HPLT to [-180, 180]
+                    wx = ((wx + 180.0) % 360.0) - 180.0
+                    wy = ((wy + 180.0) % 360.0) - 180.0
+                    hpln_arcsec = wx * 3600.0
+                    hplt_arcsec = wy * 3600.0
+                    coord_info = (
+                        f"{pixel_info}<br><b>World:</b> "
+                        f"HPLN={hpln_arcsec:.1f}\", HPLT={hplt_arcsec:.1f}\""
+                    )
+                else:
+                    # Standard RA/Dec
+                    from astropy.coordinates import SkyCoord
+                    coord = SkyCoord(ra=wx * u.degree, dec=wy * u.degree)
+                    ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
+                    dec_str = coord.dec.to_string(sep=":", precision=1)
+                    coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
+
                 self.coord_label.setText(coord_info)
             except Exception as e:
                 self.coord_label.setText(f"{pixel_info}<br><b>WCS Error:</b> {str(e)}")
         elif self.current_wcs:
             try:
-                from astropy.wcs import WCS
-                from astropy.coordinates import SkyCoord
-                import astropy.units as u
+                # Use CASA toworld for coordinate conversion
+                world = self.current_wcs.toworld([event.xdata, event.ydata, 0, 0])["numeric"]
 
-                ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
-                ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
-                increment = self.current_wcs.increment()["numeric"][0:2]
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                ctype1 = str(_hdr.get('CTYPE1', '')).upper()
 
-                w = WCS(naxis=2)
-                w.wcs.crpix = ref_pix
-                w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
-                w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
-                w.wcs.ctype = ["RA---SIN", "DEC--SIN"]
+                if 'SOLAR' in ctype1:
+                    # SOLAR-X/Y: values are in arcsec
+                    coord_info = (
+                        f"{pixel_info}<br><b>World:</b> "
+                        f"SOLAR-X={world[0]:.1f}\", SOLAR-Y={world[1]:.1f}\""
+                    )
+                elif 'HPLN' in ctype1:
+                    # Helioprojective: CASA returns radians, convert to arcsec with unwrap
+                    hpln_deg = world[0] * 180 / np.pi
+                    hplt_deg = world[1] * 180 / np.pi
+                    hpln_deg = ((hpln_deg + 180.0) % 360.0) - 180.0
+                    hplt_deg = ((hplt_deg + 180.0) % 360.0) - 180.0
+                    coord_info = (
+                        f"{pixel_info}<br><b>World:</b> "
+                        f"HPLN={hpln_deg * 3600.0:.1f}\", HPLT={hplt_deg * 3600.0:.1f}\""
+                    )
+                else:
+                    # Standard RA/Dec: CASA returns radians
+                    import astropy.units as u
+                    from astropy.coordinates import SkyCoord
+                    ra_deg = world[0] * 180 / np.pi
+                    dec_deg = world[1] * 180 / np.pi
+                    coord = SkyCoord(ra=ra_deg * u.degree, dec=dec_deg * u.degree)
+                    ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
+                    dec_str = coord.dec.to_string(sep=":", precision=1)
+                    coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
 
-                ra, dec = w.wcs_pix2world(event.xdata, event.ydata, 0)
-                coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
-                ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
-                dec_str = coord.dec.to_string(sep=":", precision=1)
-
-                coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
                 self.coord_label.setText(coord_info)
             except Exception as e:
                 self.coord_label.setText(f"{pixel_info}<br><b>WCS Error:</b> {str(e)}")
@@ -8863,7 +9195,7 @@ class SolarRadioImageTab(QWidget):
                         increment = self.current_contour_wcs.increment()["numeric"][0:2]
 
                         # Swap axes for numpy (row, col) = (y, x) order
-                        contour_wcs_obj.wcs.crpix = [ref_pix[1], ref_pix[0]]
+                        contour_wcs_obj.wcs.crpix = [ref_pix[1] + 1, ref_pix[0] + 1]  # CASA 0-indexed -> FITS 1-indexed
 
                         # Get CTYPE from FITS header (correct for HPC)
                         ctype1 = header.get("CTYPE1", "")
@@ -8873,15 +9205,31 @@ class SolarRadioImageTab(QWidget):
                             or "HPLT" in ctype1
                             or "HPLN" in ctype2
                             or "HPLT" in ctype2
+                            or "SOLAR-X" in ctype1.upper()
+                            or "SOLAR-Y" in ctype2.upper()
                         )
 
                         if is_hpc:
-                            # For HPC FITS files, CASA coordsys is in radians
-                            # Convert to degrees for WCS reprojection
-                            crval1 = ref_val[0] * 180.0 / np.pi
-                            crval2 = ref_val[1] * 180.0 / np.pi
-                            cdelt1 = increment[0] * 180.0 / np.pi
-                            cdelt2 = increment[1] * 180.0 / np.pi
+                            # Distinguish HPLN-TAN (CASA stores in radians) from
+                            # SOLAR-X (CASA stores as linear coords in arcsec)
+                            is_solar_xy = (
+                                "SOLAR-X" in ctype1.upper()
+                                or "SOLAR-Y" in ctype2.upper()
+                            )
+                            if is_solar_xy:
+                                # SOLAR-X/Y: CASA coordsys has arcsec values
+                                # Convert arcsec → degrees for astropy WCS
+                                crval1 = ref_val[0] / 3600.0
+                                crval2 = ref_val[1] / 3600.0
+                                cdelt1 = increment[0] / 3600.0
+                                cdelt2 = increment[1] / 3600.0
+                            else:
+                                # HPLN/HPLT: CASA coordsys is in radians
+                                # Convert to degrees for WCS reprojection
+                                crval1 = ref_val[0] * 180.0 / np.pi
+                                crval2 = ref_val[1] * 180.0 / np.pi
+                                cdelt1 = increment[0] * 180.0 / np.pi
+                                cdelt2 = increment[1] * 180.0 / np.pi
                         else:
                             # For RA/Dec, CASA coordsys is already in radians, convert to degrees
                             crval1 = ref_val[0] * 180.0 / np.pi
@@ -8891,10 +9239,19 @@ class SolarRadioImageTab(QWidget):
 
                         contour_wcs_obj.wcs.crval = [crval2, crval1]  # Swapped
                         contour_wcs_obj.wcs.cdelt = [cdelt2, cdelt1]  # Swapped
+                        # Map SOLAR-X/Y to standard celestial types for reproject
+                        def _to_celestial_ctype(ct):
+                            ct_upper = ct.upper()
+                            if "SOLAR-X" in ct_upper:
+                                return "HPLN-TAN"
+                            elif "SOLAR-Y" in ct_upper:
+                                return "HPLT-TAN"
+                            return ct
+
                         contour_wcs_obj.wcs.ctype = [
-                            ctype2,
-                            ctype1,
-                        ]  # From header (correct HPC)
+                            _to_celestial_ctype(ctype2),
+                            _to_celestial_ctype(ctype1),
+                        ]  # Map to celestial types for reproject
                     except Exception as e:
 
                         print(f"[ERROR] Failed to build WCS from FITS header: {e}")
@@ -8911,9 +9268,9 @@ class SolarRadioImageTab(QWidget):
                     # But numpy arrays are (row, col) = (y, x)
                     # We need to SWAP the axes for proper alignment with reproject
                     contour_wcs_obj.wcs.crpix = [
-                        ref_pix[1],
-                        ref_pix[0],
-                    ]  # Swap to (y, x)
+                        ref_pix[1] + 1,
+                        ref_pix[0] + 1,
+                    ]  # Swap to (y, x); CASA 0-indexed -> FITS 1-indexed
 
                     if "Right Ascension" in summary["axisnames"]:
                         contour_wcs_obj.wcs.crval = [
@@ -8933,17 +9290,32 @@ class SolarRadioImageTab(QWidget):
                 if fits_flag:
                     try:
                         # Swap CTYPE order to match swapped axes
-                        contour_wcs_obj.wcs.ctype = [header["CTYPE2"], header["CTYPE1"]]
+                        # Map SOLAR-X/Y to celestial types for reproject
+                        def _to_celestial_ctype2(ct):
+                            ct_upper = ct.upper()
+                            if "SOLAR-X" in ct_upper:
+                                return "HPLN-TAN"
+                            elif "SOLAR-Y" in ct_upper:
+                                return "HPLT-TAN"
+                            return ct
+
+                        contour_wcs_obj.wcs.ctype = [
+                            _to_celestial_ctype2(header["CTYPE2"]),
+                            _to_celestial_ctype2(header["CTYPE1"]),
+                        ]
                     except Exception as e:
                         print(f"[ERROR] Error getting projection type from FITS: {e}")
                         self.show_status_message(
                             f"Error getting projection type from FITS: {e}"
                         )
-                        # Use swapped image ctype
-                        contour_wcs_obj.wcs.ctype = [
-                            image_wcs_obj.wcs.ctype[1],
-                            image_wcs_obj.wcs.ctype[0],
-                        ]
+                        # Use swapped image ctype, mapping SOLAR-X/Y if needed
+                        ct0 = image_wcs_obj.wcs.ctype[1]
+                        ct1 = image_wcs_obj.wcs.ctype[0]
+                        if "SOLAR-X" in ct1.upper():
+                            ct1 = "HPLN-TAN"
+                        if "SOLAR-Y" in ct0.upper():
+                            ct0 = "HPLT-TAN"
+                        contour_wcs_obj.wcs.ctype = [ct0, ct1]
                 elif (csys.projection()["type"] == "SIN") and (
                     "Right Ascension" in summary["axisnames"]
                 ):
@@ -8953,11 +9325,14 @@ class SolarRadioImageTab(QWidget):
                 ):
                     contour_wcs_obj.wcs.ctype = ["DEC--TAN", "RA---TAN"]  # Swapped
                 else:
-                    # Use swapped image ctype
-                    contour_wcs_obj.wcs.ctype = [
-                        image_wcs_obj.wcs.ctype[1],
-                        image_wcs_obj.wcs.ctype[0],
-                    ]
+                    # Use swapped image ctype, mapping SOLAR-X/Y if needed
+                    ct0 = image_wcs_obj.wcs.ctype[1]
+                    ct1 = image_wcs_obj.wcs.ctype[0]
+                    if "SOLAR-X" in ct1.upper():
+                        ct1 = "HPLN-TAN"
+                    if "SOLAR-Y" in ct0.upper():
+                        ct0 = "HPLT-TAN"
+                    contour_wcs_obj.wcs.ctype = [ct0, ct1]
 
                 # IMPORTANT: Also swap the image WCS to match!
                 # Create a copy with swapped axes for reprojection
@@ -8966,18 +9341,40 @@ class SolarRadioImageTab(QWidget):
                     image_wcs_obj.wcs.crpix[1],
                     image_wcs_obj.wcs.crpix[0],
                 ]
-                image_wcs_swapped.wcs.crval = [
-                    image_wcs_obj.wcs.crval[1],
-                    image_wcs_obj.wcs.crval[0],
-                ]
-                image_wcs_swapped.wcs.cdelt = [
-                    image_wcs_obj.wcs.cdelt[1],
-                    image_wcs_obj.wcs.cdelt[0],
-                ]
-                image_wcs_swapped.wcs.ctype = [
-                    image_wcs_obj.wcs.ctype[1],
-                    image_wcs_obj.wcs.ctype[0],
-                ]
+
+                # Check if base image uses SOLAR-X/Y (non-celestial in astropy)
+                # If so, convert values from arcsec to degrees and remap CTYPE
+                img_ctype0 = image_wcs_obj.wcs.ctype[0]
+                img_ctype1 = image_wcs_obj.wcs.ctype[1]
+                is_base_solar_xy = (
+                    "SOLAR-X" in img_ctype0.upper()
+                    or "SOLAR-Y" in img_ctype1.upper()
+                )
+
+                if is_base_solar_xy:
+                    # SOLAR-X/Y: values are in arcsec, convert to degrees
+                    image_wcs_swapped.wcs.crval = [
+                        image_wcs_obj.wcs.crval[1] / 3600.0,
+                        image_wcs_obj.wcs.crval[0] / 3600.0,
+                    ]
+                    image_wcs_swapped.wcs.cdelt = [
+                        image_wcs_obj.wcs.cdelt[1] / 3600.0,
+                        image_wcs_obj.wcs.cdelt[0] / 3600.0,
+                    ]
+                    image_wcs_swapped.wcs.ctype = ["HPLT-TAN", "HPLN-TAN"]
+                else:
+                    image_wcs_swapped.wcs.crval = [
+                        image_wcs_obj.wcs.crval[1],
+                        image_wcs_obj.wcs.crval[0],
+                    ]
+                    image_wcs_swapped.wcs.cdelt = [
+                        image_wcs_obj.wcs.cdelt[1],
+                        image_wcs_obj.wcs.cdelt[0],
+                    ]
+                    image_wcs_swapped.wcs.ctype = [
+                        image_wcs_obj.wcs.ctype[1],
+                        image_wcs_obj.wcs.ctype[0],
+                    ]
 
                 # Use the swapped WCS for reprojection
                 image_wcs_for_reproject = image_wcs_swapped
@@ -8985,12 +9382,17 @@ class SolarRadioImageTab(QWidget):
                 # Check for different projections and warn user
                 # Extract projection type from ctype (e.g., "SIN" from "RA---SIN" or "DEC--SIN")
                 def get_projection_type(ctype):
-                    if ctype and len(ctype) >= 3:
+                    if not ctype:
+                        return ""
+                    # SOLAR-X/SOLAR-Y are equivalent to TAN projection
+                    if "SOLAR-X" in ctype.upper() or "SOLAR-Y" in ctype.upper():
+                        return "TAN"
+                    if len(ctype) >= 3:
                         return ctype[-3:]  # Get last 3 chars (SIN, TAN, etc.)
                     return ""
 
                 contour_proj = get_projection_type(contour_wcs_obj.wcs.ctype[0])
-                image_proj = get_projection_type(image_wcs_obj.wcs.ctype[0])
+                image_proj = get_projection_type(image_wcs_for_reproject.wcs.ctype[0])
 
                 if contour_proj != image_proj:
                     different_projections = True
@@ -13511,16 +13913,27 @@ except Exception as e:
                 try:
                     # Get pixel scale from WCS (radians -> arcsec)
                     increment = current_tab.current_wcs.increment()["numeric"][0:2]
-                    scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
-                    scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
+                    # Check if image uses SOLAR-X/Y (increment is already in arcsec)
+                    _hdr = getattr(current_tab, '_cached_fits_header', None) or {}
+                    _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                    if _is_solar:
+                        scale_x = abs(increment[0])  # already arcsec/pixel
+                        scale_y = abs(increment[1])
+                    else:
+                        scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
+                        scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
                     avg_scale = (scale_x + scale_y) / 2
 
                     # Convert to world coordinates
                     world = current_tab.current_wcs.toworld([x0_px, y0_px, 0, 0])[
                         "numeric"
                     ]
-                    ra_deg = world[0] * 180 / np.pi if world[0] else None
-                    dec_deg = world[1] * 180 / np.pi if world[1] else None
+                    if _is_solar:
+                        ra_deg = world[0] / 3600.0 if world[0] else None
+                        dec_deg = world[1] / 3600.0 if world[1] else None
+                    else:
+                        ra_deg = world[0] * 180 / np.pi if world[0] else None
+                        dec_deg = world[1] * 180 / np.pi if world[1] else None
 
                     # Convert radii to arcsec
                     inner_r_arcsec = inner_r_px * avg_scale
@@ -13544,10 +13957,20 @@ except Exception as e:
                 print(f"  {'Parameter':<20} {'Value':>15} {'Error':>15}")
                 print("-" * 60)
                 print(f"  {'Amplitude':<20} {popt[0]:>15.4g} {perr[0]:>15.4g}")
-                if ra_deg is not None:
-                    print(f"  {'RA (deg)':<20} {ra_deg:>15.6f}")
-                if dec_deg is not None:
-                    print(f"  {'Dec (deg)':<20} {dec_deg:>15.6f}")
+                if ra_deg is not None and dec_deg is not None:
+                    _ctype1_rf = str(_hdr.get('CTYPE1', '')).upper()
+                    if 'SOLAR' in _ctype1_rf:
+                        print(f"  {'SOLAR-X (arcsec)':<20} {ra_deg * 3600.0:>15.2f}")
+                        print(f"  {'SOLAR-Y (arcsec)':<20} {dec_deg * 3600.0:>15.2f}")
+                    elif 'HPLN' in _ctype1_rf:
+                        # Unwrap helioprojective degrees to [-180, 180] then to arcsec
+                        hpln_as = ((ra_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                        hplt_as = ((dec_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                        print(f"  {'HPLN (arcsec)':<20} {hpln_as:>15.2f}")
+                        print(f"  {'HPLT (arcsec)':<20} {hplt_as:>15.2f}")
+                    else:
+                        print(f"  {'RA (deg)':<20} {ra_deg:>15.6f}")
+                        print(f"  {'Dec (deg)':<20} {dec_deg:>15.6f}")
                 print(f"  {'X0 (pixel)':<20} {x0_px:>15.2f} {perr[1]:>15.2f}")
                 print(f"  {'Y0 (pixel)':<20} {y0_px:>15.2f} {perr[2]:>15.2f}")
                 print(f"  {'Inner R (arcsec)':<20} {inner_r_arcsec:>15.3f}")
