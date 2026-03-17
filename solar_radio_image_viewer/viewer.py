@@ -9575,10 +9575,14 @@ class SolarRadioImageTab(QWidget):
                     self._contour_offset = contour_offset
 
                     # Check cache for reprojected data
+                    original_contour_source = (
+                        self.imagename if is_same_image else self.contour_settings.get("external_image")
+                    )
+
                     # Create a comprehensive cache key
                     cache_key = (
                         self.imagename,  # Base image
-                        contour_imagename,  # Contour image source
+                        original_contour_source,  # Contour image source
                         self.contour_settings.get(
                             "stokes", ""
                         ),  # Stokes parameter (crucial!)
