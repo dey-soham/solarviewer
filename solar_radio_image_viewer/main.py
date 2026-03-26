@@ -130,6 +130,12 @@ Examples:
         help="Path to the image file to open (FITS or CASA format)",
     )
     parser.add_argument(
+        "-f",
+        "--fast",
+        action="store_true",
+        help="Start with fast preview mode enabled",
+    )
+    parser.add_argument(
         "--light",
         action="store_true",
         help="Start with light theme instead of dark theme",
@@ -289,7 +295,7 @@ Examples:
             apply_theme(app, theme_manager)
 
             # Instantiate the main window now that classes are imported and theme is active
-            win = ViewerClass(args.imagename)
+            win = ViewerClass(args.imagename, fast_preview=args.fast)
             window_container["window"] = win
 
             # Setup theme callback

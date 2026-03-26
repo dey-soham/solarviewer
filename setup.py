@@ -2,7 +2,6 @@ from setuptools import setup, find_packages
 import subprocess
 import sys
 
-# Read the content of README.md
 with open("README.md") as f:
     long_description = f.read()
 

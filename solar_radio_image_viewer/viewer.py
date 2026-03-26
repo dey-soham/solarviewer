@@ -11747,8 +11747,10 @@ class CustomTabWidget(QTabWidget):
 
 
 class SolarRadioImageViewerApp(QMainWindow):
-    def __init__(self, imagename=None):
+    def __init__(self, imagename=None, fast_preview=False):
         super().__init__()
+
+        self._fast_preview = fast_preview
 
         # Initialize bundled fonts before any widgets are created
         theme_manager.initialize_fonts()
@@ -11810,6 +11812,11 @@ class SolarRadioImageViewerApp(QMainWindow):
         self._set_hand_cursor_recursive(self)
 
         first_tab = self.add_new_tab("Tab1")
+
+        # Apply fast preview flag from CLI
+        if self._fast_preview and hasattr(first_tab, "downsample_toggle"):
+            first_tab.downsample_toggle.setChecked(True)
+
         if imagename and os.path.exists(imagename):
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
