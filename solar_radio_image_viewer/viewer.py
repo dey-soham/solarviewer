@@ -350,6 +350,11 @@ class SolarRadioImageTab(QWidget):
             "show_center": False,
         }
 
+        # Annotations (tracked for remove/clear support)
+        self.shape_annotations = []
+        self.text_annotations = []
+        self.arrow_annotations = []
+
         # Beam style properties
         self.beam_style = {
             "edgecolor": "black",
@@ -6161,6 +6166,9 @@ class SolarRadioImageTab(QWidget):
         state["beam_settings"] = str(self.beam_style)
         state["solar_disk_settings"] = str(self.solar_disk_style)
         state["plot_settings"] = str(self.plot_settings)
+        state["shape_annotations"] = str(self.shape_annotations)
+        state["text_annotations"] = str(self.text_annotations)
+        state["arrow_annotations"] = str(self.arrow_annotations)
 
         return state
 
@@ -7092,6 +7100,12 @@ class SolarRadioImageTab(QWidget):
                 print(f"[ERROR] Error drawing solar disk: {e}")
                 self.show_status_message(f"Error drawing solar disk: {e}")
 
+        # Draw shape, text, and arrow annotations
+        from .shape_annotations import draw_shape_annotations, draw_text_annotations, draw_arrow_annotations
+        draw_shape_annotations(self, ax)
+        draw_text_annotations(self, ax)
+        draw_arrow_annotations(self, ax)
+
         # Draw contours if enabled
         if (
             hasattr(self, "show_contours_checkbox")
@@ -7143,8 +7157,8 @@ class SolarRadioImageTab(QWidget):
         ):
             return
 
-        for patch in ax.patches:
-            if isinstance(patch, Ellipse):
+        for patch in list(ax.patches):
+            if isinstance(patch, Ellipse) and not getattr(patch, '_shape_annotation', False) and not getattr(patch, '_solar_disk', False):
                 patch.remove()
 
         xlim = ax.get_xlim()
@@ -7504,22 +7518,14 @@ class SolarRadioImageTab(QWidget):
         alpha=1.0,
     ):
         """Add text annotation to the plot with customizable styling."""
-        ax = self.figure.gca()
-        bbox_props = None
-        if background:
-            bbox_props = dict(boxstyle="round,pad=0.3", facecolor=background, alpha=0.7)
-        ax.text(
-            x,
-            y,
-            text,
-            color=color,
-            fontsize=fontsize,
-            fontweight=fontweight,
-            fontstyle=fontstyle,
-            bbox=bbox_props,
-            alpha=alpha,
-        )
-        self.canvas.draw()
+        annot = {
+            "x": x, "y": y, "text": text,
+            "color": color, "fontsize": fontsize,
+            "fontweight": fontweight, "fontstyle": fontstyle,
+            "background": background, "alpha": alpha,
+        }
+        self.text_annotations.append(annot)
+        self.schedule_plot()
 
     def add_arrow_annotation(
         self,
@@ -7534,17 +7540,13 @@ class SolarRadioImageTab(QWidget):
         alpha=1.0,
     ):
         """Add arrow annotation to the plot with customizable styling."""
-        ax = self.figure.gca()
-        ax.annotate(
-            "",
-            xy=(x2, y2),
-            xytext=(x1, y1),
-            arrowprops=dict(
-                arrowstyle="-|>", color=color, lw=linewidth, mutation_scale=head_width
-            ),
-            alpha=alpha,
-        )
-        self.canvas.draw()
+        annot = {
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "color": color, "linewidth": linewidth,
+            "head_width": head_width, "alpha": alpha,
+        }
+        self.arrow_annotations.append(annot)
+        self.schedule_plot()
 
     def set_solar_disk_center(self):
         """Show non-modal solar disk settings dialog."""
@@ -12190,6 +12192,10 @@ class SolarRadioImageViewerApp(QMainWindow):
         arrow_act.triggered.connect(self.add_arrow_annotation)
         annot_menu.addAction(arrow_act)
 
+        # Shape annotations (circle, ellipse, square, rectangle) + solar radii presets
+        from .shape_annotations import setup_shape_menu
+        setup_shape_menu(self, annot_menu)
+
         preset_menu = menubar.addMenu("Presets")
         auto_minmax_act = QAction("Auto Min/Max", self)
         auto_minmax_act.setShortcut("F5")
@@ -14108,7 +14114,7 @@ except Exception as e:
         # Store tab reference for callback
         tab_ref = current_tab
 
-        def on_accept():
+        def on_add():
             try:
                 # Check if tab still exists
                 if tab_ref not in [
@@ -14139,7 +14145,6 @@ except Exception as e:
                     fontstyle=fontstyle,
                     background=background,
                 )
-                dialog.close()
             except ValueError:
                 QMessageBox.warning(
                     self, "Invalid Input", "Please enter valid numeric coordinates"
@@ -14150,10 +14155,21 @@ except Exception as e:
                 )
                 dialog.close()
 
+        def on_ok():
+            on_add()
+            dialog.close()
+
+        from PyQt5.QtWidgets import QPushButton
+        btn_layout = QHBoxLayout()
+        add_btn = QPushButton("Add")
+        add_btn.setToolTip("Add annotation and keep dialog open")
+        add_btn.clicked.connect(on_add)
+        btn_layout.addWidget(add_btn)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(on_accept)
+        buttons.accepted.connect(on_ok)
         buttons.rejected.connect(dialog.close)
-        layout.addWidget(buttons)
+        btn_layout.addWidget(buttons)
+        layout.addLayout(btn_layout)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(
@@ -14237,7 +14253,7 @@ except Exception as e:
         # Store tab reference for callback
         tab_ref = current_tab
 
-        def on_accept():
+        def on_add():
             try:
                 # Check if tab still exists
                 if tab_ref not in [
@@ -14264,7 +14280,6 @@ except Exception as e:
                     linewidth=linewidth,
                     head_width=head_width,
                 )
-                dialog.close()
             except ValueError:
                 QMessageBox.warning(
                     self, "Invalid Input", "Please enter valid numeric coordinates"
@@ -14275,10 +14290,21 @@ except Exception as e:
                 )
                 dialog.close()
 
+        def on_ok():
+            on_add()
+            dialog.close()
+
+        from PyQt5.QtWidgets import QPushButton
+        btn_layout = QHBoxLayout()
+        add_btn = QPushButton("Add")
+        add_btn.setToolTip("Add annotation and keep dialog open")
+        add_btn.clicked.connect(on_add)
+        btn_layout.addWidget(add_btn)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(on_accept)
+        buttons.accepted.connect(on_ok)
         buttons.rejected.connect(dialog.close)
-        layout.addWidget(buttons)
+        btn_layout.addWidget(buttons)
+        layout.addLayout(btn_layout)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(
