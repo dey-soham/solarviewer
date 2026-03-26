@@ -76,7 +76,8 @@ class ListDirectoryThread(QThread):
                 import json
                 import shlex
 
-                # Script tailored to this view's flags (show_hidden, fits_only)
+                # Uses os.scandir (Python 3.5+, faster) with os.listdir fallback (Python 3.4)
+                # Uses "OK:" prefix to distinguish success from script failure
                 py_script = """
 import os, json, sys, stat
 path = sys.argv[1]
@@ -84,33 +85,40 @@ entries = []
 show_hidden = %s
 fits_only = %s
 
+def add_entry(name, is_dir, size, mtime):
+    if not show_hidden and name.startswith('.'):
+        return
+    if fits_only and not is_dir:
+        if not name.lower().endswith(('.fits', '.fts', '.fit')):
+            return
+    entries.append({'n': name, 'd': is_dir, 's': size, 'm': mtime})
+
 try:
-    with os.scandir(path) as it:
-        for e in it:
-            name = e.name
-            
-            # Skip hidden files unless requested
-            if not show_hidden and name.startswith('.'):
+    # Fast path: os.scandir (Python 3.5+) - single syscall per entry
+    try:
+        scanner = os.scandir(path)
+    except AttributeError:
+        scanner = None
+
+    if scanner is not None:
+        with scanner as it:
+            for e in it:
+                s = e.stat()
+                add_entry(e.name, e.is_dir(), s.st_size, s.st_mtime)
+    else:
+        # Fallback: os.listdir + os.stat (Python 3.4)
+        for name in os.listdir(path):
+            full = os.path.join(path, name)
+            try:
+                s = os.stat(full)
+            except OSError:
                 continue
-            
-            is_dir = e.is_dir()
-            
-            # Filter for FITS files if requested
-            if fits_only and not is_dir:
-                if not name.lower().endswith(('.fits', '.fts', '.fit')):
-                    continue
-            
-            s = e.stat()
-            entries.append({
-                'n': name,
-                'd': is_dir,
-                's': s.st_size,
-                'm': s.st_mtime
-            })
-            
-    print(json.dumps(entries))
-except Exception:
-    print("[]")
+            add_entry(name, stat.S_ISDIR(s.st_mode), s.st_size, s.st_mtime)
+
+    sys.stdout.write("OK:" + json.dumps(entries))
+except Exception as exc:
+    sys.stderr.write(str(exc))
+    sys.exit(1)
 """ % (
                     "True" if self.show_hidden else "False",
                     "True" if self.fits_only else "False",
@@ -125,10 +133,16 @@ except Exception:
                     return
 
                 out_data = stdout.read().decode("utf-8").strip()
+                err_data = stderr.read().decode("utf-8").strip()
+                exit_status = stdout.channel.recv_exit_status()
 
-                if out_data and out_data.startswith("["):
+                # print(f"[SSH-List] Fast path result: exit={exit_status}, "
+                #       f"stdout_len={len(out_data)}, stderr={err_data[:200] if err_data else '(none)'}")
+
+                if exit_status == 0 and out_data.startswith("OK:"):
                     try:
-                        raw_entries = json.loads(out_data)
+                        json_str = out_data[3:]  # Strip "OK:" prefix
+                        raw_entries = json.loads(json_str)
                         entries = []
                         for item in raw_entries:
                             if self._cancelled:
@@ -146,14 +160,18 @@ except Exception:
 
                         # Sort and emit
                         entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
+                        # print(f"[SSH-List] Fast path success: {len(entries)} entries")
                         self.finished.emit(entries)
                         return  # Success!
-                    except:
-                        pass  # Fallback to SFTP
-            except Exception:
-                pass  # Fallback to SFTP
+                    except Exception as e:
+                        print(f"[SSH-List] Fast path JSON parse failed: {e}")
+                else:
+                    print(f"[SSH-List] Fast path failed, falling back to SFTP")
+            except Exception as e:
+                print(f"[SSH-List] Fast path exception: {e}, falling back to SFTP")
 
             # FALLBACK: Use SFTP loop (slow for large dirs)
+            print(f"[SSH-List] SFTP fallback: listing {self.path}")
             # Create our own SFTP channel for this thread
             if self.connection._client:
                 self._sftp = self.connection._client.open_sftp()
@@ -165,6 +183,7 @@ except Exception:
 
             entries = []
             attrs = self._sftp.listdir_attr(self.path)
+            # print(f"[SSH-List] SFTP listdir_attr returned {len(attrs)} raw entries")
 
             for attr in attrs:
                 if self._cancelled:
@@ -196,13 +215,14 @@ except Exception:
             if not self._cancelled:
                 # Sort: directories first, then alphabetically
                 entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
+                # print(f"[SSH-List] SFTP fallback success: {len(entries)} entries")
                 self.finished.emit(entries)
 
         except Exception as e:
+            print(f"[SSH-List] ERROR: {e}")
             if not self._cancelled:
                 self.error.emit(str(e))
         finally:
-            # Always close our SFTP channel
             if self._sftp:
                 try:
                     self._sftp.close()
