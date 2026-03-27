@@ -2518,6 +2518,20 @@ class SolarRadioImageTab(QWidget):
     def open_helioviewer_with_time(self):
         """Open Helioviewer Browser with time range from current file (FITS or CASA)."""
         try:
+            import requests
+            from PyQt5.QtWidgets import QMessageBox
+            
+            # Fast connection check
+            try:
+                requests.get("https://api.helioviewer.org/v2/", timeout=3)
+            except requests.RequestException:
+                QMessageBox.warning(
+                    self,
+                    "Connection Error",
+                    "Could not connect to the Helioviewer API.\nPlease check your internet connection and try again."
+                )
+                return
+
             from .helioviewer_browser import HelioviewerBrowser
             from datetime import datetime, timedelta
             from PyQt5.QtCore import QDateTime
@@ -15843,6 +15857,20 @@ read -p "Press Enter to close..."
     def open_helioviewer_browser(self):
         """Open Helioviewer browser window."""
         try:
+            import requests
+            from PyQt5.QtWidgets import QMessageBox
+            
+            # Fast connection check
+            try:
+                requests.get("https://api.helioviewer.org/v2/", timeout=3)
+            except requests.RequestException:
+                QMessageBox.warning(
+                    self,
+                    "Connection Error",
+                    "Could not connect to the Helioviewer API.\nPlease check your internet connection and try again."
+                )
+                return
+
             from .helioviewer_browser import HelioviewerBrowser
 
             browser = HelioviewerBrowser(self)
