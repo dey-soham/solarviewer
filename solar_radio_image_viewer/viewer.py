@@ -341,6 +341,7 @@ class SolarRadioImageTab(QWidget):
         self.imagename = None
         self.solar_disk_center = None
         self.solar_disk_diameter_arcmin = 32.0
+        self.solar_disk_auto_compute = True
         # Solar disk style properties
         self.solar_disk_style = {
             "color": "white",
@@ -5836,6 +5837,10 @@ class SolarRadioImageTab(QWidget):
         raise RuntimeError(f"Cannot handle {stokes} for this FITS structure")
 
     def load_data(self, imagename, stokes, threshold, auto_adjust_rms=False):
+        # Clear WCS cache so new images don't accidentally reuse old WCS objects
+        # if the new dictionary falls on the same memory address (id)
+        #self._cached_wcs_obj = None
+        #self._cached_wcs_id = None
         import time
 
         start_time = time.time()
@@ -7005,6 +7010,11 @@ class SolarRadioImageTab(QWidget):
                 print(f"[ERROR] Error drawing beam: {e}")
                 self.show_status_message(f"Error drawing beam: {e}")
 
+        # Ensure Solar disk metadata (center and diameter) is ALWAYS computed on load,
+        # even if not drawn, so Shape Annotations and Dialogs have physically accurate data
+        if getattr(self, "solar_disk_auto_compute", True) or self.solar_disk_center is None:
+            self._compute_solar_disk_center(data.shape)
+
         # Draw solar disk if enabled
         if (
             hasattr(self, "show_solar_disk_checkbox")
@@ -7018,33 +7028,6 @@ class SolarRadioImageTab(QWidget):
                 lines_to_remove = [l for l in ax.lines if getattr(l, '_solar_disk', False)]
                 for l in lines_to_remove:
                     l.remove()
-                if self.solar_disk_center is None:
-                    height, width = data.shape
-                    # For HPC/SOLAR-X or HPLN images, disk center is at world (0,0)
-                    _is_hpc = self._is_already_hpc()
-                    if _is_hpc and self.current_wcs:
-                        try:
-                            ref_world = list(self.current_wcs.referencevalue()["numeric"])
-                            ref_world[0] = 0.0  # SOLAR-X / HPLN = 0
-                            ref_world[1] = 0.0  # SOLAR-Y / HPLT = 0
-                            pix_origin = self.current_wcs.topixel(ref_world)["numeric"]
-                            cx, cy = float(pix_origin[0]), float(pix_origin[1])
-                            cx = max(0.0, min(float(width - 1), cx))
-                            cy = max(0.0, min(float(height - 1), cy))
-                            self.solar_disk_center = (cx, cy)
-                        except Exception:
-                            self.solar_disk_center = (width // 2, height // 2)
-                    elif _is_hpc and hasattr(self, '_cached_wcs_obj') and self._cached_wcs_obj is not None:
-                        try:
-                            px, py = self._cached_wcs_obj.wcs_world2pix(0.0, 0.0, 0)
-                            cx, cy = float(px), float(py)
-                            cx = max(0.0, min(float(width - 1), cx))
-                            cy = max(0.0, min(float(height - 1), cy))
-                            self.solar_disk_center = (cx, cy)
-                        except Exception:
-                            self.solar_disk_center = (width // 2, height // 2)
-                    else:
-                        self.solar_disk_center = (width // 2, height // 2)
 
                 center_x, center_y = self.solar_disk_center
 
@@ -7204,6 +7187,12 @@ class SolarRadioImageTab(QWidget):
                 lines_to_remove = [l for l in ax.lines if getattr(l, '_solar_disk', False)]
                 for l in lines_to_remove:
                     l.remove()
+
+                if getattr(self, "solar_disk_auto_compute", True) or self.solar_disk_center is None:
+                    if self.current_image_data is not None:
+                        self._compute_solar_disk_center(self.current_image_data.shape)
+                    else:
+                        self.solar_disk_center = (0, 0)
 
                 center_x, center_y = self.solar_disk_center
                 if self.current_wcs:
@@ -7548,6 +7537,82 @@ class SolarRadioImageTab(QWidget):
         self.arrow_annotations.append(annot)
         self.schedule_plot()
 
+    def _compute_solar_disk_center(self, shape):
+        """Auto-compute solar disk center and diameter from WCS/FITS header."""
+        height, width = shape
+        _is_hpc = self._is_already_hpc()
+        if _is_hpc and self.current_wcs:
+            try:
+                ref_world = list(self.current_wcs.referencevalue()["numeric"])
+                ref_world[0] = 0.0
+                ref_world[1] = 0.0
+                pix_origin = self.current_wcs.topixel(ref_world)["numeric"]
+                cx, cy = float(pix_origin[0]), float(pix_origin[1])
+                cx = max(0.0, min(float(width - 1), cx))
+                cy = max(0.0, min(float(height - 1), cy))
+                self.solar_disk_center = (cx, cy)
+                self._auto_set_solar_diameter()
+            except Exception:
+                self.solar_disk_center = (width // 2, height // 2)
+        elif _is_hpc and hasattr(self, '_cached_wcs_obj') and self._cached_wcs_obj is not None:
+            try:
+                px, py = self._cached_wcs_obj.wcs_world2pix(0.0, 0.0, 0)
+                cx, cy = float(px), float(py)
+                cx = max(0.0, min(float(width - 1), cx))
+                cy = max(0.0, min(float(height - 1), cy))
+                self.solar_disk_center = (cx, cy)
+                self._auto_set_solar_diameter()
+            except Exception:
+                self.solar_disk_center = (width // 2, height // 2)
+        else:
+            _auto_computed = False
+            _hdr = getattr(self, '_cached_fits_header', None) or {}
+            if _hdr and hasattr(self, '_cached_wcs_obj') and self._cached_wcs_obj is not None:
+                try:
+                    from astropy.time import Time
+                    from astropy.coordinates import get_sun
+                    from sunpy.coordinates.sun import angular_radius
+                    date_str = None
+                    for key in ["DATE-OBS", "DATE_OBS", "DATE", "STARTOBS", "T_OBS"]:
+                        date_str = _hdr.get(key)
+                        if date_str:
+                            break
+                    if date_str:
+                        obs_time = Time(str(date_str))
+                        sun_coord = get_sun(obs_time)
+                        ra_deg = sun_coord.ra.deg
+                        dec_deg = sun_coord.dec.deg
+                        px, py = self._cached_wcs_obj.wcs_world2pix(ra_deg, dec_deg, 0)
+                        cx, cy = float(px), float(py)
+                        cx = max(0.0, min(float(width - 1), cx))
+                        cy = max(0.0, min(float(height - 1), cy))
+                        self.solar_disk_center = (cx, cy)
+                        ang_radius = angular_radius(obs_time)
+                        self.solar_disk_diameter_arcmin = float(ang_radius.to('arcmin').value) * 2.0
+                        _auto_computed = True
+                except Exception as e:
+                    print(f"[WARN] Auto-compute solar position failed: {e}")
+            if not _auto_computed:
+                self.solar_disk_center = (width // 2, height // 2)
+
+    def _auto_set_solar_diameter(self):
+        """Auto-set solar_disk_diameter_arcmin from DATE-OBS if available."""
+        try:
+            _hdr = getattr(self, '_cached_fits_header', None) or {}
+            date_str = None
+            for key in ["DATE-OBS", "DATE_OBS", "DATE", "STARTOBS", "T_OBS"]:
+                date_str = _hdr.get(key)
+                if date_str:
+                    break
+            if date_str:
+                from astropy.time import Time
+                from sunpy.coordinates.sun import angular_radius
+                obs_time = Time(str(date_str))
+                ang_radius = angular_radius(obs_time)
+                self.solar_disk_diameter_arcmin = float(ang_radius.to('arcmin').value) * 2.0
+        except Exception:
+            pass  # keep default 32 arcmin
+
     def set_solar_disk_center(self):
         """Show non-modal solar disk settings dialog."""
         if self.current_image_data is None:
@@ -7661,6 +7726,110 @@ class SolarRadioImageTab(QWidget):
         position_tab = QWidget()
         position_layout = QVBoxLayout(position_tab)
 
+        # Auto-compute toggle
+        auto_group = QGroupBox("Auto-Compute")
+        auto_layout = QVBoxLayout(auto_group)
+        auto_checkbox = QCheckBox("Auto-compute from FITS header")
+        auto_checkbox.setToolTip(
+            "Automatically compute the Sun's position and apparent\n"
+            "diameter from the observation date in the FITS header."
+        )
+        auto_checkbox.setChecked(self.solar_disk_auto_compute)
+        auto_layout.addWidget(auto_checkbox)
+        auto_info = QLabel("")
+        auto_info.setWordWrap(True)
+        auto_layout.addWidget(auto_info)
+        position_layout.addWidget(auto_group)
+
+        viewer_ref = self
+
+        def run_auto_compute():
+            """Run auto-compute and populate spinboxes + info label."""
+            _hdr = getattr(viewer_ref, '_cached_fits_header', None) or {}
+            wcs_obj = getattr(viewer_ref, '_cached_wcs_obj', None)
+            if not _hdr:
+                auto_info.setText("No FITS header available.")
+                return False
+            try:
+                from astropy.time import Time
+                from sunpy.coordinates.sun import angular_radius
+                date_str = None
+                for key in ["DATE-OBS", "DATE_OBS", "DATE", "STARTOBS", "T_OBS"]:
+                    date_str = _hdr.get(key)
+                    if date_str:
+                        break
+                if not date_str:
+                    auto_info.setText("No DATE-OBS found in FITS header.")
+                    return False
+                obs_time = Time(str(date_str))
+                _is_hpc = viewer_ref._is_already_hpc()
+
+                ang_radius = angular_radius(obs_time)
+                diam = float(ang_radius.to('arcmin').value) * 2.0
+                diameter_spinbox.setValue(diam)
+
+                if _is_hpc:
+                    cx, cy = None, None
+                    if viewer_ref.current_wcs:
+                        try:
+                            ref_world = list(viewer_ref.current_wcs.referencevalue()["numeric"])
+                            ref_world[0] = 0.0
+                            ref_world[1] = 0.0
+                            pix_origin = viewer_ref.current_wcs.topixel(ref_world)["numeric"]
+                            cx, cy = float(pix_origin[0]), float(pix_origin[1])
+                        except Exception:
+                            pass
+                    if cx is None and wcs_obj is not None:
+                        try:
+                            px, py = wcs_obj.wcs_world2pix(0.0, 0.0, 0)
+                            cx, cy = float(px), float(py)
+                        except Exception:
+                            pass
+                    if cx is not None:
+                        cx = max(0.0, min(float(width - 1), cx))
+                        cy = max(0.0, min(float(height - 1), cy))
+                        x_spinbox.setValue(int(round(cx)))
+                        y_spinbox.setValue(int(round(cy)))
+                    auto_info.setText(
+                        f"HPC image: center set to (0,0)\n"
+                        f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
+                    )
+                else:
+                    if wcs_obj is None:
+                        auto_info.setText("No WCS available for RA/DEC conversion.")
+                        return False
+                    from astropy.coordinates import get_sun
+                    sun_coord = get_sun(obs_time)
+                    ra_deg = sun_coord.ra.deg
+                    dec_deg = sun_coord.dec.deg
+                    px, py = wcs_obj.wcs_world2pix(ra_deg, dec_deg, 0)
+                    cx, cy = float(px), float(py)
+                    cx = max(0.0, min(float(width - 1), cx))
+                    cy = max(0.0, min(float(height - 1), cy))
+                    x_spinbox.setValue(int(round(cx)))
+                    y_spinbox.setValue(int(round(cy)))
+                    auto_info.setText(
+                        f"Sun RA={ra_deg:.4f}° DEC={dec_deg:.4f}°\n"
+                        f"Pixel ({cx:.1f}, {cy:.1f})\n"
+                        f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
+                    )
+                return True
+            except Exception as e:
+                auto_info.setText(f"Auto-compute failed: {e}")
+                return False
+
+        def on_auto_toggle(checked):
+            """Toggle auto-compute on/off and enable/disable manual controls."""
+            x_spinbox.setEnabled(not checked)
+            y_spinbox.setEnabled(not checked)
+            diameter_spinbox.setEnabled(not checked)
+            if checked:
+                run_auto_compute()
+            else:
+                auto_info.setText("")
+
+        auto_checkbox.toggled.connect(on_auto_toggle)
+
         # Center coordinates
         center_group = QGroupBox("Disk Center")
         center_layout = QHBoxLayout(center_group)
@@ -7691,16 +7860,18 @@ class SolarRadioImageTab(QWidget):
         size_group = QGroupBox("Disk Size")
         size_layout = QHBoxLayout(size_group)
         diameter_label = QLabel("Diameter (arcmin):")
-        diameter_spinbox = QSpinBox()
-        diameter_spinbox.setRange(1, 100)
-        diameter_spinbox.setValue(int(self.solar_disk_diameter_arcmin))
+        diameter_spinbox = QDoubleSpinBox()
+        diameter_spinbox.setRange(1.0, 100.0)
+        diameter_spinbox.setDecimals(2)
+        diameter_spinbox.setSingleStep(0.1)
+        diameter_spinbox.setValue(self.solar_disk_diameter_arcmin)
         size_layout.addWidget(diameter_label)
         size_layout.addWidget(diameter_spinbox)
         position_layout.addWidget(size_group)
 
         position_layout.addStretch()
 
-        # Add tabs to tab widget - Style first, then Position
+        # Add tabs to tab widget
         tab_widget.addTab(style_tab, "Style")
         tab_widget.addTab(position_tab, "Configure")
 
@@ -7716,7 +7887,11 @@ class SolarRadioImageTab(QWidget):
                     dialog.close()
                     return
 
-                viewer.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
+                viewer.solar_disk_auto_compute = auto_checkbox.isChecked()
+                if viewer.solar_disk_auto_compute:
+                    viewer.solar_disk_center = None
+                else:
+                    viewer.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
                 viewer.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
 
                 # Update style properties
@@ -7771,6 +7946,8 @@ class SolarRadioImageTab(QWidget):
         self._open_dialogs.append(dialog)
 
         dialog.show()
+
+        on_auto_toggle(auto_checkbox.isChecked())
 
     def show_beam_settings(self):
         """Show non-modal beam settings dialog."""
@@ -8287,6 +8464,7 @@ class SolarRadioImageTab(QWidget):
 
         self.solar_disk_center = None
         self.solar_disk_diameter_arcmin = 32.0
+        self.solar_disk_auto_compute = True
 
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
 

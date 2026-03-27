@@ -266,8 +266,13 @@ def add_solar_radius_circle(tab, multiplier):
     if center is None:
         return
 
-    # 1 R☉ = 960 arcsec (angular solar radius)
-    radius_arcsec = 960.0 * multiplier
+    # If top global auto-compute is ON, calculate precise radius. Else, use 960 arcsec baseline.
+    if getattr(tab, "solar_disk_auto_compute", True):
+        diam_arcmin = getattr(tab, "solar_disk_diameter_arcmin", 32.0)
+        radius_arcsec = (diam_arcmin / 2.0) * 60.0 * multiplier
+    else:
+        radius_arcsec = 960.0 * multiplier
+        
     diameter_arcsec = radius_arcsec * 2.0
 
     label_text = f"{multiplier} R☉" if multiplier == int(multiplier) else f"{multiplier} R☉"
@@ -341,6 +346,13 @@ class ShapeAnnotationDialog(QDialog):
             self.preset_combo.addItem(label, r)
         self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
         preset_layout.addWidget(self.preset_combo)
+
+        self.preset_auto_check = QCheckBox("From FITS")
+        self.preset_auto_check.setToolTip("Scale radius perfectly to the actual FITS date")
+        self.preset_auto_check.setChecked(True)
+        self.preset_auto_check.toggled.connect(lambda: self._on_preset_changed(self.preset_combo.currentIndex()))
+        preset_layout.addWidget(self.preset_auto_check)
+        
         layout.addWidget(self.preset_group)
 
         # --- Position ---
@@ -487,8 +499,14 @@ class ShapeAnnotationDialog(QDialog):
             self.cx_edit.setText(f"{center[0]:.1f}")
             self.cy_edit.setText(f"{center[1]:.1f}")
 
-        # Set diameter in arcsec (1 R☉ = 960 arcsec)
-        diameter = 960.0 * multiplier * 2.0
+        # Set diameter in arcsec
+        if hasattr(self, "preset_auto_check") and self.preset_auto_check.isChecked():
+            diam_arcmin = getattr(self.tab, "solar_disk_diameter_arcmin", 32.0)
+            radius_arcsec = (diam_arcmin / 2.0) * 60.0 * multiplier
+        else:
+            radius_arcsec = 960.0 * multiplier
+            
+        diameter = radius_arcsec * 2.0
         self.width_spin.setValue(diameter)
         self.unit_combo.setCurrentText("Arcsec")
 
