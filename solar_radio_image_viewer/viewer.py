@@ -12051,6 +12051,9 @@ class SolarRadioImageViewerApp(QMainWindow):
         # Register for theme changes
         theme_manager.register_callback(self._on_theme_changed)
 
+        # Enable drag and drop
+        self.setAcceptDrops(True)
+
         self.statusBar().showMessage("Ready")
         self.create_menus()
         
@@ -12087,6 +12090,59 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Ensure add button is visible after initialization
         QTimer.singleShot(200, self.ensureAddButtonVisible)
+
+    def dragEnterEvent(self, event):
+        """Handle drag enter events for file dropping."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Handle drop events to load images/files."""
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            
+            # Use QTimer to delay processing slightly so the drag operation completes properly
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(10, lambda: self._process_dropped_urls(urls))
+            
+            event.acceptProposedAction()
+
+    def _process_dropped_urls(self, urls):
+        """Process dropped URLs and open them in tabs."""
+        for i, url in enumerate(urls):
+            if not url.isLocalFile():
+                continue
+            
+            file_path = url.toLocalFile()
+            if not os.path.exists(file_path):
+                continue
+                
+            # If there's only one tab and it's empty, use it. Otherwise add tab.
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab and not current_tab.imagename and i == 0:
+                target_tab = current_tab
+            else:
+                basename = os.path.basename(file_path.rstrip("/"))
+                target_tab = self.add_new_tab(basename)
+                
+            # Now load the image into the tab
+            if os.path.isdir(file_path):
+                target_tab.radio_casa_image.setChecked(True)
+            else:
+                target_tab.radio_fits_file.setChecked(True)
+                
+            target_tab.imagename = file_path
+            target_tab.dir_entry.setText(file_path)
+            
+            # Update view
+            target_tab.on_visualization_changed(dir_load=True)
+            target_tab.update_tab_name_from_path(file_path)
+            
+            # Scan directory
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(100, target_tab._scan_directory_files)
 
     def _update_update_btn_style(self):
         """Update the update notification button style based on theme."""
