@@ -5945,9 +5945,6 @@ class SolarRadioImageTab(QWidget):
                     ref_world[1] = 0.0  # SOLAR-Y / HPLT = 0
                     pix_origin = self.current_wcs.topixel(ref_world)["numeric"]
                     cx, cy = float(pix_origin[0]), float(pix_origin[1])
-                    # Clamp to image bounds
-                    cx = max(0.0, min(float(width - 1), cx))
-                    cy = max(0.0, min(float(height - 1), cy))
                     self.solar_disk_center = (cx, cy)
                 except Exception:
                     self.solar_disk_center = (width // 2, height // 2)
@@ -7570,8 +7567,6 @@ class SolarRadioImageTab(QWidget):
                 ref_world[1] = 0.0
                 pix_origin = self.current_wcs.topixel(ref_world)["numeric"]
                 cx, cy = float(pix_origin[0]), float(pix_origin[1])
-                cx = max(0.0, min(float(width - 1), cx))
-                cy = max(0.0, min(float(height - 1), cy))
                 self.solar_disk_center = (cx, cy)
                 self._auto_set_solar_diameter()
             except Exception:
@@ -7580,8 +7575,6 @@ class SolarRadioImageTab(QWidget):
             try:
                 px, py = self._cached_wcs_obj.wcs_world2pix(0.0, 0.0, 0)
                 cx, cy = float(px), float(py)
-                cx = max(0.0, min(float(width - 1), cx))
-                cy = max(0.0, min(float(height - 1), cy))
                 self.solar_disk_center = (cx, cy)
                 self._auto_set_solar_diameter()
             except Exception:
@@ -7589,7 +7582,7 @@ class SolarRadioImageTab(QWidget):
         else:
             _auto_computed = False
             _hdr = getattr(self, '_cached_fits_header', None) or {}
-            if _hdr and hasattr(self, '_cached_wcs_obj') and self._cached_wcs_obj is not None:
+            if (_hdr or self.current_wcs) and hasattr(self, '_cached_wcs_obj') and self._cached_wcs_obj is not None:
                 try:
                     from astropy.time import Time
                     from astropy.coordinates import get_sun
@@ -7599,6 +7592,20 @@ class SolarRadioImageTab(QWidget):
                         date_str = _hdr.get(key)
                         if date_str:
                             break
+                            
+                    if not date_str and self.current_wcs:
+                        csys_record = {}
+                        if hasattr(self.current_wcs, "torecord"):
+                            csys_record = self.current_wcs.torecord()
+                        elif isinstance(self.current_wcs, dict):
+                            csys_record = self.current_wcs
+                            
+                        if "obsdate" in csys_record:
+                            obsdate = csys_record["obsdate"]
+                            if "m0" in obsdate:
+                                t = Time(obsdate["m0"]["value"], format="mjd")
+                                date_str = t.iso
+                            
                     if date_str:
                         obs_time = Time(str(date_str))
                         sun_coord = get_sun(obs_time)
@@ -7606,8 +7613,6 @@ class SolarRadioImageTab(QWidget):
                         dec_deg = sun_coord.dec.deg
                         px, py = self._cached_wcs_obj.wcs_world2pix(ra_deg, dec_deg, 0)
                         cx, cy = float(px), float(py)
-                        cx = max(0.0, min(float(width - 1), cx))
-                        cy = max(0.0, min(float(height - 1), cy))
                         self.solar_disk_center = (cx, cy)
                         ang_radius = angular_radius(obs_time)
                         self.solar_disk_diameter_arcmin = float(ang_radius.to('arcmin').value) * 2.0
@@ -7626,6 +7631,21 @@ class SolarRadioImageTab(QWidget):
                 date_str = _hdr.get(key)
                 if date_str:
                     break
+                    
+            if not date_str and self.current_wcs:
+                csys_record = {}
+                if hasattr(self.current_wcs, "torecord"):
+                    csys_record = self.current_wcs.torecord()
+                elif isinstance(self.current_wcs, dict):
+                    csys_record = self.current_wcs
+                    
+                if "obsdate" in csys_record:
+                    obsdate = csys_record["obsdate"]
+                    if "m0" in obsdate:
+                        from astropy.time import Time
+                        t = Time(obsdate["m0"]["value"], format="mjd")
+                        date_str = t.iso
+                    
             if date_str:
                 from astropy.time import Time
                 from sunpy.coordinates.sun import angular_radius
@@ -7769,8 +7789,8 @@ class SolarRadioImageTab(QWidget):
             """Run auto-compute and populate spinboxes + info label."""
             _hdr = getattr(viewer_ref, '_cached_fits_header', None) or {}
             wcs_obj = getattr(viewer_ref, '_cached_wcs_obj', None)
-            if not _hdr:
-                auto_info.setText("No FITS header available.")
+            if not _hdr and not viewer_ref.current_wcs:
+                auto_info.setText("No metadata available.")
                 return False
             try:
                 from astropy.time import Time
@@ -7780,8 +7800,22 @@ class SolarRadioImageTab(QWidget):
                     date_str = _hdr.get(key)
                     if date_str:
                         break
+                        
+                if not date_str and viewer_ref.current_wcs:
+                    csys_record = {}
+                    if hasattr(viewer_ref.current_wcs, "torecord"):
+                        csys_record = viewer_ref.current_wcs.torecord()
+                    elif isinstance(viewer_ref.current_wcs, dict):
+                        csys_record = viewer_ref.current_wcs
+                        
+                    if "obsdate" in csys_record:
+                        obsdate = csys_record["obsdate"]
+                        if "m0" in obsdate:
+                            t = Time(obsdate["m0"]["value"], format="mjd")
+                            date_str = t.iso
+                        
                 if not date_str:
-                    auto_info.setText("No DATE-OBS found in FITS header.")
+                    auto_info.setText("No observation date found.")
                     return False
                 obs_time = Time(str(date_str))
                 _is_hpc = viewer_ref._is_already_hpc()
@@ -7808,8 +7842,6 @@ class SolarRadioImageTab(QWidget):
                         except Exception:
                             pass
                     if cx is not None:
-                        cx = max(0.0, min(float(width - 1), cx))
-                        cy = max(0.0, min(float(height - 1), cy))
                         x_spinbox.setValue(int(round(cx)))
                         y_spinbox.setValue(int(round(cy)))
                     auto_info.setText(
@@ -7826,8 +7858,6 @@ class SolarRadioImageTab(QWidget):
                     dec_deg = sun_coord.dec.deg
                     px, py = wcs_obj.wcs_world2pix(ra_deg, dec_deg, 0)
                     cx, cy = float(px), float(py)
-                    cx = max(0.0, min(float(width - 1), cx))
-                    cy = max(0.0, min(float(height - 1), cy))
                     x_spinbox.setValue(int(round(cx)))
                     y_spinbox.setValue(int(round(cy)))
                     auto_info.setText(
@@ -7858,7 +7888,7 @@ class SolarRadioImageTab(QWidget):
 
         x_label = QLabel("X coordinate:")
         x_spinbox = QSpinBox()
-        x_spinbox.setRange(0, width - 1)
+        x_spinbox.setRange(-width * 5, width * 5)
         if self.solar_disk_center is not None:
             x_spinbox.setValue(int(round(self.solar_disk_center[0])))
         else:
@@ -7868,7 +7898,7 @@ class SolarRadioImageTab(QWidget):
 
         y_label = QLabel("Y coordinate:")
         y_spinbox = QSpinBox()
-        y_spinbox.setRange(0, height - 1)
+        y_spinbox.setRange(-height * 5, height * 5)
         if self.solar_disk_center is not None:
             y_spinbox.setValue(int(round(self.solar_disk_center[1])))
         else:
@@ -12280,6 +12310,12 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.log_console_action.triggered.connect(self.show_log_console)
         view_menu.addAction(self.log_console_action)
 
+        metadata_act = QAction("Image Metadata", self)
+        metadata_act.setShortcut("Ctrl+M")
+        metadata_act.setStatusTip("View detailed metadata for the current image")
+        metadata_act.triggered.connect(self.show_metadata)
+        view_menu.addAction(metadata_act)
+
         view_menu.addSeparator()
 
         # Preferences action
@@ -12304,11 +12340,6 @@ class SolarRadioImageViewerApp(QMainWindow):
         # batch_act.triggered.connect(self.show_batch_dialog)
         # tools_menu.addAction(batch_act)
 
-        metadata_act = QAction("Image Metadata", self)
-        metadata_act.setShortcut("Ctrl+M")
-        metadata_act.setStatusTip("View detailed metadata for the current image")
-        metadata_act.triggered.connect(self.show_metadata)
-        tools_menu.addAction(metadata_act)
 
         # Add Solar Phase Shift option
         from .dialogs import PhaseShiftDialog
