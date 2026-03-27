@@ -8502,6 +8502,51 @@ class SolarRadioImageTab(QWidget):
         else:
             self.coord_label.setText(pixel_info)
 
+    def _on_mouse_scroll(self, event):
+        """Handle mouse scroll events for zooming."""
+        # Check if feature is enabled in View menu
+        main_window = self.window()
+        if hasattr(main_window, "scroll_zoom_action"):
+            if not main_window.scroll_zoom_action.isChecked():
+                return
+        
+        if event.inaxes is None or self.current_image_data is None:
+            return
+
+        ax = event.inaxes
+        base_scale = 1.1
+
+        if event.button == "up":
+            # Scroll up = zoom in
+            scale_factor = 1 / base_scale
+        elif event.button == "down":
+            # Scroll down = zoom out
+            scale_factor = base_scale
+        else:
+            return
+
+        # Get the current x and y limits
+        cur_xlim = ax.get_xlim()
+        cur_ylim = ax.get_ylim()
+
+        # Get the data coordinates of the mouse
+        xdata = event.xdata
+        ydata = event.ydata
+
+        # Calculate new width and height
+        new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
+        new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
+
+        # Calculate relative position of cursor to maintain it at same screen spot
+        relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0])
+        rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0])
+
+        ax.set_xlim([xdata - new_width * (1 - relx), xdata + new_width * relx])
+        ax.set_ylim([ydata - new_height * (1 - rely), ydata + new_height * rely])
+
+        # Redraw the canvas
+        self.canvas.draw_idle()
+
     def setup_canvas(self, parent_layout):
         self.figure = Figure(figsize=(5, 5), dpi=100)
         self.canvas = FigureCanvas(self.figure)
@@ -8533,6 +8578,7 @@ class SolarRadioImageTab(QWidget):
         self.solar_disk_auto_compute = True
 
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+        self.canvas.mpl_connect("scroll_event", self._on_mouse_scroll)
 
     def show_contour_settings(self):
         """Show non-modal contour settings dialog."""
@@ -12385,6 +12431,12 @@ class SolarRadioImageViewerApp(QMainWindow):
         metadata_act.setStatusTip("View detailed metadata for the current image")
         metadata_act.triggered.connect(self.show_metadata)
         view_menu.addAction(metadata_act)
+
+        # Interactive Scroll Zoom toggle action
+        self.scroll_zoom_action = QAction("Interactive Scroll Zoom", self, checkable=True)
+        self.scroll_zoom_action.setChecked(True)
+        self.scroll_zoom_action.setStatusTip("Enable/disable zooming with the mouse wheel")
+        view_menu.addAction(self.scroll_zoom_action)
 
         view_menu.addSeparator()
 
