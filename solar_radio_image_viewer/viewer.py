@@ -2987,90 +2987,110 @@ class SolarRadioImageTab(QWidget):
                 )
             if dir_load:
                 fname = os.path.basename(self.imagename).lower()
-                if "hmi" in fname:
-                    self.HMI_presets()
-                elif "aia" in fname:
-                    if "94" in fname:
-                        self.aia_presets(wavelength=94)
-                    elif "131" in fname:
-                        self.aia_presets(wavelength=131)
-                    elif "171" in fname:
-                        self.aia_presets(wavelength=171)
-                    elif "193" in fname:
-                        self.aia_presets(wavelength=193)
-                    elif "211" in fname:
-                        self.aia_presets(wavelength=211)
-                    elif "304" in fname:
-                        self.aia_presets(wavelength=304)
-                    elif "335" in fname:
-                        self.aia_presets(wavelength=335)
-                    elif "1600" in fname:
-                        self.aia_presets(wavelength=1600)
-                    elif "1700" in fname:
-                        self.aia_presets(wavelength=1700)
-                    elif "4500" in fname:
-                        self.aia_presets(wavelength=4500)
-                    else:
-                        self.aia_presets(wavelength=171)
-                elif "eit" in fname or "efz" in fname:
-                    # SOHO EIT files
-                    if "171" in fname:
-                        self.EIT_presets(wavelength=171)
-                    elif "195" in fname:
-                        self.EIT_presets(wavelength=195)
-                    elif "284" in fname:
-                        self.EIT_presets(wavelength=284)
-                    elif "304" in fname:
-                        self.EIT_presets(wavelength=304)
-                    else:
-                        self.EIT_presets(wavelength=171)
-                elif "lasco" in fname:
-                    if "cal_2" in fname:
-                        self.LASCO_presets(detector="C2")
-                    elif "cal_3" in fname:
-                        self.LASCO_presets(detector="C3")
-                    else:
-                        self.LASCO_presets(detector="C2")
-                elif "iris" in fname or "sji" in fname:
-                    # IRIS SJI files
-                    if "1330" in fname:
-                        self.IRIS_presets(wavelength=1330)
-                    elif "1400" in fname:
-                        self.IRIS_presets(wavelength=1400)
-                    elif "2796" in fname:
-                        self.IRIS_presets(wavelength=2796)
-                    elif "2832" in fname:
-                        self.IRIS_presets(wavelength=2832)
-                    else:
-                        self.IRIS_presets(wavelength=1330)
-                elif "suvi" in fname:
-                    # GOES SUVI files
-                    if "094" in fname or "ci094" in fname:
-                        self.SUVI_presets(wavelength=94)
-                    elif "131" in fname:
-                        self.SUVI_presets(wavelength=131)
-                    elif "171" in fname:
-                        self.SUVI_presets(wavelength=171)
-                    elif "195" in fname:
-                        self.SUVI_presets(wavelength=195)
-                    elif "284" in fname:
-                        self.SUVI_presets(wavelength=284)
-                    elif "304" in fname:
-                        self.SUVI_presets(wavelength=304)
-                    else:
-                        self.SUVI_presets(wavelength=171)
-                elif "gong" in fname:
-                    self.GONG_presets()
-                elif "euvi" in fname or "eua" in fname or "eub" in fname:
-                    # STEREO EUVI
-                    self.STEREO_presets("EUVI")
-                elif "cor1" in fname or "c1a" in fname or "c1b" in fname:
-                    # STEREO COR1
-                    self.STEREO_presets("COR1")
-                elif "cor2" in fname or "c2a" in fname or "c2b" in fname:
-                    # STEREO COR2
-                    self.STEREO_presets("COR2")
-                else:
+                mw = self.window()
+                auto_presets = hasattr(mw, "auto_preset_act") and mw.auto_preset_act.isChecked()
+                is_preset_matched = False
+
+                if auto_presets:
+                    header = getattr(self, "current_header", {})
+                    telescop = str(header.get("TELESCOP", "")).upper().strip()
+                    instrume = str(header.get("INSTRUME", "")).upper().strip()
+                    detector = str(header.get("DETECTOR", "")).upper().strip()
+                    wavelnth = str(header.get("WAVELNTH", ""))
+                    if not wavelnth:
+                        wavelnth = str(header.get("TWAVE1", "")) # IRIS fallback
+                    
+                    try:
+                        wavelnth_int = int(float(wavelnth)) if wavelnth else 0
+                    except Exception:
+                        wavelnth_int = 0
+
+                    if telescop == "SDO/HMI" or "HMI" in instrume or "hmi" in fname:
+                        self.HMI_presets()
+                        is_preset_matched = True
+                    elif telescop == "SDO/AIA" or "aia" in fname:
+                        is_preset_matched = True
+                        wv = wavelnth_int
+                        if wv == 0 and "aia" in fname:
+                            for w in [94, 131, 171, 193, 211, 304, 335, 1600, 1700, 4500]:
+                                if str(w) in fname:
+                                    wv = w
+                                    break
+                            if wv == 0: wv = 171
+                        self.aia_presets(wavelength=wv)
+                    elif (telescop == "SOHO" and instrume == "EIT") or "eit" in fname or "efz" in fname:
+                        is_preset_matched = True
+                        wv = wavelnth_int
+                        if wv == 0 and ("eit" in fname or "efz" in fname):
+                            for w in [171, 195, 284, 304]:
+                                if str(w) in fname:
+                                    wv = w
+                                    break
+                            if wv == 0: wv = 171
+                        self.EIT_presets(wavelength=wv)
+                    elif (telescop == "SOHO" and "LASCO" in instrume) or "lasco" in fname:
+                        is_preset_matched = True
+                        det = detector
+                        if not det and "lasco" in fname:
+                            if "cal_2" in fname: det = "C2"
+                            elif "cal_3" in fname: det = "C3"
+                        if "C3" in det:
+                            self.LASCO_presets(detector="C3")
+                        else:
+                            self.LASCO_presets(detector="C2")
+                    elif telescop == "IRIS" or "SJI" in instrume or "iris" in fname or "sji" in fname:
+                        is_preset_matched = True
+                        wv = wavelnth_int
+                        if wv == 0 and ("iris" in fname or "sji" in fname):
+                            for w in [1330, 1400, 2796, 2832]:
+                                if str(w) in fname:
+                                    wv = w
+                                    break
+                            if wv == 0: wv = 1330
+                        self.IRIS_presets(wavelength=wv)
+                    elif "SUVI" in instrume or "suvi" in fname:
+                        is_preset_matched = True
+                        wv = wavelnth_int
+                        if wv == 0 and "suvi" in fname:
+                            for w in [94, 131, 171, 195, 284, 304]:
+                                if str(w) in fname or f"ci0{w}" in fname:
+                                    wv = w
+                                    break
+                            if wv == 0: wv = 171
+                        self.SUVI_presets(wavelength=wv)
+                    elif "GONG" in telescop or "GONG" in instrume or "gong" in fname:
+                        self.GONG_presets()
+                        is_preset_matched = True
+                    elif (telescop == "STEREO" and instrume == "SECCHI") or "euvi" in fname or "cor1" in fname or "cor2" in fname or "eua" in fname or "eub" in fname or "c1a" in fname or "c1b" in fname or "c2a" in fname or "c2b" in fname:
+                        is_preset_matched = True
+                        if detector == "EUVI" or "euvi" in fname or "eua" in fname or "eub" in fname:
+                            self.STEREO_presets("EUVI")
+                        elif detector == "COR1" or "cor1" in fname or "c1a" in fname or "c1b" in fname:
+                            self.STEREO_presets("COR1")
+                        elif detector == "COR2" or "cor2" in fname or "c2a" in fname or "c2b" in fname:
+                            self.STEREO_presets("COR2")
+                        else:
+                            is_preset_matched = False
+
+                if not is_preset_matched:
+                    # Reset to defaults if the previous load was a preset
+                    if getattr(self, "_was_preset_image", False):
+                        if hasattr(self, "cmap_combo"):
+                            self.cmap_combo.blockSignals(True)
+                            self.cmap_combo.setCurrentText("viridis")
+                            self.cmap_combo.blockSignals(False)
+                        if hasattr(self, "stretch_combo"):
+                            self.stretch_combo.blockSignals(True)
+                            self.stretch_combo.setCurrentText("linear")
+                            self.stretch_combo.blockSignals(False)
+                        if hasattr(self, "gamma_entry"):
+                            self.gamma_entry.blockSignals(True)
+                            self.gamma_entry.setText("1.0")
+                            self.gamma_entry.blockSignals(False)
+                        cmap = "viridis"
+                        stretch = "linear"
+                        gamma = 1.0
+
                     vmin_val = float(np.nanmin(self.current_image_data))
                     vmax_val = float(np.nanmax(self.current_image_data))
                     self.set_range(vmin_val, vmax_val)
@@ -3085,6 +3105,8 @@ class SolarRadioImageTab(QWidget):
                         preserve_view=not dir_load,
                     )
                     # print(f"Plotting image with vmin={vmin_val}, vmax={vmax_val}")
+
+                self._was_preset_image = is_preset_matched
             elif vmin_val is None or vmax_val is None:
                 self.auto_minmax()
             else:
@@ -12375,6 +12397,13 @@ class SolarRadioImageViewerApp(QMainWindow):
         setup_shape_menu(self, annot_menu)
 
         preset_menu = menubar.addMenu("Presets")
+
+        self.auto_preset_act = QAction("Auto-apply Instrument Presets", self, checkable=True)
+        self.auto_preset_act.setChecked(True)
+        self.auto_preset_act.setStatusTip("Automatically apply colormaps and limits for known instruments (AIA, LASCO, etc.)")
+        preset_menu.addAction(self.auto_preset_act)
+        preset_menu.addSeparator()
+
         auto_minmax_act = QAction("Auto Min/Max", self)
         auto_minmax_act.setShortcut("F5")
         auto_minmax_act.setStatusTip("Set display range to data min/max")
