@@ -1387,11 +1387,11 @@ class ImageInfoDialog(QDialog):
         tab_widget = QTabWidget()
 
         section_info = [
-            ("observation", "📅 Observation", "Observation details"),
-            ("spectral", "📡 Spectral", "Frequency and wavelength information"),
-            ("beam", "🎯 Beam", "Synthesized beam properties"),
-            ("image", "🖼️ Image", "Image dimensions and coordinates"),
-            ("processing", "⚙️ Processing", "Data processing information"),
+            ("observation", "Observation", "Observation details"),
+            ("spectral", "Spectral", "Frequency and wavelength information"),
+            ("beam", "Beam", "Synthesized beam properties"),
+            ("image", "Image", "Image dimensions and coordinates"),
+            ("processing", "Processing", "Data processing information"),
         ]
 
         for section_key, title, tooltip in section_info:
@@ -1403,7 +1403,7 @@ class ImageInfoDialog(QDialog):
         # Add raw header tab if available
         if "raw_header" in self.metadata and self.metadata["raw_header"]:
             raw_tab = self._create_raw_header_view(self.metadata["raw_header"])
-            tab_widget.addTab(raw_tab, "📄 All Headers")
+            tab_widget.addTab(raw_tab, "All")
             tab_widget.setTabToolTip(
                 tab_widget.count() - 1, "Complete FITS header information"
             )

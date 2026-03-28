@@ -927,6 +927,9 @@ class SolarRadioImageTab(QWidget):
                 font-size: 11pt;
                 color: {text_color};
             }}
+            QCheckBox:disabled {{
+                color: #4a4a6a;
+            }}
             QCheckBox::indicator {{
                 width: 28px;
                 height: 14px;
@@ -944,6 +947,11 @@ class SolarRadioImageTab(QWidget):
             }}
             QCheckBox::indicator:checked:hover {{
                 background-color: #7c7ff5;
+            }}
+            QCheckBox::indicator:disabled {{
+                background-color: {toggle_bg};
+                border-color: {toggle_border};
+                opacity: 0.5;
             }}
         """
 
@@ -964,7 +972,8 @@ class SolarRadioImageTab(QWidget):
         """
 
         # Row 0: Show Beam + settings | Show Grid + settings
-        self.show_beam_checkbox = QCheckBox("Beam")
+        self.show_beam_checkbox = QCheckBox("")
+        self.show_beam_label = QLabel("Beam")
         self.show_beam_checkbox.setChecked(True)
         self.show_beam_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
@@ -1026,6 +1035,7 @@ class SolarRadioImageTab(QWidget):
         left_layout_0.setContentsMargins(0, 0, 0, 0)
         left_layout_0.setSpacing(2)
         left_layout_0.addWidget(self.show_beam_checkbox)
+        left_layout_0.addWidget(self.show_beam_label)
         left_layout_0.addWidget(self.beam_settings_button)
         left_layout_0.addStretch()
 
@@ -6151,8 +6161,10 @@ class SolarRadioImageTab(QWidget):
         if not self.psf:
             self.show_beam_checkbox.setChecked(False)
             self.show_beam_checkbox.setEnabled(False)
+            self.show_beam_label.setEnabled(False)
         else:
             self.show_beam_checkbox.setEnabled(True)
+            self.show_beam_label.setEnabled(True)
 
         # Enable NOAA Events button when an image is loaded
         if hasattr(self, "noaa_events_btn"):
