@@ -507,6 +507,13 @@ class SolarRadioImageTab(QWidget):
         self._last_rendered_state = {}
         self.image_plot = None
 
+        # Animation state for smooth scroll zoom
+        self._zoom_timer = QTimer()
+        self._zoom_timer.timeout.connect(self._perform_zoom_step)
+        self._zoom_target_xlim = None
+        self._zoom_target_ylim = None
+        self._zoom_lowres_transposed = None
+
         self.setup_ui()
         self._setup_file_navigation_shortcuts()
         self._set_button_cursors()
@@ -6285,9 +6292,17 @@ class SolarRadioImageTab(QWidget):
         data = self.current_image_data
         n_dims = len(data.shape)
 
-        # Cache the transposed image if the current image hasn't changed.
         if not hasattr(self, "_cached_data_id") or self._cached_data_id != id(data):
             self._cached_transposed = data.transpose()
+            
+            # Create a 4x+ downsampled version for smooth zooming animations (Low-Res Glide)
+            h, w = self._cached_transposed.shape
+            skip = max(1, min(h, w) // 150) # Target ~150px for maximum interactive performance
+            if skip > 1:
+                self._zoom_lowres_transposed = self._cached_transposed[::skip, ::skip]
+            else:
+                self._zoom_lowres_transposed = self._cached_transposed
+                
             self._cached_data_id = id(data)
         transposed_data = self._cached_transposed
 
@@ -8503,7 +8518,7 @@ class SolarRadioImageTab(QWidget):
             self.coord_label.setText(pixel_info)
 
     def _on_mouse_scroll(self, event):
-        """Handle mouse scroll events for zooming."""
+        """Handle mouse scroll events for zooming with smooth animation."""
         # Check if feature is enabled in View menu
         main_window = self.window()
         if hasattr(main_window, "scroll_zoom_action"):
@@ -8514,38 +8529,86 @@ class SolarRadioImageTab(QWidget):
             return
 
         ax = event.inaxes
-        base_scale = 1.1
+        base_scale = 1.2 
 
         if event.button == "up":
-            # Scroll up = zoom in
             scale_factor = 1 / base_scale
         elif event.button == "down":
-            # Scroll down = zoom out
             scale_factor = base_scale
         else:
             return
 
-        # Get the current x and y limits
-        cur_xlim = ax.get_xlim()
-        cur_ylim = ax.get_ylim()
+        # Use current target as base if already animating to prevent "jerking"
+        if self._zoom_timer.isActive() and self._zoom_target_xlim:
+            cur_xlim = self._zoom_target_xlim
+            cur_ylim = self._zoom_target_ylim
+        else:
+            cur_xlim = ax.get_xlim()
+            cur_ylim = ax.get_ylim()
 
-        # Get the data coordinates of the mouse
         xdata = event.xdata
         ydata = event.ydata
 
-        # Calculate new width and height
+        # Calculate target limits
         new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
         new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
 
-        # Calculate relative position of cursor to maintain it at same screen spot
         relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0])
         rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0])
 
-        ax.set_xlim([xdata - new_width * (1 - relx), xdata + new_width * relx])
-        ax.set_ylim([ydata - new_height * (1 - rely), ydata + new_height * rely])
+        self._zoom_target_xlim = [xdata - new_width * (1 - relx), xdata + new_width * relx]
+        self._zoom_target_ylim = [ydata - new_height * (1 - rely), ydata + new_height * rely]
 
-        # Redraw the canvas
+        # Start animation timer
+        if not self._zoom_timer.isActive():
+            # Performance Optimization: Switch image to low-res decimation during the animation
+            if self.image_plot is not None and self._zoom_lowres_transposed is not None:
+                self.image_plot.set_data(self._zoom_lowres_transposed)
+            
+            # 16ms (60 FPS)
+            self._zoom_timer.start(16) 
+
+    def _perform_zoom_step(self):
+        """Timer callback for smooth zooming animation using easing."""
+        if self.image_plot is None or not self._zoom_target_xlim:
+            self._zoom_timer.stop()
+            return
+
+        ax = self.image_plot.axes
+        curr_xlim = ax.get_xlim()
+        curr_ylim = ax.get_ylim()
+
+        # Smoother easing parameter (0.35 = 35% of remaining distance per frame)
+        alpha = 0.35 
+        
+        new_xlim = [
+            curr_xlim[0] + (self._zoom_target_xlim[0] - curr_xlim[0]) * alpha,
+            curr_xlim[1] + (self._zoom_target_xlim[1] - curr_xlim[1]) * alpha
+        ]
+        new_ylim = [
+            curr_ylim[0] + (self._zoom_target_ylim[0] - curr_ylim[0]) * alpha,
+            curr_ylim[1] + (self._zoom_target_ylim[1] - curr_ylim[1]) * alpha
+        ]
+
+        ax.set_xlim(new_xlim)
+        ax.set_ylim(new_ylim)
         self.canvas.draw_idle()
+
+        # Stop once we are close enough to target
+        if abs(new_xlim[0] - self._zoom_target_xlim[0]) < 0.01 * (new_xlim[1] - new_xlim[0]):
+            ax.set_xlim(self._zoom_target_xlim)
+            ax.set_ylim(self._zoom_target_ylim)
+            
+            # Restore FULL resolution data once animation completes
+            if hasattr(self, "_cached_transposed") and self._cached_transposed is not None:
+                self.image_plot.set_data(self._cached_transposed)
+            
+            # Update Overlays (Beam, Solar Disk) to reflect new viewport
+            if hasattr(self, "show_beam_checkbox") and self.show_beam_checkbox.isChecked():
+                self._update_beam_position(ax)
+                
+            self.canvas.draw_idle()
+            self._zoom_timer.stop()
 
     def setup_canvas(self, parent_layout):
         self.figure = Figure(figsize=(5, 5), dpi=100)
