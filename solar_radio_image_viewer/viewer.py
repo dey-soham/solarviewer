@@ -181,6 +181,7 @@ mplstyle.use("fast")
 class RegionMode:
     RECTANGLE = 0
     ELLIPSE = 1
+    PAN = 2
 
 
 class SegmentedControl(QWidget):
@@ -513,6 +514,16 @@ class SolarRadioImageTab(QWidget):
         self._zoom_target_xlim = None
         self._zoom_target_ylim = None
         self._zoom_lowres_transposed = None
+        
+        # Extension for smooth panning 
+        self._pan_timer = QTimer()
+        self._pan_timer.timeout.connect(self._perform_pan_step)
+        self._pan_target_xlim = None
+        self._pan_target_ylim = None
+        self._is_panning = False
+        
+        # Default mode
+        self.region_mode = RegionMode.PAN
 
         self.setup_ui()
         self._setup_file_navigation_shortcuts()
@@ -545,12 +556,12 @@ class SolarRadioImageTab(QWidget):
         """Set pointing hand cursor on all buttons and interactive widgets for better UX"""
         set_hand_cursor(self)
 
-    def show_status_message(self, message):
+    def show_status_message(self, message, timeout=0):
         """Helper method to show messages in the status bar"""
         main_window = self.window()
         try:
             if main_window:
-                main_window.statusBar().showMessage(message)
+                main_window.statusBar().showMessage(message, timeout)
                 QApplication.processEvents()
         except AttributeError:
             pass
@@ -1284,6 +1295,22 @@ class SolarRadioImageTab(QWidget):
         """
         )
         action_group = QActionGroup(self)
+        
+        # Pan action (default)
+        self.pan_action = QAction(
+            QIcon(get_resource_path("assets/pan.png")),
+            "",
+            self,
+        )
+        self.pan_action.setToolTip("Pan")
+        self.pan_action.setCheckable(True)
+        self.pan_action.setChecked(True)
+        self.pan_action.triggered.connect(
+            lambda: self.set_region_mode(RegionMode.PAN)
+        )
+        action_group.addAction(self.pan_action)
+        toolbar.addAction(self.pan_action)
+
         self.rect_action = QAction(
             QIcon(get_resource_path("assets/rectangle_selection.png")),
             "",
@@ -1291,11 +1318,12 @@ class SolarRadioImageTab(QWidget):
         )
         self.rect_action.setToolTip("Rectangle Select")
         self.rect_action.setCheckable(True)
-        self.rect_action.setChecked(True)
+        self.rect_action.setChecked(False)
         self.rect_action.triggered.connect(
             lambda: self.set_region_mode(RegionMode.RECTANGLE)
         )
         action_group.addAction(self.rect_action)
+        toolbar.addAction(self.rect_action)
 
         # Ellipse selection action
         self.ellipse_action = QAction(
@@ -2525,7 +2553,7 @@ class SolarRadioImageTab(QWidget):
         group = QGroupBox("Cursor Position")
         layout = QVBoxLayout(group)
         layout.setContentsMargins(8, 8, 8, 8)
-        self.coord_label = QLabel("RA: −\nDEC: −")
+        self.coord_label = QLabel("No image loaded")
         self.coord_label.setAlignment(Qt.AlignCenter)
         self.coord_label.setStyleSheet("font-family: monospace; font-size: 10.5pt;")
         self.coord_label.setMinimumHeight(55)
@@ -4818,13 +4846,11 @@ class SolarRadioImageTab(QWidget):
             self._activate_profile_mode()
 
         def on_cancel():
-            dialog.reject()
-            # Uncheck the profile action
             self.profile_action.setChecked(False)
             self._profile_mode = False
 
         ok_btn.clicked.connect(on_ok)
-        cancel_btn.clicked.connect(on_cancel)
+        cancel_btn.clicked.connect(dialog.reject)
         dialog.rejected.connect(on_cancel)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
@@ -5671,11 +5697,28 @@ class SolarRadioImageTab(QWidget):
 
     def set_region_mode(self, mode_id):
         self.region_mode = mode_id
-        # Disable ruler mode when switching to ROI selection
+        # Disable ruler mode when switching to ROI/Pan
         if hasattr(self, "_ruler_mode") and self._ruler_mode:
             self._toggle_ruler_mode(False)
             if hasattr(self, "ruler_action"):
                 self.ruler_action.setChecked(False)
+        
+        # Status feedback
+        if mode_id == RegionMode.PAN:
+            self.show_status_message("Mode: Pan")
+        elif mode_id == RegionMode.RECTANGLE:
+            self.show_status_message("Mode: Rectangle Select")
+        elif mode_id == RegionMode.ELLIPSE:
+            self.show_status_message("Mode: Ellipse Select")
+        
+        '''
+        # Performance Safety: Ensure high-res is restored when switching modes
+        if hasattr(self, "image_plot") and self.image_plot:
+            if hasattr(self, "_cached_transposed") and self._cached_transposed is not None:
+                self.image_plot.set_data(self._cached_transposed)
+                self.canvas.draw_idle()
+        '''
+
         # Re-init region editor if we have an axis
         if hasattr(self, "figure") and self.figure.axes:
             self.init_region_editor(self.figure.axes[0])
@@ -6309,7 +6352,7 @@ class SolarRadioImageTab(QWidget):
             
             # Create a 4x+ downsampled version for smooth zooming animations (Low-Res Glide)
             h, w = self._cached_transposed.shape
-            skip = max(1, min(h, w) // 150) # Target ~150px for maximum interactive performance
+            skip = max(1, min(h, w) // 350) # Target ~350px for smooth zooming
             if skip > 1:
                 self._zoom_lowres_transposed = self._cached_transposed[::skip, ::skip]
             else:
@@ -8210,8 +8253,16 @@ class SolarRadioImageTab(QWidget):
         from matplotlib.widgets import RectangleSelector, EllipseSelector
 
         if self.roi_selector:
+            self.roi_selector.set_visible(False)
             self.roi_selector.disconnect_events()
             self.roi_selector = None
+            self.canvas.draw_idle()
+
+        if hasattr(self, "region_mode") and self.region_mode == RegionMode.PAN:
+            # Checkable actions state sync (if not already handled)
+            if hasattr(self, "pan_action"): self.pan_action.setChecked(True)
+            self.show_status_message("Pan Tool Active")
+            return
 
         # Choose selector based on region mode
         if hasattr(self, "region_mode") and self.region_mode == RegionMode.ELLIPSE:
@@ -8436,98 +8487,173 @@ class SolarRadioImageTab(QWidget):
         self.show_roi_stats(roi_data, ra_dec_info)
 
     def on_mouse_move(self, event):
-        if not event.inaxes or self.current_image_data is None:
+        if self.current_image_data is None:
+            self.coord_label.setText("No image loaded")
             return
+
+        if not event.inaxes:
+            self.coord_label.setText("")
+            return
+
+        # Priority to Matplotlib toolbar tools
+        if hasattr(self, "nav_toolbar") and self.nav_toolbar.mode != "":
+            return
+            
+        # Suspend optimization during precision measurement tasks
+        is_precision_mode = (
+            (hasattr(self, "_ruler_mode") and self._ruler_mode) or 
+            (hasattr(self, "_profile_mode") and self._profile_mode)
+        )
 
         x, y = round(event.xdata), round(event.ydata)
 
+        # Panning Logic (Interactive Panning)
+        if not is_precision_mode and self._is_panning and event.x is not None:
+            ax = event.inaxes
+            
+            # Calculate delta in pixel coordinates
+            dx_px = event.x - self._pan_start_x_px
+            dy_px = event.y - self._pan_start_y_px
+            
+            # Convert pixel delta to data delta using initial scale
+            width_px = ax.bbox.width
+            height_px = ax.bbox.height
+            width_data = self._pan_start_xlim[1] - self._pan_start_xlim[0]
+            height_data = self._pan_start_ylim[1] - self._pan_start_ylim[0]
+            
+            dx_data = dx_px * (width_data / width_px)
+            dy_data = dy_px * (height_data / height_px)
+            
+            # Update panning target
+            self._pan_target_xlim = [self._pan_start_xlim[0] - dx_data, self._pan_start_xlim[1] - dx_data]
+            self._pan_target_ylim = [self._pan_start_ylim[0] - dy_data, self._pan_start_ylim[1] - dy_data]
+            
+            if not self._pan_timer.isActive():
+                self._pan_timer.start(16)
+        
+        # Delegate coordinate and value formatting to Matplotlib Artists
         try:
-            value = self.current_image_data[x, y]
-            pixel_info = f"<b>Pixel:</b> X={x}, Y={y}<br><b>Value:</b> {value:.3g}"
-        except (IndexError, TypeError):
-            pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
+            ax = event.inaxes
+            im = self.image_plot
+            
+            # 1. Get exact World coordinates as Matplotlib would show them
+            world_str = ax.format_coord(event.xdata, event.ydata)
+            # Remove any trailing [value] Matplotlib might have appended to format_coord
+            import re
+            world_str = re.sub(r'\s*\[.*?\]$', '', world_str).replace('(world)', '').strip()
+            
+            # 2. Get exact Value as Matplotlib would show it
+            cursor_data = im.get_cursor_data(event)
+            if cursor_data is not None:
+                # Use Matplotlib's own value formatter for perfect parity
+                val_str = im.format_cursor_data(cursor_data).strip('[]').strip()
+                
+                pixel_info = f"<b>Pixel:</b> X={x}, Y={y}<br><b>Value:</b> {val_str}"
+                world_info = f"<b>World:</b> {world_str}"
+                coord_info = f"{pixel_info}<br>{world_info}"
+            else:
+                pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
+                world_info = f"<b>World:</b> {world_str}"
+                coord_info = f"{pixel_info}<br>{world_info}"
 
-        wcs_obj = getattr(self, "_cached_wcs_obj", None)
-        if wcs_obj is not None:
-            try:
-                import astropy.units as u
+            #    coord_info = f"<b>Pixel:</b> Outside Image"
+                
+            self.coord_label.setText(coord_info)
+            return
+            
+        except Exception as e:
+            # Fallback to simple pixel info if Artist API fails
+            print(f"[DEBUG] Coordinate Readout Fallback: {e}")
+            self.coord_label.setText(f"<b>Pixel:</b> X={x}, Y={y}")
 
-                wx, wy = wcs_obj.wcs_pix2world(event.xdata, event.ydata, 0)
+    def _on_mouse_press(self, event):
+        """Handle mouse button press for panning."""
+        # Priority to Matplotlib toolbar tools
+        if hasattr(self, "nav_toolbar") and self.nav_toolbar.mode != "":
+            return
+        
+        # Suspend custom panning logic during precision measurement tasks
+        if (hasattr(self, "_ruler_mode") and self._ruler_mode) or \
+           (hasattr(self, "_profile_mode") and self._profile_mode):
+            return
+            
+        if (
+            not hasattr(self, "region_mode") 
+            or self.region_mode != RegionMode.PAN 
+            or event.inaxes is None 
+            or event.button != 1
+        ):
+            return
+            
+        self._is_panning = True
+        self._pan_start_x_px = event.x
+        self._pan_start_y_px = event.y
+        
+        ax = event.inaxes
+        self._pan_start_xlim = ax.get_xlim()
+        self._pan_start_ylim = ax.get_ylim()
+        
+        # Performance Optimization: Switch image to low-res decimation during the drag
+        if self.image_plot is not None and self._zoom_lowres_transposed is not None:
+             self.image_plot.set_data(self._zoom_lowres_transposed)
+             self.canvas.draw_idle()
 
-                # Detect coordinate type from cached header or WCS ctype
-                _hdr = getattr(self, '_cached_fits_header', None) or {}
-                ctype1 = str(_hdr.get('CTYPE1', '')).upper()
-                if not ctype1 and hasattr(wcs_obj, 'wcs') and hasattr(wcs_obj.wcs, 'ctype'):
-                    ctype1 = str(wcs_obj.wcs.ctype[0]).upper()
+    def _on_mouse_release(self, event):
+        """Handle mouse button release to finalize panning."""
+        if not self._is_panning:
+            return
+            
+        self._is_panning = False
+        self._pan_timer.stop()
+        
+        # Restore FULL resolution data whenever panning/clicking ends
+        if self.image_plot and hasattr(self, "_cached_transposed") and self._cached_transposed is not None:
+            self.image_plot.set_data(self._cached_transposed)
+            self.canvas.draw_idle()
 
-                if 'SOLAR' in ctype1:
-                    # SOLAR-X/Y: values are in arcsec from CASA
-                    coord_info = (
-                        f"{pixel_info}<br><b>World:</b> "
-                        f"SOLAR-X={wx:.1f}\", SOLAR-Y={wy:.1f}\""
-                    )
-                elif 'HPLN' in ctype1:
-                    # Helioprojective: WCS returns degrees, display in arcsec
-                    # Unwrap both HPLN and HPLT to [-180, 180]
-                    wx = ((wx + 180.0) % 360.0) - 180.0
-                    wy = ((wy + 180.0) % 360.0) - 180.0
-                    hpln_arcsec = wx * 3600.0
-                    hplt_arcsec = wy * 3600.0
-                    coord_info = (
-                        f"{pixel_info}<br><b>World:</b> "
-                        f"HPLN={hpln_arcsec:.1f}\", HPLT={hplt_arcsec:.1f}\""
-                    )
-                else:
-                    # Standard RA/Dec
-                    from astropy.coordinates import SkyCoord
-                    coord = SkyCoord(ra=wx * u.degree, dec=wy * u.degree)
-                    ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
-                    dec_str = coord.dec.to_string(sep=":", precision=1)
-                    coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
+        if self._pan_target_xlim and self.image_plot:
+            ax = self.image_plot.axes
+            ax.set_xlim(self._pan_target_xlim)
+            ax.set_ylim(self._pan_target_ylim)
+            
+            # Update Overlays (Beam, Solar Disk) to reflect new viewport
+            if hasattr(self, "show_beam_checkbox") and self.show_beam_checkbox.isChecked():
+                self._update_beam_position(ax)
+                
+            self.canvas.draw_idle()
+            
+        self._pan_target_xlim = None
+        self._pan_target_ylim = None
 
-                self.coord_label.setText(coord_info)
-            except Exception as e:
-                self.coord_label.setText(f"{pixel_info}<br><b>WCS Error:</b> {str(e)}")
-        elif self.current_wcs:
-            try:
-                # Use CASA toworld for coordinate conversion
-                world = self.current_wcs.toworld([event.xdata, event.ydata, 0, 0])["numeric"]
+    def _perform_pan_step(self):
+        """Timer callback for smooth panning animation using easing."""
+        if self.image_plot is None or self._pan_target_xlim is None:
+            self._pan_timer.stop()
+            return
 
-                _hdr = getattr(self, '_cached_fits_header', None) or {}
-                ctype1 = str(_hdr.get('CTYPE1', '')).upper()
+        ax = self.image_plot.axes
+        curr_xlim = ax.get_xlim()
+        curr_ylim = ax.get_ylim()
 
-                if 'SOLAR' in ctype1:
-                    # SOLAR-X/Y: values are in arcsec
-                    coord_info = (
-                        f"{pixel_info}<br><b>World:</b> "
-                        f"SOLAR-X={world[0]:.1f}\", SOLAR-Y={world[1]:.1f}\""
-                    )
-                elif 'HPLN' in ctype1:
-                    # Helioprojective: CASA returns radians, convert to arcsec with unwrap
-                    hpln_deg = world[0] * 180 / np.pi
-                    hplt_deg = world[1] * 180 / np.pi
-                    hpln_deg = ((hpln_deg + 180.0) % 360.0) - 180.0
-                    hplt_deg = ((hplt_deg + 180.0) % 360.0) - 180.0
-                    coord_info = (
-                        f"{pixel_info}<br><b>World:</b> "
-                        f"HPLN={hpln_deg * 3600.0:.1f}\", HPLT={hplt_deg * 3600.0:.1f}\""
-                    )
-                else:
-                    # Standard RA/Dec: CASA returns radians
-                    import astropy.units as u
-                    from astropy.coordinates import SkyCoord
-                    ra_deg = world[0] * 180 / np.pi
-                    dec_deg = world[1] * 180 / np.pi
-                    coord = SkyCoord(ra=ra_deg * u.degree, dec=dec_deg * u.degree)
-                    ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
-                    dec_str = coord.dec.to_string(sep=":", precision=1)
-                    coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
+        # Snappy alpha (0.5 = 50% distance per frame) for responsive follow
+        alpha = 0.5 
+        
+        new_xlim = [
+            curr_xlim[0] + (self._pan_target_xlim[0] - curr_xlim[0]) * alpha,
+            curr_xlim[1] + (self._pan_target_xlim[1] - curr_xlim[1]) * alpha
+        ]
+        new_ylim = [
+            curr_ylim[0] + (self._pan_target_ylim[0] - curr_ylim[0]) * alpha,
+            curr_ylim[1] + (self._pan_target_ylim[1] - curr_ylim[1]) * alpha
+        ]
 
-                self.coord_label.setText(coord_info)
-            except Exception as e:
-                self.coord_label.setText(f"{pixel_info}<br><b>WCS Error:</b> {str(e)}")
-        else:
-            self.coord_label.setText(pixel_info)
+        ax.set_xlim(new_xlim)
+        ax.set_ylim(new_ylim)
+        self.canvas.draw_idle()
+
+        # Stop once we are close enough to target
+        if abs(new_xlim[0] - self._pan_target_xlim[0]) < 0.001 * (new_xlim[1] - new_xlim[0]):
+            self._pan_timer.stop()
 
     def _on_mouse_scroll(self, event):
         """Handle mouse scroll events for zooming with smooth animation."""
@@ -8538,6 +8664,12 @@ class SolarRadioImageTab(QWidget):
                 return
         
         if event.inaxes is None or self.current_image_data is None:
+            return
+
+        # Disable scroll-to-zoom during precision measurement tasks (Ruler/Profile)
+        if (hasattr(self, "_ruler_mode") and self._ruler_mode) or \
+           (hasattr(self, "_profile_mode") and self._profile_mode):
+            self.show_status_message("Scroll to zoom suspended in measurement mode", timeout=2000)
             return
 
         ax = event.inaxes
@@ -8655,6 +8787,8 @@ class SolarRadioImageTab(QWidget):
 
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
         self.canvas.mpl_connect("scroll_event", self._on_mouse_scroll)
+        self.canvas.mpl_connect("button_press_event", self._on_mouse_press)
+        self.canvas.mpl_connect("button_release_event", self._on_mouse_release)
 
     def show_contour_settings(self):
         """Show non-modal contour settings dialog."""
@@ -11803,14 +11937,16 @@ except Exception:
             self.zoom_in_action.setIcon(QIcon(themed_icon("zoom_in.png")))
         if hasattr(self, "zoom_out_action"):
             self.zoom_out_action.setIcon(QIcon(themed_icon("zoom_out.png")))
-        if hasattr(self, "reset_view_action"):
-            self.reset_view_action.setIcon(QIcon(themed_icon("reset.png")))
         if hasattr(self, "zoom_60arcmin_action"):
             self.zoom_60arcmin_action.setIcon(QIcon(themed_icon("zoom_60arcmin.png")))
+        if hasattr(self, "reset_view_action"):
+            self.reset_view_action.setIcon(QIcon(themed_icon("reset.png")))
+        if hasattr(self, "pan_action"):
+            self.pan_action.setIcon(QIcon(themed_icon("pan.png")))
         if hasattr(self, "rect_action"):
             self.rect_action.setIcon(QIcon(themed_icon("rectangle_selection.png")))
         if hasattr(self, "ellipse_action"):
-            self.ellipse_action.setIcon(QIcon(themed_icon("icons8-ellipse-90.png")))
+            self.ellipse_action.setIcon(QIcon(themed_icon("ellipse_selection.png")))
         if hasattr(self, "info_action"):
             self.info_action.setIcon(QIcon(themed_icon("icons8-info-90.png")))
         if hasattr(self, "customize_plot_action"):
@@ -15053,7 +15189,7 @@ except Exception as e:
         scroll_layout.setSpacing(20)
         scroll_layout.setContentsMargins(0, 0, 10, 0)
 
-        # Shortcut categories with icons
+        # Shortcut categories
         categories = [
             (
                 "📁",
