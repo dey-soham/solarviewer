@@ -8590,8 +8590,8 @@ class SolarRadioImageTab(QWidget):
         curr_xlim = ax.get_xlim()
         curr_ylim = ax.get_ylim()
 
-        # Smoother easing parameter (0.35 = 35% of remaining distance per frame)
-        alpha = 0.35 
+        # Easing factor: 0.5 (50% per frame) 
+        alpha = 0.5 
         
         new_xlim = [
             curr_xlim[0] + (self._zoom_target_xlim[0] - curr_xlim[0]) * alpha,
@@ -8606,8 +8606,9 @@ class SolarRadioImageTab(QWidget):
         ax.set_ylim(new_ylim)
         self.canvas.draw_idle()
 
-        # Stop once we are close enough to target
-        if abs(new_xlim[0] - self._zoom_target_xlim[0]) < 0.01 * (new_xlim[1] - new_xlim[0]):
+        # Precision stopping
+        # This prevents the "hanging" feeling at the end of the zoom.
+        if abs(new_xlim[0] - self._zoom_target_xlim[0]) < 0.002 * (new_xlim[1] - new_xlim[0]):
             ax.set_xlim(self._zoom_target_xlim)
             ax.set_ylim(self._zoom_target_ylim)
             
