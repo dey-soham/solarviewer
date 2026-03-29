@@ -1291,7 +1291,7 @@ class RemoteFileBrowser(QDialog):
             self.tree.addTopLevelItem(item)
 
         cache_indicator = " (cached)" if from_cache else ""
-        self.status_label.setText(f"{len(entries)} items{cache_indicator}")
+        self.status_label.setText(f"🔍 Found {len(entries)} files{cache_indicator}")
 
     def _on_list_error(self, error_msg: str):
         """Handle directory listing error."""

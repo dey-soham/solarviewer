@@ -10537,17 +10537,26 @@ class SolarRadioImageTab(QWidget):
         self._last_file_btn.setEnabled(has_next)
 
         # Update position label
-        if self._file_list and self._file_list_index >= 0:
-            total = len(self._file_list)
-            current = self._file_list_index + 1
-            filename = os.path.basename(self._file_list[self._file_list_index])
-            self._file_pos_label.setText(f"{current}/{total}")
-            self._file_pos_label.setToolTip(
-                f"File {current} of {total}: {filename}\nFilter: {self._file_filter_pattern}"
-            )
+        total = len(self._file_list)
+        if total > 0:
+            if self._file_list_index >= 0:
+                current = self._file_list_index + 1
+                filename = os.path.basename(self._file_list[self._file_list_index])
+                self._file_pos_label.setText(f"{current}/{total}")
+                self._file_pos_label.setToolTip(
+                    f"File {current} of {total}: {filename}\nFilter: {self._file_filter_pattern}"
+                )
+            else:
+                # Current file not in filtered list
+                self._file_pos_label.setText(f"-/{total}")
+                self._file_pos_label.setToolTip(
+                    f"Current file excluded by filter\n{total} matching files found\nFilter: {self._file_filter_pattern}"
+                )
         else:
             self._file_pos_label.setText("")
-            self._file_pos_label.setToolTip("")
+            self._file_pos_label.setToolTip(
+                f"No files match filter: {self._file_filter_pattern}" if self._file_filter_pattern != "*" else "No files found"
+            )
 
     def _populate_remote_file_list(
         self, main_window, remote_dir, casa_mode, current_local_path
@@ -11100,7 +11109,18 @@ except Exception:
                     f"No files found matching '{self._file_filter_pattern}'"
                 )
 
-    def _show_playlist_dialog(self):
+            # If playlist dialog is open, refresh it to show new filtered list
+            if hasattr(self, "_playlist_dialog") and self._playlist_dialog:
+                try:
+                    if self._playlist_dialog.isVisible():
+                        # Close and re-open to refresh with new filter/list
+                        # This is the simplest way to ensure all widgets (badge, list) are updated
+                        # We use QTimer to avoid potential issues with closing/opening in the same event
+                        QTimer.singleShot(0, lambda: self._show_playlist_dialog(force_refresh=True))
+                except RuntimeError:
+                    self._playlist_dialog = None
+
+    def _show_playlist_dialog(self, force_refresh=False):
         """Show a non-modal dialog listing all files in the current file list"""
         from PyQt5.QtWidgets import (
             QDialog,
@@ -11113,17 +11133,20 @@ except Exception:
         )
 
         # Check if file list exists
-        if not self._file_list:
+        if not self._file_list and not self._is_remote_mode:
             self.show_status_message("No files found. Load an image first.")
             return
 
-        # If dialog already exists and is visible, just raise it
+        # If dialog already exists and is visible, just raise it (unless force_refresh is True)
         if hasattr(self, "_playlist_dialog") and self._playlist_dialog is not None:
             try:
                 if self._playlist_dialog.isVisible():
-                    self._playlist_dialog.raise_()
-                    self._playlist_dialog.activateWindow()
-                    return
+                    if force_refresh:
+                        self._playlist_dialog.close()
+                    else:
+                        self._playlist_dialog.raise_()
+                        self._playlist_dialog.activateWindow()
+                        return
             except RuntimeError:
                 # Dialog was deleted, create a new one
                 self._playlist_dialog = None
@@ -11325,7 +11348,7 @@ except Exception:
 
         def on_dialog_destroyed():
             """Clean up reference when dialog is destroyed"""
-            if hasattr(viewer, "_playlist_dialog"):
+            if getattr(viewer, "_playlist_dialog", None) == dialog:
                 viewer._playlist_dialog = None
 
         open_btn.clicked.connect(on_open)
