@@ -17,6 +17,10 @@ from . import __version__
 
 # Globally suppress Astropy's "Invalid 'BLANK' keyword" warning
 import warnings
+from .crash_handler import install_crash_handler, generate_crash_report
+
+# Enable crash reporting immediately
+install_crash_handler()
 
 try:
     from astropy.io.fits.verify import VerifyWarning
