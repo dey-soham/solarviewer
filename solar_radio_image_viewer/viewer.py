@@ -8493,11 +8493,22 @@ class SolarRadioImageTab(QWidget):
 
         if not event.inaxes:
             self.coord_label.setText("")
+            self.canvas.setCursor(Qt.ArrowCursor)
             return
 
         # Priority to Matplotlib toolbar tools
         if hasattr(self, "nav_toolbar") and self.nav_toolbar.mode != "":
             return
+
+        # Update cursor for panning mode feedback
+        if hasattr(self, "region_mode") and self.region_mode == RegionMode.PAN:
+            if self._is_panning:
+                self.canvas.setCursor(Qt.ClosedHandCursor)
+            else:
+                self.canvas.setCursor(Qt.OpenHandCursor)
+        else:
+            # Default cursor for other modes within axes
+            self.canvas.setCursor(Qt.CrossCursor)
             
         # Suspend optimization during precision measurement tasks
         is_precision_mode = (
@@ -8586,6 +8597,7 @@ class SolarRadioImageTab(QWidget):
             return
             
         self._is_panning = True
+        self.canvas.setCursor(Qt.ClosedHandCursor)
         self._pan_start_x_px = event.x
         self._pan_start_y_px = event.y
         
@@ -8606,6 +8618,12 @@ class SolarRadioImageTab(QWidget):
         self._is_panning = False
         self._pan_timer.stop()
         
+        # Restore cursor based on location
+        if event.inaxes:
+            self.canvas.setCursor(Qt.OpenHandCursor)
+        else:
+            self.canvas.setCursor(Qt.ArrowCursor)
+
         # Restore FULL resolution data whenever panning/clicking ends
         if self.image_plot and hasattr(self, "_cached_transposed") and self._cached_transposed is not None:
             self.image_plot.set_data(self._cached_transposed)
