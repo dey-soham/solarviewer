@@ -12750,14 +12750,14 @@ class SolarRadioImageViewerApp(QMainWindow):
         batch_process_submenu = QMenu("Batch Processing", self)
         tools_menu.addMenu(batch_process_submenu)
 
-        # Add Batch HPC Conversion option to submenu
-        from .dialogs import HPCBatchConversionDialog
-        batch_hpc_act = QAction("Batch HPC Conversion", self)
-        batch_hpc_act.setStatusTip(
-            "Convert multiple files to helioprojective coordinates"
+        # Add Coordinate Transformation option to submenu
+        from .dialogs import CoordinateTransformationDialog
+        batch_transform_act = QAction("Coordinate Transformation", self)
+        batch_transform_act.setStatusTip(
+            "Transform multiple files between RA/DEC and helioprojective coordinates"
         )
-        batch_hpc_act.triggered.connect(self.show_batch_hpc_dialog)
-        batch_process_submenu.addAction(batch_hpc_act)
+        batch_transform_act.triggered.connect(self.show_coordinate_transformation_dialog)
+        batch_process_submenu.addAction(batch_transform_act)
 
         # Add Solar Phase Center Shift option to batch processing submenu
         batch_phase_shift_act = QAction("Solar Phase Center Shift", self)
@@ -16219,17 +16219,17 @@ read -p "Press Enter to close..."
             traceback.print_exc()
             QMessageBox.critical(self, "Error", error_message)
 
-    def show_batch_hpc_dialog(self):
-        """Show the dialog for batch conversion to helioprojective coordinates"""
+    def show_coordinate_transformation_dialog(self):
+        """Show the dialog for batch coordinate transformation"""
         try:
             # Get current image name if available
             current_tab = self.tab_widget.currentWidget()
             current_file = current_tab.imagename if current_tab else None
 
             # Import and show dialog
-            from .dialogs import HPCBatchConversionDialog
+            from .dialogs import CoordinateTransformationDialog
 
-            dialog = HPCBatchConversionDialog(self, current_file)
+            dialog = CoordinateTransformationDialog(self, current_file)
             dialog.setAttribute(Qt.WA_DeleteOnClose)
             dialog.destroyed.connect(
                 lambda: (
@@ -16242,7 +16242,7 @@ read -p "Press Enter to close..."
             dialog.show()
         except Exception as e:
             # Show error message with details
-            error_message = f"Error opening batch HPC conversion dialog: {str(e)}"
+            error_message = f"Error opening coordinate transformation dialog: {str(e)}"
             print(f"[ERROR] {error_message}")  # Log to console
             QMessageBox.critical(self, "Error", error_message)
 

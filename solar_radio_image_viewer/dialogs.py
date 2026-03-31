@@ -59,20 +59,21 @@ import time
 
 
 # Standalone function for multiprocessing
-def process_single_file_hpc(args):
-    """Process a single file for HPC conversion - standalone function for multiprocessing
+def process_single_file_coordsys(args):
+    """Process a single file for coordinate transformation - standalone function for multiprocessing
 
     Parameters:
     -----------
     args : tuple
-        Tuple containing (input_file, output_path, stokes, process_id)
+        Tuple containing (input_file, output_path, stokes, process_id, target_mode)
+        target_mode: "HPC" or "RADEC"
 
     Returns:
     --------
     dict
         Result dictionary with processing outcome
     """
-    input_file, output_path, stokes, process_id = args
+    input_file, output_path, stokes, process_id, target_mode = args
 
     try:
         result = {
@@ -81,11 +82,20 @@ def process_single_file_hpc(args):
             "stokes": stokes,
             "success": False,
             "error": None,
-            "skipped": False,  # True if already HPC and just copied
+            "skipped": False,  # True if already in target format and just copied
         }
 
-        # Check if file is already in HPC coordinates
-        if is_already_hpc(input_file):
+        # Check coordinate system
+        already_hpc = is_already_hpc(input_file)
+        
+        # Decide if we need to convert or just copy
+        should_copy = False
+        if target_mode == "HPC" and already_hpc:
+            should_copy = True
+        elif target_mode == "RADEC" and not already_hpc:
+            should_copy = True
+            
+        if should_copy:
             # Just copy the file instead of converting
             import shutil
 
@@ -105,22 +115,34 @@ def process_single_file_hpc(args):
                 result["error"] = f"Copy failed: {str(e)}"
                 return result
 
-        # Import the function here to ensure we have it in the subprocess
-        from .helioprojective import convert_and_save_hpc
+        # Import transformation functions
+        from .helioprojective import convert_and_save_hpc, convert_hpc_to_radec
 
         # Generate a unique file suffix for this process to avoid conflicts
         temp_suffix = f"_proc_{process_id}_{uuid.uuid4().hex[:8]}"
 
-        # Convert file with unique temp file handling
-        success = convert_and_save_hpc(
-            input_file,
-            output_path,
-            Stokes=stokes,
-            overwrite=True,
-            temp_suffix=temp_suffix,
-        )
+        if target_mode == "HPC":
+            # Convert RA/DEC to HPC
+            success = convert_and_save_hpc(
+                input_file,
+                output_path,
+                Stokes=stokes,
+                overwrite=True,
+                temp_suffix=temp_suffix,
+            )
+        else:
+            # Convert HPC to RA/DEC
+            # convert_hpc_to_radec handles saving to output_path
+            success = convert_hpc_to_radec(
+                input_file,
+                output_path,
+                overwrite=True
+            )
 
         result["success"] = success
+        if not success and result["error"] is None:
+            result["error"] = f"Transformation to {target_mode} failed (check file headers for valid WCS info)"
+            
         return result
     except Exception as e:
         result["error"] = str(e)
@@ -163,7 +185,7 @@ def is_already_hpc(imagepath):
                 or "SOLAR" in ctype2
             ):
                 return True
-
+        
         # For CASA images, check coordinate system
         if os.path.isdir(imagepath):
             try:
@@ -2549,14 +2571,14 @@ class PhaseShiftDialog(QDialog):
             )
 
 
-class HPCBatchConversionDialog(QDialog):
-    """Dialog for batch conversion of images to helioprojective coordinates."""
+class CoordinateTransformationDialog(QDialog):
+    """Dialog for batch coordinate transformation of images (RA/DEC <-> HPC)."""
 
     def __init__(self, parent=None, current_file=None):
         super().__init__(parent)
-        self.setWindowTitle("Batch Conversion to Helioprojective Coordinates")
-        self.setMinimumSize(600, 500)
-        self.resize(750, 700)
+        self.setWindowTitle("Batch Coordinate Transformation")
+        self.setMinimumSize(600, 550)
+        self.resize(750, 850)
         self.parent = parent
         self.current_file = current_file
 
@@ -2732,13 +2754,29 @@ class HPCBatchConversionDialog(QDialog):
 
         # Header description
         header = QLabel(
-            "Convert multiple FITS/CASA images to helioprojective coordinates (HPC) in batch."
+            "Convert multiple FITS/CASA images between RA/DEC and Helioprojective (HPC) coordinates."
         )
         header.setWordWrap(True)
         header.setStyleSheet(
             f"font-style: italic; color: {text_secondary}; padding: 4px 0;"
         )
         main_layout.addWidget(header)
+
+        # Transformation Direction Group
+        trans_group = QGroupBox("Transformation Direction")
+        trans_layout = QVBoxLayout(trans_group)
+        
+        self.radio_to_hpc = QRadioButton("Celestial (RA/DEC) ➔ Helioprojective (HPC)")
+        self.radio_to_radec = QRadioButton("Helioprojective (HPC) ➔ Celestial (RA/DEC)")
+        self.radio_to_hpc.setChecked(True)
+        
+        trans_layout.addWidget(self.radio_to_hpc)
+        trans_layout.addWidget(self.radio_to_radec)
+        main_layout.addWidget(trans_group)
+
+        # Connect direction change to update output directory
+        self.radio_to_hpc.toggled.connect(self._update_default_output_dir)
+        self.radio_to_radec.toggled.connect(self._update_default_output_dir)
 
         # ========== TAB WIDGET ==========
         self.tab_widget = QTabWidget()
@@ -3034,6 +3072,25 @@ class HPCBatchConversionDialog(QDialog):
 
         main_layout.addLayout(button_layout)
 
+    def _update_default_output_dir(self):
+        """Update default output directory based on transformation direction"""
+        input_dir = self.dir_edit.text()
+        if not input_dir:
+            return
+            
+        if self.radio_to_hpc.isChecked():
+            target_sub = "hpc"
+            pattern = "hpc_*.fits"
+        else:
+            target_sub = "radec"
+            pattern = "radec_*.fits"
+            
+        # Update output directory if it matches previous default or is empty
+        current_out = self.output_dir_edit.text()
+        if not current_out or current_out.endswith("/hpc") or current_out.endswith("/radec"):
+            self.output_dir_edit.setText(os.path.join(input_dir, target_sub))
+            self.output_pattern_edit.setText(pattern)
+
     def browse_directory(self):
         """Browse for input directory"""
         current_dir = self.dir_edit.text()
@@ -3048,12 +3105,7 @@ class HPCBatchConversionDialog(QDialog):
 
         if directory:
             self.dir_edit.setText(directory)
-
-            # Set output directory to input_dir/hpc/ by default
-            if not self.output_dir_edit.text() or self.output_dir_edit.text().endswith(
-                "/hpc"
-            ):
-                self.output_dir_edit.setText(os.path.join(directory, "hpc"))
+            self._update_default_output_dir()
 
             # Preview files if pattern is already set
             self.preview_files()
@@ -3229,6 +3281,7 @@ class HPCBatchConversionDialog(QDialog):
         max_cores = self.cores_spinbox.value() if use_multiprocessing else 1
         full_stokes = self.full_stokes_radio.isChecked()
         stokes_param = self.stokes_combo.currentText() if not full_stokes else None
+        target_mode = "HPC" if self.radio_to_hpc.isChecked() else "RADEC"
 
         # Import modules needed for processing
         import multiprocessing
@@ -3298,6 +3351,7 @@ class HPCBatchConversionDialog(QDialog):
                                 stokes_output,
                                 stokes,
                                 f"{process_id}_{stokes}",
+                                target_mode,
                             )
                             tasks.append(task)
 
@@ -3309,7 +3363,7 @@ class HPCBatchConversionDialog(QDialog):
                     pool = multiprocessing.Pool(processes=max_cores)
 
                     # Start asynchronous processing with our standalone function
-                    result_objects = pool.map_async(process_single_file_hpc, tasks)
+                    result_objects = pool.map_async(process_single_file_coordsys, tasks)
                     pool.close()  # No more tasks will be submitted
 
                     # Monitor progress while processing
@@ -3415,12 +3469,13 @@ class HPCBatchConversionDialog(QDialog):
                             try:
                                 # Convert file with a unique temp suffix
                                 temp_suffix = f"_seq_{i}_{stokes}"
-                                result = process_single_file_hpc(
+                                result = process_single_file_coordsys(
                                     (
                                         input_file,
                                         stokes_output,
                                         stokes,
                                         f"_seq_{i}_{stokes}",
+                                        target_mode,
                                     )
                                 )
                                 success = result["success"]
@@ -3470,7 +3525,7 @@ class HPCBatchConversionDialog(QDialog):
                             )
 
                         output_path = os.path.join(output_dir, output_filename)
-                        task = (input_file, output_path, stokes_param, i)
+                        task = (input_file, output_path, stokes_param, i, target_mode)
                         tasks.append(task)
 
                     # Set up progress tracking
@@ -3481,7 +3536,7 @@ class HPCBatchConversionDialog(QDialog):
                     pool = multiprocessing.Pool(processes=max_cores)
 
                     # Start asynchronous processing
-                    result_objects = pool.map_async(process_single_file_hpc, tasks)
+                    result_objects = pool.map_async(process_single_file_coordsys, tasks)
                     pool.close()  # No more tasks will be submitted
 
                     # Monitor progress while processing
@@ -3552,8 +3607,8 @@ class HPCBatchConversionDialog(QDialog):
                         try:
                             # Convert file with a unique temp suffix
                             temp_suffix = f"_seq_{i}"
-                            result = process_single_file_hpc(
-                                (input_file, output_path, stokes_param, f"_seq_{i}")
+                            result = process_single_file_coordsys(
+                                (input_file, output_path, stokes_param, f"_seq_{i}", target_mode)
                             )
                             success = result["success"]
 
