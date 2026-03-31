@@ -297,6 +297,11 @@ class NOAAEventsCache:
             for d in data:
                 if isinstance(d, dict):
                     d.pop('__class__', None)
+                    if 'image_date' in d and isinstance(d['image_date'], str):
+                        try:
+                            d['image_date'] = datetime.fromisoformat(d['image_date'])
+                        except ValueError:
+                            pass
                     images.append(ci_module.ContextImage(**d))
                 else:
                     images.append(d)
@@ -659,6 +664,11 @@ class FetchWorker(QThread):
             if not self.force_refresh and cached_status['images']:
                 self.progress.emit("Loading context images from cache...")
                 images = cache.load_images(self.event_date)
+                
+                # Auto-heal cache for old images missing the timestamp
+                if images and any(not hasattr(img, 'image_date') or img.image_date is None for img in images):
+                    self.progress.emit("Stale image cache detected. Refreshing for timestamps...")
+                    images = None
             
             if images is None:
                 try:
@@ -3787,6 +3797,19 @@ class NOAAEventsViewer(QMainWindow):
 
             info_layout.addWidget(title)
             info_layout.addWidget(instrument_lbl)
+
+            if hasattr(img, 'image_date') and img.image_date:
+                qdate = self.date_edit.date()
+                query_date = date(qdate.year(), qdate.month(), qdate.day())
+                time_str = img.image_date.strftime("%Y-%m-%d %H:%M:%S UTC")
+                date_lbl = QLabel(f"Image Time: {time_str}")
+                if img.image_date.date() != query_date:
+                    date_lbl.setStyleSheet("font-weight: bold; color: #E65100; font-size: 11pt;") # Bold dark orange/alert
+                    date_lbl.setToolTip("WARNING: This image is from a different date than requested.")
+                else:
+                    date_lbl.setStyleSheet("color: #00796B; font-weight: bold;") # Nice green/teal for match
+                info_layout.addWidget(date_lbl)
+
             info_layout.addWidget(desc)
             info_layout.addWidget(credits_lbl)
 
