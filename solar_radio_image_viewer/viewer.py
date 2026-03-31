@@ -12771,6 +12771,13 @@ class SolarRadioImageViewerApp(QMainWindow):
         batch_unit_conv_act.triggered.connect(self.show_unit_conversion_dialog)
         batch_process_submenu.addAction(batch_unit_conv_act)
 
+        # Add Format Conversion option to batch processing submenu
+        from .dialogs import FormatConversionDialog
+        batch_format_conv_act = QAction("Format Conversion", self)
+        batch_format_conv_act.setStatusTip("Batch convert between CASA Images and FITS files")
+        batch_format_conv_act.triggered.connect(self.show_format_conversion_dialog)
+        batch_process_submenu.addAction(batch_format_conv_act)
+
         # Add Create Video action
         create_video_act = QAction("Create &Video", self)
         create_video_act.setStatusTip("Create video from sequence of FITS files")
@@ -16243,6 +16250,27 @@ read -p "Press Enter to close..."
             dialog.show()
         except Exception as e:
             error_message = f"Error opening unit conversion dialog: {str(e)}"
+            print(f"[ERROR] {error_message}")  # Log to console
+            QMessageBox.critical(self, "Error", error_message)
+
+    def show_format_conversion_dialog(self):
+        """Show the dialog for batch format conversion (CASA \u2194 FITS)"""
+        try:
+            from .dialogs import FormatConversionDialog
+
+            dialog = FormatConversionDialog(self)
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            dialog.destroyed.connect(
+                lambda: (
+                    self._open_dialogs.remove(dialog)
+                    if dialog in self._open_dialogs
+                    else None
+                )
+            )
+            self._open_dialogs.append(dialog)
+            dialog.show()
+        except Exception as e:
+            error_message = f"Error opening format conversion dialog: {str(e)}"
             print(f"[ERROR] {error_message}")  # Log to console
             QMessageBox.critical(self, "Error", error_message)
 
