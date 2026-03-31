@@ -1212,92 +1212,142 @@ class RemoteFileBrowser(QDialog):
             self._set_loading_state(False)
             self.status_label.setText("Cancelled")
 
-    def reject(self):
-        """Override reject to cancel any running operations before closing."""
-        # Cancel listing thread if running
+    def _cleanup_threads(self):
+        """Safely cancel all background threads and disconnect their signals."""
+        from PyQt5 import sip
+
+        # Cancel and cleanup listing thread
         if self._list_thread and self._list_thread.isRunning():
-            # Disconnect signals so results are ignored
             try:
                 self._list_thread.finished.disconnect()
                 self._list_thread.error.disconnect()
-            except:
+            except (RuntimeError, TypeError):
                 pass
             self._list_thread.cancel()
-            # Don't wait - just let it finish in background
+            self._list_thread = None
 
-        # Cancel download thread if running
+        # Cancel and cleanup download thread
         if self._download_thread and self._download_thread.isRunning():
             try:
                 self._download_thread.finished.disconnect()
                 self._download_thread.error.disconnect()
                 self._download_thread.progress.disconnect()
-            except:
+            except (RuntimeError, TypeError):
                 pass
             # Don't wait - just let it finish in background
             RemoteFileBrowser._has_pending_operation = True
+            # Keep in _active_downloads but remove local reference
+            self._download_thread = None
 
+        # Cancel and cleanup home thread
+        if hasattr(self, "_home_thread") and self._home_thread and self._home_thread.isRunning():
+            try:
+                self._home_thread.result.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._home_thread = None
+
+        # Cancel and cleanup autocomplete thread
+        if self._autocomplete_thread and self._autocomplete_thread.isRunning():
+            try:
+                self._autocomplete_thread.finished.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._autocomplete_thread.cancel()
+            self._autocomplete_thread = None
+            
+        # Stop autocomplete timer
+        if self._autocomplete_timer:
+            self._autocomplete_timer.stop()
+
+    def accept(self):
+        """Override accept to perform cleanup first."""
+        self._cleanup_threads()
+        super().accept()
+
+    def reject(self):
+        """Override reject to perform cleanup first."""
+        self._cleanup_threads()
         super().reject()
+
+    def closeEvent(self, event):
+        """Handle dialog close events."""
+        self._cleanup_threads()
+        super().closeEvent(event)
 
     def _on_list_finished(self, entries: list, from_cache: bool = False):
         """Handle successful directory listing."""
-        self._set_loading_state(False)
-
-        # Store in cache if this was a fresh fetch
-        if not from_cache:
-            import time
-
-            cache_key = (
-                self.connection._host,
-                self.current_path,
-                self.show_hidden_cb.isChecked(),
-                self.fits_only_cb.isChecked(),
-            )
-            RemoteFileBrowser._listing_cache[cache_key] = (entries, time.time())
-
-        from datetime import datetime
-
-        for entry in entries:
-            item = QTreeWidgetItem()
-
-            # Name with icon
-            if entry.is_dir:
-                item.setText(0, f"📁 {entry.name}")
-            elif entry.is_fits:
-                item.setText(0, f"🔭 {entry.name}")
-            else:
-                item.setText(0, f"📄 {entry.name}")
-
-            # Size
-            if entry.is_dir:
-                item.setText(1, "<DIR>")
-            else:
-                size = entry.size
-                if size > 1024 * 1024 * 1024:
-                    item.setText(1, f"{size / (1024**3):.1f} GB")
-                elif size > 1024 * 1024:
-                    item.setText(1, f"{size / (1024**2):.1f} MB")
-                elif size > 1024:
-                    item.setText(1, f"{size / 1024:.1f} KB")
+        try:
+            from PyQt5 import sip
+            if sip.isdeleted(self):
+                return
+                
+            self._set_loading_state(False)
+    
+            # Store in cache if this was a fresh fetch
+            if not from_cache:
+                import time
+    
+                cache_key = (
+                    self.connection._host,
+                    self.current_path,
+                    self.show_hidden_cb.isChecked(),
+                    self.fits_only_cb.isChecked(),
+                )
+                RemoteFileBrowser._listing_cache[cache_key] = (entries, time.time())
+    
+            from datetime import datetime
+    
+            for entry in entries:
+                item = QTreeWidgetItem()
+    
+                # Name with icon
+                if entry.is_dir:
+                    item.setText(0, f"📁 {entry.name}")
+                elif entry.is_fits:
+                    item.setText(0, f"🔭 {entry.name}")
                 else:
-                    item.setText(1, f"{size} B")
-
-            # Modified time
-            mtime = datetime.fromtimestamp(entry.mtime)
-            item.setText(2, mtime.strftime("%Y-%m-%d %H:%M"))
-
-            # Store file info
-            item.setData(0, Qt.UserRole, entry)
-
-            self.tree.addTopLevelItem(item)
-
-        cache_indicator = " (cached)" if from_cache else ""
-        self.status_label.setText(f"🔍 Found {len(entries)} files{cache_indicator}")
+                    item.setText(0, f"📄 {entry.name}")
+    
+                # Size
+                if entry.is_dir:
+                    item.setText(1, "<DIR>")
+                else:
+                    size = entry.size
+                    if size > 1024 * 1024 * 1024:
+                        item.setText(1, f"{size / (1024**3):.1f} GB")
+                    elif size > 1024 * 1024:
+                        item.setText(1, f"{size / (1024**2):.1f} MB")
+                    elif size > 1024:
+                        item.setText(1, f"{size / 1024:.1f} KB")
+                    else:
+                        item.setText(1, f"{size} B")
+    
+                # Modified time
+                mtime = datetime.fromtimestamp(entry.mtime)
+                item.setText(2, mtime.strftime("%Y-%m-%d %H:%M"))
+    
+                # Store file info
+                item.setData(0, Qt.UserRole, entry)
+    
+                self.tree.addTopLevelItem(item)
+    
+            cache_indicator = " (cached)" if from_cache else ""
+            self.status_label.setText(f"🔍 Found {len(entries)} files{cache_indicator}")
+        except RuntimeError:
+            pass
 
     def _on_list_error(self, error_msg: str):
         """Handle directory listing error."""
-        self._set_loading_state(False)
-        self.status_label.setText(f"❌ Error: {error_msg}")
-        QMessageBox.warning(self, "Error", f"Failed to list directory:\n{error_msg}")
+        try:
+            from PyQt5 import sip
+            if sip.isdeleted(self):
+                return
+            self._set_loading_state(False)
+            self.status_label.setText(f"❌ Error: {error_msg}")
+            QMessageBox.warning(self, "Error", f"Failed to list directory:\n{error_msg}")
+        except RuntimeError:
+            pass
 
     def _on_selection_changed(self):
         """Update UI when selection changes."""
@@ -1441,107 +1491,78 @@ class RemoteFileBrowser(QDialog):
 
     def _on_download_progress(self, transferred: int, total: int):
         """Update download progress (works for both files and directories)."""
-        if total > 0:
-            percent = int(100 * transferred / total)
-            self.progress_bar.setValue(percent)
-
-            if total > 1024 * 1024:
-                self.progress_label.setText(
-                    f"Downloading... {transferred / (1024**2):.1f} / {total / (1024**2):.1f} MB"
-                )
-            else:
-                self.progress_label.setText(
-                    f"Downloading... {transferred / 1024:.1f} / {total / 1024:.1f} KB"
-                )
+        try:
+            from PyQt5 import sip
+            if sip.isdeleted(self):
+                return
+                
+            if total > 0:
+                percent = int(100 * transferred / total)
+                self.progress_bar.setValue(percent)
+    
+                if total > 1024 * 1024:
+                    self.progress_label.setText(
+                        f"Downloading... {transferred / (1024**2):.1f} / {total / (1024**2):.1f} MB"
+                    )
+                else:
+                    self.progress_label.setText(
+                        f"Downloading... {transferred / 1024:.1f} / {total / 1024:.1f} KB"
+                    )
+        except RuntimeError:
+            pass
 
     def _on_download_finished(self, local_path: str):
         """Handle download completion."""
-        self.progress_frame.hide()
-
-        entry = self._current_download_entry
-
-        # Mark as cached
-        self.cache.mark_cached(
-            self.connection._host,
-            entry.path,
-            Path(local_path),
-            entry.mtime,
-            entry.size,
-        )
-
-        self._update_cache_info()
-        self.status_label.setText(f"Downloaded: {os.path.basename(local_path)}")
-
-        # Emit signal and close
-        self.fileSelected.emit(local_path)
-        self.accept()
-
-        # Remove from active list
-        if self._download_thread in RemoteFileBrowser._active_downloads:
-            RemoteFileBrowser._active_downloads.remove(self._download_thread)
-            self._download_thread = None
+        try:
+            from PyQt5 import sip
+            if sip.isdeleted(self):
+                return
+                
+            self.progress_frame.hide()
+    
+            entry = self._current_download_entry
+    
+            # Mark as cached
+            self.cache.mark_cached(
+                self.connection._host,
+                entry.path,
+                Path(local_path),
+                entry.mtime,
+                entry.size,
+            )
+    
+            self._update_cache_info()
+            self.status_label.setText(f"Downloaded: {os.path.basename(local_path)}")
+    
+            # Emit signal and close
+            self.fileSelected.emit(local_path)
+            self.accept()
+    
+            # Remove from active list
+            if self._download_thread in RemoteFileBrowser._active_downloads:
+                RemoteFileBrowser._active_downloads.remove(self._download_thread)
+                self._download_thread = None
+        except RuntimeError:
+            pass
 
     def _on_download_error(self, error_msg: str):
         """Handle download error."""
-        self.progress_frame.hide()
-        self.open_btn.setEnabled(True)
-        self.status_label.setText(f"Error: {error_msg}")
-
-        # Remove from active list
-        if self._download_thread in RemoteFileBrowser._active_downloads:
-            RemoteFileBrowser._active_downloads.remove(self._download_thread)
-            self._download_thread = None
-
-        QMessageBox.warning(
-            self, "Download Error", f"Failed to download file: {error_msg}"
-        )
-
-    def closeEvent(self, event):
-        """Handle dialog close - clean up threads without blocking."""
-        # Cancel and cleanup download thread (non-blocking)
-        if self._download_thread and self._download_thread.isRunning():
-            try:
-                # Disconnect UI callbacks specifically
-                self._download_thread.finished.disconnect(self._on_download_finished)
-                self._download_thread.error.disconnect(self._on_download_error)
-                self._download_thread.progress.disconnect(self._on_download_progress)
-            except:
-                pass
-            # Don't wait - let it finish in background
-            RemoteFileBrowser._has_pending_operation = True
-
-        # Cancel listing thread (non-blocking)
-        if self._list_thread and self._list_thread.isRunning():
-            try:
-                self._list_thread.finished.disconnect()
-                self._list_thread.error.disconnect()
-            except:
-                pass
-            self._list_thread.cancel()
-
-        # Cleanup home thread if running
-        if (
-            hasattr(self, "_home_thread")
-            and self._home_thread
-            and self._home_thread.isRunning()
-        ):
-            try:
-                self._home_thread.result.disconnect()
-            except:
-                pass
-            # Don't wait - let it finish
-
-        # Cancel autocomplete thread if running
-        if self._autocomplete_thread and self._autocomplete_thread.isRunning():
-            try:
-                self._autocomplete_thread.finished.disconnect()
-            except:
-                pass
-            self._autocomplete_thread.cancel()
-            self._autocomplete_thread.wait(500)  # Wait up to 500ms for clean shutdown
-
-        # Stop autocomplete timer
-        if self._autocomplete_timer:
-            self._autocomplete_timer.stop()
-
-        super().closeEvent(event)
+        try:
+            from PyQt5 import sip
+            if sip.isdeleted(self):
+                return
+                
+            self.progress_frame.hide()
+            self.open_btn.setEnabled(True)
+            self.status_label.setText(f"Error: {error_msg}")
+    
+            # Remove from active list
+            if self._download_thread in RemoteFileBrowser._active_downloads:
+                RemoteFileBrowser._active_downloads.remove(self._download_thread)
+                self._download_thread = None
+    
+            QMessageBox.warning(
+                self, "Download Error", f"Failed to download file: {error_msg}"
+            )
+        except RuntimeError:
+            pass

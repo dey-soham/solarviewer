@@ -8834,9 +8834,18 @@ class SolarRadioImageTab(QWidget):
         def on_apply():
             """Apply settings without closing dialog."""
             try:
-                if not viewer:
-                    dialog.close()
+                from PyQt5 import sip
+                if sip.isdeleted(dialog):
                     return
+
+                if not viewer:
+                    # This case should be rare as viewer is 'self'
+                    try:
+                        dialog.close()
+                    except RuntimeError:
+                        pass
+                    return
+
                 viewer.contour_settings = dialog.get_settings()
                 if viewer.show_contours_checkbox.isChecked():
                     viewer.load_contour_data()
@@ -8845,14 +8854,16 @@ class SolarRadioImageTab(QWidget):
                     # Update dialog with captured dimensions
                     w = viewer.contour_settings.get("dim_w", 0)
                     h = viewer.contour_settings.get("dim_h", 0)
-                    if hasattr(dialog, "update_dimensions_label"):
+                    if hasattr(dialog, "update_dimensions_label") and not sip.isdeleted(dialog):
                         dialog.update_dimensions_label(w, h)
 
                 viewer.show_status_message("Contour settings applied")
             except RuntimeError:
-                dialog.close()
+                # Dialog or a child widget was likely deleted during processing
+                pass
             except Exception as e:
-                viewer.show_status_message(f"Error applying settings: {e}")
+                if viewer:
+                    viewer.show_status_message(f"Error applying settings: {e}")
 
         def on_close():
             dialog.close()
@@ -8912,9 +8923,17 @@ class SolarRadioImageTab(QWidget):
         def on_apply():
             """Apply settings without closing dialog."""
             try:
-                if not viewer:
-                    dialog.close()
+                from PyQt5 import sip
+                if sip.isdeleted(dialog):
                     return
+
+                if not viewer:
+                    try:
+                        dialog.close()
+                    except RuntimeError:
+                        pass
+                    return
+
                 viewer.plot_settings = dialog.get_settings()
                 # Refresh the plot with new settings
                 if viewer.current_image_data is not None:
@@ -8929,9 +8948,11 @@ class SolarRadioImageTab(QWidget):
                         viewer.plot_image()
                 viewer.show_status_message("Plot settings applied")
             except RuntimeError:
-                dialog.close()
+                # Dialog was likely deleted during long-running plot update
+                pass
             except Exception as e:
-                viewer.show_status_message(f"Error applying settings: {e}")
+                if viewer:
+                    viewer.show_status_message(f"Error applying settings: {e}")
 
         def on_close():
             dialog.close()

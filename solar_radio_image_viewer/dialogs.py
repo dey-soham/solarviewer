@@ -1155,13 +1155,20 @@ class ContourSettingsDialog(QDialog):
 
     def update_dimensions_label(self, w, h):
         """Update the image dimensions label and settings."""
-        if hasattr(self, "rms_dims_label"):
-            dim_text = f"{w} x {h}" if w > 0 and h > 0 else "Unknown"
-            self.rms_dims_label.setText(f"Contour Dimensions: {dim_text}")
+        try:
+            if hasattr(self, "rms_dims_label") and self.rms_dims_label:
+                dim_text = f"{w} x {h}" if w > 0 and h > 0 else "Unknown"
+                self.rms_dims_label.setText(f"Contour Dimensions: {dim_text}")
+        except RuntimeError:
+            # Handle case where QLabel has been deleted
+            pass
             
         # Also update internal settings to reflect current state
-        self.settings["dim_w"] = w
-        self.settings["dim_h"] = h
+        try:
+            self.settings["dim_w"] = w
+            self.settings["dim_h"] = h
+        except (RuntimeError, AttributeError):
+            pass
 
     def _update_threshold_visibility(self):
         """Show/hide threshold controls based on selected Stokes parameter."""
