@@ -1551,7 +1551,7 @@ class ImageInfoDialog(QDialog):
 class PhaseShiftDialog(QDialog):
     """Dialog for configuring and executing solar phase center shifting."""
 
-    def __init__(self, parent=None, imagename=None):
+    def __init__(self, parent=None, imagename=None, batch_mode=False):
         super().__init__(parent)
         self.setWindowTitle("Solar Phase Center Shift")
         self.setMinimumSize(550, 600)
@@ -1569,6 +1569,8 @@ class PhaseShiftDialog(QDialog):
             )"""
 
         self.setup_ui()
+        if batch_mode:
+            self.batch_mode_radio.setChecked(True)
         set_hand_cursor(self)
 
     def setup_ui(self):

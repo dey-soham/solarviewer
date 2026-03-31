@@ -12746,14 +12746,24 @@ class SolarRadioImageViewerApp(QMainWindow):
         phase_shift_act.triggered.connect(self.show_phase_shift_dialog)
         tools_menu.addAction(phase_shift_act)        
         
-        # Add Batch HPC Conversion option
+        # Batch Processing Submenu
+        batch_process_submenu = QMenu("Batch Processing", self)
+        tools_menu.addMenu(batch_process_submenu)
+
+        # Add Batch HPC Conversion option to submenu
         from .dialogs import HPCBatchConversionDialog
         batch_hpc_act = QAction("Batch HPC Conversion", self)
         batch_hpc_act.setStatusTip(
             "Convert multiple files to helioprojective coordinates"
         )
         batch_hpc_act.triggered.connect(self.show_batch_hpc_dialog)
-        tools_menu.addAction(batch_hpc_act)
+        batch_process_submenu.addAction(batch_hpc_act)
+
+        # Add Solar Phase Center Shift option to batch processing submenu
+        batch_phase_shift_act = QAction("Solar Phase Center Shift", self)
+        batch_phase_shift_act.setStatusTip("Batch shift solar center to phase center")
+        batch_phase_shift_act.triggered.connect(lambda: self.show_phase_shift_dialog(batch_mode=True))
+        batch_process_submenu.addAction(batch_phase_shift_act)
 
         # Add Create Video action
         create_video_act = QAction("Create &Video", self)
@@ -15937,7 +15947,7 @@ read -p "Press Enter to close..."
         """AIA 4500 Angstrom preset with specific colormap"""
         self.aia_presets(4500)
 
-    def show_phase_shift_dialog(self):
+    def show_phase_shift_dialog(self, batch_mode=False):
         """Show the dialog for shifting solar center to phase center"""
         current_tab = self.tab_widget.currentWidget()
 
@@ -15949,7 +15959,7 @@ read -p "Press Enter to close..."
         # Import and show the dialog
         from .dialogs import PhaseShiftDialog
 
-        dialog = PhaseShiftDialog(self, imagename)
+        dialog = PhaseShiftDialog(self, imagename, batch_mode=batch_mode)
 
         # Store tab reference for callback
         tab_ref = current_tab
