@@ -318,7 +318,7 @@ class RemoteFileBrowser(QDialog):
         fileSelected(str): Emitted with local path when a file is downloaded and ready
     """
 
-    fileSelected = pyqtSignal(str)  # local path to downloaded file
+    fileSelected = pyqtSignal(str, bool)  # (local_path, is_remote)
 
     # Class-level variable to remember last browsed directory per host
     _last_paths: dict = {}  # {host: last_path}
@@ -1417,7 +1417,7 @@ class RemoteFileBrowser(QDialog):
             )
 
         if local_path:
-            self.fileSelected.emit(local_path)
+            self.fileSelected.emit(local_path, False)  # is_remote = False
             self.accept()
 
     def _open_selected(self):
@@ -1448,7 +1448,7 @@ class RemoteFileBrowser(QDialog):
 
         if cached_path:
             self.status_label.setText(f"Using cached: {cached_path.name}")
-            self.fileSelected.emit(str(cached_path))
+            self.fileSelected.emit(str(cached_path), True)  # is_remote = True
             self.accept()
             return
 
@@ -1534,8 +1534,8 @@ class RemoteFileBrowser(QDialog):
             self._update_cache_info()
             self.status_label.setText(f"Downloaded: {os.path.basename(local_path)}")
     
-            # Emit signal and close
-            self.fileSelected.emit(local_path)
+            # Emit signal (remote=True) and close
+            self.fileSelected.emit(local_path, True)
             self.accept()
     
             # Remove from active list

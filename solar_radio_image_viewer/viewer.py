@@ -2877,7 +2877,7 @@ class SolarRadioImageTab(QWidget):
             )
 
             # Connect to handle the selected file
-            def on_file_selected(local_path):
+            def on_file_selected(local_path, is_remote):
                 if not local_path or not os.path.exists(local_path):
                     return
 
@@ -2891,20 +2891,34 @@ class SolarRadioImageTab(QWidget):
                 self.on_visualization_changed(dir_load=True)
                 self.update_tab_name_from_path(local_path)
 
-                # Set remote mode - store remote directory info for navigation
-                self._is_remote_mode = True
-                self._remote_base_dir = browser.current_path
+                # Set mode based on what was selected
+                self._is_remote_mode = is_remote
 
-                # Populate remote file list for navigation
-                self._populate_remote_file_list(
-                    main_window, browser.current_path, casa_mode, local_path
-                )
-
-                elapsed = time.time() - start_time
-                basename = os.path.basename(local_path)
-                self.show_status_message(
-                    f"Loaded remote file: {basename} ({elapsed:.2f}s)"
-                )
+                if is_remote:
+                    self._remote_base_dir = browser.current_path
+                    # Populate remote file list for navigation
+                    self._populate_remote_file_list(
+                        main_window, browser.current_path, casa_mode, local_path
+                    )
+                    
+                    elapsed = time.time() - start_time
+                    basename = os.path.basename(local_path)
+                    self.show_status_message(
+                        f"Loaded remote file: {basename} ({elapsed:.2f}s)"
+                    )
+                else:
+                    # Clear remote state if we selected a local file
+                    self._remote_base_dir = None
+                    self._remote_file_list = []
+                    
+                    # Scan local directory for navigation
+                    self._scan_directory_files()
+                    
+                    elapsed = time.time() - start_time
+                    basename = os.path.basename(local_path)
+                    self.show_status_message(
+                        f"Loaded local file: {basename} ({elapsed:.2f}s)"
+                    )
 
             browser.fileSelected.connect(on_file_selected)
             browser.exec_()
@@ -10497,6 +10511,13 @@ class SolarRadioImageTab(QWidget):
         if not self.imagename:
             return
 
+        # Ensure we're in local mode when scanning local directory
+        self._is_remote_mode = False
+        if hasattr(self, "_remote_file_list"):
+            self._remote_file_list = []
+        if hasattr(self, "_remote_base_dir"):
+            self._remote_base_dir = None
+
         # Determine base directory and file type
         if os.path.isdir(self.imagename):
             # CASA image - use parent directory
@@ -12452,6 +12473,11 @@ class SolarRadioImageViewerApp(QMainWindow):
                 target_tab.radio_casa_image.setChecked(True)
             else:
                 target_tab.radio_fits_file.setChecked(True)
+                
+            # Reset remote mode for target tab when receiving local dropped file
+            target_tab._is_remote_mode = False
+            target_tab._remote_file_list = []
+            target_tab._remote_base_dir = None
                 
             target_tab.imagename = file_path
             target_tab.dir_entry.setText(file_path)
