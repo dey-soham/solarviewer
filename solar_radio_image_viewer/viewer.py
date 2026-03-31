@@ -12765,6 +12765,12 @@ class SolarRadioImageViewerApp(QMainWindow):
         batch_phase_shift_act.triggered.connect(lambda: self.show_phase_shift_dialog(batch_mode=True))
         batch_process_submenu.addAction(batch_phase_shift_act)
 
+        # Add Unit Conversion option to batch processing submenu
+        batch_unit_conv_act = QAction("Unit Conversion", self)
+        batch_unit_conv_act.setStatusTip("Batch convert units between Flux Density and Brightness Temperature")
+        batch_unit_conv_act.triggered.connect(self.show_unit_conversion_dialog)
+        batch_process_submenu.addAction(batch_unit_conv_act)
+
         # Add Create Video action
         create_video_act = QAction("Create &Video", self)
         create_video_act.setStatusTip("Create video from sequence of FITS files")
@@ -16217,6 +16223,27 @@ read -p "Press Enter to close..."
             import traceback
 
             traceback.print_exc()
+            QMessageBox.critical(self, "Error", error_message)
+
+    def show_unit_conversion_dialog(self):
+        """Show the dialog for batch unit conversion"""
+        try:
+            from .dialogs import UnitConversionDialog
+
+            dialog = UnitConversionDialog(self)
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            dialog.destroyed.connect(
+                lambda: (
+                    self._open_dialogs.remove(dialog)
+                    if dialog in self._open_dialogs
+                    else None
+                )
+            )
+            self._open_dialogs.append(dialog)
+            dialog.show()
+        except Exception as e:
+            error_message = f"Error opening unit conversion dialog: {str(e)}"
+            print(f"[ERROR] {error_message}")  # Log to console
             QMessageBox.critical(self, "Error", error_message)
 
     def show_coordinate_transformation_dialog(self):
