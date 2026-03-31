@@ -12410,6 +12410,13 @@ class SolarRadioImageViewerApp(QMainWindow):
         if imagename and os.path.exists(imagename):
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
+
+            # Sync CASA/FITS toggle with the loaded file type
+            if os.path.isdir(imagename):
+                first_tab.file_type_toggle.setSelectedIndex(0)  # CASA
+            else:
+                first_tab.file_type_toggle.setSelectedIndex(1)  # FITS
+
             # Delay to setup the tab before calling on_visualization_changed
             QTimer.singleShot(
                 20, lambda: first_tab.on_visualization_changed(dir_load=True)
@@ -12470,9 +12477,9 @@ class SolarRadioImageViewerApp(QMainWindow):
                 
             # Now load the image into the tab
             if os.path.isdir(file_path):
-                target_tab.radio_casa_image.setChecked(True)
+                target_tab.file_type_toggle.setSelectedIndex(0)  # CASA (auto-syncs radio_casa_image)
             else:
-                target_tab.radio_fits_file.setChecked(True)
+                target_tab.file_type_toggle.setSelectedIndex(1)  # FITS (auto-syncs radio_fits_file)
                 
             # Reset remote mode for target tab when receiving local dropped file
             target_tab._is_remote_mode = False
