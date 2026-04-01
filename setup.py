@@ -2,7 +2,6 @@ from setuptools import setup, find_packages
 import subprocess
 import sys
 
-# Read the content of README.md
 with open("README.md") as f:
     long_description = f.read()
 
@@ -47,6 +46,7 @@ setup(
         "aiapy>=0.1.0",
         "imageio[ffmpeg]",
         "paramiko>=3.0.0",
+        "pyqtgraph",
     ],
     entry_points={
         "console_scripts": [

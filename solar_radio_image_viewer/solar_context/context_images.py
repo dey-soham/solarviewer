@@ -23,10 +23,11 @@ class ContextImage:
     description: str
     credits: str = "Helioviewer"  # Credit source
     source_id: Optional[int] = None  # Helioviewer sourceId if applicable
+    image_date: Optional[datetime] = None
 
 
 # Essential instruments for context viewing
-# Format: (nickname, layer_path, description)
+# Format: (nickname, layer_path, observatory, description, source_id)
 # layer_path format: [observatory,instrument,detector,measurement,visible,opacity]
 ESSENTIAL_INSTRUMENTS = [
     (
@@ -34,67 +35,84 @@ ESSENTIAL_INSTRUMENTS = [
         "[SDO,AIA,AIA,304,1,100]",
         "SDO",
         "304Å Chromosphere & Transition Region (He II)",
+        13,
     ),
     (
         "AIA 193",
         "[SDO,AIA,AIA,193,1,100]",
         "SDO",
         "193Å Corona & Flare Plasma (Fe XII/XXIV)",
+        11,
     ),
     (
         "AIA 171",
         "[SDO,AIA,AIA,171,1,100]",
         "SDO",
         "171Å Upper Transition Region & Quiet Corona (Fe IX)",
+        10,
     ),
-    ("AIA 335", "[SDO,AIA,AIA,335,1,100]", "SDO", "335Å Active Region Corona (Fe XVI)"),
+    (
+        "AIA 335",
+        "[SDO,AIA,AIA,335,1,100]",
+        "SDO",
+        "335Å Active Region Corona (Fe XVI)",
+        14,
+    ),
     (
         "HMI Mag",
         "[SDO,HMI,HMI,magnetogram,1,100]",
         "SDO",
         "Magnetogram (Photospheric Magnetic Field)",
+        19,
     ),
     (
         "HMI Int",
         "[SDO,HMI,HMI,continuum,1,100]",
         "SDO",
         "Continuum Intensity (Photosphere, Sunspots)",
+        18,
     ),
     (
         "LASCO C2",
         "[SOHO,LASCO,C2,white-light,1,100]",
         "SOHO",
         "Inner Coronagraph (2-6 R☉, White Light)",
+        4,
     ),
     (
         "LASCO C3",
         "[SOHO,LASCO,C3,white-light,1,100]",
         "SOHO",
         "Outer Coronagraph (4-30 R☉, White Light)",
+        5,
     ),
     (
         "SUVI 171",
         "[GOES,SUVI,SUVI,171,1,100]",
         "GOES",
         "171Å Upper Transition Region & Corona",
+        2002,
     ),
     (
         "SUVI 304",
         "[GOES,SUVI,SUVI,304,1,100]",
         "GOES",
         "304Å Chromosphere & Transition Region",
+        2005,
     ),
     (
         "EUVI-A 171",
         "[STEREO_A,SECCHI,EUVI,171,1,100]",
         "STEREO_A",
         "171Å Corona from STEREO-A (Far-side view)",
+        20,
     ),
     (
         "EUVI-A 304",
         "[STEREO_A,SECCHI,EUVI,304,1,100]",
         "STEREO_A",
         "304Å Chromosphere from STEREO-A (Far-side view)",
+        23,
     ),
 ]
 
@@ -115,7 +133,7 @@ def fetch_from_helioviewer(event_date: date) -> List[ContextImage]:
     images = []
 
     # Fetch only essential instruments with PNG screenshots
-    for nickname, layer_path, observatory, description in ESSENTIAL_INSTRUMENTS:
+    for nickname, layer_path, observatory, description, source_id in ESSENTIAL_INSTRUMENTS:
         # Determine image type for appropriate field of view
         is_lasco_c2 = "LASCO,C2" in layer_path
         is_lasco_c3 = "LASCO,C3" in layer_path
@@ -202,6 +220,20 @@ def fetch_from_helioviewer(event_date: date) -> List[ContextImage]:
         thumb_url = f"{base_url}?{urlencode(thumb_params)}"
         full_url = f"{base_url}?{urlencode(full_params)}"
 
+        image_date = None
+        try:
+            from ..utils import get_global_session
+            session = get_global_session()
+            date_url = f"https://api.helioviewer.org/v2/getClosestImage/?date={date_str}&sourceId={source_id}"
+            res = session.get(date_url, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                img_date_str = data.get('date', None)
+                if img_date_str:
+                    image_date = datetime.strptime(img_date_str, "%Y-%m-%d %H:%M:%S")
+        except Exception as e:
+            print(f"Failed to fetch image date for {nickname}: {e}")
+
         images.append(
             ContextImage(
                 title=nickname,
@@ -210,7 +242,8 @@ def fetch_from_helioviewer(event_date: date) -> List[ContextImage]:
                 instrument=observatory,
                 description=description,
                 credits="Helioviewer",
-                source_id=None,
+                source_id=source_id,
+                image_date=image_date
             )
         )
 

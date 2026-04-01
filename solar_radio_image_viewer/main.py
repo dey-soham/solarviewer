@@ -17,6 +17,10 @@ from . import __version__
 
 # Globally suppress Astropy's "Invalid 'BLANK' keyword" warning
 import warnings
+from .crash_handler import install_crash_handler, generate_crash_report
+
+# Enable crash reporting immediately
+install_crash_handler()
 
 try:
     from astropy.io.fits.verify import VerifyWarning
@@ -128,6 +132,12 @@ Examples:
         nargs="?",
         default=None,
         help="Path to the image file to open (FITS or CASA format)",
+    )
+    parser.add_argument(
+        "-f",
+        "--fast",
+        action="store_true",
+        help="Start with fast preview mode enabled",
     )
     parser.add_argument(
         "--light",
@@ -289,7 +299,7 @@ Examples:
             apply_theme(app, theme_manager)
 
             # Instantiate the main window now that classes are imported and theme is active
-            win = ViewerClass(args.imagename)
+            win = ViewerClass(args.imagename, fast_preview=args.fast)
             window_container["window"] = win
 
             # Setup theme callback

@@ -297,6 +297,11 @@ class NOAAEventsCache:
             for d in data:
                 if isinstance(d, dict):
                     d.pop('__class__', None)
+                    if 'image_date' in d and isinstance(d['image_date'], str):
+                        try:
+                            d['image_date'] = datetime.fromisoformat(d['image_date'])
+                        except ValueError:
+                            pass
                     images.append(ci_module.ContextImage(**d))
                 else:
                     images.append(d)
@@ -497,7 +502,7 @@ class FullImageViewer(QDialog):
                 # If huge, maybe enable scrollbars
                 self.scroll.setWidgetResizable(
                     True
-                )  # If true, it shrinks image to fit? No, QLabel usually expands.
+                )
                 # To scroll, widgetResizable is complicated.
                 # If we want scroll, setWidgetResizable(False) implies widget dictates size.
                 if (
@@ -659,6 +664,11 @@ class FetchWorker(QThread):
             if not self.force_refresh and cached_status['images']:
                 self.progress.emit("Loading context images from cache...")
                 images = cache.load_images(self.event_date)
+                
+                # Auto-heal cache for old images missing the timestamp
+                if images and any(not hasattr(img, 'image_date') or img.image_date is None for img in images):
+                    self.progress.emit("Stale image cache detected. Refreshing for timestamps...")
+                    images = None
             
             if images is None:
                 try:
@@ -1572,6 +1582,11 @@ class NOAAEventsViewer(QMainWindow):
         self.fetch_btn.clicked.connect(self.fetch_data)
         top_bar.addWidget(self.fetch_btn)
 
+        self.plot_goes_btn = QPushButton("📈 Plot GOES X-ray Flux")
+        self.plot_goes_btn.setToolTip("Plot the GOES X-ray light curve for this date")
+        self.plot_goes_btn.clicked.connect(self.plot_goes_xray)
+        top_bar.addWidget(self.plot_goes_btn)
+
         layout.addLayout(top_bar)
 
         # Modern summary bar - subtle styling
@@ -1623,7 +1638,7 @@ class NOAAEventsViewer(QMainWindow):
         events_layout.setSpacing(10)
 
         # X-ray Flares section
-        self.xray_section = CollapsibleSection("X-ray Flares", "☀️")
+        self.xray_section = CollapsibleSection("X-ray Flares")
         self.xray_table = EventTable(
             ["Time (UT)", "Class", "Peak Flux", "Region", "Duration", "Observatory"]
         )
@@ -1631,7 +1646,7 @@ class NOAAEventsViewer(QMainWindow):
         events_layout.addWidget(self.xray_section)
 
         # Optical Flares section
-        self.optical_section = CollapsibleSection("Optical Flares (H-alpha)", "🔥")
+        self.optical_section = CollapsibleSection("Optical Flares (H-alpha)")
         self.optical_table = EventTable(
             ["Time (UT)", "Class", "Location", "Region", "Notes", "Observatory"]
         )
@@ -1639,7 +1654,7 @@ class NOAAEventsViewer(QMainWindow):
         events_layout.addWidget(self.optical_section)
 
         # Radio Events section
-        self.radio_section = CollapsibleSection("Radio Events", "📻")
+        self.radio_section = CollapsibleSection("Radio Events")
         self.radio_table = EventTable(
             ["Type", "Time (UT)", "Frequency", "Particulars", "Region", "Observatory"]
         )
@@ -1677,7 +1692,7 @@ class NOAAEventsViewer(QMainWindow):
         events_scroll.setWidgetResizable(True)
         events_scroll.setFrameShape(QFrame.NoFrame)
         events_scroll.setWidget(events_tab)
-        self.tabs.addTab(events_scroll, "☀️ Solar Events")
+        self.tabs.addTab(events_scroll, "Events")
 
         # Tab 2: Active Regions
         ar_tab = QWidget()
@@ -1696,7 +1711,7 @@ class NOAAEventsViewer(QMainWindow):
                 "C%",
                 "M%",
                 "X%",
-                "Risk Level",
+                "Flare Potential",
             ]
         )
         ar_layout.addWidget(self.ar_table)
@@ -1729,7 +1744,7 @@ class NOAAEventsViewer(QMainWindow):
         ar_scroll.setWidgetResizable(True)
         ar_scroll.setFrameShape(QFrame.NoFrame)
         ar_scroll.setWidget(ar_tab)
-        self.tabs.addTab(ar_scroll, "🌡️ Active Regions")
+        self.tabs.addTab(ar_scroll, "Active Regions")
 
         # Tab 3: Solar Conditions (Real-time data)
         conditions_tab = QWidget()
@@ -1882,19 +1897,11 @@ class NOAAEventsViewer(QMainWindow):
             lbl.setStyleSheet("padding-left: 10px;")
             f107_layout.addWidget(lbl)
 
-        # Add GOES Plot Button
-        self.plot_goes_btn = QPushButton("📈 Plot GOES X-ray Flux")
-        self.plot_goes_btn.setToolTip("Plot the GOES X-ray light curve for this date")
-
-        self.plot_goes_btn.clicked.connect(self.plot_goes_xray)
-        f107_layout.addWidget(self.plot_goes_btn)
-        self.plot_goes_btn.setEnabled(True)
-
         conditions_layout.addWidget(f107_card)
 
         # Conditions info label - theme-aware
         self.conditions_info_label = QLabel(
-            "⚡ Real-time solar conditions from NOAA SWPC"
+            "Real-time solar conditions from NOAA SWPC"
         )
         self.conditions_info_label.setWordWrap(True)
         self.conditions_info_label.setStyleSheet(
@@ -1920,7 +1927,7 @@ class NOAAEventsViewer(QMainWindow):
         conditions_scroll.setWidgetResizable(True)
         conditions_scroll.setFrameShape(QFrame.NoFrame)
         conditions_scroll.setWidget(conditions_tab)
-        self.tabs.addTab(conditions_scroll, "⚡ Solar Conditions")
+        self.tabs.addTab(conditions_scroll, "Solar Conditions")
 
         # Tab 4: CME Alerts
         cme_tab = QWidget()
@@ -1936,14 +1943,13 @@ class NOAAEventsViewer(QMainWindow):
                 "Source",
                 "Width",
                 "Earth Dir.",
-                "Est. Arrival",
             ]
         )
         cme_layout.addWidget(self.cme_table)
 
         # CME info label - theme-aware
         self.cme_info_label = QLabel(
-            "🚀 CME data from NASA DONKI (±3 days from selected date)"
+            "CME data from NASA DONKI (±3 days from selected date)"
         )
         self.cme_info_label.setWordWrap(True)
         self.cme_info_label.setStyleSheet(
@@ -1967,7 +1973,7 @@ class NOAAEventsViewer(QMainWindow):
         cme_scroll.setWidgetResizable(True)
         cme_scroll.setFrameShape(QFrame.NoFrame)
         cme_scroll.setWidget(cme_tab)
-        self.tabs.addTab(cme_scroll, "🚀 CME Alerts")
+        self.tabs.addTab(cme_scroll, "CMEs")
 
         # Tab 5: Context Images
         images_tab = QWidget()
@@ -1996,7 +2002,7 @@ class NOAAEventsViewer(QMainWindow):
         )
         images_layout.addWidget(images_credits_label)
 
-        self.tabs.addTab(images_tab, "📷 Context Images")
+        self.tabs.addTab(images_tab, "Context Images")
 
         # Tab 6: Radio Spectra (DH-band)
         spectra_tab = QWidget()
@@ -2006,7 +2012,7 @@ class NOAAEventsViewer(QMainWindow):
 
         # Fetch button and progress
         spectra_controls = QHBoxLayout()
-        self.fetch_spectra_btn = QPushButton("📻 Fetch Spectra")
+        self.fetch_spectra_btn = QPushButton("Fetch Spectra")
         self.fetch_spectra_btn.setToolTip(
             "Download WIND/WAVES and STEREO dynamic spectra for this date"
         )
@@ -2504,7 +2510,7 @@ class NOAAEventsViewer(QMainWindow):
         )
         spectra_layout.addWidget(spectra_credits_label)
 
-        self.tabs.addTab(spectra_tab, "📻 Radio Spectra")
+        self.tabs.addTab(spectra_tab, "Radio Spectra")
 
         layout.addWidget(self.tabs)
 
@@ -2999,13 +3005,13 @@ class NOAAEventsViewer(QMainWindow):
 
         if cmes is None or len(cmes) == 0:
             self.cme_info_label.setText(
-                "🚀 No CME activity detected in the ±3 day range for this date."
+                "No CME activity detected in the ±3 day range for this date."
             )
             self.cme_info_label.show()
             return
 
         self.cme_info_label.setText(
-            f"🚀 Found {len(cmes)} CME events (±3 days from selected date)"
+            f"Found {len(cmes)} CME events (±3 days from selected date)"
         )
 
         for cme in cmes:
@@ -3014,7 +3020,6 @@ class NOAAEventsViewer(QMainWindow):
             speed_str = f"{cme.speed:.0f}"
             width_str = f"{cme.half_angle:.0f}°" if cme.half_angle else "—"
             earth_str = "🌍 Yes" if cme.is_earth_directed else "No"
-            arrival_str = cme.arrival_str
 
             # Color coding
             color_col = {}
@@ -3041,7 +3046,6 @@ class NOAAEventsViewer(QMainWindow):
                     cme.source_location,
                     width_str,
                     earth_str,
-                    arrival_str,
                 ],
                 color_col,
             )
@@ -3793,6 +3797,19 @@ class NOAAEventsViewer(QMainWindow):
 
             info_layout.addWidget(title)
             info_layout.addWidget(instrument_lbl)
+
+            if hasattr(img, 'image_date') and img.image_date:
+                qdate = self.date_edit.date()
+                query_date = date(qdate.year(), qdate.month(), qdate.day())
+                time_str = img.image_date.strftime("%Y-%m-%d %H:%M:%S UTC")
+                date_lbl = QLabel(f"Image Time: {time_str}")
+                if img.image_date.date() != query_date:
+                    date_lbl.setStyleSheet("font-weight: bold; color: #E65100; font-size: 11pt;") # Bold dark orange/alert
+                    date_lbl.setToolTip("WARNING: This image is from a different date than requested.")
+                else:
+                    date_lbl.setStyleSheet("color: #00796B; font-weight: bold;") # Nice green/teal for match
+                info_layout.addWidget(date_lbl)
+
             info_layout.addWidget(desc)
             info_layout.addWidget(credits_lbl)
 

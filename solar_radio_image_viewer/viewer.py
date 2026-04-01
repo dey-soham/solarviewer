@@ -181,6 +181,7 @@ mplstyle.use("fast")
 class RegionMode:
     RECTANGLE = 0
     ELLIPSE = 1
+    PAN = 2
 
 
 class SegmentedControl(QWidget):
@@ -341,6 +342,7 @@ class SolarRadioImageTab(QWidget):
         self.imagename = None
         self.solar_disk_center = None
         self.solar_disk_diameter_arcmin = 32.0
+        self.solar_disk_auto_compute = True
         # Solar disk style properties
         self.solar_disk_style = {
             "color": "white",
@@ -349,6 +351,11 @@ class SolarRadioImageTab(QWidget):
             "alpha": 0.6,
             "show_center": False,
         }
+
+        # Annotations (tracked for remove/clear support)
+        self.shape_annotations = []
+        self.text_annotations = []
+        self.arrow_annotations = []
 
         # Beam style properties
         self.beam_style = {
@@ -501,6 +508,23 @@ class SolarRadioImageTab(QWidget):
         self._last_rendered_state = {}
         self.image_plot = None
 
+        # Animation state for smooth scroll zoom
+        self._zoom_timer = QTimer()
+        self._zoom_timer.timeout.connect(self._perform_zoom_step)
+        self._zoom_target_xlim = None
+        self._zoom_target_ylim = None
+        self._zoom_lowres_transposed = None
+        
+        # Extension for smooth panning 
+        self._pan_timer = QTimer()
+        self._pan_timer.timeout.connect(self._perform_pan_step)
+        self._pan_target_xlim = None
+        self._pan_target_ylim = None
+        self._is_panning = False
+        
+        # Default mode
+        self.region_mode = RegionMode.PAN
+
         self.setup_ui()
         self._setup_file_navigation_shortcuts()
         self._set_button_cursors()
@@ -532,12 +556,12 @@ class SolarRadioImageTab(QWidget):
         """Set pointing hand cursor on all buttons and interactive widgets for better UX"""
         set_hand_cursor(self)
 
-    def show_status_message(self, message):
+    def show_status_message(self, message, timeout=0):
         """Helper method to show messages in the status bar"""
         main_window = self.window()
         try:
             if main_window:
-                main_window.statusBar().showMessage(message)
+                main_window.statusBar().showMessage(message, timeout)
                 QApplication.processEvents()
         except AttributeError:
             pass
@@ -545,7 +569,7 @@ class SolarRadioImageTab(QWidget):
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(0)  # Splitter handles spacing
+        main_layout.setSpacing(0)
 
         # Create splitter for resizable panels
         splitter = QSplitter(Qt.Horizontal)
@@ -595,7 +619,7 @@ class SolarRadioImageTab(QWidget):
     def create_file_controls(self, parent_layout):
         group = QGroupBox("Image Selection")
         layout = QVBoxLayout(group)
-        layout.setSpacing(8)  # Tighter spacing for compact layout
+        layout.setSpacing(8)
 
         # Modern segmented control for file type selection
         toggle_layout = QHBoxLayout()
@@ -914,6 +938,9 @@ class SolarRadioImageTab(QWidget):
                 font-size: 11pt;
                 color: {text_color};
             }}
+            QCheckBox:disabled {{
+                color: #4a4a6a;
+            }}
             QCheckBox::indicator {{
                 width: 28px;
                 height: 14px;
@@ -931,6 +958,11 @@ class SolarRadioImageTab(QWidget):
             }}
             QCheckBox::indicator:checked:hover {{
                 background-color: #7c7ff5;
+            }}
+            QCheckBox::indicator:disabled {{
+                background-color: {toggle_bg};
+                border-color: {toggle_border};
+                opacity: 0.5;
             }}
         """
 
@@ -951,7 +983,8 @@ class SolarRadioImageTab(QWidget):
         """
 
         # Row 0: Show Beam + settings | Show Grid + settings
-        self.show_beam_checkbox = QCheckBox("Beam")
+        self.show_beam_checkbox = QCheckBox("")
+        self.show_beam_label = QLabel("Beam")
         self.show_beam_checkbox.setChecked(True)
         self.show_beam_checkbox.setStyleSheet(overlay_toggle_style)
         self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
@@ -1013,6 +1046,7 @@ class SolarRadioImageTab(QWidget):
         left_layout_0.setContentsMargins(0, 0, 0, 0)
         left_layout_0.setSpacing(2)
         left_layout_0.addWidget(self.show_beam_checkbox)
+        left_layout_0.addWidget(self.show_beam_label)
         left_layout_0.addWidget(self.beam_settings_button)
         left_layout_0.addStretch()
 
@@ -1261,6 +1295,22 @@ class SolarRadioImageTab(QWidget):
         """
         )
         action_group = QActionGroup(self)
+        
+        # Pan action (default)
+        self.pan_action = QAction(
+            QIcon(get_resource_path("assets/pan.png")),
+            "",
+            self,
+        )
+        self.pan_action.setToolTip("Pan")
+        self.pan_action.setCheckable(True)
+        self.pan_action.setChecked(True)
+        self.pan_action.triggered.connect(
+            lambda: self.set_region_mode(RegionMode.PAN)
+        )
+        action_group.addAction(self.pan_action)
+        toolbar.addAction(self.pan_action)
+
         self.rect_action = QAction(
             QIcon(get_resource_path("assets/rectangle_selection.png")),
             "",
@@ -1268,11 +1318,12 @@ class SolarRadioImageTab(QWidget):
         )
         self.rect_action.setToolTip("Rectangle Select")
         self.rect_action.setCheckable(True)
-        self.rect_action.setChecked(True)
+        self.rect_action.setChecked(False)
         self.rect_action.triggered.connect(
             lambda: self.set_region_mode(RegionMode.RECTANGLE)
         )
         action_group.addAction(self.rect_action)
+        toolbar.addAction(self.rect_action)
 
         # Ellipse selection action
         self.ellipse_action = QAction(
@@ -2502,7 +2553,7 @@ class SolarRadioImageTab(QWidget):
         group = QGroupBox("Cursor Position")
         layout = QVBoxLayout(group)
         layout.setContentsMargins(8, 8, 8, 8)
-        self.coord_label = QLabel("RA: −\nDEC: −")
+        self.coord_label = QLabel("No image loaded")
         self.coord_label.setAlignment(Qt.AlignCenter)
         self.coord_label.setStyleSheet("font-family: monospace; font-size: 10.5pt;")
         self.coord_label.setMinimumHeight(55)
@@ -2512,6 +2563,20 @@ class SolarRadioImageTab(QWidget):
     def open_helioviewer_with_time(self):
         """Open Helioviewer Browser with time range from current file (FITS or CASA)."""
         try:
+            import requests
+            from PyQt5.QtWidgets import QMessageBox
+            
+            # Fast connection check
+            try:
+                requests.get("https://api.helioviewer.org/v2/", timeout=3)
+            except requests.RequestException:
+                QMessageBox.warning(
+                    self,
+                    "Connection Error",
+                    "Could not connect to the Helioviewer API.\nPlease check your internet connection and try again."
+                )
+                return
+
             from .helioviewer_browser import HelioviewerBrowser
             from datetime import datetime, timedelta
             from PyQt5.QtCore import QDateTime
@@ -2812,7 +2877,7 @@ class SolarRadioImageTab(QWidget):
             )
 
             # Connect to handle the selected file
-            def on_file_selected(local_path):
+            def on_file_selected(local_path, is_remote):
                 if not local_path or not os.path.exists(local_path):
                     return
 
@@ -2826,20 +2891,34 @@ class SolarRadioImageTab(QWidget):
                 self.on_visualization_changed(dir_load=True)
                 self.update_tab_name_from_path(local_path)
 
-                # Set remote mode - store remote directory info for navigation
-                self._is_remote_mode = True
-                self._remote_base_dir = browser.current_path
+                # Set mode based on what was selected
+                self._is_remote_mode = is_remote
 
-                # Populate remote file list for navigation
-                self._populate_remote_file_list(
-                    main_window, browser.current_path, casa_mode, local_path
-                )
-
-                elapsed = time.time() - start_time
-                basename = os.path.basename(local_path)
-                self.show_status_message(
-                    f"Loaded remote file: {basename} ({elapsed:.2f}s)"
-                )
+                if is_remote:
+                    self._remote_base_dir = browser.current_path
+                    # Populate remote file list for navigation
+                    self._populate_remote_file_list(
+                        main_window, browser.current_path, casa_mode, local_path
+                    )
+                    
+                    elapsed = time.time() - start_time
+                    basename = os.path.basename(local_path)
+                    self.show_status_message(
+                        f"Loaded remote file: {basename} ({elapsed:.2f}s)"
+                    )
+                else:
+                    # Clear remote state if we selected a local file
+                    self._remote_base_dir = None
+                    self._remote_file_list = []
+                    
+                    # Scan local directory for navigation
+                    self._scan_directory_files()
+                    
+                    elapsed = time.time() - start_time
+                    basename = os.path.basename(local_path)
+                    self.show_status_message(
+                        f"Loaded local file: {basename} ({elapsed:.2f}s)"
+                    )
 
             browser.fileSelected.connect(on_file_selected)
             browser.exec_()
@@ -2981,90 +3060,110 @@ class SolarRadioImageTab(QWidget):
                 )
             if dir_load:
                 fname = os.path.basename(self.imagename).lower()
-                if "hmi" in fname:
-                    self.HMI_presets()
-                elif "aia" in fname:
-                    if "94" in fname:
-                        self.aia_presets(wavelength=94)
-                    elif "131" in fname:
-                        self.aia_presets(wavelength=131)
-                    elif "171" in fname:
-                        self.aia_presets(wavelength=171)
-                    elif "193" in fname:
-                        self.aia_presets(wavelength=193)
-                    elif "211" in fname:
-                        self.aia_presets(wavelength=211)
-                    elif "304" in fname:
-                        self.aia_presets(wavelength=304)
-                    elif "335" in fname:
-                        self.aia_presets(wavelength=335)
-                    elif "1600" in fname:
-                        self.aia_presets(wavelength=1600)
-                    elif "1700" in fname:
-                        self.aia_presets(wavelength=1700)
-                    elif "4500" in fname:
-                        self.aia_presets(wavelength=4500)
-                    else:
-                        self.aia_presets(wavelength=171)
-                elif "eit" in fname or "efz" in fname:
-                    # SOHO EIT files
-                    if "171" in fname:
-                        self.EIT_presets(wavelength=171)
-                    elif "195" in fname:
-                        self.EIT_presets(wavelength=195)
-                    elif "284" in fname:
-                        self.EIT_presets(wavelength=284)
-                    elif "304" in fname:
-                        self.EIT_presets(wavelength=304)
-                    else:
-                        self.EIT_presets(wavelength=171)
-                elif "lasco" in fname:
-                    if "cal_2" in fname:
-                        self.LASCO_presets(detector="C2")
-                    elif "cal_3" in fname:
-                        self.LASCO_presets(detector="C3")
-                    else:
-                        self.LASCO_presets(detector="C2")
-                elif "iris" in fname or "sji" in fname:
-                    # IRIS SJI files
-                    if "1330" in fname:
-                        self.IRIS_presets(wavelength=1330)
-                    elif "1400" in fname:
-                        self.IRIS_presets(wavelength=1400)
-                    elif "2796" in fname:
-                        self.IRIS_presets(wavelength=2796)
-                    elif "2832" in fname:
-                        self.IRIS_presets(wavelength=2832)
-                    else:
-                        self.IRIS_presets(wavelength=1330)
-                elif "suvi" in fname:
-                    # GOES SUVI files
-                    if "094" in fname or "ci094" in fname:
-                        self.SUVI_presets(wavelength=94)
-                    elif "131" in fname:
-                        self.SUVI_presets(wavelength=131)
-                    elif "171" in fname:
-                        self.SUVI_presets(wavelength=171)
-                    elif "195" in fname:
-                        self.SUVI_presets(wavelength=195)
-                    elif "284" in fname:
-                        self.SUVI_presets(wavelength=284)
-                    elif "304" in fname:
-                        self.SUVI_presets(wavelength=304)
-                    else:
-                        self.SUVI_presets(wavelength=171)
-                elif "gong" in fname:
-                    self.GONG_presets()
-                elif "euvi" in fname or "eua" in fname or "eub" in fname:
-                    # STEREO EUVI
-                    self.STEREO_presets("EUVI")
-                elif "cor1" in fname or "c1a" in fname or "c1b" in fname:
-                    # STEREO COR1
-                    self.STEREO_presets("COR1")
-                elif "cor2" in fname or "c2a" in fname or "c2b" in fname:
-                    # STEREO COR2
-                    self.STEREO_presets("COR2")
-                else:
+                mw = self.window()
+                auto_presets = hasattr(mw, "auto_preset_act") and mw.auto_preset_act.isChecked()
+                is_preset_matched = False
+
+                if auto_presets:
+                    header = getattr(self, "current_header", {})
+                    telescop = str(header.get("TELESCOP", "")).upper().strip()
+                    instrume = str(header.get("INSTRUME", "")).upper().strip()
+                    detector = str(header.get("DETECTOR", "")).upper().strip()
+                    wavelnth = str(header.get("WAVELNTH", ""))
+                    if not wavelnth:
+                        wavelnth = str(header.get("TWAVE1", "")) # IRIS fallback
+                    
+                    try:
+                        wavelnth_int = int(float(wavelnth)) if wavelnth else 0
+                    except Exception:
+                        wavelnth_int = 0
+
+                    if telescop == "SDO/HMI" or "HMI" in instrume or "hmi" in fname:
+                        self.HMI_presets()
+                        is_preset_matched = True
+                    elif telescop == "SDO/AIA" or "aia" in fname:
+                        is_preset_matched = True
+                        wv = wavelnth_int
+                        if wv == 0 and "aia" in fname:
+                            for w in [94, 131, 171, 193, 211, 304, 335, 1600, 1700, 4500]:
+                                if str(w) in fname:
+                                    wv = w
+                                    break
+                            if wv == 0: wv = 171
+                        self.aia_presets(wavelength=wv)
+                    elif (telescop == "SOHO" and instrume == "EIT") or "eit" in fname or "efz" in fname:
+                        is_preset_matched = True
+                        wv = wavelnth_int
+                        if wv == 0 and ("eit" in fname or "efz" in fname):
+                            for w in [171, 195, 284, 304]:
+                                if str(w) in fname:
+                                    wv = w
+                                    break
+                            if wv == 0: wv = 171
+                        self.EIT_presets(wavelength=wv)
+                    elif (telescop == "SOHO" and "LASCO" in instrume) or "lasco" in fname:
+                        is_preset_matched = True
+                        det = detector
+                        if not det and "lasco" in fname:
+                            if "cal_2" in fname: det = "C2"
+                            elif "cal_3" in fname: det = "C3"
+                        if "C3" in det:
+                            self.LASCO_presets(detector="C3")
+                        else:
+                            self.LASCO_presets(detector="C2")
+                    elif telescop == "IRIS" or "SJI" in instrume or "iris" in fname or "sji" in fname:
+                        is_preset_matched = True
+                        wv = wavelnth_int
+                        if wv == 0 and ("iris" in fname or "sji" in fname):
+                            for w in [1330, 1400, 2796, 2832]:
+                                if str(w) in fname:
+                                    wv = w
+                                    break
+                            if wv == 0: wv = 1330
+                        self.IRIS_presets(wavelength=wv)
+                    elif "SUVI" in instrume or "suvi" in fname:
+                        is_preset_matched = True
+                        wv = wavelnth_int
+                        if wv == 0 and "suvi" in fname:
+                            for w in [94, 131, 171, 195, 284, 304]:
+                                if str(w) in fname or f"ci0{w}" in fname:
+                                    wv = w
+                                    break
+                            if wv == 0: wv = 171
+                        self.SUVI_presets(wavelength=wv)
+                    elif "GONG" in telescop or "GONG" in instrume or "gong" in fname:
+                        self.GONG_presets()
+                        is_preset_matched = True
+                    elif (telescop == "STEREO" and instrume == "SECCHI") or "euvi" in fname or "cor1" in fname or "cor2" in fname or "eua" in fname or "eub" in fname or "c1a" in fname or "c1b" in fname or "c2a" in fname or "c2b" in fname:
+                        is_preset_matched = True
+                        if detector == "EUVI" or "euvi" in fname or "eua" in fname or "eub" in fname:
+                            self.STEREO_presets("EUVI")
+                        elif detector == "COR1" or "cor1" in fname or "c1a" in fname or "c1b" in fname:
+                            self.STEREO_presets("COR1")
+                        elif detector == "COR2" or "cor2" in fname or "c2a" in fname or "c2b" in fname:
+                            self.STEREO_presets("COR2")
+                        else:
+                            is_preset_matched = False
+
+                if not is_preset_matched:
+                    # Reset to defaults if the previous load was a preset
+                    if getattr(self, "_was_preset_image", False):
+                        if hasattr(self, "cmap_combo"):
+                            self.cmap_combo.blockSignals(True)
+                            self.cmap_combo.setCurrentText("viridis")
+                            self.cmap_combo.blockSignals(False)
+                        if hasattr(self, "stretch_combo"):
+                            self.stretch_combo.blockSignals(True)
+                            self.stretch_combo.setCurrentText("linear")
+                            self.stretch_combo.blockSignals(False)
+                        if hasattr(self, "gamma_entry"):
+                            self.gamma_entry.blockSignals(True)
+                            self.gamma_entry.setText("1.0")
+                            self.gamma_entry.blockSignals(False)
+                        cmap = "viridis"
+                        stretch = "linear"
+                        gamma = 1.0
+
                     vmin_val = float(np.nanmin(self.current_image_data))
                     vmax_val = float(np.nanmax(self.current_image_data))
                     self.set_range(vmin_val, vmax_val)
@@ -3079,6 +3178,8 @@ class SolarRadioImageTab(QWidget):
                         preserve_view=not dir_load,
                     )
                     # print(f"Plotting image with vmin={vmin_val}, vmax={vmax_val}")
+
+                self._was_preset_image = is_preset_matched
             elif vmin_val is None or vmax_val is None:
                 self.auto_minmax()
             else:
@@ -4055,12 +4156,14 @@ class SolarRadioImageTab(QWidget):
         self._ruler_mode = checked
         if checked:
             self.show_status_message(
-                "Ruler mode: Click first point, then click second point to measure"
+                "Ruler mode: Click first point, then click second point to measure (Shift for H/V snap)"
             )
             # Disconnect ROI selector temporarily
             if self.roi_selector:
                 self.roi_selector.set_active(False)
-            # Connect mouse events for ruler (only click, no motion/release for drag)
+            
+            self.canvas.setCursor(Qt.CrossCursor)
+            # Connect mouse events for ruler
             self._ruler_click_cid = self.canvas.mpl_connect(
                 "button_press_event", self._ruler_on_click
             )
@@ -4072,6 +4175,9 @@ class SolarRadioImageTab(QWidget):
             # Disconnect ruler events
             if hasattr(self, "_ruler_click_cid"):
                 self.canvas.mpl_disconnect(self._ruler_click_cid)
+            if hasattr(self, "_ruler_motion_cid") and self._ruler_motion_cid:
+                self.canvas.mpl_disconnect(self._ruler_motion_cid)
+                self._ruler_motion_cid = None
             # Clear ruler graphics
             self._clear_ruler()
 
@@ -4089,6 +4195,13 @@ class SolarRadioImageTab(QWidget):
             except:
                 pass
             self._ruler_text = None
+        if hasattr(self, '_ruler_preview_line') and self._ruler_preview_line is not None:
+            try:
+                self._ruler_preview_line.remove()
+            except:
+                pass
+            self._ruler_preview_line = None
+        self._ruler_blit_bg = None
         self._ruler_start = None
         self.canvas.draw_idle()
 
@@ -4096,6 +4209,10 @@ class SolarRadioImageTab(QWidget):
         """Handle mouse click for ruler - two clicks to measure"""
         if event.inaxes is None or event.button != 1:
             return
+
+        from PyQt5.QtWidgets import QApplication
+        modifiers = QApplication.keyboardModifiers()
+        shift_held = bool(modifiers & Qt.ShiftModifier)
 
         if self._ruler_start is None:
             # First click - clear previous measurement first, then set start point
@@ -4123,13 +4240,37 @@ class SolarRadioImageTab(QWidget):
             )
             self.canvas.draw_idle()
 
+            # Connect motion for live preview
+            self._ruler_preview_line = None
+            self._ruler_blit_bg = None
+            self._ruler_motion_cid = self.canvas.mpl_connect(
+                "motion_notify_event", self._ruler_on_motion
+            )
+
             self.show_status_message(
-                f"Start point set at ({event.xdata:.1f}, {event.ydata:.1f}) - click second point"
+                f"Start point set at ({event.xdata:.1f}, {event.ydata:.1f}) - click second point (Shift for H/V snap)"
             )
         else:
             # Second click - set end point and calculate distance
             x1, y1 = self._ruler_start
             x2, y2 = event.xdata, event.ydata
+
+            if shift_held:
+                x2, y2 = self._snap_to_axis(x1, y1, x2, y2)
+
+            # Disconnect motion handler
+            if hasattr(self, '_ruler_motion_cid') and self._ruler_motion_cid:
+                self.canvas.mpl_disconnect(self._ruler_motion_cid)
+                self._ruler_motion_cid = None
+
+            # Clean up preview line
+            if hasattr(self, '_ruler_preview_line') and self._ruler_preview_line is not None:
+                try:
+                    self._ruler_preview_line.remove()
+                except:
+                    pass
+                self._ruler_preview_line = None
+            self._ruler_blit_bg = None
 
             ax = event.inaxes
 
@@ -4165,6 +4306,48 @@ class SolarRadioImageTab(QWidget):
             # Reset for next measurement
             self._ruler_start = None
 
+    def _ruler_on_motion(self, event):
+        """Handle mouse motion for ruler live preview line with blitting"""
+        if self._ruler_start is None or event.inaxes is None:
+            return
+
+        from PyQt5.QtWidgets import QApplication
+        modifiers = QApplication.keyboardModifiers()
+        shift_held = bool(modifiers & Qt.ShiftModifier)
+
+        x1, y1 = self._ruler_start
+        x2, y2 = event.xdata, event.ydata
+
+        if shift_held:
+            x2, y2 = self._snap_to_axis(x1, y1, x2, y2)
+
+        ax = event.inaxes
+
+        # Update or create preview line
+        if self._ruler_preview_line is None:
+            (self._ruler_preview_line,) = ax.plot(
+                [x1, x2], [y1, y2], "r--", linewidth=1.5, alpha=0.7
+            )
+            # Capture background for blitting
+            self.canvas.draw()
+            self._ruler_blit_bg = self.canvas.copy_from_bbox(ax.bbox)
+        else:
+            self._ruler_preview_line.set_data([x1, x2], [y1, y2])
+
+        # Use blitting for fast updates
+        if self._ruler_blit_bg is not None:
+            self.canvas.restore_region(self._ruler_blit_bg)
+            ax.draw_artist(self._ruler_preview_line)
+            self.canvas.blit(ax.bbox)
+        else:
+            self.canvas.draw_idle()
+
+        # Show distance in status bar
+        pixel_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        self.show_status_message(
+            f"Distance: {pixel_dist:.1f} px | Shift for H/V snap | Click to confirm"
+        )
+
     def _calculate_angular_distance(self, x1, y1, x2, y2):
         """Calculate angular distance between two pixel coordinates using WCS"""
         # Pixel distance
@@ -4176,9 +4359,15 @@ class SolarRadioImageTab(QWidget):
             try:
                 # Get pixel scale from WCS
                 increment = self.current_wcs.increment()["numeric"][0:2]
-                # Convert from radians to arcsec
-                scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
-                scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
+                # Check if image uses SOLAR-X/Y (increment is already in arcsec)
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    scale_x = abs(increment[0])  # already arcsec/pixel
+                    scale_y = abs(increment[1])
+                else:
+                    scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
+                    scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
 
                 # Calculate angular distance
                 dx_arcsec = dx_px * scale_x
@@ -4188,10 +4377,39 @@ class SolarRadioImageTab(QWidget):
                 # Get world coordinates for both points
                 world1 = self.current_wcs.toworld([x1, y1, 0, 0])["numeric"]
                 world2 = self.current_wcs.toworld([x2, y2, 0, 0])["numeric"]
-                ra1_deg = world1[0] * 180 / np.pi if world1[0] else None
-                dec1_deg = world1[1] * 180 / np.pi if world1[1] else None
-                ra2_deg = world2[0] * 180 / np.pi if world2[0] else None
-                dec2_deg = world2[1] * 180 / np.pi if world2[1] else None
+                # Check if SOLAR-X (toworld returns arcsec, not radians)
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    ra1_deg = world1[0] / 3600.0 if world1[0] else None
+                    dec1_deg = world1[1] / 3600.0 if world1[1] else None
+                    ra2_deg = world2[0] / 3600.0 if world2[0] else None
+                    dec2_deg = world2[1] / 3600.0 if world2[1] else None
+                else:
+                    ra1_deg = world1[0] * 180 / np.pi if world1[0] else None
+                    dec1_deg = world1[1] * 180 / np.pi if world1[1] else None
+                    ra2_deg = world2[0] * 180 / np.pi if world2[0] else None
+                    dec2_deg = world2[1] * 180 / np.pi if world2[1] else None
+
+                # Determine coordinate label names
+                _hdr_lbl = getattr(self, '_cached_fits_header', None) or {}
+                _ctype1_lbl = str(_hdr_lbl.get('CTYPE1', '')).upper()
+                if 'SOLAR' in _ctype1_lbl:
+                    _coord1_name, _coord2_name = 'SOLAR-X (")', 'SOLAR-Y (")'
+                    # Convert deg back to arcsec for display
+                    if ra1_deg is not None: ra1_deg = ra1_deg * 3600.0
+                    if dec1_deg is not None: dec1_deg = dec1_deg * 3600.0
+                    if ra2_deg is not None: ra2_deg = ra2_deg * 3600.0
+                    if dec2_deg is not None: dec2_deg = dec2_deg * 3600.0
+                elif 'HPLN' in _ctype1_lbl:
+                    _coord1_name, _coord2_name = 'HPLN (")', 'HPLT (")'
+                    # Unwrap helioprojective degrees to [-180, 180] then convert to arcsec
+                    if ra1_deg is not None: ra1_deg = ((ra1_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                    if dec1_deg is not None: dec1_deg = ((dec1_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                    if ra2_deg is not None: ra2_deg = ((ra2_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                    if dec2_deg is not None: dec2_deg = ((dec2_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                else:
+                    _coord1_name, _coord2_name = 'RA (deg)', 'Dec (deg)'
 
                 # Professional terminal output
                 print("\n" + "=" * 60)
@@ -4200,12 +4418,12 @@ class SolarRadioImageTab(QWidget):
                 print(f'  Coordinate System: WCS (scale: {scale_x:.4f}"/px)')
                 print("-" * 60)
                 print(
-                    f"  {'Point':<12} {'X (px)':<12} {'Y (px)':<12} {'RA (deg)':<15} {'Dec (deg)':<15}"
+                    f"  {'Point':<12} {'X (px)':<12} {'Y (px)':<12} {_coord1_name:<15} {_coord2_name:<15}"
                 )
                 print("-" * 60)
                 if ra1_deg is not None and dec1_deg is not None:
                     print(
-                        f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {ra1_deg:<15.6f} {dec1_deg:<15.6f}"
+                        f"  {'Start':<12} {x1:<12.2f} {y1:<12.2f} {ra1_deg:<15.4f} {dec1_deg:<15.4f}"
                     )
                 else:
                     print(
@@ -4213,7 +4431,7 @@ class SolarRadioImageTab(QWidget):
                     )
                 if ra2_deg is not None and dec2_deg is not None:
                     print(
-                        f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {ra2_deg:<15.6f} {dec2_deg:<15.6f}"
+                        f"  {'End':<12} {x2:<12.2f} {y2:<12.2f} {ra2_deg:<15.4f} {dec2_deg:<15.4f}"
                     )
                 else:
                     print(
@@ -4553,7 +4771,7 @@ class SolarRadioImageTab(QWidget):
         """Toggle profile mode for flux profile cut"""
         self._profile_mode = checked
         if checked:
-            # Show mode selection dialog
+            self.canvas.setCursor(Qt.CrossCursor)
             self._show_profile_mode_dialog()
         else:
             self.show_status_message("Profile mode off")
@@ -4644,13 +4862,11 @@ class SolarRadioImageTab(QWidget):
             self._activate_profile_mode()
 
         def on_cancel():
-            dialog.reject()
-            # Uncheck the profile action
             self.profile_action.setChecked(False)
             self._profile_mode = False
 
         ok_btn.clicked.connect(on_ok)
-        cancel_btn.clicked.connect(on_cancel)
+        cancel_btn.clicked.connect(dialog.reject)
         dialog.rejected.connect(on_cancel)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
@@ -4704,6 +4920,7 @@ class SolarRadioImageTab(QWidget):
             except:
                 pass
             self._profile_preview_line = None
+        self._profile_blit_bg = None
 
     def _profile_line_on_click(self, event):
         """Handle click for line profile mode"""
@@ -4769,16 +4986,25 @@ class SolarRadioImageTab(QWidget):
             (self._profile_preview_line,) = ax.plot(
                 [x1, x2], [y1, y2], "g--", linewidth=1.5, alpha=0.7
             )
+            # Capture background for blitting
+            self.canvas.draw()
+            self._profile_blit_bg = self.canvas.copy_from_bbox(ax.bbox)
         else:
             self._profile_preview_line.set_data([x1, x2], [y1, y2])
+
+        # Use blitting for fast updates instead of full canvas redraw
+        if hasattr(self, '_profile_blit_bg') and self._profile_blit_bg is not None:
+            self.canvas.restore_region(self._profile_blit_bg)
+            ax.draw_artist(self._profile_preview_line)
+            self.canvas.blit(ax.bbox)
+        else:
+            self.canvas.draw_idle()
 
         # Calculate and show distance
         pixel_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
         self.show_status_message(
             f"Distance: {pixel_dist:.1f} px | Shift for H/V snap | Click to confirm"
         )
-
-        self.canvas.draw_idle()
 
     def _snap_to_axis(self, x1, y1, x2, y2):
         """Snap end point to horizontal or vertical based on which is closer"""
@@ -5138,7 +5364,13 @@ class SolarRadioImageTab(QWidget):
         if self.current_wcs:
             try:
                 increment = self.current_wcs.increment()["numeric"][0:2]
-                scale = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
+                # Check if image uses SOLAR-X/Y (increment is already in arcsec)
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    scale = abs(increment[0])  # already arcsec/pixel
+                else:
+                    scale = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
 
                 if is_radial:
                     # Radial mode: center at 0, from -half_dist to +half_dist
@@ -5154,9 +5386,15 @@ class SolarRadioImageTab(QWidget):
                 world_coords = []
                 for px, py in zip(x_coords, y_coords):
                     world = self.current_wcs.toworld([px, py, 0, 0])["numeric"]
-                    # world[0] and world[1] are RA, Dec in radians
-                    ra_deg = world[0] * 180 / np.pi
-                    dec_deg = world[1] * 180 / np.pi
+                    # world[0] and world[1] are RA, Dec in radians (or arcsec for SOLAR-X)
+                    _hdr_chk = getattr(self, '_cached_fits_header', None) or {}
+                    _is_solar_chk = 'SOLAR-X' in str(_hdr_chk.get('CTYPE1', '')).upper()
+                    if _is_solar_chk:
+                        ra_deg = world[0] / 3600.0
+                        dec_deg = world[1] / 3600.0
+                    else:
+                        ra_deg = world[0] * 180 / np.pi
+                        dec_deg = world[1] * 180 / np.pi
                     world_coords.append((ra_deg, dec_deg))
                 world_coords = np.array(world_coords)
                 wcs_available = True
@@ -5348,17 +5586,36 @@ class SolarRadioImageTab(QWidget):
         if wcs_available and world_coords is not None:
             ax2 = ax.twiny()  # Create twin axis sharing y-axis
 
-            # Use RA or Dec based on which varies more
+            # Determine axis labels based on coordinate type
+            _hdr_ax = getattr(self, '_cached_fits_header', None) or {}
+            _ctype1_ax = str(_hdr_ax.get('CTYPE1', '')).upper()
+
+            # Use coord1 or coord2 based on which varies more
             ra_range = abs(world_coords[-1, 0] - world_coords[0, 0])
             dec_range = abs(world_coords[-1, 1] - world_coords[0, 1])
 
             if ra_range >= dec_range:
-                wcs_vals = world_coords[:, 0]  # RA in degrees
-                # Format as hours:min:sec for RA
-                ax2.set_xlabel("RA (deg)")
+                wcs_vals = world_coords[:, 0]
+                if 'SOLAR' in _ctype1_ax:
+                    # Convert deg to arcsec for SOLAR-X
+                    wcs_vals = wcs_vals * 3600.0
+                    ax2.set_xlabel('SOLAR-X (arcsec)')
+                elif 'HPLN' in _ctype1_ax:
+                    # Unwrap helioprojective to [-180, 180] then to arcsec
+                    wcs_vals = ((wcs_vals + 180.0) % 360.0 - 180.0) * 3600.0
+                    ax2.set_xlabel('HPLN (arcsec)')
+                else:
+                    ax2.set_xlabel("RA (deg)")
             else:
-                wcs_vals = world_coords[:, 1]  # Dec in degrees
-                ax2.set_xlabel("Dec (deg)")
+                wcs_vals = world_coords[:, 1]
+                if 'SOLAR' in _ctype1_ax:
+                    wcs_vals = wcs_vals * 3600.0
+                    ax2.set_xlabel('SOLAR-Y (arcsec)')
+                elif 'HPLN' in _ctype1_ax:
+                    wcs_vals = ((wcs_vals + 180.0) % 360.0 - 180.0) * 3600.0
+                    ax2.set_xlabel('HPLT (arcsec)')
+                else:
+                    ax2.set_xlabel("Dec (deg)")
 
             # Set the same data limits as main axis but mapped to WCS values
             ax2.set_xlim(wcs_vals[0], wcs_vals[-1])
@@ -5456,11 +5713,28 @@ class SolarRadioImageTab(QWidget):
 
     def set_region_mode(self, mode_id):
         self.region_mode = mode_id
-        # Disable ruler mode when switching to ROI selection
+        # Disable ruler mode when switching to ROI/Pan
         if hasattr(self, "_ruler_mode") and self._ruler_mode:
             self._toggle_ruler_mode(False)
             if hasattr(self, "ruler_action"):
                 self.ruler_action.setChecked(False)
+        
+        # Status feedback
+        if mode_id == RegionMode.PAN:
+            self.show_status_message("Mode: Pan")
+        elif mode_id == RegionMode.RECTANGLE:
+            self.show_status_message("Mode: Rectangle Select")
+        elif mode_id == RegionMode.ELLIPSE:
+            self.show_status_message("Mode: Ellipse Select")
+        
+        '''
+        # Performance Safety: Ensure high-res is restored when switching modes
+        if hasattr(self, "image_plot") and self.image_plot:
+            if hasattr(self, "_cached_transposed") and self._cached_transposed is not None:
+                self.image_plot.set_data(self._cached_transposed)
+                self.canvas.draw_idle()
+        '''
+
         # Re-init region editor if we have an axis
         if hasattr(self, "figure") and self.figure.axes:
             self.init_region_editor(self.figure.axes[0])
@@ -5675,6 +5949,10 @@ class SolarRadioImageTab(QWidget):
         raise RuntimeError(f"Cannot handle {stokes} for this FITS structure")
 
     def load_data(self, imagename, stokes, threshold, auto_adjust_rms=False):
+        # Clear WCS cache so new images don't accidentally reuse old WCS objects
+        # if the new dictionary falls on the same memory address (id)
+        #self._cached_wcs_obj = None
+        #self._cached_wcs_id = None
         import time
 
         start_time = time.time()
@@ -5746,7 +6024,22 @@ class SolarRadioImageTab(QWidget):
 
         if pix is not None:
             height, width = pix.shape
-            self.solar_disk_center = (width // 2, height // 2)
+            # For HPC/SOLAR-X or HPLN images, disk center is at world (0,0)
+            _is_hpc = self._is_already_hpc()
+            if _is_hpc and self.current_wcs:
+                try:
+                    # Use CASA coordsys to find pixel of world (0,0)
+                    # Use reference values for non-spatial axes (freq, Stokes)
+                    ref_world = list(self.current_wcs.referencevalue()["numeric"])
+                    ref_world[0] = 0.0  # SOLAR-X / HPLN = 0
+                    ref_world[1] = 0.0  # SOLAR-Y / HPLT = 0
+                    pix_origin = self.current_wcs.topixel(ref_world)["numeric"]
+                    cx, cy = float(pix_origin[0]), float(pix_origin[1])
+                    self.solar_disk_center = (cx, cy)
+                except Exception:
+                    self.solar_disk_center = (width // 2, height // 2)
+            else:
+                self.solar_disk_center = (width // 2, height // 2)
 
             # Make sure RMS box is within image bounds
             if self.current_rms_box[1] > height:
@@ -5927,8 +6220,10 @@ class SolarRadioImageTab(QWidget):
         if not self.psf:
             self.show_beam_checkbox.setChecked(False)
             self.show_beam_checkbox.setEnabled(False)
+            self.show_beam_label.setEnabled(False)
         else:
             self.show_beam_checkbox.setEnabled(True)
+            self.show_beam_label.setEnabled(True)
 
         # Enable NOAA Events button when an image is loaded
         if hasattr(self, "noaa_events_btn"):
@@ -5987,6 +6282,9 @@ class SolarRadioImageTab(QWidget):
         state["beam_settings"] = str(self.beam_style)
         state["solar_disk_settings"] = str(self.solar_disk_style)
         state["plot_settings"] = str(self.plot_settings)
+        state["shape_annotations"] = str(self.shape_annotations)
+        state["text_annotations"] = str(self.text_annotations)
+        state["arrow_annotations"] = str(self.arrow_annotations)
 
         return state
 
@@ -6065,9 +6363,17 @@ class SolarRadioImageTab(QWidget):
         data = self.current_image_data
         n_dims = len(data.shape)
 
-        # Cache the transposed image if the current image hasn't changed.
         if not hasattr(self, "_cached_data_id") or self._cached_data_id != id(data):
             self._cached_transposed = data.transpose()
+            
+            # Create a 4x+ downsampled version for smooth zooming animations (Low-Res Glide)
+            h, w = self._cached_transposed.shape
+            skip = max(1, min(h, w) // 350) # Target ~350px for smooth zooming
+            if skip > 1:
+                self._zoom_lowres_transposed = self._cached_transposed[::skip, ::skip]
+            else:
+                self._zoom_lowres_transposed = self._cached_transposed
+                
             self._cached_data_id = id(data)
         transposed_data = self._cached_transposed
 
@@ -6221,7 +6527,7 @@ class SolarRadioImageTab(QWidget):
                     ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
                     increment = self.current_wcs.increment()["numeric"][0:2]
                     self._cached_wcs_obj = WCS(naxis=2)
-                    self._cached_wcs_obj.wcs.crpix = ref_pix
+                    self._cached_wcs_obj.wcs.crpix = [ref_pix[0] + 1, ref_pix[1] + 1]  # CASA 0-indexed -> FITS 1-indexed
                     temp_flag = False
                     if fits_flag:
                         if (
@@ -6779,7 +7085,12 @@ class SolarRadioImageTab(QWidget):
                     cdelt = self.current_wcs.increment()["numeric"][0:2]
                     if isinstance(cdelt, list):
                         cdelt = [float(c) for c in cdelt]
-                    cdelt = np.array(cdelt) * 180 / np.pi
+                    _hdr = getattr(self, '_cached_fits_header', None) or {}
+                    _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                    if _is_solar:
+                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
+                    else:
+                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
                     dx_deg = abs(cdelt[0])
                 else:
                     dx_deg = 1.0 / 3600
@@ -6818,15 +7129,24 @@ class SolarRadioImageTab(QWidget):
                 print(f"[ERROR] Error drawing beam: {e}")
                 self.show_status_message(f"Error drawing beam: {e}")
 
+        # Ensure Solar disk metadata (center and diameter) is ALWAYS computed on load,
+        # even if not drawn, so Shape Annotations and Dialogs have physically accurate data
+        if getattr(self, "solar_disk_auto_compute", True) or self.solar_disk_center is None:
+            self._compute_solar_disk_center(data.shape)
+
         # Draw solar disk if enabled
         if (
             hasattr(self, "show_solar_disk_checkbox")
             and self.show_solar_disk_checkbox.isChecked()
         ):
             try:
-                if self.solar_disk_center is None:
-                    height, width = data.shape
-                    self.solar_disk_center = (width // 2, height // 2)
+                # Remove old solar disk patches/lines before drawing new ones
+                patches_to_remove = [p for p in ax.patches if getattr(p, '_solar_disk', False)]
+                for p in patches_to_remove:
+                    p.remove()
+                lines_to_remove = [l for l in ax.lines if getattr(l, '_solar_disk', False)]
+                for l in lines_to_remove:
+                    l.remove()
 
                 center_x, center_y = self.solar_disk_center
 
@@ -6835,7 +7155,13 @@ class SolarRadioImageTab(QWidget):
                     cdelt = self.current_wcs.increment()["numeric"][0:2]
                     if isinstance(cdelt, list):
                         cdelt = [float(c) for c in cdelt]
-                    cdelt = np.array(cdelt) * 180 / np.pi
+                    # Check if image uses SOLAR-X/Y (increment is in arcsec, not radians)
+                    _hdr = getattr(self, '_cached_fits_header', None) or {}
+                    _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                    if _is_solar:
+                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
+                    else:
+                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
                     dx_deg = abs(cdelt[0])
                     radius_pix = radius_deg / dx_deg
                 else:
@@ -6850,28 +7176,37 @@ class SolarRadioImageTab(QWidget):
                     linewidth=self.solar_disk_style["linewidth"],
                     alpha=self.solar_disk_style["alpha"],
                 )
+                circle._solar_disk = True
                 ax.add_patch(circle)
 
                 # Only draw the center marker if show_center is True
                 if self.solar_disk_style.get("show_center", True):
                     cross_size = radius_pix / 20
-                    ax.plot(
+                    line1, = ax.plot(
                         [center_x - cross_size, center_x + cross_size],
                         [center_y, center_y],
                         color=self.solar_disk_style["color"],
                         linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
-                    ax.plot(
+                    line1._solar_disk = True
+                    line2, = ax.plot(
                         [center_x, center_x],
                         [center_y - cross_size, center_y + cross_size],
                         color=self.solar_disk_style["color"],
                         linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
+                    line2._solar_disk = True
             except Exception as e:
                 print(f"[ERROR] Error drawing solar disk: {e}")
                 self.show_status_message(f"Error drawing solar disk: {e}")
+
+        # Draw shape, text, and arrow annotations
+        from .shape_annotations import draw_shape_annotations, draw_text_annotations, draw_arrow_annotations
+        draw_shape_annotations(self, ax)
+        draw_text_annotations(self, ax)
+        draw_arrow_annotations(self, ax)
 
         # Draw contours if enabled
         if (
@@ -6924,8 +7259,8 @@ class SolarRadioImageTab(QWidget):
         ):
             return
 
-        for patch in ax.patches:
-            if isinstance(patch, Ellipse):
+        for patch in list(ax.patches):
+            if isinstance(patch, Ellipse) and not getattr(patch, '_shape_annotation', False) and not getattr(patch, '_solar_disk', False):
                 patch.remove()
 
         xlim = ax.get_xlim()
@@ -6964,13 +7299,32 @@ class SolarRadioImageTab(QWidget):
             and self.show_solar_disk_checkbox.isChecked()
         ):
             try:
+                # Remove old solar disk patches/lines before drawing new ones
+                patches_to_remove = [p for p in ax.patches if getattr(p, '_solar_disk', False)]
+                for p in patches_to_remove:
+                    p.remove()
+                lines_to_remove = [l for l in ax.lines if getattr(l, '_solar_disk', False)]
+                for l in lines_to_remove:
+                    l.remove()
+
+                if getattr(self, "solar_disk_auto_compute", True) or self.solar_disk_center is None:
+                    if self.current_image_data is not None:
+                        self._compute_solar_disk_center(self.current_image_data.shape)
+                    else:
+                        self.solar_disk_center = (0, 0)
+
                 center_x, center_y = self.solar_disk_center
                 if self.current_wcs:
                     radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
                     cdelt = self.current_wcs.increment()["numeric"][0:2]
                     if isinstance(cdelt, list):
                         cdelt = [float(c) for c in cdelt]
-                    cdelt = np.array(cdelt) * 180 / np.pi
+                    _hdr = getattr(self, '_cached_fits_header', None) or {}
+                    _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                    if _is_solar:
+                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
+                    else:
+                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
                     dx_deg = abs(cdelt[0])
                     radius_pix = radius_deg / dx_deg
                 else:
@@ -6985,24 +7339,27 @@ class SolarRadioImageTab(QWidget):
                     linewidth=self.solar_disk_style["linewidth"],
                     alpha=self.solar_disk_style["alpha"],
                 )
+                circle._solar_disk = True
                 ax.add_patch(circle)
 
                 if self.solar_disk_style.get("show_center", True):
                     cross_size = radius_pix / 20
-                    ax.plot(
+                    line1, = ax.plot(
                         [center_x - cross_size, center_x + cross_size],
                         [center_y, center_y],
                         color=self.solar_disk_style["color"],
                         linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
-                    ax.plot(
+                    line1._solar_disk = True
+                    line2, = ax.plot(
                         [center_x, center_x],
                         [center_y - cross_size, center_y + cross_size],
                         color=self.solar_disk_style["color"],
                         linewidth=1.5,
                         alpha=self.solar_disk_style["alpha"],
                     )
+                    line2._solar_disk = True
             except Exception as e:
                 print(f"[ERROR] Error drawing solar disk: {e}")
                 self.show_status_message(f"Error drawing solar disk: {e}")
@@ -7269,22 +7626,14 @@ class SolarRadioImageTab(QWidget):
         alpha=1.0,
     ):
         """Add text annotation to the plot with customizable styling."""
-        ax = self.figure.gca()
-        bbox_props = None
-        if background:
-            bbox_props = dict(boxstyle="round,pad=0.3", facecolor=background, alpha=0.7)
-        ax.text(
-            x,
-            y,
-            text,
-            color=color,
-            fontsize=fontsize,
-            fontweight=fontweight,
-            fontstyle=fontstyle,
-            bbox=bbox_props,
-            alpha=alpha,
-        )
-        self.canvas.draw()
+        annot = {
+            "x": x, "y": y, "text": text,
+            "color": color, "fontsize": fontsize,
+            "fontweight": fontweight, "fontstyle": fontstyle,
+            "background": background, "alpha": alpha,
+        }
+        self.text_annotations.append(annot)
+        self.schedule_plot()
 
     def add_arrow_annotation(
         self,
@@ -7299,17 +7648,112 @@ class SolarRadioImageTab(QWidget):
         alpha=1.0,
     ):
         """Add arrow annotation to the plot with customizable styling."""
-        ax = self.figure.gca()
-        ax.annotate(
-            "",
-            xy=(x2, y2),
-            xytext=(x1, y1),
-            arrowprops=dict(
-                arrowstyle="-|>", color=color, lw=linewidth, mutation_scale=head_width
-            ),
-            alpha=alpha,
-        )
-        self.canvas.draw()
+        annot = {
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "color": color, "linewidth": linewidth,
+            "head_width": head_width, "alpha": alpha,
+        }
+        self.arrow_annotations.append(annot)
+        self.schedule_plot()
+
+    def _compute_solar_disk_center(self, shape):
+        """Auto-compute solar disk center and diameter from WCS/FITS header."""
+        height, width = shape
+        _is_hpc = self._is_already_hpc()
+        if _is_hpc and self.current_wcs:
+            try:
+                ref_world = list(self.current_wcs.referencevalue()["numeric"])
+                ref_world[0] = 0.0
+                ref_world[1] = 0.0
+                pix_origin = self.current_wcs.topixel(ref_world)["numeric"]
+                cx, cy = float(pix_origin[0]), float(pix_origin[1])
+                self.solar_disk_center = (cx, cy)
+                self._auto_set_solar_diameter()
+            except Exception:
+                self.solar_disk_center = (width // 2, height // 2)
+        elif _is_hpc and hasattr(self, '_cached_wcs_obj') and self._cached_wcs_obj is not None:
+            try:
+                px, py = self._cached_wcs_obj.wcs_world2pix(0.0, 0.0, 0)
+                cx, cy = float(px), float(py)
+                self.solar_disk_center = (cx, cy)
+                self._auto_set_solar_diameter()
+            except Exception:
+                self.solar_disk_center = (width // 2, height // 2)
+        else:
+            _auto_computed = False
+            _hdr = getattr(self, '_cached_fits_header', None) or {}
+            if (_hdr or self.current_wcs) and hasattr(self, '_cached_wcs_obj') and self._cached_wcs_obj is not None:
+                try:
+                    from astropy.time import Time
+                    from astropy.coordinates import get_sun
+                    from sunpy.coordinates.sun import angular_radius
+                    date_str = None
+                    for key in ["DATE-OBS", "DATE_OBS", "DATE", "STARTOBS", "T_OBS"]:
+                        date_str = _hdr.get(key)
+                        if date_str:
+                            break
+                            
+                    if not date_str and self.current_wcs:
+                        csys_record = {}
+                        if hasattr(self.current_wcs, "torecord"):
+                            csys_record = self.current_wcs.torecord()
+                        elif isinstance(self.current_wcs, dict):
+                            csys_record = self.current_wcs
+                            
+                        if "obsdate" in csys_record:
+                            obsdate = csys_record["obsdate"]
+                            if "m0" in obsdate:
+                                t = Time(obsdate["m0"]["value"], format="mjd")
+                                date_str = t.iso
+                            
+                    if date_str:
+                        obs_time = Time(str(date_str))
+                        sun_coord = get_sun(obs_time)
+                        ra_deg = sun_coord.ra.deg
+                        dec_deg = sun_coord.dec.deg
+                        px, py = self._cached_wcs_obj.wcs_world2pix(ra_deg, dec_deg, 0)
+                        cx, cy = float(px), float(py)
+                        self.solar_disk_center = (cx, cy)
+                        ang_radius = angular_radius(obs_time)
+                        self.solar_disk_diameter_arcmin = float(ang_radius.to('arcmin').value) * 2.0
+                        _auto_computed = True
+                except Exception as e:
+                    print(f"[WARN] Auto-compute solar position failed: {e}")
+            if not _auto_computed:
+                self.solar_disk_center = (width // 2, height // 2)
+
+    def _auto_set_solar_diameter(self):
+        """Auto-set solar_disk_diameter_arcmin from DATE-OBS if available."""
+        try:
+            _hdr = getattr(self, '_cached_fits_header', None) or {}
+            date_str = None
+            for key in ["DATE-OBS", "DATE_OBS", "DATE", "STARTOBS", "T_OBS"]:
+                date_str = _hdr.get(key)
+                if date_str:
+                    break
+                    
+            if not date_str and self.current_wcs:
+                csys_record = {}
+                if hasattr(self.current_wcs, "torecord"):
+                    csys_record = self.current_wcs.torecord()
+                elif isinstance(self.current_wcs, dict):
+                    csys_record = self.current_wcs
+                    
+                if "obsdate" in csys_record:
+                    obsdate = csys_record["obsdate"]
+                    if "m0" in obsdate:
+                        from astropy.time import Time
+                        t = Time(obsdate["m0"]["value"], format="mjd")
+                        date_str = t.iso
+                    
+            if date_str:
+                from astropy.time import Time
+                from sunpy.coordinates.sun import angular_radius
+                obs_time = Time(str(date_str))
+                ang_radius = angular_radius(obs_time)
+                self.solar_disk_diameter_arcmin = float(ang_radius.to('arcmin').value) * 2.0
+        except Exception:
+            pass  # keep default 32 arcmin
 
     def set_solar_disk_center(self):
         """Show non-modal solar disk settings dialog."""
@@ -7424,15 +7868,129 @@ class SolarRadioImageTab(QWidget):
         position_tab = QWidget()
         position_layout = QVBoxLayout(position_tab)
 
+        # Auto-compute toggle
+        auto_group = QGroupBox("Auto-Compute")
+        auto_layout = QVBoxLayout(auto_group)
+        auto_checkbox = QCheckBox("Auto-compute from FITS header")
+        auto_checkbox.setToolTip(
+            "Automatically compute the Sun's position and apparent\n"
+            "diameter from the observation date in the FITS header."
+        )
+        auto_checkbox.setChecked(self.solar_disk_auto_compute)
+        auto_layout.addWidget(auto_checkbox)
+        auto_info = QLabel("")
+        auto_info.setWordWrap(True)
+        auto_layout.addWidget(auto_info)
+        position_layout.addWidget(auto_group)
+
+        viewer_ref = self
+
+        def run_auto_compute():
+            """Run auto-compute and populate spinboxes + info label."""
+            _hdr = getattr(viewer_ref, '_cached_fits_header', None) or {}
+            wcs_obj = getattr(viewer_ref, '_cached_wcs_obj', None)
+            if not _hdr and not viewer_ref.current_wcs:
+                auto_info.setText("No metadata available.")
+                return False
+            try:
+                from astropy.time import Time
+                from sunpy.coordinates.sun import angular_radius
+                date_str = None
+                for key in ["DATE-OBS", "DATE_OBS", "DATE", "STARTOBS", "T_OBS"]:
+                    date_str = _hdr.get(key)
+                    if date_str:
+                        break
+                        
+                if not date_str and viewer_ref.current_wcs:
+                    csys_record = {}
+                    if hasattr(viewer_ref.current_wcs, "torecord"):
+                        csys_record = viewer_ref.current_wcs.torecord()
+                    elif isinstance(viewer_ref.current_wcs, dict):
+                        csys_record = viewer_ref.current_wcs
+                        
+                    if "obsdate" in csys_record:
+                        obsdate = csys_record["obsdate"]
+                        if "m0" in obsdate:
+                            t = Time(obsdate["m0"]["value"], format="mjd")
+                            date_str = t.iso
+                        
+                if not date_str:
+                    auto_info.setText("No observation date found.")
+                    return False
+                obs_time = Time(str(date_str))
+                _is_hpc = viewer_ref._is_already_hpc()
+
+                ang_radius = angular_radius(obs_time)
+                diam = float(ang_radius.to('arcmin').value) * 2.0
+                diameter_spinbox.setValue(diam)
+
+                if _is_hpc:
+                    cx, cy = None, None
+                    if viewer_ref.current_wcs:
+                        try:
+                            ref_world = list(viewer_ref.current_wcs.referencevalue()["numeric"])
+                            ref_world[0] = 0.0
+                            ref_world[1] = 0.0
+                            pix_origin = viewer_ref.current_wcs.topixel(ref_world)["numeric"]
+                            cx, cy = float(pix_origin[0]), float(pix_origin[1])
+                        except Exception:
+                            pass
+                    if cx is None and wcs_obj is not None:
+                        try:
+                            px, py = wcs_obj.wcs_world2pix(0.0, 0.0, 0)
+                            cx, cy = float(px), float(py)
+                        except Exception:
+                            pass
+                    if cx is not None:
+                        x_spinbox.setValue(int(round(cx)))
+                        y_spinbox.setValue(int(round(cy)))
+                    auto_info.setText(
+                        f"HPC image: center set to (0,0)\n"
+                        f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
+                    )
+                else:
+                    if wcs_obj is None:
+                        auto_info.setText("No WCS available for RA/DEC conversion.")
+                        return False
+                    from astropy.coordinates import get_sun
+                    sun_coord = get_sun(obs_time)
+                    ra_deg = sun_coord.ra.deg
+                    dec_deg = sun_coord.dec.deg
+                    px, py = wcs_obj.wcs_world2pix(ra_deg, dec_deg, 0)
+                    cx, cy = float(px), float(py)
+                    x_spinbox.setValue(int(round(cx)))
+                    y_spinbox.setValue(int(round(cy)))
+                    auto_info.setText(
+                        f"Sun RA={ra_deg:.4f}° DEC={dec_deg:.4f}°\n"
+                        f"Pixel ({cx:.1f}, {cy:.1f})\n"
+                        f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
+                    )
+                return True
+            except Exception as e:
+                auto_info.setText(f"Auto-compute failed: {e}")
+                return False
+
+        def on_auto_toggle(checked):
+            """Toggle auto-compute on/off and enable/disable manual controls."""
+            x_spinbox.setEnabled(not checked)
+            y_spinbox.setEnabled(not checked)
+            diameter_spinbox.setEnabled(not checked)
+            if checked:
+                run_auto_compute()
+            else:
+                auto_info.setText("")
+
+        auto_checkbox.toggled.connect(on_auto_toggle)
+
         # Center coordinates
         center_group = QGroupBox("Disk Center")
         center_layout = QHBoxLayout(center_group)
 
         x_label = QLabel("X coordinate:")
         x_spinbox = QSpinBox()
-        x_spinbox.setRange(0, width - 1)
+        x_spinbox.setRange(-width * 5, width * 5)
         if self.solar_disk_center is not None:
-            x_spinbox.setValue(self.solar_disk_center[0])
+            x_spinbox.setValue(int(round(self.solar_disk_center[0])))
         else:
             x_spinbox.setValue(width // 2)
         center_layout.addWidget(x_label)
@@ -7440,9 +7998,9 @@ class SolarRadioImageTab(QWidget):
 
         y_label = QLabel("Y coordinate:")
         y_spinbox = QSpinBox()
-        y_spinbox.setRange(0, height - 1)
+        y_spinbox.setRange(-height * 5, height * 5)
         if self.solar_disk_center is not None:
-            y_spinbox.setValue(self.solar_disk_center[1])
+            y_spinbox.setValue(int(round(self.solar_disk_center[1])))
         else:
             y_spinbox.setValue(height // 2)
         center_layout.addWidget(y_label)
@@ -7454,16 +8012,18 @@ class SolarRadioImageTab(QWidget):
         size_group = QGroupBox("Disk Size")
         size_layout = QHBoxLayout(size_group)
         diameter_label = QLabel("Diameter (arcmin):")
-        diameter_spinbox = QSpinBox()
-        diameter_spinbox.setRange(1, 100)
-        diameter_spinbox.setValue(int(self.solar_disk_diameter_arcmin))
+        diameter_spinbox = QDoubleSpinBox()
+        diameter_spinbox.setRange(1.0, 100.0)
+        diameter_spinbox.setDecimals(2)
+        diameter_spinbox.setSingleStep(0.1)
+        diameter_spinbox.setValue(self.solar_disk_diameter_arcmin)
         size_layout.addWidget(diameter_label)
         size_layout.addWidget(diameter_spinbox)
         position_layout.addWidget(size_group)
 
         position_layout.addStretch()
 
-        # Add tabs to tab widget - Style first, then Position
+        # Add tabs to tab widget
         tab_widget.addTab(style_tab, "Style")
         tab_widget.addTab(position_tab, "Configure")
 
@@ -7479,7 +8039,11 @@ class SolarRadioImageTab(QWidget):
                     dialog.close()
                     return
 
-                viewer.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
+                viewer.solar_disk_auto_compute = auto_checkbox.isChecked()
+                if viewer.solar_disk_auto_compute:
+                    viewer.solar_disk_center = None
+                else:
+                    viewer.solar_disk_center = (x_spinbox.value(), y_spinbox.value())
                 viewer.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
 
                 # Update style properties
@@ -7491,7 +8055,10 @@ class SolarRadioImageTab(QWidget):
                     show_center_checkbox.isChecked()
                 )
 
-                viewer.schedule_plot()
+                # Directly update solar disk without full replot for instant feedback
+                ax = viewer.figure.gca()
+                viewer._update_solar_disk_position(ax)
+                viewer.canvas.draw_idle()
                 viewer.show_status_message("Solar disk settings applied")
             except RuntimeError:
                 dialog.close()
@@ -7531,6 +8098,8 @@ class SolarRadioImageTab(QWidget):
         self._open_dialogs.append(dialog)
 
         dialog.show()
+
+        on_auto_toggle(auto_checkbox.isChecked())
 
     def show_beam_settings(self):
         """Show non-modal beam settings dialog."""
@@ -7671,7 +8240,12 @@ class SolarRadioImageTab(QWidget):
             cdelt = self.current_wcs.increment()["numeric"][0:2]
             if isinstance(cdelt, list):
                 cdelt = [float(c) for c in cdelt]
-            cdelt = np.array(cdelt) * 180 / np.pi
+            _hdr = getattr(self, '_cached_fits_header', None) or {}
+            _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+            if _is_solar:
+                cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
+            else:
+                cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
             arcmin_60_deg = 60.0 / 60.0
             pixels_x = arcmin_60_deg / abs(cdelt[0])
             pixels_y = arcmin_60_deg / abs(cdelt[1])
@@ -7695,8 +8269,16 @@ class SolarRadioImageTab(QWidget):
         from matplotlib.widgets import RectangleSelector, EllipseSelector
 
         if self.roi_selector:
+            self.roi_selector.set_visible(False)
             self.roi_selector.disconnect_events()
             self.roi_selector = None
+            self.canvas.draw_idle()
+
+        if hasattr(self, "region_mode") and self.region_mode == RegionMode.PAN:
+            # Checkable actions state sync (if not already handled)
+            if hasattr(self, "pan_action"): self.pan_action.setChecked(True)
+            self.show_status_message("Pan Tool Active")
+            return
 
         # Choose selector based on region mode
         if hasattr(self, "region_mode") and self.region_mode == RegionMode.ELLIPSE:
@@ -7741,35 +8323,56 @@ class SolarRadioImageTab(QWidget):
                 increment = self.current_wcs.increment()["numeric"][0:2]
 
                 w = WCS(naxis=2)
-                w.wcs.crpix = ref_pix
-                w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
-                w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
+                w.wcs.crpix = [ref_pix[0] + 1, ref_pix[1] + 1]  # CASA 0-indexed -> FITS 1-indexed
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    w.wcs.crval = [ref_val[0] / 3600.0, ref_val[1] / 3600.0]
+                    w.wcs.cdelt = [increment[0] / 3600.0, increment[1] / 3600.0]
+                else:
+                    w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
+                    w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
 
-                ra1, dec1 = w.wcs_pix2world(xlow, ylow, 0)
-                ra2, dec2 = w.wcs_pix2world(xhigh, yhigh, 0)
+                w1x, w1y = w.wcs_pix2world(xlow, ylow, 0)
+                w2x, w2y = w.wcs_pix2world(xhigh, yhigh, 0)
 
-                coord1 = SkyCoord(ra=ra1 * u.degree, dec=dec1 * u.degree)
-                coord2 = SkyCoord(ra=ra2 * u.degree, dec=dec2 * u.degree)
+                center_wx = (w1x + w2x) / 2
+                center_wy = (w1y + w2y) / 2
 
-                center_ra = (ra1 + ra2) / 2
-                center_dec = (dec1 + dec2) / 2
-                center_coord = SkyCoord(
-                    ra=center_ra * u.degree, dec=center_dec * u.degree
-                )
-
-                width = abs(ra2 - ra1) * u.degree
-                height = abs(dec2 - dec1) * u.degree
-
-                ra_dec_info = (
-                    f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
-                    f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
-                    f"\nSize: {width.to(u.arcsec):.1f} × {height.to(u.arcsec):.1f}"
-                    # f"\nCorners: "
-                    # f"\n  Bottom-Left: RA={coord1.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
-                    # f"Dec={coord1.dec.to_string(sep=':', precision=2)}"
-                    # f"\n  Top-Right: RA={coord2.ra.to_string(unit=u.hour, sep=':', precision=2)}, "
-                    # f"Dec={coord2.dec.to_string(sep=':', precision=2)}"
-                )
+                ctype1_roi = str(_hdr.get('CTYPE1', '')).upper()
+                if 'SOLAR' in ctype1_roi:
+                    # SOLAR-X/Y: WCS values are in arcsec (crval was set directly)
+                    sx = center_wx * 3600.0  # degrees -> arcsec
+                    sy = center_wy * 3600.0
+                    w_arcsec = abs(w2x - w1x) * 3600.0
+                    h_arcsec = abs(w2y - w1y) * 3600.0
+                    ra_dec_info = (
+                        f'Center: SOLAR-X={sx:.1f}", SOLAR-Y={sy:.1f}"'
+                        f'\nSize: {w_arcsec:.1f}" × {h_arcsec:.1f}"'
+                    )
+                elif 'HPLN' in ctype1_roi:
+                    # Unwrap helioprojective to [-180, 180]
+                    center_wx = ((center_wx + 180.0) % 360.0) - 180.0
+                    center_wy = ((center_wy + 180.0) % 360.0) - 180.0
+                    hx = center_wx * 3600.0
+                    hy = center_wy * 3600.0
+                    w_arcsec = abs(w2x - w1x) * 3600.0
+                    h_arcsec = abs(w2y - w1y) * 3600.0
+                    ra_dec_info = (
+                        f'Center: HPLN={hx:.1f}", HPLT={hy:.1f}"'
+                        f'\nSize: {w_arcsec:.1f}" × {h_arcsec:.1f}"'
+                    )
+                else:
+                    center_coord = SkyCoord(
+                        ra=center_wx * u.degree, dec=center_wy * u.degree
+                    )
+                    width = abs(w2x - w1x) * u.degree
+                    height = abs(w2y - w1y) * u.degree
+                    ra_dec_info = (
+                        f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                        f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
+                        f"\nSize: {width.to(u.arcsec):.1f} × {height.to(u.arcsec):.1f}"
+                    )
             except Exception as e:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
 
@@ -7843,87 +8446,355 @@ class SolarRadioImageTab(QWidget):
                 increment = self.current_wcs.increment()["numeric"][0:2]
 
                 wcs = WCS(naxis=2)
-                wcs.wcs.crpix = ref_pix
-                wcs.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
-                wcs.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
+                wcs.wcs.crpix = [ref_pix[0] + 1, ref_pix[1] + 1]  # CASA 0-indexed -> FITS 1-indexed
+                _hdr = getattr(self, '_cached_fits_header', None) or {}
+                _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                if _is_solar:
+                    wcs.wcs.crval = [ref_val[0] / 3600.0, ref_val[1] / 3600.0]
+                    wcs.wcs.cdelt = [increment[0] / 3600.0, increment[1] / 3600.0]
+                else:
+                    wcs.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
+                    wcs.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
 
                 # Convert display coordinates to world coordinates
                 # center_x, center_y are in display coordinates (used for WCS)
-                ra_center, dec_center = wcs.wcs_pix2world(center_x, center_y, 0)
-                center_coord = SkyCoord(
-                    ra=ra_center * u.degree, dec=dec_center * u.degree
-                )
+                wx_c, wy_c = wcs.wcs_pix2world(center_x, center_y, 0)
 
                 # Angular size of ellipse (display width/height)
-                angular_width = abs(width * increment[0] * 180 / np.pi) * 3600  # arcsec
-                angular_height = (
-                    abs(height * increment[1] * 180 / np.pi) * 3600
-                )  # arcsec
+                if _is_solar:
+                    angular_width = abs(width * increment[0])  # already arcsec
+                    angular_height = abs(height * increment[1])  # already arcsec
+                else:
+                    angular_width = abs(width * increment[0] * 180 / np.pi) * 3600  # arcsec
+                    angular_height = (
+                        abs(height * increment[1] * 180 / np.pi) * 3600
+                    )  # arcsec
 
-                ra_dec_info = (
-                    f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
-                    f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
-                    f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
-                )
+                ctype1_ell = str(_hdr.get('CTYPE1', '')).upper()
+                if 'SOLAR' in ctype1_ell:
+                    sx = wx_c * 3600.0
+                    sy = wy_c * 3600.0
+                    ra_dec_info = (
+                        f'Center: SOLAR-X={sx:.1f}", SOLAR-Y={sy:.1f}"'
+                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
+                    )
+                elif 'HPLN' in ctype1_ell:
+                    # Unwrap helioprojective to [-180, 180]
+                    wx_c = ((wx_c + 180.0) % 360.0) - 180.0
+                    wy_c = ((wy_c + 180.0) % 360.0) - 180.0
+                    hx = wx_c * 3600.0
+                    hy = wy_c * 3600.0
+                    ra_dec_info = (
+                        f'Center: HPLN={hx:.1f}", HPLT={hy:.1f}"'
+                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
+                    )
+                else:
+                    center_coord = SkyCoord(
+                        ra=wx_c * u.degree, dec=wy_c * u.degree
+                    )
+                    ra_dec_info = (
+                        f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                        f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
+                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
+                    )
             except Exception as e:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
 
         self.show_roi_stats(roi_data, ra_dec_info)
 
     def on_mouse_move(self, event):
-        if not event.inaxes or self.current_image_data is None:
+        if self.current_image_data is None:
+            self.coord_label.setText("No image loaded")
             return
+
+        if not event.inaxes:
+            self.coord_label.setText("")
+            self.canvas.setCursor(Qt.ArrowCursor)
+            return
+
+        # Priority to Matplotlib toolbar tools
+        if hasattr(self, "nav_toolbar") and self.nav_toolbar.mode != "":
+            return
+
+        is_precision_mode = (
+            (hasattr(self, "_ruler_mode") and self._ruler_mode) or 
+            (hasattr(self, "_profile_mode") and self._profile_mode)
+        )
+
+        # Update cursor for panning mode feedback
+        if is_precision_mode:
+            self.canvas.setCursor(Qt.CrossCursor)
+        elif hasattr(self, "region_mode") and self.region_mode == RegionMode.PAN:
+            if self._is_panning:
+                self.canvas.setCursor(Qt.ClosedHandCursor)
+            else:
+                self.canvas.setCursor(Qt.OpenHandCursor)
+        else:
+            # Default cursor for other modes within axes
+            self.canvas.setCursor(Qt.CrossCursor)
+            
+        # Suspend optimization during precision measurement tasks
+        is_precision_mode = (
+            (hasattr(self, "_ruler_mode") and self._ruler_mode) or 
+            (hasattr(self, "_profile_mode") and self._profile_mode)
+        )
 
         x, y = round(event.xdata), round(event.ydata)
 
+        # Panning Logic (Interactive Panning)
+        if not is_precision_mode and self._is_panning and event.x is not None:
+            ax = event.inaxes
+            
+            # Calculate delta in pixel coordinates
+            dx_px = event.x - self._pan_start_x_px
+            dy_px = event.y - self._pan_start_y_px
+            
+            # Convert pixel delta to data delta using initial scale
+            width_px = ax.bbox.width
+            height_px = ax.bbox.height
+            width_data = self._pan_start_xlim[1] - self._pan_start_xlim[0]
+            height_data = self._pan_start_ylim[1] - self._pan_start_ylim[0]
+            
+            dx_data = dx_px * (width_data / width_px)
+            dy_data = dy_px * (height_data / height_px)
+            
+            # Update panning target
+            self._pan_target_xlim = [self._pan_start_xlim[0] - dx_data, self._pan_start_xlim[1] - dx_data]
+            self._pan_target_ylim = [self._pan_start_ylim[0] - dy_data, self._pan_start_ylim[1] - dy_data]
+            
+            if not self._pan_timer.isActive():
+                self._pan_timer.start(16)
+        
+        # Delegate coordinate and value formatting to Matplotlib Artists
         try:
-            value = self.current_image_data[x, y]
-            pixel_info = f"<b>Pixel:</b> X={x}, Y={y}<br><b>Value:</b> {value:.3g}"
-        except (IndexError, TypeError):
-            pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
+            ax = event.inaxes
+            im = self.image_plot
+            
+            # 1. Get exact World coordinates as Matplotlib would show them
+            world_str = ax.format_coord(event.xdata, event.ydata)
+            # Remove any trailing [value] Matplotlib might have appended to format_coord
+            import re
+            world_str = re.sub(r'\s*\[.*?\]$', '', world_str).replace('(world)', '').strip()
+            
+            # 2. Get exact Value as Matplotlib would show it
+            cursor_data = im.get_cursor_data(event)
+            if cursor_data is not None:
+                # Use Matplotlib's own value formatter for perfect parity
+                val_str = im.format_cursor_data(cursor_data).strip('[]').strip()
+                
+                pixel_info = f"<b>Pixel:</b> X={x}, Y={y}<br><b>Value:</b> {val_str}"
+                world_info = f"<b>World:</b> {world_str}"
+                coord_info = f"{pixel_info}<br>{world_info}"
+            else:
+                pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
+                world_info = f"<b>World:</b> {world_str}"
+                coord_info = f"{pixel_info}<br>{world_info}"
 
-        wcs_obj = getattr(self, "_cached_wcs_obj", None)
-        if wcs_obj is not None:
-            try:
-                from astropy.coordinates import SkyCoord
-                import astropy.units as u
+            #    coord_info = f"<b>Pixel:</b> Outside Image"
+                
+            self.coord_label.setText(coord_info)
+            return
+            
+        except Exception as e:
+            # Fallback to simple pixel info if Artist API fails
+            print(f"[DEBUG] Coordinate Readout Fallback: {e}")
+            self.coord_label.setText(f"<b>Pixel:</b> X={x}, Y={y}")
 
-                ra, dec = wcs_obj.wcs_pix2world(event.xdata, event.ydata, 0)
-                coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
-                ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
-                dec_str = coord.dec.to_string(sep=":", precision=1)
+    def _on_mouse_press(self, event):
+        """Handle mouse button press for panning."""
+        # Priority to Matplotlib toolbar tools
+        if hasattr(self, "nav_toolbar") and self.nav_toolbar.mode != "":
+            return
+        
+        # Suspend custom panning logic during precision measurement tasks
+        if (hasattr(self, "_ruler_mode") and self._ruler_mode) or \
+           (hasattr(self, "_profile_mode") and self._profile_mode):
+            return
+            
+        if (
+            not hasattr(self, "region_mode") 
+            or self.region_mode != RegionMode.PAN 
+            or event.inaxes is None 
+            or event.button != 1
+        ):
+            return
+            
+        self._is_panning = True
+        self.canvas.setCursor(Qt.ClosedHandCursor)
+        self._pan_start_x_px = event.x
+        self._pan_start_y_px = event.y
+        
+        ax = event.inaxes
+        self._pan_start_xlim = ax.get_xlim()
+        self._pan_start_ylim = ax.get_ylim()
+        
+        # Performance Optimization: Switch image to low-res decimation during the drag
+        if self.image_plot is not None and self._zoom_lowres_transposed is not None:
+             self.image_plot.set_data(self._zoom_lowres_transposed)
+             self.canvas.draw_idle()
 
-                coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
-                self.coord_label.setText(coord_info)
-            except Exception as e:
-                self.coord_label.setText(f"{pixel_info}<br><b>WCS Error:</b> {str(e)}")
-        elif self.current_wcs:
-            try:
-                from astropy.wcs import WCS
-                from astropy.coordinates import SkyCoord
-                import astropy.units as u
-
-                ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
-                ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
-                increment = self.current_wcs.increment()["numeric"][0:2]
-
-                w = WCS(naxis=2)
-                w.wcs.crpix = ref_pix
-                w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
-                w.wcs.cdelt = [increment[0] * 180 / np.pi, increment[1] * 180 / np.pi]
-                w.wcs.ctype = ["RA---SIN", "DEC--SIN"]
-
-                ra, dec = w.wcs_pix2world(event.xdata, event.ydata, 0)
-                coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree)
-                ra_str = coord.ra.to_string(unit=u.hour, sep=":", precision=1)
-                dec_str = coord.dec.to_string(sep=":", precision=1)
-
-                coord_info = f"{pixel_info}<br><b>World:</b> RA={ra_str}, Dec={dec_str}"
-                self.coord_label.setText(coord_info)
-            except Exception as e:
-                self.coord_label.setText(f"{pixel_info}<br><b>WCS Error:</b> {str(e)}")
+    def _on_mouse_release(self, event):
+        """Handle mouse button release to finalize panning."""
+        if not self._is_panning:
+            return
+            
+        self._is_panning = False
+        self._pan_timer.stop()
+        
+        # Restore cursor based on location
+        if event.inaxes:
+            self.canvas.setCursor(Qt.OpenHandCursor)
         else:
-            self.coord_label.setText(pixel_info)
+            self.canvas.setCursor(Qt.ArrowCursor)
+
+        # Restore FULL resolution data whenever panning/clicking ends
+        if self.image_plot and hasattr(self, "_cached_transposed") and self._cached_transposed is not None:
+            self.image_plot.set_data(self._cached_transposed)
+            self.canvas.draw_idle()
+
+        if self._pan_target_xlim and self.image_plot:
+            ax = self.image_plot.axes
+            ax.set_xlim(self._pan_target_xlim)
+            ax.set_ylim(self._pan_target_ylim)
+            
+            # Update Overlays (Beam, Solar Disk) to reflect new viewport
+            if hasattr(self, "show_beam_checkbox") and self.show_beam_checkbox.isChecked():
+                self._update_beam_position(ax)
+                
+            self.canvas.draw_idle()
+            
+        self._pan_target_xlim = None
+        self._pan_target_ylim = None
+
+    def _perform_pan_step(self):
+        """Timer callback for smooth panning animation using easing."""
+        if self.image_plot is None or self._pan_target_xlim is None:
+            self._pan_timer.stop()
+            return
+
+        ax = self.image_plot.axes
+        curr_xlim = ax.get_xlim()
+        curr_ylim = ax.get_ylim()
+
+        # Snappy alpha (0.5 = 50% distance per frame) for responsive follow
+        alpha = 0.5 
+        
+        new_xlim = [
+            curr_xlim[0] + (self._pan_target_xlim[0] - curr_xlim[0]) * alpha,
+            curr_xlim[1] + (self._pan_target_xlim[1] - curr_xlim[1]) * alpha
+        ]
+        new_ylim = [
+            curr_ylim[0] + (self._pan_target_ylim[0] - curr_ylim[0]) * alpha,
+            curr_ylim[1] + (self._pan_target_ylim[1] - curr_ylim[1]) * alpha
+        ]
+
+        ax.set_xlim(new_xlim)
+        ax.set_ylim(new_ylim)
+        self.canvas.draw_idle()
+
+        # Stop once we are close enough to target
+        if abs(new_xlim[0] - self._pan_target_xlim[0]) < 0.001 * (new_xlim[1] - new_xlim[0]):
+            self._pan_timer.stop()
+
+    def _on_mouse_scroll(self, event):
+        """Handle mouse scroll events for zooming with smooth animation."""
+        # Check if feature is enabled in View menu
+        main_window = self.window()
+        if hasattr(main_window, "scroll_zoom_action"):
+            if not main_window.scroll_zoom_action.isChecked():
+                return
+        
+        if event.inaxes is None or self.current_image_data is None:
+            return
+
+        # Disable scroll-to-zoom during precision measurement tasks (Ruler/Profile)
+        if (hasattr(self, "_ruler_mode") and self._ruler_mode) or \
+           (hasattr(self, "_profile_mode") and self._profile_mode):
+            self.show_status_message("Scroll to zoom suspended in measurement mode", timeout=2000)
+            return
+
+        ax = event.inaxes
+        base_scale = 1.2 
+
+        if event.button == "up":
+            scale_factor = 1 / base_scale
+        elif event.button == "down":
+            scale_factor = base_scale
+        else:
+            return
+
+        # Use current target as base if already animating to prevent "jerking"
+        if self._zoom_timer.isActive() and self._zoom_target_xlim:
+            cur_xlim = self._zoom_target_xlim
+            cur_ylim = self._zoom_target_ylim
+        else:
+            cur_xlim = ax.get_xlim()
+            cur_ylim = ax.get_ylim()
+
+        xdata = event.xdata
+        ydata = event.ydata
+
+        # Calculate target limits
+        new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
+        new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
+
+        relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0])
+        rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0])
+
+        self._zoom_target_xlim = [xdata - new_width * (1 - relx), xdata + new_width * relx]
+        self._zoom_target_ylim = [ydata - new_height * (1 - rely), ydata + new_height * rely]
+
+        # Start animation timer
+        if not self._zoom_timer.isActive():
+            # Performance Optimization: Switch image to low-res decimation during the animation
+            if self.image_plot is not None and self._zoom_lowres_transposed is not None:
+                self.image_plot.set_data(self._zoom_lowres_transposed)
+            
+            # 16ms (60 FPS)
+            self._zoom_timer.start(16) 
+
+    def _perform_zoom_step(self):
+        """Timer callback for smooth zooming animation using easing."""
+        if self.image_plot is None or not self._zoom_target_xlim:
+            self._zoom_timer.stop()
+            return
+
+        ax = self.image_plot.axes
+        curr_xlim = ax.get_xlim()
+        curr_ylim = ax.get_ylim()
+
+        # Easing factor: 0.5 (50% per frame) 
+        alpha = 0.5 
+        
+        new_xlim = [
+            curr_xlim[0] + (self._zoom_target_xlim[0] - curr_xlim[0]) * alpha,
+            curr_xlim[1] + (self._zoom_target_xlim[1] - curr_xlim[1]) * alpha
+        ]
+        new_ylim = [
+            curr_ylim[0] + (self._zoom_target_ylim[0] - curr_ylim[0]) * alpha,
+            curr_ylim[1] + (self._zoom_target_ylim[1] - curr_ylim[1]) * alpha
+        ]
+
+        ax.set_xlim(new_xlim)
+        ax.set_ylim(new_ylim)
+        self.canvas.draw_idle()
+
+        # Precision stopping
+        # This prevents the "hanging" feeling at the end of the zoom.
+        if abs(new_xlim[0] - self._zoom_target_xlim[0]) < 0.002 * (new_xlim[1] - new_xlim[0]):
+            ax.set_xlim(self._zoom_target_xlim)
+            ax.set_ylim(self._zoom_target_ylim)
+            
+            # Restore FULL resolution data once animation completes
+            if hasattr(self, "_cached_transposed") and self._cached_transposed is not None:
+                self.image_plot.set_data(self._cached_transposed)
+            
+            # Update Overlays (Beam, Solar Disk) to reflect new viewport
+            if hasattr(self, "show_beam_checkbox") and self.show_beam_checkbox.isChecked():
+                self._update_beam_position(ax)
+                
+            self.canvas.draw_idle()
+            self._zoom_timer.stop()
 
     def setup_canvas(self, parent_layout):
         self.figure = Figure(figsize=(5, 5), dpi=100)
@@ -7953,8 +8824,12 @@ class SolarRadioImageTab(QWidget):
 
         self.solar_disk_center = None
         self.solar_disk_diameter_arcmin = 32.0
+        self.solar_disk_auto_compute = True
 
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+        self.canvas.mpl_connect("scroll_event", self._on_mouse_scroll)
+        self.canvas.mpl_connect("button_press_event", self._on_mouse_press)
+        self.canvas.mpl_connect("button_release_event", self._on_mouse_release)
 
     def show_contour_settings(self):
         """Show non-modal contour settings dialog."""
@@ -7982,9 +8857,18 @@ class SolarRadioImageTab(QWidget):
         def on_apply():
             """Apply settings without closing dialog."""
             try:
-                if not viewer:
-                    dialog.close()
+                from PyQt5 import sip
+                if sip.isdeleted(dialog):
                     return
+
+                if not viewer:
+                    # This case should be rare as viewer is 'self'
+                    try:
+                        dialog.close()
+                    except RuntimeError:
+                        pass
+                    return
+
                 viewer.contour_settings = dialog.get_settings()
                 if viewer.show_contours_checkbox.isChecked():
                     viewer.load_contour_data()
@@ -7993,14 +8877,16 @@ class SolarRadioImageTab(QWidget):
                     # Update dialog with captured dimensions
                     w = viewer.contour_settings.get("dim_w", 0)
                     h = viewer.contour_settings.get("dim_h", 0)
-                    if hasattr(dialog, "update_dimensions_label"):
+                    if hasattr(dialog, "update_dimensions_label") and not sip.isdeleted(dialog):
                         dialog.update_dimensions_label(w, h)
 
                 viewer.show_status_message("Contour settings applied")
             except RuntimeError:
-                dialog.close()
+                # Dialog or a child widget was likely deleted during processing
+                pass
             except Exception as e:
-                viewer.show_status_message(f"Error applying settings: {e}")
+                if viewer:
+                    viewer.show_status_message(f"Error applying settings: {e}")
 
         def on_close():
             dialog.close()
@@ -8060,9 +8946,17 @@ class SolarRadioImageTab(QWidget):
         def on_apply():
             """Apply settings without closing dialog."""
             try:
-                if not viewer:
-                    dialog.close()
+                from PyQt5 import sip
+                if sip.isdeleted(dialog):
                     return
+
+                if not viewer:
+                    try:
+                        dialog.close()
+                    except RuntimeError:
+                        pass
+                    return
+
                 viewer.plot_settings = dialog.get_settings()
                 # Refresh the plot with new settings
                 if viewer.current_image_data is not None:
@@ -8077,9 +8971,11 @@ class SolarRadioImageTab(QWidget):
                         viewer.plot_image()
                 viewer.show_status_message("Plot settings applied")
             except RuntimeError:
-                dialog.close()
+                # Dialog was likely deleted during long-running plot update
+                pass
             except Exception as e:
-                viewer.show_status_message(f"Error applying settings: {e}")
+                if viewer:
+                    viewer.show_status_message(f"Error applying settings: {e}")
 
         def on_close():
             dialog.close()
@@ -8863,7 +9759,7 @@ class SolarRadioImageTab(QWidget):
                         increment = self.current_contour_wcs.increment()["numeric"][0:2]
 
                         # Swap axes for numpy (row, col) = (y, x) order
-                        contour_wcs_obj.wcs.crpix = [ref_pix[1], ref_pix[0]]
+                        contour_wcs_obj.wcs.crpix = [ref_pix[1] + 1, ref_pix[0] + 1]  # CASA 0-indexed -> FITS 1-indexed
 
                         # Get CTYPE from FITS header (correct for HPC)
                         ctype1 = header.get("CTYPE1", "")
@@ -8873,15 +9769,31 @@ class SolarRadioImageTab(QWidget):
                             or "HPLT" in ctype1
                             or "HPLN" in ctype2
                             or "HPLT" in ctype2
+                            or "SOLAR-X" in ctype1.upper()
+                            or "SOLAR-Y" in ctype2.upper()
                         )
 
                         if is_hpc:
-                            # For HPC FITS files, CASA coordsys is in radians
-                            # Convert to degrees for WCS reprojection
-                            crval1 = ref_val[0] * 180.0 / np.pi
-                            crval2 = ref_val[1] * 180.0 / np.pi
-                            cdelt1 = increment[0] * 180.0 / np.pi
-                            cdelt2 = increment[1] * 180.0 / np.pi
+                            # Distinguish HPLN-TAN (CASA stores in radians) from
+                            # SOLAR-X (CASA stores as linear coords in arcsec)
+                            is_solar_xy = (
+                                "SOLAR-X" in ctype1.upper()
+                                or "SOLAR-Y" in ctype2.upper()
+                            )
+                            if is_solar_xy:
+                                # SOLAR-X/Y: CASA coordsys has arcsec values
+                                # Convert arcsec → degrees for astropy WCS
+                                crval1 = ref_val[0] / 3600.0
+                                crval2 = ref_val[1] / 3600.0
+                                cdelt1 = increment[0] / 3600.0
+                                cdelt2 = increment[1] / 3600.0
+                            else:
+                                # HPLN/HPLT: CASA coordsys is in radians
+                                # Convert to degrees for WCS reprojection
+                                crval1 = ref_val[0] * 180.0 / np.pi
+                                crval2 = ref_val[1] * 180.0 / np.pi
+                                cdelt1 = increment[0] * 180.0 / np.pi
+                                cdelt2 = increment[1] * 180.0 / np.pi
                         else:
                             # For RA/Dec, CASA coordsys is already in radians, convert to degrees
                             crval1 = ref_val[0] * 180.0 / np.pi
@@ -8891,10 +9803,19 @@ class SolarRadioImageTab(QWidget):
 
                         contour_wcs_obj.wcs.crval = [crval2, crval1]  # Swapped
                         contour_wcs_obj.wcs.cdelt = [cdelt2, cdelt1]  # Swapped
+                        # Map SOLAR-X/Y to standard celestial types for reproject
+                        def _to_celestial_ctype(ct):
+                            ct_upper = ct.upper()
+                            if "SOLAR-X" in ct_upper:
+                                return "HPLN-TAN"
+                            elif "SOLAR-Y" in ct_upper:
+                                return "HPLT-TAN"
+                            return ct
+
                         contour_wcs_obj.wcs.ctype = [
-                            ctype2,
-                            ctype1,
-                        ]  # From header (correct HPC)
+                            _to_celestial_ctype(ctype2),
+                            _to_celestial_ctype(ctype1),
+                        ]  # Map to celestial types for reproject
                     except Exception as e:
 
                         print(f"[ERROR] Failed to build WCS from FITS header: {e}")
@@ -8911,9 +9832,9 @@ class SolarRadioImageTab(QWidget):
                     # But numpy arrays are (row, col) = (y, x)
                     # We need to SWAP the axes for proper alignment with reproject
                     contour_wcs_obj.wcs.crpix = [
-                        ref_pix[1],
-                        ref_pix[0],
-                    ]  # Swap to (y, x)
+                        ref_pix[1] + 1,
+                        ref_pix[0] + 1,
+                    ]  # Swap to (y, x); CASA 0-indexed -> FITS 1-indexed
 
                     if "Right Ascension" in summary["axisnames"]:
                         contour_wcs_obj.wcs.crval = [
@@ -8933,17 +9854,32 @@ class SolarRadioImageTab(QWidget):
                 if fits_flag:
                     try:
                         # Swap CTYPE order to match swapped axes
-                        contour_wcs_obj.wcs.ctype = [header["CTYPE2"], header["CTYPE1"]]
+                        # Map SOLAR-X/Y to celestial types for reproject
+                        def _to_celestial_ctype2(ct):
+                            ct_upper = ct.upper()
+                            if "SOLAR-X" in ct_upper:
+                                return "HPLN-TAN"
+                            elif "SOLAR-Y" in ct_upper:
+                                return "HPLT-TAN"
+                            return ct
+
+                        contour_wcs_obj.wcs.ctype = [
+                            _to_celestial_ctype2(header["CTYPE2"]),
+                            _to_celestial_ctype2(header["CTYPE1"]),
+                        ]
                     except Exception as e:
                         print(f"[ERROR] Error getting projection type from FITS: {e}")
                         self.show_status_message(
                             f"Error getting projection type from FITS: {e}"
                         )
-                        # Use swapped image ctype
-                        contour_wcs_obj.wcs.ctype = [
-                            image_wcs_obj.wcs.ctype[1],
-                            image_wcs_obj.wcs.ctype[0],
-                        ]
+                        # Use swapped image ctype, mapping SOLAR-X/Y if needed
+                        ct0 = image_wcs_obj.wcs.ctype[1]
+                        ct1 = image_wcs_obj.wcs.ctype[0]
+                        if "SOLAR-X" in ct1.upper():
+                            ct1 = "HPLN-TAN"
+                        if "SOLAR-Y" in ct0.upper():
+                            ct0 = "HPLT-TAN"
+                        contour_wcs_obj.wcs.ctype = [ct0, ct1]
                 elif (csys.projection()["type"] == "SIN") and (
                     "Right Ascension" in summary["axisnames"]
                 ):
@@ -8953,11 +9889,14 @@ class SolarRadioImageTab(QWidget):
                 ):
                     contour_wcs_obj.wcs.ctype = ["DEC--TAN", "RA---TAN"]  # Swapped
                 else:
-                    # Use swapped image ctype
-                    contour_wcs_obj.wcs.ctype = [
-                        image_wcs_obj.wcs.ctype[1],
-                        image_wcs_obj.wcs.ctype[0],
-                    ]
+                    # Use swapped image ctype, mapping SOLAR-X/Y if needed
+                    ct0 = image_wcs_obj.wcs.ctype[1]
+                    ct1 = image_wcs_obj.wcs.ctype[0]
+                    if "SOLAR-X" in ct1.upper():
+                        ct1 = "HPLN-TAN"
+                    if "SOLAR-Y" in ct0.upper():
+                        ct0 = "HPLT-TAN"
+                    contour_wcs_obj.wcs.ctype = [ct0, ct1]
 
                 # IMPORTANT: Also swap the image WCS to match!
                 # Create a copy with swapped axes for reprojection
@@ -8966,18 +9905,40 @@ class SolarRadioImageTab(QWidget):
                     image_wcs_obj.wcs.crpix[1],
                     image_wcs_obj.wcs.crpix[0],
                 ]
-                image_wcs_swapped.wcs.crval = [
-                    image_wcs_obj.wcs.crval[1],
-                    image_wcs_obj.wcs.crval[0],
-                ]
-                image_wcs_swapped.wcs.cdelt = [
-                    image_wcs_obj.wcs.cdelt[1],
-                    image_wcs_obj.wcs.cdelt[0],
-                ]
-                image_wcs_swapped.wcs.ctype = [
-                    image_wcs_obj.wcs.ctype[1],
-                    image_wcs_obj.wcs.ctype[0],
-                ]
+
+                # Check if base image uses SOLAR-X/Y (non-celestial in astropy)
+                # If so, convert values from arcsec to degrees and remap CTYPE
+                img_ctype0 = image_wcs_obj.wcs.ctype[0]
+                img_ctype1 = image_wcs_obj.wcs.ctype[1]
+                is_base_solar_xy = (
+                    "SOLAR-X" in img_ctype0.upper()
+                    or "SOLAR-Y" in img_ctype1.upper()
+                )
+
+                if is_base_solar_xy:
+                    # SOLAR-X/Y: values are in arcsec, convert to degrees
+                    image_wcs_swapped.wcs.crval = [
+                        image_wcs_obj.wcs.crval[1] / 3600.0,
+                        image_wcs_obj.wcs.crval[0] / 3600.0,
+                    ]
+                    image_wcs_swapped.wcs.cdelt = [
+                        image_wcs_obj.wcs.cdelt[1] / 3600.0,
+                        image_wcs_obj.wcs.cdelt[0] / 3600.0,
+                    ]
+                    image_wcs_swapped.wcs.ctype = ["HPLT-TAN", "HPLN-TAN"]
+                else:
+                    image_wcs_swapped.wcs.crval = [
+                        image_wcs_obj.wcs.crval[1],
+                        image_wcs_obj.wcs.crval[0],
+                    ]
+                    image_wcs_swapped.wcs.cdelt = [
+                        image_wcs_obj.wcs.cdelt[1],
+                        image_wcs_obj.wcs.cdelt[0],
+                    ]
+                    image_wcs_swapped.wcs.ctype = [
+                        image_wcs_obj.wcs.ctype[1],
+                        image_wcs_obj.wcs.ctype[0],
+                    ]
 
                 # Use the swapped WCS for reprojection
                 image_wcs_for_reproject = image_wcs_swapped
@@ -8985,12 +9946,17 @@ class SolarRadioImageTab(QWidget):
                 # Check for different projections and warn user
                 # Extract projection type from ctype (e.g., "SIN" from "RA---SIN" or "DEC--SIN")
                 def get_projection_type(ctype):
-                    if ctype and len(ctype) >= 3:
+                    if not ctype:
+                        return ""
+                    # SOLAR-X/SOLAR-Y are equivalent to TAN projection
+                    if "SOLAR-X" in ctype.upper() or "SOLAR-Y" in ctype.upper():
+                        return "TAN"
+                    if len(ctype) >= 3:
                         return ctype[-3:]  # Get last 3 chars (SIN, TAN, etc.)
                     return ""
 
                 contour_proj = get_projection_type(contour_wcs_obj.wcs.ctype[0])
-                image_proj = get_projection_type(image_wcs_obj.wcs.ctype[0])
+                image_proj = get_projection_type(image_wcs_for_reproject.wcs.ctype[0])
 
                 if contour_proj != image_proj:
                     different_projections = True
@@ -9173,10 +10139,14 @@ class SolarRadioImageTab(QWidget):
                     self._contour_offset = contour_offset
 
                     # Check cache for reprojected data
+                    original_contour_source = (
+                        self.imagename if is_same_image else self.contour_settings.get("external_image")
+                    )
+
                     # Create a comprehensive cache key
                     cache_key = (
                         self.imagename,  # Base image
-                        contour_imagename,  # Contour image source
+                        original_contour_source,  # Contour image source
                         self.contour_settings.get(
                             "stokes", ""
                         ),  # Stokes parameter (crucial!)
@@ -9550,6 +10520,13 @@ class SolarRadioImageTab(QWidget):
         if not self.imagename:
             return
 
+        # Ensure we're in local mode when scanning local directory
+        self._is_remote_mode = False
+        if hasattr(self, "_remote_file_list"):
+            self._remote_file_list = []
+        if hasattr(self, "_remote_base_dir"):
+            self._remote_base_dir = None
+
         # Determine base directory and file type
         if os.path.isdir(self.imagename):
             # CASA image - use parent directory
@@ -9629,17 +10606,26 @@ class SolarRadioImageTab(QWidget):
         self._last_file_btn.setEnabled(has_next)
 
         # Update position label
-        if self._file_list and self._file_list_index >= 0:
-            total = len(self._file_list)
-            current = self._file_list_index + 1
-            filename = os.path.basename(self._file_list[self._file_list_index])
-            self._file_pos_label.setText(f"{current}/{total}")
-            self._file_pos_label.setToolTip(
-                f"File {current} of {total}: {filename}\nFilter: {self._file_filter_pattern}"
-            )
+        total = len(self._file_list)
+        if total > 0:
+            if self._file_list_index >= 0:
+                current = self._file_list_index + 1
+                filename = os.path.basename(self._file_list[self._file_list_index])
+                self._file_pos_label.setText(f"{current}/{total}")
+                self._file_pos_label.setToolTip(
+                    f"File {current} of {total}: {filename}\nFilter: {self._file_filter_pattern}"
+                )
+            else:
+                # Current file not in filtered list
+                self._file_pos_label.setText(f"-/{total}")
+                self._file_pos_label.setToolTip(
+                    f"Current file excluded by filter\n{total} matching files found\nFilter: {self._file_filter_pattern}"
+                )
         else:
             self._file_pos_label.setText("")
-            self._file_pos_label.setToolTip("")
+            self._file_pos_label.setToolTip(
+                f"No files match filter: {self._file_filter_pattern}" if self._file_filter_pattern != "*" else "No files found"
+            )
 
     def _populate_remote_file_list(
         self, main_window, remote_dir, casa_mode, current_local_path
@@ -10192,7 +11178,18 @@ except Exception:
                     f"No files found matching '{self._file_filter_pattern}'"
                 )
 
-    def _show_playlist_dialog(self):
+            # If playlist dialog is open, refresh it to show new filtered list
+            if hasattr(self, "_playlist_dialog") and self._playlist_dialog:
+                try:
+                    if self._playlist_dialog.isVisible():
+                        # Close and re-open to refresh with new filter/list
+                        # This is the simplest way to ensure all widgets (badge, list) are updated
+                        # We use QTimer to avoid potential issues with closing/opening in the same event
+                        QTimer.singleShot(0, lambda: self._show_playlist_dialog(force_refresh=True))
+                except RuntimeError:
+                    self._playlist_dialog = None
+
+    def _show_playlist_dialog(self, force_refresh=False):
         """Show a non-modal dialog listing all files in the current file list"""
         from PyQt5.QtWidgets import (
             QDialog,
@@ -10205,17 +11202,20 @@ except Exception:
         )
 
         # Check if file list exists
-        if not self._file_list:
+        if not self._file_list and not self._is_remote_mode:
             self.show_status_message("No files found. Load an image first.")
             return
 
-        # If dialog already exists and is visible, just raise it
+        # If dialog already exists and is visible, just raise it (unless force_refresh is True)
         if hasattr(self, "_playlist_dialog") and self._playlist_dialog is not None:
             try:
                 if self._playlist_dialog.isVisible():
-                    self._playlist_dialog.raise_()
-                    self._playlist_dialog.activateWindow()
-                    return
+                    if force_refresh:
+                        self._playlist_dialog.close()
+                    else:
+                        self._playlist_dialog.raise_()
+                        self._playlist_dialog.activateWindow()
+                        return
             except RuntimeError:
                 # Dialog was deleted, create a new one
                 self._playlist_dialog = None
@@ -10417,7 +11417,7 @@ except Exception:
 
         def on_dialog_destroyed():
             """Clean up reference when dialog is destroyed"""
-            if hasattr(viewer, "_playlist_dialog"):
+            if getattr(viewer, "_playlist_dialog", None) == dialog:
                 viewer._playlist_dialog = None
 
         open_btn.clicked.connect(on_open)
@@ -11029,14 +12029,16 @@ except Exception:
             self.zoom_in_action.setIcon(QIcon(themed_icon("zoom_in.png")))
         if hasattr(self, "zoom_out_action"):
             self.zoom_out_action.setIcon(QIcon(themed_icon("zoom_out.png")))
-        if hasattr(self, "reset_view_action"):
-            self.reset_view_action.setIcon(QIcon(themed_icon("reset.png")))
         if hasattr(self, "zoom_60arcmin_action"):
             self.zoom_60arcmin_action.setIcon(QIcon(themed_icon("zoom_60arcmin.png")))
+        if hasattr(self, "reset_view_action"):
+            self.reset_view_action.setIcon(QIcon(themed_icon("reset.png")))
+        if hasattr(self, "pan_action"):
+            self.pan_action.setIcon(QIcon(themed_icon("pan.png")))
         if hasattr(self, "rect_action"):
             self.rect_action.setIcon(QIcon(themed_icon("rectangle_selection.png")))
         if hasattr(self, "ellipse_action"):
-            self.ellipse_action.setIcon(QIcon(themed_icon("icons8-ellipse-90.png")))
+            self.ellipse_action.setIcon(QIcon(themed_icon("ellipse_selection.png")))
         if hasattr(self, "info_action"):
             self.info_action.setIcon(QIcon(themed_icon("icons8-info-90.png")))
         if hasattr(self, "customize_plot_action"):
@@ -11341,8 +12343,10 @@ class CustomTabWidget(QTabWidget):
 
 
 class SolarRadioImageViewerApp(QMainWindow):
-    def __init__(self, imagename=None):
+    def __init__(self, imagename=None, fast_preview=False):
         super().__init__()
+
+        self._fast_preview = fast_preview
 
         # Initialize bundled fonts before any widgets are created
         theme_manager.initialize_fonts()
@@ -11397,6 +12401,9 @@ class SolarRadioImageViewerApp(QMainWindow):
         # Register for theme changes
         theme_manager.register_callback(self._on_theme_changed)
 
+        # Enable drag and drop
+        self.setAcceptDrops(True)
+
         self.statusBar().showMessage("Ready")
         self.create_menus()
         
@@ -11404,9 +12411,21 @@ class SolarRadioImageViewerApp(QMainWindow):
         self._set_hand_cursor_recursive(self)
 
         first_tab = self.add_new_tab("Tab1")
+
+        # Apply fast preview flag from CLI
+        if self._fast_preview and hasattr(first_tab, "downsample_toggle"):
+            first_tab.downsample_toggle.setChecked(True)
+
         if imagename and os.path.exists(imagename):
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
+
+            # Sync CASA/FITS toggle with the loaded file type
+            if os.path.isdir(imagename):
+                first_tab.file_type_toggle.setSelectedIndex(0)  # CASA
+            else:
+                first_tab.file_type_toggle.setSelectedIndex(1)  # FITS
+
             # Delay to setup the tab before calling on_visualization_changed
             QTimer.singleShot(
                 20, lambda: first_tab.on_visualization_changed(dir_load=True)
@@ -11428,6 +12447,64 @@ class SolarRadioImageViewerApp(QMainWindow):
 
         # Ensure add button is visible after initialization
         QTimer.singleShot(200, self.ensureAddButtonVisible)
+
+    def dragEnterEvent(self, event):
+        """Handle drag enter events for file dropping."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Handle drop events to load images/files."""
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            
+            # Use QTimer to delay processing slightly so the drag operation completes properly
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(10, lambda: self._process_dropped_urls(urls))
+            
+            event.acceptProposedAction()
+
+    def _process_dropped_urls(self, urls):
+        """Process dropped URLs and open them in tabs."""
+        for i, url in enumerate(urls):
+            if not url.isLocalFile():
+                continue
+            
+            file_path = url.toLocalFile()
+            if not os.path.exists(file_path):
+                continue
+                
+            # If there's only one tab and it's empty, use it. Otherwise add tab.
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab and not current_tab.imagename and i == 0:
+                target_tab = current_tab
+            else:
+                basename = os.path.basename(file_path.rstrip("/"))
+                target_tab = self.add_new_tab(basename)
+                
+            # Now load the image into the tab
+            if os.path.isdir(file_path):
+                target_tab.file_type_toggle.setSelectedIndex(0)  # CASA (auto-syncs radio_casa_image)
+            else:
+                target_tab.file_type_toggle.setSelectedIndex(1)  # FITS (auto-syncs radio_fits_file)
+                
+            # Reset remote mode for target tab when receiving local dropped file
+            target_tab._is_remote_mode = False
+            target_tab._remote_file_list = []
+            target_tab._remote_base_dir = None
+                
+            target_tab.imagename = file_path
+            target_tab.dir_entry.setText(file_path)
+            
+            # Update view
+            target_tab.on_visualization_changed(dir_load=True)
+            target_tab.update_tab_name_from_path(file_path)
+            
+            # Scan directory
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(100, target_tab._scan_directory_files)
 
     def _update_update_btn_style(self):
         """Update the update notification button style based on theme."""
@@ -11665,6 +12742,18 @@ class SolarRadioImageViewerApp(QMainWindow):
         self.log_console_action.triggered.connect(self.show_log_console)
         view_menu.addAction(self.log_console_action)
 
+        metadata_act = QAction("Image Metadata", self)
+        metadata_act.setShortcut("Ctrl+M")
+        metadata_act.setStatusTip("View detailed metadata for the current image")
+        metadata_act.triggered.connect(self.show_metadata)
+        view_menu.addAction(metadata_act)
+
+        # Interactive Scroll Zoom toggle action
+        self.scroll_zoom_action = QAction("Interactive Scroll Zoom", self, checkable=True)
+        self.scroll_zoom_action.setChecked(True)
+        self.scroll_zoom_action.setStatusTip("Enable/disable zooming with the mouse wheel")
+        view_menu.addAction(self.scroll_zoom_action)
+
         view_menu.addSeparator()
 
         # Preferences action
@@ -11689,11 +12778,6 @@ class SolarRadioImageViewerApp(QMainWindow):
         # batch_act.triggered.connect(self.show_batch_dialog)
         # tools_menu.addAction(batch_act)
 
-        metadata_act = QAction("Image Metadata", self)
-        metadata_act.setShortcut("Ctrl+M")
-        metadata_act.setStatusTip("View detailed metadata for the current image")
-        metadata_act.triggered.connect(self.show_metadata)
-        tools_menu.addAction(metadata_act)
 
         # Add Solar Phase Shift option
         from .dialogs import PhaseShiftDialog
@@ -11704,14 +12788,37 @@ class SolarRadioImageViewerApp(QMainWindow):
         phase_shift_act.triggered.connect(self.show_phase_shift_dialog)
         tools_menu.addAction(phase_shift_act)        
         
-        # Add Batch HPC Conversion option
-        from .dialogs import HPCBatchConversionDialog
-        batch_hpc_act = QAction("Batch HPC Conversion", self)
-        batch_hpc_act.setStatusTip(
-            "Convert multiple files to helioprojective coordinates"
+        # Batch Processing Submenu
+        batch_process_submenu = QMenu("Batch Processing", self)
+        tools_menu.addMenu(batch_process_submenu)
+
+        # Add Coordinate Transformation option to submenu
+        from .dialogs import CoordinateTransformationDialog
+        batch_transform_act = QAction("Coordinate Transformation", self)
+        batch_transform_act.setStatusTip(
+            "Transform multiple files between RA/DEC and helioprojective coordinates"
         )
-        batch_hpc_act.triggered.connect(self.show_batch_hpc_dialog)
-        tools_menu.addAction(batch_hpc_act)
+        batch_transform_act.triggered.connect(self.show_coordinate_transformation_dialog)
+        batch_process_submenu.addAction(batch_transform_act)
+
+        # Add Solar Phase Center Shift option to batch processing submenu
+        batch_phase_shift_act = QAction("Solar Phase Center Shift", self)
+        batch_phase_shift_act.setStatusTip("Batch shift solar center to phase center")
+        batch_phase_shift_act.triggered.connect(lambda: self.show_phase_shift_dialog(batch_mode=True))
+        batch_process_submenu.addAction(batch_phase_shift_act)
+
+        # Add Unit Conversion option to batch processing submenu
+        batch_unit_conv_act = QAction("Unit Conversion", self)
+        batch_unit_conv_act.setStatusTip("Batch convert units between Flux Density and Brightness Temperature")
+        batch_unit_conv_act.triggered.connect(self.show_unit_conversion_dialog)
+        batch_process_submenu.addAction(batch_unit_conv_act)
+
+        # Add Format Conversion option to batch processing submenu
+        from .dialogs import FormatConversionDialog
+        batch_format_conv_act = QAction("Format Conversion", self)
+        batch_format_conv_act.setStatusTip("Batch convert between CASA Images and FITS files")
+        batch_format_conv_act.triggered.connect(self.show_format_conversion_dialog)
+        batch_process_submenu.addAction(batch_format_conv_act)
 
         # Add Create Video action
         create_video_act = QAction("Create &Video", self)
@@ -11777,7 +12884,18 @@ class SolarRadioImageViewerApp(QMainWindow):
         arrow_act.triggered.connect(self.add_arrow_annotation)
         annot_menu.addAction(arrow_act)
 
+        # Shape annotations (circle, ellipse, square, rectangle) + solar radii presets
+        from .shape_annotations import setup_shape_menu
+        setup_shape_menu(self, annot_menu)
+
         preset_menu = menubar.addMenu("Presets")
+
+        self.auto_preset_act = QAction("Auto-apply Instrument Presets", self, checkable=True)
+        self.auto_preset_act.setChecked(True)
+        self.auto_preset_act.setStatusTip("Automatically apply colormaps and limits for known instruments (AIA, LASCO, etc.)")
+        preset_menu.addAction(self.auto_preset_act)
+        preset_menu.addSeparator()
+
         auto_minmax_act = QAction("Auto Min/Max", self)
         auto_minmax_act.setShortcut("F5")
         auto_minmax_act.setStatusTip("Set display range to data min/max")
@@ -13511,16 +14629,27 @@ except Exception as e:
                 try:
                     # Get pixel scale from WCS (radians -> arcsec)
                     increment = current_tab.current_wcs.increment()["numeric"][0:2]
-                    scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
-                    scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
+                    # Check if image uses SOLAR-X/Y (increment is already in arcsec)
+                    _hdr = getattr(current_tab, '_cached_fits_header', None) or {}
+                    _is_solar = 'SOLAR-X' in str(_hdr.get('CTYPE1', '')).upper()
+                    if _is_solar:
+                        scale_x = abs(increment[0])  # already arcsec/pixel
+                        scale_y = abs(increment[1])
+                    else:
+                        scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
+                        scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
                     avg_scale = (scale_x + scale_y) / 2
 
                     # Convert to world coordinates
                     world = current_tab.current_wcs.toworld([x0_px, y0_px, 0, 0])[
                         "numeric"
                     ]
-                    ra_deg = world[0] * 180 / np.pi if world[0] else None
-                    dec_deg = world[1] * 180 / np.pi if world[1] else None
+                    if _is_solar:
+                        ra_deg = world[0] / 3600.0 if world[0] else None
+                        dec_deg = world[1] / 3600.0 if world[1] else None
+                    else:
+                        ra_deg = world[0] * 180 / np.pi if world[0] else None
+                        dec_deg = world[1] * 180 / np.pi if world[1] else None
 
                     # Convert radii to arcsec
                     inner_r_arcsec = inner_r_px * avg_scale
@@ -13544,10 +14673,20 @@ except Exception as e:
                 print(f"  {'Parameter':<20} {'Value':>15} {'Error':>15}")
                 print("-" * 60)
                 print(f"  {'Amplitude':<20} {popt[0]:>15.4g} {perr[0]:>15.4g}")
-                if ra_deg is not None:
-                    print(f"  {'RA (deg)':<20} {ra_deg:>15.6f}")
-                if dec_deg is not None:
-                    print(f"  {'Dec (deg)':<20} {dec_deg:>15.6f}")
+                if ra_deg is not None and dec_deg is not None:
+                    _ctype1_rf = str(_hdr.get('CTYPE1', '')).upper()
+                    if 'SOLAR' in _ctype1_rf:
+                        print(f"  {'SOLAR-X (arcsec)':<20} {ra_deg * 3600.0:>15.2f}")
+                        print(f"  {'SOLAR-Y (arcsec)':<20} {dec_deg * 3600.0:>15.2f}")
+                    elif 'HPLN' in _ctype1_rf:
+                        # Unwrap helioprojective degrees to [-180, 180] then to arcsec
+                        hpln_as = ((ra_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                        hplt_as = ((dec_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                        print(f"  {'HPLN (arcsec)':<20} {hpln_as:>15.2f}")
+                        print(f"  {'HPLT (arcsec)':<20} {hplt_as:>15.2f}")
+                    else:
+                        print(f"  {'RA (deg)':<20} {ra_deg:>15.6f}")
+                        print(f"  {'Dec (deg)':<20} {dec_deg:>15.6f}")
                 print(f"  {'X0 (pixel)':<20} {x0_px:>15.2f} {perr[1]:>15.2f}")
                 print(f"  {'Y0 (pixel)':<20} {y0_px:>15.2f} {perr[2]:>15.2f}")
                 print(f"  {'Inner R (arcsec)':<20} {inner_r_arcsec:>15.3f}")
@@ -13674,7 +14813,7 @@ except Exception as e:
         # Store tab reference for callback
         tab_ref = current_tab
 
-        def on_accept():
+        def on_add():
             try:
                 # Check if tab still exists
                 if tab_ref not in [
@@ -13705,7 +14844,6 @@ except Exception as e:
                     fontstyle=fontstyle,
                     background=background,
                 )
-                dialog.close()
             except ValueError:
                 QMessageBox.warning(
                     self, "Invalid Input", "Please enter valid numeric coordinates"
@@ -13716,10 +14854,21 @@ except Exception as e:
                 )
                 dialog.close()
 
+        def on_ok():
+            on_add()
+            dialog.close()
+
+        from PyQt5.QtWidgets import QPushButton
+        btn_layout = QHBoxLayout()
+        add_btn = QPushButton("Add")
+        add_btn.setToolTip("Add annotation and keep dialog open")
+        add_btn.clicked.connect(on_add)
+        btn_layout.addWidget(add_btn)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(on_accept)
+        buttons.accepted.connect(on_ok)
         buttons.rejected.connect(dialog.close)
-        layout.addWidget(buttons)
+        btn_layout.addWidget(buttons)
+        layout.addLayout(btn_layout)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(
@@ -13803,7 +14952,7 @@ except Exception as e:
         # Store tab reference for callback
         tab_ref = current_tab
 
-        def on_accept():
+        def on_add():
             try:
                 # Check if tab still exists
                 if tab_ref not in [
@@ -13830,7 +14979,6 @@ except Exception as e:
                     linewidth=linewidth,
                     head_width=head_width,
                 )
-                dialog.close()
             except ValueError:
                 QMessageBox.warning(
                     self, "Invalid Input", "Please enter valid numeric coordinates"
@@ -13841,10 +14989,21 @@ except Exception as e:
                 )
                 dialog.close()
 
+        def on_ok():
+            on_add()
+            dialog.close()
+
+        from PyQt5.QtWidgets import QPushButton
+        btn_layout = QHBoxLayout()
+        add_btn = QPushButton("Add")
+        add_btn.setToolTip("Add annotation and keep dialog open")
+        add_btn.clicked.connect(on_add)
+        btn_layout.addWidget(add_btn)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(on_accept)
+        buttons.accepted.connect(on_ok)
         buttons.rejected.connect(dialog.close)
-        layout.addWidget(buttons)
+        btn_layout.addWidget(buttons)
+        layout.addLayout(btn_layout)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(
@@ -14157,7 +15316,7 @@ except Exception as e:
         scroll_layout.setSpacing(20)
         scroll_layout.setContentsMargins(0, 0, 10, 0)
 
-        # Shortcut categories with icons
+        # Shortcut categories
         categories = [
             (
                 "📁",
@@ -14843,7 +16002,7 @@ read -p "Press Enter to close..."
         """AIA 4500 Angstrom preset with specific colormap"""
         self.aia_presets(4500)
 
-    def show_phase_shift_dialog(self):
+    def show_phase_shift_dialog(self, batch_mode=False):
         """Show the dialog for shifting solar center to phase center"""
         current_tab = self.tab_widget.currentWidget()
 
@@ -14855,7 +16014,7 @@ read -p "Press Enter to close..."
         # Import and show the dialog
         from .dialogs import PhaseShiftDialog
 
-        dialog = PhaseShiftDialog(self, imagename)
+        dialog = PhaseShiftDialog(self, imagename, batch_mode=batch_mode)
 
         # Store tab reference for callback
         tab_ref = current_tab
@@ -15115,17 +16274,59 @@ read -p "Press Enter to close..."
             traceback.print_exc()
             QMessageBox.critical(self, "Error", error_message)
 
-    def show_batch_hpc_dialog(self):
-        """Show the dialog for batch conversion to helioprojective coordinates"""
+    def show_unit_conversion_dialog(self):
+        """Show the dialog for batch unit conversion"""
+        try:
+            from .dialogs import UnitConversionDialog
+
+            dialog = UnitConversionDialog(self)
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            dialog.destroyed.connect(
+                lambda: (
+                    self._open_dialogs.remove(dialog)
+                    if dialog in self._open_dialogs
+                    else None
+                )
+            )
+            self._open_dialogs.append(dialog)
+            dialog.show()
+        except Exception as e:
+            error_message = f"Error opening unit conversion dialog: {str(e)}"
+            print(f"[ERROR] {error_message}")  # Log to console
+            QMessageBox.critical(self, "Error", error_message)
+
+    def show_format_conversion_dialog(self):
+        """Show the dialog for batch format conversion (CASA \u2194 FITS)"""
+        try:
+            from .dialogs import FormatConversionDialog
+
+            dialog = FormatConversionDialog(self)
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            dialog.destroyed.connect(
+                lambda: (
+                    self._open_dialogs.remove(dialog)
+                    if dialog in self._open_dialogs
+                    else None
+                )
+            )
+            self._open_dialogs.append(dialog)
+            dialog.show()
+        except Exception as e:
+            error_message = f"Error opening format conversion dialog: {str(e)}"
+            print(f"[ERROR] {error_message}")  # Log to console
+            QMessageBox.critical(self, "Error", error_message)
+
+    def show_coordinate_transformation_dialog(self):
+        """Show the dialog for batch coordinate transformation"""
         try:
             # Get current image name if available
             current_tab = self.tab_widget.currentWidget()
             current_file = current_tab.imagename if current_tab else None
 
             # Import and show dialog
-            from .dialogs import HPCBatchConversionDialog
+            from .dialogs import CoordinateTransformationDialog
 
-            dialog = HPCBatchConversionDialog(self, current_file)
+            dialog = CoordinateTransformationDialog(self, current_file)
             dialog.setAttribute(Qt.WA_DeleteOnClose)
             dialog.destroyed.connect(
                 lambda: (
@@ -15138,13 +16339,27 @@ read -p "Press Enter to close..."
             dialog.show()
         except Exception as e:
             # Show error message with details
-            error_message = f"Error opening batch HPC conversion dialog: {str(e)}"
+            error_message = f"Error opening coordinate transformation dialog: {str(e)}"
             print(f"[ERROR] {error_message}")  # Log to console
             QMessageBox.critical(self, "Error", error_message)
 
     def open_helioviewer_browser(self):
         """Open Helioviewer browser window."""
         try:
+            import requests
+            from PyQt5.QtWidgets import QMessageBox
+            
+            # Fast connection check
+            try:
+                requests.get("https://api.helioviewer.org/v2/", timeout=3)
+            except requests.RequestException:
+                QMessageBox.warning(
+                    self,
+                    "Connection Error",
+                    "Could not connect to the Helioviewer API.\nPlease check your internet connection and try again."
+                )
+                return
+
             from .helioviewer_browser import HelioviewerBrowser
 
             browser = HelioviewerBrowser(self)

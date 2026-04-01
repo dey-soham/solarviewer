@@ -200,12 +200,17 @@ def estimate_rms_near_Sun(imagename, stokes="I", box=(0, 200, 0, 130)):
 
 
 def remove_pixels_away_from_sun(pix, csys, radius_arcmin=55):
-    rad_to_deg = 180.0 / np.pi
     # Use astropy's WCS for coordinate conversion
     from astropy.wcs import WCS
 
     w = WCS(naxis=2)
-    w.wcs.cdelt = csys.increment()["numeric"][0:2] * rad_to_deg
+    # Check if coordinate system uses SOLAR-X (arcsec) vs RA/Dec (radians)
+    axis_names = list(csys.names())
+    if 'SOLAR-X' in axis_names or 'SOLAR-Y' in axis_names:
+        w.wcs.cdelt = csys.increment()["numeric"][0:2] / 3600.0  # arcsec -> degrees
+    else:
+        rad_to_deg = 180.0 / np.pi
+        w.wcs.cdelt = csys.increment()["numeric"][0:2] * rad_to_deg  # radians -> degrees
     radius_deg = radius_arcmin / 60.0
     delta_deg = abs(w.wcs.cdelt[0])
     pixel_radius = radius_deg / delta_deg
@@ -801,8 +806,27 @@ def get_image_metadata(imagename):
                 metadata["image"]["Dimensions"] = f"{naxis1} × {naxis2} pixels"
 
                 if "CDELT1" in header and "CDELT2" in header:
-                    cdelt1_arcsec = abs(float(header["CDELT1"])) * 3600
-                    cdelt2_arcsec = abs(float(header["CDELT2"])) * 3600
+                    # Check CUNIT to determine if CDELT is in degrees or arcsec
+                    cunit1 = header.get("CUNIT1", "deg").strip().lower()
+                    cunit2 = header.get("CUNIT2", "deg").strip().lower()
+
+                    cdelt1 = abs(float(header["CDELT1"]))
+                    cdelt2 = abs(float(header["CDELT2"]))
+
+                    # Convert to arcsec based on the actual unit
+                    if cunit1 in ("arcsec", "arcseconds"):
+                        cdelt1_arcsec = cdelt1
+                    elif cunit1 in ("arcmin", "arcminutes"):
+                        cdelt1_arcsec = cdelt1 * 60
+                    else:  # deg or unrecognized → assume degrees
+                        cdelt1_arcsec = cdelt1 * 3600
+
+                    if cunit2 in ("arcsec", "arcseconds"):
+                        cdelt2_arcsec = cdelt2
+                    elif cunit2 in ("arcmin", "arcminutes"):
+                        cdelt2_arcsec = cdelt2 * 60
+                    else:
+                        cdelt2_arcsec = cdelt2 * 3600
 
                     # Smart pixel scale formatting
                     def smart_angle_format(arcsec_val):
@@ -965,9 +989,16 @@ def get_image_metadata(imagename):
                 # Coordinate info
                 try:
                     refval = csys.referencevalue()["numeric"]
+                    axis_names = list(csys.names())
+                    _is_solar = 'SOLAR-X' in axis_names or 'SOLAR-Y' in axis_names
                     if len(refval) >= 2:
-                        ra_deg = refval[0] * 180 / np.pi
-                        dec_deg = refval[1] * 180 / np.pi
+                        if _is_solar:
+                            # SOLAR-X/Y: values are in arcsec
+                            ra_deg = refval[0] / 3600.0
+                            dec_deg = refval[1] / 3600.0
+                        else:
+                            ra_deg = refval[0] * 180 / np.pi
+                            dec_deg = refval[1] * 180 / np.pi
                         metadata["image"]["Reference RA"] = format_ra_hms(ra_deg)
                         metadata["image"]["Reference Dec"] = format_dec_dms(dec_deg)
                 except:
@@ -977,8 +1008,12 @@ def get_image_metadata(imagename):
                 try:
                     increment = csys.increment()["numeric"]
                     if len(increment) >= 2:
-                        cdelt1_arcsec = abs(increment[0]) * 180 / np.pi * 3600
-                        cdelt2_arcsec = abs(increment[1]) * 180 / np.pi * 3600
+                        if _is_solar:
+                            cdelt1_arcsec = abs(increment[0])  # already arcsec
+                            cdelt2_arcsec = abs(increment[1])
+                        else:
+                            cdelt1_arcsec = abs(increment[0]) * 180 / np.pi * 3600
+                            cdelt2_arcsec = abs(increment[1]) * 180 / np.pi * 3600
                         metadata["image"][
                             "Pixel Scale"
                         ] = f"{cdelt1_arcsec:.3f} × {cdelt2_arcsec:.3f} arcsec/pixel"

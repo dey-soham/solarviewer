@@ -707,7 +707,10 @@ class SSHConnection:
 
         try:
             # Use SFTP normalize to get absolute path of ~
+            # Note: this returns the canonical/resolved path, not the symlinked path
+            # e.g. if /home/user is a symlink to /misc/home/user, this returns /misc/home/user
             home = self._sftp.normalize(".")
+            # print(f"[SSH] Home directory (sftp.normalize): {home}")
             # Cache for non-blocking access later
             self._last_home = home
             return home
