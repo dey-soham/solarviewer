@@ -1,5 +1,24 @@
 # SolarViewer Release Notes
 
+## Version 1.2.5
+
+### Visualization & Annotations
+*   **Shape Annotations**: Added shape annotations (Circle, Ellipse, Square, Rectangle) with support for customizable styling.
+*   **Solar Radii Presets**: Quickly overlay 1-10 R☉ circles.
+
+### Core Viewer Enhancements
+*   **Drag & Drop**: Effortlessly open CASA images and FITS files by dragging them directly into the viewer.
+*   **Interactive Interaction**: Added **Scroll-to-Zoom** support and a dedicated **Panning Mode** for more intuitive navigation in the main viewer.
+*   **Fast Preview Mode**: Use the new `-f` command-line flag to launch the viewer in fast preview mode immediately from the terminal.
+
+### Analysis & Processing
+*   **Batch Conversion**: The batch processor now supports both **File Format conversion** and **Unit conversion** (e.g., Jy/beam to K).
+*   **Dynamic Spectra 2.0**: Completely ported the dynamic spectra viewer from Matplotlib to **PyQtGraph**. This architectural shift provides hardware acceleration, enabling smoother interaction.
+
+### Quality of Life & Bug Fixes
+*   **Cursor States**: Fixed a persistent bug where the cursor would remain as a "panning hand" or "ROI crosshair" when switching to Ruler or Flux Profile tools.
+*   **General**: Implemented several UI polishings and stability improvements across all modules.
+
 ## Version 1.2.4
 
 ### Dynamic Spectra Viewer
