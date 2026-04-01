@@ -4161,6 +4161,8 @@ class SolarRadioImageTab(QWidget):
             # Disconnect ROI selector temporarily
             if self.roi_selector:
                 self.roi_selector.set_active(False)
+            
+            self.canvas.setCursor(Qt.CrossCursor)
             # Connect mouse events for ruler
             self._ruler_click_cid = self.canvas.mpl_connect(
                 "button_press_event", self._ruler_on_click
@@ -4769,7 +4771,7 @@ class SolarRadioImageTab(QWidget):
         """Toggle profile mode for flux profile cut"""
         self._profile_mode = checked
         if checked:
-            # Show mode selection dialog
+            self.canvas.setCursor(Qt.CrossCursor)
             self._show_profile_mode_dialog()
         else:
             self.show_status_message("Profile mode off")
@@ -8514,8 +8516,15 @@ class SolarRadioImageTab(QWidget):
         if hasattr(self, "nav_toolbar") and self.nav_toolbar.mode != "":
             return
 
+        is_precision_mode = (
+            (hasattr(self, "_ruler_mode") and self._ruler_mode) or 
+            (hasattr(self, "_profile_mode") and self._profile_mode)
+        )
+
         # Update cursor for panning mode feedback
-        if hasattr(self, "region_mode") and self.region_mode == RegionMode.PAN:
+        if is_precision_mode:
+            self.canvas.setCursor(Qt.CrossCursor)
+        elif hasattr(self, "region_mode") and self.region_mode == RegionMode.PAN:
             if self._is_panning:
                 self.canvas.setCursor(Qt.ClosedHandCursor)
             else:
