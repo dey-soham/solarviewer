@@ -3075,8 +3075,26 @@ class MainWindow(QMainWindow):
                 for hdu in self.hdul:
                     if hdu.name.upper() == "TIME_AXIS":
                         time_axis = hdu.data["TIME_MJD"] * 86400.0
-                    if hdu.name.upper() == "FREQ_AXIS":
+                    elif hdu.name.upper() == "FREQ_AXIS":
                         freq_axis = hdu.data["FREQ_MHz"]
+                    elif isinstance(hdu, fits.BinTableHDU):
+                        cols = [c.name.upper() for c in hdu.columns]
+                        if "TIME" in cols and time_axis is None:
+                            t_raw = np.array(hdu.data["TIME"].tolist()).flatten()
+                            if len(t_raw) > 0:
+                                t_first = float(t_raw[0])
+                                if 600000 < t_first < 800000:
+                                    time_axis = (t_raw - 678576.0) * 86400.0
+                                elif t_first > 1000000000:
+                                    time_axis = (t_raw / 86400.0 + 40587.0) * 86400.0
+                                elif 30000 < t_first < 100000:
+                                    time_axis = t_raw * 86400.0
+                                else:
+                                    time_axis = t_raw
+                        if "FREQ" in cols and freq_axis is None:
+                            f_raw = np.array(hdu.data["FREQ"].tolist()).flatten()
+                            if len(f_raw) > 0:
+                                freq_axis = f_raw
 
                 if time_axis is None or freq_axis is None:
                     try:
@@ -3103,7 +3121,10 @@ class MainWindow(QMainWindow):
                                 freq_axis = freqs
                             elif "TIME" in ctype:
                                 start_mjd = 0
-                                if crval > 2400000.5:
+                                if crval > 1000000000:
+                                    from astropy.time import Time as AstroTime
+                                    start_mjd = AstroTime(crval, format="unix").mjd
+                                elif crval > 2400000.5:
                                     start_mjd = crval - 2400000.5
                                 elif 30000 < crval < 100000:
                                     start_mjd = crval
