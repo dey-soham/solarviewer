@@ -3030,6 +3030,71 @@ class MainWindow(QMainWindow):
                 self._setHandCursorRecursive(child)
 
     # ---------------------------- File Operations -------------------------------
+
+    def _interpret_time_column(self, t_raw, header):
+        """Interpret a raw TIME column from a FITS binary table."""
+        t_first = float(t_raw[0])
+
+        # Each candidate: (label, conversion_func producing MJD-seconds)
+        candidates = [
+            ("MJD",
+             lambda t: t * 86400.0),
+            ("Unix epoch days",
+             lambda t: (t + 40587.0) * 86400.0),
+            ("Unix seconds",
+             lambda t: (t / 86400.0 + 40587.0) * 86400.0),
+            ("Proleptic Gregorian day",
+             lambda t: (t - 678576.0) * 86400.0),
+        ]
+
+        # --- Try to validate against DATE-OBS ---
+        date_obs_str = header.get("DATE-OBS", None)
+        if date_obs_str:
+            try:
+                from astropy.time import Time as AstroTime
+
+                ref = AstroTime(date_obs_str.replace("/", "-"))
+                ref_mjd = ref.mjd  # e.g. 59764.0 for 2022-07-04
+
+                best = None
+                best_diff = float("inf")
+                for label, func in candidates:
+                    try:
+                        mjd_sec = func(t_first)
+                        candidate_mjd = mjd_sec / 86400.0
+                        diff = abs(candidate_mjd - ref_mjd)
+                        if diff < best_diff:
+                            best_diff = diff
+                            best = (label, func)
+                    except Exception:
+                        continue
+
+                if best is not None and best_diff < 1.5:
+                    self.logger.info(
+                        f"TIME column interpreted as '{best[0]}' "
+                        f"(delta={best_diff:.4f}d from DATE-OBS)"
+                    )
+                    return best[1](t_raw)
+
+                self.logger.warning(
+                    f"No TIME interpretation matched DATE-OBS "
+                    f"(best delta={best_diff:.1f}d); using range fallback"
+                )
+            except Exception as e:
+                self.logger.warning(f"DATE-OBS validation failed ({e}); using range fallback")
+
+        # --- Fallback: range-based heuristic ---
+        if 600000 < t_first < 800000:
+            return (t_raw - 678576.0) * 86400.0
+        elif t_first > 1000000000:
+            return (t_raw / 86400.0 + 40587.0) * 86400.0
+        elif 30000 < t_first < 100000:
+            return t_raw * 86400.0
+        elif 10000 < t_first < 30000:
+            return (t_raw + 40587.0) * 86400.0
+        else:
+            return t_raw
+
     def openFile(self):
         fileName, _ = QFileDialog.getOpenFileName(
             self, "Open FITS File", "", "FITS Files (*.fits *.fts);;All Files (*)"
@@ -3081,22 +3146,9 @@ class MainWindow(QMainWindow):
                         if "TIME" in cols and time_axis is None:
                             t_raw = np.array(hdu.data["TIME"].tolist()).flatten()
                             if len(t_raw) > 0:
-                                t_first = float(t_raw[0])
-                                if 600000 < t_first < 800000:
-                                    # Proleptic Gregorian day number
-                                    time_axis = (t_raw - 678576.0) * 86400.0
-                                elif t_first > 1000000000:
-                                    # Unix timestamp (seconds since 1970-01-01)
-                                    time_axis = (t_raw / 86400.0 + 40587.0) * 86400.0
-                                elif 30000 < t_first < 100000:
-                                    # MJD (days since 1858-11-17)
-                                    time_axis = t_raw * 86400.0
-                                elif 10000 < t_first < 30000:
-                                    # Days since Unix epoch (1970-01-01)
-                                    # e.g. LOFAR: 19177.27 => 2022-07-04
-                                    time_axis = (t_raw + 40587.0) * 86400.0
-                                else:
-                                    time_axis = t_raw
+                                time_axis = self._interpret_time_column(
+                                    t_raw, header
+                                )
                         if "FREQ" in cols and freq_axis is None:
                             f_raw = np.array(hdu.data["FREQ"].tolist()).flatten()
                             if len(f_raw) > 0:
