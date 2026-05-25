@@ -3071,7 +3071,6 @@ class MainWindow(QMainWindow):
                 time_axis = None
                 freq_axis = None
 
-                # Robust axis extraction (using the logic we built)
                 for hdu in self.hdul:
                     if hdu.name.upper() == "TIME_AXIS":
                         time_axis = hdu.data["TIME_MJD"] * 86400.0
@@ -3084,11 +3083,18 @@ class MainWindow(QMainWindow):
                             if len(t_raw) > 0:
                                 t_first = float(t_raw[0])
                                 if 600000 < t_first < 800000:
+                                    # Proleptic Gregorian day number
                                     time_axis = (t_raw - 678576.0) * 86400.0
                                 elif t_first > 1000000000:
+                                    # Unix timestamp (seconds since 1970-01-01)
                                     time_axis = (t_raw / 86400.0 + 40587.0) * 86400.0
                                 elif 30000 < t_first < 100000:
+                                    # MJD (days since 1858-11-17)
                                     time_axis = t_raw * 86400.0
+                                elif 10000 < t_first < 30000:
+                                    # Days since Unix epoch (1970-01-01)
+                                    # e.g. LOFAR: 19177.27 => 2022-07-04
+                                    time_axis = (t_raw + 40587.0) * 86400.0
                                 else:
                                     time_axis = t_raw
                         if "FREQ" in cols and freq_axis is None:
