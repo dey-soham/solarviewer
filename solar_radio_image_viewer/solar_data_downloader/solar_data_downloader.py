@@ -1626,6 +1626,25 @@ def download_soho(
                 try:
                     lasco_map = Map(file_path)
                     base_name = os.path.basename(file_path)
+                    calibrated = False
+
+                    # Step 1: Rotate to solar north using CROTA
+                    crota = float(
+                        lasco_map.meta.get(
+                            "crota",
+                            lasco_map.meta.get("crota2", lasco_map.meta.get("crota1", 0.0)),
+                        )
+                    )
+                    if abs(crota) > 0.01:
+                        import numpy as np
+
+                        float_data = lasco_map.data.astype(np.float64)
+                        lasco_map = Map(float_data, lasco_map.meta)
+                        lasco_map = lasco_map.rotate(
+                            angle=-crota * u.deg, recenter=True, missing=np.nan
+                        )
+                        print(f"  - Rotated {-crota:.2f}° to solar north")
+                        calibrated = True
 
                     # LASCO calibration is complex (stray light, F-corona, vignetting)
                     # We do basic exposure normalization
@@ -1636,16 +1655,21 @@ def download_soho(
                     )
                     if exptime > 0:
                         lasco_map = lasco_map / lasco_map.exposure_time
+                        print(f"  - Normalized by exposure time ({exptime:.2f}s)")
+                        calibrated = True
 
+                    if calibrated:
                         output_file = os.path.join(output_dir, f"lasco_cal_{base_name}")
+                        if not output_file.endswith(".fits"):
+                            output_file = output_file + ".fits"
                         lasco_map.save(output_file, overwrite=True)
-                        print(f"Calibrated {base_name} (exposure normalized)")
+                        print(f"Calibrated {base_name}")
 
-                        if os.path.exists(output_file):
+                        if os.path.exists(output_file) and file_path != output_file:
                             os.remove(file_path)
                             calibrated_files.append(output_file)
                         else:
-                            calibrated_files.append(file_path)
+                            calibrated_files.append(output_file)
                     else:
                         calibrated_files.append(file_path)
                 except Exception as e:
