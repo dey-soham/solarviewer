@@ -196,7 +196,7 @@ def fetch_ecallisto_observatories(
     return sorted_obs
 
 # ============================================================================
-# SRS File Parser (adapted from learmonth-py/srs_data.py)
+# SRS File Parser (originally adapted from the removed learmonth-py/srs_data.py)
 # ============================================================================
 
 RECORD_SIZE = 826

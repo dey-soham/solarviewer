@@ -305,7 +305,6 @@ solarviewer/
 │   ├── solar_context/          # Real-time solar data
 │   ├── remote/                 # Remote file access (SSH/SFTP)
 │   ├── from_simpl/             # LOFAR/SIMPL tools
-│   ├── learmonth-py/           # Learmonth data downloader
 │   ├── utils/                  # Networking helpers (rate limiter, sessions, update checker)
 │   ├── helioviewer_browser.py  # Helioviewer API browser
 │   ├── shape_annotations.py    # Shape annotations and solar-radii overlays
