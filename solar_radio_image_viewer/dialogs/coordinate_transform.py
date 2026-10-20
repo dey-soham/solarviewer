@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
 )
 import os
 
+from ..processing.workers import process_pool
 from ..ui.styles import set_hand_cursor
 
 import multiprocessing
@@ -907,7 +908,6 @@ class CoordinateTransformationDialog(QDialog):
         target_mode = "HPC" if self.target_system_combo.currentText() == "Helioprojective (HPC)" else "RADEC"
 
         # Import modules needed for processing
-        import multiprocessing
         import time
 
         # Setup Progress UI
@@ -982,7 +982,7 @@ class CoordinateTransformationDialog(QDialog):
                     self.progress_bar.setRange(0, total_tasks)
 
                     # Create process pool and start processing
-                    pool = multiprocessing.Pool(processes=max_cores)
+                    pool = process_pool(max_cores)
 
                     # Start asynchronous processing with our standalone function
                     result_objects = pool.map_async(process_single_file_coordsys, tasks)
@@ -1155,7 +1155,7 @@ class CoordinateTransformationDialog(QDialog):
                     self.progress_bar.setRange(0, total_tasks)
 
                     # Create process pool
-                    pool = multiprocessing.Pool(processes=max_cores)
+                    pool = process_pool(max_cores)
 
                     # Start asynchronous processing
                     result_objects = pool.map_async(process_single_file_coordsys, tasks)

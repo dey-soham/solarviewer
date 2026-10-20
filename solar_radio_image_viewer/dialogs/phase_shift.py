@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 )
 import os
 
+from ..processing.workers import process_pool
 from ..ui.styles import set_hand_cursor
 
 import multiprocessing
@@ -669,7 +670,6 @@ class PhaseShiftDialog(QDialog):
         import os
         from ..coordinates.move_phasecenter import SolarPhaseCenter
         from PyQt5.QtWidgets import QApplication, QMessageBox
-        import multiprocessing
         import time
 
         # Check if we're in batch mode or single file mode
@@ -859,7 +859,7 @@ class PhaseShiftDialog(QDialog):
                         f"Using Multiprocessing ({max_cores} cores)"
                     )
 
-                    self.pool = multiprocessing.Pool(processes=max_cores)
+                    self.pool = process_pool(max_cores)
                     async_results = [
                         self.pool.apply_async(process_single_file_phase_shift, (t,))
                         for t in tasks

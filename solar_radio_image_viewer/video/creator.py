@@ -16,7 +16,6 @@ from tqdm import tqdm
 import threading
 import time
 from multiprocessing import cpu_count
-from concurrent.futures import ProcessPoolExecutor
 from astropy.visualization import (
     ImageNormalize,
     LogStretch,
@@ -33,6 +32,7 @@ from ..processing.norms import (
     HistEqNorm,
 )
 from ..processing.colormaps import ensure_solar_colormaps
+from ..processing.workers import process_pool_executor
 from .utils import (
     detect_coordinate_system,
     get_wcs_axis_labels,
@@ -1222,7 +1222,9 @@ def create_video(files, output_file, options, progress_callback=None):
             ]
 
             # Use ProcessPoolExecutor for parallel processing in batches
-            with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            with process_pool_executor(
+                num_cores, preload=["solar_radio_image_viewer.video.creator"]
+            ) as executor:
                 # Process in chunks to reduce overhead
                 batch_start_time = time.time()
                 results = list(

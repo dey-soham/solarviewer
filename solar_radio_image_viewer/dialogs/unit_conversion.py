@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
 import multiprocessing
 import os
 
+from ..processing.workers import process_pool
 from ..ui.styles import set_hand_cursor
 
 
@@ -588,7 +589,7 @@ class UnitConversionDialog(QDialog):
                 completed = 0
                 success_count = 0
                 
-                with multiprocessing.Pool(processes=cores) as pool:
+                with process_pool(cores) as pool:
                     from functools import partial
                     map_func = pool.imap(_unit_conversion_worker, tasks)
                     

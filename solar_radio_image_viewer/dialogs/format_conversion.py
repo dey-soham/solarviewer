@@ -25,6 +25,7 @@ from PyQt5.QtCore import QTimer
 import multiprocessing
 import os
 
+from ..processing.workers import process_pool
 from ..ui.styles import set_hand_cursor
 
 
@@ -476,7 +477,7 @@ class FormatConversionDialog(QDialog):
                 completed = 0
                 success_count = 0
                 
-                with multiprocessing.Pool(processes=cores) as pool:
+                with process_pool(cores) as pool:
                     map_func = pool.imap(_format_conversion_worker, tasks)
                     for i, result in enumerate(map_func):
                         if self.aborted:

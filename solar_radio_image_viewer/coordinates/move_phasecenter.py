@@ -13,9 +13,9 @@ from astropy.wcs import WCS
 import scipy.ndimage as ndi
 import argparse
 import multiprocessing
-from multiprocessing import Pool
 import shutil
 import hashlib
+from ..processing.workers import process_pool
 from ..processing.fits_io import readable_image_path
 
 
@@ -1364,7 +1364,7 @@ class SolarPhaseCenter:
                 ]
 
                 # Create a process pool and process the files
-                with Pool(processes=max_processes) as pool:
+                with process_pool(max_processes) as pool:
                     results = pool.map(self.process_single_file, file_args)
 
                 # Count successful operations
