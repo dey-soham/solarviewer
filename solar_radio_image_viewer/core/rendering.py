@@ -716,6 +716,12 @@ class RenderingMixin:
                         title = f"Time: {image_time}"
                     elif image_time is None and image_freq is not None:
                         title = f"Freq: {image_freq}"
+                    else:
+                        title = (
+                            os.path.basename(self.imagename)
+                            if self.imagename
+                            else "No Image"
+                        )
 
                 elif image_time is not None and image_freq is None:
                     title = f"Time: {image_time}"
