@@ -319,8 +319,7 @@ solarviewer/
 │   └── assets/                 # Icons and resources
 ├── tests/                      # pytest suite (runs offscreen)
 ├── resources/                  # Desktop integration resources
-├── setup.py
-├── pyproject.toml              # Dev tool configuration
+├── pyproject.toml              # Packaging metadata + dev tool configuration
 ├── requirements.txt
 ├── README.md
 ├── LICENSE
