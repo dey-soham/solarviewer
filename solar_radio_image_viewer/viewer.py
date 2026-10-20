@@ -10848,7 +10848,7 @@ except Exception:
 
         try:
             from PyQt5.QtWidgets import QProgressDialog
-            from PyQt5.QtCore import Qt, QEventLoop
+            from PyQt5.QtCore import Qt, QEventLoop, QTimer
             from .remote.download_thread import DownloadThread
 
             # Get the remote file info
@@ -10936,6 +10936,24 @@ except Exception:
                 download_thread.error.connect(on_error)
                 progress.canceled.connect(on_cancel)
 
+                # Safety watchdog: if download thread terminates without
+                # emitting finished/error (e.g. crash in native code, OS
+                # kill, etc.), force-quit the event loop so the UI doesn't
+                # hang forever.
+                safety_timer = QTimer()
+
+                def check_thread_health():
+                    if download_thread.isFinished() and loop.isRunning():
+                        download_result["success"] = False
+                        download_result["error"] = (
+                            "Download thread terminated unexpectedly. "
+                            "The connection may have been lost."
+                        )
+                        loop.quit()
+
+                safety_timer.timeout.connect(check_thread_health)
+                safety_timer.start(2000)  # Check every 2 seconds
+
                 # Start thread and show dialog
                 download_thread.start()
                 progress.show()
@@ -10943,6 +10961,7 @@ except Exception:
                 # Wait for completion
                 loop.exec_()
 
+                safety_timer.stop()
                 progress.close()
                 download_thread.wait()  # Ensure thread is joined
 

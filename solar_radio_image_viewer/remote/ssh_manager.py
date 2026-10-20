@@ -8,6 +8,7 @@ Provides SSH/SFTP connectivity using paramiko, with support for:
 """
 
 import os
+import socket
 import stat
 from pathlib import Path
 from typing import Optional, List, Tuple, Callable
@@ -520,6 +521,40 @@ class SSHConnection:
         except IOError as e:
             raise SSHConnectionError(f"Failed to get file info for {path}: {e}")
 
+    def _recover_after_transfer_failure(self, is_network_error: bool = False):
+        """Recover the SFTP channel after a failed transfer.
+
+        If is_network_error is True, the transport is likely dead and we
+        attempt a full SSH reconnection.  Otherwise we just refresh the
+        SFTP channel.
+        """
+        if self._sftp:
+            try:
+                self._sftp.close()
+            except Exception:
+                pass
+            self._sftp = None
+
+        if is_network_error:
+            # Transport is probably dead — try full reconnect
+            print("[SSH] Network error during transfer, attempting full reconnect...")
+            try:
+                if self.reconnect():
+                    print("[SSH] Reconnect successful after transfer failure")
+                    return
+                else:
+                    print("[SSH] Reconnect failed after transfer failure")
+            except Exception as e:
+                print(f"[SSH] Reconnect error: {e}")
+        else:
+            # Transport may still be alive — just refresh SFTP channel
+            if self._client:
+                try:
+                    self._sftp = self._client.open_sftp()
+                except Exception:
+                    # If re-opening fails, the transport is dead too
+                    self._sftp = None
+
     def download_file(
         self,
         remote_path: str,
@@ -553,27 +588,13 @@ class SSHConnection:
             else:
                 self._sftp.get(remote_path, local_path)
             return local_path
+        except (socket.timeout, EOFError, ConnectionResetError, BrokenPipeError) as e:
+            # Network-level failures — transport is likely dead
+            self._recover_after_transfer_failure(is_network_error=True)
+            raise  # Re-raise the original exception for DownloadThread to handle
         except Exception as e:
-            # If download fails (especially interruption), the SFTP channel might be in a bad state.
-            # Close it to force a fresh channel on next use.
-            if self._sftp:
-                try:
-                    self._sftp.close()
-                except:
-                    pass
-                self._sftp = None
-
-                # Check if we need to reconnect the SSH client itself?
-                # Usually closing SFTP is enough, but if transport is garbage, might need full reconnect.
-                # For now, let's try resetting SFTP only.
-                # If we are effectively disconnected, next ensure_connection/is_connected check should handle it.
-                if self._client:
-                    try:
-                        self._sftp = self._client.open_sftp()
-                    except:
-                        # If re-opening fails, just leave it closed. Next status check will catch it.
-                        self._sftp = None
-
+            # Other failures (permission, disk, etc.) — SFTP channel may be bad
+            self._recover_after_transfer_failure(is_network_error=False)
             raise SSHConnectionError(f"Failed to download {remote_path}: {e}")
 
     def download_directory(
@@ -634,21 +655,13 @@ class SSHConnection:
 
             return local_dir
 
+        except (socket.timeout, EOFError, ConnectionResetError, BrokenPipeError) as e:
+            # Network-level failures — transport is likely dead
+            self._recover_after_transfer_failure(is_network_error=True)
+            raise  # Re-raise for DownloadThread to handle with user-friendly message
         except Exception as e:
-            # If download fails, reset SFTP channel to prevent "Garbage packet" errors on next use
-            if self._sftp:
-                try:
-                    self._sftp.close()
-                except:
-                    pass
-                self._sftp = None
-
-                if self._client:
-                    try:
-                        self._sftp = self._client.open_sftp()
-                    except:
-                        self._sftp = None
-
+            # Other failures — SFTP channel may be bad but transport might be OK
+            self._recover_after_transfer_failure(is_network_error=False)
             raise SSHConnectionError(f"Failed to download directory {remote_path}: {e}")
 
     def _get_files_recursive_with_sizes(

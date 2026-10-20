@@ -210,6 +210,34 @@ def crash_excepthook(exctype, value, tb):
     sys.exit(1)
 
 
+def thread_excepthook(args):
+    """Catch unhandled exceptions in non-main threads (Python 3.8+).
+
+    Without this, any exception that escapes a QThread.run() (e.g. a
+    paramiko socket timeout or EOFError during SFTP transfer) kills the
+    thread silently — sys.excepthook is never called and no crash report
+    is generated.
+    """
+    # Ignore SystemExit and KeyboardInterrupt in threads
+    if args.exc_type is not None and issubclass(
+        args.exc_type, (SystemExit, KeyboardInterrupt)
+    ):
+        return
+
+    # Generate the crash report (non-fatal — don't exit the app)
+    try:
+        generate_crash_report(args.exc_type, args.exc_value, args.exc_traceback)
+    except Exception:
+        # Last resort: at least print the traceback
+        traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+
+
 def install_crash_handler():
-    """Enable the crash hander."""
+    """Enable the crash handler for both main and worker threads."""
     sys.excepthook = crash_excepthook
+
+    # Also catch unhandled exceptions in non-main threads (Python 3.8+)
+    import threading
+
+    if hasattr(threading, "excepthook"):
+        threading.excepthook = thread_excepthook
