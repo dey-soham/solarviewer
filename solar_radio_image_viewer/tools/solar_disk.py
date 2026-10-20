@@ -32,9 +32,8 @@ class SolarDiskMixin:
 
     Host attributes/methods used:
 
-    ``_cached_wcs_obj``, ``current_image_data``, ``current_wcs``,
-    ``_is_already_hpc``, ``_open_dialogs``, ``show_solar_disk_checkbox``,
-    ``show_status_message``, ``solar_disk_auto_compute``, ``solar_disk_style``
+    ``current_image_data``, ``current_wcs``, ``_is_already_hpc``,
+    ``_open_dialogs``, ``show_status_message``, ``solar_disk_style``
     """
 
     def _compute_solar_disk_center(self, shape):
@@ -559,6 +558,88 @@ class SolarDiskMixin:
                 circle._solar_disk = True
                 ax.add_patch(circle)
 
+                if self.solar_disk_style.get("show_center", True):
+                    cross_size = radius_pix / 20
+                    (line1,) = ax.plot(
+                        [center_x - cross_size, center_x + cross_size],
+                        [center_y, center_y],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
+                    line1._solar_disk = True
+                    (line2,) = ax.plot(
+                        [center_x, center_x],
+                        [center_y - cross_size, center_y + cross_size],
+                        color=self.solar_disk_style["color"],
+                        linewidth=1.5,
+                        alpha=self.solar_disk_style["alpha"],
+                    )
+                    line2._solar_disk = True
+            except Exception as e:
+                print(f"[ERROR] Error drawing solar disk: {e}")
+                self.show_status_message(f"Error drawing solar disk: {e}")
+
+    def _draw_solar_disk(self, ax, data):
+        """Compute solar disk metadata and draw the disk if enabled."""
+        # Ensure Solar disk metadata (center and diameter) is ALWAYS computed on load,
+        # even if not drawn, so Shape Annotations and Dialogs have physically accurate data
+        if (
+            getattr(self, "solar_disk_auto_compute", True)
+            or self.solar_disk_center is None
+        ):
+            self._compute_solar_disk_center(data.shape)
+
+        # Draw solar disk if enabled
+        if (
+            hasattr(self, "show_solar_disk_checkbox")
+            and self.show_solar_disk_checkbox.isChecked()
+        ):
+            try:
+                # Remove old solar disk patches/lines before drawing new ones
+                patches_to_remove = [
+                    p for p in ax.patches if getattr(p, "_solar_disk", False)
+                ]
+                for p in patches_to_remove:
+                    p.remove()
+                lines_to_remove = [
+                    l for l in ax.lines if getattr(l, "_solar_disk", False)
+                ]
+                for l in lines_to_remove:
+                    l.remove()
+
+                center_x, center_y = self.solar_disk_center
+
+                if self.current_wcs:
+                    radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
+                    cdelt = self.current_wcs.increment()["numeric"][0:2]
+                    if isinstance(cdelt, list):
+                        cdelt = [float(c) for c in cdelt]
+                    # Check if image uses SOLAR-X/Y (increment is in arcsec, not radians)
+                    _hdr = getattr(self, "_cached_fits_header", None) or {}
+                    _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
+                    if _is_solar:
+                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
+                    else:
+                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
+                    dx_deg = abs(cdelt[0])
+                    radius_pix = radius_deg / dx_deg
+                else:
+                    radius_pix = min(data.shape) / 8
+
+                circle = plt.Circle(
+                    (center_x, center_y),
+                    radius_pix,
+                    fill=False,
+                    edgecolor=self.solar_disk_style["color"],
+                    linestyle=self.solar_disk_style["linestyle"],
+                    linewidth=self.solar_disk_style["linewidth"],
+                    alpha=self.solar_disk_style["alpha"],
+                )
+                circle._solar_disk = True
+                ax.add_patch(circle)
+
+                # Only draw the center marker if show_center is True
                 if self.solar_disk_style.get("show_center", True):
                     cross_size = radius_pix / 20
                     (line1,) = ax.plot(
