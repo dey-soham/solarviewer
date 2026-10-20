@@ -1950,10 +1950,20 @@ class SolarRadioImageTab(
             return
 
         data = self.current_image_data
+        if not np.isfinite(data).any():
+            # Fully masked (e.g. PANG below threshold everywhere)
+            self.vmin_entry.setText(f"{0.0:.3f}")
+            self.vmax_entry.setText(f"{1.0:.3f}")
+            return
         dmin = float(np.nanmin(data))
         dmax = float(np.nanmax(data))
         rng = dmax - dmin
         if rng <= 0:
+            # Constant image (e.g. Lfrac below threshold everywhere): centre a
+            # small range on the value instead of keeping the previous range
+            pad = abs(dmin) * 0.01 if dmin != 0 else 1.0
+            self.vmin_entry.setText(f"{dmin - pad:.3f}")
+            self.vmax_entry.setText(f"{dmin + pad:.3f}")
             return
 
         if vmin_val < dmin:
