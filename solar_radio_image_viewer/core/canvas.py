@@ -364,7 +364,8 @@ class CanvasMixin:
             self.image_plot.set_data(self._cached_transposed)
             self.canvas.draw_idle()
 
-        if self._pan_target_xlim and self.image_plot:
+        # (axes is None if the figure was cleared while dragging)
+        if self._pan_target_xlim and self.image_plot and self.image_plot.axes:
             ax = self.image_plot.axes
             ax.set_xlim(self._pan_target_xlim)
             ax.set_ylim(self._pan_target_ylim)
@@ -388,6 +389,13 @@ class CanvasMixin:
             return
 
         ax = self.image_plot.axes
+        if ax is None:
+            # The figure was cleared mid-animation (e.g. a new file is loading);
+            # the image is no longer on an axes, so abandon the animation.
+            self._pan_timer.stop()
+            self._pan_target_xlim = None
+            self._pan_target_ylim = None
+            return
         curr_xlim = ax.get_xlim()
         curr_ylim = ax.get_ylim()
 
@@ -486,6 +494,13 @@ class CanvasMixin:
             return
 
         ax = self.image_plot.axes
+        if ax is None:
+            # The figure was cleared mid-animation (e.g. a new file is loading);
+            # the image is no longer on an axes, so abandon the animation.
+            self._zoom_timer.stop()
+            self._zoom_target_xlim = None
+            self._zoom_target_ylim = None
+            return
         curr_xlim = ax.get_xlim()
         curr_ylim = ax.get_ylim()
 
