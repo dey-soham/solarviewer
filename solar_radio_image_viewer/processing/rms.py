@@ -5,12 +5,13 @@ Noise (RMS) estimation and masking pixels far from the Sun.
 import numpy as np
 
 from .dependencies import IA
+from .fits_io import readable_image_path
 
 
 def estimate_rms_near_Sun(imagename, stokes="I", box=(0, 200, 0, 130)):
     stokes_map = {"I": 0, "Q": 1, "U": 2, "V": 3}
     ia_tool = IA()
-    ia_tool.open(imagename)
+    ia_tool.open(readable_image_path(imagename))
     summary = ia_tool.summary()
     dimension_names = summary["axisnames"]
 

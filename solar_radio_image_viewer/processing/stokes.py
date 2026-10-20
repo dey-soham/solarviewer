@@ -3,6 +3,7 @@ Stokes parameter discovery for FITS and CASA images.
 """
 
 from .dependencies import ASTROPY_AVAILABLE, CASA_AVAILABLE, IA
+from .fits_io import readable_image_path
 
 
 def get_available_stokes(imagename):
@@ -25,7 +26,7 @@ def get_available_stokes(imagename):
         try:
             from astropy.io import fits
 
-            with fits.open(imagename, memmap=True) as hdul:
+            with fits.open(readable_image_path(imagename), memmap=True) as hdul:
                 header = hdul[0].header
                 ndim = header.get("NAXIS", 0)
 
@@ -45,7 +46,7 @@ def get_available_stokes(imagename):
     elif CASA_AVAILABLE:
         try:
             ia_tool = IA()
-            ia_tool.open(imagename)
+            ia_tool.open(readable_image_path(imagename))
             summary = ia_tool.summary()
             ia_tool.close()
 

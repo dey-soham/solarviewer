@@ -5,6 +5,7 @@ Image metadata extraction (FITS headers / CASA image info) and formatting.
 import numpy as np
 
 from .dependencies import ASTROPY_AVAILABLE, CASA_AVAILABLE, IA, u
+from .fits_io import readable_image_path
 
 
 def get_image_metadata(imagename):
@@ -124,7 +125,7 @@ def get_image_metadata(imagename):
             # Use astropy for FITS files
             from astropy.io import fits
 
-            with fits.open(imagename) as hdul:
+            with fits.open(readable_image_path(imagename)) as hdul:
                 header = hdul[0].header
 
                 # Store raw header for reference
@@ -287,7 +288,7 @@ def get_image_metadata(imagename):
         elif CASA_AVAILABLE:
             # Use CASA tools for CASA images or FITS without astropy
             ia_tool = IA()
-            ia_tool.open(imagename)
+            ia_tool.open(readable_image_path(imagename))
 
             try:
                 summary = ia_tool.summary(list=False, verbose=True)

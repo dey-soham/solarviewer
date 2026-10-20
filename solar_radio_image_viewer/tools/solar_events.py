@@ -2,6 +2,8 @@
 Context lookups for the current image: NOAA events and Helioviewer.
 """
 
+from ..processing.fits_io import readable_image_path
+
 
 class SolarEventsMixin:
     """NOAA solar events and Helioviewer lookups for the current image's time.
@@ -47,7 +49,7 @@ class SolarEventsMixin:
                 try:
                     from astropy.io import fits
 
-                    header = fits.getheader(imagename)
+                    header = fits.getheader(readable_image_path(imagename))
 
                     # Check DATE-OBS (standard), DATE_OBS (IRIS), and STARTOBS
                     image_time = (
@@ -104,7 +106,7 @@ class SolarEventsMixin:
                         from casatools import image as IA
 
                         ia_tool = IA()
-                        ia_tool.open(imagename)
+                        ia_tool.open(readable_image_path(imagename))
                         csys_record = ia_tool.coordsys().torecord()
                         ia_tool.close()
 
@@ -286,7 +288,7 @@ class SolarEventsMixin:
                     try:
                         from astropy.io import fits as fits_fallback
 
-                        header = fits_fallback.getheader(self.imagename)
+                        header = fits_fallback.getheader(readable_image_path(self.imagename))
                         image_time = (
                             header.get("DATE-OBS")
                             or header.get("DATE_OBS")
@@ -345,7 +347,7 @@ class SolarEventsMixin:
                         from casatools import image as IA
 
                         ia_tool = IA()
-                        ia_tool.open(self.imagename)
+                        ia_tool.open(readable_image_path(self.imagename))
                         csys = ia_tool.coordsys()
                         csys_record = csys.torecord()
                         ia_tool.close()

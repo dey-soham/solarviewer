@@ -9,6 +9,7 @@ import numpy as np
 from .dependencies import CASA_AVAILABLE, IA
 from .immath import run_immath_subprocess
 from .rms import estimate_rms_near_Sun, remove_pixels_away_from_sun
+from .fits_io import readable_image_path
 
 
 # TODO: Handle single stokes case, return flag so that some features can be disabled
@@ -60,7 +61,7 @@ def get_pixel_values_from_image(
     single_stokes_flag = False
     try:
         ia_tool = IA()
-        ia_tool.open(imagename)
+        ia_tool.open(readable_image_path(imagename))
     except Exception as e:
         raise RuntimeError(f"Failed to open image {imagename}: {e}")
 

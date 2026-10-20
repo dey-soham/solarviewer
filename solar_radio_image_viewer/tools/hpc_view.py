@@ -6,6 +6,7 @@ import os
 
 
 from ..processing.dependencies import IA
+from ..processing.fits_io import readable_image_path
 
 
 class HpcViewMixin:
@@ -358,7 +359,7 @@ class HpcViewMixin:
         try:
             # Check via CASA image tool
             ia_tool = IA()
-            ia_tool.open(self.imagename)
+            ia_tool.open(readable_image_path(self.imagename))
             csys = ia_tool.coordsys()
             dimension_names = [n.upper() for n in csys.names()]
             ia_tool.close()
@@ -371,7 +372,7 @@ class HpcViewMixin:
             if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
                 from astropy.io import fits
 
-                header = fits.getheader(self.imagename)
+                header = fits.getheader(readable_image_path(self.imagename))
                 ctype1 = header.get("CTYPE1", "").upper()
                 ctype2 = header.get("CTYPE2", "").upper()
                 if (
@@ -400,6 +401,7 @@ class HpcViewMixin:
         str
             'hpc' for helioprojective, 'radec' for RA/Dec, 'unknown' otherwise
         """
+        imagepath = readable_image_path(imagepath)
         if not imagepath or not os.path.exists(imagepath):
             return "unknown"
 

@@ -5,6 +5,7 @@ Brightness temperature <-> flux density map conversion.
 import os
 
 from .dependencies import CASA_AVAILABLE, IA
+from .fits_io import readable_image_path
 
 
 def generate_tb_map(imagename, outfile=None, flux_data=None):
@@ -38,7 +39,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
 
         if is_fits:
             # FITS file
-            with fits.open(imagename) as hdul:
+            with fits.open(readable_image_path(imagename)) as hdul:
                 header = hdul[0].header
                 if flux_data is None:
                     flux_data = hdul[0].data
@@ -79,7 +80,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                 return None, "CASA tools not available for CASA image"
 
             ia = IA()
-            ia.open(imagename)
+            ia.open(readable_image_path(imagename))
 
             if flux_data is None:
                 flux_data = ia.getchunk()
@@ -144,7 +145,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                     new_header["RESTFRQ"] = freq_hz
 
                 # Get original data to check for full Stokes
-                original_data = fits.getdata(imagename)
+                original_data = fits.getdata(readable_image_path(imagename))
 
                 # Check if original is multi-Stokes (3D or 4D with Stokes axis)
                 if original_data.ndim >= 3:
@@ -188,7 +189,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                 # For CASA, need to export first
                 temp_export = outfile + ".temp_export.fits"
                 ia = IA()
-                ia.open(imagename)
+                ia.open(readable_image_path(imagename))
                 ia.tofits(temp_export, overwrite=True, stokeslast=False)
                 ia.close()
 
@@ -263,7 +264,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
 
         if is_fits:
             # FITS file
-            with fits.open(imagename) as hdul:
+            with fits.open(readable_image_path(imagename)) as hdul:
                 header = hdul[0].header
                 if tb_data is None:
                     tb_data = hdul[0].data
@@ -304,7 +305,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                 return None, "CASA tools not available for CASA image"
 
             ia = IA()
-            ia.open(imagename)
+            ia.open(readable_image_path(imagename))
 
             if tb_data is None:
                 tb_data = ia.getchunk()
@@ -370,7 +371,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                     new_header["RESTFRQ"] = freq_hz
 
                 # Get original data to check shape
-                original_data = fits.getdata(imagename)
+                original_data = fits.getdata(readable_image_path(imagename))
 
                 # Handle multi-Stokes
                 if original_data.ndim >= 3:
@@ -410,7 +411,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                 # For CASA, need to export first
                 temp_export = outfile + ".temp_export.fits"
                 ia = IA()
-                ia.open(imagename)
+                ia.open(readable_image_path(imagename))
                 ia.tofits(temp_export, overwrite=True, stokeslast=False)
                 ia.close()
 

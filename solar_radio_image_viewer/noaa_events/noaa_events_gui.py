@@ -61,6 +61,7 @@ except ImportError:
 import requests
 import json
 from pathlib import Path
+from ..processing.fits_io import readable_image_path
 
 
 def _serialize_obj(obj):
@@ -3096,7 +3097,7 @@ class NOAAEventsViewer(QMainWindow):
                     try:
                         from astropy.io import fits
 
-                        header = fits.getheader(imagename)
+                        header = fits.getheader(readable_image_path(imagename))
                     except Exception as fits_err:
                         print(f"FITS header read failed: {fits_err}")
 
@@ -3135,7 +3136,7 @@ class NOAAEventsViewer(QMainWindow):
                         from casatools import image as IA
 
                         ia_tool = IA()
-                        ia_tool.open(imagename)
+                        ia_tool.open(readable_image_path(imagename))
                         csys_record = ia_tool.coordsys().torecord()
                         ia_tool.close()
 

@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import QApplication
 
 from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
 from ..processing.dependencies import IA
+from ..processing.fits_io import readable_image_path
 
 
 class RenderingMixin:
@@ -254,12 +255,12 @@ class RenderingMixin:
 
                 try:
                     self._cached_fits_flag = True
-                    with fits.open(self.imagename, memmap=True) as hdul:
+                    with fits.open(readable_image_path(self.imagename), memmap=True) as hdul:
                         # Make a copy of header so we don't hold the file open
                         self._cached_fits_header = dict(hdul[0].header)
                 except Exception as e:
                     try:
-                        self._cached_fits_header = dict(fits.getheader(self.imagename))
+                        self._cached_fits_header = dict(fits.getheader(readable_image_path(self.imagename)))
                     except Exception as e2:
                         print(f"[ERROR] Error getting header: {e2}")
                         self.show_status_message(f"Error getting header: {e2}")
@@ -267,7 +268,7 @@ class RenderingMixin:
 
             try:
                 ia_tool = IA()
-                ia_tool.open(self.imagename)
+                ia_tool.open(readable_image_path(self.imagename))
                 self._cached_csys = ia_tool.coordsys()
                 self._cached_summary = ia_tool.summary()
                 self._cached_csys_record = ia_tool.coordsys().torecord()

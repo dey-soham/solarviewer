@@ -17,6 +17,7 @@ from multiprocessing import Pool
 from functools import partial
 import shutil
 import hashlib
+from ..processing.fits_io import readable_image_path
 
 
 # Subprocess wrappers for casatasks to avoid segfaults
@@ -200,7 +201,7 @@ class SolarPhaseCenter:
             if os.path.isdir(imagename):
                 try:
                     ia = image()
-                    ia.open(imagename)
+                    ia.open(readable_image_path(imagename))
 
                     # Get observation date from image miscinfo
                     misc = ia.miscinfo()
@@ -233,7 +234,7 @@ class SolarPhaseCenter:
                 except Exception as e:
                     print(f"Error reading CASA image for observation time: {e}")
             else:
-                header = fits.getheader(imagename)
+                header = fits.getheader(readable_image_path(imagename))
 
                 # Check common keywords for observation time
                 time_keywords = [
@@ -1031,8 +1032,8 @@ class SolarPhaseCenter:
                 )
             elif imagetype == "fits":
                 # Update CRPIX and CRVAL in FITS header
-                data = fits.getdata(imagename)
-                header = fits.getheader(imagename)
+                data = fits.getdata(readable_image_path(imagename))
+                header = fits.getheader(readable_image_path(imagename))
 
                 # Set CRPIX to apparent pixel position (1-based for FITS)
                 # Add 1 because FITS CRPIX is 1-based but our pixel positions are 0-based

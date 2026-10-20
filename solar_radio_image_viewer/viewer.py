@@ -94,6 +94,7 @@ from .core import (
     PresetMenuMixin,
     RemoteModeMixin,
 )
+from .processing.fits_io import readable_image_path
 
 
 class CheckUpdateThread(QThread):
@@ -2113,7 +2114,7 @@ class SolarRadioImageTab(
         """
         from astropy.io import fits
 
-        hdul = fits.open(imagename, memmap=True)
+        hdul = fits.open(readable_image_path(imagename), memmap=True)
         data = hdul[0].data
         header = hdul[0].header
         hdul.close()
@@ -2362,7 +2363,7 @@ class SolarRadioImageTab(
                 self.show_status_message(f"Error loading FITS data: {fits_err}")
                 try:
                     # Last resort: just get raw data
-                    pix = fits.getdata(imagename)
+                    pix = fits.getdata(readable_image_path(imagename))
                     self.current_image_data = pix
                 except Exception as e2:
                     print(f"[ERROR] Error getting data: {e2}")
@@ -2416,7 +2417,7 @@ class SolarRadioImageTab(
             )
 
             if imagename.endswith(".fits") or imagename.endswith(".fts"):
-                with fits.open(imagename) as hdul:
+                with fits.open(readable_image_path(imagename)) as hdul:
                     self.current_header = dict(hdul[0].header)
                     bunit = self.current_header.get("BUNIT", "").lower()
                     self._current_bunit = self.current_header.get("BUNIT", "")
@@ -2467,7 +2468,7 @@ class SolarRadioImageTab(
                     from casatools import image as IA
 
                     ia = IA()
-                    ia.open(imagename)
+                    ia.open(readable_image_path(imagename))
 
                     # Get CASA image info
                     summary = ia.summary()

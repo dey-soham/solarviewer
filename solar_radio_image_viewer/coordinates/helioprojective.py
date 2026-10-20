@@ -32,6 +32,7 @@ except ImportError:
 
 from ..processing.immath import run_immath_subprocess
 from ..processing.rms import estimate_rms_near_Sun, remove_pixels_away_from_sun
+from ..processing.fits_io import readable_image_path
 
 
 rcParams["axes.linewidth"] = 1.4
@@ -39,6 +40,7 @@ rcParams["font.size"] = 12
 
 
 def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observatory=None):
+    fits_file = readable_image_path(fits_file)
     hdul = fits.open(fits_file, memmap=True)
     header = hdul[0].header
     POS = None
@@ -108,6 +110,7 @@ def convert_to_hpc(
     Convert a FITS file to helioprojective coordinates
     TODO: Redundantly written for ndim>2 and ndim=2, should be refactored
     """
+    fits_file = readable_image_path(fits_file)
     if not sunpy_imported:
         print("[ERROR] Cannot convert to helioprojective coordinates without sunpy")
         return None, None, None
@@ -830,6 +833,7 @@ def convert_and_save_hpc(
     bool
         True if the file was saved successfully, False otherwise.
     """
+    input_fits_file = readable_image_path(input_fits_file)
     if not sunpy_imported:
         print("[ERROR] Cannot convert to helioprojective coordinates without sunpy")
         return False
@@ -946,6 +950,7 @@ def convert_and_save_hpc_all_stokes(
     bool
         True if the file was saved successfully, False otherwise.
     """
+    input_fits_file = readable_image_path(input_fits_file)
     if not sunpy_imported:
         print("[ERROR] Cannot convert to helioprojective coordinates without sunpy")
         return False
@@ -1144,6 +1149,7 @@ def convert_hpc_to_radec(
     bool
         True if the file was saved successfully, False otherwise.
     """
+    input_fits_file = readable_image_path(input_fits_file)
     if not sunpy_imported:
         print("[ERROR] Cannot convert from helioprojective coordinates without sunpy")
         return False

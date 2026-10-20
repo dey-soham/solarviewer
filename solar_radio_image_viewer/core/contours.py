@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import QDialogButtonBox, QMessageBox
 
 from ..processing.dependencies import IA
 from ..processing.image_data import get_pixel_values_from_image
+from ..processing.fits_io import readable_image_path
 
 
 class ContoursMixin:
@@ -132,6 +133,7 @@ class ContoursMixin:
         tuple
             (height, width) in pixels, or (0, 0) on failure
         """
+        imagepath = readable_image_path(imagepath)
         height, width = 0, 0
         if not imagepath or not os.path.exists(imagepath):
             return height, width
@@ -770,7 +772,7 @@ class ContoursMixin:
 
                 fits_flag = True
                 try:
-                    with fits.open(contour_imagename, memmap=True) as hdul:
+                    with fits.open(readable_image_path(contour_imagename), memmap=True) as hdul:
                         header = dict(hdul[0].header)
                 except Exception as e:
                     print(f"[ERROR] Error getting contour FITS header: {e}")
@@ -778,7 +780,7 @@ class ContoursMixin:
 
             try:
                 ia_tool = IA()
-                ia_tool.open(contour_imagename)
+                ia_tool.open(readable_image_path(contour_imagename))
                 csys = ia_tool.coordsys()
                 summary = ia_tool.summary()
                 ia_tool.close()

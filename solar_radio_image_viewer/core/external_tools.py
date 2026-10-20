@@ -5,6 +5,7 @@ Launching downloaders, Helioviewer browser and pipeline tools.
 from PyQt5.QtWidgets import QMessageBox
 
 from ..ui.styles import theme_manager
+from ..processing.fits_io import readable_image_path
 
 
 class ExternalToolsMixin:
@@ -106,7 +107,7 @@ class ExternalToolsMixin:
                         from casatools import image as IA
 
                         ia_tool = IA()
-                        ia_tool.open(imagename)
+                        ia_tool.open(readable_image_path(imagename))
                         csys_record = ia_tool.coordsys().torecord()
                         ia_tool.close()
 
