@@ -3095,10 +3095,16 @@ class MainWindow(QMainWindow):
         else:
             return t_raw
 
-    def openFile(self):
-        fileName, _ = QFileDialog.getOpenFileName(
-            self, "Open FITS File", "", "FITS Files (*.fits *.fts);;All Files (*)"
-        )
+    def openFile(self, fileName=None):
+        """Open a FITS file; asks with a file dialog if no path is given.
+
+        (When connected to a QAction, Qt passes ``checked`` as the first
+        argument, which is falsy here, so the dialog is still shown.)
+        """
+        if not fileName:
+            fileName, _ = QFileDialog.getOpenFileName(
+                self, "Open FITS File", "", "FITS Files (*.fits *.fts);;All Files (*)"
+            )
         if not fileName:
             return
 

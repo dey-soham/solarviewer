@@ -84,9 +84,7 @@ def launch_dynamic_spectrum_viewer(parent=None, fits_file=None):
 
     # Open file if provided
     if fits_file:
-        # The MainWindow has an openFile method we can use
-        # But we need to load the file programmatically
-        window._load_fits_file(fits_file)
+        window.openFile(fits_file)
 
     return window
 
