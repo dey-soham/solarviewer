@@ -31,6 +31,7 @@ _MOVED_MODULES = {
     "helioprojective": "coordinates.helioprojective",
     "helioprojective_viewer": "coordinates.helioprojective_viewer",
     "move_phasecenter": "coordinates.move_phasecenter",
+    "from_simpl": "pipeline",
 }
 
 
@@ -41,8 +42,13 @@ class _MovedModuleFinder:
         prefix = __name__ + "."
         if not fullname.startswith(prefix):
             return None
-        new = _MOVED_MODULES.get(fullname[len(prefix) :])
-        if new is None:
+        old = fullname[len(prefix) :]
+        # Match the module itself or a submodule of a moved package
+        for old_name, new_name in _MOVED_MODULES.items():
+            if old == old_name or old.startswith(old_name + "."):
+                new = new_name + old[len(old_name) :]
+                break
+        else:
             return None
         import importlib.util
 
@@ -69,7 +75,9 @@ class _MovedModuleLoader:
 import sys as _sys
 
 if not any(isinstance(f, _MovedModuleFinder) for f in _sys.meta_path):
-    _sys.meta_path.append(_MovedModuleFinder())
+    # First, so a moved package's submodules resolve to the new modules
+    # instead of being loaded a second time through the aliased package path
+    _sys.meta_path.insert(0, _MovedModuleFinder())
 
 
 def __getattr__(name):

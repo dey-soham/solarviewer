@@ -55,9 +55,9 @@ setup(
         "console_scripts": [
             "solarviewer=solar_radio_image_viewer.main:main",
             "sv=solar_radio_image_viewer.main:main",
-            "viewcaltable=solar_radio_image_viewer.from_simpl.caltable_visualizer:main",
-            "viewds=solar_radio_image_viewer.from_simpl.view_dynamic_spectra_GUI:main",
-            "viewlogs=solar_radio_image_viewer.from_simpl.pipeline_logger_gui:main",
+            "viewcaltable=solar_radio_image_viewer.pipeline.caltable_visualizer:main",
+            "viewds=solar_radio_image_viewer.pipeline.view_dynamic_spectra_GUI:main",
+            "viewlogs=solar_radio_image_viewer.pipeline.pipeline_logger_gui:main",
             "viewsolaractivity=solar_radio_image_viewer.noaa_events.noaa_events_gui:main",
             "heliobrowser=solar_radio_image_viewer.helioviewer_browser:main",
         ],

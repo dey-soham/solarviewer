@@ -4269,14 +4269,14 @@ class MainWindow(QMainWindow):
 def main():
     """Entry point for viewds command."""
     # Apply high DPI scaling
-    from solar_radio_image_viewer.from_simpl.simpl_theme import setup_high_dpi
+    from solar_radio_image_viewer.pipeline.simpl_theme import setup_high_dpi
 
     setup_high_dpi()
 
     app = QApplication(sys.argv)
 
     # Apply dark theme from solarviewer
-    from solar_radio_image_viewer.from_simpl.simpl_theme import apply_theme
+    from solar_radio_image_viewer.pipeline.simpl_theme import apply_theme
 
     apply_theme(app, "dark")
 

@@ -26,7 +26,7 @@ try:
 
     DYNAMIC_SPECTRUM_AVAILABLE = True
 except ImportError as e:
-    print(f"[from_simpl] Dynamic Spectrum Viewer not available: {e}")
+    print(f"[pipeline] Dynamic Spectrum Viewer not available: {e}")
 
 try:
     import seaborn
@@ -34,7 +34,7 @@ try:
 
     CALTABLE_VISUALIZER_AVAILABLE = True
 except ImportError as e:
-    print(f"[from_simpl] Calibration Table Visualizer not available: {e}")
+    print(f"[pipeline] Calibration Table Visualizer not available: {e}")
     print("  Install with: pip install python-casacore seaborn")
 
 try:
@@ -43,7 +43,7 @@ try:
 
     DYNAMIC_SPECTRA_CREATOR_AVAILABLE = True
 except ImportError as e:
-    print(f"[from_simpl] Dynamic Spectra Creator not available: {e}")
+    print(f"[pipeline] Dynamic Spectra Creator not available: {e}")
     print("  Install with: pip install python-casacore astropy")
 
 # Log viewer just needs PyQt5 which is always available

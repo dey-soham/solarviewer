@@ -4,13 +4,13 @@ Run one of the SIMPL pipeline GUI tools as a standalone process.
 SolarViewer launches these in a separate process to avoid memory conflicts
 between python-casacore and casatasks/casatools:
 
-    python -m solar_radio_image_viewer.from_simpl.launch <tool> [theme]
+    python -m solar_radio_image_viewer.pipeline.launch <tool> [theme]
 """
 
 import os
 import sys
 
-# tool name -> (module in from_simpl, window class, accepts a ``theme`` kwarg)
+# tool name -> (module in pipeline/, window class, accepts a ``theme`` kwarg)
 TOOLS = {
     "dynamic_spectrum_viewer": ("view_dynamic_spectra_GUI", "MainWindow", True),
     "caltable_visualizer": ("caltable_visualizer", "VisualizationApp", False),

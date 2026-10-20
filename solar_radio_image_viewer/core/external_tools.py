@@ -283,7 +283,7 @@ read -p "Press Enter to close..."
         return theme_manager.current_theme
 
     def _launch_pipeline_tool(self, tool, display_name):
-        """Launch a SIMPL pipeline GUI tool (see ``from_simpl/launch.py``).
+        """Launch a SIMPL pipeline GUI tool (see ``pipeline/launch.py``).
 
         These tools are launched as separate processes to avoid memory
         conflicts between python-casacore and casatasks/casatools.
@@ -303,7 +303,7 @@ read -p "Press Enter to close..."
                 [
                     sys.executable,
                     "-m",
-                    "solar_radio_image_viewer.from_simpl.launch",
+                    "solar_radio_image_viewer.pipeline.launch",
                     tool,
                     self._get_current_theme(),
                 ],
