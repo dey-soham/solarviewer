@@ -83,6 +83,7 @@ from .tools import (
     ImageStatsMixin,
     SolarEventsMixin,
 )
+from .core.presets import display_range
 from .core import (
     CanvasMixin,
     ContoursMixin,
@@ -1873,9 +1874,14 @@ class SolarRadioImageTab(
                 # Validate Stokes selection when loading a new image
                 if dir_load:
                     stokes = self._validate_and_switch_stokes(self.imagename, stokes)
+                elif getattr(self, "_range_stokes", stokes) != stokes:
+                    # The Min/Max boxes hold the range of the previously shown
+                    # Stokes product, which means nothing for this one
+                    vmin_val = vmax_val = None
                 self.load_data(
                     self.imagename, stokes, threshold, auto_adjust_rms=dir_load
                 )
+                self._range_stokes = stokes
             if dir_load:
                 mw = self.window()
                 auto_presets = (
@@ -1950,20 +1956,14 @@ class SolarRadioImageTab(
             return
 
         data = self.current_image_data
-        if not np.isfinite(data).any():
-            # Fully masked (e.g. PANG below threshold everywhere)
-            self.vmin_entry.setText(f"{0.0:.3f}")
-            self.vmax_entry.setText(f"{1.0:.3f}")
-            return
-        dmin = float(np.nanmin(data))
-        dmax = float(np.nanmax(data))
-        rng = dmax - dmin
-        if rng <= 0:
-            # Constant image (e.g. Lfrac below threshold everywhere): centre a
-            # small range on the value instead of keeping the previous range
-            pad = abs(dmin) * 0.01 if dmin != 0 else 1.0
-            self.vmin_entry.setText(f"{dmin - pad:.3f}")
-            self.vmax_entry.setText(f"{dmin + pad:.3f}")
+        finite = np.isfinite(data).any()
+        dmin = float(np.nanmin(data)) if finite else float("nan")
+        dmax = float(np.nanmax(data)) if finite else float("nan")
+        if not dmax > dmin:
+            # Constant or fully masked map: don't keep the previous range
+            low, high = display_range(dmin, dmax)
+            self.vmin_entry.setText(f"{low:.3f}")
+            self.vmax_entry.setText(f"{high:.3f}")
             return
 
         if vmin_val < dmin:
@@ -2615,6 +2615,7 @@ class SolarRadioImageTab(
 
         try:
             self.load_data(self.imagename, stokes, threshold)
+            self._range_stokes = stokes
         except RuntimeError as e:
             # Show warning dialog for missing Stokes data
             QMessageBox.warning(

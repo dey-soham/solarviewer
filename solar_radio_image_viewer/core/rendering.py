@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import QApplication
 
 from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
 from ..processing.dependencies import IA
+from .presets import display_range
 from ..processing.fits_io import readable_image_path
 
 
@@ -141,8 +142,7 @@ class RenderingMixin:
             vmin_val = np.nanmin(data)
         if vmax_val is None:
             vmax_val = np.nanmax(data)
-        if vmax_val <= vmin_val:
-            vmax_val = vmin_val + 1e-6
+        vmin_val, vmax_val = display_range(vmin_val, vmax_val)
 
         norm = self._make_norm(stretch, vmin_val, vmax_val, gamma)
         if self._try_fast_redraw(

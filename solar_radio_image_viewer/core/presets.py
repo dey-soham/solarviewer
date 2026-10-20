@@ -50,6 +50,22 @@ def compute_range(data, mode):
     raise ValueError(f"Unknown range mode: {mode!r}")
 
 
+def display_range(vmin, vmax):
+    """Make ``(vmin, vmax)`` usable as a colour range: finite, with vmax > vmin.
+
+    A constant map (vmin == vmax, e.g. Lfrac/Vfrac with everything below the
+    threshold) gets a small range centred on its value; an all-NaN map (e.g. a
+    fully masked PANG) gets (0, 1).
+    """
+    vmin, vmax = float(vmin), float(vmax)
+    if not (np.isfinite(vmin) and np.isfinite(vmax)):
+        return 0.0, 1.0
+    if vmax <= vmin:
+        pad = abs(vmin) * 0.01 if vmin != 0 else 1.0
+        return vmin - pad, vmin + pad
+    return vmin, vmax
+
+
 @dataclass(frozen=True)
 class AutoRange:
     menu_label: str
