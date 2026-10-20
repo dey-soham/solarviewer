@@ -122,6 +122,13 @@ cd solarviewer
 pip install -e .
 ```
 
+For development, install the dev tools and run the test suite (runs offscreen, no display needed):
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
 ### Desktop Integration
 
 After installation, you can create a desktop entry and icon (Linux) or an application bundle (macOS) to launch SolarViewer from your application menu:

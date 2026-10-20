@@ -7,19 +7,17 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QApplication,
-    QButtonGroup,
     QDialog,
     QDoubleSpinBox,
-    QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QVBoxLayout,
 )
+
+from .geometry import snap_to_axis
 
 
 class ProfileMixin:
@@ -213,7 +211,7 @@ class ProfileMixin:
             x2, y2 = event.xdata, event.ydata
 
             if shift_held:
-                x2, y2 = self._snap_to_axis(x1, y1, x2, y2)
+                x2, y2 = snap_to_axis(x1, y1, x2, y2)
 
             # Clear preview line
             if self._profile_preview_line is not None:
@@ -238,7 +236,7 @@ class ProfileMixin:
 
         # Apply shift snap if held
         if shift_held:
-            x2, y2 = self._snap_to_axis(x1, y1, x2, y2)
+            x2, y2 = snap_to_axis(x1, y1, x2, y2)
 
         ax = event.inaxes
 
@@ -266,17 +264,6 @@ class ProfileMixin:
         self.show_status_message(
             f"Distance: {pixel_dist:.1f} px | Shift for H/V snap | Click to confirm"
         )
-
-    def _snap_to_axis(self, x1, y1, x2, y2):
-        """Snap end point to horizontal or vertical based on which is closer"""
-        dx = abs(x2 - x1)
-        dy = abs(y2 - y1)
-        if dx > dy:
-            # Snap to horizontal
-            return x2, y1
-        else:
-            # Snap to vertical
-            return x1, y2
 
     def _profile_radial_on_click(self, event):
         """Handle click for radial profile mode - click center, then show dialog"""

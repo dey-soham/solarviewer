@@ -1,0 +1,18 @@
+# Packaging metadata still lives in setup.py; this file only configures dev tools.
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"
+
+[tool.ruff]
+line-length = 88
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+# Pyflakes (undefined names, unused imports, ...) plus a few error checks.
+select = ["F", "E9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

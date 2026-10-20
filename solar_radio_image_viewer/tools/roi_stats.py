@@ -5,7 +5,6 @@ ROI statistics tool for SolarViewer.
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.widgets import RectangleSelector
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -331,23 +330,6 @@ class RoiStatsMixin:
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
-
-    def _toggle_roi_mode(self):
-        """Toggle between Rectangle and Ellipse ROI selection modes"""
-        if not hasattr(self, "region_mode") or self.region_mode == RegionMode.RECTANGLE:
-            self.region_mode = RegionMode.ELLIPSE
-            self.roi_mode_btn.setText("⬭")  # Ellipse icon
-            self.roi_mode_btn.setToolTip("ROI Mode: Ellipse (click to toggle)")
-            self.show_status_message("ROI Mode: Ellipse")
-        else:
-            self.region_mode = RegionMode.RECTANGLE
-            self.roi_mode_btn.setText("▭")  # Rectangle icon
-            self.roi_mode_btn.setToolTip("ROI Mode: Rectangle (click to toggle)")
-            self.show_status_message("ROI Mode: Rectangle")
-
-        # Re-initialize region editor with new mode
-        if hasattr(self, "figure") and self.figure.axes:
-            self.init_region_editor(self.figure.axes[0])
 
     def init_region_editor(self, ax):
         from matplotlib.widgets import EllipseSelector, RectangleSelector

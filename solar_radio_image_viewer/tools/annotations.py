@@ -14,7 +14,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPushButton,
     QSpinBox,
     QVBoxLayout,
 )
@@ -88,7 +87,7 @@ class AnnotationDialogsMixin:
     Mixed into :class:`SolarRadioImageViewerApp`; relies on its attributes via ``self``.
     """
 
-    def add_text_annotation(self):
+    def show_add_text_annotation_dialog(self):
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
             QMessageBox.warning(self, "No Data", "Load data first.")
@@ -239,7 +238,7 @@ class AnnotationDialogsMixin:
         self._open_dialogs.append(dialog)
         dialog.show()
 
-    def add_arrow_annotation(self):
+    def show_add_arrow_annotation_dialog(self):
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
             QMessageBox.warning(self, "No Data", "Load data first.")

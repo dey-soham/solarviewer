@@ -4,13 +4,12 @@ Ruler (distance measurement) tool for SolarViewer.
 
 import numpy as np
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication
+
+from .geometry import snap_to_axis
 
 
 class RulerMixin:
     """Ruler / angular distance measurement tool.
-
-    Uses ``_snap_to_axis`` from :class:`ProfileMixin`.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
     """
@@ -124,7 +123,7 @@ class RulerMixin:
             x2, y2 = event.xdata, event.ydata
 
             if shift_held:
-                x2, y2 = self._snap_to_axis(x1, y1, x2, y2)
+                x2, y2 = snap_to_axis(x1, y1, x2, y2)
 
             # Disconnect motion handler
             if hasattr(self, "_ruler_motion_cid") and self._ruler_motion_cid:
@@ -191,7 +190,7 @@ class RulerMixin:
         x2, y2 = event.xdata, event.ydata
 
         if shift_held:
-            x2, y2 = self._snap_to_axis(x1, y1, x2, y2)
+            x2, y2 = snap_to_axis(x1, y1, x2, y2)
 
         ax = event.inaxes
 

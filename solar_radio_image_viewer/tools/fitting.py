@@ -2,10 +2,6 @@
 2D Gaussian / ring fitting tool for SolarViewer.
 """
 
-import os
-import sys
-import tempfile
-
 import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QMessageBox

@@ -1,9 +1,7 @@
-import sys
 import os
 import tempfile
 
 import numpy as np
-from importlib import resources as importlib_resources
 
 import matplotlib
 
@@ -13,7 +11,6 @@ import matplotlib.style as mplstyle
 from matplotlib.colors import Normalize, LogNorm
 from matplotlib.patches import Ellipse
 from matplotlib.figure import Figure
-from matplotlib.widgets import RectangleSelector
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
     NavigationToolbar2QT as NavigationToolbar,
@@ -50,8 +47,6 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QCheckBox,
     QGridLayout,
-    QStatusBar,
-    QMenuBar,
     QGroupBox,
     QToolBar,
     QHeaderView,
@@ -82,9 +77,6 @@ from .utils import (
     IA,
 )
 from .styles import (
-    STYLESHEET,
-    DARK_PALETTE,
-    LIGHT_PALETTE,
     theme_manager,
     get_stylesheet,
     get_icon_path,
@@ -95,7 +87,7 @@ from .searchable_combobox import ColormapSelector
 from astropy.time import Time
 from .utils.update_checker import check_for_updates
 from .version import __version__
-from sunpy.map import Map
+import sunpy.visualization.colormaps  # noqa: F401  (registers sdoaia*, etc.)
 from .tools import (
     RegionMode,
     RoiStatsMixin,
@@ -4863,8 +4855,11 @@ class SolarRadioImageTab(
                             ]
 
                         else:
-                            print(f"[ERROR] Error getting projection: {e}")
-                            self.show_status_message(f"Error getting projection: {e}")
+                            projection = csys.projection()["type"]
+                            print(f"[ERROR] Unsupported projection: {projection}")
+                            self.show_status_message(
+                                f"Unsupported projection: {projection}"
+                            )
                             self._cached_wcs_obj = None
 
                     except Exception as e:
@@ -11003,13 +10998,13 @@ class SolarRadioImageViewerApp(
         text_act = QAction("Add Text Annotation", self)
         text_act.setShortcut("Ctrl+T")
         text_act.setStatusTip("Add text annotation to the image")
-        text_act.triggered.connect(self.add_text_annotation)
+        text_act.triggered.connect(self.show_add_text_annotation_dialog)
         annot_menu.addAction(text_act)
 
         arrow_act = QAction("Add Arrow Annotation", self)
         arrow_act.setShortcut("Ctrl+A")
         arrow_act.setStatusTip("Add arrow annotation to the image")
-        arrow_act.triggered.connect(self.add_arrow_annotation)
+        arrow_act.triggered.connect(self.show_add_arrow_annotation_dialog)
         annot_menu.addAction(arrow_act)
 
         # Shape annotations (circle, ellipse, square, rectangle) + solar radii presets

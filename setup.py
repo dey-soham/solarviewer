@@ -48,6 +48,9 @@ setup(
         "paramiko>=3.0.0",
         "pyqtgraph",
     ],
+    extras_require={
+        "dev": ["pytest", "black", "isort", "ruff"],
+    },
     entry_points={
         "console_scripts": [
             "solarviewer=solar_radio_image_viewer.main:main",

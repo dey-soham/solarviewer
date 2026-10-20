@@ -2,11 +2,8 @@
 Brightness temperature (TB) mode tool for SolarViewer.
 """
 
-import os
-import tempfile
-
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QMessageBox
 
 
 class TbModeMixin:
