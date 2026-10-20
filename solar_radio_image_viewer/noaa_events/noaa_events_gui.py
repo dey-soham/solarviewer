@@ -1630,6 +1630,22 @@ class NOAAEventsViewer(QMainWindow):
         # Modern tab styling handled by global stylesheet
         self.tabs = QTabWidget()
 
+        self._create_events_tab()
+
+        self._create_active_regions_tab()
+
+        self._create_conditions_tab()
+
+        self._create_cme_tab()
+
+        self._create_context_images_tab()
+
+        self._create_radio_spectra_tab()
+
+        layout.addWidget(self.tabs)
+
+    def _create_events_tab(self):
+        """Events tab: X-ray, optical and radio event tables."""
         # Tab 1: Solar Events (existing content)
         events_tab = QWidget()
         events_layout = QVBoxLayout(events_tab)
@@ -1693,6 +1709,8 @@ class NOAAEventsViewer(QMainWindow):
         events_scroll.setWidget(events_tab)
         self.tabs.addTab(events_scroll, "Events")
 
+    def _create_active_regions_tab(self):
+        """Active Regions tab."""
         # Tab 2: Active Regions
         ar_tab = QWidget()
         ar_layout = QVBoxLayout(ar_tab)
@@ -1744,6 +1762,10 @@ class NOAAEventsViewer(QMainWindow):
         ar_scroll.setFrameShape(QFrame.NoFrame)
         ar_scroll.setWidget(ar_tab)
         self.tabs.addTab(ar_scroll, "Active Regions")
+
+    def _create_conditions_tab(self):
+        """Solar Conditions tab: geomagnetic, solar wind and F10.7 cards."""
+        palette = theme_manager.palette
 
         # Tab 3: Solar Conditions (Real-time data)
         conditions_tab = QWidget()
@@ -1928,6 +1950,8 @@ class NOAAEventsViewer(QMainWindow):
         conditions_scroll.setWidget(conditions_tab)
         self.tabs.addTab(conditions_scroll, "Solar Conditions")
 
+    def _create_cme_tab(self):
+        """CMEs tab."""
         # Tab 4: CME Alerts
         cme_tab = QWidget()
         cme_layout = QVBoxLayout(cme_tab)
@@ -1974,6 +1998,8 @@ class NOAAEventsViewer(QMainWindow):
         cme_scroll.setWidget(cme_tab)
         self.tabs.addTab(cme_scroll, "CMEs")
 
+    def _create_context_images_tab(self):
+        """Context Images tab."""
         # Tab 5: Context Images
         images_tab = QWidget()
         images_layout = QVBoxLayout(images_tab)
@@ -2002,6 +2028,10 @@ class NOAAEventsViewer(QMainWindow):
         images_layout.addWidget(images_credits_label)
 
         self.tabs.addTab(images_tab, "Context Images")
+
+    def _create_radio_spectra_tab(self):
+        """Radio Spectra tab: one card per instrument."""
+        palette = theme_manager.palette
 
         # Tab 6: Radio Spectra (DH-band)
         spectra_tab = QWidget()
@@ -2045,452 +2075,82 @@ class NOAAEventsViewer(QMainWindow):
         spectra_content_layout = QVBoxLayout(spectra_content)
         spectra_content_layout.setSpacing(16)
 
-        # WIND/WAVES image
-        wind_card = QFrame()
-        if self.is_dark_theme:
-            wind_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(99, 102, 241, 0.12),
-                        stop:1 rgba(99, 102, 241, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(99, 102, 241, 0.25);
-                }
-            """
-            )
-        else:
-            wind_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
-        wind_layout = QVBoxLayout(wind_card)
-        wind_layout.setContentsMargins(12, 12, 12, 12)
-
-        wind_header = QHBoxLayout()
-        wind_title = QLabel("🛰️ WIND/WAVES 24h Calibrated (14 kHz - 14 MHz)")
-        wind_title.setStyleSheet("font-weight: bold;")
-        wind_header.addWidget(wind_title)
-        wind_header.addStretch()
-        self.wind_save_btn = QPushButton("💾 Save")
-        self.wind_save_btn.setToolTip("Save WIND/WAVES image as PNG")
-        self.wind_save_btn.clicked.connect(lambda checked: self.save_spectra_image('wind'))
-        self.wind_save_btn.setEnabled(False)
-        wind_header.addWidget(self.wind_save_btn)
-        wind_layout.addLayout(wind_header)
-
-        self.wind_image_label = ClickableLabel("No data loaded")
-        self.wind_image_label.setAlignment(Qt.AlignCenter)
-        self.wind_image_label.setMinimumHeight(200)
-        self.wind_image_label.setScaledContents(False)
-        self.wind_image_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']};"
+        # One card per instrument
+        self._add_spectrum_card(
+            spectra_content_layout,
+            "wind",
+            "🛰️ WIND/WAVES 24h Calibrated (14 kHz - 14 MHz)",
+            (99, 102, 241),
+            "WIND/WAVES",
+            "WIND/WAVES",
         )
-        self.wind_image_label.setCursor(Qt.PointingHandCursor)
-        self.wind_image_label.setToolTip("Click to view full resolution")
-        self.wind_image_label.clicked.connect(lambda: self.show_local_image('wind', 'WIND/WAVES'))
-        wind_layout.addWidget(self.wind_image_label)
-
-        spectra_content_layout.addWidget(wind_card)
-
-        # STEREO-A image
-        stereo_a_card = QFrame()
-        if self.is_dark_theme:
-            stereo_a_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(16, 185, 129, 0.12),
-                        stop:1 rgba(16, 185, 129, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(16, 185, 129, 0.25);
-                }
-            """
-            )
-        else:
-            stereo_a_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
-        stereo_a_layout = QVBoxLayout(stereo_a_card)
-        stereo_a_layout.setContentsMargins(12, 12, 12, 12)
-
-        stereo_a_header = QHBoxLayout()
-        stereo_a_title = QLabel("🛰️ STEREO-A S/WAVES (10 kHz - 16 MHz)")
-        stereo_a_title.setStyleSheet("font-weight: bold;")
-        stereo_a_header.addWidget(stereo_a_title)
-        stereo_a_header.addStretch()
-        self.stereo_a_save_btn = QPushButton("💾 Save")
-        self.stereo_a_save_btn.setToolTip("Save STEREO-A image as PNG")
-        self.stereo_a_save_btn.clicked.connect(lambda checked: self.save_spectra_image('stereo_a'))
-        self.stereo_a_save_btn.setEnabled(False)
-        stereo_a_header.addWidget(self.stereo_a_save_btn)
-        stereo_a_layout.addLayout(stereo_a_header)
-
-        self.stereo_a_image_label = ClickableLabel("No data loaded")
-        self.stereo_a_image_label.setAlignment(Qt.AlignCenter)
-        self.stereo_a_image_label.setMinimumHeight(200)
-        self.stereo_a_image_label.setScaledContents(False)
-        self.stereo_a_image_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']};"
+        self._add_spectrum_card(
+            spectra_content_layout,
+            "stereo_a",
+            "🛰️ STEREO-A S/WAVES (10 kHz - 16 MHz)",
+            (16, 185, 129),
+            "STEREO-A",
+            "STEREO-A",
         )
-        self.stereo_a_image_label.setCursor(Qt.PointingHandCursor)
-        self.stereo_a_image_label.setToolTip("Click to view full resolution")
-        self.stereo_a_image_label.clicked.connect(lambda: self.show_local_image('stereo_a', 'STEREO-A'))
-        stereo_a_layout.addWidget(self.stereo_a_image_label)
-
-        spectra_content_layout.addWidget(stereo_a_card)
-
-        # STEREO-B image (hidden by default, only available for older dates)
-        self.stereo_b_card = QFrame()
-        if self.is_dark_theme:
-            self.stereo_b_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(251, 146, 60, 0.12),
-                        stop:1 rgba(251, 146, 60, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(251, 146, 60, 0.25);
-                }
-            """
-            )
-        else:
-            self.stereo_b_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
-        stereo_b_layout = QVBoxLayout(self.stereo_b_card)
-        stereo_b_layout.setContentsMargins(12, 12, 12, 12)
-
-        stereo_b_header = QHBoxLayout()
-        stereo_b_title = QLabel("🛰️ STEREO-B S/WAVES (10 kHz - 16 MHz)")
-        stereo_b_title.setStyleSheet("font-weight: bold;")
-        stereo_b_header.addWidget(stereo_b_title)
-        stereo_b_header.addStretch()
-        self.stereo_b_save_btn = QPushButton("💾 Save")
-        self.stereo_b_save_btn.setToolTip("Save STEREO-B image as PNG")
-        self.stereo_b_save_btn.clicked.connect(lambda checked: self.save_spectra_image('stereo_b'))
-        self.stereo_b_save_btn.setEnabled(False)
-        stereo_b_header.addWidget(self.stereo_b_save_btn)
-        stereo_b_layout.addLayout(stereo_b_header)
-
-        self.stereo_b_image_label = ClickableLabel("No data loaded")
-        self.stereo_b_image_label.setAlignment(Qt.AlignCenter)
-        self.stereo_b_image_label.setMinimumHeight(200)
-        self.stereo_b_image_label.setScaledContents(False)
-        self.stereo_b_image_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']};"
+        self._add_spectrum_card(
+            spectra_content_layout,
+            "stereo_b",
+            "🛰️ STEREO-B S/WAVES (10 kHz - 16 MHz)",
+            (251, 146, 60),
+            "STEREO-B",
+            "STEREO-B",
+            keep_card=True,
+            hidden=True,
+        )  # STEREO-B lost contact in 2014
+        self._add_spectrum_card(
+            spectra_content_layout,
+            "norp",
+            "📡 Nobeyama Radio Polarimeter (NORP) Full-Day",
+            (59, 130, 246),
+            "Nobeyama",
+            "Nobeyama NORP",
+            label_text="\n\n\n\n\n\n\n\n\n\nNo data loaded",
+            alignment=Qt.AlignTop | Qt.AlignHCenter,
+            min_height=400,
         )
-        self.stereo_b_image_label.setCursor(Qt.PointingHandCursor)
-        self.stereo_b_image_label.setToolTip("Click to view full resolution")
-        self.stereo_b_image_label.clicked.connect(lambda: self.show_local_image('stereo_b', 'STEREO-B'))
-        stereo_b_layout.addWidget(self.stereo_b_image_label)
-
-        self.stereo_b_card.hide()  # STEREO-B lost contact in 2014
-        spectra_content_layout.addWidget(self.stereo_b_card)
-
-        # Nobeyama (NORP) image
-        norp_card = QFrame()
-        if self.is_dark_theme:
-            norp_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(59, 130, 246, 0.12),
-                        stop:1 rgba(59, 130, 246, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(59, 130, 246, 0.25);
-                }
-            """
-            )
-        else:
-            norp_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
-        norp_layout = QVBoxLayout(norp_card)
-        norp_layout.setContentsMargins(12, 12, 12, 12)
-
-        norp_header = QHBoxLayout()
-        norp_title = QLabel("📡 Nobeyama Radio Polarimeter (NORP) Full-Day")
-        norp_title.setStyleSheet("font-weight: bold;")
-        norp_header.addWidget(norp_title)
-        norp_header.addStretch()
-        self.norp_save_btn = QPushButton("💾 Save")
-        self.norp_save_btn.setToolTip("Save Nobeyama image as PNG")
-        self.norp_save_btn.clicked.connect(lambda checked: self.save_spectra_image('norp'))
-        self.norp_save_btn.setEnabled(False)
-        norp_header.addWidget(self.norp_save_btn)
-        norp_layout.addLayout(norp_header)
-
-        self.norp_image_label = ClickableLabel("\n\n\n\n\n\n\n\n\n\nNo data loaded")
-        self.norp_image_label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        self.norp_image_label.setMinimumHeight(400)
-        self.norp_image_label.setScaledContents(False)
-        self.norp_image_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']};"
+        self._add_spectrum_card(
+            spectra_content_layout,
+            "yamagawa",
+            "🛰️ NICT Yamagawa Spectrograph",
+            (20, 184, 166),
+            "Yamagawa",
+            "Yamagawa",
+            min_height=None,
+            keep_card=True,
+            scroll=True,
         )
-        self.norp_image_label.setCursor(Qt.PointingHandCursor)
-        self.norp_image_label.setToolTip("Click to view full resolution")
-        self.norp_image_label.clicked.connect(lambda: self.show_local_image('norp', 'Nobeyama NORP'))
-        norp_layout.addWidget(self.norp_image_label)
-
-        spectra_content_layout.addWidget(norp_card)
-
-        # Yamagawa (NICT) card
-        self.yamagawa_card = QFrame()
-        yamagawa_card = self.yamagawa_card
-        if self.is_dark_theme:
-            yamagawa_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(20, 184, 166, 0.12),
-                        stop:1 rgba(20, 184, 166, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(20, 184, 166, 0.25);
-                }
-            """
-            )
-        else:
-            yamagawa_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
-        yamagawa_layout = QVBoxLayout(yamagawa_card)
-        yamagawa_layout.setContentsMargins(12, 12, 12, 12)
-
-        yamagawa_header = QHBoxLayout()
-        yamagawa_title = QLabel("🛰️ NICT Yamagawa Spectrograph")
-        yamagawa_title.setStyleSheet("font-weight: bold;")
-        yamagawa_header.addWidget(yamagawa_title)
-        yamagawa_header.addStretch()
-        self.yamagawa_save_btn = QPushButton("💾 Save")
-        self.yamagawa_save_btn.setToolTip("Save Yamagawa image as PNG")
-        self.yamagawa_save_btn.clicked.connect(lambda checked: self.save_spectra_image('yamagawa'))
-        self.yamagawa_save_btn.setEnabled(False)
-        yamagawa_header.addWidget(self.yamagawa_save_btn)
-        yamagawa_layout.addLayout(yamagawa_header)
-
-        # Scroll area for Yamagawa
-        self.yamagawa_scroll = QScrollArea()
-        self.yamagawa_scroll.setWidgetResizable(True)
-        self.yamagawa_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.yamagawa_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.yamagawa_scroll.setMinimumHeight(180) # Sufficient for scaled image + scrollbar
-        self.yamagawa_scroll.setFrameShape(QFrame.NoFrame)
-        self.yamagawa_scroll.setStyleSheet("background: transparent;")
-        
-        self.yamagawa_image_label = ClickableLabel("No data loaded")
-        self.yamagawa_image_label.setAlignment(Qt.AlignCenter)
-        self.yamagawa_image_label.setScaledContents(False)
-        self.yamagawa_image_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']};"
+        self._add_spectrum_card(
+            spectra_content_layout,
+            "hiras",
+            "🛰️ NICT HiRAS Spectrograph",
+            (14, 165, 233),
+            "HiRAS",
+            "HiRAS",
+            min_height=None,
+            keep_card=True,
+            scroll=True,
         )
-        self.yamagawa_image_label.setCursor(Qt.PointingHandCursor)
-        self.yamagawa_image_label.setToolTip("Click to view full resolution")
-        self.yamagawa_image_label.clicked.connect(lambda: self.show_local_image('yamagawa', 'Yamagawa'))
-        
-        self.yamagawa_scroll.setWidget(self.yamagawa_image_label)
-        yamagawa_layout.addWidget(self.yamagawa_scroll)
-
-        spectra_content_layout.addWidget(yamagawa_card)
-
-        # HiRAS (NICT) card
-        self.hiras_card = QFrame()
-        hiras_card = self.hiras_card
-        if self.is_dark_theme:
-            hiras_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(14, 165, 233, 0.12),
-                        stop:1 rgba(14, 165, 233, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(14, 165, 233, 0.25);
-                }
-            """
-            )
-        else:
-            hiras_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
-        hiras_layout = QVBoxLayout(hiras_card)
-        hiras_layout.setContentsMargins(12, 12, 12, 12)
-
-        hiras_header = QHBoxLayout()
-        hiras_title = QLabel("🛰️ NICT HiRAS Spectrograph")
-        hiras_title.setStyleSheet("font-weight: bold;")
-        hiras_header.addWidget(hiras_title)
-        hiras_header.addStretch()
-        self.hiras_save_btn = QPushButton("💾 Save")
-        self.hiras_save_btn.setToolTip("Save HiRAS image as PNG")
-        self.hiras_save_btn.clicked.connect(lambda checked: self.save_spectra_image('hiras'))
-        self.hiras_save_btn.setEnabled(False)
-        hiras_header.addWidget(self.hiras_save_btn)
-        hiras_layout.addLayout(hiras_header)
-
-        # Scroll area for HiRAS
-        self.hiras_scroll = QScrollArea()
-        self.hiras_scroll.setWidgetResizable(True)
-        self.hiras_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.hiras_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.hiras_scroll.setMinimumHeight(180)
-        self.hiras_scroll.setFrameShape(QFrame.NoFrame)
-        self.hiras_scroll.setStyleSheet("background: transparent;")
-        
-        self.hiras_image_label = ClickableLabel("No data loaded")
-        self.hiras_image_label.setAlignment(Qt.AlignCenter)
-        self.hiras_image_label.setScaledContents(False)
-        self.hiras_image_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']};"
+        self._add_spectrum_card(
+            spectra_content_layout,
+            "orfees",
+            "📡 ORFEES (Nançay) Spectrograph",
+            (168, 85, 247),
+            "ORFEES",
+            "ORFEES",
         )
-        self.hiras_image_label.setCursor(Qt.PointingHandCursor)
-        self.hiras_image_label.setToolTip("Click to view full resolution")
-        self.hiras_image_label.clicked.connect(lambda: self.show_local_image('hiras', 'HiRAS'))
-        
-        self.hiras_scroll.setWidget(self.hiras_image_label)
-        hiras_layout.addWidget(self.hiras_scroll)
-
-        spectra_content_layout.addWidget(hiras_card)
-
-        # ORFEES (Nancay) image
-        orfees_card = QFrame()
-        if self.is_dark_theme:
-            orfees_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(168, 85, 247, 0.12),
-                        stop:1 rgba(168, 85, 247, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(168, 85, 247, 0.25);
-                }
-            """
-            )
-        else:
-            orfees_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
-        orfees_layout = QVBoxLayout(orfees_card)
-        orfees_layout.setContentsMargins(12, 12, 12, 12)
-
-        orfees_header = QHBoxLayout()
-        orfees_title = QLabel("📡 ORFEES (Nançay) Spectrograph")
-        orfees_title.setStyleSheet("font-weight: bold;")
-        orfees_header.addWidget(orfees_title)
-        orfees_header.addStretch()
-        self.orfees_save_btn = QPushButton("💾 Save")
-        self.orfees_save_btn.setToolTip("Save ORFEES image as PNG")
-        self.orfees_save_btn.clicked.connect(lambda checked: self.save_spectra_image('orfees'))
-        self.orfees_save_btn.setEnabled(False)
-        orfees_header.addWidget(self.orfees_save_btn)
-        orfees_layout.addLayout(orfees_header)
-
-        self.orfees_image_label = ClickableLabel("No data loaded")
-        self.orfees_image_label.setAlignment(Qt.AlignCenter)
-        self.orfees_image_label.setMinimumHeight(200)
-        self.orfees_image_label.setScaledContents(False)
-        self.orfees_image_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']};"
+        self._add_spectrum_card(
+            spectra_content_layout,
+            "nda",
+            "📡 NDA (Nançay) Spectrograph",
+            (236, 72, 153),
+            "NDA",
+            "NDA",
         )
-        self.orfees_image_label.setCursor(Qt.PointingHandCursor)
-        self.orfees_image_label.setToolTip("Click to view full resolution")
-        self.orfees_image_label.clicked.connect(lambda: self.show_local_image('orfees', 'ORFEES'))
-        orfees_layout.addWidget(self.orfees_image_label)
-
-        spectra_content_layout.addWidget(orfees_card)
-
-        # NDA (Nancay) image
-        nda_card = QFrame()
-        if self.is_dark_theme:
-            nda_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(236, 72, 153, 0.12),
-                        stop:1 rgba(236, 72, 153, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(236, 72, 153, 0.25);
-                }
-            """
-            )
-        else:
-            nda_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
-        nda_layout = QVBoxLayout(nda_card)
-        nda_layout.setContentsMargins(12, 12, 12, 12)
-
-        nda_header = QHBoxLayout()
-        nda_title = QLabel("📡 NDA (Nançay) Spectrograph")
-        nda_title.setStyleSheet("font-weight: bold;")
-        nda_header.addWidget(nda_title)
-        nda_header.addStretch()
-        self.nda_save_btn = QPushButton("💾 Save")
-        self.nda_save_btn.setToolTip("Save NDA image as PNG")
-        self.nda_save_btn.clicked.connect(lambda checked: self.save_spectra_image('nda'))
-        self.nda_save_btn.setEnabled(False)
-        nda_header.addWidget(self.nda_save_btn)
-        nda_layout.addLayout(nda_header)
-
-        self.nda_image_label = ClickableLabel("No data loaded")
-        self.nda_image_label.setAlignment(Qt.AlignCenter)
-        self.nda_image_label.setMinimumHeight(200)
-        self.nda_image_label.setScaledContents(False)
-        self.nda_image_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']};"
-        )
-        self.nda_image_label.setCursor(Qt.PointingHandCursor)
-        self.nda_image_label.setToolTip("Click to view full resolution")
-        self.nda_image_label.clicked.connect(lambda: self.show_local_image('nda', 'NDA'))
-        nda_layout.addWidget(self.nda_image_label)
-
-        spectra_content_layout.addWidget(nda_card)
 
         spectra_content_layout.addStretch()
         spectra_scroll.setWidget(spectra_content)
@@ -2511,7 +2171,98 @@ class NOAAEventsViewer(QMainWindow):
 
         self.tabs.addTab(spectra_tab, "Radio Spectra")
 
-        layout.addWidget(self.tabs)
+
+    def _add_spectrum_card(
+        self,
+        parent_layout,
+        key,
+        title,
+        accent_rgb,
+        save_name,
+        viewer_title,
+        label_text="No data loaded",
+        alignment=Qt.AlignCenter,
+        min_height=200,
+        scroll=False,
+        hidden=False,
+        keep_card=False,
+    ):
+        """Add a themed card with a title, a Save button and a clickable image
+        label for one radio spectrograph. Creates ``self.<key>_save_btn`` and
+        ``self.<key>_image_label`` (and ``self.<key>_scroll`` / ``self.<key>_card``
+        when ``scroll`` / ``keep_card`` are set)."""
+        palette = theme_manager.palette
+        rgb = ", ".join(str(v) for v in accent_rgb)
+        card = QFrame()
+        if keep_card:
+            setattr(self, f"{key}_card", card)
+        if self.is_dark_theme:
+            card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 rgba({rgb}, 0.12),
+                        stop:1 rgba({rgb}, 0.06));
+                    border-radius: 12px;
+                    border: 1px solid rgba({rgb}, 0.25);
+                }}
+            """
+            )
+        else:
+            card.setStyleSheet(
+                f"""
+                QFrame {{
+                    background-color: {palette['surface']};
+                    border-radius: 12px;
+                    border: 1px solid {palette['border']};
+                }}
+            """
+            )
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        header = QHBoxLayout()
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-weight: bold;")
+        header.addWidget(title_label)
+        header.addStretch()
+        save_btn = QPushButton("💾 Save")
+        save_btn.setToolTip(f"Save {save_name} image as PNG")
+        save_btn.clicked.connect(lambda checked: self.save_spectra_image(key))
+        save_btn.setEnabled(False)
+        setattr(self, f"{key}_save_btn", save_btn)
+        header.addWidget(save_btn)
+        layout.addLayout(header)
+
+        if scroll:
+            scroll_area = QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll_area.setMinimumHeight(180)  # Scaled image + scrollbar
+            scroll_area.setFrameShape(QFrame.NoFrame)
+            scroll_area.setStyleSheet("background: transparent;")
+            setattr(self, f"{key}_scroll", scroll_area)
+
+        image_label = ClickableLabel(label_text)
+        image_label.setAlignment(alignment)
+        if not scroll:
+            image_label.setMinimumHeight(min_height)
+        image_label.setScaledContents(False)
+        image_label.setStyleSheet(f"color: {palette['text_secondary']};")
+        image_label.setCursor(Qt.PointingHandCursor)
+        image_label.setToolTip("Click to view full resolution")
+        image_label.clicked.connect(lambda: self.show_local_image(key, viewer_title))
+        setattr(self, f"{key}_image_label", image_label)
+
+        if scroll:
+            scroll_area.setWidget(image_label)
+            layout.addWidget(scroll_area)
+        else:
+            layout.addWidget(image_label)
+        if hidden:
+            card.hide()
+        parent_layout.addWidget(card)
 
     def update_events_layout_logic(self, *args):
         """Show/hide bottom spacer based on whether any section is open."""
