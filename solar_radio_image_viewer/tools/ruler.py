@@ -12,6 +12,10 @@ class RulerMixin:
     """Ruler / angular distance measurement tool.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
+
+    Host attributes/methods used:
+
+    ``canvas``, ``current_wcs``, ``roi_selector``, ``show_status_message``
     """
 
     def _toggle_ruler_mode(self, checked):

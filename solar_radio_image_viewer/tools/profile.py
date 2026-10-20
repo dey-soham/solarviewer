@@ -24,6 +24,11 @@ class ProfileMixin:
     """Flux profile cuts (line and radial) and the profile plot dialog.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
+
+    Host attributes/methods used:
+
+    ``canvas``, ``current_image_data``, ``current_wcs``, ``figure``,
+    ``profile_action``, ``roi_selector``, ``show_status_message``
     """
 
     def _toggle_profile_mode(self, checked):

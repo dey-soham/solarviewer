@@ -25,6 +25,10 @@ class AnnotationsMixin:
     """Store text/arrow annotations on a tab (drawn by ``plot_image``).
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
+
+    Host attributes/methods used:
+
+    ``arrow_annotations``, ``schedule_plot``, ``text_annotations``
     """
 
     def add_text_annotation(
@@ -85,6 +89,10 @@ class AnnotationDialogsMixin:
     """Main-window dialogs that create text/arrow annotations on the current tab.
 
     Mixed into :class:`SolarRadioImageViewerApp`; relies on its attributes via ``self``.
+
+    Host attributes/methods used:
+
+    ``_open_dialogs``, ``tab_widget``
     """
 
     def show_add_text_annotation_dialog(self):

@@ -32,6 +32,12 @@ class RoiStatsMixin:
     """ROI selection (rectangle/ellipse), ROI statistics and the ROI histogram.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
+
+    Host attributes/methods used:
+
+    ``canvas``, ``current_image_data``, ``current_wcs``, ``info_label``,
+    ``on_mouse_move``, ``pan_action``, ``parent``, ``region_mode``,
+    ``show_status_message``, ``stats_table``
     """
 
     def show_roi_stats(self, roi, ra_dec_info=""):

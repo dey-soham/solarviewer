@@ -10,6 +10,12 @@ class TbModeMixin:
     """Toggle between flux (Jy/beam) and brightness temperature (K) views.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
+
+    Host attributes/methods used:
+
+    ``current_image_data``, ``hpc_btn``, ``_hpc_temp_file``,
+    ``on_visualization_changed``, ``show_status_message``, ``tb_btn``,
+    ``_temp_file_id``
     """
 
     def _toggle_tb_mode(self):

@@ -13,6 +13,10 @@ class FittingMixin:
     """2D Gaussian and elliptical ring fitting on the current tab's ROI.
 
     Mixed into :class:`SolarRadioImageViewerApp`; relies on its attributes via ``self``.
+
+    Host attributes/methods used:
+
+    ``statusBar``, ``tab_widget``
     """
 
     def fit_2d_gaussian(self):
