@@ -265,6 +265,53 @@ class VideoCreationDialog(QDialog):
         # Add preview controls to the main layout first
         main_layout.addWidget(preview_controls_group)
 
+        input_scroll = self._create_input_tab(input_layout)
+
+        display_scroll = self._create_display_tab(display_layout)
+
+        region_scroll = self._create_region_tab(region_layout)
+
+        overlay_scroll = self._create_overlay_tab(overlay_layout)
+
+        output_scroll = self._create_output_tab(output_layout)
+
+        contours_scroll = self._create_contours_tab()
+
+        # Add tabs to tab widget (Contours is second when in Contour Mode)
+        self.tab_widget.addTab(input_scroll, "Input")
+        self.tab_widget.addTab(contours_scroll, "Input")
+        self.tab_widget.addTab(display_scroll, "Display")
+        self.tab_widget.addTab(region_scroll, "Region")
+        self.tab_widget.addTab(overlay_scroll, "Overlays")
+        self.tab_widget.addTab(output_scroll, "Output")
+
+        # Add the tab widget to the main layout (after the preview)
+        main_layout.addWidget(self.tab_widget)
+
+        # Hide Contours tab by default (shown when Contour Mode checkbox is checked)
+        self.tab_widget.setTabVisible(1, False)
+
+        # Buttons at the bottom
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+        button_layout.addStretch()
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setMinimumWidth(100)
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_btn)
+
+        self.create_btn = QPushButton("Create Video")
+        self.create_btn.setMinimumWidth(120)
+        self.create_btn.setObjectName("PrimaryButton")
+        self.create_btn.clicked.connect(self.create_video)
+        self.create_btn.setEnabled(False)
+        button_layout.addWidget(self.create_btn)
+
+        main_layout.addLayout(button_layout)
+
+    def _create_input_tab(self, input_layout):
+        """Input tab: directory, file pattern, sorting, Stokes. Returns the tab's scroll area."""
         # ------ Input Tab ------
         # Create a scroll area for the input tab
         input_scroll = QScrollArea()
@@ -331,7 +378,10 @@ class VideoCreationDialog(QDialog):
         self.files_found_label.setObjectName("StatusLabel")
         input_layout.addWidget(self.files_found_label)
         input_layout.addStretch()
+        return input_scroll
 
+    def _create_display_tab(self, display_layout):
+        """Display tab: colormap, stretch, range, frame size, presets. Returns the tab's scroll area."""
         # ------ Display Tab ------
         # Create a scroll area for the display tab
         display_scroll = QScrollArea()
@@ -570,7 +620,10 @@ class VideoCreationDialog(QDialog):
 
         display_layout.addWidget(presets_group)
         display_layout.addStretch()
+        return display_scroll
 
+    def _create_region_tab(self, region_layout):
+        """Region tab: optional sub-region selection. Returns the tab's scroll area."""
         # ------ Region Tab ------
         # Create a scroll area for the region tab
         region_scroll = QScrollArea()
@@ -681,7 +734,10 @@ class VideoCreationDialog(QDialog):
         self.toggle_region_controls(False)
 
         region_layout.addStretch()
+        return region_scroll
 
+    def _create_overlay_tab(self, overlay_layout):
+        """Overlays tab: timestamp, frame number, file name, min/max timeline. Returns the tab's scroll area."""
         # ------ Overlay Tab ------
         # Create a scroll area for the overlay tab
         overlay_scroll = QScrollArea()
@@ -782,7 +838,10 @@ class VideoCreationDialog(QDialog):
 
         # Add spacer to push controls to the top
         overlay_layout.addStretch()
+        return overlay_scroll
 
+    def _create_output_tab(self, output_layout):
+        """Output tab: file name, fps, quality, multiprocessing. Returns the tab's scroll area."""
         # ------ Output Tab ------
         # Create a scroll area for the output tab
         output_scroll = QScrollArea()
@@ -872,7 +931,10 @@ class VideoCreationDialog(QDialog):
 
         output_layout.addWidget(perf_group)
         output_layout.addStretch()
+        return output_scroll
 
+    def _create_contours_tab(self):
+        """Contours tab (shown in Contour Mode). Returns the tab's scroll area."""
         # ------ Contours Tab ------
         # Create a scroll area for the contours tab
         contours_scroll = QScrollArea()
@@ -1079,39 +1141,7 @@ class VideoCreationDialog(QDialog):
         # Initially disable contour controls
         self.toggle_contour_video_controls(False)
         self.update_contour_mode_ui(0)
-
-        # Add tabs to tab widget (Contours is second when in Contour Mode)
-        self.tab_widget.addTab(input_scroll, "Input")
-        self.tab_widget.addTab(contours_scroll, "Input")
-        self.tab_widget.addTab(display_scroll, "Display")
-        self.tab_widget.addTab(region_scroll, "Region")
-        self.tab_widget.addTab(overlay_scroll, "Overlays")
-        self.tab_widget.addTab(output_scroll, "Output")
-
-        # Add the tab widget to the main layout (after the preview)
-        main_layout.addWidget(self.tab_widget)
-
-        # Hide Contours tab by default (shown when Contour Mode checkbox is checked)
-        self.tab_widget.setTabVisible(1, False)
-
-        # Buttons at the bottom
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(12)
-        button_layout.addStretch()
-
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setMinimumWidth(100)
-        self.cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(self.cancel_btn)
-
-        self.create_btn = QPushButton("Create Video")
-        self.create_btn.setMinimumWidth(120)
-        self.create_btn.setObjectName("PrimaryButton")
-        self.create_btn.clicked.connect(self.create_video)
-        self.create_btn.setEnabled(False)
-        button_layout.addWidget(self.create_btn)
-
-        main_layout.addLayout(button_layout)
+        return contours_scroll
 
     def toggle_range_mode(self, index):
         """Enable/disable controls based on the range mode selection"""
