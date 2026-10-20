@@ -132,8 +132,9 @@ class ExternalToolsMixin:
             import sys
 
             # Get the path to the CLI script and its directory
+            package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             cli_script = os.path.join(
-                os.path.dirname(__file__),
+                package_dir,
                 "solar_data_downloader",
                 "solar_data_downloader_cli.py",
             )
