@@ -82,6 +82,7 @@ from .tools import (
     ImageStatsMixin,
     SolarEventsMixin,
 )
+from .core.cache import ReprojectionCache
 from .core.presets import display_range
 from .processing.colormaps import ensure_solar_colormaps
 from .core import (
@@ -269,7 +270,7 @@ class SolarRadioImageTab(
         # Cache for reprojected contours to avoid redundant heavy computations
         # Key: (base_image_path, contour_image_path, stokes, visualization_params...)
         # Value: (reprojected_data, extended_wcs, extended_shape, contour_offset)
-        self._reproject_cache = {}
+        self._reproject_cache = ReprojectionCache()
 
         # Debounce timers for UI responsiveness
         self._gamma_debounce_timer = None
@@ -1798,7 +1799,7 @@ class SolarRadioImageTab(
             return
 
         if dir_load:
-            self._reproject_cache = {}
+            self._reproject_cache = ReprojectionCache()
 
         tight_layout = False
         """if dir_load:
