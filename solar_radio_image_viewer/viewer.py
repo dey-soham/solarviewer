@@ -3987,6 +3987,20 @@ class SolarRadioImageViewerApp(
 
     def create_menus(self):
         menubar = self.menuBar()
+        self._create_file_menu(menubar)
+        self._create_view_menu(menubar)
+        tools_menu = self._create_tools_menu(menubar)
+        self._create_region_menu(menubar)
+        self._create_fitting_menu(menubar)
+        self._create_annotations_menu(menubar)
+        self._create_presets_menu(menubar)
+        self._create_tabs_menu(menubar)
+        self._create_download_menu(menubar)
+        self._create_help_menu(menubar)
+        self._create_lofar_menu(tools_menu)
+
+    def _create_file_menu(self, menubar):
+        """File menu: open, remote, export, quit."""
         file_menu = menubar.addMenu("&File")
 
         open_act = QAction("Open Solar Radio Image...", self)
@@ -4075,6 +4089,8 @@ class SolarRadioImageViewerApp(
         exit_act.triggered.connect(self.close)
         file_menu.addAction(exit_act)
 
+    def _create_view_menu(self, menubar):
+        """View menu: theme, fullscreen, metadata, scroll zoom."""
         # View menu with theme toggle
         view_menu = menubar.addMenu("&View")
 
@@ -4130,6 +4146,8 @@ class SolarRadioImageViewerApp(
         # Register for theme changes
         theme_manager.register_callback(self._on_theme_changed)
 
+    def _create_tools_menu(self, menubar):
+        """Tools menu (the LOFAR submenu is added by _create_lofar_menu)."""
         tools_menu = menubar.addMenu("&Tools")
         from .dialogs import BatchProcessDialog, ImageInfoDialog
 
@@ -4219,7 +4237,10 @@ class SolarRadioImageViewerApp(
             )
         )
         tools_menu.addAction(dynamic_spectrum_act)
+        return tools_menu
 
+    def _create_region_menu(self, menubar):
+        """Region menu."""
         region_menu = menubar.addMenu("&Region")
         subimg_act = QAction("Export Sub-Image (ROI)", self)
         subimg_act.setShortcut("Ctrl+S")
@@ -4233,6 +4254,8 @@ class SolarRadioImageViewerApp(
         export_roi_act.triggered.connect(self.export_casa_region)
         region_menu.addAction(export_roi_act)
 
+    def _create_fitting_menu(self, menubar):
+        """Fitting menu."""
         fitting_menu = menubar.addMenu("F&itting")
         gauss_act = QAction("Fit 2D Gaussian", self)
         gauss_act.setShortcut("Ctrl+G")
@@ -4245,6 +4268,8 @@ class SolarRadioImageViewerApp(
         ring_act.triggered.connect(self.fit_2d_ring)
         fitting_menu.addAction(ring_act)
 
+    def _create_annotations_menu(self, menubar):
+        """Annotations menu (text, arrows, shapes)."""
         annot_menu = menubar.addMenu("&Annotations")
         text_act = QAction("Add Text Annotation", self)
         text_act.setShortcut("Ctrl+T")
@@ -4263,6 +4288,8 @@ class SolarRadioImageViewerApp(
 
         setup_shape_menu(self, annot_menu)
 
+    def _create_presets_menu(self, menubar):
+        """Presets menu; entries come from core/presets.py."""
         preset_menu = menubar.addMenu("Presets")
 
         self.auto_preset_act = QAction(
@@ -4277,6 +4304,8 @@ class SolarRadioImageViewerApp(
 
         self._add_preset_actions(preset_menu)
 
+    def _create_tabs_menu(self, menubar):
+        """Tabs menu."""
         tabs_menu = menubar.addMenu("&Tabs")
         new_tab_act = QAction("Add New Tab", self)
         new_tab_act.setShortcut("Ctrl+N")
@@ -4289,6 +4318,8 @@ class SolarRadioImageViewerApp(
         close_tab_act.triggered.connect(self.close_current_tab)
         tabs_menu.addAction(close_tab_act)
 
+    def _create_download_menu(self, menubar):
+        """Download menu."""
         # Add Data Download menu after File menu
         download_menu = menubar.addMenu("&Download")
 
@@ -4315,6 +4346,9 @@ class SolarRadioImageViewerApp(
         )
         cli_downloader_action.triggered.connect(self.launch_data_downloader_cli)
         download_menu.addAction(cli_downloader_action)"""
+
+    def _create_help_menu(self, menubar):
+        """Help menu."""
         help_menu = menubar.addMenu("&Help")
 
         """tutorial_act = QAction("Tutorial", self)
@@ -4338,17 +4372,8 @@ class SolarRadioImageViewerApp(
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
 
-        # Tools menu
-        # tools_menu = self.menuBar().addMenu("&Tools")
-
-        # Add Create Video option to Tools menu
-        # create_video_action = QAction("Create &Video", self)
-        # create_video_action.setStatusTip("Create video from sequence of FITS files")
-        # create_video_action.triggered.connect(self.show_create_video_dialog)
-        # tools_menu.addAction(create_video_action)
-
-        # Add Batch HPC Conversion option
-
+    def _create_lofar_menu(self, tools_menu):
+        """LOFAR Tools submenu at the end of the Tools menu."""
         # Add LOFAR Tools submenu
         tools_menu.addSeparator()
         lofar_menu = QMenu("LOFAR Tools", self)
