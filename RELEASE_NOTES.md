@@ -1,5 +1,28 @@
 # SolarViewer Release Notes
 
+## Version 1.3.0
+
+### Image Loading & Display
+*   **Compressed FITS Support**: Files that store the image in a compressed extension (e.g. GOES SUVI L2, SDO/AIA and HMI from JSOC) now load with proper solar coordinates, titles and units instead of raw pixels.
+*   **Colour Range Fixes**: Constant or fully masked maps (e.g. Lfrac/Vfrac/PANG below threshold) no longer keep the previous product's colour range, and **Update Display** after a Stokes change now resets the range.
+*   **LASCO Presets**: LASCO presets now use the LASCO colormaps; the menu offers separate C2 and C3 presets.
+
+### Stability
+*   **No More Crash-on-Error**: Unexpected errors no longer close the application. A crash report is still saved and a warning is shown, and the viewer keeps running.
+*   **Scroll-Zoom Crash**: Fixed a crash when switching files or redrawing during a scroll-zoom/pan animation.
+*   **Remote Downloads**: Stalled SSH/SFTP downloads are now detected instead of hanging.
+*   **Dialogs**: Fixed the Unit Conversion and Format Conversion dialogs crashing on open.
+
+### Fixes
+*   **2D Gaussian Fit**: A fit that finds no component now shows an error instead of an all-zero result.
+*   **Solar Data Downloader CLI**: Fixed the launcher, which always failed.
+*   **Titles**: Removed a spurious "Error getting title" message for FITS files without time or frequency.
+
+### Under the Hood
+*   **Restructured Codebase**: The 17,000-line viewer was split into focused packages (`core`, `tools`, `dialogs`, `processing`, `coordinates`, `video`, `ui`, `pipeline`). Old import paths still work but emit a deprecation warning.
+*   **Packaging**: Moved from `setup.py` to `pyproject.toml`, and added the missing `reproject` dependency.
+*   **Cleanup**: Renamed `from_simpl` to `pipeline` and removed the unused `learmonth-py` scripts.
+
 ## Version 1.2.5
 
 ### Visualization & Annotations
