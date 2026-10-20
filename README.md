@@ -122,11 +122,10 @@ cd solarviewer
 pip install -e .
 ```
 
-For development, install the dev tools and run the test suite (runs offscreen, no display needed):
+For development, install the formatting and lint tools as well:
 
 ```bash
 pip install -e ".[dev]"
-pytest
 ```
 
 ### Desktop Integration
@@ -317,7 +316,6 @@ solarviewer/
 │   ├── log_console.py          # Internal log viewer
 │   ├── version.py              # Version information
 │   └── assets/                 # Icons and resources
-├── tests/                      # pytest suite (runs offscreen)
 ├── resources/                  # Desktop integration resources
 ├── pyproject.toml              # Packaging metadata + dev tool configuration
 ├── requirements.txt

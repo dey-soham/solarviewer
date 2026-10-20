@@ -20,7 +20,7 @@ _modules = {
     "video.dialog": ["VideoCreationDialog"],
 }
 
-# Modules moved during the restructuring (see RESTRUCTURING.md). Importing the
+# Modules moved during the v1.3 restructuring. Importing the
 # old path still works but returns the new module with a DeprecationWarning.
 _MOVED_MODULES = {
     "norms": "processing.norms",
