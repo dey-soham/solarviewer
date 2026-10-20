@@ -17,7 +17,11 @@ from . import __version__
 
 # Globally suppress Astropy's "Invalid 'BLANK' keyword" warning
 import warnings
-from .crash_handler import install_crash_handler, generate_crash_report
+from .crash_handler import (
+    install_crash_handler,
+    generate_crash_report,
+    set_main_window,
+)
 
 # Enable crash reporting immediately
 install_crash_handler()
@@ -315,6 +319,9 @@ Examples:
             # Finish splash sequence
             splash.finish(win)
             win.show()
+
+            # From now on, unhandled exceptions are reported but not fatal
+            set_main_window(win)
 
         except Exception as e:
             import traceback

@@ -3,10 +3,11 @@ import os
 import platform
 import traceback
 import subprocess
-import json
 from datetime import datetime
 from pathlib import Path
 from .version import __version__
+
+CRASH_REPORTS_DIR = Path.home() / ".solarviewer" / "crash_reports"
 
 
 def get_library_versions():
@@ -104,15 +105,21 @@ def get_environment_info():
     return env_info
 
 
-def generate_crash_report(exctype, value, tb):
-    """Generate a detailed crash report and save it to a file."""
+def generate_crash_report(exctype, value, tb, fatal=True):
+    """Generate a detailed crash report and save it to a file.
+
+    ``fatal`` records whether the application exited because of the error.
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     report_filename = f"crash_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
 
-    # Define crash reports directory
-    reports_dir = Path.home() / ".solarviewer" / "crash_reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    report_path = reports_dir / report_filename
+    CRASH_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = CRASH_REPORTS_DIR / report_filename
+    # Several non-fatal errors can happen within the same second
+    n = 2
+    while report_path.exists():
+        report_path = CRASH_REPORTS_DIR / report_filename.replace(".md", f"_{n}.md")
+        n += 1
 
     # Get traceback
     traceback_details = "".join(traceback.format_exception(exctype, value, tb))
@@ -133,6 +140,7 @@ def generate_crash_report(exctype, value, tb):
         "# SolarViewer Crash Report",
         f"\n**Timestamp:** {timestamp}",
         f"**App Version:** {__version__}",
+        f"**Fatal:** {'Yes' if fatal else 'No (the application kept running)'}",
         "\n## 1. Exception Details",
         "```python",
         f"{traceback_details}",
@@ -187,7 +195,10 @@ def generate_crash_report(exctype, value, tb):
     try:
         with open(report_path, "w") as f:
             f.write(report_content)
-        print(f"\nCRITICAL: SolarViewer encountered an unhandled exception.")
+        if fatal:
+            print("\nCRITICAL: SolarViewer encountered an unhandled exception.")
+        else:
+            print("\n[ERROR] SolarViewer encountered an unhandled exception (continuing).")
         print(f"A detailed crash report has been saved to: {report_path}")
     except Exception as e:
         print(f"CRITICAL: Application crashed and failed to save report: {e}")
@@ -196,12 +207,113 @@ def generate_crash_report(exctype, value, tb):
     return report_path
 
 
+# Once the main window is up (see set_main_window), unhandled exceptions are
+# reported and shown to the user, but the application keeps running.
+_main_window = None
+# Exception signature -> {"count": n, "path": report path}, so an error that
+# repeats (e.g. raised from a timer) is reported once rather than every time.
+_reported = {}
+_error_dialog = None
+
+
+def set_main_window(window):
+    """Make unhandled exceptions non-fatal from now on.
+
+    Call once the main window is shown. Before that (during startup) an
+    unhandled exception still exits the application after writing a report.
+    """
+    global _main_window
+    _main_window = window
+
+
+def _exception_signature(exctype, tb):
+    """Identify an error by its type and the line that raised it."""
+    frames = traceback.extract_tb(tb)
+    last = frames[-1] if frames else None
+    return (
+        exctype.__name__,
+        last.filename if last else "",
+        last.lineno if last else 0,
+    )
+
+
+def _restore_cursor():
+    """Undo any wait cursors left behind by the interrupted action."""
+    try:
+        from PyQt5.QtWidgets import QApplication
+
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
+    except Exception:
+        pass
+
+
+def _notify_user(exctype, value, tb, report_path):
+    """Show a non-blocking message about the error (one at a time)."""
+    global _error_dialog
+    if _error_dialog is not None:
+        return  # Already showing one; the report is saved regardless
+
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QMessageBox
+
+    dialog = QMessageBox(_main_window)
+    dialog.setIcon(QMessageBox.Warning)
+    dialog.setWindowTitle("Unexpected Error")
+    dialog.setText(
+        "Something went wrong. SolarViewer is still running, but the last "
+        "action may not have completed."
+    )
+    dialog.setInformativeText(
+        f"{exctype.__name__}: {value}\n\nA crash report was saved to:\n{report_path}"
+    )
+    dialog.setDetailedText("".join(traceback.format_exception(exctype, value, tb)))
+    dialog.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    dialog.setStandardButtons(QMessageBox.Ok)
+    dialog.setWindowModality(Qt.NonModal)
+    dialog.setAttribute(Qt.WA_DeleteOnClose)
+
+    def on_finished(_result):
+        global _error_dialog
+        _error_dialog = None
+
+    dialog.finished.connect(on_finished)
+    _error_dialog = dialog
+    dialog.show()
+
+
+def _handle_nonfatal(exctype, value, tb):
+    _restore_cursor()
+
+    signature = _exception_signature(exctype, tb)
+    entry = _reported.get(signature)
+    if entry is not None:
+        entry["count"] += 1
+        print(
+            f"[ERROR] {exctype.__name__}: {value} "
+            f"(repeated {entry['count']}x; report: {entry['path']})"
+        )
+        return
+
+    report_path = generate_crash_report(exctype, value, tb, fatal=False)
+    _reported[signature] = {"count": 1, "path": report_path}
+    _notify_user(exctype, value, tb, report_path)
+
+
 def crash_excepthook(exctype, value, tb):
     """The sys.excepthook that catches all crashes."""
     # Run original hook if it's a KeyboardInterrupt (so Ctrl+C still works normally)
     if issubclass(exctype, KeyboardInterrupt):
         sys.__excepthook__(exctype, value, tb)
         return
+
+    if _main_window is not None:
+        try:
+            _handle_nonfatal(exctype, value, tb)
+            return
+        except Exception:
+            # Reporting itself failed; fall back to the fatal path below
+            traceback.print_exc()
 
     # Generate and save report
     generate_crash_report(exctype, value, tb)
@@ -226,7 +338,9 @@ def thread_excepthook(args):
 
     # Generate the crash report (non-fatal — don't exit the app)
     try:
-        generate_crash_report(args.exc_type, args.exc_value, args.exc_traceback)
+        generate_crash_report(
+            args.exc_type, args.exc_value, args.exc_traceback, fatal=False
+        )
     except Exception:
         # Last resort: at least print the traceback
         traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
