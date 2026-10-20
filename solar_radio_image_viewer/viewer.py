@@ -99,8 +99,10 @@ from .core import (
     CanvasMixin,
     ContoursMixin,
     FileNavigationMixin,
+    PresetsMixin,
     ExportsMixin,
     ExternalToolsMixin,
+    PresetMenuMixin,
     RemoteModeMixin,
 )
 
@@ -326,6 +328,7 @@ class SolarRadioImageTab(
     CanvasMixin,
     ContoursMixin,
     FileNavigationMixin,
+    PresetsMixin,
     RoiStatsMixin,
     RulerMixin,
     ProfileMixin,
@@ -1130,15 +1133,21 @@ class SolarRadioImageTab(
 
         self.auto_minmax_button = QPushButton("Auto")
         self.auto_minmax_button.setStyleSheet(preset_btn_style)
-        self.auto_minmax_button.clicked.connect(self.auto_minmax)
+        self.auto_minmax_button.clicked.connect(
+            lambda: self.apply_auto_range("minmax")
+        )
 
         self.auto_percentile_button = QPushButton("1-99%")
         self.auto_percentile_button.setStyleSheet(preset_btn_style)
-        self.auto_percentile_button.clicked.connect(self.auto_percentile)
+        self.auto_percentile_button.clicked.connect(
+            lambda: self.apply_auto_range("p1_99")
+        )
 
         self.auto_median_button = QPushButton("Med±3σ")
         self.auto_median_button.setStyleSheet(preset_btn_style)
-        self.auto_median_button.clicked.connect(self.auto_median_rms)
+        self.auto_median_button.clicked.connect(
+            lambda: self.apply_auto_range("median_rms")
+        )
 
         preset_layout.addWidget(self.auto_minmax_button)
         preset_layout.addWidget(self.auto_percentile_button)
@@ -1203,11 +1212,17 @@ class SolarRadioImageTab(
         gamma_layout.addWidget(self.gamma_entry)
         preset_layout = QHBoxLayout()
         self.auto_minmax_button = QPushButton("Auto")
-        self.auto_minmax_button.clicked.connect(self.auto_minmax)
+        self.auto_minmax_button.clicked.connect(
+            lambda: self.apply_auto_range("minmax")
+        )
         self.auto_percentile_button = QPushButton("1-99%")
-        self.auto_percentile_button.clicked.connect(self.auto_percentile)
+        self.auto_percentile_button.clicked.connect(
+            lambda: self.apply_auto_range("p1_99")
+        )
         self.auto_median_button = QPushButton("Med±3σ")
-        self.auto_median_button.clicked.connect(self.auto_median_rms)
+        self.auto_median_button.clicked.connect(
+            lambda: self.apply_auto_range("median_rms")
+        )
         preset_layout.addWidget(self.auto_minmax_button)
         preset_layout.addWidget(self.auto_percentile_button)
         preset_layout.addWidget(self.auto_median_button)
@@ -2059,7 +2074,6 @@ class SolarRadioImageTab(
                     self.imagename, stokes, threshold, auto_adjust_rms=dir_load
                 )
             if dir_load:
-                fname = os.path.basename(self.imagename).lower()
                 mw = self.window()
                 auto_presets = (
                     hasattr(mw, "auto_preset_act") and mw.auto_preset_act.isChecked()
@@ -2067,139 +2081,7 @@ class SolarRadioImageTab(
                 is_preset_matched = False
 
                 if auto_presets:
-                    header = getattr(self, "current_header", {})
-                    telescop = str(header.get("TELESCOP", "")).upper().strip()
-                    instrume = str(header.get("INSTRUME", "")).upper().strip()
-                    detector = str(header.get("DETECTOR", "")).upper().strip()
-                    wavelnth = str(header.get("WAVELNTH", ""))
-                    if not wavelnth:
-                        wavelnth = str(header.get("TWAVE1", ""))  # IRIS fallback
-
-                    try:
-                        wavelnth_int = int(float(wavelnth)) if wavelnth else 0
-                    except Exception:
-                        wavelnth_int = 0
-
-                    if telescop == "SDO/HMI" or "HMI" in instrume or "hmi" in fname:
-                        self.HMI_presets()
-                        is_preset_matched = True
-                    elif telescop == "SDO/AIA" or "aia" in fname:
-                        is_preset_matched = True
-                        wv = wavelnth_int
-                        if wv == 0 and "aia" in fname:
-                            for w in [
-                                94,
-                                131,
-                                171,
-                                193,
-                                211,
-                                304,
-                                335,
-                                1600,
-                                1700,
-                                4500,
-                            ]:
-                                if str(w) in fname:
-                                    wv = w
-                                    break
-                            if wv == 0:
-                                wv = 171
-                        self.aia_presets(wavelength=wv)
-                    elif (
-                        (telescop == "SOHO" and instrume == "EIT")
-                        or "eit" in fname
-                        or "efz" in fname
-                    ):
-                        is_preset_matched = True
-                        wv = wavelnth_int
-                        if wv == 0 and ("eit" in fname or "efz" in fname):
-                            for w in [171, 195, 284, 304]:
-                                if str(w) in fname:
-                                    wv = w
-                                    break
-                            if wv == 0:
-                                wv = 171
-                        self.EIT_presets(wavelength=wv)
-                    elif (
-                        telescop == "SOHO" and "LASCO" in instrume
-                    ) or "lasco" in fname:
-                        is_preset_matched = True
-                        det = detector
-                        if not det and "lasco" in fname:
-                            if "cal_2" in fname:
-                                det = "C2"
-                            elif "cal_3" in fname:
-                                det = "C3"
-                        if "C3" in det:
-                            self.LASCO_presets(detector="C3")
-                        else:
-                            self.LASCO_presets(detector="C2")
-                    elif (
-                        telescop == "IRIS"
-                        or "SJI" in instrume
-                        or "iris" in fname
-                        or "sji" in fname
-                    ):
-                        is_preset_matched = True
-                        wv = wavelnth_int
-                        if wv == 0 and ("iris" in fname or "sji" in fname):
-                            for w in [1330, 1400, 2796, 2832]:
-                                if str(w) in fname:
-                                    wv = w
-                                    break
-                            if wv == 0:
-                                wv = 1330
-                        self.IRIS_presets(wavelength=wv)
-                    elif "SUVI" in instrume or "suvi" in fname:
-                        is_preset_matched = True
-                        wv = wavelnth_int
-                        if wv == 0 and "suvi" in fname:
-                            for w in [94, 131, 171, 195, 284, 304]:
-                                if str(w) in fname or f"ci0{w}" in fname:
-                                    wv = w
-                                    break
-                            if wv == 0:
-                                wv = 171
-                        self.SUVI_presets(wavelength=wv)
-                    elif "GONG" in telescop or "GONG" in instrume or "gong" in fname:
-                        self.GONG_presets()
-                        is_preset_matched = True
-                    elif (
-                        (telescop == "STEREO" and instrume == "SECCHI")
-                        or "euvi" in fname
-                        or "cor1" in fname
-                        or "cor2" in fname
-                        or "eua" in fname
-                        or "eub" in fname
-                        or "c1a" in fname
-                        or "c1b" in fname
-                        or "c2a" in fname
-                        or "c2b" in fname
-                    ):
-                        is_preset_matched = True
-                        if (
-                            detector == "EUVI"
-                            or "euvi" in fname
-                            or "eua" in fname
-                            or "eub" in fname
-                        ):
-                            self.STEREO_presets("EUVI")
-                        elif (
-                            detector == "COR1"
-                            or "cor1" in fname
-                            or "c1a" in fname
-                            or "c1b" in fname
-                        ):
-                            self.STEREO_presets("COR1")
-                        elif (
-                            detector == "COR2"
-                            or "cor2" in fname
-                            or "c2a" in fname
-                            or "c2b" in fname
-                        ):
-                            self.STEREO_presets("COR2")
-                        else:
-                            is_preset_matched = False
+                    is_preset_matched = self._auto_apply_instrument_preset()
 
                 if not is_preset_matched:
                     # Reset to defaults if the previous load was a preset
@@ -2237,7 +2119,7 @@ class SolarRadioImageTab(
 
                 self._was_preset_image = is_preset_matched
             elif vmin_val is None or vmax_val is None:
-                self.auto_minmax()
+                self.apply_auto_range("minmax")
             else:
                 self.plot_image(
                     vmin_val,
@@ -2259,532 +2141,6 @@ class SolarRadioImageTab(
             if main_window:
                 self.show_status_message(f"Error: {str(e)}")
             QMessageBox.critical(self, "Error", f"Failed to load/plot data: {str(e)}")
-
-    def auto_minmax(self):
-        if self.current_image_data is None:
-            return
-
-        data = self.current_image_data
-        dmin = float(np.nanmin(data))
-        dmax = float(np.nanmax(data))
-        self.set_range(dmin, dmax)
-
-        stretch = (
-            self.stretch_combo.currentText()
-            if hasattr(self, "stretch_combo")
-            else "linear"
-        )
-        cmap = (
-            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
-        )
-        try:
-            gamma = float(self.gamma_entry.text())
-        except (ValueError, AttributeError):
-            gamma = 1.0
-
-        self.plot_image(dmin, dmax, stretch, cmap, gamma)
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set display range to min/max: [{dmin:.4g}, {dmax:.4g}]"
-            )
-
-    def auto_percentile(self):
-        if self.current_image_data is None:
-            return
-
-        data = self.current_image_data
-        p1 = np.nanpercentile(data, 1)
-        p99 = np.nanpercentile(data, 99)
-        self.set_range(p1, p99)
-
-        stretch = (
-            self.stretch_combo.currentText()
-            if hasattr(self, "stretch_combo")
-            else "linear"
-        )
-        cmap = (
-            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
-        )
-        try:
-            gamma = float(self.gamma_entry.text())
-        except (ValueError, AttributeError):
-            gamma = 1.0
-
-        self.plot_image(p1, p99, stretch, cmap, gamma)
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set display range to 1-99 percentile: [{p1:.4g}, {p99:.4g}]"
-            )
-
-    def auto_percentile_99(self):
-        if self.current_image_data is None:
-            return
-
-        data = self.current_image_data
-        p01 = np.nanpercentile(data, 0.1)
-        p999 = np.nanpercentile(data, 99.9)
-        self.set_range(p01, p999)
-        stretch = (
-            self.stretch_combo.currentText()
-            if hasattr(self, "stretch_combo")
-            else "linear"
-        )
-        cmap = (
-            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
-        )
-        try:
-            gamma = float(self.gamma_entry.text())
-        except (ValueError, AttributeError):
-            gamma = 1.0
-
-        self.plot_image(p01, p999, stretch, cmap, gamma)
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set display range to 0.1st and 99.9th percentiles: [{p01:.4g}, {p999:.4g}]"
-            )
-
-    def auto_percentile_95(self):
-        if self.current_image_data is None:
-            return
-
-        data = self.current_image_data
-        p5 = np.nanpercentile(data, 5)
-        p95 = np.nanpercentile(data, 95)
-        self.set_range(p5, p95)
-        stretch = (
-            self.stretch_combo.currentText()
-            if hasattr(self, "stretch_combo")
-            else "linear"
-        )
-        cmap = (
-            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
-        )
-        try:
-            gamma = float(self.gamma_entry.text())
-        except (ValueError, AttributeError):
-            gamma = 1.0
-        self.plot_image(p5, p95, stretch, cmap, gamma)
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set display range to 5th and 95th percentiles: [{p5:.4g}, {p95:.4g}]"
-            )
-
-    def auto_median_rms(self):
-        if self.current_image_data is None:
-            return
-
-        data = self.current_image_data
-        median_val = np.nanmedian(data)
-        rms_val = np.sqrt(np.nanmean((data - median_val) ** 2))
-        low = median_val - 3 * rms_val
-        high = median_val + 3 * rms_val
-        self.set_range(low, high)
-
-        stretch = (
-            self.stretch_combo.currentText()
-            if hasattr(self, "stretch_combo")
-            else "linear"
-        )
-        cmap = (
-            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
-        )
-        try:
-            gamma = float(self.gamma_entry.text())
-        except (ValueError, AttributeError):
-            gamma = 1.0
-
-        self.plot_image(low, high, stretch, cmap, gamma)
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set display range to median±3×RMS: [{low:.4g}, {high:.4g}]"
-            )
-
-    def HMI_presets(self):
-        """HMI preset"""
-        if self.current_image_data is None:
-            return
-
-        # data = self.current_image_data
-        dmin = -1000
-        dmax = 1000
-        stretch = "linear"
-        cmap = "gray"
-        gamma = 1.0
-        self.set_range(dmin, dmax)
-        self.vmin_entry.setText(f"{dmin:.3f}")
-        self.vmax_entry.setText(f"{dmax:.3f}")
-        self.stretch_combo.setCurrentText(stretch)
-        self.cmap_combo.setCurrentText(cmap)
-        self.gamma_entry.setText(f"{gamma:.1f}")
-        # self.update_gamma_slider()
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set display range to [-1000, 1000], stretch to linear, colormap to gray"
-            )
-
-    def aia_presets(self, wavelength=171):
-        """
-        Apply AIA preset for the specified wavelength.
-
-        Args:
-            wavelength (int): AIA wavelength in Angstroms (94, 131, 171, 193, 211, 304, 335, 1600, 1700, 4500)
-        """
-        if self.current_image_data is None:
-            return
-
-        # Convert wavelength to string and ensure it's a supported value
-        wavelength = str(wavelength)
-        supported_wavelengths = [
-            "94",
-            "131",
-            "171",
-            "193",
-            "211",
-            "304",
-            "335",
-            "1600",
-            "1700",
-            "4500",
-        ]
-        if wavelength not in supported_wavelengths:
-            wavelength = "171"  # Default to 171 if unsupported wavelength
-
-        data = self.current_image_data
-        dmin = 0.0
-        dmax = float(np.nanmax(data))
-        self.set_range(dmin, dmax)
-        try:
-            gamma = float(self.gamma_entry.text())
-        except (ValueError, AttributeError):
-            gamma = 1.0
-        if wavelength == "4500":
-            stretch = "linear"
-        elif wavelength == "1700":
-            stretch = "power"
-            gamma = 0.7
-        elif wavelength == "1600":
-            stretch = "power"
-            gamma = 0.55
-        elif wavelength == "94" or wavelength == "304":
-            stretch = "arcsinh"
-        elif wavelength == "335":
-            stretch = "power"
-            gamma = 0.3
-        else:
-            stretch = "sqrt"
-        # check if cmap available
-        if f"sdoaia{wavelength}" in plt.colormaps():
-            cmap = f"sdoaia{wavelength}"
-        else:
-            cmap = self.cmap_combo.currentText()
-            print(f"[Warning] {cmap} colormap not available, using default")
-            self.show_status_message(
-                f"Warning: {cmap} colormap not available, using default"
-            )
-
-        self.stretch_combo.setCurrentText(stretch)
-        self.cmap_combo.setCurrentText(cmap)
-        self.gamma_entry.setText(f"{gamma:.1f}")
-        # self.update_gamma_slider()
-        self.vmin_entry.setText(f"{dmin:.3f}")
-        self.vmax_entry.setText(f"{dmax:.3f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set display range to 0.0 and {dmax:.4g}, stretch to arcsinh, colormap to {cmap}"
-            )
-
-    def aia_presets_94(self):
-        """AIA 94 Angstrom preset with specific colormap"""
-        self.aia_presets(94)
-
-    def aia_presets_131(self):
-        """AIA 131 Angstrom preset with specific colormap"""
-        self.aia_presets(131)
-
-    def aia_presets_171(self):
-        """AIA 171 Angstrom preset with specific colormap"""
-        self.aia_presets(171)
-
-    def aia_presets_193(self):
-        """AIA 193 Angstrom preset with specific colormap"""
-        self.aia_presets(193)
-
-    def aia_presets_211(self):
-        """AIA 211 Angstrom preset with specific colormap"""
-        self.aia_presets(211)
-
-    def aia_presets_304(self):
-        """AIA 304 Angstrom preset with specific colormap"""
-        self.aia_presets(304)
-
-    def aia_presets_335(self):
-        """AIA 335 Angstrom preset with specific colormap"""
-        self.aia_presets(335)
-
-    def aia_presets_1600(self):
-        """AIA 1600 Angstrom preset with specific colormap"""
-        self.aia_presets(1600)
-
-    def aia_presets_1700(self):
-        """AIA 1700 Angstrom preset with specific colormap"""
-        self.aia_presets(1700)
-
-    def aia_presets_4500(self):
-        """AIA 4500 Angstrom preset with specific colormap"""
-        self.aia_presets(4500)
-
-    def EIT_presets(self, wavelength=171):
-        """
-        Apply SOHO EIT preset for the specified wavelength.
-
-        Args:
-            wavelength (int): EIT wavelength (171, 195, 284, 304)
-        """
-        if self.current_image_data is None:
-            return
-
-        wavelength = str(wavelength)
-        supported_wavelengths = ["171", "195", "284", "304"]
-        if wavelength not in supported_wavelengths:
-            wavelength = "171"
-
-        data = self.current_image_data
-        valid_data = data[~np.isnan(data)]
-        dmin = 0.0
-        dmax = float(np.nanmax(valid_data))
-        stretch = "sqrt"
-        gamma = 1.0
-
-        # Use SOHO EIT colormap if available
-        cmap_name = f"sohoeit{wavelength}"
-        if cmap_name in plt.colormaps():
-            cmap = cmap_name
-        else:
-            cmap = "inferno"
-
-        self.set_range(dmin, dmax)
-        self.vmin_entry.setText(f"{dmin:.3f}")
-        self.vmax_entry.setText(f"{dmax:.3f}")
-        self.stretch_combo.setCurrentText(stretch)
-        self.cmap_combo.setCurrentText(cmap)
-        self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set SOHO EIT {wavelength} preset: colormap={cmap}, stretch={stretch}"
-            )
-
-    def LASCO_presets(self, detector="C2"):
-        """SOHO LASCO coronagraph preset"""
-        if self.current_image_data is None:
-            return
-
-        data = self.current_image_data
-        valid_data = data[~np.isnan(data)]
-        dmin = float(np.nanmin(valid_data))
-        dmax = float(np.nanmax(valid_data))
-        stretch = "sqrt"
-        gamma = 1.0
-
-        # Use LASCO colormap if available
-        if f"soholasco{detector}" in plt.colormaps():
-            cmap = f"soholasco{detector}"
-        else:
-            cmap = "afmhot"
-
-        self.set_range(dmin, dmax)
-        self.vmin_entry.setText(f"{dmin:.3f}")
-        self.vmax_entry.setText(f"{dmax:.3f}")
-        self.stretch_combo.setCurrentText(stretch)
-        self.cmap_combo.setCurrentText(cmap)
-        self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set SOHO LASCO preset: colormap={cmap}, stretch={stretch}"
-            )
-
-    def IRIS_presets(self, wavelength=1330):
-        """
-        Apply IRIS SJI preset for the specified wavelength.
-
-        Args:
-            wavelength (int): IRIS SJI wavelength (1330, 1400, 2796, 2832)
-        """
-        if self.current_image_data is None:
-            return
-
-        wavelength = str(wavelength)
-        supported_wavelengths = ["1330", "1400", "2796", "2832"]
-        if wavelength not in supported_wavelengths:
-            wavelength = "1330"
-
-        data = self.current_image_data
-        valid_data = data[~np.isnan(data)]
-        dmin = 0.0
-        dmax = float(
-            np.nanpercentile(valid_data, 99.5)
-        )  # Use 99.5 percentile to avoid hot pixels
-        stretch = "sqrt"
-        gamma = 1.0
-
-        # Use IRIS SJI colormap if available
-        cmap_name = f"irissji{wavelength}"
-        if cmap_name in plt.colormaps():
-            cmap = cmap_name
-        else:
-            cmap = "viridis"
-
-        self.set_range(dmin, dmax)
-        self.vmin_entry.setText(f"{dmin:.3f}")
-        self.vmax_entry.setText(f"{dmax:.3f}")
-        self.stretch_combo.setCurrentText(stretch)
-        self.cmap_combo.setCurrentText(cmap)
-        self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set IRIS SJI {wavelength} preset: colormap={cmap}, stretch={stretch}"
-            )
-
-    def SUVI_presets(self, wavelength=171):
-        """
-        Apply GOES SUVI preset for the specified wavelength.
-
-        Args:
-            wavelength (int): SUVI wavelength (94, 131, 171, 195, 284, 304)
-        """
-        if self.current_image_data is None:
-            return
-
-        data = self.current_image_data
-        valid_data = data[~np.isnan(data)]
-        dmin = 0.0
-        dmax = float(np.nanpercentile(valid_data, 99.5))
-        stretch = "sqrt"
-        gamma = 1.0
-
-        # SUVI doesn't have dedicated colormaps, use similar to AIA
-        cmap_name = f"goes-rsuvi{wavelength}"
-        if cmap_name in plt.colormaps():
-            cmap = cmap_name
-        else:
-            cmap = "inferno"
-
-        self.set_range(dmin, dmax)
-        self.vmin_entry.setText(f"{dmin:.3f}")
-        self.vmax_entry.setText(f"{dmax:.3f}")
-        self.stretch_combo.setCurrentText(stretch)
-        self.cmap_combo.setCurrentText(cmap)
-        self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set GOES SUVI {wavelength} preset: colormap={cmap}, stretch={stretch}"
-            )
-
-    def GONG_presets(self):
-        """GONG magnetogram preset (similar to HMI)"""
-        if self.current_image_data is None:
-            return
-
-        dmin = -1000
-        dmax = 1000
-        stretch = "linear"
-        cmap = "gray"
-        gamma = 1.0
-
-        self.set_range(dmin, dmax)
-        self.vmin_entry.setText(f"{dmin:.3f}")
-        self.vmax_entry.setText(f"{dmax:.3f}")
-        self.stretch_combo.setCurrentText(stretch)
-        self.cmap_combo.setCurrentText(cmap)
-        self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set GONG magnetogram preset: [-1000, 1000], gray colormap"
-            )
-
-    def STEREO_presets(self, detector="EUVI"):
-        """
-        Apply STEREO SECCHI preset for the specified detector.
-
-        Args:
-            detector (str): STEREO detector (EUVI, COR1, COR2)
-        """
-        if self.current_image_data is None:
-            return
-
-        data = self.current_image_data
-        valid_data = data[~np.isnan(data)] if np.any(np.isnan(data)) else data.flatten()
-
-        detector = detector.upper()
-        if detector == "EUVI":
-            # EUVI: Range [680, 16428], use 1-99 percentile
-            # dmin = float(np.nanpercentile(valid_data, 1))
-            # dmax = float(np.nanpercentile(valid_data, 99))
-            dmin = float(np.nanmin(valid_data))
-            dmax = float(np.nanmax(valid_data))
-            stretch = "sqrt"
-            cmap = "sdoaia171" if "sdoaia171" in plt.colormaps() else "inferno"
-        elif detector == "COR1":
-            # COR1: Range [336, 8198], coronagraph
-            dmin = float(np.nanpercentile(valid_data, 1))
-            dmax = float(np.nanpercentile(valid_data, 99))
-            stretch = "sqrt"
-            cmap = "soholasco2" if "soholasco2" in plt.colormaps() else "afmhot"
-        elif detector == "COR2":
-            # COR2: Range [2052, 12564], coronagraph
-            dmin = float(np.nanpercentile(valid_data, 1))
-            dmax = float(np.nanpercentile(valid_data, 99))
-            stretch = "sqrt"
-            cmap = "soholasco2" if "soholasco2" in plt.colormaps() else "afmhot"
-        else:
-            # Default
-            dmin = float(np.nanmin(valid_data))
-            dmax = float(np.nanmax(valid_data))
-            stretch = "linear"
-            cmap = "viridis"
-
-        gamma = 1.0
-        self.set_range(dmin, dmax)
-        self.vmin_entry.setText(f"{dmin:.3f}")
-        self.vmax_entry.setText(f"{dmax:.3f}")
-        self.stretch_combo.setCurrentText(stretch)
-        self.cmap_combo.setCurrentText(cmap)
-        self.gamma_entry.setText(f"{gamma:.1f}")
-        self.plot_image(dmin, dmax, stretch, cmap, gamma, interpolation="nearest")
-
-        main_window = self.parent()
-        if main_window:
-            self.show_status_message(
-                f"Set STEREO {detector} preset: colormap={cmap}, stretch={stretch}"
-            )
 
     def set_range(self, vmin_val, vmax_val):
         if self.current_image_data is None:
@@ -5418,6 +4774,7 @@ class SolarRadioImageViewerApp(
     FittingMixin,
     ExportsMixin,
     ExternalToolsMixin,
+    PresetMenuMixin,
     RemoteModeMixin,
     QMainWindow,
 ):
@@ -6002,157 +5359,7 @@ class SolarRadioImageViewerApp(
         preset_menu.addAction(self.auto_preset_act)
         preset_menu.addSeparator()
 
-        auto_minmax_act = QAction("Auto Min/Max", self)
-        auto_minmax_act.setShortcut("F5")
-        auto_minmax_act.setStatusTip("Set display range to data min/max")
-        auto_minmax_act.triggered.connect(self.auto_minmax)
-        preset_menu.addAction(auto_minmax_act)
-        auto_percentile_act = QAction("Auto Percentile (1%,99%)", self)
-        auto_percentile_act.setShortcut("F6")
-        auto_percentile_act.setStatusTip(
-            "Set display range to 1st and 99th percentiles"
-        )
-        auto_percentile_act.triggered.connect(self.auto_percentile)
-        preset_menu.addAction(auto_percentile_act)
-        auto_percentile_act_99 = QAction("Auto Percentile (0.1%,99.9%)", self)
-        auto_percentile_act_99.setStatusTip(
-            "Set display range to 0.1st and 99.9th percentiles"
-        )
-        auto_percentile_act_99.triggered.connect(self.auto_percentile_99)
-        auto_percentile_act_95 = QAction("Auto Percentile (5%,95%)", self)
-        auto_percentile_act_95.setStatusTip(
-            "Set display range to 5th and 95th percentiles"
-        )
-        auto_percentile_act_95.triggered.connect(self.auto_percentile_95)
-        preset_menu.addAction(auto_percentile_act_99)
-        preset_menu.addAction(auto_percentile_act_95)
-        auto_median_rms_act = QAction("Auto Median ± 3×RMS", self)
-        auto_median_rms_act.setShortcut("F7")
-        auto_median_rms_act.setStatusTip("Set display range to median ± 3×RMS")
-        auto_median_rms_act.triggered.connect(self.auto_median_rms)
-        preset_menu.addAction(auto_median_rms_act)
-
-        # aia_presets_act = QAction("AIA Presets", self)
-        # aia_presets_act.setShortcut("F8")
-        # aia_presets_act.setStatusTip("Set display range to AIA presets")
-        # Create submenu for AIA presets
-        aia_presets_submenu = QMenu("AIA Presets", self)
-
-        # Create actions for each AIA wavelength
-        aia_94_act = QAction("94 Å", self)
-        aia_94_act.setStatusTip("Set display range and colormap for AIA 94 Å")
-        aia_94_act.triggered.connect(self.aia_presets_94)
-        aia_presets_submenu.addAction(aia_94_act)
-
-        aia_131_act = QAction("131 Å", self)
-        aia_131_act.setStatusTip("Set display range and colormap for AIA 131 Å")
-        aia_131_act.triggered.connect(self.aia_presets_131)
-        aia_presets_submenu.addAction(aia_131_act)
-
-        aia_171_act = QAction("171 Å", self)
-        aia_171_act.setStatusTip("Set display range and colormap for AIA 171 Å")
-        aia_171_act.triggered.connect(self.aia_presets_171)
-        aia_171_act.setShortcut("F8")
-        aia_presets_submenu.addAction(aia_171_act)
-
-        aia_193_act = QAction("193 Å", self)
-        aia_193_act.setStatusTip("Set display range and colormap for AIA 193 Å")
-        aia_193_act.triggered.connect(self.aia_presets_193)
-        aia_presets_submenu.addAction(aia_193_act)
-
-        aia_211_act = QAction("211 Å", self)
-        aia_211_act.setStatusTip("Set display range and colormap for AIA 211 Å")
-        aia_211_act.triggered.connect(self.aia_presets_211)
-        aia_presets_submenu.addAction(aia_211_act)
-
-        aia_304_act = QAction("304 Å", self)
-        aia_304_act.setStatusTip("Set display range and colormap for AIA 304 Å")
-        aia_304_act.triggered.connect(self.aia_presets_304)
-        aia_presets_submenu.addAction(aia_304_act)
-
-        aia_335_act = QAction("335 Å", self)
-        aia_335_act.setStatusTip("Set display range and colormap for AIA 335 Å")
-        aia_335_act.triggered.connect(self.aia_presets_335)
-        aia_presets_submenu.addAction(aia_335_act)
-
-        aia_1600_act = QAction("1600 Å", self)
-        aia_1600_act.setStatusTip("Set display range and colormap for AIA 1600 Å")
-        aia_1600_act.triggered.connect(self.aia_presets_1600)
-        aia_presets_submenu.addAction(aia_1600_act)
-
-        aia_1700_act = QAction("1700 Å", self)
-        aia_1700_act.setStatusTip("Set display range and colormap for AIA 1700 Å")
-        aia_1700_act.triggered.connect(self.aia_presets_1700)
-        aia_presets_submenu.addAction(aia_1700_act)
-
-        aia_4500_act = QAction("4500 Å", self)
-        aia_4500_act.setStatusTip("Set display range and colormap for AIA 4500 Å")
-        aia_4500_act.triggered.connect(self.aia_presets_4500)
-        aia_presets_submenu.addAction(aia_4500_act)
-
-        # Add the submenu to the presets menu
-        preset_menu.addMenu(aia_presets_submenu)
-
-        hmi_preset_act = QAction("HMI Preset", self)
-        hmi_preset_act.setShortcut("F9")
-        hmi_preset_act.setStatusTip("Set display range to HMI preset")
-        hmi_preset_act.triggered.connect(self.HMI_presets)
-        preset_menu.addAction(hmi_preset_act)
-
-        # SOHO/EIT Presets submenu
-        eit_presets_submenu = QMenu("SOHO/EIT Presets", self)
-        for wl in ["171", "195", "284", "304"]:
-            act = QAction(f"{wl} Å", self)
-            act.setStatusTip(f"Set preset for SOHO EIT {wl} Å")
-            act.triggered.connect(lambda checked, w=wl: self.EIT_presets(int(w)))
-            eit_presets_submenu.addAction(act)
-        preset_menu.addMenu(eit_presets_submenu)
-
-        # SOHO/LASCO Preset
-        lasco_preset_act = QAction("SOHO/LASCO Preset", self)
-        lasco_preset_act.setStatusTip("Set display range for LASCO coronagraph")
-        lasco_preset_act.triggered.connect(self.LASCO_presets)
-        preset_menu.addAction(lasco_preset_act)
-
-        # IRIS SJI Presets submenu
-        iris_presets_submenu = QMenu("IRIS SJI Presets", self)
-        for wl in ["1330", "1400", "2796", "2832"]:
-            act = QAction(f"{wl} Å", self)
-            act.setStatusTip(f"Set preset for IRIS SJI {wl} Å")
-            act.triggered.connect(lambda checked, w=wl: self.IRIS_presets(int(w)))
-            iris_presets_submenu.addAction(act)
-        preset_menu.addMenu(iris_presets_submenu)
-
-        # GOES SUVI Presets submenu
-        suvi_presets_submenu = QMenu("GOES SUVI Presets", self)
-        for wl in ["94", "131", "171", "195", "284", "304"]:
-            act = QAction(f"{wl} Å", self)
-            act.setStatusTip(f"Set preset for GOES SUVI {wl} Å")
-            act.triggered.connect(lambda checked, w=wl: self.SUVI_presets(int(w)))
-            suvi_presets_submenu.addAction(act)
-        preset_menu.addMenu(suvi_presets_submenu)
-
-        # STEREO SECCHI Presets submenu
-        stereo_presets_submenu = QMenu("STEREO Presets", self)
-        stereo_euvi_act = QAction("EUVI", self)
-        stereo_euvi_act.setStatusTip("Set preset for STEREO EUVI")
-        stereo_euvi_act.triggered.connect(lambda: self.STEREO_presets("EUVI"))
-        stereo_presets_submenu.addAction(stereo_euvi_act)
-        stereo_cor1_act = QAction("COR1", self)
-        stereo_cor1_act.setStatusTip("Set preset for STEREO COR1")
-        stereo_cor1_act.triggered.connect(lambda: self.STEREO_presets("COR1"))
-        stereo_presets_submenu.addAction(stereo_cor1_act)
-        stereo_cor2_act = QAction("COR2", self)
-        stereo_cor2_act.setStatusTip("Set preset for STEREO COR2")
-        stereo_cor2_act.triggered.connect(lambda: self.STEREO_presets("COR2"))
-        stereo_presets_submenu.addAction(stereo_cor2_act)
-        preset_menu.addMenu(stereo_presets_submenu)
-
-        # GONG Preset
-        # gong_preset_act = QAction("GONG Preset", self)
-        # gong_preset_act.setStatusTip("Set display range for GONG magnetogram")
-        # gong_preset_act.triggered.connect(self.GONG_presets)
-        # preset_menu.addAction(gong_preset_act)
+        self._add_preset_actions(preset_menu)
 
         tabs_menu = menubar.addMenu("&Tabs")
         new_tab_act = QAction("Add New Tab", self)
@@ -6474,84 +5681,6 @@ class SolarRadioImageViewerApp(
             current_tab.radio_fits_file.setChecked(True)
             # Call the select_file_or_directory method
             current_tab.select_file_or_directory()
-
-    def auto_minmax(self):
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.auto_minmax()
-
-    def auto_percentile(self):
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.auto_percentile()
-
-    def auto_percentile_99(self):
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.auto_percentile_99()
-
-    def auto_percentile_95(self):
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.auto_percentile_95()
-
-    def auto_median_rms(self):
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.auto_median_rms()
-
-    def aia_presets(self, wavelength=171):
-        """
-        Apply AIA preset for the specified wavelength.
-
-        Args:
-            wavelength (int): AIA wavelength in Angstroms (94, 131, 171, 193, 211, 304, 335, 1600, 1700, 4500)
-        """
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.aia_presets(wavelength)
-
-    def HMI_presets(self):
-        """HMI preset"""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.HMI_presets()
-
-    def EIT_presets(self, wavelength=171):
-        """SOHO EIT preset"""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.EIT_presets(wavelength)
-
-    def LASCO_presets(self, detector="C2"):
-        """SOHO LASCO preset"""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.LASCO_presets(detector)
-
-    def IRIS_presets(self, wavelength=1330):
-        """IRIS SJI preset"""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.IRIS_presets(wavelength)
-
-    def SUVI_presets(self, wavelength=171):
-        """GOES SUVI preset"""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.SUVI_presets(wavelength)
-
-    def GONG_presets(self):
-        """GONG magnetogram preset"""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.GONG_presets()
-
-    def STEREO_presets(self, detector="EUVI"):
-        """STEREO SECCHI preset"""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            current_tab.STEREO_presets(detector)
 
     def show_batch_dialog(self):
         from .dialogs import BatchProcessDialog
@@ -7210,15 +6339,15 @@ class SolarRadioImageViewerApp(
         elif event.key() == Qt.Key_F5:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
-                current_tab.auto_minmax()
+                current_tab.apply_auto_range("minmax")
         elif event.key() == Qt.Key_F6:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
-                current_tab.auto_percentile()
+                current_tab.apply_auto_range("p1_99")
         elif event.key() == Qt.Key_F7:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
-                current_tab.auto_median_rms()
+                current_tab.apply_auto_range("median_rms")
         else:
             super().keyPressEvent(event)
 
@@ -7242,46 +6371,6 @@ class SolarRadioImageViewerApp(
         from PyQt5.QtWidgets import QApplication
 
         QApplication.instance().quit()
-
-    def aia_presets_94(self):
-        """AIA 94 Angstrom preset with specific colormap"""
-        self.aia_presets(94)
-
-    def aia_presets_131(self):
-        """AIA 131 Angstrom preset with specific colormap"""
-        self.aia_presets(131)
-
-    def aia_presets_171(self):
-        """AIA 171 Angstrom preset with specific colormap"""
-        self.aia_presets(171)
-
-    def aia_presets_193(self):
-        """AIA 193 Angstrom preset with specific colormap"""
-        self.aia_presets(193)
-
-    def aia_presets_211(self):
-        """AIA 211 Angstrom preset with specific colormap"""
-        self.aia_presets(211)
-
-    def aia_presets_304(self):
-        """AIA 304 Angstrom preset with specific colormap"""
-        self.aia_presets(304)
-
-    def aia_presets_335(self):
-        """AIA 335 Angstrom preset with specific colormap"""
-        self.aia_presets(335)
-
-    def aia_presets_1600(self):
-        """AIA 1600 Angstrom preset with specific colormap"""
-        self.aia_presets(1600)
-
-    def aia_presets_1700(self):
-        """AIA 1700 Angstrom preset with specific colormap"""
-        self.aia_presets(1700)
-
-    def aia_presets_4500(self):
-        """AIA 4500 Angstrom preset with specific colormap"""
-        self.aia_presets(4500)
 
     def show_phase_shift_dialog(self, batch_mode=False):
         """Show the dialog for shifting solar center to phase center"""
