@@ -12,7 +12,7 @@ from PyQt5.QtGui import QPalette, QColor
 from PyQt5.QtCore import Qt, QSettings
 
 # Import theme manager FIRST, before viewer
-from .styles import theme_manager, ThemeManager
+from .ui.styles import theme_manager, ThemeManager
 from . import __version__
 
 # Globally suppress Astropy's "Invalid 'BLANK' keyword" warning

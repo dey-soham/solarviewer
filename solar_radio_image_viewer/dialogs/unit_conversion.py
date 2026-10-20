@@ -37,7 +37,7 @@ import sys
 import numpy as np
 import os
 
-from ..styles import theme_manager, set_hand_cursor
+from ..ui.styles import theme_manager, set_hand_cursor
 
 import glob
 
@@ -54,9 +54,9 @@ class UnitConversionDialog(QDialog):
 
         # Import theme manager for theme-aware styling
         try:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
         except ImportError:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
 
         # Get colors directly from the palette for consistency
         palette = theme_manager.palette

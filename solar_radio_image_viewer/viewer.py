@@ -7,8 +7,6 @@ import matplotlib
 matplotlib.use("Qt5Agg")
 import matplotlib.pyplot as plt
 import matplotlib.style as mplstyle
-from matplotlib.colors import Normalize, LogNorm
-from matplotlib.patches import Ellipse
 from matplotlib.backends.backend_qt5agg import (
     NavigationToolbar2QT as NavigationToolbar,
 )
@@ -29,7 +27,6 @@ from PyQt5.QtWidgets import (
     QSlider,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QFrame,
     # QInputDialog,
     # QMenuBar,
@@ -50,29 +47,25 @@ from PyQt5.QtWidgets import (
     # QListWidget,
     # QListWidgetItem,
     QActionGroup,
-    QToolButton,
-    QTabBar,
-    # QStyle,
     QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QIcon, QColor, QPalette
-from PyQt5.QtWidgets import QStyledItemDelegate
 
 # from PyQt5.QtGui import QColor, QPalette, QPainter
 
-from .processing.norms import SqrtNorm, AsinhNorm, PowerNorm, ZScaleNorm, HistEqNorm
-from .processing.dependencies import IA
 from .processing.metadata import get_image_metadata
-from .styles import (
+from .ui.styles import (
     theme_manager,
     get_stylesheet,
-    get_icon_path,
     set_hand_cursor,
 )
 from .dialogs import UpdateDialog
-from .searchable_combobox import ColormapSelector
-from astropy.time import Time
+from .ui.searchable_combobox import ColormapSelector
+from .ui.icons import get_resource_path, themed_icon
+from .ui.segmented_control import SegmentedControl
+from .ui.custom_tabs import CustomTabWidget
+from .ui.item_delegates import DisabledItemDelegate
 from .utils.update_checker import check_for_updates
 from .version import __version__
 import sunpy.visualization.colormaps  # noqa: F401  (registers sdoaia*, etc.)
@@ -117,62 +110,12 @@ class CheckUpdateThread(QThread):
             pass  # Silently fail for updates
 
 
-class DisabledItemDelegate(QStyledItemDelegate):
-    """Custom delegate that properly renders disabled items with grayed text."""
-
-    def paint(self, painter, option, index):
-        # Check if item is disabled
-        if not (index.flags() & Qt.ItemIsEnabled):
-            # Get disabled color from theme
-            try:
-                disabled_color = QColor(
-                    theme_manager.palette.get("disabled", "#cccccc")
-                )
-            except:
-                disabled_color = QColor("#cccccc")
-
-            # Modify the palette to use disabled color for text
-            option.palette.setColor(QPalette.Text, disabled_color)
-            option.palette.setColor(QPalette.HighlightedText, disabled_color)
-
-        super().paint(painter, option, index)
-
 
 def update_matplotlib_theme():
     """Update matplotlib rcParams based on current theme."""
     palette = theme_manager.palette
     rcParams.update(theme_manager.matplotlib_params)
 
-
-# Package root directory for fast resource loading
-_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-
-def get_resource_path(relative_path):
-    """Get absolute path to a package resource file.
-
-    Uses os.path for speed (avoids slow pkg_resources import).
-
-    Args:
-        relative_path: Path relative to the package directory (e.g., 'assets/icon.png')
-
-    Returns:
-        Absolute path to the resource file
-    """
-    return os.path.join(_PACKAGE_DIR, relative_path)
-
-
-def themed_icon(icon_name):
-    """Get the full resource path for a theme-appropriate icon.
-
-    Args:
-        icon_name: Base icon filename (e.g., 'browse.png')
-
-    Returns:
-        Full resource path to the appropriate icon
-    """
-    themed_name = get_icon_path(icon_name)
-    return get_resource_path(f"assets/{themed_name}")
 
 
 # Initialize matplotlib with default theme
@@ -181,143 +124,6 @@ rcParams["font.size"] = 12
 update_matplotlib_theme()
 mplstyle.use("fast")
 
-
-class SegmentedControl(QWidget):
-    """A modern segmented control widget."""
-
-    selectionChanged = pyqtSignal(int)  # Emits index of selected segment
-
-    def __init__(self, options, parent=None):
-        super().__init__(parent)
-        self.options = options
-        self._selected_index = 0
-        self._buttons = []
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Create container for the pill shape
-        self._container = QWidget()
-        container_layout = QHBoxLayout(self._container)
-        container_layout.setContentsMargins(2, 2, 2, 2)
-        container_layout.setSpacing(1)
-
-        for i, option in enumerate(options):
-            btn = QPushButton(option)
-            btn.setCheckable(True)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(lambda checked, idx=i: self._on_button_clicked(idx))
-            self._buttons.append(btn)
-            container_layout.addWidget(btn)
-
-        # Select first by default
-        if self._buttons:
-            self._buttons[0].setChecked(True)
-
-        layout.addWidget(self._container)
-        self._apply_styles()
-
-        # Register for theme changes
-        theme_manager.register_callback(self._on_theme_changed)
-
-    def _on_theme_changed(self, theme):
-        """Update styling when theme changes."""
-        self._apply_styles()
-
-    def _apply_styles(self):
-        """Apply button-style toggle styling matching app palette."""
-        from .styles import theme_manager
-
-        palette = theme_manager.palette
-        is_dark = theme_manager.is_dark
-
-        # Container styling - subtle pill background
-        if is_dark:
-            surface = palette.get("surface", "#16162a")
-            border_style = "none"
-            hover_bg = palette.get("button_hover", "#32325d")
-        else:
-            surface = "rgba(0, 0, 0, 0.03)"
-            border_color = palette.get("border", "#d1d5db")
-            border_style = f"1px solid {border_color}"
-            hover_bg = "rgba(0, 0, 0, 0.06)"
-
-        self._container.setStyleSheet(
-            f"""
-            QWidget {{
-                background-color: {surface};
-                border: {border_style};
-                border-radius: 8px;
-            }}
-        """
-        )
-
-        # Button styling - matches app button palette
-        text_color = palette.get("text", "#f0f0f5")
-        text_secondary = palette.get("text_secondary", "#a0a0b0")
-        highlight = palette.get("highlight", "#6366f1")
-        highlight_hover = palette.get("highlight_hover", "#818cf8")
-
-        for btn in self._buttons:
-            btn.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background-color: transparent;
-                    color: {text_secondary};
-                    border: none;
-                    border-radius: 5px;
-                    padding: 4px 10px;
-                    font-weight: 500;
-                    font-size: 10pt;
-                    min-width: 65px;
-                    min-height: 22px;
-                }}
-                QPushButton:hover {{
-                    color: {text_color};
-                    background-color: {hover_bg};
-                }}
-                QPushButton:checked {{
-                    background-color: {highlight};
-                    color: #ffffff;
-                    font-weight: 600;
-                }}
-                QPushButton:checked:hover {{
-                    background-color: {highlight_hover};
-                }}
-            """
-            )
-
-    def _on_button_clicked(self, index):
-        """Handle button click - ensure only one is selected."""
-        if index == self._selected_index:
-            # Re-check if clicking already selected (don't allow deselect)
-            self._buttons[index].setChecked(True)
-            return
-
-        # Uncheck all others
-        for i, btn in enumerate(self._buttons):
-            btn.setChecked(i == index)
-
-        self._selected_index = index
-        self.selectionChanged.emit(index)
-
-    def selectedIndex(self):
-        """Return the currently selected index."""
-        return self._selected_index
-
-    def setSelectedIndex(self, index):
-        """Set the selected index programmatically."""
-        if 0 <= index < len(self._buttons):
-            self._on_button_clicked(index)
-
-    def selectedText(self):
-        """Return the text of the selected option."""
-        return self.options[self._selected_index]
-
-    def updateTheme(self):
-        """Update styling when theme changes."""
-        self._apply_styles()
 
 
 class SolarRadioImageTab(
@@ -1387,7 +1193,7 @@ class SolarRadioImageTab(
         )
 
         # Ruler/distance measurement action
-        from .styles import get_icon_path
+        from .ui.styles import get_icon_path
 
         self.ruler_action = QAction(
             QIcon(get_resource_path(f"assets/{get_icon_path('ruler.png')}")),
@@ -1429,7 +1235,6 @@ class SolarRadioImageTab(
         )
 
         # Add theme-aware vertical separator before zoom buttons
-        from .styles import theme_manager
 
         self._profile_zoom_separator = QWidget()
         self._profile_zoom_separator.setFixedWidth(1)
@@ -1532,7 +1337,7 @@ class SolarRadioImageTab(
 
     def _update_profile_zoom_separator_style(self):
         """Update the profile/zoom separator style based on current theme"""
-        from .styles import theme_manager
+        from .ui.styles import theme_manager
 
         if not hasattr(self, "_profile_zoom_separator"):
             return
@@ -1560,7 +1365,7 @@ class SolarRadioImageTab(
 
     def _update_hpc_nav_separator_style(self):
         """Update the HPC/navigation separator style based on current theme"""
-        from .styles import theme_manager
+        from .ui.styles import theme_manager
 
         if not hasattr(self, "_hpc_nav_separator"):
             return
@@ -1588,7 +1393,7 @@ class SolarRadioImageTab(
 
     def _update_nav_button_styles(self):
         """Update navigation button styles based on current theme"""
-        from .styles import theme_manager
+        from .ui.styles import theme_manager
 
         if not hasattr(self, "_prev_file_btn"):
             return
@@ -2265,7 +2070,7 @@ class SolarRadioImageTab(
 
     def _on_theme_change(self, theme):
         """Handle theme change - update icons"""
-        from .styles import get_icon_path
+        from .ui.styles import get_icon_path
 
         # Update ruler icon
         if hasattr(self, "ruler_action"):
@@ -2863,7 +2668,7 @@ class SolarRadioImageTab(
 
         # Get theme-aware colors for disabled state - use palette for consistency
         try:
-            from .styles import theme_manager
+            from .ui.styles import theme_manager
 
             palette = theme_manager.palette
             is_dark = theme_manager.is_dark
@@ -3433,257 +3238,6 @@ class SolarRadioImageTab(
         self._set_button_cursors()
 
 
-class CustomTabBar(QTabBar):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        # Create the add tab button
-        self.add_tab_button = QToolButton(self)
-        self.add_tab_button.setIcon(QIcon(themed_icon("add_tab_default.png")))
-        self.add_tab_button.setToolTip("Add new tab")
-        self.add_tab_button.setFixedSize(32, 32)
-        self.add_tab_button.setIconSize(QSize(32, 32))
-        self.add_tab_button.setStyleSheet(
-            """
-            QToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 4px;
-                margin: 2px 0px 2px 0px;
-                padding: 0px;
-            }
-            */QToolButton:hover {
-                background-color: #2D2D2D;
-            }*/
-            QToolButton:pressed {
-                background-color: #3D3D3D;
-            }
-            """
-        )
-
-        # Connect hover events for the add button
-        self.add_tab_button.enterEvent = self._handle_add_button_hover_enter
-        self.add_tab_button.leaveEvent = self._handle_add_button_hover_leave
-
-        # Enable expanding tabs to fill available space
-        self.setExpanding(True)
-
-        # Make sure the add button is visible and on top
-        self.add_tab_button.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-        # self.add_tab_button.setFocusPolicy(Qt.StrongFocus)
-        self.add_tab_button.show()
-        self.add_tab_button.raise_()
-
-        # Initialize button position
-        QTimer.singleShot(0, self.moveAddButton)
-
-        # Apply current theme immediately (for correct startup colors)
-        self.refresh_theme()
-
-    # Add mouseDoubleClickEvent to handle tab editing
-    def mouseDoubleClickEvent(self, event):
-        """Handle double-click on a tab to edit its text using a dialog"""
-        index = self.tabAt(event.pos())
-        if index >= 0:
-            current_text = self.tabText(index)
-
-            # Use a modal dialog instead of in-place editing to avoid crashes
-            from PyQt5.QtWidgets import QInputDialog
-
-            new_text, ok = QInputDialog.getText(
-                self, "Edit Tab Name", "Enter new tab name:", text=current_text
-            )
-
-            if ok and new_text:
-                self.setTabText(index, new_text)
-
-        super().mouseDoubleClickEvent(event)
-
-    def _handle_add_button_hover_enter(self, event):
-        self.add_tab_button.setIcon(QIcon(themed_icon("add_tab_hover.png")))
-
-    def _handle_add_button_hover_leave(self, event):
-        self.add_tab_button.setIcon(QIcon(themed_icon("add_tab_default.png")))
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.moveAddButton()
-
-    def tabLayoutChange(self):
-        super().tabLayoutChange()
-        self.moveAddButton()
-
-    def moveAddButton(self):
-        """Position the add button at the extreme right of the tab bar"""
-        button_x = self.width() - self.add_tab_button.width() - 2
-        button_y = (self.height() - self.add_tab_button.height()) // 2
-        self.add_tab_button.move(button_x, button_y)
-        self.add_tab_button.show()  # Ensure button is visible
-        self.add_tab_button.raise_()  # Ensure button is on top
-
-    def sizeHint(self):
-        """Return a size that accounts for the add button at the right"""
-        size = super().sizeHint()
-        # Add extra space for the add button
-        size.setWidth(
-            size.width() + self.add_tab_button.width() + 720
-        )  # 20px extra padding (increased from 10px)
-        return size
-
-    def tabSizeHint(self, index):
-        """Calculate the size for each tab to distribute space evenly"""
-        width = (
-            self.width() - self.add_tab_button.width() - 40
-        )  # Reserve more space for add button (20px instead of 10px)
-        if self.count() > 0:
-            tab_width = width // self.count()
-            # Ensure minimum tab width with enough space for text
-            return QSize(max(tab_width, 120), super().tabSizeHint(index).height())
-        return super().tabSizeHint(index)
-
-    def setTabText(self, index, text):
-        """Override setTabText to ensure text is properly elided if too long"""
-        # Call the parent implementation
-        super().setTabText(index, text)
-
-        # Get the current tab size
-        tab_rect = self.tabRect(index)
-
-        # Calculate available width for text (accounting for close button and padding)
-        available_width = tab_rect.width() - 10  # 40px for close button and padding
-
-        # If text is too long, elide it
-        if self.fontMetrics().horizontalAdvance(text) > available_width:
-            elided_text = self.fontMetrics().elidedText(
-                text, Qt.ElideRight, available_width
-            )
-            # Call parent implementation again with elided text
-            super().setTabText(index, elided_text)
-
-    def refresh_theme(self):
-        """Update tab bar styling and icons for current theme."""
-        palette = theme_manager.palette
-        is_dark = theme_manager.is_dark
-
-        # Theme-aware colors
-        if is_dark:
-            tab_selected_bg = "#383838"
-            tab_unselected_bg = "#252525"
-            tab_hover_bg = "#404040"
-            tab_border = "#484848"
-            tab_border_unsel = "#353535"
-            button_pressed = "#3D3D3D"
-            tab_text_color = "#ffffff"
-        else:
-            tab_selected_bg = palette.get("surface", "#f5f5f5")
-            tab_unselected_bg = palette.get("window", "#e8e8e8")
-            tab_hover_bg = palette.get("button_hover", "#d0d0d0")
-            tab_border = palette.get("border", "#b0b0b0")
-            tab_border_unsel = palette.get("border", "#c0c0c0")
-            button_pressed = palette.get("button_pressed", "#c0c0c0")
-            tab_text_color = palette.get("text", "#1a1a1a")
-
-        # Update add button icon - themed_icon handles light/dark switching
-        self.add_tab_button.setIcon(QIcon(themed_icon("add_tab_default.png")))
-
-        # Update add button styling
-        self.add_tab_button.setStyleSheet(
-            f"""
-            QToolButton {{
-                background-color: transparent;
-                border: none;
-                border-radius: 4px;
-            }}
-            QToolButton:pressed {{
-                background-color: {button_pressed};
-            }}
-        """
-        )
-
-        # Update tab bar styling with theme colors
-        close_default = themed_icon("close_tab_default.png")
-        close_hover = themed_icon("close_tab_hover.png")
-
-        self.setStyleSheet(
-            f"""
-            QTabBar::tab {{
-                padding: 4px 12px 4px 8px;
-                margin: 0px 0px 0px 0px;
-                border-top-left-radius: 0px;
-                border-top-right-radius: 0px;
-                text-align: left;
-                border-top: none;
-                color: {tab_text_color};
-            }}
-            QTabBar::tab:selected {{
-                background: {tab_selected_bg};
-                border: 1px solid {tab_border};
-                border-top: none;
-            }}
-            QTabBar::tab:!selected {{
-                background: {tab_unselected_bg};
-                border: 1px solid {tab_border_unsel};
-                border-top: none;
-            }}
-            QTabBar::tab:hover {{
-                background: {tab_hover_bg};
-            }}
-            QTabBar::close-button {{
-                image: url("{close_default}");
-                subcontrol-position: left;
-                subcontrol-origin: margin;
-                margin-left: 4px;
-                width: 32px;
-                height: 32px;
-            }}
-            QTabBar::close-button:hover {{
-                image: url("{close_hover}");
-            }}
-        """
-        )
-
-
-class CustomTabWidget(QTabWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        # Use our custom tab bar
-        self.setTabBar(CustomTabBar())
-
-        # Get reference to the add button from our custom tab bar
-        self.add_tab_button = self.tabBar().add_tab_button
-
-        # Set the tab widget to use the entire available width
-        self.setUsesScrollButtons(False)
-        self.setElideMode(Qt.ElideRight)
-
-        # Ensure the tab bar is visible
-        self.tabBar().setVisible(True)
-
-        # Tab widget pane styling is now handled by the main theme stylesheet
-
-        # Make sure the add button is properly initialized
-        QTimer.singleShot(100, self.ensureAddButtonVisible)
-
-    def _handle_add_button_hover_enter(self, event):
-        self.add_tab_button.setIcon(QIcon(themed_icon("add_tab_hover.png")))
-
-    def _handle_add_button_hover_leave(self, event):
-        self.add_tab_button.setIcon(QIcon(themed_icon("add_tab_default.png")))
-
-    def resizeEvent(self, event):
-        """Handle resize events to ensure tab bar is properly updated"""
-        super().resizeEvent(event)
-        # Force tab bar to update its layout
-        self.tabBar().tabLayoutChange()
-        # Ensure add button is visible after resize
-        self.ensureAddButtonVisible()
-
-    def ensureAddButtonVisible(self):
-        """Make sure the add button is visible and on top"""
-        if hasattr(self, "add_tab_button") and self.add_tab_button:
-            self.add_tab_button.show()
-            self.add_tab_button.raise_()
-
 
 class SolarRadioImageViewerApp(
     AnnotationDialogsMixin,
@@ -4149,7 +3703,6 @@ class SolarRadioImageViewerApp(
     def _create_tools_menu(self, menubar):
         """Tools menu (the LOFAR submenu is added by _create_lofar_menu)."""
         tools_menu = menubar.addMenu("&Tools")
-        from .dialogs import BatchProcessDialog, ImageInfoDialog
 
         # batch_act = QAction("Batch Processing", self)
         # batch_act.setShortcut("Ctrl+B")
@@ -4158,7 +3711,6 @@ class SolarRadioImageViewerApp(
         # tools_menu.addAction(batch_act)
 
         # Add Solar Phase Shift option
-        from .dialogs import PhaseShiftDialog
 
         phase_shift_act = QAction("Solar Phase Center Shift", self)
         phase_shift_act.setShortcut("Ctrl+P")
@@ -4171,7 +3723,6 @@ class SolarRadioImageViewerApp(
         tools_menu.addMenu(batch_process_submenu)
 
         # Add Coordinate Transformation option to submenu
-        from .dialogs import CoordinateTransformationDialog
 
         batch_transform_act = QAction("Coordinate Transformation", self)
         batch_transform_act.setStatusTip(
@@ -4199,7 +3750,6 @@ class SolarRadioImageViewerApp(
         batch_process_submenu.addAction(batch_unit_conv_act)
 
         # Add Format Conversion option to batch processing submenu
-        from .dialogs import FormatConversionDialog
 
         batch_format_conv_act = QAction("Format Conversion", self)
         batch_format_conv_act.setStatusTip(
@@ -4687,7 +4237,7 @@ class SolarRadioImageViewerApp(
 
     def show_about_dialog(self):
         """Show a modern, professional about dialog."""
-        from .styles import theme_manager
+        from .ui.styles import theme_manager
         from PyQt5.QtGui import QPixmap
 
         is_dark = theme_manager.is_dark
@@ -4917,8 +4467,6 @@ class SolarRadioImageViewerApp(
     def show_keyboard_shortcuts(parent=None):
         """Show keyboard shortcuts dialog with modern, professional UI design."""
         from PyQt5.QtWidgets import QGridLayout, QScrollArea, QFrame, QLineEdit
-        from PyQt5.QtGui import QFont
-        from PyQt5.QtCore import QSize
 
         dialog = QDialog(parent)
         dialog.setWindowTitle("Keyboard Shortcuts")
@@ -5047,7 +4595,7 @@ class SolarRadioImageViewerApp(
         ]
 
         # Get theme for styling
-        from .styles import theme_manager
+        from .ui.styles import theme_manager
 
         is_dark = theme_manager.is_dark
 
@@ -5380,7 +4928,7 @@ class SolarRadioImageViewerApp(
         """Show the NOAA Solar Events Viewer."""
         try:
             from .noaa_events import show_noaa_events_viewer
-            from datetime import date, datetime
+            from datetime import datetime
 
             # Try to get date from currently open FITS file
             initial_date = None

@@ -44,7 +44,7 @@ except ImportError:
 try:
     # First try relative import (when used as part of package)
     from . import solar_data_downloader as sdd
-    from ..styles import set_hand_cursor
+    from ..ui.styles import set_hand_cursor
 except ImportError:
     try:
         # Then try importing from the same directory (when run as script)

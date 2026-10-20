@@ -36,7 +36,7 @@ import sys
 import numpy as np
 import os
 
-from ..styles import theme_manager, set_hand_cursor
+from ..ui.styles import theme_manager, set_hand_cursor
 
 
 class BeamSettingsDialog(QDialog):

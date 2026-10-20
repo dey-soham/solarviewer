@@ -768,7 +768,7 @@ class RenderingMixin:
         ps = self.plot_settings
 
         # Helper to resolve "auto" colors based on theme
-        from ..styles import theme_manager
+        from ..ui.styles import theme_manager
 
         is_dark = theme_manager.is_dark
         theme_text = "#ffffff" if is_dark else "#000000"

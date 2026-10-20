@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
 )
 
-from ..styles import set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 
 class RemoteModeMixin:

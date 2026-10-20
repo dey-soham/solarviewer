@@ -36,7 +36,7 @@ import sys
 import numpy as np
 import os
 
-from ..styles import theme_manager, set_hand_cursor
+from ..ui.styles import theme_manager, set_hand_cursor
 
 import multiprocessing
 import glob
@@ -208,9 +208,9 @@ class CoordinateTransformationDialog(QDialog):
 
         # Import theme manager for theme-aware styling
         try:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
         except ImportError:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
 
         # Get colors directly from the palette for consistency
         palette = theme_manager.palette
@@ -363,9 +363,9 @@ class CoordinateTransformationDialog(QDialog):
     def setup_ui(self):
         """Set up the dialog UI with a modern tabbed layout."""
         try:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
         except ImportError:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
 
         palette = theme_manager.palette
         highlight_color = palette["highlight"]

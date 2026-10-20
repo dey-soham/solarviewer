@@ -135,7 +135,7 @@ class VideoCreationDialog(QDialog):
         self.setWindowTitle("Create Video")
         self.resize(650, 700)
 
-        from ..styles import set_hand_cursor
+        from ..ui.styles import set_hand_cursor
 
         self.setup_ui()
         set_hand_cursor(self)

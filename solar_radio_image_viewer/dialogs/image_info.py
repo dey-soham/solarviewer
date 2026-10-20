@@ -36,7 +36,7 @@ import sys
 import numpy as np
 import os
 
-from ..styles import theme_manager, set_hand_cursor
+from ..ui.styles import theme_manager, set_hand_cursor
 
 
 class ImageInfoDialog(QDialog):
@@ -64,7 +64,7 @@ class ImageInfoDialog(QDialog):
             source_layout = QHBoxLayout(source_container)
             source_layout.setContentsMargins(0, 5, 0, 10)
             
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
             palette = theme_manager.palette
             
             source_label = QLabel(f"📄 {os.path.basename(self.imagename)}")

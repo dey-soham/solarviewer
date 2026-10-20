@@ -52,7 +52,7 @@ import sys
 import os
 from urllib.parse import urlencode
 from typing import List, Dict, Optional, Tuple
-from .styles import set_hand_cursor
+from .ui.styles import set_hand_cursor
 
 # Global list to keep threads alive if window is closed while they are running
 # This prevents "QThread: Destroyed while thread is still running"
@@ -961,7 +961,7 @@ class HelioviewerBrowser(QMainWindow):
         layout.addWidget(scroll, 0, 0)
 
         # --- Floating Zoom Toolbar ---
-        from .styles import theme_manager
+        from .ui.styles import theme_manager
         is_dark = theme_manager.is_dark
         bg_color = "rgba(40, 40, 40, 200)" if is_dark else "rgba(230, 230, 230, 200)"
         text_color = "white" if is_dark else "black"

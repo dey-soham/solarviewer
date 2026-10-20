@@ -44,7 +44,7 @@ except ImportError:
 try:
     # Try relative imports (when run as module)
     from . import noaa_events as ne
-    from ..styles import theme_manager, set_hand_cursor
+    from ..ui.styles import theme_manager, set_hand_cursor
 except ImportError:
     # Fallback for standalone execution
     # Add project root to path to allow absolute imports
@@ -57,7 +57,7 @@ except ImportError:
         sys.path.insert(0, project_root)
 
     from solar_radio_image_viewer.noaa_events import noaa_events as ne
-    from solar_radio_image_viewer.styles import theme_manager, set_hand_cursor
+    from solar_radio_image_viewer.ui.styles import theme_manager, set_hand_cursor
 import requests
 import json
 from pathlib import Path

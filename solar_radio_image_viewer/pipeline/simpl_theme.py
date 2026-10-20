@@ -24,7 +24,7 @@ def setup_high_dpi():
 
 # Try to import palettes and stylesheet from main viewer styles for consistency
 try:
-    from ..styles import (
+    from ..ui.styles import (
         DARK_PALETTE,
         LIGHT_PALETTE,
         theme_manager,

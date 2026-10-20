@@ -59,7 +59,7 @@ class ConnectionDialog(QDialog):
         self._apply_styles()
         
         try:
-            from ..styles import set_hand_cursor
+            from ..ui.styles import set_hand_cursor
             set_hand_cursor(self)
         except ImportError:
             pass
@@ -192,10 +192,7 @@ class ConnectionDialog(QDialog):
 
     def _apply_styles(self):
         """Apply styling to the dialog using theme_manager for consistency."""
-        try:
-            from ..styles import theme_manager
-        except ImportError:
-            from styles import theme_manager
+        from ..ui.styles import theme_manager
 
         palette = theme_manager.palette
         border = palette["border"]

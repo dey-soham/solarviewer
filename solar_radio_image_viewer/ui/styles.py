@@ -6,6 +6,8 @@ from PyQt5.QtGui import QFontDatabase, QFont
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QAbstractButton, QComboBox, QTabBar, QMenu, QMenuBar, QWidget
 
+from .icons import PACKAGE_DIR, get_resource_path
+
 # Global flag to track if fonts are loaded
 _fonts_loaded = False
 _inter_font_family = "Inter"
@@ -31,8 +33,7 @@ def load_bundled_fonts():
     for font_file in font_files:
         try:
             # Use os.path instead of pkg_resources for speed
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            font_path = os.path.join(base_dir, "assets", font_file)
+            font_path = get_resource_path("assets", font_file)
 
             font_id = font_db.addApplicationFont(font_path)
             if font_id != -1:
@@ -45,8 +46,7 @@ def load_bundled_fonts():
 
     # Load Noto Emoji as fallback for emoji characters
     try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        emoji_path = os.path.join(base_dir, "assets", "NotoEmoji-Regular.ttf")
+        emoji_path = get_resource_path("assets", "NotoEmoji-Regular.ttf")
         font_db.addApplicationFont(emoji_path)
     except Exception as e:
         print(f"Could not load emoji font: {e}")
@@ -124,7 +124,7 @@ def get_stylesheet(palette, is_dark=True):
 
     # Get asset path for arrow images
     try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = PACKAGE_DIR
         suffix = "_light" if not is_dark else ""
 
         arrow_up = os.path.join(base_dir, "assets", f"spinbox_up{suffix}.png").replace(

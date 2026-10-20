@@ -11,9 +11,8 @@ from .version import __version__
 _modules = {
     "viewer": ["SolarRadioImageViewerApp", "SolarRadioImageTab"],
     "utils": None,
-    "styles": None,
     "dialogs": None,
-    "searchable_combobox": None,
+    "ui": None,
     "processing": None,
     "coordinates": None,
     "video": None,
@@ -32,6 +31,8 @@ _MOVED_MODULES = {
     "helioprojective_viewer": "coordinates.helioprojective_viewer",
     "move_phasecenter": "coordinates.move_phasecenter",
     "from_simpl": "pipeline",
+    "styles": "ui.styles",
+    "searchable_combobox": "ui.searchable_combobox",
 }
 
 

@@ -37,7 +37,7 @@ import sys
 import numpy as np
 import os
 
-from ..styles import theme_manager, set_hand_cursor
+from ..ui.styles import theme_manager, set_hand_cursor
 
 import glob
 import subprocess
@@ -58,9 +58,9 @@ class FormatConversionDialog(QDialog):
         self.aborted = False
 
         try:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
         except ImportError:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
             
         palette = theme_manager.palette
         text_secondary = palette.get("text_secondary", palette["disabled"])

@@ -27,7 +27,7 @@ class TutorialDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        from .styles import theme_manager, set_hand_cursor
+        from .ui.styles import theme_manager, set_hand_cursor
 
         self.is_dark = theme_manager.is_dark
         self._setup_ui()

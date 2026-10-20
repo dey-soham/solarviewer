@@ -15,16 +15,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QIcon
-import os
+from .icons import get_resource_path
 from .styles import get_icon_path, theme_manager, set_hand_cursor
-
-# Package directory for fast resource loading
-_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-
-def _get_resource_path(relative_path):
-    """Get absolute path to a package resource file."""
-    return os.path.join(_PACKAGE_DIR, relative_path)
 
 
 class SearchDialog(QDialog):
@@ -171,7 +163,7 @@ class ColormapSelector(QWidget):
     def _update_search_icon(self):
         """Update the search icon based on the current theme."""
         icon_filename = get_icon_path("search.png")
-        self.search_button.setIcon(QIcon(_get_resource_path(f"assets/{icon_filename}")))
+        self.search_button.setIcon(QIcon(get_resource_path(f"assets/{icon_filename}")))
 
     def _on_theme_changed(self, theme):
         """Handle theme change by updating the search icon."""

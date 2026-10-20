@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
 )
 
-from ..styles import set_hand_cursor, theme_manager
+from ..ui.styles import set_hand_cursor, theme_manager
 
 
 class FileNavigationMixin:

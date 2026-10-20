@@ -32,21 +32,13 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QSize
-import sys
 import numpy as np
 import os
 
-from ..styles import theme_manager, set_hand_cursor
+from ..ui.icons import get_resource_path
+from ..ui.styles import theme_manager, set_hand_cursor
 
 
-def _get_resource_path(relative_path):
-    """Get absolute path to resource, working for dev and PyInstaller."""
-    try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_path, relative_path)
 
 
 class ContourSettingsDialog(QDialog):
@@ -59,9 +51,9 @@ class ContourSettingsDialog(QDialog):
 
         # Import theme manager for theme-aware styling
         try:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
         except ImportError:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
 
         # Get colors directly from the palette for consistency
         palette = theme_manager.palette
@@ -189,9 +181,9 @@ class ContourSettingsDialog(QDialog):
 
         # Get theme colors for styling
         try:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
         except ImportError:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
 
         palette = theme_manager.palette
         is_dark = theme_manager.is_dark
@@ -326,8 +318,8 @@ class ContourSettingsDialog(QDialog):
         external_layout.addLayout(path_row)
 
         # Store icon references for theme switching
-        self.browse_icon_light = QIcon(_get_resource_path("assets/browse.png"))
-        self.browse_icon_dark = QIcon(_get_resource_path("assets/browse_light.png"))
+        self.browse_icon_light = QIcon(get_resource_path("assets/browse.png"))
+        self.browse_icon_dark = QIcon(get_resource_path("assets/browse_light.png"))
 
         source_layout.addWidget(self.external_group)
         source_layout.addStretch()
@@ -939,7 +931,7 @@ class ContourSettingsDialog(QDialog):
 
         # Get theme-aware colors for disabled state
         try:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
 
             palette = theme_manager.palette
             is_dark = theme_manager.is_dark

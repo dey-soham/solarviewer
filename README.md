@@ -295,6 +295,8 @@ solarviewer/
 │   ├── tools/                  # Interactive tools: ROI stats, ruler, profiles, fitting,
 │   │                           #   annotations, TB mode, HPC view, solar disk, solar events
 │   ├── dialogs/                # One module per dialog
+│   ├── ui/                     # Shared UI: themes/styles, icons, tab bar, segmented control,
+│   │                           #   colormap selector
 │   ├── processing/             # Qt-free image processing: pixel I/O, metadata, Stokes,
 │   │                           #   RMS, TB/flux maps, norms, CASA imfit/immath runners
 │   ├── coordinates/            # Helioprojective conversion, HPC viewer, phase-center shift
@@ -313,8 +315,6 @@ solarviewer/
 │   ├── crash_handler.py        # Crash reports
 │   ├── splash.py               # Splash screen
 │   ├── log_console.py          # Internal log viewer
-│   ├── searchable_combobox.py  # Custom combobox widget
-│   ├── styles.py               # UI themes (light/dark)
 │   ├── version.py              # Version information
 │   └── assets/                 # Icons and resources
 ├── tests/                      # pytest suite (runs offscreen)

@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from ..styles import set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 
 class SolarDiskMixin:

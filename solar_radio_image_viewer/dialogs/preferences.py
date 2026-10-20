@@ -36,7 +36,7 @@ import sys
 import numpy as np
 import os
 
-from ..styles import theme_manager, set_hand_cursor
+from ..ui.styles import theme_manager, set_hand_cursor
 
 import subprocess
 
@@ -50,9 +50,9 @@ class PreferencesDialog(QDialog):
 
         # Import theme manager for styling
         try:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
         except ImportError:
-            from ..styles import theme_manager
+            from ..ui.styles import theme_manager
 
         palette = theme_manager.palette
         is_dark = theme_manager.is_dark

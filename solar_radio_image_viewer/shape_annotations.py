@@ -27,7 +27,7 @@ from PyQt5.QtCore import Qt
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Ellipse, Rectangle
 
-from .styles import set_hand_cursor, theme_manager
+from .ui.styles import set_hand_cursor, theme_manager
 
 
 # ---------------------------------------------------------------------------

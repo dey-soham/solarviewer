@@ -29,7 +29,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from .simpl_theme import apply_theme, get_theme_from_args
-from ..styles import set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 
 class ProcessingThread(QThread):
@@ -374,7 +374,7 @@ def main():
 
     # Get theme from command line
     from .simpl_theme import apply_theme, get_theme_from_args
-    from ..styles import set_hand_cursor
+    from ..ui.styles import set_hand_cursor
     theme = get_theme_from_args()
     apply_theme(app, theme)
 

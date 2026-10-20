@@ -4,7 +4,7 @@ Launching downloaders, Helioviewer browser and pipeline tools.
 
 from PyQt5.QtWidgets import QMessageBox
 
-from ..styles import theme_manager
+from ..ui.styles import theme_manager
 
 
 class ExternalToolsMixin:

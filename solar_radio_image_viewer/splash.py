@@ -13,7 +13,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtCore import Qt, QRectF, QTimer, QPointF
 import os
 import math
-from .styles import theme_manager
+from .ui.styles import theme_manager
 
 
 class ModernSplashScreen(QSplashScreen):

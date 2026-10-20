@@ -368,7 +368,7 @@ class RemoteFileBrowser(QDialog):
         self._apply_styles()
         
         try:
-            from ..styles import set_hand_cursor
+            from ..ui.styles import set_hand_cursor
             set_hand_cursor(self)
         except ImportError:
             pass
@@ -590,10 +590,7 @@ class RemoteFileBrowser(QDialog):
 
     def _apply_styles(self):
         """Apply modern styling to the dialog using theme_manager."""
-        try:
-            from ..styles import theme_manager
-        except ImportError:
-            from styles import theme_manager
+        from ..ui.styles import theme_manager
 
         palette = theme_manager.palette
         is_dark = theme_manager.is_dark

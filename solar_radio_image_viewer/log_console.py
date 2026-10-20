@@ -137,14 +137,14 @@ class LogConsole(QDialog):
         self.apply_theme()
         
         try:
-            from .styles import set_hand_cursor
+            from .ui.styles import set_hand_cursor
             set_hand_cursor(self)
         except ImportError:
             pass
 
         # Register for theme updates
         try:
-            from .styles import theme_manager
+            from .ui.styles import theme_manager
 
             theme_manager.register_callback(self.apply_theme)
         except ImportError:
@@ -217,7 +217,7 @@ class LogConsole(QDialog):
     def apply_theme(self, *args):
         """Apply current theme colors."""
         try:
-            from .styles import theme_manager
+            from .ui.styles import theme_manager
 
             self.setStyleSheet(theme_manager.stylesheet)
 

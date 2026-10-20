@@ -36,7 +36,7 @@ import sys
 import numpy as np
 import os
 
-from ..styles import theme_manager, set_hand_cursor
+from ..ui.styles import theme_manager, set_hand_cursor
 
 from PyQt5.QtCore import QThread, pyqtSignal
 import subprocess
@@ -64,7 +64,7 @@ class UpdateDialog(QDialog):
         self.setMinimumWidth(400)
 
         # Theme styling
-        from ..styles import theme_manager
+        from ..ui.styles import theme_manager
 
         self.theme = theme_manager
         self.palette = theme_manager.palette

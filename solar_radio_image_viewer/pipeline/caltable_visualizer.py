@@ -29,10 +29,7 @@ import subprocess
 import tempfile
 import pickle
 import os
-try:
-    from ..styles import set_hand_cursor
-except ImportError:
-    from styles import set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 
 def read_caltable_safe(table_path, read_spectral_window=False):
@@ -1198,7 +1195,7 @@ def main():
 
     # Configure matplotlib using theme_manager (same as solarviewer)
     from matplotlib import rcParams
-    from solar_radio_image_viewer.styles import theme_manager
+    from solar_radio_image_viewer.ui.styles import theme_manager
 
     rcParams.update(theme_manager.matplotlib_params)
     rcParams["axes.linewidth"] = 1.4

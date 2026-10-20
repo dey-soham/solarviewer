@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..styles import set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 
 class AnnotationsMixin:

@@ -27,10 +27,7 @@ import logging
 from queue import Queue, Empty
 from datetime import datetime
 import threading
-try:
-    from ..styles import set_hand_cursor
-except ImportError:
-    from styles import set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 from PyQt5.QtWidgets import (
     QApplication,
