@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QSize
+import multiprocessing
 import sys
 import numpy as np
 import os

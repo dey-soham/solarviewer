@@ -991,8 +991,7 @@ class SolarPhaseCenter:
                 except Exception as e:
                     print(f"Error calculating pixel position for RA/Dec: {e}")
                     # Fallback to image center if WCS conversion fails
-                    naxis1 = header.get("NAXIS1", 512)
-                    naxis2 = header.get("NAXIS2", 512)
+                    naxis1, naxis2 = w_celest.pixel_shape or (512, 512)
                     apparent_pix_x = naxis1 // 2
                     apparent_pix_y = naxis2 // 2
 

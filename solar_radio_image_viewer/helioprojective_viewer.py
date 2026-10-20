@@ -38,6 +38,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon
 
+from .styles import set_hand_cursor
+
 # Try to import sunpy
 try:
     import sunpy

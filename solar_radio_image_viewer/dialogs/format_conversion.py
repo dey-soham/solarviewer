@@ -31,7 +31,8 @@ from PyQt5.QtWidgets import (
     QApplication,
 )
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QTimer
+import multiprocessing
 import sys
 import numpy as np
 import os
