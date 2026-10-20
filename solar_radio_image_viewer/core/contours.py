@@ -1176,189 +1176,27 @@ class ContoursMixin:
                 contour_wcs_obj.array_shape = contour_data.shape
                 image_wcs_for_reproject.array_shape = self.current_image_data.shape
 
-                # Calculate extended or clipped bounds based on show_full_extent setting
-                extended_shape = self.current_image_data.shape
-                contour_offset = [0, 0]  # Offset for contour plotting (y, x)
-                extended_wcs = image_wcs_for_reproject
-
-                show_full_extent = self.contour_settings.get("show_full_extent", False)
-
-                # Always try to extend canvas (default: 1.5x cap, full extent: no cap)
-                try:
-                    # Get world coordinates of contour image corners
-                    contour_corners_pix = np.array(
-                        [
-                            [0, 0],
-                            [contour_data.shape[1] - 1, 0],
-                            [0, contour_data.shape[0] - 1],
-                            [contour_data.shape[1] - 1, contour_data.shape[0] - 1],
-                        ]
-                    )
-                    contour_corners_world = contour_wcs_obj.wcs_pix2world(
-                        contour_corners_pix, 0
-                    )
-                    image_corners_pix = image_wcs_for_reproject.wcs_world2pix(
-                        contour_corners_world, 0
-                    )
-
-                    # Calculate the extent of contour in base image coordinates
-                    min_x = min(np.min(image_corners_pix[:, 0]), 0)
-                    max_x = max(
-                        np.max(image_corners_pix[:, 0]),
-                        self.current_image_data.shape[1] - 1,
-                    )
-                    min_y = min(np.min(image_corners_pix[:, 1]), 0)
-                    max_y = max(
-                        np.max(image_corners_pix[:, 1]),
-                        self.current_image_data.shape[0] - 1,
-                    )
-
-                    # Calculate extended dimensions
-                    extended_width = int(np.ceil(max_x - min_x)) + 1
-                    extended_height = int(np.ceil(max_y - min_y)) + 1
-
-                    # Check for large reprojected matrix size when show_full_extent is enabled
-                    if show_full_extent:
-                        max_dim = max(extended_width, extended_height)
-                        if max_dim > 5000:
-                            reply = QMessageBox.warning(
-                                self,
-                                "Large Reprojection Size",
-                                f"The reprojected matrix size ({extended_width} x {extended_height}) "
-                                f"exceeds 5000 pixels in at least one dimension.\n\n"
-                                f"This may consume significant memory and take a long time to compute.\n\n"
-                                f"Do you want to continue?",
-                                QMessageBox.Yes | QMessageBox.No,
-                                QMessageBox.No,
-                            )
-                            if reply == QMessageBox.No:
-                                self.show_status_message(
-                                    "Contour drawing cancelled by user."
-                                )
-                                return False, contour_data
-
-                    # Apply 1.5x cap by default (unless show_full_extent is enabled)
-                    if not show_full_extent:
-                        max_width = int(self.current_image_data.shape[1] * 1.5)
-                        max_height = int(self.current_image_data.shape[0] * 1.5)
-
-                        # Recalculate bounds if capped
-                        if extended_width > max_width:
-                            center_x = self.current_image_data.shape[1] / 2
-                            min_x = center_x - max_width / 2
-                            max_x = center_x + max_width / 2 - 1
-                            extended_width = max_width
-                        if extended_height > max_height:
-                            center_y = self.current_image_data.shape[0] / 2
-                            min_y = center_y - max_height / 2
-                            max_y = center_y + max_height / 2 - 1
-                            extended_height = max_height
-
-                    extended_shape = (extended_height, extended_width)
-
-                    # Calculate offset (how much the base image is shifted in the extended canvas)
-                    # Use floats to preserve sub-pixel accuracy
-                    contour_offset = [-min_y, -min_x]
-
-                    # Adjust WCS reference pixel for the extended shape
-                    extended_wcs = image_wcs_for_reproject.deepcopy()
-                    extended_wcs.wcs.crpix = [
-                        image_wcs_for_reproject.wcs.crpix[0] - min_x,
-                        image_wcs_for_reproject.wcs.crpix[1] - min_y,
-                    ]
-                    extended_wcs.array_shape = extended_shape
-
-                except Exception as e:
-                    if main_window:
-                        self.show_status_message(
-                            f"Could not compute extended bounds: {e}"
-                        )
-                    print(f"[ERROR] Could not compute extended bounds: {e}")
-                    extended_wcs = image_wcs_for_reproject
-                    extended_shape = self.current_image_data.shape
-                    contour_offset = [0, 0]
+                canvas = self._extended_contour_canvas(
+                    contour_data, contour_wcs_obj, image_wcs_for_reproject, main_window
+                )
+                if canvas is None:
+                    return False, contour_data
+                extended_shape, extended_wcs, contour_offset, show_full_extent = canvas
 
                 # Store offset for contour drawing
                 self._contour_offset = contour_offset
 
-                # Check cache for reprojected data
-                original_contour_source = (
-                    self.imagename
-                    if is_same_image
-                    else self.contour_settings.get("external_image")
+                array, ds_factor, extended_shape = self._reproject_with_cache(
+                    contour_data,
+                    contour_wcs_obj,
+                    image_wcs_for_reproject,
+                    extended_shape,
+                    extended_wcs,
+                    fits_flag,
+                    is_same_image,
+                    main_window,
+                    show_full_extent,
                 )
-
-                # Create a comprehensive cache key
-                cache_key = (
-                    self.imagename,  # Base image
-                    original_contour_source,  # Contour image source
-                    self.contour_settings.get(
-                        "stokes", ""
-                    ),  # Stokes parameter (crucial!)
-                    contour_data.shape,  # Original contour shape
-                    "fits_header" if fits_flag else "casa_csys",  # Source type
-                    str(contour_wcs_obj.wcs.crval),  # Contour WCS params
-                    str(contour_wcs_obj.wcs.cdelt),
-                    str(
-                        image_wcs_for_reproject.wcs.crval
-                    ),  # Base image WCS params (includes downsampling state)
-                    str(image_wcs_for_reproject.wcs.cdelt),
-                    show_full_extent,  # Extent setting
-                    self.contour_settings.get("downsample", True),  # Downsample setting
-                )
-
-                cached_result = self._reproject_cache.get(cache_key)
-
-                if cached_result is not None:
-                    # cache hit
-                    # print("Using cached reprojected contour data")
-                    if main_window:
-                        self.show_status_message("Using cached contour alignment...")
-                    array, offset, ds_factor = cached_result
-                    self._contour_offset = offset
-
-                    # Apply downsampling factor to offset if needed for plotting calculations
-                    # Note: The array itself is already downsampled, so we just use it.
-                    # The offset is in base image pixels, which is correct for placement.
-                else:
-                    # Cache miss - perform reprojection
-
-                    # OPTIMIZATION: Downsample large arrays to save memory/time
-                    # Contours don't need pixel-perfect 4k resolution
-                    contour_ds_factor = 1
-                    max_dim = max(extended_shape)
-                    downsample_enabled = self.contour_settings.get("downsample", True)
-
-                    if downsample_enabled and max_dim > 2048:
-                        contour_ds_factor = int(np.ceil(max_dim / 2048.0))
-                        print(
-                            f"[INFO] Downsampling contour reprojection by {contour_ds_factor}x (original size: {extended_shape})"
-                        )
-
-                        # Adjust shape
-                        new_height = extended_shape[0] // contour_ds_factor
-                        new_width = extended_shape[1] // contour_ds_factor
-                        extended_shape = (new_height, new_width)
-
-                        # Adjust WCS
-                        extended_wcs.wcs.cdelt *= contour_ds_factor
-                        extended_wcs.wcs.crpix /= contour_ds_factor
-
-                    # Reproject the contour data to the extended/clipped WCS
-                    # OPTIMIZATION: Don't calculate footprint unless needed (2x speedup)
-                    array = reproject_interp(
-                        (contour_data, contour_wcs_obj),
-                        extended_wcs,
-                        shape_out=extended_shape,
-                        return_footprint=False,
-                    )
-
-                    # Store in cache
-                    self._reproject_cache[cache_key] = (
-                        array,
-                        self._contour_offset,
-                        contour_ds_factor,
-                    )
 
                 # Replace the NaNs with zeros
                 array = np.nan_to_num(array, nan=0.0)
@@ -1406,14 +1244,9 @@ class ContoursMixin:
                         )
 
                 contour_data = array
-                reprojection_done = True
 
                 # Store factor for extent calculation
-                self._contour_ds_factor = (
-                    contour_ds_factor if "contour_ds_factor" in locals() else 1
-                )
-                if "ds_factor" in locals():
-                    self._contour_ds_factor = ds_factor
+                self._contour_ds_factor = ds_factor
 
             except ImportError as e:
                 print(f"[ERROR] reproject library not available: {e}")
@@ -1426,69 +1259,281 @@ class ContoursMixin:
                 )
             except Exception as e:
                 print(f"[ERROR] Error reprojecting contour data: {e}")
-                import traceback
-
-                traceback.print_exc()
-
-                # Fallback: try scipy-based scaling using pixel scale ratio
-                # This is useful when WCS reprojection fails (e.g., HPC observer=None)
-                try:
-                    from scipy.ndimage import zoom
-
-                    self.show_status_message(
-                        "WCS reprojection failed, trying pixel-scale fallback..."
-                    )
-
-                    # Calculate scale factors from CDELT
-                    scale_x = (
-                        contour_wcs_obj.wcs.cdelt[0]
-                        / image_wcs_for_reproject.wcs.cdelt[0]
-                    )
-                    scale_y = (
-                        contour_wcs_obj.wcs.cdelt[1]
-                        / image_wcs_for_reproject.wcs.cdelt[1]
-                    )
-
-                    # Zoom to match pixel scales
-                    zoomed = zoom(
-                        contour_data,
-                        [abs(scale_y), abs(scale_x)],
-                        order=1,
-                        mode="constant",
-                        cval=0,
-                    )
-
-                    # Pad or crop to match target shape
-                    target_shape = self.current_image_data.shape
-                    result = np.zeros(target_shape)
-
-                    # Calculate the offset to center the contour
-                    # Use reference value difference to determine shift
-                    dcrval = (
-                        contour_wcs_obj.wcs.crval - image_wcs_for_reproject.wcs.crval
-                    )
-                    offset_x = int(dcrval[0] / image_wcs_for_reproject.wcs.cdelt[0])
-                    offset_y = int(dcrval[1] / image_wcs_for_reproject.wcs.cdelt[1])
-
-                    # Calculate copy ranges
-                    src_start_y = max(0, -offset_y)
-                    src_end_y = min(zoomed.shape[0], target_shape[0] - offset_y)
-                    src_start_x = max(0, -offset_x)
-                    src_end_x = min(zoomed.shape[1], target_shape[1] - offset_x)
-
-                    dst_start_y = max(0, offset_y)
-                    dst_end_y = dst_start_y + (src_end_y - src_start_y)
-                    dst_start_x = max(0, offset_x)
-                    dst_end_x = dst_start_x + (src_end_x - src_start_x)
-
-                    if src_end_y > src_start_y and src_end_x > src_start_x:
-                        result[dst_start_y:dst_end_y, dst_start_x:dst_end_x] = zoomed[
-                            src_start_y:src_end_y, src_start_x:src_end_x
-                        ]
-
-                    contour_data = result
-                    self.show_status_message("Fallback reprojection done")
-                    print("[INFO] Fallback pixel-scale reprojection successful")
-                except Exception as fallback_e:
-                    print(f"[ERROR] Fallback reprojection also failed: {fallback_e}")
+                contour_data = self._fallback_reproject_contour(
+                    contour_data, contour_wcs_obj, image_wcs_for_reproject
+                )
         return True, contour_data
+
+    def _extended_contour_canvas(
+        self, contour_data, contour_wcs_obj, image_wcs_for_reproject, main_window
+    ):
+        """Output grid for reprojection: the base image extended to cover the
+        contour image (capped at 1.5x unless show_full_extent).
+
+        Returns (extended_shape, extended_wcs, contour_offset, show_full_extent),
+        or None if the user cancelled a very large reprojection.
+        """
+        # Calculate extended or clipped bounds based on show_full_extent setting
+        extended_shape = self.current_image_data.shape
+        contour_offset = [0, 0]  # Offset for contour plotting (y, x)
+        extended_wcs = image_wcs_for_reproject
+
+        show_full_extent = self.contour_settings.get("show_full_extent", False)
+
+        # Always try to extend canvas (default: 1.5x cap, full extent: no cap)
+        try:
+            # Get world coordinates of contour image corners
+            contour_corners_pix = np.array(
+                [
+                    [0, 0],
+                    [contour_data.shape[1] - 1, 0],
+                    [0, contour_data.shape[0] - 1],
+                    [contour_data.shape[1] - 1, contour_data.shape[0] - 1],
+                ]
+            )
+            contour_corners_world = contour_wcs_obj.wcs_pix2world(
+                contour_corners_pix, 0
+            )
+            image_corners_pix = image_wcs_for_reproject.wcs_world2pix(
+                contour_corners_world, 0
+            )
+
+            # Calculate the extent of contour in base image coordinates
+            min_x = min(np.min(image_corners_pix[:, 0]), 0)
+            max_x = max(
+                np.max(image_corners_pix[:, 0]),
+                self.current_image_data.shape[1] - 1,
+            )
+            min_y = min(np.min(image_corners_pix[:, 1]), 0)
+            max_y = max(
+                np.max(image_corners_pix[:, 1]),
+                self.current_image_data.shape[0] - 1,
+            )
+
+            # Calculate extended dimensions
+            extended_width = int(np.ceil(max_x - min_x)) + 1
+            extended_height = int(np.ceil(max_y - min_y)) + 1
+
+            # Check for large reprojected matrix size when show_full_extent is enabled
+            if show_full_extent:
+                max_dim = max(extended_width, extended_height)
+                if max_dim > 5000:
+                    reply = QMessageBox.warning(
+                        self,
+                        "Large Reprojection Size",
+                        f"The reprojected matrix size ({extended_width} x {extended_height}) "
+                        f"exceeds 5000 pixels in at least one dimension.\n\n"
+                        f"This may consume significant memory and take a long time to compute.\n\n"
+                        f"Do you want to continue?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if reply == QMessageBox.No:
+                        self.show_status_message("Contour drawing cancelled by user.")
+                        return None
+
+            # Apply 1.5x cap by default (unless show_full_extent is enabled)
+            if not show_full_extent:
+                max_width = int(self.current_image_data.shape[1] * 1.5)
+                max_height = int(self.current_image_data.shape[0] * 1.5)
+
+                # Recalculate bounds if capped
+                if extended_width > max_width:
+                    center_x = self.current_image_data.shape[1] / 2
+                    min_x = center_x - max_width / 2
+                    max_x = center_x + max_width / 2 - 1
+                    extended_width = max_width
+                if extended_height > max_height:
+                    center_y = self.current_image_data.shape[0] / 2
+                    min_y = center_y - max_height / 2
+                    max_y = center_y + max_height / 2 - 1
+                    extended_height = max_height
+
+            extended_shape = (extended_height, extended_width)
+
+            # Calculate offset (how much the base image is shifted in the extended canvas)
+            # Use floats to preserve sub-pixel accuracy
+            contour_offset = [-min_y, -min_x]
+
+            # Adjust WCS reference pixel for the extended shape
+            extended_wcs = image_wcs_for_reproject.deepcopy()
+            extended_wcs.wcs.crpix = [
+                image_wcs_for_reproject.wcs.crpix[0] - min_x,
+                image_wcs_for_reproject.wcs.crpix[1] - min_y,
+            ]
+            extended_wcs.array_shape = extended_shape
+
+        except Exception as e:
+            if main_window:
+                self.show_status_message(f"Could not compute extended bounds: {e}")
+            print(f"[ERROR] Could not compute extended bounds: {e}")
+            extended_wcs = image_wcs_for_reproject
+            extended_shape = self.current_image_data.shape
+            contour_offset = [0, 0]
+        return extended_shape, extended_wcs, contour_offset, show_full_extent
+
+    def _reproject_with_cache(
+        self,
+        contour_data,
+        contour_wcs_obj,
+        image_wcs_for_reproject,
+        extended_shape,
+        extended_wcs,
+        fits_flag,
+        is_same_image,
+        main_window,
+        show_full_extent,
+    ):
+        """Reproject onto the extended grid, using self._reproject_cache.
+
+        Returns (array, ds_factor, extended_shape); large outputs are
+        downsampled by ds_factor.
+        """
+        from reproject import reproject_interp
+
+        # Check cache for reprojected data
+        original_contour_source = (
+            self.imagename
+            if is_same_image
+            else self.contour_settings.get("external_image")
+        )
+
+        # Create a comprehensive cache key
+        cache_key = (
+            self.imagename,  # Base image
+            original_contour_source,  # Contour image source
+            self.contour_settings.get("stokes", ""),  # Stokes parameter (crucial!)
+            contour_data.shape,  # Original contour shape
+            "fits_header" if fits_flag else "casa_csys",  # Source type
+            str(contour_wcs_obj.wcs.crval),  # Contour WCS params
+            str(contour_wcs_obj.wcs.cdelt),
+            str(
+                image_wcs_for_reproject.wcs.crval
+            ),  # Base image WCS params (includes downsampling state)
+            str(image_wcs_for_reproject.wcs.cdelt),
+            show_full_extent,  # Extent setting
+            self.contour_settings.get("downsample", True),  # Downsample setting
+        )
+
+        cached_result = self._reproject_cache.get(cache_key)
+
+        if cached_result is not None:
+            # cache hit
+            # print("Using cached reprojected contour data")
+            if main_window:
+                self.show_status_message("Using cached contour alignment...")
+            array, offset, ds_factor = cached_result
+            self._contour_offset = offset
+
+            # Apply downsampling factor to offset if needed for plotting calculations
+            # Note: The array itself is already downsampled, so we just use it.
+            # The offset is in base image pixels, which is correct for placement.
+        else:
+            # Cache miss - perform reprojection
+
+            # OPTIMIZATION: Downsample large arrays to save memory/time
+            # Contours don't need pixel-perfect 4k resolution
+            contour_ds_factor = 1
+            max_dim = max(extended_shape)
+            downsample_enabled = self.contour_settings.get("downsample", True)
+
+            if downsample_enabled and max_dim > 2048:
+                contour_ds_factor = int(np.ceil(max_dim / 2048.0))
+                print(
+                    f"[INFO] Downsampling contour reprojection by {contour_ds_factor}x (original size: {extended_shape})"
+                )
+
+                # Adjust shape
+                new_height = extended_shape[0] // contour_ds_factor
+                new_width = extended_shape[1] // contour_ds_factor
+                extended_shape = (new_height, new_width)
+
+                # Adjust WCS
+                extended_wcs.wcs.cdelt *= contour_ds_factor
+                extended_wcs.wcs.crpix /= contour_ds_factor
+
+            # Reproject the contour data to the extended/clipped WCS
+            # OPTIMIZATION: Don't calculate footprint unless needed (2x speedup)
+            array = reproject_interp(
+                (contour_data, contour_wcs_obj),
+                extended_wcs,
+                shape_out=extended_shape,
+                return_footprint=False,
+            )
+
+            # Store in cache
+            self._reproject_cache[cache_key] = (
+                array,
+                self._contour_offset,
+                contour_ds_factor,
+            )
+        if cached_result is not None:
+            return array, ds_factor, extended_shape
+        return array, contour_ds_factor, extended_shape
+
+    def _fallback_reproject_contour(
+        self, contour_data, contour_wcs_obj, image_wcs_for_reproject
+    ):
+        """Simpler reprojection onto the base image grid after the main path failed."""
+        import traceback
+
+        traceback.print_exc()
+
+        # Fallback: try scipy-based scaling using pixel scale ratio
+        # This is useful when WCS reprojection fails (e.g., HPC observer=None)
+        try:
+            from scipy.ndimage import zoom
+
+            self.show_status_message(
+                "WCS reprojection failed, trying pixel-scale fallback..."
+            )
+
+            # Calculate scale factors from CDELT
+            scale_x = (
+                contour_wcs_obj.wcs.cdelt[0] / image_wcs_for_reproject.wcs.cdelt[0]
+            )
+            scale_y = (
+                contour_wcs_obj.wcs.cdelt[1] / image_wcs_for_reproject.wcs.cdelt[1]
+            )
+
+            # Zoom to match pixel scales
+            zoomed = zoom(
+                contour_data,
+                [abs(scale_y), abs(scale_x)],
+                order=1,
+                mode="constant",
+                cval=0,
+            )
+
+            # Pad or crop to match target shape
+            target_shape = self.current_image_data.shape
+            result = np.zeros(target_shape)
+
+            # Calculate the offset to center the contour
+            # Use reference value difference to determine shift
+            dcrval = contour_wcs_obj.wcs.crval - image_wcs_for_reproject.wcs.crval
+            offset_x = int(dcrval[0] / image_wcs_for_reproject.wcs.cdelt[0])
+            offset_y = int(dcrval[1] / image_wcs_for_reproject.wcs.cdelt[1])
+
+            # Calculate copy ranges
+            src_start_y = max(0, -offset_y)
+            src_end_y = min(zoomed.shape[0], target_shape[0] - offset_y)
+            src_start_x = max(0, -offset_x)
+            src_end_x = min(zoomed.shape[1], target_shape[1] - offset_x)
+
+            dst_start_y = max(0, offset_y)
+            dst_end_y = dst_start_y + (src_end_y - src_start_y)
+            dst_start_x = max(0, offset_x)
+            dst_end_x = dst_start_x + (src_end_x - src_start_x)
+
+            if src_end_y > src_start_y and src_end_x > src_start_x:
+                result[dst_start_y:dst_end_y, dst_start_x:dst_end_x] = zoomed[
+                    src_start_y:src_end_y, src_start_x:src_end_x
+                ]
+
+            contour_data = result
+            self.show_status_message("Fallback reprojection done")
+            print("[INFO] Fallback pixel-scale reprojection successful")
+        except Exception as fallback_e:
+            print(f"[ERROR] Fallback reprojection also failed: {fallback_e}")
+        return contour_data
