@@ -68,7 +68,6 @@ from .ui.custom_tabs import CustomTabWidget
 from .ui.item_delegates import DisabledItemDelegate
 from .utils.update_checker import check_for_updates
 from .version import __version__
-import sunpy.visualization.colormaps  # noqa: F401  (registers sdoaia*, etc.)
 from .tools import (
     RegionMode,
     RoiStatsMixin,
@@ -84,6 +83,7 @@ from .tools import (
     SolarEventsMixin,
 )
 from .core.presets import display_range
+from .processing.colormaps import ensure_solar_colormaps
 from .core import (
     CanvasMixin,
     ContoursMixin,
@@ -1844,6 +1844,11 @@ class SolarRadioImageTab(
             )
 
             cmap = "viridis"
+            requested = colormap_name or getattr(
+                getattr(self, "cmap_combo", None), "currentText", lambda: ""
+            )()
+            if requested and requested not in plt.colormaps():
+                ensure_solar_colormaps()
             if colormap_name and colormap_name in plt.colormaps():
                 cmap = colormap_name
                 self.cmap_combo.setCurrentText(cmap)

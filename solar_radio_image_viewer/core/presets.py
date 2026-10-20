@@ -18,6 +18,8 @@ from typing import Dict, Optional, Tuple, Union
 import matplotlib
 import numpy as np
 
+from ..processing.colormaps import ensure_solar_colormaps
+
 # --------------------------------------------------------------------------
 # Display ranges
 # --------------------------------------------------------------------------
@@ -244,6 +246,7 @@ def get_preset(instrument, variant=None):
 
 def resolve_cmap(preset, current_cmap):
     """Return the colormap to use: preferred, else fallback, else current."""
+    ensure_solar_colormaps()
     if preset.cmap in matplotlib.colormaps:
         return preset.cmap
     return preset.fallback_cmap or current_cmap

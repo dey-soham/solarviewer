@@ -169,12 +169,24 @@ class ColormapSelector(QWidget):
         """Handle theme change by updating the search icon."""
         self._update_search_icon()
 
+    def _refresh_all_items(self):
+        """Pick up colormaps registered after startup (e.g. sunpy's)."""
+        import matplotlib
+
+        self.all_items = sorted(set(self.all_items) | set(matplotlib.colormaps))
+
     def on_combo_changed(self, text):
-        if text in self.all_items:
+        import matplotlib
+
+        if text in self.all_items or text in matplotlib.colormaps:
             self.current_colormap = text
             self.colormapSelected.emit(text)
 
     def show_search_dialog(self):
+        from ..processing.colormaps import ensure_solar_colormaps
+
+        ensure_solar_colormaps()
+        self._refresh_all_items()
         dialog = SearchDialog(self, self.all_items)
         if dialog.exec_() == QDialog.Accepted and dialog.selected_item:
             self.current_colormap = dialog.selected_item

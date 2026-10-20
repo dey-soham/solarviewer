@@ -131,6 +131,7 @@ except Exception as e:
 
 
 # Import the helioprojective conversion functions
+from ..processing.colormaps import ensure_solar_colormaps
 from .helioprojective import convert_to_hpc
 from ..ui.styles import theme_manager, get_stylesheet
 
@@ -251,6 +252,7 @@ class HelioProjectiveViewer(QMainWindow):
 
         # Colormap selection
         self.cmap_combo = QComboBox()
+        ensure_solar_colormaps()
         for cmap in sorted(plt.colormaps()):
             self.cmap_combo.addItem(cmap)
         self.cmap_combo.setCurrentText(self.colormap)

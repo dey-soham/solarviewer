@@ -59,6 +59,7 @@ def wait_cursor():
         QApplication.restoreOverrideCursor()
 
 
+from ..processing.colormaps import ensure_solar_colormaps
 from .creator import (
     create_video,
     VideoProgress,
@@ -384,6 +385,7 @@ class VideoCreationDialog(QDialog):
 
         # Colormap
         self.colormap_combo = QComboBox()
+        ensure_solar_colormaps()
         colormaps = sorted(
             [cmap for cmap in plt.colormaps() if not cmap.endswith("_r")]
         )

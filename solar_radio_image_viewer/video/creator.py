@@ -40,6 +40,7 @@ from ..processing.norms import (
     ZScaleNorm,
     HistEqNorm,
 )
+from ..processing.colormaps import ensure_solar_colormaps
 from .utils import (
     detect_coordinate_system,
     get_wcs_axis_labels,
@@ -528,6 +529,8 @@ def process_image(
 
         # Display the image
         cmap = options.get("colormap", "viridis")
+        if cmap not in plt.colormaps():
+            ensure_solar_colormaps()
         img = ax.imshow(
             data,
             cmap=cmap,

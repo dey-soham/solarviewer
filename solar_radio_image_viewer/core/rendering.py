@@ -4,6 +4,7 @@ Rendering the image tab: plot_image and its drawing steps.
 
 import os
 
+import matplotlib
 import numpy as np
 from astropy.time import Time
 from matplotlib.colors import LogNorm, Normalize
@@ -13,6 +14,7 @@ from PyQt5.QtWidgets import QApplication
 
 from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
 from ..processing.dependencies import IA
+from ..processing.colormaps import ensure_solar_colormaps
 from .presets import display_range
 from ..processing.fits_io import readable_image_path
 
@@ -102,6 +104,9 @@ class RenderingMixin:
     ):
         # Show wait cursor during plotting
         QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        if isinstance(cmap, str) and cmap not in matplotlib.colormaps:
+            ensure_solar_colormaps()
 
         self._refresh_metadata_cache()
 

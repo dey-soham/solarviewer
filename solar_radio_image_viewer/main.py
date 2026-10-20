@@ -323,6 +323,17 @@ Examples:
             # From now on, unhandled exceptions are reported but not fatal
             set_main_window(win)
 
+            # sunpy's solar colormaps take ~1 s to import; load them in the
+            # background now that the window is up (they load on first use
+            # anyway if something needs them sooner)
+            import threading
+
+            from .processing.colormaps import ensure_solar_colormaps
+
+            threading.Thread(
+                target=ensure_solar_colormaps, name="solar-colormaps", daemon=True
+            ).start()
+
         except Exception as e:
             import traceback
 
