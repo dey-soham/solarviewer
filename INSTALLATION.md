@@ -168,15 +168,14 @@ If you prefer Homebrew, you must manually install all dependencies and set compi
 4. Re-install forcing a source build:
    ```bash
    pip install --no-binary python-casacore solarviewer
+   ```
 
-### Environment conflicts in Conda 
+### **Environment conflicts in Conda**
+If packages from your user site-packages or `PYTHONPATH` are picked up instead of the ones in your Conda environment, isolate the environment before running SolarViewer:
 ```bash
-export PYTHONNOUSERSIT=1
+export PYTHONNOUSERSITE=1
 unset PYTHONPATH
 ```
-```
-```
-   ```
 
 ### **Command `solarviewer` or `sv` not found?**
 *   Ensure your virtual environment is active:
