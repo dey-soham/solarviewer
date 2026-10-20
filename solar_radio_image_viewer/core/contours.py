@@ -871,207 +871,11 @@ class ContoursMixin:
             and self.current_contour_wcs is not None
             and image_wcs_obj is not None
         ):
-            # Build the contour WCS object
-            from astropy.wcs import WCS
-
-            contour_wcs_obj = WCS(naxis=2)
-
-            # For FITS files, we need to handle the WCS carefully:
-            # - Use current_contour_wcs for CRPIX/CRVAL/CDELT (which is adjusted for downsampling)
-            # - But for HPC FITS files, CASA misinterprets the CTYPE, so use header for CTYPE
-            if fits_flag and header:
-                try:
-                    # Get downsampling-adjusted values from CASA coordsys
-                    ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
-                    ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
-                    increment = self.current_contour_wcs.increment()["numeric"][0:2]
-
-                    # Swap axes for numpy (row, col) = (y, x) order
-                    contour_wcs_obj.wcs.crpix = [
-                        ref_pix[1] + 1,
-                        ref_pix[0] + 1,
-                    ]  # CASA 0-indexed -> FITS 1-indexed
-
-                    # Get CTYPE from FITS header (correct for HPC)
-                    ctype1 = header.get("CTYPE1", "")
-                    ctype2 = header.get("CTYPE2", "")
-                    is_hpc = (
-                        "HPLN" in ctype1
-                        or "HPLT" in ctype1
-                        or "HPLN" in ctype2
-                        or "HPLT" in ctype2
-                        or "SOLAR-X" in ctype1.upper()
-                        or "SOLAR-Y" in ctype2.upper()
-                    )
-
-                    if is_hpc:
-                        # Distinguish HPLN-TAN (CASA stores in radians) from
-                        # SOLAR-X (CASA stores as linear coords in arcsec)
-                        is_solar_xy = (
-                            "SOLAR-X" in ctype1.upper() or "SOLAR-Y" in ctype2.upper()
-                        )
-                        if is_solar_xy:
-                            # SOLAR-X/Y: CASA coordsys has arcsec values
-                            # Convert arcsec → degrees for astropy WCS
-                            crval1 = ref_val[0] / 3600.0
-                            crval2 = ref_val[1] / 3600.0
-                            cdelt1 = increment[0] / 3600.0
-                            cdelt2 = increment[1] / 3600.0
-                        else:
-                            # HPLN/HPLT: CASA coordsys is in radians
-                            # Convert to degrees for WCS reprojection
-                            crval1 = ref_val[0] * 180.0 / np.pi
-                            crval2 = ref_val[1] * 180.0 / np.pi
-                            cdelt1 = increment[0] * 180.0 / np.pi
-                            cdelt2 = increment[1] * 180.0 / np.pi
-                    else:
-                        # For RA/Dec, CASA coordsys is already in radians, convert to degrees
-                        crval1 = ref_val[0] * 180.0 / np.pi
-                        crval2 = ref_val[1] * 180.0 / np.pi
-                        cdelt1 = increment[0] * 180.0 / np.pi
-                        cdelt2 = increment[1] * 180.0 / np.pi
-
-                    contour_wcs_obj.wcs.crval = [crval2, crval1]  # Swapped
-                    contour_wcs_obj.wcs.cdelt = [cdelt2, cdelt1]  # Swapped
-
-                    # Map SOLAR-X/Y to standard celestial types for reproject
-                    def _to_celestial_ctype(ct):
-                        ct_upper = ct.upper()
-                        if "SOLAR-X" in ct_upper:
-                            return "HPLN-TAN"
-                        elif "SOLAR-Y" in ct_upper:
-                            return "HPLT-TAN"
-                        return ct
-
-                    contour_wcs_obj.wcs.ctype = [
-                        _to_celestial_ctype(ctype2),
-                        _to_celestial_ctype(ctype1),
-                    ]  # Map to celestial types for reproject
-                except Exception as e:
-
-                    print(f"[ERROR] Failed to build WCS from FITS header: {e}")
-                    # Fall back to CASA coordsys without FITS header
-                    fits_flag = False
-
-            if not fits_flag:
-                # Use CASA coordsys (for CASA images or as fallback)
-                ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
-                ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
-                increment = self.current_contour_wcs.increment()["numeric"][0:2]
-
-                # IMPORTANT: CASA WCS stores in (RA, Dec) = (x, y) order
-                # But numpy arrays are (row, col) = (y, x)
-                # We need to SWAP the axes for proper alignment with reproject
-                contour_wcs_obj.wcs.crpix = [
-                    ref_pix[1] + 1,
-                    ref_pix[0] + 1,
-                ]  # Swap to (y, x); CASA 0-indexed -> FITS 1-indexed
-
-                if "Right Ascension" in summary["axisnames"]:
-                    contour_wcs_obj.wcs.crval = [
-                        ref_val[1] * 180 / np.pi,  # Dec first
-                        ref_val[0] * 180 / np.pi,  # RA second
-                    ]
-                    contour_wcs_obj.wcs.cdelt = [
-                        increment[1] * 180 / np.pi,
-                        increment[0] * 180 / np.pi,
-                    ]
-                    contour_wcs_obj.wcs.ctype = ["DEC--SIN", "RA---SIN"]
-                else:
-                    contour_wcs_obj.wcs.crval = [ref_val[1], ref_val[0]]
-                    contour_wcs_obj.wcs.cdelt = [increment[1], increment[0]]
-
-            # Set projection type for contour WCS (swapped to match axis order)
-            if fits_flag:
-                try:
-                    # Swap CTYPE order to match swapped axes
-                    # Map SOLAR-X/Y to celestial types for reproject
-                    def _to_celestial_ctype2(ct):
-                        ct_upper = ct.upper()
-                        if "SOLAR-X" in ct_upper:
-                            return "HPLN-TAN"
-                        elif "SOLAR-Y" in ct_upper:
-                            return "HPLT-TAN"
-                        return ct
-
-                    contour_wcs_obj.wcs.ctype = [
-                        _to_celestial_ctype2(header["CTYPE2"]),
-                        _to_celestial_ctype2(header["CTYPE1"]),
-                    ]
-                except Exception as e:
-                    print(f"[ERROR] Error getting projection type from FITS: {e}")
-                    self.show_status_message(
-                        f"Error getting projection type from FITS: {e}"
-                    )
-                    # Use swapped image ctype, mapping SOLAR-X/Y if needed
-                    ct0 = image_wcs_obj.wcs.ctype[1]
-                    ct1 = image_wcs_obj.wcs.ctype[0]
-                    if "SOLAR-X" in ct1.upper():
-                        ct1 = "HPLN-TAN"
-                    if "SOLAR-Y" in ct0.upper():
-                        ct0 = "HPLT-TAN"
-                    contour_wcs_obj.wcs.ctype = [ct0, ct1]
-            elif (csys.projection()["type"] == "SIN") and (
-                "Right Ascension" in summary["axisnames"]
-            ):
-                contour_wcs_obj.wcs.ctype = ["DEC--SIN", "RA---SIN"]  # Swapped
-            elif (csys.projection()["type"] == "TAN") and (
-                "Right Ascension" in summary["axisnames"]
-            ):
-                contour_wcs_obj.wcs.ctype = ["DEC--TAN", "RA---TAN"]  # Swapped
-            else:
-                # Use swapped image ctype, mapping SOLAR-X/Y if needed
-                ct0 = image_wcs_obj.wcs.ctype[1]
-                ct1 = image_wcs_obj.wcs.ctype[0]
-                if "SOLAR-X" in ct1.upper():
-                    ct1 = "HPLN-TAN"
-                if "SOLAR-Y" in ct0.upper():
-                    ct0 = "HPLT-TAN"
-                contour_wcs_obj.wcs.ctype = [ct0, ct1]
-
-            # IMPORTANT: Also swap the image WCS to match!
-            # Create a copy with swapped axes for reprojection
-            image_wcs_swapped = WCS(naxis=2)
-            image_wcs_swapped.wcs.crpix = [
-                image_wcs_obj.wcs.crpix[1],
-                image_wcs_obj.wcs.crpix[0],
-            ]
-
-            # Check if base image uses SOLAR-X/Y (non-celestial in astropy)
-            # If so, convert values from arcsec to degrees and remap CTYPE
-            img_ctype0 = image_wcs_obj.wcs.ctype[0]
-            img_ctype1 = image_wcs_obj.wcs.ctype[1]
-            is_base_solar_xy = (
-                "SOLAR-X" in img_ctype0.upper() or "SOLAR-Y" in img_ctype1.upper()
+            contour_wcs_obj, fits_flag = self._build_contour_wcs(
+                csys, fits_flag, header, image_wcs_obj, summary
             )
 
-            if is_base_solar_xy:
-                # SOLAR-X/Y: values are in arcsec, convert to degrees
-                image_wcs_swapped.wcs.crval = [
-                    image_wcs_obj.wcs.crval[1] / 3600.0,
-                    image_wcs_obj.wcs.crval[0] / 3600.0,
-                ]
-                image_wcs_swapped.wcs.cdelt = [
-                    image_wcs_obj.wcs.cdelt[1] / 3600.0,
-                    image_wcs_obj.wcs.cdelt[0] / 3600.0,
-                ]
-                image_wcs_swapped.wcs.ctype = ["HPLT-TAN", "HPLN-TAN"]
-            else:
-                image_wcs_swapped.wcs.crval = [
-                    image_wcs_obj.wcs.crval[1],
-                    image_wcs_obj.wcs.crval[0],
-                ]
-                image_wcs_swapped.wcs.cdelt = [
-                    image_wcs_obj.wcs.cdelt[1],
-                    image_wcs_obj.wcs.cdelt[0],
-                ]
-                image_wcs_swapped.wcs.ctype = [
-                    image_wcs_obj.wcs.ctype[1],
-                    image_wcs_obj.wcs.ctype[0],
-                ]
-
-            # Use the swapped WCS for reprojection
-            image_wcs_for_reproject = image_wcs_swapped
+            image_wcs_for_reproject = self._swapped_image_wcs(image_wcs_obj)
 
             # Check for different projections and warn user
             # Extract projection type from ctype (e.g., "SIN" from "RA---SIN" or "DEC--SIN")
@@ -1124,6 +928,220 @@ class ContoursMixin:
             if contour_data.shape != self.current_image_data.shape:
                 needs_reprojection = True
         return contour_wcs_obj, fits_flag, image_wcs_for_reproject, needs_reprojection
+
+    def _build_contour_wcs(self, csys, fits_flag, header, image_wcs_obj, summary):
+        """2D astropy WCS for the contour image (axes swapped to match the base image).
+
+        Returns (contour_wcs_obj, fits_flag).
+        """
+        # Build the contour WCS object
+        from astropy.wcs import WCS
+
+        contour_wcs_obj = WCS(naxis=2)
+
+        # For FITS files, we need to handle the WCS carefully:
+        # - Use current_contour_wcs for CRPIX/CRVAL/CDELT (which is adjusted for downsampling)
+        # - But for HPC FITS files, CASA misinterprets the CTYPE, so use header for CTYPE
+        if fits_flag and header:
+            try:
+                # Get downsampling-adjusted values from CASA coordsys
+                ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
+                ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
+                increment = self.current_contour_wcs.increment()["numeric"][0:2]
+
+                # Swap axes for numpy (row, col) = (y, x) order
+                contour_wcs_obj.wcs.crpix = [
+                    ref_pix[1] + 1,
+                    ref_pix[0] + 1,
+                ]  # CASA 0-indexed -> FITS 1-indexed
+
+                # Get CTYPE from FITS header (correct for HPC)
+                ctype1 = header.get("CTYPE1", "")
+                ctype2 = header.get("CTYPE2", "")
+                is_hpc = (
+                    "HPLN" in ctype1
+                    or "HPLT" in ctype1
+                    or "HPLN" in ctype2
+                    or "HPLT" in ctype2
+                    or "SOLAR-X" in ctype1.upper()
+                    or "SOLAR-Y" in ctype2.upper()
+                )
+
+                if is_hpc:
+                    # Distinguish HPLN-TAN (CASA stores in radians) from
+                    # SOLAR-X (CASA stores as linear coords in arcsec)
+                    is_solar_xy = (
+                        "SOLAR-X" in ctype1.upper() or "SOLAR-Y" in ctype2.upper()
+                    )
+                    if is_solar_xy:
+                        # SOLAR-X/Y: CASA coordsys has arcsec values
+                        # Convert arcsec → degrees for astropy WCS
+                        crval1 = ref_val[0] / 3600.0
+                        crval2 = ref_val[1] / 3600.0
+                        cdelt1 = increment[0] / 3600.0
+                        cdelt2 = increment[1] / 3600.0
+                    else:
+                        # HPLN/HPLT: CASA coordsys is in radians
+                        # Convert to degrees for WCS reprojection
+                        crval1 = ref_val[0] * 180.0 / np.pi
+                        crval2 = ref_val[1] * 180.0 / np.pi
+                        cdelt1 = increment[0] * 180.0 / np.pi
+                        cdelt2 = increment[1] * 180.0 / np.pi
+                else:
+                    # For RA/Dec, CASA coordsys is already in radians, convert to degrees
+                    crval1 = ref_val[0] * 180.0 / np.pi
+                    crval2 = ref_val[1] * 180.0 / np.pi
+                    cdelt1 = increment[0] * 180.0 / np.pi
+                    cdelt2 = increment[1] * 180.0 / np.pi
+
+                contour_wcs_obj.wcs.crval = [crval2, crval1]  # Swapped
+                contour_wcs_obj.wcs.cdelt = [cdelt2, cdelt1]  # Swapped
+
+                # Map SOLAR-X/Y to standard celestial types for reproject
+                def _to_celestial_ctype(ct):
+                    ct_upper = ct.upper()
+                    if "SOLAR-X" in ct_upper:
+                        return "HPLN-TAN"
+                    elif "SOLAR-Y" in ct_upper:
+                        return "HPLT-TAN"
+                    return ct
+
+                contour_wcs_obj.wcs.ctype = [
+                    _to_celestial_ctype(ctype2),
+                    _to_celestial_ctype(ctype1),
+                ]  # Map to celestial types for reproject
+            except Exception as e:
+
+                print(f"[ERROR] Failed to build WCS from FITS header: {e}")
+                # Fall back to CASA coordsys without FITS header
+                fits_flag = False
+
+        if not fits_flag:
+            # Use CASA coordsys (for CASA images or as fallback)
+            ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
+            ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
+            increment = self.current_contour_wcs.increment()["numeric"][0:2]
+
+            # IMPORTANT: CASA WCS stores in (RA, Dec) = (x, y) order
+            # But numpy arrays are (row, col) = (y, x)
+            # We need to SWAP the axes for proper alignment with reproject
+            contour_wcs_obj.wcs.crpix = [
+                ref_pix[1] + 1,
+                ref_pix[0] + 1,
+            ]  # Swap to (y, x); CASA 0-indexed -> FITS 1-indexed
+
+            if "Right Ascension" in summary["axisnames"]:
+                contour_wcs_obj.wcs.crval = [
+                    ref_val[1] * 180 / np.pi,  # Dec first
+                    ref_val[0] * 180 / np.pi,  # RA second
+                ]
+                contour_wcs_obj.wcs.cdelt = [
+                    increment[1] * 180 / np.pi,
+                    increment[0] * 180 / np.pi,
+                ]
+                contour_wcs_obj.wcs.ctype = ["DEC--SIN", "RA---SIN"]
+            else:
+                contour_wcs_obj.wcs.crval = [ref_val[1], ref_val[0]]
+                contour_wcs_obj.wcs.cdelt = [increment[1], increment[0]]
+
+        # Set projection type for contour WCS (swapped to match axis order)
+        if fits_flag:
+            try:
+                # Swap CTYPE order to match swapped axes
+                # Map SOLAR-X/Y to celestial types for reproject
+                def _to_celestial_ctype2(ct):
+                    ct_upper = ct.upper()
+                    if "SOLAR-X" in ct_upper:
+                        return "HPLN-TAN"
+                    elif "SOLAR-Y" in ct_upper:
+                        return "HPLT-TAN"
+                    return ct
+
+                contour_wcs_obj.wcs.ctype = [
+                    _to_celestial_ctype2(header["CTYPE2"]),
+                    _to_celestial_ctype2(header["CTYPE1"]),
+                ]
+            except Exception as e:
+                print(f"[ERROR] Error getting projection type from FITS: {e}")
+                self.show_status_message(
+                    f"Error getting projection type from FITS: {e}"
+                )
+                # Use swapped image ctype, mapping SOLAR-X/Y if needed
+                ct0 = image_wcs_obj.wcs.ctype[1]
+                ct1 = image_wcs_obj.wcs.ctype[0]
+                if "SOLAR-X" in ct1.upper():
+                    ct1 = "HPLN-TAN"
+                if "SOLAR-Y" in ct0.upper():
+                    ct0 = "HPLT-TAN"
+                contour_wcs_obj.wcs.ctype = [ct0, ct1]
+        elif (csys.projection()["type"] == "SIN") and (
+            "Right Ascension" in summary["axisnames"]
+        ):
+            contour_wcs_obj.wcs.ctype = ["DEC--SIN", "RA---SIN"]  # Swapped
+        elif (csys.projection()["type"] == "TAN") and (
+            "Right Ascension" in summary["axisnames"]
+        ):
+            contour_wcs_obj.wcs.ctype = ["DEC--TAN", "RA---TAN"]  # Swapped
+        else:
+            # Use swapped image ctype, mapping SOLAR-X/Y if needed
+            ct0 = image_wcs_obj.wcs.ctype[1]
+            ct1 = image_wcs_obj.wcs.ctype[0]
+            if "SOLAR-X" in ct1.upper():
+                ct1 = "HPLN-TAN"
+            if "SOLAR-Y" in ct0.upper():
+                ct0 = "HPLT-TAN"
+            contour_wcs_obj.wcs.ctype = [ct0, ct1]
+        return contour_wcs_obj, fits_flag
+
+    def _swapped_image_wcs(self, image_wcs_obj):
+        """Base-image WCS with axes swapped (and SOLAR-X/Y converted to degrees)
+        for use as the reprojection target."""
+        from astropy.wcs import WCS
+
+        # IMPORTANT: Also swap the image WCS to match!
+        # Create a copy with swapped axes for reprojection
+        image_wcs_swapped = WCS(naxis=2)
+        image_wcs_swapped.wcs.crpix = [
+            image_wcs_obj.wcs.crpix[1],
+            image_wcs_obj.wcs.crpix[0],
+        ]
+
+        # Check if base image uses SOLAR-X/Y (non-celestial in astropy)
+        # If so, convert values from arcsec to degrees and remap CTYPE
+        img_ctype0 = image_wcs_obj.wcs.ctype[0]
+        img_ctype1 = image_wcs_obj.wcs.ctype[1]
+        is_base_solar_xy = (
+            "SOLAR-X" in img_ctype0.upper() or "SOLAR-Y" in img_ctype1.upper()
+        )
+
+        if is_base_solar_xy:
+            # SOLAR-X/Y: values are in arcsec, convert to degrees
+            image_wcs_swapped.wcs.crval = [
+                image_wcs_obj.wcs.crval[1] / 3600.0,
+                image_wcs_obj.wcs.crval[0] / 3600.0,
+            ]
+            image_wcs_swapped.wcs.cdelt = [
+                image_wcs_obj.wcs.cdelt[1] / 3600.0,
+                image_wcs_obj.wcs.cdelt[0] / 3600.0,
+            ]
+            image_wcs_swapped.wcs.ctype = ["HPLT-TAN", "HPLN-TAN"]
+        else:
+            image_wcs_swapped.wcs.crval = [
+                image_wcs_obj.wcs.crval[1],
+                image_wcs_obj.wcs.crval[0],
+            ]
+            image_wcs_swapped.wcs.cdelt = [
+                image_wcs_obj.wcs.cdelt[1],
+                image_wcs_obj.wcs.cdelt[0],
+            ]
+            image_wcs_swapped.wcs.ctype = [
+                image_wcs_obj.wcs.ctype[1],
+                image_wcs_obj.wcs.ctype[0],
+            ]
+
+        # Use the swapped WCS for reprojection
+        image_wcs_for_reproject = image_wcs_swapped
+        return image_wcs_for_reproject
 
     def _downsample_contour_for_display(self, contour_data, needs_reprojection):
         """Downsample large, non-reprojected contour data for plotting speed."""
