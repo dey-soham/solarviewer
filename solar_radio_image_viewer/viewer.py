@@ -2712,35 +2712,39 @@ class SolarRadioImageTab(
         has_u = "U" in available_stokes
         has_v = "V" in available_stokes
 
-        # Store current selection before modifying
-        current_selection = self.stokes_combo.currentText()
+        # Changing the current item's flags/colour makes QComboBox emit
+        # currentTextChanged, which would reload and replot the image twice.
+        # Nothing is selected here, so keep the combo quiet while updating.
+        was_blocked = self.stokes_combo.blockSignals(True)
+        try:
+            # Iterate through combo items and enable/disable based on requirements
+            model = self.stokes_combo.model()
+            for i in range(self.stokes_combo.count()):
+                item_text = self.stokes_combo.itemText(i)
 
-        # Iterate through combo items and enable/disable based on requirements
-        model = self.stokes_combo.model()
-        for i in range(self.stokes_combo.count()):
-            item_text = self.stokes_combo.itemText(i)
+                # Check if this item can be enabled
+                enabled = True
+                if item_text in requires_q and not has_q:
+                    enabled = False
+                if item_text in requires_u and not has_u:
+                    enabled = False
+                if item_text in requires_v and not has_v:
+                    enabled = False
 
-            # Check if this item can be enabled
-            enabled = True
-            if item_text in requires_q and not has_q:
-                enabled = False
-            if item_text in requires_u and not has_u:
-                enabled = False
-            if item_text in requires_v and not has_v:
-                enabled = False
-
-            # Set item enabled/disabled using model flags AND foreground color
-            item = model.item(i)
-            if item:
-                if enabled:
-                    item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                    item.setData(QBrush(enabled_color), Qt.ForegroundRole)
-                else:
-                    # Remove both enabled and selectable flags
-                    item.setFlags(
-                        item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable
-                    )
-                    item.setData(QBrush(disabled_color), Qt.ForegroundRole)
+                # Set item enabled/disabled using model flags AND foreground color
+                item = model.item(i)
+                if item:
+                    if enabled:
+                        item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                        item.setData(QBrush(enabled_color), Qt.ForegroundRole)
+                    else:
+                        # Remove both enabled and selectable flags
+                        item.setFlags(
+                            item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable
+                        )
+                        item.setData(QBrush(disabled_color), Qt.ForegroundRole)
+        finally:
+            self.stokes_combo.blockSignals(was_blocked)
 
         # Store available stokes for later reference
         self._available_stokes = available_stokes
