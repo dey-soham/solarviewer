@@ -190,10 +190,16 @@ class FittingMixin:
                 return
 
             results = output.get("results", {})
-            if not results:
+            # With a zero-level offset, imfit can return only the offset when it
+            # fails to fit a component; don't report that as an all-zero source.
+            if "major_arcsec" not in results:
                 QApplication.restoreOverrideCursor()
                 QMessageBox.warning(
-                    self, "Fit Failed", "No components fitted in Gaussian fit"
+                    self,
+                    "Fit Failed",
+                    "No Gaussian component could be fitted in the selected region.\n\n"
+                    "Try a region that is better centred on the source"
+                    + (", or fit without the zero-level offset." if dooff else "."),
                 )
                 return
 
