@@ -214,6 +214,8 @@ _main_window = None
 # repeats (e.g. raised from a timer) is reported once rather than every time.
 _reported = {}
 _error_dialog = None
+# Carries errors from worker threads to the main thread (see set_main_window)
+_notifier = None
 
 
 def set_main_window(window):
@@ -222,8 +224,17 @@ def set_main_window(window):
     Call once the main window is shown. Before that (during startup) an
     unhandled exception still exits the application after writing a report.
     """
-    global _main_window
+    global _main_window, _notifier
     _main_window = window
+    if window is not None and _notifier is None:
+        from PyQt5.QtCore import QObject, pyqtSignal
+
+        class _Notifier(QObject):
+            # Delivered on the main thread (queued) when emitted from a worker
+            error = pyqtSignal(object, object, object, object)
+
+        _notifier = _Notifier()
+        _notifier.error.connect(_show_error)
 
 
 def _exception_signature(exctype, tb):
@@ -282,8 +293,16 @@ def _notify_user(exctype, value, tb, report_path):
     dialog.show()
 
 
-def _handle_nonfatal(exctype, value, tb):
+def _show_error(exctype, value, tb, report_path):
+    """Main thread only: reset the cursor and show the error dialog."""
     _restore_cursor()
+    _notify_user(exctype, value, tb, report_path)
+
+
+def _handle_nonfatal(exctype, value, tb):
+    import threading
+
+    on_main_thread = threading.current_thread() is threading.main_thread()
 
     signature = _exception_signature(exctype, tb)
     entry = _reported.get(signature)
@@ -293,11 +312,18 @@ def _handle_nonfatal(exctype, value, tb):
             f"[ERROR] {exctype.__name__}: {value} "
             f"(repeated {entry['count']}x; report: {entry['path']})"
         )
+        if on_main_thread:
+            _restore_cursor()
         return
 
     report_path = generate_crash_report(exctype, value, tb, fatal=False)
     _reported[signature] = {"count": 1, "path": report_path}
-    _notify_user(exctype, value, tb, report_path)
+    # Qt widgets may only be touched from the main thread. Errors escaping a
+    # QThread arrive here on that worker thread, so hand them over.
+    if on_main_thread:
+        _show_error(exctype, value, tb, report_path)
+    elif _notifier is not None:
+        _notifier.error.emit(exctype, value, tb, report_path)
 
 
 def crash_excepthook(exctype, value, tb):
@@ -336,11 +362,15 @@ def thread_excepthook(args):
     ):
         return
 
-    # Generate the crash report (non-fatal — don't exit the app)
+    # Report it (non-fatal: don't exit the app), and show it once the main
+    # window is up
     try:
-        generate_crash_report(
-            args.exc_type, args.exc_value, args.exc_traceback, fatal=False
-        )
+        if _main_window is not None:
+            _handle_nonfatal(args.exc_type, args.exc_value, args.exc_traceback)
+        else:
+            generate_crash_report(
+                args.exc_type, args.exc_value, args.exc_traceback, fatal=False
+            )
     except Exception:
         # Last resort: at least print the traceback
         traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
