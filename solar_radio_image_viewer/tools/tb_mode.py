@@ -109,7 +109,7 @@ class TbModeMixin:
                 self.show_status_message("Converting to flux (Jy/beam)...")
                 QApplication.processEvents()
 
-                from ..utils import generate_flux_map
+                from ..processing.maps import generate_flux_map
 
                 # Store original imagename
                 self._tb_original_imagename = self.imagename
@@ -157,7 +157,7 @@ class TbModeMixin:
                 self.show_status_message("Converting to brightness temperature...")
                 QApplication.processEvents()
 
-                from ..utils import generate_tb_map
+                from ..processing.maps import generate_tb_map
 
                 # Store original imagename
                 self._tb_original_imagename = self.imagename

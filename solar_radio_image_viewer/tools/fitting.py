@@ -6,7 +6,7 @@ import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
-from ..utils import twoD_elliptical_ring
+from ..processing.models import twoD_elliptical_ring
 
 
 class FittingMixin:
@@ -141,7 +141,7 @@ class FittingMixin:
                 [
                     sys.executable,
                     "-m",
-                    "solar_radio_image_viewer.science.imfit",
+                    "solar_radio_image_viewer.processing.imfit",
                     os.path.abspath(imagename),
                     box,
                     os.path.abspath(result_file),

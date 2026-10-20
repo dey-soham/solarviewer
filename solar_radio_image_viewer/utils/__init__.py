@@ -1,4 +1,9 @@
-"""Utility modules for solarviewer."""
+"""Utility modules for solarviewer (HTTP rate limiting, sessions, updates).
+
+Image-processing helpers that used to live in ``utils.py`` are now in the
+``processing`` package; the old names are still importable from here for
+backwards compatibility but emit a DeprecationWarning.
+"""
 
 # Import rate limiting utilities from local module
 from .rate_limiter import (
@@ -7,29 +12,42 @@ from .rate_limiter import (
     get_global_session,
 )
 
-# Re-export all utilities from parent utils.py module
-import sys
-from pathlib import Path
+# Old utils.py name -> processing submodule that now provides it
+_MOVED_TO_PROCESSING = {
+    "IA": "dependencies",
+    "CASA_AVAILABLE": "dependencies",
+    "ASTROPY_AVAILABLE": "dependencies",
+    "run_immath_subprocess": "immath",
+    "get_available_stokes": "stokes",
+    "estimate_rms_near_Sun": "rms",
+    "remove_pixels_away_from_sun": "rms",
+    "get_pixel_values_from_image": "image_data",
+    "get_image_metadata": "metadata",
+    "format_metadata_text": "metadata",
+    "twoD_gaussian": "models",
+    "twoD_elliptical_ring": "models",
+    "generate_tb_map": "maps",
+    "generate_flux_map": "maps",
+}
 
-parent_utils_path = Path(__file__).parent.parent / "utils.py"
-if parent_utils_path.exists():
-    import importlib.util
 
-    spec = importlib.util.spec_from_file_location(
-        "_parent_utils", str(parent_utils_path)
-    )
-    if spec and spec.loader:
-        _parent_utils = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(_parent_utils)
+def __getattr__(name):
+    if name in _MOVED_TO_PROCESSING:
+        import importlib
+        import warnings
 
-        # Re-export all public functions from parent utils
-        for name in dir(_parent_utils):
-            if not name.startswith("_"):
-                globals()[name] = getattr(_parent_utils, name)
+        module = f"solar_radio_image_viewer.processing.{_MOVED_TO_PROCESSING[name]}"
+        warnings.warn(
+            f"solar_radio_image_viewer.utils.{name} has moved to {module}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return getattr(importlib.import_module(module), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "RateLimitedSession",
     "CachedSession",
     "get_global_session",
-    "get_pixel_values_from_image",  # From parent utils.py
 ]

@@ -89,7 +89,7 @@ class BatchProcessDialog(QDialog):
         for i in range(self.image_list.count()):
             imagename = self.image_list.item(i).text()
             try:
-                from ..utils import get_pixel_values_from_image
+                from ..processing.image_data import get_pixel_values_from_image
 
                 pix, _, _ = get_pixel_values_from_image(imagename, "I", threshold)
                 flux = float(np.sum(pix))

@@ -8,7 +8,8 @@ import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialogButtonBox, QMessageBox
 
-from ..utils import IA, get_pixel_values_from_image
+from ..processing.dependencies import IA
+from ..processing.image_data import get_pixel_values_from_image
 
 
 class ContoursMixin:
@@ -211,7 +212,7 @@ class ContoursMixin:
                 source_image = self.contour_settings.get("external_image")
 
             if source_image:
-                from ..utils import get_available_stokes
+                from ..processing.stokes import get_available_stokes
 
                 available_stokes = get_available_stokes(source_image)
 
@@ -266,7 +267,7 @@ class ContoursMixin:
                         )
                         self.contour_settings["contour_data"] = pix
                     elif stokes in ["Q/I", "U/I", "V/I"]:
-                        from ..utils import estimate_rms_near_Sun
+                        from ..processing.rms import estimate_rms_near_Sun
 
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
@@ -324,7 +325,7 @@ class ContoursMixin:
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
-                        from ..utils import estimate_rms_near_Sun
+                        from ..processing.rms import estimate_rms_near_Sun
 
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename,
@@ -371,7 +372,7 @@ class ContoursMixin:
                         lfrac[div_mask] = l_pix_masked[div_mask] / i_pix[div_mask]
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
-                        from ..utils import estimate_rms_near_Sun
+                        from ..processing.rms import estimate_rms_near_Sun
 
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
                             self.imagename,
@@ -560,7 +561,7 @@ class ContoursMixin:
                         self.contour_settings["contour_data"] = pix
 
                     elif stokes in ["Q/I", "U/I", "V/I"]:
-                        from ..utils import estimate_rms_near_Sun
+                        from ..processing.rms import estimate_rms_near_Sun
 
                         numerator_stokes = stokes.split("/")[0]
                         numerator_pix, contour_csys, _ = get_pixel_values_from_image(
@@ -618,7 +619,7 @@ class ContoursMixin:
                         l_pix = np.sqrt(q_pix**2 + u_pix**2)
                         self.contour_settings["contour_data"] = l_pix
                     elif stokes == "Lfrac":
-                        from ..utils import estimate_rms_near_Sun
+                        from ..processing.rms import estimate_rms_near_Sun
 
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
                             image_to_load,
@@ -665,7 +666,7 @@ class ContoursMixin:
                         lfrac[div_mask] = l_pix_masked[div_mask] / i_pix[div_mask]
                         self.contour_settings["contour_data"] = lfrac
                     elif stokes == "PANG":
-                        from ..utils import estimate_rms_near_Sun
+                        from ..processing.rms import estimate_rms_near_Sun
 
                         q_pix, contour_csys, _ = get_pixel_values_from_image(
                             image_to_load,

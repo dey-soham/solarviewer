@@ -5,7 +5,7 @@ Switching a tab between RA/Dec and helioprojective (HPC) views.
 import os
 
 
-from ..utils import IA
+from ..processing.dependencies import IA
 
 
 class HpcViewMixin:

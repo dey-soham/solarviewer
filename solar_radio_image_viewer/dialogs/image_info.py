@@ -257,7 +257,7 @@ class ImageInfoDialog(QDialog):
 
         if self.metadata:
             # Format structured metadata as text
-            from ..utils import format_metadata_text
+            from ..processing.metadata import format_metadata_text
 
             text = format_metadata_text(self.metadata)
         else:

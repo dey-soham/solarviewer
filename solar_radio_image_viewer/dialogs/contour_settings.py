@@ -989,7 +989,7 @@ class ContourSettingsDialog(QDialog):
         if not imagepath or not os.path.exists(imagepath):
             return
         try:
-            from ..utils import get_available_stokes
+            from ..processing.stokes import get_available_stokes
 
             available_stokes = get_available_stokes(imagepath)
             self._update_stokes_combo_state(available_stokes)
@@ -1003,7 +1003,7 @@ class ContourSettingsDialog(QDialog):
             parent = self.parent()
             if parent and hasattr(parent, "imagename") and parent.imagename:
                 try:
-                    from ..utils import get_available_stokes
+                    from ..processing.stokes import get_available_stokes
 
                     available_stokes = get_available_stokes(parent.imagename)
                     self._update_stokes_combo_state(available_stokes)

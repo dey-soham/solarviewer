@@ -62,13 +62,8 @@ from PyQt5.QtWidgets import QStyledItemDelegate
 # from PyQt5.QtGui import QColor, QPalette, QPainter
 
 from .norms import SqrtNorm, AsinhNorm, PowerNorm, ZScaleNorm, HistEqNorm
-from .utils import (
-    # estimate_rms_near_Sun,
-    # remove_pixels_away_from_sun,
-    get_image_metadata,
-    # twoD_gaussian,
-    IA,
-)
+from .processing.dependencies import IA
+from .processing.metadata import get_image_metadata
 from .styles import (
     theme_manager,
     get_stylesheet,
@@ -2506,7 +2501,7 @@ class SolarRadioImageTab(
         start_time = time.time()
         try:
             # Use the current RMS box when loading data
-            from .utils import get_pixel_values_from_image
+            from .processing.image_data import get_pixel_values_from_image
 
             # Calculate target size for fast load mode
             target_size = 0  # 0 = no downsampling
@@ -4017,7 +4012,7 @@ class SolarRadioImageTab(
         Returns:
             str: The validated Stokes parameter to use
         """
-        from .utils import get_available_stokes
+        from .processing.stokes import get_available_stokes
 
         available_stokes = get_available_stokes(imagename)
 

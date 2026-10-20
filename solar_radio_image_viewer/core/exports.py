@@ -8,7 +8,7 @@ import tempfile
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-from ..utils import IA
+from ..processing.dependencies import IA
 
 
 class ExportsMixin:
@@ -410,7 +410,7 @@ except Exception as e:
             return
 
         try:
-            from ..utils import generate_tb_map
+            from ..processing.maps import generate_tb_map
 
             # Get save path
             default_name = os.path.basename(current_tab.imagename)

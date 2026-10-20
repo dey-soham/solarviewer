@@ -663,7 +663,8 @@ def _unit_conversion_worker(args):
     import os
     import shutil
     try:
-        from ..utils import get_image_metadata, generate_tb_map, generate_flux_map
+        from ..processing.metadata import get_image_metadata
+        from ..processing.maps import generate_tb_map, generate_flux_map
         
         # Read metadata to check current unit
         meta = get_image_metadata(infile)

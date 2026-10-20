@@ -300,7 +300,7 @@ class ImageStatsMixin:
                     )
 
                     # Reload the data with the new RMS box
-                    from ..utils import get_pixel_values_from_image
+                    from ..processing.image_data import get_pixel_values_from_image
 
                     pix, csys, psf = get_pixel_values_from_image(
                         self.imagename,

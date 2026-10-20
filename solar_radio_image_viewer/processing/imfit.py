@@ -4,7 +4,7 @@ Run CASA's ``imfit`` on an image and write the fit results as JSON.
 Executed in a separate process (to avoid casatasks/PyQt5 conflicts) by
 ``FittingMixin.fit_2d_gaussian``:
 
-    python -m solar_radio_image_viewer.science.imfit \
+    python -m solar_radio_image_viewer.processing.imfit \
         IMAGENAME BOX RESULT_FILE DOOFF STOKES
 
 DOOFF is ``True`` or ``False``. The JSON written to RESULT_FILE has the form

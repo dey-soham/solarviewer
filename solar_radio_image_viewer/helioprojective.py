@@ -17,35 +17,7 @@ from casatools import image as IA
 
 # casatasks (immath, exportfits) are now run via subprocess to avoid memory issues
 import math
-import subprocess
 import sys
-
-
-def run_immath_subprocess(imagename, outfile, mode="lpoli"):
-    """Run immath in a subprocess to avoid memory issues with casatasks."""
-    imagename = os.path.abspath(imagename)
-    outfile = os.path.abspath(outfile)
-
-    script = f"""
-import sys
-from casatasks import immath
-try:
-    immath(imagename="{imagename}", outfile="{outfile}", mode="{mode}")
-    print("SUCCESS")
-except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
-    sys.exit(1)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"immath failed: {result.stderr}")
-    return True
-
 
 try:
     from sunpy.net import Fido, attrs as a
@@ -58,7 +30,8 @@ except ImportError:
     print("[ERROR] sunpy is not installed or some components are missing")
     sunpy_imported = False
 
-from .utils import estimate_rms_near_Sun, remove_pixels_away_from_sun
+from .processing.immath import run_immath_subprocess
+from .processing.rms import estimate_rms_near_Sun, remove_pixels_away_from_sun
 
 
 rcParams["axes.linewidth"] = 1.4
