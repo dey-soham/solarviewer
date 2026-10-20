@@ -560,7 +560,7 @@ class RemoteModeMixin:
                 QMessageBox.information(
                     self,
                     "Cache Cleared",
-                    f"Successfully cleared:\n• " + "\n• ".join(cleared),
+                    "Successfully cleared:\n• " + "\n• ".join(cleared),
                 )
                 self._update_cache_menu_item()
                 dialog.accept()

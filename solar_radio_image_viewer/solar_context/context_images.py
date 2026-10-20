@@ -5,11 +5,9 @@ Context Images Fetcher - Get solar context imagery from Helioviewer API or Solar
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import List, Optional, Dict, Tuple
-import requests
+from typing import List, Optional, Tuple
 import re
 from urllib.parse import urljoin
-import json
 
 
 @dataclass

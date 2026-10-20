@@ -7,7 +7,7 @@ via SFTP and selecting FITS files to open.
 
 import os
 from pathlib import Path
-from typing import Optional, List, Callable
+from typing import Optional, List
 
 from PyQt5.QtWidgets import (
     QDialog,
@@ -21,7 +21,6 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QMessageBox,
     QCheckBox,
-    QSplitter,
     QFrame,
     QHeaderView,
     QAbstractItemView,
@@ -29,7 +28,6 @@ from PyQt5.QtWidgets import (
     QCompleter,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer, QStringListModel
-from PyQt5.QtGui import QIcon
 
 from .ssh_manager import SSHConnection, SSHConnectionError, RemoteFileInfo
 from .file_cache import RemoteFileCache
@@ -166,7 +164,7 @@ except Exception as exc:
                     except Exception as e:
                         print(f"[SSH-List] Fast path JSON parse failed: {e}")
                 else:
-                    print(f"[SSH-List] Fast path failed, falling back to SFTP")
+                    print("[SSH-List] Fast path failed, falling back to SFTP")
             except Exception as e:
                 print(f"[SSH-List] Fast path exception: {e}, falling back to SFTP")
 
@@ -1211,7 +1209,6 @@ class RemoteFileBrowser(QDialog):
 
     def _cleanup_threads(self):
         """Safely cancel all background threads and disconnect their signals."""
-        from PyQt5 import sip
 
         # Cancel and cleanup listing thread
         if self._list_thread and self._list_thread.isRunning():

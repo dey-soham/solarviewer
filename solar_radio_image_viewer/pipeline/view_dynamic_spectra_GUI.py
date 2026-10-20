@@ -68,7 +68,6 @@ except ImportError:
 from astropy.io import fits
 from astropy.time import Time
 
-import threading
 from PyQt5.QtWidgets import (
     QMainWindow,
     QApplication,
@@ -79,25 +78,18 @@ from PyQt5.QtWidgets import (
     QAction,
     QFileDialog,
     QMessageBox,
-    QStatusBar,
     QMenuBar,
     QLabel,
     QSlider,
     QComboBox,
     QFormLayout,
     QPushButton,
-    QDockWidget,
     QDoubleSpinBox,
-    QSpinBox,
-    QCheckBox,
     QInputDialog,
     QGroupBox,
     QDialog,
-    QTextEdit,
-    QVBoxLayout as QVBoxLayoutDialog,
     QScrollArea,
     QFrame,
-    QGridLayout,
     QLineEdit,
     QTableWidget,
     QTableWidgetItem,
@@ -106,7 +98,7 @@ from PyQt5.QtWidgets import (
     QTabWidget,
 )
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, pyqtSlot, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QColor
 
 import matplotlib
@@ -116,7 +108,6 @@ from matplotlib.dates import DateFormatter, date2num
 from .simpl_theme import apply_theme, get_matplotlib_params, get_palette
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
-    NavigationToolbar2QT as NavigationToolbar,
 )
 from matplotlib.widgets import RectangleSelector
 

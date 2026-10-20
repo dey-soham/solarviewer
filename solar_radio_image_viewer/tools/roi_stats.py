@@ -289,7 +289,7 @@ class RoiStatsMixin:
                     color="orange",
                     linewidth=1.5,
                     linestyle=":",
-                    label=f"Mean±σ",
+                    label="Mean±σ",
                 )
                 ax.axvline(
                     mean_val + std_val, color="orange", linewidth=1.5, linestyle=":"

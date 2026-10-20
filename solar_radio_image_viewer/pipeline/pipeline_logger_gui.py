@@ -23,10 +23,8 @@ Date: April 2025
 import os
 import sys
 import time
-import logging
 from queue import Queue, Empty
 from datetime import datetime
-import threading
 from ..ui.styles import set_hand_cursor
 
 from PyQt5.QtWidgets import (
@@ -43,8 +41,6 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QLabel,
     QCheckBox,
-    QSplitter,
-    QTextEdit,
     QStatusBar,
     QAction,
     QFileDialog,
@@ -54,9 +50,6 @@ from PyQt5.QtWidgets import (
     QToolBar,
     QAbstractItemView,
     QMessageBox,
-    QTabWidget,
-    QGroupBox,
-    QRadioButton,
     QGridLayout,
     QShortcut,
     QDialog,
@@ -69,18 +62,10 @@ from PyQt5.QtCore import (
     pyqtSignal,
     QTimer,
     QSize,
-    QPoint,
     QRect,
-    QSortFilterProxyModel,
 )
 from PyQt5.QtGui import (
-    QIcon,
     QColor,
-    QTextCursor,
-    QFont,
-    QPalette,
-    QTextCharFormat,
-    QBrush,
     QKeySequence,
 )
 
@@ -484,7 +469,7 @@ class MessageDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         """Paint cell using QTextDocument for proper HTML rendering."""
         from PyQt5.QtWidgets import QStyle
-        from PyQt5.QtGui import QTextDocument, QAbstractTextDocumentLayout
+        from PyQt5.QtGui import QTextDocument
 
         text = index.data()
         if not text:

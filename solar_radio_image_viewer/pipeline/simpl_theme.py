@@ -40,7 +40,7 @@ except ImportError:
 
     def load_bundled_fonts():
         """Fallback font loader if main styles cannot be imported."""
-        from PyQt5.QtGui import QFontDatabase, QFont
+        from PyQt5.QtGui import QFontDatabase
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
         assets_dir = os.path.join(os.path.dirname(base_dir), "assets")
@@ -440,7 +440,6 @@ def get_matplotlib_params(theme_name):
 
 def apply_theme(app, theme_name="dark"):
     """Apply theme to a QApplication instance."""
-    from PyQt5.QtWidgets import QApplication
     from PyQt5.QtGui import QPalette, QColor
     from matplotlib import rcParams
 

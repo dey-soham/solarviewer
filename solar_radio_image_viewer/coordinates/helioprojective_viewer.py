@@ -3,7 +3,6 @@
 
 import os
 import sys
-import tempfile
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -29,14 +28,8 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QSizePolicy,
     QStatusBar,
-    QToolBar,
-    QAction,
-    QToolButton,
-    QSpinBox,
-    QDoubleSpinBox,
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QIcon
 
 from ..ui.styles import set_hand_cursor
 
@@ -381,7 +374,7 @@ class HelioProjectiveViewer(QMainWindow):
                 fits_file = self.imagename
 
             # Convert to helioprojective coordinates
-            self.show_status_message(f"Converting to helioprojective coordinates...")
+            self.show_status_message("Converting to helioprojective coordinates...")
 
             # Make sure the rms_box is a tuple of integers
             if isinstance(self.rms_box, list):

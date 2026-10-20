@@ -274,7 +274,7 @@ def download_aia_data():
     # Confirm download
     print("\n" + "=" * 50)
     print("Download Summary:")
-    print(f"  Instrument: SDO/AIA")
+    print("  Instrument: SDO/AIA")
     print(f"  Wavelength: {wavelength} Å")
     print(f"  Time range: {start_time} to {end_time}")
     print(f"  Output directory: {output_dir}")
@@ -399,7 +399,7 @@ def download_hmi_data():
     # Confirm download
     print("\n" + "=" * 50)
     print("Download Summary:")
-    print(f"  Instrument: SDO/HMI")
+    print("  Instrument: SDO/HMI")
     print(f"  Series: {series} ({series_descriptions[series_choice]})")
     print(f"  Time range: {start_time} to {end_time}")
     print(f"  Output directory: {output_dir}")
@@ -503,7 +503,7 @@ def download_iris_data():
     # Confirm download
     print("\n" + "=" * 50)
     print("Download Summary:")
-    print(f"  Instrument: IRIS")
+    print("  Instrument: IRIS")
     print(f"  Observation type: {obs_type}")
     if wavelength:
         print(f"  Wavelength: {wavelength} Å")
@@ -699,7 +699,7 @@ def download_suvi_data():
     # Confirm download
     print("\n" + "=" * 50)
     print("Download Summary:")
-    print(f"  Instrument: GOES/SUVI")
+    print("  Instrument: GOES/SUVI")
     print(f"  Wavelength: {wavelength} Å")
     print(f"  Data level: {level}")
     print(f"  Time range: {start_time} to {end_time}")
@@ -852,8 +852,8 @@ def download_gong_data():
     # Confirm download
     print("\n" + "=" * 50)
     print("Download Summary:")
-    print(f"  Instrument: GONG")
-    print(f"  Data type: LOS Magnetogram")
+    print("  Instrument: GONG")
+    print("  Data type: LOS Magnetogram")
     print(f"  Time range: {start_time} to {end_time}")
     print(f"  Output directory: {output_dir}")
     print("=" * 50)

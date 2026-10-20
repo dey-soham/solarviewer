@@ -7,7 +7,6 @@ Cache is stored in ~/.cache/solarviewer/remote/<host>/<path>
 
 import os
 import json
-import hashlib
 import time
 from pathlib import Path
 from typing import Optional, Dict, Tuple

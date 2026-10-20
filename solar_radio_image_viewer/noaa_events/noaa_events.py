@@ -6,10 +6,8 @@ Data source: https://solarmonitor.org/data/{YYYY}/{MM}/{DD}/meta/noaa_events_raw
 """
 
 import re
-import urllib.request
-import urllib.error
-from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
+from dataclasses import dataclass
+from datetime import date
 from typing import List, Optional, Dict, Any
 
 
@@ -567,7 +565,7 @@ if __name__ == "__main__":
                     )
 
         stats = get_event_statistics(events)
-        print(f"\nStatistics:")
+        print("\nStatistics:")
         print(f"  Max X-ray class: {stats['max_xray_class']}")
         print(f"  Active regions: {stats['active_regions']}")
     else:

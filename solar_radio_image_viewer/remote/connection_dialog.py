@@ -5,7 +5,6 @@ Provides a dialog for configuring and establishing SSH connections,
 with support for saving connection profiles.
 """
 
-import os
 from pathlib import Path
 from typing import Optional, List
 import json
@@ -27,8 +26,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QFrame,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import pyqtSignal
 
 from .ssh_manager import SSHConnection, SSHConnectionError, ConnectionProfile
 

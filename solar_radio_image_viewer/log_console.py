@@ -5,11 +5,9 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QTextEdit,
     QPushButton,
-    QApplication,
-    QLabel,
     QWidget,
 )
-from PyQt5.QtCore import Qt, QObject, pyqtSignal, QSize
+from PyQt5.QtCore import Qt, QObject, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCursor
 
 

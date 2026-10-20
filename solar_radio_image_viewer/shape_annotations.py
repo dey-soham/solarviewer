@@ -16,7 +16,6 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QComboBox,
     QDoubleSpinBox,
-    QSpinBox,
     QCheckBox,
     QDialogButtonBox,
     QAction,
@@ -24,10 +23,9 @@ from PyQt5.QtWidgets import (
     QMessageBox,
 )
 from PyQt5.QtCore import Qt
-import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Ellipse, Rectangle
 
-from .ui.styles import set_hand_cursor, theme_manager
+from .ui.styles import set_hand_cursor
 
 
 # ---------------------------------------------------------------------------

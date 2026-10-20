@@ -8,9 +8,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
-    QDoubleSpinBox,
-    QGridLayout,
-    QFormLayout,
     QDialogButtonBox,
     QComboBox,
     QCheckBox,
@@ -19,30 +16,20 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
-    QButtonGroup,
     QWidget,
-    QProgressDialog,
     QFrame,
     QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
     QProgressBar,
     QApplication,
 )
-from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize
-import sys
-import numpy as np
 import os
 
-from ..ui.styles import theme_manager, set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 import multiprocessing
 import glob
 import uuid
 import traceback
-import time
 
 def process_single_file_coordsys(args):
     """Process a single file for coordinate transformation - standalone function for multiprocessing
@@ -922,7 +909,6 @@ class CoordinateTransformationDialog(QDialog):
         # Import modules needed for processing
         import multiprocessing
         import time
-        from ..coordinates.helioprojective import convert_and_save_hpc
 
         # Setup Progress UI
         self.progress_bar.setVisible(True)

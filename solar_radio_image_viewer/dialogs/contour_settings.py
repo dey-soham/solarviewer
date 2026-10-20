@@ -2,7 +2,6 @@ from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
-    QGroupBox,
     QRadioButton,
     QLineEdit,
     QLabel,
@@ -10,33 +9,21 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QGridLayout,
-    QFormLayout,
     QDialogButtonBox,
     QComboBox,
     QCheckBox,
     QFileDialog,
-    QMessageBox,
-    QListWidget,
-    QListWidgetItem,
-    QPlainTextEdit,
     QButtonGroup,
     QWidget,
-    QProgressDialog,
     QFrame,
     QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QProgressBar,
-    QApplication,
 )
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize
-import numpy as np
+from PyQt5.QtCore import Qt
 import os
 
 from ..ui.icons import get_resource_path
-from ..ui.styles import theme_manager, set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 
 

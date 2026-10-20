@@ -10,10 +10,7 @@ Data sources:
 Note: For dates older than 30 days, data may not be available from SWPC.
 """
 
-import re
 import json
-import urllib.request
-import urllib.error
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Optional, Dict, Any, List, Tuple
@@ -531,7 +528,7 @@ if __name__ == "__main__":
 
     if conditions.kp_index:
         kp = conditions.kp_index
-        print(f"\nKp Index:")
+        print("\nKp Index:")
         print(f"  Ap: {kp.ap_value}")
         print(f"  Kp max: {kp.kp_max:.1f}")
         print(f"  Kp values: {kp.kp_values}")
@@ -539,7 +536,7 @@ if __name__ == "__main__":
 
     if conditions.f107_flux:
         f107 = conditions.f107_flux
-        print(f"\nF10.7 Radio Flux:")
+        print("\nF10.7 Radio Flux:")
         print(f"  Value: {f107.flux_value:.1f} sfu")
         print(f"  Sunspot #: {f107.sunspot_number}")
         print(f"  Activity: {f107.activity_level}")

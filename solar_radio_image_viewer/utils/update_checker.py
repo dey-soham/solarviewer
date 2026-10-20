@@ -1,6 +1,5 @@
 import requests
 from packaging import version
-import sys
 
 
 def check_for_updates(current_version_str):

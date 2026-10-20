@@ -347,14 +347,10 @@ if interrupted. It provides functions to save, load, and check checkpoint status
 Checkpoints are stored as JSON files in a dedicated directory structure.
 """
 
-import os
-import json
 import shutil
 import logging
-import glob
 import time
-from typing import Dict, List, Any, Union, Optional, Tuple
-import sys
+from typing import Dict, List, Any, Optional
 
 
 class CheckpointManager:

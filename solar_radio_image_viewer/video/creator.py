@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import glob
 import re
 import numpy as np
 from datetime import datetime
@@ -11,25 +10,18 @@ from matplotlib.colors import Normalize, LogNorm, PowerNorm
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-import matplotlib.dates as mdates
 from astropy.io import fits
 import imageio
 from tqdm import tqdm
-from pathlib import Path
 import threading
 import time
-from multiprocessing import Pool, cpu_count
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-import concurrent.futures  # Add this import for as_completed
+from multiprocessing import cpu_count
+from concurrent.futures import ProcessPoolExecutor
 from astropy.visualization import (
     ImageNormalize,
-    LinearStretch,
     LogStretch,
-    SqrtStretch,
-    PowerStretch,
 )
 import warnings
-from functools import partial
 import logging
 
 # Import custom norms

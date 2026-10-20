@@ -20,7 +20,6 @@ Usage:
 """
 
 import os
-import sys
 import glob
 import argparse
 import re
@@ -30,7 +29,7 @@ from casacore.tables import table
 from astropy.io import fits
 from astropy.time import Time
 import concurrent.futures
-from matplotlib.dates import DateFormatter, date2num
+from matplotlib.dates import date2num
 import logging
 
 try:

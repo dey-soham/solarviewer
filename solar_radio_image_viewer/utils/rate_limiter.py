@@ -8,7 +8,6 @@ Prevents IP blocking by enforcing delays between requests and caching responses.
 import time
 import hashlib
 import json
-import os
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any

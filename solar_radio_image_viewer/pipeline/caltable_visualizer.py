@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QShortcut,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QIcon, QKeySequence, QCursor
+from PyQt5.QtGui import QKeySequence, QCursor
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
@@ -26,7 +26,6 @@ from matplotlib.figure import Figure
 from pathlib import Path
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import subprocess
-import tempfile
 import pickle
 import os
 from ..ui.styles import set_hand_cursor

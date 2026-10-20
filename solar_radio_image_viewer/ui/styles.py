@@ -4,7 +4,7 @@
 import os
 from PyQt5.QtGui import QFontDatabase, QFont
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QAbstractButton, QComboBox, QTabBar, QMenu, QMenuBar, QWidget
+from PyQt5.QtWidgets import QApplication, QWidget
 
 from .icons import PACKAGE_DIR, get_resource_path
 

@@ -18,20 +18,15 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QSpinBox,
     QDoubleSpinBox,
-    QProgressBar,
     QMessageBox,
-    QRadioButton,
-    QButtonGroup,
     QApplication,
-    QFrame,
     QTabWidget,
     QScrollArea,
     QWidget,
     QProgressDialog,
     QFormLayout,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -61,19 +56,8 @@ def wait_cursor():
 
 from ..processing.colormaps import ensure_solar_colormaps
 from .creator import (
-    create_video,
-    VideoProgress,
     load_fits_data,
-    apply_visualization,
-    format_timestamp,
     get_norm,
-)
-from ..processing.norms import (
-    SqrtNorm,
-    AsinhNorm,
-    PowerNorm,
-    ZScaleNorm,
-    HistEqNorm,
 )
 
 
@@ -1272,10 +1256,10 @@ class VideoCreationDialog(QDialog):
                 msg = f"Found {len(invalid_extensions)} files with invalid extensions.\nOnly .fits and .fts files are supported."
                 if len(invalid_extensions) > 5:
                     msg += (
-                        f"\n\nExamples:\n" + "\n".join(invalid_extensions[:5]) + "\n..."
+                        "\n\nExamples:\n" + "\n".join(invalid_extensions[:5]) + "\n..."
                     )
                 else:
-                    msg += f"\n\nFiles:\n" + "\n".join(invalid_extensions)
+                    msg += "\n\nFiles:\n" + "\n".join(invalid_extensions)
 
                 QMessageBox.warning(self, "Invalid File Extensions", msg)
                 return
@@ -1611,12 +1595,12 @@ class VideoCreationDialog(QDialog):
                     msg = f"Found {len(invalid_extensions)} files with invalid extensions.\nOnly .fits and .fts files are supported."
                     if len(invalid_extensions) > 5:
                         msg += (
-                            f"\n\nExamples:\n"
+                            "\n\nExamples:\n"
                             + "\n".join(invalid_extensions[:5])
                             + "\n..."
                         )
                     else:
-                        msg += f"\n\nFiles:\n" + "\n".join(invalid_extensions)
+                        msg += "\n\nFiles:\n" + "\n".join(invalid_extensions)
 
                     QMessageBox.warning(self, "Invalid File Extensions", msg)
                     return
@@ -1819,7 +1803,7 @@ class VideoCreationDialog(QDialog):
             )
             progress_dialog.setWindowTitle("Creating Video")
             progress_dialog.setWindowModality(Qt.WindowModal)
-            print(f"Created progress dialog with range: 0-1000")
+            print("Created progress dialog with range: 0-1000")
             progress_dialog.show()
             self.progress_dialog = progress_dialog  # Store as class member
 

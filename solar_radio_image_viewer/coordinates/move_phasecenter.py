@@ -14,7 +14,6 @@ import scipy.ndimage as ndi
 import argparse
 import multiprocessing
 from multiprocessing import Pool
-from functools import partial
 import shutil
 import hashlib
 from ..processing.fits_io import readable_image_path
@@ -1246,7 +1245,7 @@ class SolarPhaseCenter:
                 datacolumn="all",
             )
 
-            print(f"Phase center of MS successfully updated")
+            print("Phase center of MS successfully updated")
             return 0
         except Exception as e:
             print(f"Error shifting phase center in MS: {e}")

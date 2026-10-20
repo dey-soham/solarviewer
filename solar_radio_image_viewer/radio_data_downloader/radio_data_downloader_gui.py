@@ -8,8 +8,6 @@ from various observatories (starting with Learmonth) and converting to FITS form
 
 import sys
 import os
-from datetime import datetime, timedelta
-from typing import Optional
 
 try:
     from PyQt5.QtWidgets import (
@@ -148,7 +146,7 @@ class DownloadWorker(QThread):
                     self.finished.emit(f"{len(results)} files created in {output_dir}")
             else:
                 self.error.emit(
-                    f"Download or conversion failed for e-CALLISTO. Check if data is available for this date/time."
+                    "Download or conversion failed for e-CALLISTO. Check if data is available for this date/time."
                 )
         except Exception as e:
             self.error.emit(str(e))
@@ -446,7 +444,6 @@ class RadioDataDownloaderGUI(QMainWindow):
 
     def on_start_date_changed(self, new_date):
         """Sync end date when start date is changed."""
-        from PyQt5.QtCore import QTime
 
         # Keep the current end time but change the date
         current_end_time = self.end_datetime.time()
@@ -582,7 +579,7 @@ class RadioDataDownloaderGUI(QMainWindow):
                 date = self.date_only_edit.dateTime().toString("yyyy-MM-dd")
                 start_datetime_str = f"{date} 00:00:00"
                 end_datetime_str = f"{date} 23:59:59"
-                log_msg = f"Starting e-CALLISTO download (full day)..."
+                log_msg = "Starting e-CALLISTO download (full day)..."
             else:
                 # Time range mode
                 start_dt = self.start_datetime.dateTime()
@@ -598,7 +595,7 @@ class RadioDataDownloaderGUI(QMainWindow):
                 # Format as 'YYYY-MM-DD HH:MM:SS' for e-CALLISTO
                 start_datetime_str = start_dt.toString("yyyy-MM-dd HH:mm:ss")
                 end_datetime_str = end_dt.toString("yyyy-MM-dd HH:mm:ss")
-                log_msg = f"Starting e-CALLISTO download..."
+                log_msg = "Starting e-CALLISTO download..."
             
             log_msg += f"\nObservatory: {observatory}"
             log_msg += f"\nTime range: {start_datetime_str} to {end_datetime_str}"
@@ -677,7 +674,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.cancel_button.setEnabled(False)
         self.progress_bar.hide()
 
-        self.log_message(f"\n✓ Success! FITS file created:")
+        self.log_message("\n✓ Success! FITS file created:")
         self.log_message(f"  {fits_file}")
         self.log_message(
             "\nYou can now open this file with the Dynamic Spectrum Viewer:"

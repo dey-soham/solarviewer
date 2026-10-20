@@ -19,7 +19,6 @@ from . import __version__
 import warnings
 from .crash_handler import (
     install_crash_handler,
-    generate_crash_report,
     set_main_window,
 )
 

@@ -24,9 +24,6 @@ from scipy import interpolate
 from typing import Optional, Tuple, List
 import urllib.request
 import urllib.error
-import tempfile
-import gzip
-import shutil
 
 
 # ============================================================================
@@ -664,7 +661,7 @@ def list_ecallisto_observatories(
     end_time = end_time.replace("T", " ")
 
     if progress_callback:
-        progress_callback(f"Searching for available e-CALLISTO observatories...")
+        progress_callback("Searching for available e-CALLISTO observatories...")
 
     try:
         res = Fido.search(
@@ -1250,7 +1247,7 @@ def dataframe_to_fits(
     header["FREQ_MAX"] = float(np.nanmax(freqs))
 
     # History
-    header["HISTORY"] = f"Created by SolarViewer"
+    header["HISTORY"] = "Created by SolarViewer"
     header["HISTORY"] = f"Source: {site_name} Solar Spectrograph"
 
     # Create HDU list starting with primary

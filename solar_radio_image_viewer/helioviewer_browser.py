@@ -13,15 +13,12 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QDateTimeEdit,
     QSpinBox,
-    QListWidget,
     QScrollArea,
     QFrame,
     QProgressBar,
     QComboBox,
     QFileDialog,
     QMessageBox,
-    QDialog,
-    QListWidgetItem,
     QApplication,
     QGroupBox,
     QTreeWidget,
@@ -44,14 +41,11 @@ from PyQt5.QtCore import (
     QRect,
     QVariantAnimation,
 )
-from PyQt5.QtGui import QPixmap, QImage, QIcon, QColor, QKeySequence
-from datetime import datetime, timedelta
+from PyQt5.QtGui import QPixmap, QImage, QColor, QKeySequence
 from collections import OrderedDict
 import requests
-import sys
 import os
-from urllib.parse import urlencode
-from typing import List, Dict, Optional, Tuple
+from typing import List, Tuple
 from .ui.styles import set_hand_cursor
 
 # Global list to keep threads alive if window is closed while they are running
@@ -1867,7 +1861,7 @@ class HelioviewerBrowser(QMainWindow):
         nickname, _, _, _ = selected[0]
 
         # Ask for format
-        from PyQt5.QtWidgets import QInputDialog, QProgressDialog, QCheckBox
+        from PyQt5.QtWidgets import QInputDialog, QProgressDialog
 
         formats = ["GIF", "MP4"]
         format_choice, ok = QInputDialog.getItem(
@@ -2200,7 +2194,7 @@ class HelioviewerBrowser(QMainWindow):
 
         saved_count = 0
         metadata_lines = []
-        metadata_lines.append(f"Helioviewer Batch Download")
+        metadata_lines.append("Helioviewer Batch Download")
         metadata_lines.append(f"Instrument: {nickname}")
         metadata_lines.append(
             f"Download Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"

@@ -3,40 +3,20 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QGroupBox,
-    QRadioButton,
     QLineEdit,
     QLabel,
     QPushButton,
     QSpinBox,
     QDoubleSpinBox,
     QGridLayout,
-    QFormLayout,
     QDialogButtonBox,
     QComboBox,
     QCheckBox,
-    QFileDialog,
-    QMessageBox,
-    QListWidget,
-    QListWidgetItem,
-    QPlainTextEdit,
-    QButtonGroup,
     QWidget,
-    QProgressDialog,
-    QFrame,
-    QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QProgressBar,
-    QApplication,
 )
-from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize
-import sys
-import numpy as np
-import os
+from PyQt5.QtCore import Qt
 
-from ..ui.styles import theme_manager, set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 
 class PlotCustomizationDialog(QDialog):

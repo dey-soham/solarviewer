@@ -7,17 +7,14 @@ import tempfile
 if __name__ == "__main__":
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-import numpy as np, matplotlib.pyplot as plt, astropy.units as u, matplotlib.patches as patches
+import numpy as np, matplotlib.pyplot as plt, astropy.units as u
 from astropy.coordinates import SkyCoord, EarthLocation
 from astropy.time import Time
 from astropy.io import fits
-from datetime import timedelta
 from matplotlib import rcParams
 from casatools import image as IA
 
 # casatasks (immath, exportfits) are now run via subprocess to avoid memory issues
-import math
-import sys
 
 try:
     from sunpy.net import Fido, attrs as a
@@ -81,7 +78,7 @@ def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observator
                 POS = EarthLocation.from_geocentric(x, y, z, unit=u.m)
             else:
                 print(
-                    f"[WARNING] Invalid telescope position in header. Looking for observatory from header..."
+                    "[WARNING] Invalid telescope position in header. Looking for observatory from header..."
                 )
                 ia_tool = IA()
                 ia_tool.open(fits_file)
@@ -527,7 +524,7 @@ def convert_to_hpc(
             elif "FREQ" in header:
                 freq = header["FREQ"] * u.Hz
             else:
-                print(f"[WARNING] No frequency keyword found in header")
+                print("[WARNING] No frequency keyword found in header")
                 freq = None
         except Exception as e:
             print(f"[ERROR] Error getting frequency: {e}")
@@ -1743,29 +1740,29 @@ def extract_telescope_position(metadata_dict):
         z = float(coords[2].replace("m", "").strip())
         if abs(x) < 1e6 and abs(y) < 1e6 and abs(z) < 1e6:
             print(f"[WARNING] Invalid telescope position format: {telescope_position}")
-            print(f"Checking if it is a known telescope ....")
+            print("Checking if it is a known telescope ....")
             if observatory.upper() == "LOFAR":
-                print(f"Observatory matched with LOFAR")
+                print("Observatory matched with LOFAR")
                 lat = "52:55:53.90"
                 lon = "06:51:56.95"
                 height = 50.16
             elif observatory.upper() == "MWA":
-                print(f"Observatory matched with MWA")
+                print("Observatory matched with MWA")
                 lat = "-26:42:12.09"
                 lon = "116:40:14.84"
                 height = 375.75
             elif observatory.upper() == "MEERKAT":
-                print(f"Observatory matched with MEERKAT")
+                print("Observatory matched with MEERKAT")
                 lat = "-30:42:47.36"
                 lon = "21:26:38.09"
                 height = 1050.82
             elif observatory.upper() == "GMRT" or observatory.upper() == "UGMRT":
-                print(f"Observatory matched with uGMRT")
+                print("Observatory matched with uGMRT")
                 lat = "19:05:26.21"
                 lon = "74:02:59.90"
                 height = 639.68
             else:
-                print(f"Observatory not matched with database of known telescopes")
+                print("Observatory not matched with database of known telescopes")
                 return None, None, None, observatory
         else:
             # Convert ITRF coordinates to latitude, longitude, and height
@@ -2028,7 +2025,7 @@ if __name__ == "__main__":
 
             x, y, z = geodetic_to_itrf(lat, lon, args.height)
             if x is not None:
-                print(f"ITRF Coordinates:")
+                print("ITRF Coordinates:")
                 print(f"X: {x:.3f} meters")
                 print(f"Y: {y:.3f} meters")
                 print(f"Z: {z:.3f} meters")

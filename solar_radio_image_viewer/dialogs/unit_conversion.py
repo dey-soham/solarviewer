@@ -3,14 +3,10 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QGroupBox,
-    QRadioButton,
     QLineEdit,
     QLabel,
     QPushButton,
     QSpinBox,
-    QDoubleSpinBox,
-    QGridLayout,
-    QFormLayout,
     QDialogButtonBox,
     QComboBox,
     QCheckBox,
@@ -19,27 +15,17 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
-    QButtonGroup,
     QWidget,
-    QProgressDialog,
     QFrame,
     QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
     QProgressBar,
     QApplication,
 )
-from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize
 import multiprocessing
-import sys
-import numpy as np
 import os
 
-from ..ui.styles import theme_manager, set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
-import glob
 
 class UnitConversionDialog(QDialog):
     """Dialog for batch unit conversion between Flux Density and Brightness Temperature."""
@@ -543,7 +529,6 @@ class UnitConversionDialog(QDialog):
             self.reject()
 
     def run_conversion(self):
-        import glob
         files = self.scan_files()
         if not files:
             QMessageBox.warning(self, "Error", "No input files found. Please check your directory and pattern.")

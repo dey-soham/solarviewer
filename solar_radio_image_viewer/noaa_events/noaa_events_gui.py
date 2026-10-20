@@ -7,7 +7,7 @@ import sys
 import os
 import re
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Optional
 
 # Qt imports
 try:
@@ -58,7 +58,6 @@ except ImportError:
 
     from solar_radio_image_viewer.noaa_events import noaa_events as ne
     from solar_radio_image_viewer.ui.styles import theme_manager, set_hand_cursor
-import requests
 import json
 from pathlib import Path
 from ..processing.fits_io import readable_image_path
@@ -812,7 +811,6 @@ class DHSpectraWorker(QThread):
         """Fetch spectra from CDAW servers, using cache when available."""
         import urllib.request
         import urllib.error
-        from datetime import datetime as dt
         import re
         
         try:
@@ -858,7 +856,7 @@ class DHSpectraWorker(QThread):
                     self.progress.emit("Calibrated WIND/WAVES data found!")
                     
                 except Exception as e:
-                    self.progress.emit(f"Calibrated source unavailable, trying fallback...")
+                    self.progress.emit("Calibrated source unavailable, trying fallback...")
                 
                 # Fallback to 24h source if calibrated not found
                 if not wind_found:
@@ -925,7 +923,7 @@ class DHSpectraWorker(QThread):
                     matches_a = sorted(pattern_a.findall(html))
                     
                     if matches_a:
-                        self.progress.emit(f"Stitching STEREO-A images...")
+                        self.progress.emit("Stitching STEREO-A images...")
                         stitched_data = self._stitch_images(stereo_dir_url, matches_a)
                         if stitched_data:
                             sta_file = cache.save_spectra(event_date, 'stereo_a', stitched_data)
@@ -967,7 +965,7 @@ class DHSpectraWorker(QThread):
                         matches_b = sorted(pattern_b.findall(html))
                         
                         if matches_b:
-                            self.progress.emit(f"Stitching STEREO-B images...")
+                            self.progress.emit("Stitching STEREO-B images...")
                             stitched_data = self._stitch_images(stereo_dir_url, matches_b)
                             if stitched_data:
                                 stb_file = cache.save_spectra(event_date, 'stereo_b', stitched_data)
@@ -1598,12 +1596,12 @@ class NOAAEventsViewer(QMainWindow):
         if theme_manager.is_dark:
             # Dark theme: subtle purple tint
             self.summary_frame.setStyleSheet(
-                f"""
-                QFrame {{
+                """
+                QFrame {
                     background-color: rgba(99, 102, 241, 0.08);
                     border-radius: 8px;
                     border: 1px solid rgba(99, 102, 241, 0.2);
-                }}
+                }
             """
             )
         else:
@@ -2678,7 +2676,7 @@ class NOAAEventsViewer(QMainWindow):
             self.progress.hide()
 
             self.summary_label.setText(f"Error fetching data: {error_msg}")
-            QMessageBox.critical(self, "Fetch Error", f"Failed to fetch data")
+            QMessageBox.critical(self, "Fetch Error", "Failed to fetch data")
         except RuntimeError:
             pass
 
@@ -3357,7 +3355,7 @@ class NOAAEventsViewer(QMainWindow):
         if hasattr(self, "previous_summary"):
             self.summary_label.setText(self.previous_summary)
         else:
-            self.summary_label.setText(f"Error fetching GOES data")
+            self.summary_label.setText("Error fetching GOES data")
         QMessageBox.warning(
             self, "GOES Error", f"Failed to fetch GOES data:\n{error_msg}"
         )
@@ -3391,8 +3389,6 @@ class NOAAEventsViewer(QMainWindow):
 
     def fetch_dh_spectra(self):
         """Fetch DH-band dynamic spectra (WIND/WAVES & STEREO) for the selected date."""
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import Qt
 
         if hasattr(self, "dh_worker") and self.dh_worker and self.dh_worker.isRunning():
             return

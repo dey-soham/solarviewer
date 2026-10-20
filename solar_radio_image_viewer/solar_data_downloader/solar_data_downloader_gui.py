@@ -9,9 +9,7 @@ application or integrated into other PyQt applications.
 
 import sys
 import os
-import datetime
 from pathlib import Path
-from typing import Optional, Dict, List
 
 try:
     from PyQt5.QtWidgets import (
@@ -283,7 +281,6 @@ class DownloadWorker(QThread):
 
     def _generate_download_script(self):
         """Generate a Python script to run the download."""
-        import json
 
         params = self.params
         instrument = params.get("instrument")

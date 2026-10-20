@@ -9,10 +9,8 @@ Data sources:
 """
 
 import re
-import urllib.request
-import urllib.error
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import date
 from typing import List, Optional, Dict, Any
 
 
@@ -371,7 +369,7 @@ if __name__ == "__main__":
             )
 
         stats = get_ar_statistics(regions)
-        print(f"\nStatistics:")
+        print("\nStatistics:")
         print(f"  Total area: {stats['total_area']} millionths")
         print(f"  Complex regions: {stats['complex_count']}")
         if stats["highest_risk_region"]:

@@ -9,40 +9,23 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSpinBox,
     QDoubleSpinBox,
-    QGridLayout,
-    QFormLayout,
     QDialogButtonBox,
     QComboBox,
     QCheckBox,
     QFileDialog,
     QMessageBox,
-    QListWidget,
-    QListWidgetItem,
     QPlainTextEdit,
-    QButtonGroup,
     QWidget,
-    QProgressDialog,
     QFrame,
     QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
     QProgressBar,
-    QApplication,
 )
-from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize
-import sys
-import numpy as np
 import os
 
-from ..ui.styles import theme_manager, set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 import multiprocessing
 import glob
-import uuid
-import traceback
-import time
 
 class PhaseShiftDialog(QDialog):
     """Dialog for configuring and executing solar phase center shifting."""
@@ -70,7 +53,6 @@ class PhaseShiftDialog(QDialog):
         set_hand_cursor(self)
 
     def setup_ui(self):
-        from ..coordinates.move_phasecenter import SolarPhaseCenter
 
         # Theme setup
         try:
@@ -686,8 +668,7 @@ class PhaseShiftDialog(QDialog):
         """Apply the phase shift to the image(s)"""
         import os
         from ..coordinates.move_phasecenter import SolarPhaseCenter
-        from PyQt5.QtWidgets import QProgressDialog, QApplication, QMessageBox
-        from PyQt5.QtCore import Qt
+        from PyQt5.QtWidgets import QApplication, QMessageBox
         import multiprocessing
         import time
 

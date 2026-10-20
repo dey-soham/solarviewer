@@ -6,10 +6,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QWidget,
-    QFrame,
     QListWidgetItem,
-    QStyle,
-    QApplication,
     QDialog,
     QDialogButtonBox,
 )

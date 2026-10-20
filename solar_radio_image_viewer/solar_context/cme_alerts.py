@@ -8,11 +8,9 @@ Data source:
 """
 
 import json
-import urllib.request
-import urllib.error
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, date, timedelta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 
 
 @dataclass

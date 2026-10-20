@@ -11,7 +11,6 @@ This module provides:
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 from astropy.io import fits
 from astropy.wcs import WCS
 import logging

@@ -1,4 +1,4 @@
-import drms, time, os, glob, warnings
+import drms, os, glob, warnings
 import sunpy
 from parfive import Downloader
 from sunpy.map import Map
@@ -109,7 +109,7 @@ def robust_fido_fetch(
     # Report final status
     if downloaded.errors:
         print(
-            f"\n" + "="*60 + "\n"
+            "\n" + "="*60 + "\n"
             f"WARNING: {len(downloaded.errors)} files failed to download after {max_retries} retries\n"
             + "="*60
         )
@@ -718,7 +718,7 @@ def download_aia_with_fido(
     
     # Show calibration status upfront
     if can_calibrate:
-        print(f"  Calibration: ENABLED (aiapy available)")
+        print("  Calibration: ENABLED (aiapy available)")
     else:
         print(f"  Calibration: DISABLED {'(aiapy not installed)' if not HAS_AIAPY else '(skipped by user)'}")
 
@@ -784,22 +784,22 @@ def download_aia_with_fido(
                 if apply_psf:
                     try:
                         print(
-                            f"  - Applying PSF deconvolution (this may take 30-60 seconds)..."
+                            "  - Applying PSF deconvolution (this may take 30-60 seconds)..."
                         )
                         aia_map = aia_deconvolve(aia_map, iterations=25)
-                        print(f"  - Applied PSF deconvolution (25 iterations)")
+                        print("  - Applied PSF deconvolution (25 iterations)")
                     except Exception as e:
                         print(f"  - Warning: Could not apply PSF deconvolution: {e}")
 
                 # Step 3: Register (rotate, scale to 0.6"/px, center sun)
                 lev1_5map = register(aia_map)
-                print(f"  - Registered (rotated, scaled, centered)")
+                print("  - Registered (rotated, scaled, centered)")
 
                 # Step 4: Correct for time-dependent degradation
                 if apply_degradation:
                     try:
                         lev1_5map = correct_degradation(lev1_5map)
-                        print(f"  - Applied degradation correction")
+                        print("  - Applied degradation correction")
                     except Exception as e:
                         print(
                             f"  - Warning: Could not apply degradation correction: {e}"
@@ -808,7 +808,7 @@ def download_aia_with_fido(
                 # Step 5: Normalize by exposure time
                 if apply_exposure_norm and lev1_5map.exposure_time.value > 0:
                     lev1_5map = lev1_5map / lev1_5map.exposure_time
-                    print(f"  - Normalized by exposure time")
+                    print("  - Normalized by exposure time")
 
                 lev1_5map.save(level1_5_file)
 
@@ -1215,7 +1215,7 @@ def update_hmi_pointing(hmi_map):
         calibrated_map = rotated_map
         print(f"  - Plate scale already at ~{TARGET_SCALE} arcsec/px")
 
-    print(f"  - HMI Level-1.5 calibration complete")
+    print("  - HMI Level-1.5 calibration complete")
 
     return calibrated_map
 
@@ -1493,7 +1493,7 @@ def download_soho(
         if total_files == 0:
             # Try again without wavelength filter for EIT
             if instrument == "EIT" and wavelength is not None:
-                print(f"No exact wavelength match, searching all EIT data...")
+                print("No exact wavelength match, searching all EIT data...")
                 result = Fido.search(
                     a.Time(start_dt, end_dt),
                     a.Instrument("EIT"),
@@ -1587,7 +1587,7 @@ def download_soho(
                     # Negate CDELT1 to correct Solar-X direction after rotation
                     meta["cdelt1"] = -abs(meta.get("cdelt1", 2.63))
                     eit_map = Map(eit_map.data, meta)
-                    print(f"  - Fixed WCS (HPLN-TAN, arcsec, Solar-X corrected)")
+                    print("  - Fixed WCS (HPLN-TAN, arcsec, Solar-X corrected)")
 
                     # Step 3: Normalize by exposure time
                     exptime = (

@@ -366,7 +366,7 @@ class ContoursMixin:
 
             if base_csys_type == "hpc" and contour_csys_type == "radec":
                 # Convert RA/Dec contour to HPC (all Stokes for full flexibility)
-                self.show_status_message(f"Transforming contour from RA/Dec to HPC...")
+                self.show_status_message("Transforming contour from RA/Dec to HPC...")
                 from ..coordinates.helioprojective import (
                     convert_and_save_hpc_all_stokes,
                 )
@@ -377,7 +377,7 @@ class ContoursMixin:
 
             elif base_csys_type == "radec" and contour_csys_type == "hpc":
                 # Convert HPC contour to RA/Dec
-                self.show_status_message(f"Transforming contour from HPC to RA/Dec...")
+                self.show_status_message("Transforming contour from HPC to RA/Dec...")
                 from ..coordinates.helioprojective import convert_hpc_to_radec
 
                 transform_success = convert_hpc_to_radec(
@@ -396,7 +396,7 @@ class ContoursMixin:
                     f"[ERROR] Transformation failed, using original: {external_image}"
                 )
                 self.show_status_message(
-                    f"Coordinate transformation failed, using original contour"
+                    "Coordinate transformation failed, using original contour"
                 )
 
         elif (
@@ -1260,7 +1260,7 @@ class ContoursMixin:
 
                     if main_window:
                         self.show_status_message(
-                            f"Reprojection done.. plotting... Please wait..."
+                            "Reprojection done.. plotting... Please wait..."
                         )
 
                 contour_data = array
