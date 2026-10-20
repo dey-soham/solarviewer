@@ -60,7 +60,7 @@ class HpcViewMixin:
             QApplication.processEvents()
 
             # Import conversion function
-            from ..helioprojective import convert_and_save_hpc_all_stokes
+            from ..coordinates.helioprojective import convert_and_save_hpc_all_stokes
 
             # Store original imagename before switching
             self._original_imagename = self.imagename
@@ -172,7 +172,7 @@ class HpcViewMixin:
                     self._hpc_temp_file = None
             else:
                 # No original - convert current HPC file to RA/Dec using the new function
-                from ..helioprojective import convert_hpc_to_radec
+                from ..coordinates.helioprojective import convert_hpc_to_radec
 
                 # Create temp output file
                 temp_dir = tempfile.gettempdir()

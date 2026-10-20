@@ -59,38 +59,21 @@ def wait_cursor():
         QApplication.restoreOverrideCursor()
 
 
-try:
-    from .create_video import (
-        create_video,
-        VideoProgress,
-        load_fits_data,
-        apply_visualization,
-        format_timestamp,
-        get_norm,
-    )
-    from .norms import (
-        SqrtNorm,
-        AsinhNorm,
-        PowerNorm,
-        ZScaleNorm,
-        HistEqNorm,
-    )
-except ImportError:
-    from create_video import (
-        create_video,
-        VideoProgress,
-        load_fits_data,
-        apply_visualization,
-        format_timestamp,
-        get_norm,
-    )
-    from norms import (
-        SqrtNorm,
-        AsinhNorm,
-        PowerNorm,
-        ZScaleNorm,
-        HistEqNorm,
-    )
+from .creator import (
+    create_video,
+    VideoProgress,
+    load_fits_data,
+    apply_visualization,
+    format_timestamp,
+    get_norm,
+)
+from ..processing.norms import (
+    SqrtNorm,
+    AsinhNorm,
+    PowerNorm,
+    ZScaleNorm,
+    HistEqNorm,
+)
 
 
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
@@ -152,10 +135,7 @@ class VideoCreationDialog(QDialog):
         self.setWindowTitle("Create Video")
         self.resize(650, 700)
 
-        try:
-            from .styles import set_hand_cursor
-        except ImportError:
-            from styles import set_hand_cursor
+        from ..styles import set_hand_cursor
 
         self.setup_ui()
         set_hand_cursor(self)
@@ -1851,7 +1831,7 @@ class VideoCreationDialog(QDialog):
             }
 
             # Create the video
-            from solar_radio_image_viewer.create_video import (
+            from solar_radio_image_viewer.video.creator import (
                 create_video as create_video_function,
             )
 
@@ -2665,7 +2645,7 @@ class VideoWorker(QThread):
     def run(self):
         try:
             # Directly use the create_video function instead of trying to import it
-            from solar_radio_image_viewer.create_video import (
+            from solar_radio_image_viewer.video.creator import (
                 create_video as create_video_function,
             )
 

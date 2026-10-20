@@ -289,15 +289,16 @@ Options:
 solarviewer/
 ├── solar_radio_image_viewer/
 │   ├── main.py                 # Entry point
-│   ├── install_utils.py        # Desktop integration (install/uninstall)
-│   ├── viewer.py               # Standard viewer
-│   ├── assets/                 # Icons and resources
-│   ├── helioprojective.py      # Coordinate conversions
-│   ├── helioprojective_viewer.py
-│   ├── helioviewer_browser.py  # Helioviewer API browser
-│   ├── video_dialog.py         # Video creation UI
-│   ├── create_video.py         # Video rendering
-│   ├── video_utils.py          # Video utilities
+│   ├── viewer.py               # Main window + image tab (combines the mixins below)
+│   ├── core/                   # Viewer building blocks: rendering, canvas (zoom/pan),
+│   │                           #   contours, file navigation, presets, exports, remote mode
+│   ├── tools/                  # Interactive tools: ROI stats, ruler, profiles, fitting,
+│   │                           #   annotations, TB mode, HPC view, solar disk, solar events
+│   ├── dialogs/                # One module per dialog
+│   ├── processing/             # Qt-free image processing: pixel I/O, metadata, Stokes,
+│   │                           #   RMS, TB/flux maps, norms, CASA imfit/immath runners
+│   ├── coordinates/            # Helioprojective conversion, HPC viewer, phase-center shift
+│   ├── video/                  # Video creation (creator, dialog, utils)
 │   ├── noaa_events/            # Solar events browser
 │   ├── solar_data_downloader/  # SDO/AIA, IRIS, etc.
 │   ├── radio_data_downloader/  # Radio data archives
@@ -305,19 +306,22 @@ solarviewer/
 │   ├── remote/                 # Remote file access (SSH/SFTP)
 │   ├── from_simpl/             # LOFAR/SIMPL tools
 │   ├── learmonth-py/           # Learmonth data downloader
-│   ├── move_phasecenter.py     # Phase center correction tool
+│   ├── utils/                  # Networking helpers (rate limiter, sessions, update checker)
+│   ├── helioviewer_browser.py  # Helioviewer API browser
+│   ├── shape_annotations.py    # Shape annotations and solar-radii overlays
+│   ├── install_utils.py        # Desktop integration (install/uninstall)
 │   ├── tutorial.py             # Tutorial
-│   ├── dialogs.py              # Application dialogs
+│   ├── crash_handler.py        # Crash reports
 │   ├── splash.py               # Splash screen
 │   ├── log_console.py          # Internal log viewer
 │   ├── searchable_combobox.py  # Custom combobox widget
-│   ├── norms.py                # Image normalization
-│   ├── utils.py                # Utility functions
-│   ├── utils/                  # Additional utilities (updater, limiter)
+│   ├── styles.py               # UI themes (light/dark)
 │   ├── version.py              # Version information
-│   └── styles.py               # UI themes (light/dark)
+│   └── assets/                 # Icons and resources
+├── tests/                      # pytest suite (runs offscreen)
 ├── resources/                  # Desktop integration resources
 ├── setup.py
+├── pyproject.toml              # Dev tool configuration
 ├── requirements.txt
 ├── README.md
 ├── LICENSE

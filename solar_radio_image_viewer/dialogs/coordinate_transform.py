@@ -101,7 +101,7 @@ def process_single_file_coordsys(args):
                 return result
 
         # Import transformation functions
-        from ..helioprojective import convert_and_save_hpc, convert_hpc_to_radec
+        from ..coordinates.helioprojective import convert_and_save_hpc, convert_hpc_to_radec
 
         # Generate a unique file suffix for this process to avoid conflicts
         temp_suffix = f"_proc_{process_id}_{uuid.uuid4().hex[:8]}"
@@ -922,7 +922,7 @@ class CoordinateTransformationDialog(QDialog):
         # Import modules needed for processing
         import multiprocessing
         import time
-        from ..helioprojective import convert_and_save_hpc
+        from ..coordinates.helioprojective import convert_and_save_hpc
 
         # Setup Progress UI
         self.progress_bar.setVisible(True)

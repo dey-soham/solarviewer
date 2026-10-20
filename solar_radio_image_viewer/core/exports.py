@@ -269,7 +269,7 @@ except Exception as e:
                             or "HPLT" in ctype2
                         ):
                             # Convert HPC to RA/Dec first
-                            from ..helioprojective import convert_hpc_to_radec
+                            from ..coordinates.helioprojective import convert_hpc_to_radec
 
                             temp_radec_file = os.path.join(
                                 tempfile.gettempdir(),
@@ -577,7 +577,7 @@ except Exception as e:
                 QApplication.processEvents()
 
                 # Call convert_and_save_hpc
-                from ..helioprojective import convert_and_save_hpc
+                from ..coordinates.helioprojective import convert_and_save_hpc
 
                 success = convert_and_save_hpc(
                     current_tab.imagename,

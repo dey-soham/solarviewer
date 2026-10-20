@@ -11,6 +11,7 @@ run in subprocesses, scripts and tests without a GUI:
 - ``rms``: RMS estimation and masking far from the Sun
 - ``maps``: brightness temperature <-> flux density maps
 - ``models``: analytic 2D models used for fitting
+- ``norms``: matplotlib normalizations for display stretches (sqrt, asinh, ...)
 - ``immath`` / ``imfit``: CASA tasks run in a subprocess
 
 Submodules are imported explicitly (e.g. ``from .processing.rms import ...``);

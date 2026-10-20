@@ -33,36 +33,20 @@ from functools import partial
 import logging
 
 # Import custom norms
-try:
-    from .norms import (
-        SqrtNorm,
-        AsinhNorm,
-        PowerNorm as CustomPowerNorm,
-        ZScaleNorm,
-        HistEqNorm,
-    )
-    from .video_utils import (
-        detect_coordinate_system,
-        get_wcs_axis_labels,
-        create_wcs_axes,
-        MinMaxTimeline,
-        ContourVideoProcessor,
-    )
-except ImportError:
-    from norms import (
-        SqrtNorm,
-        AsinhNorm,
-        PowerNorm as CustomPowerNorm,
-        ZScaleNorm,
-        HistEqNorm,
-    )
-    from video_utils import (
-        detect_coordinate_system,
-        get_wcs_axis_labels,
-        create_wcs_axes,
-        MinMaxTimeline,
-        ContourVideoProcessor,
-    )
+from ..processing.norms import (
+    SqrtNorm,
+    AsinhNorm,
+    PowerNorm as CustomPowerNorm,
+    ZScaleNorm,
+    HistEqNorm,
+)
+from .utils import (
+    detect_coordinate_system,
+    get_wcs_axis_labels,
+    create_wcs_axes,
+    MinMaxTimeline,
+    ContourVideoProcessor,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -1395,31 +1379,16 @@ class VideoProgress:
 
 
 if __name__ == "__main__":
-    # Example usage
+    # python -m solar_radio_image_viewer.video.creator OUTPUT.mp4 FILE.fits [FILE.fits ...]
+    import sys
+
+    if len(sys.argv) < 3:
+        sys.exit(
+            "usage: python -m solar_radio_image_viewer.video.creator "
+            "OUTPUT.mp4 FILE.fits [FILE.fits ...]"
+        )
     create_video(
-        input_pattern="/path/to/*.fits",
-        output_file="/path/to/output.mp4",
-        fps=10,
-        sort_by="datetime",
-        stokes="I",
-        colormap="viridis",
-        stretch="linear",
-        vmin=None,
-        vmax=None,
-        gamma=1.0,
-        width=None,
-        height=None,
-        add_timestamp=True,
-        add_frame_number=True,
-        add_filename=True,
-        use_multiprocessing=True,
-        region_enabled=False,
-        x_min=0,
-        x_max=0,
-        y_min=0,
-        y_max=0,
-        add_colorbar=False,
-        range_mode=1,  # 0=Fixed, 1=Auto Per Frame, 2=Global Auto
-        lower_percentile=0.0,
-        upper_percentile=100.0,
+        sorted(sys.argv[2:]),
+        sys.argv[1],
+        {"width": 0, "height": 0, "fps": 10, "timestamp": True, "colorbar": True},
     )

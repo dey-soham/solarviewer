@@ -11,13 +11,65 @@ from .version import __version__
 _modules = {
     "viewer": ["SolarRadioImageViewerApp", "SolarRadioImageTab"],
     "utils": None,
-    "norms": None,
     "styles": None,
     "dialogs": None,
     "searchable_combobox": None,
-    "create_video": ["VideoProgress"],
-    "video_dialog": ["VideoCreationDialog"],
+    "processing": None,
+    "coordinates": None,
+    "video": None,
+    "video.creator": ["VideoProgress"],
+    "video.dialog": ["VideoCreationDialog"],
 }
+
+# Modules moved during the restructuring (see RESTRUCTURING.md). Importing the
+# old path still works but returns the new module with a DeprecationWarning.
+_MOVED_MODULES = {
+    "norms": "processing.norms",
+    "create_video": "video.creator",
+    "video_dialog": "video.dialog",
+    "video_utils": "video.utils",
+    "helioprojective": "coordinates.helioprojective",
+    "helioprojective_viewer": "coordinates.helioprojective_viewer",
+    "move_phasecenter": "coordinates.move_phasecenter",
+}
+
+
+class _MovedModuleFinder:
+    """Import hook that aliases old module paths to their new locations."""
+
+    def find_spec(self, fullname, path, target=None):
+        prefix = __name__ + "."
+        if not fullname.startswith(prefix):
+            return None
+        new = _MOVED_MODULES.get(fullname[len(prefix) :])
+        if new is None:
+            return None
+        import importlib.util
+
+        return importlib.util.spec_from_loader(fullname, _MovedModuleLoader(new))
+
+
+class _MovedModuleLoader:
+    def __init__(self, new):
+        self.new = f"{__name__}.{new}"
+
+    def create_module(self, spec):
+        import importlib
+        import warnings
+
+        warnings.warn(
+            f"{spec.name} has moved to {self.new}", DeprecationWarning, stacklevel=2
+        )
+        return importlib.import_module(self.new)
+
+    def exec_module(self, module):
+        pass
+
+
+import sys as _sys
+
+if not any(isinstance(f, _MovedModuleFinder) for f in _sys.meta_path):
+    _sys.meta_path.append(_MovedModuleFinder())
 
 
 def __getattr__(name):

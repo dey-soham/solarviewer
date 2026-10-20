@@ -70,7 +70,7 @@ class PhaseShiftDialog(QDialog):
         set_hand_cursor(self)
 
     def setup_ui(self):
-        from ..move_phasecenter import SolarPhaseCenter
+        from ..coordinates.move_phasecenter import SolarPhaseCenter
 
         # Theme setup
         try:
@@ -685,7 +685,7 @@ class PhaseShiftDialog(QDialog):
     def apply_phase_shift(self):
         """Apply the phase shift to the image(s)"""
         import os
-        from ..move_phasecenter import SolarPhaseCenter
+        from ..coordinates.move_phasecenter import SolarPhaseCenter
         from PyQt5.QtWidgets import QProgressDialog, QApplication, QMessageBox
         from PyQt5.QtCore import Qt
         import multiprocessing
@@ -1062,7 +1062,7 @@ def process_single_file_phase_shift(args):
         (success, file_path, error_message)
     """
     try:
-        from ..move_phasecenter import SolarPhaseCenter
+        from ..coordinates.move_phasecenter import SolarPhaseCenter
 
         # Instantiate fresh for this process
         spc = SolarPhaseCenter()

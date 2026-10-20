@@ -445,7 +445,7 @@ class ContourVideoProcessor:
     def load_base_image(self, file_path, stokes="I", load_func=None):
         """Load the fixed base image (for mode A)."""
         if load_func is None:
-            from .create_video import load_fits_data
+            from .creator import load_fits_data
 
             load_func = load_fits_data
 
@@ -467,7 +467,7 @@ class ContourVideoProcessor:
     def load_fixed_contour(self, file_path, stokes="I", load_func=None):
         """Load the fixed contour data (for mode B)."""
         if load_func is None:
-            from .create_video import load_fits_data
+            from .creator import load_fits_data
 
             load_func = load_fits_data
 
@@ -691,7 +691,7 @@ class ContourVideoProcessor:
             {'colormap_data': ..., 'contour_data': ..., 'contour_levels': ...}
         """
         if load_func is None:
-            from .create_video import load_fits_data
+            from .creator import load_fits_data
 
             load_func = load_fits_data
 

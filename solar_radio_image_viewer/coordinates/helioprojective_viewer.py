@@ -38,7 +38,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon
 
-from .styles import set_hand_cursor
+from ..styles import set_hand_cursor
 
 # Try to import sunpy
 try:
@@ -131,17 +131,8 @@ except Exception as e:
 
 
 # Import the helioprojective conversion functions
-try:
-    from .helioprojective import convert_to_hpc
-    from .styles import theme_manager, get_stylesheet
-except ImportError:
-    try:
-        # For direct script execution
-        from helioprojective import convert_to_hpc
-        from styles import theme_manager, get_stylesheet
-    except ImportError:
-        print("Error: Could not import helioprojective conversion functions")
-        sys.exit(1)
+from .helioprojective import convert_to_hpc
+from ..styles import theme_manager, get_stylesheet
 
 
 def update_hpc_matplotlib_theme():

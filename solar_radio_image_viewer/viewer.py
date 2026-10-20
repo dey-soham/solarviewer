@@ -61,7 +61,7 @@ from PyQt5.QtWidgets import QStyledItemDelegate
 
 # from PyQt5.QtGui import QColor, QPalette, QPainter
 
-from .norms import SqrtNorm, AsinhNorm, PowerNorm, ZScaleNorm, HistEqNorm
+from .processing.norms import SqrtNorm, AsinhNorm, PowerNorm, ZScaleNorm, HistEqNorm
 from .processing.dependencies import IA
 from .processing.metadata import get_image_metadata
 from .styles import (
@@ -5363,7 +5363,7 @@ class SolarRadioImageViewerApp(
             current_file = current_tab.imagename if current_tab else None
 
             # Import and show dialog
-            from .video_dialog import VideoCreationDialog
+            from .video.dialog import VideoCreationDialog
 
             # Store reference to prevent garbage collection
             self._video_dialog = VideoCreationDialog(self, current_file)

@@ -30,8 +30,8 @@ except ImportError:
     print("[ERROR] sunpy is not installed or some components are missing")
     sunpy_imported = False
 
-from .processing.immath import run_immath_subprocess
-from .processing.rms import estimate_rms_near_Sun, remove_pixels_away_from_sun
+from ..processing.immath import run_immath_subprocess
+from ..processing.rms import estimate_rms_near_Sun, remove_pixels_away_from_sun
 
 
 rcParams["axes.linewidth"] = 1.4

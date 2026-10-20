@@ -11,7 +11,7 @@ from matplotlib.patches import Ellipse
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
-from ..norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
+from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
 from ..processing.dependencies import IA
 
 

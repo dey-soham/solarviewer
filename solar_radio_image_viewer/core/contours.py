@@ -365,7 +365,7 @@ class ContoursMixin:
             if base_csys_type == "hpc" and contour_csys_type == "radec":
                 # Convert RA/Dec contour to HPC (all Stokes for full flexibility)
                 self.show_status_message(f"Transforming contour from RA/Dec to HPC...")
-                from ..helioprojective import (
+                from ..coordinates.helioprojective import (
                     convert_and_save_hpc_all_stokes,
                 )
 
@@ -376,7 +376,7 @@ class ContoursMixin:
             elif base_csys_type == "radec" and contour_csys_type == "hpc":
                 # Convert HPC contour to RA/Dec
                 self.show_status_message(f"Transforming contour from HPC to RA/Dec...")
-                from ..helioprojective import convert_hpc_to_radec
+                from ..coordinates.helioprojective import convert_hpc_to_radec
 
                 transform_success = convert_hpc_to_radec(
                     external_image, transformed_path, overwrite=True
