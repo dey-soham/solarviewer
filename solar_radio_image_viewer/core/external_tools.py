@@ -296,6 +296,31 @@ read -p "Press Enter to close..."
 
         try:
             env = self._get_clean_qt_env()
+            connection = getattr(self, "remote_connection", None)
+            if connection is not None and connection.is_connected():
+                # The same server, for the tool's "Open from Server" (keys or
+                # agent: the password isn't passed on)
+                import json
+
+                params = {
+                    k: v
+                    for k, v in connection._connect_params.items()
+                    if k in ("host", "port", "username", "key_path") and v is not None
+                }
+                env["SOLARVIEWER_SSH"] = json.dumps(params)
+            else:
+                env.pop("SOLARVIEWER_SSH", None)
+            # Messages back to this window (e.g. "show the image at this time")
+            from .tool_link import ENV, ToolLink
+
+            if getattr(self, "_tool_link", None) is None:
+                try:
+                    self._tool_link = ToolLink(self)
+                except OSError as e:
+                    print(f"[WARNING] Tools can't message this window: {e}")
+                    self._tool_link = None
+            if self._tool_link is not None:
+                env[ENV] = self._tool_link.name
             launch_cwd = (
                 os.getcwd()
                 if os.access(os.getcwd(), os.W_OK)

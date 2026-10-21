@@ -102,13 +102,17 @@ class RemoteModeMixin:
                 cache=self.remote_cache,
                 parent=self,
             )
-            browser.fileSelected.connect(self._on_remote_file_selected)
+            browser.fileSelected.connect(
+                lambda local_path, is_remote: self._on_remote_file_selected(
+                    local_path, is_remote, browser
+                )
+            )
             browser.exec_()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open remote browser: {e}")
 
-    def _on_remote_file_selected(self, local_path: str):
+    def _on_remote_file_selected(self, local_path: str, is_remote=False, browser=None):
         """Handle file selected from remote browser (now downloaded locally)."""
         if not local_path or not os.path.exists(local_path):
             return
@@ -134,7 +138,15 @@ class RemoteModeMixin:
                 f"Loaded remote file: {basename} ({elapsed:.2f}s)", 5000
             )
 
-            current_tab._scan_directory_files()
+            if is_remote and browser is not None:
+                # Step through the server's folder (not the cached copies)
+                current_tab._is_remote_mode = True
+                current_tab._remote_base_dir = browser.current_path
+                current_tab._populate_remote_file_list(
+                    self, browser.current_path, browser.casa_mode, local_path
+                )
+            else:
+                current_tab._scan_directory_files()
 
     def disconnect_remote(self):
         """Disconnect from the remote server."""

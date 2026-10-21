@@ -705,6 +705,29 @@ except Exception:
             self.show_status_message(f"Failed to load remote file: {e}")
             return False
 
+    def _load_file_index(self, new_index):
+        """Load file ``new_index`` of the file list (as next/previous do)."""
+        new_path = self._file_list[new_index]
+        self._file_list_index = new_index
+
+        if self._is_remote_mode:
+            if self._load_remote_file(new_path):
+                self._update_nav_buttons()
+                self.show_status_message(f"Loaded {os.path.basename(new_path)}")
+            return
+
+        self._reset_hpc_state()
+        self.imagename = new_path
+        self.dir_entry.setText(new_path)
+        self.invalidate_contours()
+        # Clear figure to prevent restoring old view limits
+        self.figure.clear()
+        self.on_visualization_changed(dir_load=True)
+        self.update_tab_name_from_path(new_path)
+
+        self._update_nav_buttons()
+        self.show_status_message(f"Loaded {os.path.basename(new_path)}")
+
     def _on_prev_file(self):
         """Load the previous file in the file list"""
         if self._file_list_index <= 0:
