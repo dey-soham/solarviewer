@@ -31,7 +31,7 @@ from ..processing.norms import (
     HistEqNorm,
 )
 from ..processing.colormaps import ensure_solar_colormaps
-from ..processing.fits_io import readable_image_path
+from ..processing.fits_io import casa_observation_date, fits_image_path, is_casa_image
 from ..processing.workers import process_pool_executor
 from .coordinates import ConversionError, conversion_cache, frame_file
 from .utils import (
@@ -207,13 +207,21 @@ def observation_time(header, filepath=None):
     return None
 
 
+def _time_header(path):
+    """A header with the observation time of image ``path`` (for a CASA
+    image just DATE-OBS, read without exporting it)."""
+    if is_casa_image(path):
+        return {"DATE-OBS": casa_observation_date(path)}
+    from ..processing.image_meta import fits_header
+
+    return fits_header(path)
+
+
 def observation_sort_key(filepath):
     """Sort key ordering files by observation time (then name); files
     without one come last, by modification time."""
-    from ..processing.image_meta import fits_header
-
     try:
-        when = observation_time(fits_header(filepath), filepath)
+        when = observation_time(_time_header(filepath), filepath)
     except Exception:
         when = observation_time(None, filepath)
     if when is not None:
@@ -248,15 +256,16 @@ def _plane_index(header, ndim, stokes):
 
 
 def load_fits_data(filepath, stokes="I"):
-    """One Stokes plane (first frequency channel) of a FITS image, rows = y,
-    and its header.
+    """One Stokes plane (first frequency channel) of a FITS or CASA image,
+    rows = y, and its header.
 
-    Images stored in an extension (e.g. tile-compressed) are read through
-    readable_image_path; the Stokes axis is found from the CTYPE keywords.
+    Images stored in an extension (e.g. tile-compressed) and CASA images are
+    read through fits_image_path; the Stokes axis is found from the CTYPE
+    keywords.
     Returns (None, None) if the file or the Stokes plane can't be read.
     """
     try:
-        with fits.open(readable_image_path(filepath)) as hdul:
+        with fits.open(fits_image_path(filepath)) as hdul:
             header = hdul[0].header
             data = hdul[0].data
             if data is None:
@@ -555,7 +564,7 @@ def process_image(
             # Add the contour image's time when it has its own file
             if contour_file:
                 try:
-                    c_header = fits.getheader(readable_image_path(contour_file))
+                    c_header = _time_header(contour_file)
                 except Exception:
                     c_header = None
                 c_when = observation_time(c_header, contour_file)
@@ -927,12 +936,10 @@ def _frames_in_order(files, options, global_stats, frame_contours):
 
 def file_times(paths):
     """Observation time (datetime or None) of each file."""
-    from ..processing.image_meta import fits_header
-
     times = []
     for path in paths:
         try:
-            times.append(observation_time(fits_header(path), path))
+            times.append(observation_time(_time_header(path), path))
         except Exception:
             times.append(observation_time(None, path))
     return times
@@ -1376,22 +1383,28 @@ def prepare_video_options(files, options):
 
 
 def _convert_frames(files, options, progress_callback=None, status_callback=None):
-    """Convert the frames (and difference images) to the video's coordinates
-    up front, in parallel if allowed; the frames then read the converted
-    copies. Frames that can't be converted are left for process_image to
-    report. Returns False if cancelled through ``progress_callback``."""
+    """Convert the frames (and difference images) to the video's coordinates,
+    and export CASA images to FITS, up front, in parallel if allowed; the
+    frames then read the copies. Frames that can't be converted are left for
+    process_image to report. Returns False if cancelled through
+    ``progress_callback``."""
     target = options.get("coordinates") or "native"
-    if target == "native":
-        return True
     paths = list(dict.fromkeys(list(files) + list(options.get("difference_files") or [])))
-    cache_dir = options["coordinate_cache"]
-    name = "helioprojective" if target == "hpc" else "RA/Dec"
+    if target == "native":
+        paths = [p for p in paths if is_casa_image(p)]
+    if not paths:
+        return True
+    cache_dir = options.get("coordinate_cache")
+    if target == "native":
+        what = "Reading CASA images"
+    else:
+        what = f"Converting images to {'helioprojective' if target == 'hpc' else 'RA/Dec'} coordinates"
     num_cores = options.get("cpu_count", max(1, cpu_count() - 1))
     workers = num_cores if options.get("use_multiprocessing") else 1
 
     def done(count):
         if status_callback:
-            status_callback(f"Converting images to {name} coordinates: {count} of {len(paths)}")
+            status_callback(f"{what}: {count} of {len(paths)}")
         return not progress_callback or progress_callback(0, len(files))
 
     if not done(0):
@@ -1415,16 +1428,19 @@ def _convert_frames(files, options, progress_callback=None, status_callback=None
 
 
 def _convert_one(args):
-    """Convert one frame image (in a worker); failures are reported when
-    the frame is drawn."""
+    """Convert one frame image, or export a CASA image (target "native"), in
+    a worker; failures are reported when the frame is drawn."""
     _quiet_warnings()
     path, target, cache_dir = args
     from .coordinates import converted_file
 
     try:
-        converted_file(path, target, cache_dir)
-    except ConversionError as e:
-        logger.warning(str(e))
+        if target == "native":
+            fits_image_path(path)
+        else:
+            converted_file(path, target, cache_dir)
+    except Exception as e:
+        logger.warning(f"{os.path.basename(path)}: {e}")
 
 
 def create_video(

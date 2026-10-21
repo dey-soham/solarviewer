@@ -43,7 +43,9 @@ def detect_coordinate_system(fits_file):
         - 'ctype1', 'ctype2': Coordinate type strings
     """
     try:
-        with fits.open(fits_file) as hdul:
+        from ..processing.fits_io import fits_image_path
+
+        with fits.open(fits_image_path(fits_file)) as hdul:
             header = hdul[0].header
 
             try:
@@ -436,6 +438,8 @@ class FrameContours:
 
             load_func = load_fits_data
 
+        from ..processing.fits_io import fits_image_path
+
         result = (None, None)
         data, header = load_func(path, stokes=stokes)
         if data is None:
@@ -446,7 +450,7 @@ class FrameContours:
                 if target == "hpc" and own == "radec":
                     from ..coordinates.helioprojective import convert_to_hpc
 
-                    hpc_map, _, _ = convert_to_hpc(path, Stokes=stokes)
+                    hpc_map, _, _ = convert_to_hpc(fits_image_path(path), Stokes=stokes)
                     result = (np.asarray(hpc_map.data), hpc_map.wcs)
                 elif target == "radec" and own == "hpc":
                     import tempfile
@@ -455,7 +459,7 @@ class FrameContours:
 
                     with tempfile.TemporaryDirectory() as tmp:
                         converted = os.path.join(tmp, "radec.fits")
-                        if convert_hpc_to_radec(path, converted):
+                        if convert_hpc_to_radec(fits_image_path(path), converted):
                             data, header = load_func(converted, stokes=stokes)
                             result = (data, WCS(header, naxis=2))
                         else:

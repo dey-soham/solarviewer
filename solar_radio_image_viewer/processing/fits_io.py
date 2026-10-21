@@ -10,6 +10,7 @@ path for everything else, so readers can call it unconditionally.
 
 import hashlib
 import os
+import re
 import tempfile
 
 FITS_SUFFIXES = (".fits", ".fts", ".fit", ".fits.fz", ".fz", ".fits.gz", ".fts.gz")
@@ -114,3 +115,96 @@ def _resolve(path, stat):
     except Exception as e:
         print(f"[WARNING] Could not prepare {path} for reading: {e}")
         return None
+
+
+def is_casa_image(path):
+    """Whether ``path`` is a CASA image (a directory holding an image table)."""
+    return bool(path) and os.path.isfile(os.path.join(path, "table.info"))
+
+
+# CASA image signature -> its FITS export, as for _resolved
+_exported = {}
+
+
+def fits_image_path(path):
+    """A plain FITS file with ``path``'s image in the primary HDU: for a CASA
+    image a FITS export of it (all axes, Stokes not moved last; cached
+    while the image is unchanged), else ``readable_image_path(path)``.
+
+    For code that reads images with astropy only (such as videos); the main
+    window reads CASA images with casatools instead.
+    """
+    if not is_casa_image(path):
+        return readable_image_path(path)
+    from .image_meta import file_signature
+
+    signature = file_signature(path)
+    exported = _exported.get(signature)
+    if exported and os.path.exists(exported):
+        return exported
+
+    key = repr(signature)
+    name = os.path.basename(os.path.normpath(path)) + ".fits"
+    cache_dir = os.path.join(CACHE_DIR, hashlib.sha1(key.encode()).hexdigest()[:16])
+    cached = os.path.join(cache_dir, name)
+    if not os.path.exists(cached):
+        os.makedirs(cache_dir, exist_ok=True)
+        # Per process, so a background export of the same image cannot clash
+        tmp = f"{cached}.{os.getpid()}.part.fits"
+        _export_casa_image(path, tmp)
+        os.replace(tmp, cached)
+    _exported[signature] = cached
+    return cached
+
+
+def casa_observation_date(path):
+    """Observation date (ISO string) of CASA image ``path``, or None, read
+    from its coordinates without exporting the image."""
+    from casatools import image
+
+    tool = image()
+    try:
+        tool.open(path)
+        obsdate = tool.coordsys().torecord().get("obsdate") or {}
+    finally:
+        tool.close()
+    mjd = (obsdate.get("m0") or {}).get("value")
+    if mjd is None:
+        return None
+    from astropy.time import Time
+
+    return Time(mjd, format="mjd").isot
+
+# Keywords CASA writes itself from the image's coordinates and beam; when
+# also in an image's extra keywords (miscinfo, e.g. copied from a FITS
+# header) CASA refuses to export it
+_RESERVED_KEYWORD = re.compile(
+    r"^(SIMPLE|BITPIX|NAXIS\d*|EXTEND|BSCALE|BZERO|BLANK|CTYPE\d+|CRVAL\d+|CRPIX\d+"
+    r"|CDELT\d+|CROTA\d*|CUNIT\d+|PC\d+_\d+|CD\d+_\d+|PV\d+_\d+|PS\d+_\d+"
+    r"|LONPOLE|LATPOLE|EQUINOX|EPOCH|RADESYS|BMAJ|BMIN|BPA|BUNIT|BTYPE|DATE-OBS"
+    r"|OBSGEO-[XYZ]|TELESCOP|OBSERVER|RESTFRQ|RESTFREQ|SPECSYS|VELREF)$",
+    re.IGNORECASE,
+)
+
+
+def _export_casa_image(path, fits_path):
+    """Write CASA image ``path`` to FITS file ``fits_path``, leaving out
+    extra keywords that clash with those written from the image itself
+    (``path`` is not changed)."""
+    from casatools import image
+
+    tool = image()
+    tool.open(path)
+    try:
+        misc = tool.miscinfo()
+        if not any(_RESERVED_KEYWORD.match(key) for key in misc):
+            tool.tofits(fits_path, overwrite=True, stokeslast=False)
+            return
+        copy = tool.subimage()  # in memory
+        try:
+            copy.setmiscinfo({k: v for k, v in misc.items() if not _RESERVED_KEYWORD.match(k)})
+            copy.tofits(fits_path, overwrite=True, stokeslast=False)
+        finally:
+            copy.close()
+    finally:
+        tool.close()

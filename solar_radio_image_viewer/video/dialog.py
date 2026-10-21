@@ -106,6 +106,7 @@ from ..processing.contour_layers import (
     new_contour_layer,
 )
 from .coordinates import COORDINATE_NAMES, COORDINATES
+from ..processing.fits_io import is_casa_image
 from ..processing.plot_style import (
     DEFAULT_BEAM_STYLE,
     DEFAULT_GRID_STYLE,
@@ -116,6 +117,16 @@ from ..processing.plot_style import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def is_image(path):
+    """Whether ``path`` is an image the video can show: a FITS file (also
+    compressed) or a CASA image."""
+    from ..processing.fits_io import FITS_SUFFIXES
+
+    return is_casa_image(path) or (
+        os.path.isfile(path) and path.lower().endswith(FITS_SUFFIXES)
+    )
 
 
 def viewer_image(main_window):
@@ -253,27 +264,32 @@ class PreviewRenderer(QObject):
 
     def _convert(self, request_id, files, index, options):
         """Convert the images this preview reads to the video's coordinates,
-        in the worker (not in the app): the first and shown frames, or all
-        of them for a range or timeline over all frames."""
-        target = options.get("coordinates") or "native"
-        if target == "native":
-            return
+        and export CASA images to FITS, in the worker (not in the app): the
+        first and shown frames, or all of them for a range or timeline over
+        all frames."""
+        from ..processing.fits_io import is_casa_image
         from .creator import _convert_one
+
+        target = options.get("coordinates") or "native"
 
         everything = options.get("range_mode") == 2 or options.get("minmax_timeline_enabled")
         indices = range(len(files)) if everything else sorted({0, index})
         difference = options.get("difference_files") or []
         paths = [files[i] for i in indices] + [difference[i] for i in indices if i < len(difference)]
         paths = list(dict.fromkeys(paths))
-        cache_dir = options["coordinate_cache"]
+        if target == "native":
+            paths = [p for p in paths if is_casa_image(p)]
+        cache_dir = options.get("coordinate_cache")
         todo = [p for p in paths if p not in self._converted.get((target, cache_dir), set())]
         if not todo:
             return
-        self.status.emit(
-            request_id,
-            f"Converting {len(todo)} image{'s' if len(todo) > 1 else ''} to "
-            f"{'helioprojective' if target == 'hpc' else 'RA/Dec'} coordinates...",
-        )
+        images = f"{len(todo)} image{'s' if len(todo) > 1 else ''}"
+        if target == "native":
+            text = f"Reading {images} (CASA)..."
+        else:
+            name = "helioprojective" if target == "hpc" else "RA/Dec"
+            text = f"Converting {images} to {name} coordinates..."
+        self.status.emit(request_id, text)
         list(self._executor.map(_convert_one, [(p, target, cache_dir) for p in todo]))
         self._converted.setdefault((target, cache_dir), set()).update(todo)
 
@@ -836,7 +852,7 @@ class VideoCreationDialog(QDialog):
         # The image itself, also when the main window shows a converted copy
         original, coordinates = viewer_image(main_window)
         self.coordinates_combo.setCurrentIndex(self.coordinates_combo.findData(coordinates))
-        if original and original.lower().endswith((".fits", ".fts")):
+        if original and is_image(original):
             directory = os.path.dirname(os.path.abspath(original))
             self.input_directory_edit.setText(directory)
             self.input_pattern_edit.setText("*" + os.path.splitext(original)[1])
@@ -883,7 +899,7 @@ class VideoCreationDialog(QDialog):
             tab, "contour_layers", None
         ):
             self._set_contour_layers(tab.contour_layers, tab.contour_options)
-        if imagename and imagename.lower().endswith((".fits", ".fts")):
+        if imagename and is_image(original):
             self.image_series_radio.setChecked(True)
             self.preview_input_files()
         self.schedule_preview()
@@ -1066,7 +1082,7 @@ class VideoCreationDialog(QDialog):
         # 2. Pattern field
         input_group_layout.addWidget(QLabel("File Pattern:"), 1, 0)
         self.input_pattern_edit = QLineEdit()
-        self.input_pattern_edit.setPlaceholderText("e.g., *.fits or *_171*.fits")
+        self.input_pattern_edit.setPlaceholderText("e.g., *.fits, *_171*.fits or *.image (CASA)")
         input_group_layout.addWidget(self.input_pattern_edit, 1, 1)
 
         # Scan button
@@ -1091,11 +1107,15 @@ class VideoCreationDialog(QDialog):
         self.single_image_group = QGroupBox("Single Image")
         single_layout = QHBoxLayout(self.single_image_group)
         self.single_image_edit = QLineEdit()
-        self.single_image_edit.setPlaceholderText("FITS image shown in every frame")
+        self.single_image_edit.setPlaceholderText("FITS or CASA image shown in every frame")
         single_layout.addWidget(self.single_image_edit, 1)
         single_browse = QPushButton("Browse")
         single_browse.clicked.connect(self._browse_single_image)
         single_layout.addWidget(single_browse)
+        casa_browse = QPushButton("CASA Image…")
+        casa_browse.setToolTip("Choose a CASA image (a folder)")
+        casa_browse.clicked.connect(self._browse_single_casa_image)
+        single_layout.addWidget(casa_browse)
         input_layout.addWidget(self.single_image_group)
 
         def show_image_source(series):
@@ -2102,75 +2122,35 @@ class VideoCreationDialog(QDialog):
                 self.preview_input_files()
 
     def preview_input_files(self):
-        """Preview the files matching the input pattern"""
+        """Find the images matching the input pattern and preview them."""
         with wait_cursor():
-            directory = self.input_directory_edit.text()
-            pattern = self.input_pattern_edit.text()
-
-            if not directory or not pattern:
+            if not self.input_directory_edit.text() or not self.input_pattern_edit.text():
                 QMessageBox.warning(
                     self,
                     "Incomplete Input",
                     "Please specify both directory and pattern.",
                 )
                 return
-
-            full_pattern = os.path.join(directory, pattern)
-
-            # Find matching files
-            files = glob.glob(full_pattern)
-
-            if not files:
-                self.files_found_label.setText("No files found matching the pattern")
+            files, problem = self._input_files()
+            if problem:
+                self.files_found_label.setText(problem[0])
                 self.create_btn.setEnabled(False)
-                self.create_btn.setToolTip("No files found matching the pattern")
-                QMessageBox.warning(
-                    self,
-                    "No Files Found",
-                    f"No files match the pattern: {full_pattern}",
-                )
+                self.create_btn.setToolTip(problem[1])
+                QMessageBox.warning(self, *problem)
                 return
 
-            # Validate extensions
-            invalid_extensions = []
-            for f in files:
-                ext = os.path.splitext(f)[1].lower()
-                if ext not in [".fits", ".fts"]:
-                    invalid_extensions.append(os.path.basename(f))
-
-            if invalid_extensions:
-                self.files_found_label.setText(
-                    f"Found {len(files)} files, but {len(invalid_extensions)} have invalid extensions"
-                )
-                self.create_btn.setEnabled(False)
-                self.create_btn.setToolTip("Invalid file extensions found")
-
-                # Show first few invalid files
-                msg = f"Found {len(invalid_extensions)} files with invalid extensions.\nOnly .fits and .fts files are supported."
-                if len(invalid_extensions) > 5:
-                    msg += (
-                        "\n\nExamples:\n" + "\n".join(invalid_extensions[:5]) + "\n..."
-                    )
-                else:
-                    msg += "\n\nFiles:\n" + "\n".join(invalid_extensions)
-
-                QMessageBox.warning(self, "Invalid File Extensions", msg)
-                return
-
-            # Update label with file count
+            casa = sum(is_casa_image(f) for f in files)
             self.files_found_label.setText(
-                f"Found {len(files)} files matching the pattern"
+                f"Found {len(files)} images matching the pattern"
+                + (f" ({casa} CASA)" if casa else "")
             )
             self.create_btn.setEnabled(True)
             self.create_btn.setToolTip("")
 
-            # Always update the reference list and force a preview refresh
-            # Use first file as reference if no reference is set, or if we want to refresh
+            # The first image is previewed unless one of them already is
             if not self.reference_image or self.reference_image not in files:
                 self.reference_image = files[0]
                 self.reference_image_edit.setText(self.reference_image)
-
-            # Explicitly update preview to satisfy user request "Refresh the figure, each time user presses 'preview files'"
             self.update_preview(self.reference_image)
 
     def browse_reference_image(self):
@@ -2236,15 +2216,11 @@ class VideoCreationDialog(QDialog):
         files = glob.glob(input_path)
         if not files:
             return [], ("No Files Found", f"No files match the pattern: {input_path}")
-        invalid = [
-            os.path.basename(f)
-            for f in files
-            if os.path.splitext(f)[1].lower() not in (".fits", ".fts")
-        ]
+        invalid = [os.path.basename(f) for f in files if not is_image(f)]
         if invalid:
             msg = (
-                f"Found {len(invalid)} files with invalid extensions.\n"
-                "Only .fits and .fts files are supported."
+                f"Found {len(invalid)} files that are not images.\n"
+                "FITS files and CASA images are supported."
             )
             if len(invalid) > 5:
                 msg += "\n\nExamples:\n" + "\n".join(invalid[:5]) + "\n..."
@@ -2333,7 +2309,7 @@ class VideoCreationDialog(QDialog):
 
         if self.image_single_radio.isChecked():
             path = self.single_image_edit.text().strip()
-            if not path or not os.path.isfile(path):
+            if not path or not is_image(path):
                 return None, ("No Image", "Choose the image shown in every frame.")
             image_files, is_series = [path], False
         else:
@@ -2473,6 +2449,18 @@ class VideoCreationDialog(QDialog):
             "FITS Files (*.fits *.fts);;All Files (*)",
         )
         if path:
+            self.single_image_edit.setText(path)
+
+    def _browse_single_casa_image(self):
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Select the CASA Image",
+            self.get_smart_start_directory(self.single_image_edit.text()),
+        )
+        if path:
+            if not is_casa_image(path):
+                QMessageBox.warning(self, "Not a CASA Image", f"{path} is not a CASA image.")
+                return
             self.single_image_edit.setText(path)
 
     # ---------- Output ----------

@@ -15,6 +15,7 @@ import shutil
 import tempfile
 from contextlib import contextmanager
 
+from ..processing.fits_io import fits_image_path
 from .utils import coordinate_type
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,12 @@ class ConversionError(Exception):
 
 
 def frame_file(path, options):
-    """The file to read for frame image ``path``: ``path`` itself, or a copy
-    converted to ``options["coordinates"]``. Raises ConversionError."""
+    """The FITS file to read for frame image ``path``: ``path`` itself (or
+    its FITS export, for a CASA image), or a copy converted to
+    ``options["coordinates"]``. Raises ConversionError."""
     target = options.get("coordinates") or "native"
     if target == "native":
-        return path
+        return fits_image_path(path)
     cache_dir = options.get("coordinate_cache")
     if not cache_dir:
         raise ConversionError("no folder for converted images")
@@ -46,21 +48,21 @@ def frame_file(path, options):
 
 def converted_file(path, target, cache_dir):
     """``path`` in coordinates ``target`` ("hpc" or "radec"): ``path``
-    itself if it already is, else the converted copy in ``cache_dir``
-    (made now if needed)."""
-    from ..processing.fits_io import readable_image_path
+    itself (as FITS) if it already is, else the converted copy in
+    ``cache_dir`` (made now if needed)."""
     from ..processing.image_meta import fits_header
 
     try:
-        own = coordinate_type(fits_header(path))
+        source = fits_image_path(path)
+        own = coordinate_type(fits_header(source))
     except Exception as e:
-        raise ConversionError(f"cannot read {os.path.basename(path)} ({e})")
+        raise ConversionError(f"cannot read {os.path.basename(os.path.normpath(path))} ({e})")
     if own == target:
-        return path
+        return source
     if own not in ("hpc", "radec"):
         raise ConversionError(f"{os.path.basename(path)} has no sky coordinates to convert")
 
-    stat = os.stat(readable_image_path(path))
+    stat = os.stat(source)
     key = f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{target}"
     name = hashlib.sha1(key.encode()).hexdigest()[:20] + ".fits"
     out = os.path.join(cache_dir, name)
@@ -75,11 +77,11 @@ def converted_file(path, target, cache_dir):
         if target == "hpc":
             from ..coordinates.helioprojective import convert_and_save_hpc_all_stokes
 
-            done = convert_and_save_hpc_all_stokes(path, partial, overwrite=True)
+            done = convert_and_save_hpc_all_stokes(source, partial, overwrite=True)
         else:
             from ..coordinates.helioprojective import convert_hpc_to_radec
 
-            done = convert_hpc_to_radec(path, partial, overwrite=True)
+            done = convert_hpc_to_radec(source, partial, overwrite=True)
     except Exception as e:
         done = False
         logger.warning(f"Converting {path} failed: {e}")
