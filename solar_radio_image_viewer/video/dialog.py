@@ -50,9 +50,6 @@ import psutil
 import shutil
 from contextlib import contextmanager
 
-import matplotlib.style as mplstyle
-
-mplstyle.use("fast")
 
 
 OUTPUT_FORMATS = [
@@ -375,7 +372,6 @@ class VideoCreationDialog(QDialog):
         self._main_window = parent
         self.current_file = current_file
         self.progress_tracker = None
-        self.preview_image = None
         self.reference_image = None
 
         self.setWindowTitle("Create Video")
@@ -881,7 +877,6 @@ class VideoCreationDialog(QDialog):
         input_group_layout.addWidget(QLabel("Stokes Parameter:"), 3, 0)
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(["I", "Q", "U", "V"])
-        self.stokes_combo.currentIndexChanged.connect(self.update_preview_settings)
         input_group_layout.addWidget(self.stokes_combo, 3, 1)
 
         input_layout.addWidget(input_group)
@@ -957,7 +952,6 @@ class VideoCreationDialog(QDialog):
         idx = self.colormap_combo.findText("viridis")
         if idx >= 0:
             self.colormap_combo.setCurrentIndex(idx)
-        self.colormap_combo.currentIndexChanged.connect(self.update_preview_settings)
         viz_form.addRow("Colormap:", self.colormap_combo)
 
         # Stretch
@@ -1000,7 +994,6 @@ class VideoCreationDialog(QDialog):
             "Histogram equalization - enhances contrast by redistributing intensities",
             Qt.ToolTipRole,
         )
-        self.stretch_combo.currentIndexChanged.connect(self.update_preview_settings)
         self.stretch_combo.currentIndexChanged.connect(self.update_gamma_controls)
         viz_form.addRow("Stretch:", self.stretch_combo)
 
@@ -1009,13 +1002,11 @@ class VideoCreationDialog(QDialog):
         self.gamma_spinbox.setRange(0.1, 10.0)
         self.gamma_spinbox.setSingleStep(0.1)
         self.gamma_spinbox.setValue(1.0)
-        self.gamma_spinbox.valueChanged.connect(self.update_preview_settings)
         viz_form.addRow("Gamma:", self.gamma_spinbox)
 
         # Colorbar option
         self.colorbar_check = QCheckBox("Show Colorbar")
         self.colorbar_check.setChecked(True)
-        self.colorbar_check.stateChanged.connect(self.update_preview_settings)
         viz_form.addRow("", self.colorbar_check)
 
         self.difference_combo = QComboBox()
@@ -1071,7 +1062,6 @@ class VideoCreationDialog(QDialog):
         self.vmin_spinbox.setRange(-1e10, 1e10)
         self.vmin_spinbox.setDecimals(2)
         self.vmin_spinbox.setValue(0)
-        self.vmin_spinbox.valueChanged.connect(self.update_preview_settings)
         minmax_layout.addWidget(self.vmin_spinbox)
 
         minmax_layout.addWidget(QLabel("Max:"))
@@ -1079,7 +1069,6 @@ class VideoCreationDialog(QDialog):
         self.vmax_spinbox.setRange(-1e10, 1e10)
         self.vmax_spinbox.setDecimals(2)
         self.vmax_spinbox.setValue(3000)
-        self.vmax_spinbox.valueChanged.connect(self.update_preview_settings)
         minmax_layout.addWidget(self.vmax_spinbox)
 
         range_form.addRow("Values:", minmax_widget)
@@ -1096,7 +1085,6 @@ class VideoCreationDialog(QDialog):
         self.lower_percentile_spinbox.setSingleStep(0.5)
         self.lower_percentile_spinbox.setSuffix(" %")
         self.lower_percentile_spinbox.setValue(0)
-        self.lower_percentile_spinbox.valueChanged.connect(self.update_preview_settings)
         percentile_layout.addWidget(self.lower_percentile_spinbox)
         percentile_layout.addWidget(QLabel("High:"))
         self.upper_percentile_spinbox = QDoubleSpinBox()
@@ -1105,7 +1093,6 @@ class VideoCreationDialog(QDialog):
         self.upper_percentile_spinbox.setSingleStep(0.5)
         self.upper_percentile_spinbox.setSuffix(" %")
         self.upper_percentile_spinbox.setValue(100)
-        self.upper_percentile_spinbox.valueChanged.connect(self.update_preview_settings)
         percentile_layout.addWidget(self.upper_percentile_spinbox)
         percentile_widget.setToolTip(
             "Auto modes scale each frame (or all frames) from this percentile\n"
@@ -1256,13 +1243,11 @@ class VideoCreationDialog(QDialog):
         self.x_min_spinbox = QSpinBox()
         self.x_min_spinbox.setRange(0, 10000)
         self.x_min_spinbox.setValue(0)
-        self.x_min_spinbox.valueChanged.connect(self.update_region_preview)
         x_range_layout.addWidget(self.x_min_spinbox)
         x_range_layout.addWidget(QLabel("to"))
         self.x_max_spinbox = QSpinBox()
         self.x_max_spinbox.setRange(0, 10000)
         self.x_max_spinbox.setValue(1000)
-        self.x_max_spinbox.valueChanged.connect(self.update_region_preview)
         x_range_layout.addWidget(self.x_max_spinbox)
         x_range_layout.addWidget(QLabel("px"))
         x_range_layout.addStretch()
@@ -1277,13 +1262,11 @@ class VideoCreationDialog(QDialog):
         self.y_min_spinbox = QSpinBox()
         self.y_min_spinbox.setRange(0, 10000)
         self.y_min_spinbox.setValue(0)
-        self.y_min_spinbox.valueChanged.connect(self.update_region_preview)
         y_range_layout.addWidget(self.y_min_spinbox)
         y_range_layout.addWidget(QLabel("to"))
         self.y_max_spinbox = QSpinBox()
         self.y_max_spinbox.setRange(0, 10000)
         self.y_max_spinbox.setValue(1000)
-        self.y_max_spinbox.valueChanged.connect(self.update_region_preview)
         y_range_layout.addWidget(self.y_max_spinbox)
         y_range_layout.addWidget(QLabel("px"))
         y_range_layout.addStretch()
@@ -1846,7 +1829,7 @@ class VideoCreationDialog(QDialog):
         self.upper_percentile_spinbox.setEnabled(index != 0)
 
         # Update preview with new settings
-        self.update_preview()
+        self.schedule_preview()
 
     def get_smart_start_directory(self, *extra_paths):
         """
@@ -2023,19 +2006,6 @@ class VideoCreationDialog(QDialog):
 
         if filepath:
             self.output_file_edit.setText(filepath)
-
-    def update_preview_from_reference(self):
-        """Load and update the preview from the reference image"""
-        if self.reference_image:
-            self.update_preview(self.reference_image)
-        else:
-            QMessageBox.warning(
-                self, "No Reference Image", "Please select a reference image first."
-            )
-
-    def update_preview_settings(self):
-        """Update the preview with new settings"""
-        self.schedule_preview()
 
     def update_preview(self, preview_file=None):
         """Show ``preview_file``'s frame (if it is one) in the preview."""
@@ -2958,7 +2928,7 @@ class VideoCreationDialog(QDialog):
             self._rect_selector = None
 
             # Update the preview after dialog closes
-            self.update_preview()
+            self.schedule_preview()
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not select region: {str(e)}")
@@ -2982,7 +2952,7 @@ class VideoCreationDialog(QDialog):
         self.vmax_spinbox.setValue(vmax)
 
         # Update preview
-        self.update_preview()
+        self.schedule_preview()
 
     def apply_auto_percentile(self):
         """Apply Auto Percentile preset to the display range"""
@@ -2994,16 +2964,15 @@ class VideoCreationDialog(QDialog):
             return
 
         # Calculate 1st and 99th percentiles
-        vmin = np.nanpercentile(data, 1)
-        vmax = np.nanpercentile(data, 99)
+        vmin, vmax = np.nanpercentile(data, [1, 99])
 
         # Update spinboxes
         self.range_mode_combo.setCurrentIndex(0)  # Switch to fixed range
-        self.vmin_spinbox.setValue(np.nanpercentile(data, 1))
-        self.vmax_spinbox.setValue(np.nanpercentile(data, 99))
+        self.vmin_spinbox.setValue(vmin)
+        self.vmax_spinbox.setValue(vmax)
 
         # Update preview
-        self.update_preview()
+        self.schedule_preview()
 
     def apply_auto_median_rms(self):
         """Apply Auto Median ± 3×RMS preset to the display range"""
@@ -3028,7 +2997,7 @@ class VideoCreationDialog(QDialog):
         self.vmax_spinbox.setValue(vmax)
 
         # Update preview
-        self.update_preview()
+        self.schedule_preview()
 
     def apply_aia_preset(self):
         """Apply AIA 171Å preset to the display"""
@@ -3048,7 +3017,7 @@ class VideoCreationDialog(QDialog):
             self.stretch_combo.setCurrentIndex(idx)
 
         # Update preview
-        self.update_preview()
+        self.schedule_preview()
 
     def apply_hmi_preset(self):
         """Apply HMI preset to the display"""
@@ -3063,7 +3032,7 @@ class VideoCreationDialog(QDialog):
             self.stretch_combo.setCurrentIndex(idx)
 
         # Update preview
-        self.update_preview()
+        self.schedule_preview()
 
     def set_region_preset(self, percentage):
         """Set the region to a centered area covering the given percentage of the image.
@@ -3119,7 +3088,7 @@ class VideoCreationDialog(QDialog):
             self.region_enabled.setChecked(True)
 
             # Update preview
-            self.update_preview()
+            self.schedule_preview()
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not set region preset: {str(e)}")
@@ -3130,12 +3099,6 @@ class VideoCreationDialog(QDialog):
         self.x_max_spinbox.setEnabled(enabled)
         self.y_min_spinbox.setEnabled(enabled)
         self.y_max_spinbox.setEnabled(enabled)
-        self.update_region_preview()
-
-    def update_region_preview(self):
-        """Update the preview when region controls change"""
-        if self.region_enabled.isChecked():
-            self.update_preview()
 
     def _load_reference(self):
         """Data of the reference (previewed) image as the video shows it, in

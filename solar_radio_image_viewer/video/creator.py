@@ -6,14 +6,13 @@ import re
 import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize, LogNorm, PowerNorm
+from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from astropy.io import fits
 import imageio
 from tqdm import tqdm
-import threading
 import time
 from multiprocessing import cpu_count
 from astropy.visualization import (
@@ -44,16 +43,15 @@ from .utils import (
     layer_file,
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
-# Suppress common warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
-warnings.filterwarnings("ignore", category=UserWarning, module="astropy")
+
+def _quiet_warnings():
+    """Hide matplotlib's and astropy's user warnings (header fixes and the
+    like, repeated for every frame). Only in processes this module runs:
+    worker processes and the command line, never the app importing it."""
+    warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+    warnings.filterwarnings("ignore", category=UserWarning, module="astropy")
 
 
 def ensure_even_dimensions(image):
@@ -150,15 +148,6 @@ def create_error_frame(
     plt.close(fig)
 
     return image
-
-
-def natural_sort_key(s):
-    """
-    Sort strings containing numbers naturally (e.g., 'file1', 'file2', 'file10')
-    """
-    return [
-        int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)
-    ]
 
 
 STOKES_CODES = {"I": 1, "Q": 2, "U": 3, "V": 4}
@@ -301,49 +290,6 @@ def frame_size(options, data_shape):
     return (max(2, int(round(width / 2)) * 2), max(2, int(round(height / 2)) * 2))
 
 
-def apply_visualization(data, vmin=None, vmax=None, stretch="linear", gamma=1.0):
-    """
-    Apply visualization transformations (normalization and stretching)
-    """
-    if data is None:
-        return None
-
-    # Handle NaN values
-    data = np.nan_to_num(data, nan=0.0)
-
-    # Apply normalization
-    if vmin is None:
-        vmin = np.percentile(data, 0)
-    if vmax is None:
-        vmax = np.percentile(data, 100)
-
-    # Create normalized data according to the stretch
-    if stretch == "linear":
-        norm = Normalize(vmin=vmin, vmax=vmax)
-        normalized_data = norm(data)
-    elif stretch == "log":
-        # Ensure data is positive for log stretch
-        if vmin <= 0:
-            vmin = max(np.min(data[data > 0]), 1e-10)
-        norm = LogNorm(vmin=vmin, vmax=vmax)
-        normalized_data = norm(data)
-    elif stretch == "sqrt":
-        norm = PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax)
-        normalized_data = norm(data)
-    elif stretch == "power":
-        norm = PowerNorm(gamma=gamma, vmin=vmin, vmax=vmax)
-        normalized_data = norm(data)
-    else:
-        # Default to linear
-        norm = Normalize(vmin=vmin, vmax=vmax)
-        normalized_data = norm(data)
-
-    # Ensure range [0, 1]
-    normalized_data = np.clip(normalized_data, 0, 1)
-
-    return normalized_data
-
-
 def get_norm(stretch_type, vmin, vmax, gamma=1.0):
     """Create a normalization object based on the stretch type"""
     stretch_type = stretch_type.lower()
@@ -449,51 +395,9 @@ def process_image(
                 )
             data = data - other
 
-        # Region shown, as (x_min, y_min) of the full image (for WCS and contours)
-        region_origin = (0, 0)
-
-        # Apply region selection if enabled
-        if options.get("region_enabled", False):
-            # Get region coordinates
-            x_min = options.get("x_min", 0)
-            x_max = options.get("x_max", data.shape[1] - 1)
-            y_min = options.get("y_min", 0)
-            y_max = options.get("y_max", data.shape[0] - 1)
-
-            # Ensure proper order
-            x_min, x_max = min(x_min, x_max), max(x_min, x_max)
-            y_min, y_max = min(y_min, y_max), max(y_min, y_max)
-
-            # Follow solar rotation: move the region with the feature in it
-            dx, dy = _rotation_shift(options, header)
-            x_min, x_max, y_min, y_max = x_min + dx, x_max + dx, y_min + dy, y_max + dy
-
-            # Apply consistent region dimensions if provided
-            if "region_width" in options and "region_height" in options:
-                region_width = options["region_width"]
-                region_height = options["region_height"]
-
-                # Make sure the region doesn't exceed the image dimensions
-                if x_min >= data.shape[1] or y_min >= data.shape[0]:
-                    logger.warning(f"Region outside image bounds for {file_path}")
-                    x_min = 0
-                    y_min = 0
-                    x_max = min(region_width - 1, data.shape[1] - 1)
-                    y_max = min(region_height - 1, data.shape[0] - 1)
-                else:
-                    # Adjust end points to match the required dimensions
-                    x_max = min(x_min + region_width - 1, data.shape[1] - 1)
-                    y_max = min(y_min + region_height - 1, data.shape[0] - 1)
-
-            # Check boundaries
-            x_min = max(0, min(x_min, data.shape[1] - 1))
-            x_max = max(0, min(x_max, data.shape[1] - 1))
-            y_min = max(0, min(y_min, data.shape[0] - 1))
-            y_max = max(0, min(y_max, data.shape[0] - 1))
-
-            # Extract the region
-            data = data[y_min : y_max + 1, x_min : x_max + 1]
-            region_origin = (x_min, y_min)
+        # The region shown, and its lower left corner in the full image (for
+        # WCS and contours)
+        data, region_origin = crop_region(data, options, header)
 
         # Get filename for display
         filename = os.path.basename(file_path)
@@ -846,7 +750,7 @@ def calculate_global_stats(files, options):
     difference_files = options.get("difference_files")
     for i, file_path in enumerate(tqdm(sample_files, desc="Calculating global stats")):
         try:
-            data, _ = load_frame_data(file_path, options)
+            data, header = load_frame_data(file_path, options)
 
             if data is None:
                 continue
@@ -856,24 +760,8 @@ def calculate_global_stats(files, options):
                     continue
                 data = data - other
 
-            # Apply region selection if enabled
-            if options.get("region_enabled", False):
-                # Get region coordinates
-                x_min = options.get("x_min", 0)
-                x_max = options.get("x_max", data.shape[1] - 1)
-                y_min = options.get("y_min", 0)
-                y_max = options.get("y_max", data.shape[0] - 1)
-
-                # Ensure proper order and boundaries
-                x_min, x_max = min(x_min, x_max), max(x_min, x_max)
-                y_min, y_max = min(y_min, y_max), max(y_min, y_max)
-                x_min = max(0, min(x_min, data.shape[1] - 1))
-                x_max = max(0, min(x_max, data.shape[1] - 1))
-                y_min = max(0, min(y_min, data.shape[0] - 1))
-                y_max = max(0, min(y_max, data.shape[0] - 1))
-
-                # Extract the region
-                data = data[y_min : y_max + 1, x_min : x_max + 1]
+            # The region shown in this frame
+            data, _ = crop_region(data, options, header)
 
             # Calculate percentiles
             lower_percentile = options.get("lower_percentile", 0)
@@ -917,6 +805,7 @@ def process_image_wrapper(args):
 
     matplotlib.use("Agg")  # Use non-interactive backend
 
+    _quiet_warnings()
     file_path, idx, options, global_stats = args
     problems = []
     try:
@@ -1243,6 +1132,43 @@ def _rotation_shift(options, header):
         return 0, 0
 
 
+def region_bounds(options, shape, shift=(0, 0)):
+    """(x_min, x_max, y_min, y_max), inclusive, of the region shown in an
+    image of ``shape`` (rows, columns), moved by ``shift`` pixels; None if
+    the whole image is shown. With region_width / region_height (set by
+    prepare_video_options) every frame's region has that size."""
+    if not options.get("region_enabled", False):
+        return None
+    rows, cols = shape[:2]
+    x_min, x_max = sorted((options.get("x_min", 0), options.get("x_max", cols - 1)))
+    y_min, y_max = sorted((options.get("y_min", 0), options.get("y_max", rows - 1)))
+    dx, dy = shift
+    x_min, x_max, y_min, y_max = x_min + dx, x_max + dx, y_min + dy, y_max + dy
+
+    if "region_width" in options and "region_height" in options:
+        width, height = options["region_width"], options["region_height"]
+        if x_min >= cols or y_min >= rows:
+            logger.warning("Region outside the image: showing its lower left corner")
+            x_min, y_min = 0, 0
+        x_max = x_min + width - 1
+        y_max = y_min + height - 1
+
+    x_min, x_max = (max(0, min(v, cols - 1)) for v in (x_min, x_max))
+    y_min, y_max = (max(0, min(v, rows - 1)) for v in (y_min, y_max))
+    return x_min, x_max, y_min, y_max
+
+
+def crop_region(data, options, header=None):
+    """(data cut to the region shown, its lower left corner (x, y) in
+    ``data``). The region follows solar rotation if chosen (needs the
+    frame's ``header``)."""
+    bounds = region_bounds(options, data.shape, _rotation_shift(options, header))
+    if bounds is None:
+        return data, (0, 0)
+    x_min, x_max, y_min, y_max = bounds
+    return data[y_min : y_max + 1, x_min : x_max + 1], (x_min, y_min)
+
+
 def _first_frame_file(files, options):
     """The file to read for the first frame that can be shown in the video's
     coordinates (frame size, region and axes come from it); frames that
@@ -1279,19 +1205,11 @@ def prepare_video_options(files, options):
         )
 
         if first_data is not None:
-            # Get region coordinates
-            x_min = options.get("x_min", 0)
-            x_max = options.get("x_max", first_data.shape[1] - 1)
-            y_min = options.get("y_min", 0)
-            y_max = options.get("y_max", first_data.shape[0] - 1)
-
-            # Ensure proper order and boundaries
-            x_min, x_max = min(x_min, x_max), max(x_min, x_max)
-            y_min, y_max = min(y_min, y_max), max(y_min, y_max)
-            x_min = max(0, min(x_min, first_data.shape[1] - 1))
-            x_max = max(0, min(x_max, first_data.shape[1] - 1))
-            y_min = max(0, min(y_min, first_data.shape[0] - 1))
-            y_max = max(0, min(y_max, first_data.shape[0] - 1))
+            # The region as chosen (in order, inside the image); its size is
+            # worked out here
+            options.pop("region_width", None)
+            options.pop("region_height", None)
+            x_min, x_max, y_min, y_max = region_bounds(options, first_data.shape)
 
             # Calculate region dimensions
             region_width = x_max - x_min + 1
@@ -1400,11 +1318,11 @@ def prepare_video_options(files, options):
         timeline = MinMaxTimeline(
             total_frames=len(files), position=position, log_scale=log_scale
         )
-        timeline.precompute_stats(
-            timeline_files,
-            options,
-            lambda path, stokes: load_fits_data(frame_file(path, options), stokes=stokes),
-        )
+        def load_region(path, stokes):
+            data, header = load_fits_data(frame_file(path, options), stokes=stokes)
+            return (None if data is None else crop_region(data, options, header)[0]), header
+
+        timeline.precompute_stats(timeline_files, options, load_region)
         options["minmax_timeline"] = timeline
         logger.info("Timeline statistics computed")
 
@@ -1453,6 +1371,7 @@ def _convert_frames(files, options, progress_callback=None, status_callback=None
 def _convert_one(args):
     """Convert one frame image (in a worker); failures are reported when
     the frame is drawn."""
+    _quiet_warnings()
     path, target, cache_dir = args
     from .coordinates import converted_file
 
@@ -1600,41 +1519,6 @@ def _create_video(files, output_file, options, progress_callback, problems, stat
         raise
 
 
-class VideoProgress:
-    """
-    Class to manage progress updates for the video creation process
-    """
-
-    def __init__(self, callback=None):
-        self.callback = callback
-        self.progress = 0
-        self._cancel = False
-        self.thread = None
-
-    def update(self, progress):
-        self.progress = progress
-        if self.callback:
-            self.callback(progress)
-
-    def cancel(self):
-        self._cancel = True
-
-    def is_cancelled(self):
-        return self._cancel
-
-    def start_thread(self, func, *args, **kwargs):
-        def run():
-            func(*args, **kwargs)
-            if self.callback:
-                self.callback(100)  # Ensure we end at 100%
-
-        self.thread = threading.Thread(target=run)
-        self.thread.daemon = True
-        self.thread.start()
-
-        return self.thread
-
-
 def main(argv=None):
     """Command line:
     python -m solar_radio_image_viewer.video.creator OUTPUT FILE.fits [FILE.fits ...]
@@ -1643,6 +1527,12 @@ def main(argv=None):
     """
     import argparse
     import json
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    _quiet_warnings()
 
     parser = argparse.ArgumentParser(
         prog="python -m solar_radio_image_viewer.video.creator",

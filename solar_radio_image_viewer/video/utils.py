@@ -221,7 +221,8 @@ class MinMaxTimeline:
         options : dict
             Video creation options
         load_func : callable
-            Function to load FITS data: load_func(file, stokes) -> (data, header)
+            Function to load FITS data: load_func(file, stokes) -> (data, header),
+            with data cut to the region shown
 
         Returns
         -------
@@ -236,14 +237,6 @@ class MinMaxTimeline:
             try:
                 data, _ = load_func(file_path, stokes=stokes)
                 if data is not None:
-                    # Apply region if enabled
-                    if options.get("region_enabled", False):
-                        x_min = options.get("x_min", 0)
-                        x_max = options.get("x_max", data.shape[1] - 1)
-                        y_min = options.get("y_min", 0)
-                        y_max = options.get("y_max", data.shape[0] - 1)
-                        data = data[y_min : y_max + 1, x_min : x_max + 1]
-
                     all_mins.append(np.nanmin(data))
                     all_maxs.append(np.nanmax(data))
             except Exception as e:
@@ -387,8 +380,6 @@ class MinMaxTimeline:
 
         # Add current values annotation
         if current_frame_idx < len(self.min_values):
-            curr_min = self.min_values[current_frame_idx]
-            curr_max = self.max_values[current_frame_idx]
             info_text = f"Frame {current_frame_idx + 1}/{self.total_frames}"
             ax.text(
                 0.98,

@@ -16,7 +16,6 @@ _modules = {
     "processing": None,
     "coordinates": None,
     "video": None,
-    "video.creator": ["VideoProgress"],
     "video.dialog": ["VideoCreationDialog"],
 }
 
@@ -103,6 +102,5 @@ def __getattr__(name):
 __all__ = [
     "SolarRadioImageViewerApp",
     "SolarRadioImageTab",
-    "VideoProgress",
     "VideoCreationDialog",
 ]
