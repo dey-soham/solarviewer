@@ -141,6 +141,27 @@ def _bare(wcs):
     return wcs
 
 
+@contextlib.contextmanager
+def view_kept(ax):
+    """Keep ``ax``'s view, data limits and autoscaling as they are.
+
+    Matplotlib autoscales to each contour set, and contours from another
+    image are traced in that image's pixels before being mapped, so drawing
+    them would otherwise move the view.
+    """
+    xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    data_lim = ax.dataLim.frozen()
+    autoscale = ax.get_autoscalex_on(), ax.get_autoscaley_on()
+    try:
+        yield
+    finally:
+        ax.dataLim.set(data_lim)
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.set_autoscalex_on(autoscale[0])
+        ax.set_autoscaley_on(autoscale[1])
+
+
 def draw_mapped_contours(ax, data, mapping=None, step=1, offset=(0, 0), **contour_kwargs):
     """Contour ``data`` (rows = y) on ``ax`` without changing the view.
 
@@ -149,13 +170,10 @@ def draw_mapped_contours(ax, data, mapping=None, step=1, offset=(0, 0), **contou
     coordinates, None for the same grid) and then shifted by ``-offset``
     (e.g. the corner of a cropped region). Returns the ContourSet.
     """
-    xlim, ylim = ax.get_xlim(), ax.get_ylim()
-    data_lim = ax.dataLim.frozen()
-    autoscale = ax.get_autoscalex_on(), ax.get_autoscaley_on()
-
     rows = np.arange(0, data.shape[0], step)
     cols = np.arange(0, data.shape[1], step)
-    cs = ax.contour(cols, rows, data[::step, ::step], **contour_kwargs)
+    with view_kept(ax):
+        cs = ax.contour(cols, rows, data[::step, ::step], **contour_kwargs)
     shift = np.asarray(offset, dtype=float)
     for artist in contour_artists(cs):
         for path in artist.get_paths():
@@ -164,10 +182,4 @@ def draw_mapped_contours(ax, data, mapping=None, step=1, offset=(0, 0), **contou
                 if mapping is not None:
                     vertices = mapping(vertices)
                 path.vertices = vertices - shift
-
-    ax.dataLim.set(data_lim)
-    ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-    ax.set_autoscalex_on(autoscale[0])
-    ax.set_autoscaley_on(autoscale[1])
     return cs

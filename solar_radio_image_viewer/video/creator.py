@@ -767,10 +767,36 @@ def calculate_global_stats(files, options):
     return None
 
 
+def make_contour_processor(options):
+    """The ContourVideoProcessor for a contour video's options, or None."""
+    if not options.get("contour_video_enabled", False):
+        return None
+    mode = {0: "A", 1: "B", 2: "C"}.get(options.get("contour_mode", 0), "A")
+    return ContourVideoProcessor(
+        mode=mode,
+        contour_settings={
+            "level_type": options.get("level_type", "fraction"),
+            "pos_levels": options.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
+            "neg_levels": options.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
+            "pos_color": options.get("pos_color", "white"),
+            "neg_color": options.get("neg_color", "cyan"),
+            "linewidth": options.get("linewidth", 1.0),
+            "pos_linestyle": "-",
+            "neg_linestyle": "--",
+        },
+    )
+
+
+# In a worker process: the contour processor of the video being made, kept
+# between frames so a fixed contour image is read (and converted) once
+_worker_contours = {"key": None, "processor": None}
+
+
 def process_image_wrapper(args):
     """
     Wrapper function for process_image to use with multiprocessing.
-    Takes a tuple of (file_path, index) and returns (index, processed_frame)
+    Takes a tuple of (file_path, index, options, global_stats) and returns
+    (index, processed_frame)
     """
     # Configure matplotlib for non-interactive backend to avoid thread safety issues
     import matplotlib
@@ -779,62 +805,66 @@ def process_image_wrapper(args):
 
     file_path, idx, options, global_stats = args
     try:
-        # Update current frame index in options
-        options_copy = options.copy()  # Make a copy to avoid thread safety issues
-        options_copy["current_frame"] = idx
-
-        # Reconstruct ContourVideoProcessor if contour mode is enabled
-        # (ContourVideoProcessor objects can't be pickled for multiprocessing)
-        contour_processor = None
-        if options_copy.get("contour_video_enabled", False):
-            mode_map = {0: "A", 1: "B", 2: "C"}
-            mode = mode_map.get(options_copy.get("contour_mode", 0), "A")
-
-            contour_settings = {
-                "level_type": options_copy.get("level_type", "fraction"),
-                "pos_levels": options_copy.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
-                "neg_levels": options_copy.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
-                "pos_color": options_copy.get("pos_color", "white"),
-                "neg_color": options_copy.get("neg_color", "cyan"),
-                "linewidth": options_copy.get("linewidth", 1.0),
-                "pos_linestyle": "-",
-                "neg_linestyle": "--",
-            }
-
-            contour_processor = ContourVideoProcessor(
-                mode=mode, contour_settings=contour_settings
-            )
-
-            # Setup based on mode
-            if mode == "A":
-                base_file = options_copy.get("base_file", "")
-                if base_file and os.path.exists(base_file):
-                    contour_processor.load_base_image(
-                        base_file,
-                        stokes=options_copy.get("stokes", "I"),
-                        load_func=load_fits_data,
-                    )
-            elif mode == "B":
-                fixed_contour_file = options_copy.get("fixed_contour_file", "")
-                if fixed_contour_file and os.path.exists(fixed_contour_file):
-                    contour_processor.load_fixed_contour(
-                        fixed_contour_file,
-                        stokes=options_copy.get("stokes", "I"),
-                        load_func=load_fits_data,
-                    )
-
-        # Process the frame with contour processor
+        options = dict(options, current_frame=idx)
+        key = options.get("video_id")
+        if _worker_contours["key"] != key:
+            _worker_contours.update(key=key, processor=make_contour_processor(options))
         result = process_image(
             file_path,
-            options_copy,
+            options,
             global_stats,
-            contour_processor=contour_processor,
+            contour_processor=_worker_contours["processor"],
             frame_idx=idx,
         )
         return idx, result
     except Exception as e:
         logger.error(f"Error processing frame {idx} ({file_path}): {e}")
         return idx, None
+
+
+def _frames_in_order(files, options, global_stats, contour_processor):
+    """Render the frames, yielding (index, frame) in order as they are ready.
+
+    With multiprocessing, up to two frames per core are rendered ahead, so
+    memory stays bounded; closing the generator (e.g. on cancel) stops
+    submitting frames and waits only for those already being rendered.
+    """
+    num_cores = options.get("cpu_count", max(1, cpu_count() - 1))
+    if not (options.get("use_multiprocessing", False) and num_cores > 1 and len(files) > 1):
+        for i, file_path in enumerate(files):
+            frame = process_image(
+                file_path,
+                dict(options, current_frame=i),
+                global_stats,
+                contour_processor=contour_processor,
+                frame_idx=i,
+            )
+            yield i, frame
+        return
+
+    # Worker processes build their own contour processor (see process_image_wrapper)
+    worker_options = {k: v for k, v in options.items() if k != "contour_processor"}
+    worker_options["video_id"] = f"{os.getpid()}-{time.time()}"
+    logger.info(f"Rendering frames with {num_cores} processes")
+    executor = process_pool_executor(
+        num_cores, preload=["solar_radio_image_viewer.video.creator"]
+    )
+    pending = {}
+    try:
+        next_to_submit = 0
+        for i in range(len(files)):
+            while next_to_submit < len(files) and next_to_submit < i + 2 * num_cores:
+                pending[next_to_submit] = executor.submit(
+                    process_image_wrapper,
+                    (files[next_to_submit], next_to_submit, worker_options, global_stats),
+                )
+                next_to_submit += 1
+            _, frame = pending.pop(i).result()
+            yield i, frame
+    finally:
+        for future in pending.values():
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 def create_video(files, output_file, options, progress_callback=None):
@@ -874,8 +904,9 @@ def create_video(files, output_file, options, progress_callback=None):
 
     Returns
     -------
-    output_file : str
-        Path to the created video file.
+    output_file : str or None
+        Path to the created video file, or None if progress_callback
+        cancelled it (no file is left behind).
     """
     start_time = time.time()
     try:
@@ -1066,192 +1097,44 @@ def create_video(files, output_file, options, progress_callback=None):
             options["minmax_timeline"] = timeline
             logger.info("Timeline statistics computed")
 
-        # Initialize ContourVideoProcessor if enabled
-        contour_processor = None
-        if options.get("contour_video_enabled", False):
-            logger.info("Initializing Contour Video Processor...")
-            mode_map = {0: "A", 1: "B", 2: "C"}
-            mode = mode_map.get(options.get("contour_mode", 0), "A")
-
-            # Construct contour settings using keys from video_dialog.py
-            contour_settings = {
-                "level_type": options.get("level_type", "fraction"),
-                "pos_levels": options.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
-                "neg_levels": options.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
-                "pos_color": options.get("pos_color", "white"),
-                "neg_color": options.get("neg_color", "cyan"),
-                "linewidth": options.get("linewidth", 1.0),
-                "pos_linestyle": "-",
-                "neg_linestyle": "--",
-            }
-
-            contour_processor = ContourVideoProcessor(
-                mode=mode, contour_settings=contour_settings
-            )
-
-            # Setup based on mode
-            if mode == "A":
-                # Mode A: Fixed base image, evolving contours
-                base_file = options.get("base_file", "")
-                if base_file and os.path.exists(base_file):
-                    contour_processor.load_base_image(
-                        base_file, load_func=load_fits_data
-                    )
-                    logger.info(f"Mode A: Using base image: {base_file}")
-            elif mode == "B":
-                # Mode B: Fixed contours, evolving colormap
-                fixed_contour_file = options.get("fixed_contour_file", "")
-                if fixed_contour_file and os.path.exists(fixed_contour_file):
-                    contour_processor.load_fixed_contour(
-                        fixed_contour_file, load_func=load_fits_data
-                    )
-                    logger.info(
-                        f"Mode B: Using fixed contour file: {fixed_contour_file}"
-                    )
-            # Mode C uses the same contour files as the base files list
-
-            options["contour_processor"] = contour_processor
-            logger.info(f"Contour processor initialized in mode {mode}")
+        # Contour processor (worker processes make their own)
+        contour_processor = make_contour_processor(options)
 
         # Calculate global stats if needed
         global_stats = calculate_global_stats(files, options)
 
-        # Determine whether to use multiprocessing
-        use_multiprocessing = options.get("use_multiprocessing", False)
-        num_cores = options.get("cpu_count", max(1, cpu_count() - 1))
-        # Use a larger chunk size for fewer, larger batches
-        chunk_size = options.get(
-            "chunk_size", max(1, min(50, len(files) // (num_cores * 2)))
+        # Render and write the frames in order, one at a time
+        render_start = time.time()
+        written = 0
+        frames = _frames_in_order(files, options, global_stats, contour_processor)
+        cancelled = False
+        try:
+            with imageio.get_writer(output_file, **writer_kwargs) as writer:
+                for i, frame in frames:
+                    if frame is not None:
+                        writer.append_data(ensure_even_dimensions(frame))
+                        written += 1
+                    else:
+                        logger.warning(f"Could not process frame {i} ({files[i]})")
+                    if progress_callback and not progress_callback(i + 1, total_frames):
+                        cancelled = True
+                        break
+        finally:
+            frames.close()
+
+        if cancelled:
+            logger.info("Video creation cancelled by user")
+            try:
+                os.remove(output_file)
+            except OSError:
+                pass
+            return None
+
+        render_time = time.time() - render_start
+        logger.info(
+            f"Rendered {written} of {total_frames} frames in {render_time:.2f}s "
+            f"({total_frames / render_time if render_time > 0 else 0:.2f} frames/sec)"
         )
-
-        if use_multiprocessing and num_cores > 1 and len(files) > num_cores:
-            logger.info(
-                f"Using multiprocessing with {num_cores} cores and chunk size {chunk_size}"
-            )
-            print(
-                f"Multiprocessing enabled: {num_cores} cores, {chunk_size} frames per batch"
-            )
-
-            # Process frames in parallel
-            processed_frames = [None] * len(files)
-            processed_count = 0
-            failed_count = 0
-
-            # Prepare arguments for each frame
-            process_args = [
-                (file_path, i, options, global_stats)
-                for i, file_path in enumerate(files)
-            ]
-
-            # Use ProcessPoolExecutor for parallel processing in batches
-            with process_pool_executor(
-                num_cores, preload=["solar_radio_image_viewer.video.creator"]
-            ) as executor:
-                # Process in chunks to reduce overhead
-                batch_start_time = time.time()
-                results = list(
-                    tqdm(
-                        executor.map(
-                            process_image_wrapper, process_args, chunksize=chunk_size
-                        ),
-                        total=len(files),
-                        desc="Processing frames",
-                        unit="frame",
-                    )
-                )
-                batch_end_time = time.time()
-                batch_duration = batch_end_time - batch_start_time
-                frames_per_second = (
-                    len(files) / batch_duration if batch_duration > 0 else 0
-                )
-
-                logger.info(
-                    f"Parallel processing complete: {len(results)} frames in {batch_duration:.2f}s ({frames_per_second:.2f} frames/sec)"
-                )
-                print(
-                    f"Processed {len(results)} frames in {batch_duration:.2f}s ({frames_per_second:.2f} frames/sec)"
-                )
-
-                # Store results in the processed_frames list
-                for idx, frame in results:
-                    processed_frames[idx] = frame
-                    if frame is not None:
-                        processed_count += 1
-                    else:
-                        failed_count += 1
-
-                    # Call progress callback
-                    if (
-                        progress_callback and idx % 5 == 0
-                    ):  # Update every 5 frames to reduce overhead
-                        continue_processing = progress_callback(idx + 1, len(files))
-                        if not continue_processing:
-                            logger.info("Video creation cancelled by user")
-                            return None
-
-            logger.info(f"Processed {processed_count} frames ({failed_count} failed)")
-
-            # Create video writer
-            with imageio.get_writer(output_file, **writer_kwargs) as writer:
-                # Add frames to video in order
-                for i, frame in enumerate(processed_frames):
-                    if frame is not None:
-                        # Ensure image has even dimensions
-                        frame = ensure_even_dimensions(frame)
-                        # Add the frame to the video
-                        writer.append_data(frame)
-                    else:
-                        logger.warning(f"Could not process frame {i}")
-
-        else:
-            if use_multiprocessing:
-                if num_cores <= 1:
-                    logger.info("Multiprocessing disabled: only 1 core available")
-                elif len(files) <= num_cores:
-                    logger.info(
-                        "Multiprocessing disabled: too few files for parallel processing"
-                    )
-                print("Using sequential processing")
-
-            # Sequential processing (original method)
-            seq_start_time = time.time()
-            # Create video writer
-            with imageio.get_writer(output_file, **writer_kwargs) as writer:
-                # Process each frame
-                for i, file_path in enumerate(files):
-                    # Call progress callback if provided
-                    if progress_callback:
-                        continue_processing = progress_callback(i, total_frames)
-                        if not continue_processing:
-                            logger.info("Video creation cancelled by user")
-                            break
-
-                    # Update current frame index in options
-                    options["current_frame"] = i
-
-                    # Process the image
-                    frame = process_image(
-                        file_path,
-                        options,
-                        global_stats,
-                        contour_processor=contour_processor,
-                        frame_idx=i,
-                    )
-
-                    if frame is not None:
-                        # Ensure image has even dimensions
-                        frame = ensure_even_dimensions(frame)
-                        # Add the frame to the video
-                        writer.append_data(frame)
-                    else:
-                        logger.warning(f"Could not process frame {i} ({file_path})")
-
-            seq_end_time = time.time()
-            seq_duration = seq_end_time - seq_start_time
-            frames_per_second = len(files) / seq_duration if seq_duration > 0 else 0
-            logger.info(
-                f"Sequential processing complete: {len(files)} frames in {seq_duration:.2f}s ({frames_per_second:.2f} frames/sec)"
-            )
 
         total_time = time.time() - start_time
         logger.info(f"Video created successfully: {output_file} in {total_time:.2f}s")

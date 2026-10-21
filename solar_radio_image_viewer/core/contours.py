@@ -25,6 +25,7 @@ from ..processing.contour_mapping import (
     pixel_mapping,
     same_pixel_grid,
     transformable_wcs,
+    view_kept,
 )
 from ..processing.image_meta import casa_info, fits_header
 
@@ -743,25 +744,12 @@ class ContoursMixin:
         options = self.contour_options
         layers = [layer for layer in self.contour_layers if layer.get("enabled", True)]
 
-        # Contours never change which part of the image is shown. Matplotlib
-        # autoscales to each contour set, and one from another image is traced
-        # in that image's pixels before being mapped onto this one
-        xlim, ylim = ax.get_xlim(), ax.get_ylim()
-        data_lim = ax.dataLim.frozen()
-        autoscale = ax.get_autoscalex_on(), ax.get_autoscaley_on()
-
         handles = []
         for layer in layers:
             drawn = self._draw_contour_layer(ax, layer)
             if not options.get("legend_show_negative", False):
                 drawn = [sign for sign in drawn if sign == "pos"]
             handles.extend(_legend_handles(layer, drawn))
-
-        ax.dataLim.set(data_lim)
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
-        ax.set_autoscalex_on(autoscale[0])
-        ax.set_autoscaley_on(autoscale[1])
 
         if handles and options.get("show_legend", True):
             legend = ax.legend(
@@ -944,7 +932,11 @@ class ContoursMixin:
             linestyles=layer.get(f"{sign}_linestyle", "-" if sign == "pos" else "--"),
         )
         try:
-            cs = ax.contour(*args, **kwargs, **style)
+            # Contours never change which part of the image is shown (and the
+            # view must be right at once: status messages let queued redraws
+            # run in the middle of drawing)
+            with view_kept(ax):
+                cs = ax.contour(*args, **kwargs, **style)
 
             # Add contour labels if enabled
             if layer.get("show_labels", False):

@@ -33,7 +33,6 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import numpy as np
 import glob
 import time
-import threading
 import multiprocessing
 import psutil
 import shutil
@@ -42,6 +41,17 @@ from contextlib import contextmanager
 import matplotlib.style as mplstyle
 
 mplstyle.use("fast")
+
+
+def _format_duration(seconds):
+    """'45 s', '3 min', '1 h 20 min'."""
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    return f"{minutes // 60} h {minutes % 60} min"
 
 
 @contextmanager
@@ -1893,20 +1903,6 @@ class VideoCreationDialog(QDialog):
                 )
                 return
 
-            # Create progress dialog
-            progress_dialog = QProgressDialog(
-                "Creating video...",
-                "Cancel",
-                0,
-                1000,  # Use 1000 as maximum (100 * scale factor of 10)
-                self,
-            )
-            progress_dialog.setWindowTitle("Creating Video")
-            progress_dialog.setWindowModality(Qt.WindowModal)
-            print("Created progress dialog with range: 0-1000")
-            progress_dialog.show()
-            self.progress_dialog = progress_dialog  # Store as class member
-
             # Merge all options
             options = {
                 **display_options,
@@ -2003,16 +1999,26 @@ class VideoCreationDialog(QDialog):
                     f"Contour Mode {contour_mode}: Using {len(video_files)} files for video"
                 )
 
+            options["use_multiprocessing"] = self.multiprocessing_check.isChecked()
+            options["cpu_count"] = self.cores_spinbox.value()
+
             # Use a worker thread for video creation
-            self.worker = VideoWorker(
-                video_files,
-                output_file,
-                options,
-                progress_dialog,
-                self.cores_spinbox.value(),
-            )
-            self.worker.finished.connect(self.on_video_creation_finished)
+            self.worker = VideoWorker(video_files, output_file, options)
+            self.worker.video_created.connect(self.on_video_creation_finished)
             self.worker.error.connect(self.on_video_creation_error)
+            self.worker.cancelled.connect(self.on_video_creation_cancelled)
+            self.worker.progress.connect(self.on_video_progress)
+
+            # Progress dialog: busy while preparing, then counts frames
+            self.progress_dialog = QProgressDialog("Preparing frames...", "Cancel", 0, 0, self)
+            self.progress_dialog.setWindowTitle("Creating Video")
+            self.progress_dialog.setWindowModality(Qt.WindowModal)
+            self.progress_dialog.setMinimumDuration(0)
+            self.progress_dialog.setAutoClose(False)
+            self.progress_dialog.setAutoReset(False)
+            self.progress_dialog.canceled.connect(self._cancel_video)
+            self.progress_dialog.show()
+            self._render_start = None
 
             # Disable the create button while processing
             self.create_btn.setEnabled(False)
@@ -2022,31 +2028,58 @@ class VideoCreationDialog(QDialog):
             self.worker.start()
 
         except Exception as e:
-            # Close the progress dialog
-            if hasattr(self, "progress_dialog"):
-                self.progress_dialog.setValue(
-                    1000
-                )  # Use 1000 instead of 100 to match our scale factor of 10
-                self.progress_dialog.close()
-
+            self._close_progress_dialog()
             QMessageBox.critical(
                 self,
                 "Error",
                 f"Error creating video: {str(e)}",
             )
 
-    def on_video_creation_finished(self, output_file):
-        """Handle successful video creation"""
-        # Re-enable the create button
+    def on_video_progress(self, done, total):
+        """Show how many frames are written, and an estimate of the time left."""
+        dialog = getattr(self, "progress_dialog", None)
+        if dialog is None or getattr(self.worker, "is_cancelled", False):
+            return
+        if done <= 0 or total <= 1 and done <= 1:
+            return  # still preparing (busy indicator)
+        now = time.time()
+        if self._render_start is None:
+            # First frame: time the rest from here
+            self._render_start = (now, done)
+        start, start_done = self._render_start
+        text = f"Rendering frame {done} of {total}"
+        if done > start_done:
+            remaining = (now - start) / (done - start_done) * (total - done)
+            text += f" (about {_format_duration(remaining)} left)"
+        dialog.setMaximum(total)
+        dialog.setValue(done)
+        dialog.setLabelText(text)
+
+    def _cancel_video(self):
+        if hasattr(self, "worker") and self.worker.isRunning():
+            self.worker.cancel()
+            if getattr(self, "progress_dialog", None) is not None:
+                self.progress_dialog.setLabelText("Cancelling...")
+
+    def _close_progress_dialog(self):
+        dialog = getattr(self, "progress_dialog", None)
+        if dialog is not None:
+            dialog.canceled.disconnect(self._cancel_video)
+            dialog.close()
+            self.progress_dialog = None
         self.create_btn.setEnabled(True)
         self.create_btn.setText("Create Video")
 
-        # Close the progress dialog
-        if hasattr(self, "progress_dialog"):
-            self.progress_dialog.setValue(
-                1000
-            )  # Use 1000 instead of 100 to match our scale factor of 10
-            self.progress_dialog.close()
+    def on_video_creation_cancelled(self):
+        """The video was cancelled: nothing was written."""
+        self._close_progress_dialog()
+        QMessageBox.information(
+            self, "Video Cancelled", "Video creation was cancelled; no file was written."
+        )
+
+    def on_video_creation_finished(self, output_file):
+        """Handle successful video creation"""
+        self._close_progress_dialog()
 
         QMessageBox.information(
             self,
@@ -2057,9 +2090,7 @@ class VideoCreationDialog(QDialog):
 
     def on_video_creation_error(self, error_message):
         """Handle error in video creation"""
-        # Re-enable the create button
-        self.create_btn.setEnabled(True)
-        self.create_btn.setText("Create Video")
+        self._close_progress_dialog()
 
         QMessageBox.critical(
             self,
@@ -2598,7 +2629,8 @@ class VideoCreationDialog(QDialog):
         # Stop worker thread if running
         if hasattr(self, "worker") and self.worker.isRunning():
             self.worker.cancel()
-            self.worker.wait(1000)  # Wait up to 1 second for thread to finish
+            # Stops after the frame being rendered
+            self.worker.wait(30000)
         event.accept()
 
     def reject(self):
@@ -2606,7 +2638,8 @@ class VideoCreationDialog(QDialog):
         # Stop worker thread if running
         if hasattr(self, "worker") and self.worker.isRunning():
             self.worker.cancel()
-            self.worker.wait(1000)  # Wait up to 1 second for thread to finish
+            # Stops after the frame being rendered
+            self.worker.wait(30000)
         super().reject()
 
     def update_gamma_controls(self):
@@ -2631,199 +2664,45 @@ class VideoCreationDialog(QDialog):
 
 # Worker thread for video creation
 class VideoWorker(QThread):
-    finished = pyqtSignal(str)  # Signal emitted when video creation is complete
-    error = pyqtSignal(str)  # Signal emitted when an error occurs
-    progress = pyqtSignal(int)  # Signal emitted to update progress
-    status_update = pyqtSignal(str)  # Signal emitted to update status message
+    """Makes the video in the background; cancel() stops it after the frame
+    being written (no file is left behind)."""
 
-    def __init__(self, files, output_file, options, progress_dialog, cpu_count):
+    video_created = pyqtSignal(str)  # output file
+    error = pyqtSignal(str)
+    cancelled = pyqtSignal()
+    progress = pyqtSignal(int, int)  # frames written, total frames
+
+    def __init__(self, files, output_file, options):
         super().__init__()
         self.files = files
         self.output_file = output_file
         self.options = options
-        self.progress_dialog = progress_dialog
         self.is_cancelled = False
-        self.in_global_stats_phase = False
-        self.processing_complete = False  # Flag to indicate when processing is complete
-
-        # Fix for progress display - multiply progress values by 10
-        self.progress_scale_factor = 10  # Factor to scale progress values
-
-        # Add multiprocessing options to the options dictionary
-        self.options["use_multiprocessing"] = True
-        self.options["cpu_count"] = cpu_count
-        print(f"Enabling multiprocessing with {cpu_count} cores")
-
-        # Connect signals
-        self.progress.connect(self.progress_dialog.setValue)
-        print("Connected progress signal to progress_dialog.setValue")
-
-        # Add a debug print to each progress value emitted
-        def debug_progress_value(value):
-            print(f"Progress value received by dialog: {value}")
-            self.progress_dialog.setValue(value)
-
-        # Replace the standard connection with our debug version
-        self.progress.disconnect(self.progress_dialog.setValue)
-        self.progress.connect(debug_progress_value)
-
-        # Connect status update signal
-        self.status_update.connect(self.update_progress_title)
-
-        self.cpu_count = cpu_count
-
-        # For time-based progress tracking
-        self.start_time = None
-        self.frame_start_time = None
-        self.avg_frame_time = None
-        self.total_time_estimate = None
-
-        # For global stats phase
-        self.stats_progress_thread = None
-
-        # Progress tracker state
-        self.frames_processed = 0
-        self.total_frames = len(files)
-        self.progress_update_interval = 0.25  # seconds between progress updates
-
-    def update_progress_title(self, message):
-        """Update the progress dialog title with current status"""
-        if hasattr(self, "progress_dialog") and self.progress_dialog:
-            self.progress_dialog.setLabelText(message)
-
-    def update_progress_continuously(self):
-        """Thread function to update progress continuously based on time"""
-        last_update_time = time.time()
-        pulsing_progress = 0
-
-        while not self.is_cancelled and hasattr(self, "progress_dialog"):
-            current_time = time.time()
-
-            # Exit the loop if processing is complete
-            if self.processing_complete:
-                # Allow setting to 100% when complete
-                self.progress.emit(
-                    1000
-                )  # Use 1000 instead of 100 to match our scale factor of 10
-                break
-
-            # Update at most every progress_update_interval seconds
-            if current_time - last_update_time >= self.progress_update_interval:
-                last_update_time = current_time
-
-                # If no frames have been processed yet, assume we're still in initialization
-                # or global stats phase - show pulsing progress indicator
-                if self.frames_processed == 0:
-                    # Create pulsing effect from 1-20%
-                    elapsed = current_time - self.start_time
-                    pulsing_progress = 5 + 15 * (
-                        (elapsed % 3) / 3
-                    )  # 3-second cycle from 5-20%
-                    scaled_progress = int(pulsing_progress * self.progress_scale_factor)
-                    # print(
-                    #     f"Pulsing progress: {pulsing_progress}% - Scaled: {scaled_progress}"
-                    # )
-                    self.progress.emit(scaled_progress)
-
-            # Sleep for a short time to avoid consuming too much CPU
-            time.sleep(0.1)
 
     def run(self):
+        from .creator import create_video
+
+        def on_progress(done, total):
+            self.progress.emit(done, total)
+            return not self.is_cancelled
+
         try:
-            # Directly use the create_video function instead of trying to import it
-            from solar_radio_image_viewer.video.creator import (
-                create_video as create_video_function,
+            result = create_video(
+                self.files, self.output_file, self.options, progress_callback=on_progress
             )
-
-            # Record start time
-            self.start_time = time.time()
-
-            # Show immediate initial progress
-            self.progress.emit(0)
-            print("Video creation started - emitting initial progress: 0")
-
-            # Start a separate thread to update progress continuously
-            progress_thread = threading.Thread(target=self.update_progress_continuously)
-            progress_thread.daemon = True
-            progress_thread.start()
-
-            # Configure progress callback that works with both phases
-            def update_progress(current_frame, total_frames):
-                if self.is_cancelled:
-                    return False
-
-                # DIRECT FIX: Set progress directly based on frame count
-                progress_percent = min(99, int(100 * current_frame / total_frames))
-                scaled_progress = (
-                    progress_percent * 10
-                )  # Scale to match our progress dialog range (0-1000)
-
-                # Add debugging output
-                # if (
-                #     current_frame % 20 == 0 or current_frame == total_frames - 1
-                # ):  # Print every 20 frames or last frame
-                # print(
-                #     f"Frame {current_frame}/{total_frames} - Progress: {progress_percent}% - Scaled: {scaled_progress}"
-                # )
-
-                self.progress.emit(scaled_progress)
-
-                # Update frames processed count for reference
-                self.frames_processed = current_frame + 1
-
-                # Let the progress thread handle the progress update
-                return not self.progress_dialog.wasCanceled()
-
-            # Create the video
-            self.status_update.emit("Creating video...")
-            print(f"Starting video creation process with {self.cpu_count} cores")
-            create_video_function(
-                self.files,
-                self.output_file,
-                self.options,
-                progress_callback=update_progress,
-            )
-
-            # Set processing complete flag
-            self.processing_complete = True
-            print("Video creation complete - setting progress to 1000 (100%)")
-
-            # Small delay to ensure the progress thread sees the completed flag
-            time.sleep(0.2)
-
-            # Ensure progress reaches 100% when complete
-            self.progress.emit(
-                1000
-            )  # Use 1000 instead of 100 to match our scale factor of 10
-
-            # Check if cancelled before emitting signal
-            if not self.is_cancelled:
-                # Emit finished signal
-                print(f"Emitting finished signal with output file: {self.output_file}")
-                self.finished.emit(self.output_file)
-            else:
-                print("Video creation was cancelled")
-
         except Exception as e:
-            print(f"Error in video creation: {str(e)}")
-            # Set processing complete to stop the progress thread
-            self.processing_complete = True
-            if not self.is_cancelled:
-                # Emit error signal
+            if self.is_cancelled:
+                self.cancelled.emit()
+            else:
                 self.error.emit(str(e))
+            return
+        if result is None or self.is_cancelled:
+            self.cancelled.emit()
+        else:
+            self.video_created.emit(result)
 
     def cancel(self):
-        """Cancel the worker thread"""
         self.is_cancelled = True
-        self.processing_complete = (
-            True  # Also mark as complete to stop the progress thread
-        )
-
-        # Update progress to 100%
-        if hasattr(self, "progress_dialog") and self.progress_dialog:
-            self.progress_dialog.setValue(
-                1000
-            )  # Use 1000 instead of 100 to match our scale factor of 10
 
 
 if __name__ == "__main__":
