@@ -449,6 +449,11 @@ def apply_theme(app, theme_name="dark"):
     except Exception as e:
         print(f"Warning: Could not load bundled fonts: {e}")
 
+    # Dialogs shared with SolarViewer (e.g. the remote browser) style
+    # themselves from its theme manager
+    if theme_manager is not None and theme_name in ("dark", "light"):
+        theme_manager.set_theme(theme_name)
+
     # Apply stylesheet
     app.setStyleSheet(get_stylesheet(theme_name))
 
@@ -463,11 +468,18 @@ def apply_theme(app, theme_name="dark"):
     qt_palette.setColor(QPalette.Window, QColor(palette["window"]))
     qt_palette.setColor(QPalette.WindowText, QColor(palette["text"]))
     qt_palette.setColor(QPalette.Base, QColor(palette["base"]))
+    qt_palette.setColor(QPalette.AlternateBase, QColor(palette["surface"]))
     qt_palette.setColor(QPalette.Text, QColor(palette["text"]))
     qt_palette.setColor(QPalette.Button, QColor(palette["button"]))
     qt_palette.setColor(QPalette.ButtonText, QColor(palette["text"]))
     qt_palette.setColor(QPalette.Highlight, QColor(palette["highlight"]))
     qt_palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    qt_palette.setColor(QPalette.Link, QColor(palette["highlight"]))
+    if "disabled" in palette:
+        qt_palette.setColor(QPalette.Disabled, QPalette.Text, QColor(palette["disabled"]))
+        qt_palette.setColor(
+            QPalette.Disabled, QPalette.ButtonText, QColor(palette["disabled"])
+        )
     app.setPalette(qt_palette)
 
 
