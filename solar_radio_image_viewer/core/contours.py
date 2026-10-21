@@ -12,13 +12,20 @@ import os
 import uuid
 
 import numpy as np
-from matplotlib.transforms import Transform
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialogButtonBox, QMessageBox
 
 from ..processing.dependencies import IA
 from ..processing.image_data import get_pixel_values_from_image
 from ..processing.fits_io import readable_image_path
+from ..processing.contour_mapping import (
+    PixelToPixel,
+    check_mapping,
+    contour_artists,
+    pixel_mapping,
+    same_pixel_grid,
+    transformable_wcs,
+)
 from ..processing.image_meta import casa_info, fits_header
 
 
@@ -895,7 +902,7 @@ class ContoursMixin:
             cs = self._draw_contour_set(ax, layer, args, kwargs, levels, sign, label)
             if cs is not None:
                 drawn.append(sign)
-                for artist in _contour_artists(cs):
+                for artist in contour_artists(cs):
                     if clip is not None:
                         artist.set_clip_box(clip)
                     vertices.extend(p.vertices for p in artist.get_paths())
@@ -1061,28 +1068,28 @@ class ContoursMixin:
             )
             return False
 
-        if _same_pixel_grid(contour_wcs, image_wcs_obj) and (
+        if same_pixel_grid(contour_wcs, image_wcs_obj) and (
             contour_data.shape == self.current_image_data.shape
         ):
             return None
 
         base_header = getattr(self, "_cached_fits_header", None)
-        mapping = _pixel_mapping(
-            _transformable_wcs(contour_wcs, header),
-            _transformable_wcs(image_wcs_obj, base_header),
+        mapping = pixel_mapping(
+            transformable_wcs(contour_wcs, header),
+            transformable_wcs(image_wcs_obj, base_header),
         )
         try:
-            _check_mapping(mapping, contour_data.shape)
+            check_mapping(mapping, contour_data.shape)
         except Exception as e:
             # Without observation time and observer for both images: treat the
             # two coordinate frames as the same
             print(f"[INFO] Mapping contours without observer information: {e}")
-            mapping = _pixel_mapping(
-                _transformable_wcs(contour_wcs, None),
-                _transformable_wcs(image_wcs_obj, None),
+            mapping = pixel_mapping(
+                transformable_wcs(contour_wcs, None),
+                transformable_wcs(image_wcs_obj, None),
             )
             try:
-                _check_mapping(mapping, contour_data.shape)
+                check_mapping(mapping, contour_data.shape)
             except Exception as e2:
                 print(f"[ERROR] Cannot map contour coordinates onto the image: {e2}")
                 self.show_status_message(
@@ -1090,7 +1097,7 @@ class ContoursMixin:
                     f"their coordinates onto the image ({e2})"
                 )
                 return False
-        return _PixelToPixel(mapping)
+        return PixelToPixel(mapping)
 
     def _downsample_contour_for_display(self, contour_data):
         """Downsample large contour data that is aligned with the base image."""
@@ -1128,105 +1135,3 @@ def _legend_handles(layer, drawn):
             )
         )
     return handles
-
-
-def _contour_artists(cs):
-    """The artists holding a ContourSet's paths (itself on Matplotlib >= 3.8)."""
-    from matplotlib.collections import Collection
-
-    return [cs] if isinstance(cs, Collection) else list(cs.collections)
-
-
-def _same_pixel_grid(wcs_a, wcs_b):
-    """True if two display WCSs describe the same pixel grid."""
-    return (
-        list(wcs_a.wcs.ctype) == list(wcs_b.wcs.ctype)
-        and np.allclose(wcs_a.wcs.crpix, wcs_b.wcs.crpix, rtol=0, atol=1e-3)
-        and np.allclose(wcs_a.wcs.crval, wcs_b.wcs.crval, rtol=0, atol=1e-6)
-        and np.allclose(wcs_a.wcs.cdelt, wcs_b.wcs.cdelt, rtol=1e-3, atol=0)
-    )
-
-
-def _transformable_wcs(display_wcs, header):
-    """Copy of a display WCS that astropy can transform between frames.
-
-    SOLAR-X/Y (linear, in arcsec) becomes HPLN/HPLT-TAN in degrees, and the
-    observation time and observer position are taken from ``header`` when
-    it has them.
-    """
-    wcs = display_wcs.deepcopy()
-    if "SOLAR" in wcs.wcs.ctype[0].upper():
-        wcs.wcs.crval = np.asarray(display_wcs.wcs.crval) / 3600.0
-        wcs.wcs.cdelt = np.asarray(display_wcs.wcs.cdelt) / 3600.0
-        wcs.wcs.ctype = ["HPLN-TAN", "HPLT-TAN"]
-    header = header or {}
-    date_obs = header.get("DATE-OBS") or header.get("DATE_OBS")
-    if date_obs:
-        wcs.wcs.dateobs = str(date_obs)
-    if wcs.wcs.ctype[0].startswith("HPLN"):
-        for key in ("HGLN_OBS", "HGLT_OBS", "DSUN_OBS", "RSUN_REF"):
-            if header.get(key) is not None:
-                setattr(wcs.wcs.aux, key.lower(), float(header[key]))
-    wcs.wcs.set()
-    return wcs
-
-
-def _pixel_mapping(src_wcs, dst_wcs):
-    """Function mapping (n, 2) pixel positions of ``src_wcs`` to ``dst_wcs``.
-
-    Between helioprojective frames of different observers, points are taken
-    to lie on a sphere through the Sun's centre as seen from the source's
-    observer, so off-limb (coronal) emission maps as well.
-    """
-    import contextlib
-
-    from astropy.wcs.utils import pixel_to_pixel, wcs_to_celestial_frame
-
-    observer = None
-    try:
-        from sunpy.coordinates import Helioprojective
-
-        frame = wcs_to_celestial_frame(src_wcs)
-        if isinstance(frame, Helioprojective):
-            observer = frame.observer
-    except Exception:
-        pass
-
-    def mapping(xy):
-        xy = np.asarray(xy, dtype=float).reshape(-1, 2)
-        if not len(xy):
-            return xy
-        if observer is None:
-            screen = contextlib.nullcontext()
-        else:
-            screen = Helioprojective.assume_spherical_screen(observer)
-        with screen:
-            x, y = pixel_to_pixel(src_wcs, dst_wcs, xy[:, 0], xy[:, 1])
-        return np.column_stack([x, y])
-
-    return mapping
-
-
-def _check_mapping(mapping, shape):
-    """Raise if ``mapping`` fails on the corners and centre of an image."""
-    nx, ny = shape
-    probe = np.array(
-        [[0, 0], [nx - 1, 0], [0, ny - 1], [nx - 1, ny - 1], [nx / 2, ny / 2]]
-    )
-    if not np.isfinite(mapping(probe)).any():
-        raise ValueError("no point of the contour image maps onto the base image")
-
-
-class _PixelToPixel(Transform):
-    """Matplotlib transform wrapping a pixel-to-pixel mapping function.
-
-    WCSAxes.contour applies it once to all contour vertices."""
-
-    input_dims = output_dims = 2
-
-    def __init__(self, mapping):
-        super().__init__()
-        self._mapping = mapping
-
-    def transform_non_affine(self, values):
-        return self._mapping(values)

@@ -80,6 +80,16 @@ def detect_coordinate_system(fits_file):
         }
 
 
+def coordinate_type(header):
+    """'hpc', 'radec' or 'other': the sky coordinates of a FITS header."""
+    ctype = str((header or {}).get("CTYPE1", "")).upper()
+    if "HPLN" in ctype or "SOLAR" in ctype:
+        return "hpc"
+    if ctype.startswith("RA"):
+        return "radec"
+    return "other"
+
+
 def get_wcs_axis_labels(coord_info):
     """
     Get appropriate axis labels based on coordinate system.
@@ -427,6 +437,58 @@ class ContourVideoProcessor:
         self.fixed_contour_data = None
         self.fixed_contour_wcs = None
         self.fixed_contour_levels = None
+        # (path, stokes, coordinate system) -> (data, wcs), see contour_image
+        self._contour_images = {}
+
+    def contour_image(self, path, stokes, base_header, load_func=None):
+        """(data, wcs) of contour image ``path`` in the coordinate system of
+        the image it is drawn on (RA/Dec or helioprojective).
+
+        When the systems differ the image is converted the way the main
+        viewer converts contour images, so contours land in the same place
+        in videos as on screen. (None, None) if it can't be read. The last
+        few images are kept, so a fixed contour image is read only once.
+        """
+        target = coordinate_type(base_header)
+        key = (path, stokes, target)
+        if key in self._contour_images:
+            return self._contour_images[key]
+
+        if load_func is None:
+            from .creator import load_fits_data
+
+            load_func = load_fits_data
+
+        result = (None, None)
+        data, header = load_func(path, stokes=stokes)
+        if data is not None:
+            own = coordinate_type(header)
+            try:
+                if target == "hpc" and own == "radec":
+                    from ..coordinates.helioprojective import convert_to_hpc
+
+                    hpc_map, _, _ = convert_to_hpc(path, Stokes=stokes)
+                    result = (np.asarray(hpc_map.data), hpc_map.wcs)
+                elif target == "radec" and own == "hpc":
+                    import os
+                    import tempfile
+
+                    from ..coordinates.helioprojective import convert_hpc_to_radec
+
+                    with tempfile.TemporaryDirectory() as tmp:
+                        converted = os.path.join(tmp, "radec.fits")
+                        if convert_hpc_to_radec(path, converted):
+                            data, header = load_func(converted, stokes=stokes)
+                            result = (data, WCS(header, naxis=2))
+                else:
+                    result = (data, WCS(header, naxis=2))
+            except Exception as e:
+                logger.warning(f"Could not prepare contour image {path}: {e}")
+
+        self._contour_images[key] = result
+        while len(self._contour_images) > 4:
+            self._contour_images.pop(next(iter(self._contour_images)))
+        return result
 
     def _default_settings(self):
         """Return default contour settings."""
@@ -536,127 +598,77 @@ class ContourVideoProcessor:
         target_wcs=None,
         contour_wcs=None,
         target_shape=None,
-        region_info=None,
+        region_origin=(0, 0),
     ):
         """
-        Draw contours on axes with support for WCS reprojection.
+        Draw contours of ``contour_data`` (rows = y) on the image in ``ax``.
 
-        Parameters
-        ----------
-        region_info : dict, optional
-            If provided, contains 'x_min', 'y_min', 'x_max', 'y_max', 'full_shape'
-            Used to reproject to full shape first, then crop.
+        Contours are traced on the contour image's own pixels and placed
+        through ``contour_wcs`` and ``target_wcs`` (the WCS of the full image
+        shown, of shape ``target_shape``). ``region_origin`` is the (x, y) of
+        the full image's pixel at the lower left of ``ax``, when only a
+        region of it is shown. Contours that can't be placed are not drawn.
         """
+        from astropy.wcs import WCSCOMPARE_ANCILLARY
+
+        from ..processing.contour_mapping import draw_mapped_contours, mapping_between
+
         settings = self.contour_settings
 
         if levels is None:
             levels = self.compute_contour_levels(contour_data)
 
+        mapping = None
+        if target_wcs is not None and contour_wcs is not None:
+            same_grid = contour_data.shape == tuple(target_shape or ()) and (
+                target_wcs.wcs.compare(
+                    contour_wcs.wcs, cmp=WCSCOMPARE_ANCILLARY, tolerance=1e-6
+                )
+            )
+            if not same_grid:
+                try:
+                    mapping = mapping_between(
+                        contour_wcs,
+                        target_wcs,
+                        (contour_data.shape[1], contour_data.shape[0]),
+                    )
+                except Exception as e:
+                    logger.warning(f"Contours not drawn: cannot place them on the image ({e})")
+                    return []
+        elif contour_data.shape != tuple(target_shape or contour_data.shape):
+            logger.warning(
+                "Contours not drawn: the images differ in size and have no "
+                "coordinates to align them"
+            )
+            return []
+
+        # Trace large contour images on at most about 2048 x 2048 pixels
+        step = max(1, int(np.ceil(max(contour_data.shape) / 2048.0)))
+
         collections = []
-        # Reprojection logic
-        if target_wcs and contour_wcs and target_shape is not None:
+        for sign in ("pos", "neg"):
+            if not levels.get(sign):
+                continue
             try:
-                from reproject import reproject_interp
-                from astropy.wcs import WCS
-
-                # Create axis-swapped WCS objects matching viewer.py's approach
-                def create_swapped_wcs(orig_wcs):
-                    """Create WCS with swapped axes for reprojection."""
-                    swapped = WCS(naxis=2)
-                    swapped.wcs.crpix = [orig_wcs.wcs.crpix[1], orig_wcs.wcs.crpix[0]]
-                    swapped.wcs.crval = [orig_wcs.wcs.crval[1], orig_wcs.wcs.crval[0]]
-                    try:
-                        swapped.wcs.cdelt = [
-                            orig_wcs.wcs.cdelt[1],
-                            orig_wcs.wcs.cdelt[0],
-                        ]
-                    except Exception:
-                        pass
-                    if orig_wcs.wcs.ctype[0] and orig_wcs.wcs.ctype[1]:
-                        swapped.wcs.ctype = [
-                            orig_wcs.wcs.ctype[1],
-                            orig_wcs.wcs.ctype[0],
-                        ]
-                    return swapped
-
-                # Swap both WCS for consistent reprojection
-                target_wcs_swapped = create_swapped_wcs(target_wcs)
-                contour_wcs_swapped = create_swapped_wcs(contour_wcs)
-
-                # If region_info provided, reproject to FULL shape first, then crop
-                if region_info:
-                    full_shape = region_info.get("full_shape", target_shape)
-
-                    # Reproject to full base image shape
-                    reprojected_data, footprint = reproject_interp(
-                        (contour_data, contour_wcs_swapped),
-                        target_wcs_swapped,
-                        shape_out=full_shape,
+                collections.append(
+                    draw_mapped_contours(
+                        ax,
+                        contour_data,
+                        mapping,
+                        step=step,
+                        offset=region_origin,
+                        levels=levels[sign],
+                        colors=settings.get(
+                            f"{sign}_color", "white" if sign == "pos" else "cyan"
+                        ),
+                        linewidths=settings.get("linewidth", 1.0),
+                        linestyles=settings.get(
+                            f"{sign}_linestyle", "-" if sign == "pos" else "--"
+                        ),
                     )
-
-                    # Then crop to the region
-                    x_min = region_info.get("x_min", 0)
-                    y_min = region_info.get("y_min", 0)
-                    x_max = region_info.get("x_max", full_shape[1] - 1)
-                    y_max = region_info.get("y_max", full_shape[0] - 1)
-                    reprojected_data = reprojected_data[
-                        y_min : y_max + 1, x_min : x_max + 1
-                    ]
-                else:
-                    # No region - reproject directly to target shape
-                    reprojected_data, footprint = reproject_interp(
-                        (contour_data, contour_wcs_swapped),
-                        target_wcs_swapped,
-                        shape_out=target_shape,
-                    )
-
-                # Log reprojection result
-                nan_pct = 100 * np.isnan(reprojected_data).sum() / reprojected_data.size
-                logger.info(f"[REPROJ] Result: {nan_pct:.1f}% NaNs")
-
-                # Check validity of reprojected data
-                is_all_nan = np.all(np.isnan(reprojected_data))
-                is_all_zero = np.all(np.nan_to_num(reprojected_data) == 0)
-
-                if is_all_nan or is_all_zero:
-                    logger.warning(
-                        "Reprojection yielded empty data. Falling back to pixel overlay."
-                    )
-                else:
-                    contour_data = reprojected_data
-
-            except Exception as e:
-                logger.warning(
-                    f"Contour reprojection failed: {e}. Falling back to pixel overlay."
                 )
-
-        # Draw positive contours
-        if levels.get("pos"):
-            try:
-                cs_pos = ax.contour(
-                    contour_data,
-                    levels=levels["pos"],
-                    colors=settings.get("pos_color", "white"),
-                    linewidths=settings.get("linewidth", 1.0),
-                    linestyles=settings.get("pos_linestyle", "-"),
-                )
-                collections.append(cs_pos)
             except Exception as e:
-                logger.warning(f"Error drawing positive contours: {e}")
-
-        # Draw negative contours
-        if levels.get("neg"):
-            try:
-                cs_neg = ax.contour(
-                    contour_data,
-                    levels=levels["neg"],
-                    colors=settings.get("neg_color", "cyan"),
-                    linewidths=settings.get("linewidth", 1.0),
-                    linestyles=settings.get("neg_linestyle", "--"),
-                )
-                collections.append(cs_neg)
-            except Exception as e:
-                logger.warning(f"Error drawing negative contours: {e}")
+                logger.warning(f"Error drawing {sign} contours: {e}")
 
         return collections
 

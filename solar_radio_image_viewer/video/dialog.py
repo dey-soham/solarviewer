@@ -58,6 +58,7 @@ from ..processing.colormaps import ensure_solar_colormaps
 from .creator import (
     load_fits_data,
     get_norm,
+    observation_sort_key,
 )
 
 
@@ -111,7 +112,7 @@ class VideoCreationDialog(QDialog):
         self.setWindowFlags(
             Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
         )
-        self.parent = parent
+        self._main_window = parent
         self.current_file = current_file
         self.progress_tracker = None
         self.preview_image = None
@@ -157,25 +158,8 @@ class VideoCreationDialog(QDialog):
             # Set default output file
             self.output_file_edit.setText(os.path.join(dir_path, "output_video.mp4"))
 
-            # Load visualization settings from parent if available
-            if hasattr(parent, "colormap") and parent.colormap:
-                idx = self.colormap_combo.findText(parent.colormap)
-                if idx >= 0:
-                    self.colormap_combo.setCurrentIndex(idx)
-
-            if hasattr(parent, "stretch_type") and parent.stretch_type:
-                idx = self.stretch_combo.findText(parent.stretch_type.capitalize())
-                if idx >= 0:
-                    self.stretch_combo.setCurrentIndex(idx)
-
-            if hasattr(parent, "gamma") and parent.gamma:
-                self.gamma_spinbox.setValue(parent.gamma)
-
-            if hasattr(parent, "vmin") and parent.vmin:
-                self.vmin_spinbox.setValue(parent.vmin)
-
-            if hasattr(parent, "vmax") and parent.vmax:
-                self.vmax_spinbox.setValue(parent.vmax)
+            # Start from the current tab's display settings
+            self._copy_viewer_settings(parent)
 
             # Auto-scan for files
             self.preview_input_files()
@@ -197,6 +181,48 @@ class VideoCreationDialog(QDialog):
         # Update preview if we have a valid reference image
         if self.reference_image:
             self.update_preview(self.reference_image)
+
+    def _copy_viewer_settings(self, main_window):
+        """Use the colormap, stretch, gamma, Stokes and range of the main
+        window's current tab as the starting display settings."""
+        tab_widget = getattr(main_window, "tab_widget", None)
+        tab = tab_widget.currentWidget() if tab_widget is not None else None
+        if tab is None:
+            return
+
+        def text(name):
+            widget = getattr(tab, name, None)
+            try:
+                return widget.currentText() if hasattr(widget, "currentText") else widget.text()
+            except Exception:
+                return ""
+
+        colormap = text("cmap_combo")
+        if colormap:
+            if self.colormap_combo.findText(colormap) < 0:
+                self.colormap_combo.addItem(colormap)
+            self.colormap_combo.setCurrentText(colormap)
+
+        stretch = {"histeq": "Histogram Equalization", "zscale": "ZScale"}.get(
+            text("stretch_combo"), text("stretch_combo").capitalize()
+        )
+        index = self.stretch_combo.findText(stretch)
+        if index >= 0:
+            self.stretch_combo.setCurrentIndex(index)
+
+        stokes = text("stokes_combo")
+        if self.stokes_combo.findText(stokes) >= 0:
+            self.stokes_combo.setCurrentText(stokes)
+
+        for name, spinbox in (
+            ("gamma_entry", self.gamma_spinbox),
+            ("vmin_entry", self.vmin_spinbox),
+            ("vmax_entry", self.vmax_spinbox),
+        ):
+            try:
+                spinbox.setValue(float(text(name)))
+            except ValueError:
+                pass
 
     @property
     def figure(self):
@@ -540,6 +566,35 @@ class VideoCreationDialog(QDialog):
 
         range_form.addRow("Values:", minmax_widget)
 
+        # Percentile range used by the two Auto modes
+        percentile_widget = QWidget()
+        percentile_layout = QHBoxLayout(percentile_widget)
+        percentile_layout.setContentsMargins(0, 0, 0, 0)
+        percentile_layout.setSpacing(10)
+        percentile_layout.addWidget(QLabel("Low:"))
+        self.lower_percentile_spinbox = QDoubleSpinBox()
+        self.lower_percentile_spinbox.setRange(0, 100)
+        self.lower_percentile_spinbox.setDecimals(1)
+        self.lower_percentile_spinbox.setSingleStep(0.5)
+        self.lower_percentile_spinbox.setSuffix(" %")
+        self.lower_percentile_spinbox.setValue(0)
+        self.lower_percentile_spinbox.valueChanged.connect(self.update_preview_settings)
+        percentile_layout.addWidget(self.lower_percentile_spinbox)
+        percentile_layout.addWidget(QLabel("High:"))
+        self.upper_percentile_spinbox = QDoubleSpinBox()
+        self.upper_percentile_spinbox.setRange(0, 100)
+        self.upper_percentile_spinbox.setDecimals(1)
+        self.upper_percentile_spinbox.setSingleStep(0.5)
+        self.upper_percentile_spinbox.setSuffix(" %")
+        self.upper_percentile_spinbox.setValue(100)
+        self.upper_percentile_spinbox.valueChanged.connect(self.update_preview_settings)
+        percentile_layout.addWidget(self.upper_percentile_spinbox)
+        percentile_widget.setToolTip(
+            "Auto modes scale each frame (or all frames) from this percentile\n"
+            "range of the pixel values; 0-100 % is the full min-max range"
+        )
+        range_form.addRow("Percentiles:", percentile_widget)
+
         display_layout.addWidget(range_group)
 
         # Frame settings section
@@ -559,16 +614,20 @@ class VideoCreationDialog(QDialog):
         self.width_spinbox = QSpinBox()
         self.width_spinbox.setRange(0, 7680)
         self.width_spinbox.setValue(0)
-        self.width_spinbox.setSpecialValueText("Original")
+        self.width_spinbox.setSpecialValueText("Auto")
         size_layout.addWidget(self.width_spinbox)
 
         size_layout.addWidget(QLabel("Height:"))
         self.height_spinbox = QSpinBox()
         self.height_spinbox.setRange(0, 4320)
         self.height_spinbox.setValue(0)
-        self.height_spinbox.setSpecialValueText("Original")
+        self.height_spinbox.setSpecialValueText("Auto")
         size_layout.addWidget(self.height_spinbox)
 
+        size_widget.setToolTip(
+            "Frame size in pixels. Auto follows the image's shape: with both on\n"
+            "Auto the longer side is 1000 px; set one and the other follows."
+        )
         frame_form.addRow("Size:", size_widget)
 
         display_layout.addWidget(frame_group)
@@ -1170,6 +1229,10 @@ class VideoCreationDialog(QDialog):
             self.vmin_spinbox.setEnabled(False)
             self.vmax_spinbox.setEnabled(False)
 
+        # The percentile range applies to the Auto modes only
+        self.lower_percentile_spinbox.setEnabled(index != 0)
+        self.upper_percentile_spinbox.setEnabled(index != 0)
+
         # Update preview with new settings
         self.update_preview()
 
@@ -1413,9 +1476,13 @@ class VideoCreationDialog(QDialog):
                     if range_mode == 0:  # Fixed Range
                         vmin = self.vmin_spinbox.value()
                         vmax = self.vmax_spinbox.value()
-                    else:  # Auto
-                        vmin = np.nanpercentile(data, 0)
-                        vmax = np.nanpercentile(data, 100)
+                    else:  # Auto: the percentile range the video will use
+                        vmin = np.nanpercentile(
+                            data, self.lower_percentile_spinbox.value()
+                        )
+                        vmax = np.nanpercentile(
+                            data, self.upper_percentile_spinbox.value()
+                        )
 
                         # Update spinboxes for reference (without triggering events)
                         self.vmin_spinbox.blockSignals(True)
@@ -1640,7 +1707,8 @@ class VideoCreationDialog(QDialog):
                 if sort_method == "filename":
                     matching_files.sort()
                 elif sort_method == "date/time":
-                    matching_files.sort(key=os.path.getmtime)
+                    # Observation time (header or file name), not file dates
+                    matching_files.sort(key=observation_sort_key)
                 elif sort_method == "extension":
                     matching_files.sort(key=lambda x: os.path.splitext(x)[1])
 
@@ -1703,6 +1771,8 @@ class VideoCreationDialog(QDialog):
                 "range_mode": self.range_mode_combo.currentIndex(),  # 0: Fixed Range, 1: Auto Per Frame, 2: Global Auto
                 "vmin": self.vmin_spinbox.value(),
                 "vmax": self.vmax_spinbox.value(),
+                "lower_percentile": self.lower_percentile_spinbox.value(),
+                "upper_percentile": self.upper_percentile_spinbox.value(),
                 "colorbar": self.colorbar_check.isChecked(),
                 "width": self.width_spinbox.value(),
                 "height": self.height_spinbox.value(),

@@ -32,6 +32,7 @@ from ..processing.norms import (
     HistEqNorm,
 )
 from ..processing.colormaps import ensure_solar_colormaps
+from ..processing.fits_io import readable_image_path
 from ..processing.workers import process_pool_executor
 from .utils import (
     detect_coordinate_system,
@@ -106,14 +107,8 @@ def create_error_frame(
     showing weird plots or skipping frames entirely.
     """
     dpi = 100
-
-    # Use specified dimensions or default
-    if options.get("width", 0) > 0 and options.get("height", 0) > 0:
-        figsize = (options["width"] / dpi, options["height"] / dpi)
-    else:
-        figsize = (10, 10)
-
-    fig = Figure(figsize=figsize, dpi=dpi)
+    width, height = options.get("frame_size") or frame_size(options, (1, 1))
+    fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
     canvas = FigureCanvas(fig)
     ax = fig.add_subplot(111)
 
@@ -164,112 +159,144 @@ def natural_sort_key(s):
     ]
 
 
-def extract_datetime(filepath):
+STOKES_CODES = {"I": 1, "Q": 2, "U": 3, "V": 4}
+
+
+def observation_time(header, filepath=None):
+    """Observation time of an image as a datetime, or None if unknown.
+
+    From the header (DATE-OBS and its variants, with a separate TIME-OBS if
+    the date has no time), else from a date in the file name.
     """
-    Try to extract datetime from filename or FITS header
-    Returns a datetime object if successful, None otherwise
-    """
-    try:
-        # First try to get from FITS header
-        with fits.open(filepath) as hdul:
-            header = hdul[0].header
-            if "DATE-OBS" in header:
-                try:
-                    # Try different date formats
-                    formats = [
-                        "%Y-%m-%dT%H:%M:%S.%f",
-                        "%Y-%m-%dT%H:%M:%S",
-                        "%Y-%m-%d %H:%M:%S.%f",
-                        "%Y-%m-%d %H:%M:%S",
-                        "%Y/%m/%d %H:%M:%S",
-                        "%Y-%m-%d",
-                    ]
+    from astropy.time import Time
 
-                    date_str = header["DATE-OBS"]
-                    for fmt in formats:
-                        try:
-                            return datetime.strptime(date_str, fmt)
-                        except ValueError:
-                            continue
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    if header is not None:
+        for key in ("DATE-OBS", "DATE_OBS", "DATE-BEG", "STARTOBS", "DATE"):
+            value = header.get(key)
+            if not value:
+                continue
+            text = str(value).strip().rstrip("Z").replace("/", "-")
+            if "T" not in text and " " not in text:
+                time_obs = header.get("TIME-OBS") or header.get("TIME_OBS")
+                if time_obs:
+                    text = f"{text}T{str(time_obs).strip()}"
+            try:
+                return Time(text.replace(" ", "T")).to_datetime()
+            except Exception:
+                continue
 
-    # Fall back to filename pattern matching
-    filename = os.path.basename(filepath)
-    patterns = [
-        r"(\d{4}[-_]\d{2}[-_]\d{2}[-_T]\d{2}[-_]\d{2}[-_]\d{2})",  # 2023-01-01-12-30-00
-        r"(\d{4}[-_]\d{2}[-_]\d{2})",  # 2023-01-01
-        r"(\d{8}[-_]\d{6})",  # 20230101_123000
-        r"(\d{8})",  # 20230101
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, filename)
-        if match:
-            date_str = match.group(1)
-            formats = [
-                "%Y-%m-%d-%H-%M-%S",
-                "%Y_%m_%d_%H_%M_%S",
-                "%Y-%m-%dT%H-%M-%S",
-                "%Y-%m-%d",
-                "%Y_%m_%d",
-                "%Y%m%d_%H%M%S",
-                "%Y%m%d",
-            ]
-
-            for fmt in formats:
-                try:
-                    return datetime.strptime(date_str, fmt)
-                except ValueError:
-                    continue
-
+    if filepath:
+        filename = os.path.basename(filepath)
+        patterns = [
+            r"(\d{4}[-_]\d{2}[-_]\d{2}[-_T]\d{2}[-_]\d{2}[-_]\d{2})",
+            r"(\d{8}[-_T]\d{6})",
+            r"(\d{4}[-_]\d{2}[-_]\d{2})",
+            r"(\d{8})",
+        ]
+        formats = [
+            "%Y-%m-%d-%H-%M-%S",
+            "%Y_%m_%d_%H_%M_%S",
+            "%Y-%m-%dT%H-%M-%S",
+            "%Y_%m_%dT%H_%M_%S",
+            "%Y%m%d_%H%M%S",
+            "%Y%m%d-%H%M%S",
+            "%Y%m%dT%H%M%S",
+            "%Y-%m-%d",
+            "%Y_%m_%d",
+            "%Y%m%d",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, filename)
+            if match:
+                for fmt in formats:
+                    try:
+                        return datetime.strptime(match.group(1), fmt)
+                    except ValueError:
+                        continue
     return None
 
 
+def observation_sort_key(filepath):
+    """Sort key ordering files by observation time; files without one come
+    last, by modification time."""
+    from ..processing.image_meta import fits_header
+
+    try:
+        when = observation_time(fits_header(filepath), filepath)
+    except Exception:
+        when = observation_time(None, filepath)
+    if when is not None:
+        return (0, when.timestamp())
+    return (1, os.path.getmtime(filepath))
+
+
+def _plane_index(header, ndim, stokes):
+    """Index selecting one Stokes plane and the first channel of every other
+    non-spatial axis of an ``ndim``-dimensional FITS image."""
+    if isinstance(stokes, (int, np.integer)):
+        stokes = "IQUV"[int(stokes)]
+    extra = ndim - 2  # numpy axes before the two spatial ones
+    ctypes = [str(header.get(f"CTYPE{ndim - axis}", "")).upper() for axis in range(extra)]
+    index = [0] * extra
+    if "STOKES" in ctypes:
+        axis = ctypes.index("STOKES")
+        fits_axis = ndim - axis
+        crval = header.get(f"CRVAL{fits_axis}", 1.0)
+        cdelt = header.get(f"CDELT{fits_axis}", 1.0) or 1.0
+        crpix = header.get(f"CRPIX{fits_axis}", 1.0)
+        plane = int(round((STOKES_CODES[stokes] - crval) / cdelt + crpix - 1))
+        if not 0 <= plane < header.get(f"NAXIS{fits_axis}", 1):
+            raise ValueError(f"no Stokes {stokes} plane in the image")
+        index[axis] = plane
+    elif not any(ctypes):
+        # No axis types: assume the first extra axis is Stokes (I, Q, U, V)
+        index[0] = "IQUV".index(stokes)
+    elif stokes != "I":
+        raise ValueError(f"no Stokes axis in the image for Stokes {stokes}")
+    return tuple(index)
+
+
 def load_fits_data(filepath, stokes="I"):
-    """
-    Load data from a FITS file
+    """One Stokes plane (first frequency channel) of a FITS image, rows = y,
+    and its header.
+
+    Images stored in an extension (e.g. tile-compressed) are read through
+    readable_image_path; the Stokes axis is found from the CTYPE keywords.
+    Returns (None, None) if the file or the Stokes plane can't be read.
     """
     try:
-        with fits.open(filepath) as hdul:
+        with fits.open(readable_image_path(filepath)) as hdul:
             header = hdul[0].header
             data = hdul[0].data
-
-            # Handle data dimensionality
-            if data.ndim == 4:  # [stokes, freq, y, x]
-                # Find the Stokes index
-                stokes_index = 0  # default to first index
-                if stokes == "I" or stokes == 0:
-                    stokes_index = 0
-                elif stokes == "Q" or stokes == 1:
-                    stokes_index = 1
-                elif stokes == "U" or stokes == 2:
-                    stokes_index = 2
-                elif stokes == "V" or stokes == 3:
-                    stokes_index = 3
-
-                # Use first frequency channel
-                data = data[stokes_index, 0, :, :]
-            elif data.ndim == 3:  # [freq, y, x] or [stokes, y, x]
-                # Assume [stokes, y, x] format
-                stokes_index = 0  # default to first index
-                if stokes == "I" or stokes == 0:
-                    stokes_index = 0
-                elif stokes == "Q" or stokes == 1:
-                    stokes_index = 1
-                elif stokes == "U" or stokes == 2:
-                    stokes_index = 2
-                elif stokes == "V" or stokes == 3:
-                    stokes_index = 3
-
-                data = data[stokes_index, :, :]
-
-            return data, header
+            if data is None:
+                raise ValueError("no image data")
+            if data.ndim > 2:
+                data = data[_plane_index(header, data.ndim, stokes)]
+            return np.array(data), header
     except Exception as e:
         logger.error(f"Error loading {filepath}: {e}")
         return None, None
+
+
+def frame_size(options, data_shape):
+    """(width, height) of video frames in pixels, both even.
+
+    The Width/Height options if set; a missing one follows the image's
+    aspect ratio, and with neither the longer side is 1000 pixels.
+    """
+    width, height = options.get("width", 0), options.get("height", 0)
+    rows, cols = data_shape[:2]
+    aspect = cols / rows if rows else 1.0
+    if width <= 0 and height <= 0:
+        if aspect >= 1:
+            width = 1000
+        else:
+            height = 1000
+    if width <= 0:
+        width = height * aspect
+    if height <= 0:
+        height = width / aspect
+    return (max(2, int(round(width / 2)) * 2), max(2, int(round(height / 2)) * 2))
 
 
 def apply_visualization(data, vmin=None, vmax=None, stretch="linear", gamma=1.0):
@@ -315,33 +342,6 @@ def apply_visualization(data, vmin=None, vmax=None, stretch="linear", gamma=1.0)
     return normalized_data
 
 
-def format_timestamp(dt_str):
-    """Format timestamp in a consistent way similar to the main application"""
-    try:
-        # Try different date formats
-        formats = [
-            "%Y-%m-%dT%H:%M:%S.%f",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d %H:%M:%S.%f",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y/%m/%d %H:%M:%S",
-            "%Y-%m-%d",
-        ]
-
-        for fmt in formats:
-            try:
-                dt = datetime.strptime(dt_str, fmt)
-                # Format like "2023-01-01 12:30:45 UTC"
-                return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-            except ValueError:
-                continue
-    except:
-        pass
-
-    # Return original if parsing fails
-    return dt_str
-
-
 def get_norm(stretch_type, vmin, vmax, gamma=1.0):
     """Create a normalization object based on the stretch type"""
     stretch_type = stretch_type.lower()
@@ -376,6 +376,14 @@ def get_norm(stretch_type, vmin, vmax, gamma=1.0):
         return Normalize(vmin=vmin, vmax=vmax)
 
 
+def _frame_contour_file(options, frame_idx):
+    """The contour file drawn on frame ``frame_idx``, or None."""
+    if options.get("contour_mode", 0) == 1:  # Mode B: one fixed contour file
+        return options.get("fixed_contour_file") or None
+    contour_files = options.get("contour_files", [])
+    return contour_files[frame_idx] if frame_idx < len(contour_files) else None
+
+
 def process_image(
     file_path, options, global_stats=None, contour_processor=None, frame_idx=0
 ):
@@ -397,11 +405,12 @@ def process_image(
                 options, "Blank/constant data", frame_idx, os.path.basename(file_path)
             )
 
+        # Region shown, as (x_min, y_min) of the full image (for WCS and contours)
+        region_origin = (0, 0)
+        full_shape = data.shape
+
         # Apply region selection if enabled
         if options.get("region_enabled", False):
-            # Store original full shape BEFORE cropping for contour reprojection
-            options["full_shape"] = data.shape
-
             # Get region coordinates
             x_min = options.get("x_min", 0)
             x_max = options.get("x_max", data.shape[1] - 1)
@@ -437,32 +446,31 @@ def process_image(
 
             # Extract the region
             data = data[y_min : y_max + 1, x_min : x_max + 1]
-
-            # Update the region dimensions in options for reference
-            options["actual_region_width"] = data.shape[1]
-            options["actual_region_height"] = data.shape[0]
+            region_origin = (x_min, y_min)
 
         # Get filename for display
         filename = os.path.basename(file_path)
 
-        # Create figure
+        # Create figure (all frames of a video share one size)
         dpi = 100
-
-        # Determine figure size based on data dimensions and any resize options
-        if options.get("width", 0) > 0 and options.get("height", 0) > 0:
-            # Use specified dimensions
-            figsize = (options["width"] / dpi, options["height"] / dpi)
-        else:
-            # Use data dimensions
-            # figsize = (data.shape[1] / dpi + 1, data.shape[0] / dpi)
-            figsize = (10, 10)
-
-        fig = Figure(figsize=figsize, dpi=dpi)
+        width, height = options.get("frame_size") or frame_size(options, data.shape)
+        fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
         canvas = FigureCanvas(fig)
 
-        # Create axes - use WCS projection if enabled
+        # Create axes - use WCS projection if enabled: this frame's own WCS,
+        # cut to the region shown
         wcs_enabled = options.get("wcs_enabled", False)
         coord_info = options.get("coord_info", None)
+        frame_wcs = None
+        if wcs_enabled and coord_info and coord_info.get("wcs") is not None:
+            from astropy.wcs import WCS
+
+            try:
+                frame_wcs = WCS(header, naxis=2)
+            except Exception:
+                frame_wcs = coord_info["wcs"]
+            x0, y0 = region_origin
+            frame_wcs = frame_wcs[y0 : y0 + data.shape[0], x0 : x0 + data.shape[1]]
 
         # Check if timeline is enabled to use GridSpec layout
         timeline_enabled = options.get("minmax_timeline_enabled", False)
@@ -472,8 +480,8 @@ def process_image(
             # Use GridSpec for bottom dock panel layout: 88% image, 12% timeline
             gs = GridSpec(2, 1, height_ratios=[88, 12], hspace=0.25, figure=fig)
 
-            if wcs_enabled and coord_info and coord_info.get("wcs"):
-                ax = fig.add_subplot(gs[0], projection=coord_info["wcs"])
+            if frame_wcs is not None:
+                ax = fig.add_subplot(gs[0], projection=frame_wcs)
             else:
                 ax = fig.add_subplot(gs[0])
 
@@ -482,8 +490,8 @@ def process_image(
             # timeline_ax.set_facecolor('#1a1a2e')  # Removed to support dynamic themes
         else:
             # No timeline - use full figure for image
-            if wcs_enabled and coord_info and coord_info.get("wcs"):
-                ax = create_wcs_axes(fig, coord_info["wcs"])
+            if frame_wcs is not None:
+                ax = create_wcs_axes(fig, frame_wcs)
             else:
                 ax = fig.add_subplot(111)
 
@@ -537,72 +545,31 @@ def process_image(
             try:
                 from astropy.wcs import WCS
 
-                c_data = None
-                c_wcs = None
-                c_levels = None
-
-                if contour_processor.mode == "A":
-                    # Mode A: Fixed base, evolving contours
-                    # Get contour data from contour_processor's cached data for this frame
-                    contour_files = options.get("contour_files", [])
-                    if frame_idx < len(contour_files):
-                        c_data, c_header = load_fits_data(
-                            contour_files[frame_idx], stokes=options.get("stokes", "I")
-                        )
-                        if c_header:
-                            c_wcs = WCS(c_header, naxis=2)
-
-                elif contour_processor.mode == "B":
-                    # Mode B: Fixed contours, evolving colormap
-                    c_data = contour_processor.fixed_contour_data
-                    c_wcs = contour_processor.fixed_contour_wcs
-                    c_levels = contour_processor.fixed_contour_levels
-
-                elif contour_processor.mode == "C":
-                    # Mode C: Both evolve
-                    contour_files = options.get("contour_files", [])
-                    if frame_idx < len(contour_files):
-                        c_data, c_header = load_fits_data(
-                            contour_files[frame_idx], stokes=options.get("stokes", "I")
-                        )
-                        if c_header:
-                            c_wcs = WCS(c_header, naxis=2)
+                # Mode B: one fixed contour image; A and C: this frame's
+                contour_file = _frame_contour_file(options, frame_idx)
+                c_data, c_wcs = (None, None)
+                if contour_file:
+                    c_data, c_wcs = contour_processor.contour_image(
+                        contour_file, options.get("stokes", "I"), header
+                    )
+                c_levels = None  # from the contour data drawn
 
                 if c_data is not None:
-                    # Get target WCS for reprojection
+                    # Contours are placed through the WCS of the full image shown
                     target_wcs = None
-                    if (
-                        contour_processor.mode == "A"
-                        and contour_processor.base_image_wcs
-                    ):
-                        target_wcs = contour_processor.base_image_wcs
-                    elif coord_info and coord_info.get("wcs"):
-                        target_wcs = coord_info["wcs"]
-                    elif header:
+                    if header:
                         try:
                             target_wcs = WCS(header, naxis=2)
-                        except:
+                        except Exception:
                             pass
-
-                    # Build region_info if region was applied
-                    region_info = None
-                    if options.get("region_enabled", False):
-                        region_info = {
-                            "x_min": options.get("x_min", 0),
-                            "y_min": options.get("y_min", 0),
-                            "x_max": options.get("x_max", data.shape[1] - 1),
-                            "y_max": options.get("y_max", data.shape[0] - 1),
-                            "full_shape": options.get("full_shape", data.shape),
-                        }
-
                     contour_processor.draw_contours(
                         ax,
                         c_data,
                         levels=c_levels,
                         target_wcs=target_wcs,
                         contour_wcs=c_wcs,
-                        target_shape=data.shape,
-                        region_info=region_info,
+                        target_shape=full_shape,
+                        region_origin=region_origin,
                     )
                 else:
                     logger.warning(f"Frame {frame_idx}: No contour data to draw")
@@ -624,82 +591,30 @@ def process_image(
         overlay_text = []
 
         # Add timestamp if requested
-        if options.get("timestamp", False) and header:
-            # Extract date from header if available
-            timestamp = None
-            for key in ["DATE-OBS", "DATE_OBS", "DATE"]:
-                if key in header:
+        if options.get("timestamp", False):
+            when = observation_time(header, file_path)
+            text = when.strftime("%Y-%m-%d %H:%M:%S") if when else "unknown"
+            # Use "Colormap:" prefix in contour mode
+            prefix = "Colormap" if options.get("contour_video_enabled", False) else "Time"
+            overlay_text.append(f"{prefix}: {text}")
+
+            # Add contour timestamp if in contour mode
+            if options.get("contour_video_enabled", False):
+                contour_file = _frame_contour_file(options, frame_idx)
+                if contour_file:
                     try:
-                        date_str = header[key]
-                        # Parse the date string
-                        if "T" in date_str:
-                            timestamp = datetime.strptime(
-                                date_str, "%Y-%m-%dT%H:%M:%S.%f"
-                            )
-                        else:
-                            timestamp = datetime.strptime(
-                                date_str, "%Y-%m-%d %H:%M:%S.%f"
-                            )
-                        break
-                    except (ValueError, TypeError):
-                        try:
-                            # Try alternative format
-                            timestamp = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-                            break
-                        except (ValueError, TypeError):
-                            pass
-
-            if timestamp:
-                # Use "Colormap:" prefix in contour mode
-                if options.get("contour_video_enabled", False):
+                        c_header = fits.getheader(readable_image_path(contour_file))
+                    except Exception:
+                        c_header = None
+                    c_when = observation_time(c_header, contour_file)
                     overlay_text.append(
-                        f"Colormap: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+                        "Contour: "
+                        + (
+                            c_when.strftime("%Y-%m-%d %H:%M:%S")
+                            if c_when
+                            else os.path.basename(contour_file)
+                        )
                     )
-                else:
-                    overlay_text.append(
-                        f"Time: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-            else:
-                # Use file modification time as fallback
-                mtime = os.path.getmtime(file_path)
-                if options.get("contour_video_enabled", False):
-                    overlay_text.append(
-                        f"Colormap: {datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-                else:
-                    overlay_text.append(
-                        f"Time: {datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')}"
-                    )
-
-        # Add contour timestamp if in contour mode
-        if options.get("timestamp", False) and options.get(
-            "contour_video_enabled", False
-        ):
-            contour_files = options.get("contour_files", [])
-            frame_idx = options.get("current_frame", 0)
-            if frame_idx < len(contour_files):
-                contour_file = contour_files[frame_idx]
-                try:
-                    with fits.open(contour_file) as hdul:
-                        c_header = hdul[0].header
-                        for key in ["DATE-OBS", "DATE_OBS", "DATE"]:
-                            if key in c_header:
-                                c_date_str = c_header[key]
-                                if "T" in c_date_str:
-                                    c_ts = datetime.strptime(
-                                        c_date_str, "%Y-%m-%dT%H:%M:%S.%f"
-                                    )
-                                else:
-                                    c_ts = datetime.strptime(
-                                        c_date_str, "%Y-%m-%d %H:%M:%S.%f"
-                                    )
-                                overlay_text.append(
-                                    f"Contour: {c_ts.strftime('%Y-%m-%d %H:%M:%S')}"
-                                )
-                                break
-                except Exception:
-                    # Use contour filename as fallback
-                    overlay_text.append(f"Contour: {os.path.basename(contour_file)}")
 
         # Add frame number if requested
         if options.get("frame_number", False):
@@ -717,11 +632,9 @@ def process_image(
 
             # Add contour filename if in contour mode
             if options.get("contour_video_enabled", False):
-                contour_files = options.get("contour_files", [])
-                frame_idx = options.get("current_frame", 0)
-                if frame_idx < len(contour_files):
-                    contour_filename = os.path.basename(contour_files[frame_idx])
-                    overlay_text.append(f"Contour: {contour_filename}")
+                contour_file = _frame_contour_file(options, frame_idx)
+                if contour_file:
+                    overlay_text.append(f"Contour: {os.path.basename(contour_file)}")
 
         # Add text overlay
         if overlay_text:
@@ -1100,6 +1013,15 @@ def create_video(files, output_file, options, progress_callback=None):
                 )
             else:
                 logger.warning("Could not determine region dimensions from first file")
+
+        # One frame size for the whole video, from the first image (or region)
+        if "frame_size" not in options:
+            first_data, _ = load_fits_data(files[0], stokes=options.get("stokes", "I"))
+            shape = first_data.shape if first_data is not None else (1, 1)
+            if options.get("region_enabled", False) and "region_width" in options:
+                shape = (options["region_height"], options["region_width"])
+            options["frame_size"] = frame_size(options, shape)
+            logger.info(f"Frame size: {options['frame_size'][0]}x{options['frame_size'][1]}")
 
         # Initialize WCS coordinate detection if enabled
         if options.get("wcs_enabled", False):
