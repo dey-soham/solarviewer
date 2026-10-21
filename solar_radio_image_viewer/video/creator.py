@@ -959,6 +959,70 @@ def _layers_from_contour_mode(options):
     options.setdefault("contour_options", {"show_legend": False})
 
 
+# Quality presets: x264/VP9 constant rate factor (lower is better)
+QUALITY_CRF = {"Low": 30, "Medium": 24, "High": 19, "Lossless": 0}
+
+
+def _crf(quality):
+    """CRF for a quality preset name, or for the former 1-10 scale."""
+    if isinstance(quality, str):
+        return QUALITY_CRF.get(quality, QUALITY_CRF["High"])
+    return int(round(34 - 16 * (min(max(quality, 1), 10) - 1) / 9))  # 1 -> 34, 10 -> 18
+
+
+def video_writer(output_file, options):
+    """A function returning the context manager that writes the frames,
+    chosen by the file extension: .mp4/.avi (H.264), .webm (VP9), .gif, or
+    .png (frames as name_0001.png, name_0002.png, ...)."""
+    fps = options.get("fps", 15)
+    ext = os.path.splitext(output_file)[1].lower()
+    crf = _crf(options.get("quality", "High"))
+    if ext == ".png":
+        return lambda: _PngFrames(output_file)
+    if ext == ".gif":
+        # imageio's Pillow GIF writer takes the frame time in ms (since 2.28;
+        # the older GIF-PIL writer took fps)
+        major, minor = (int(part) for part in imageio.__version__.split(".")[:2])
+        if (major, minor) >= (2, 28):
+            return lambda: imageio.get_writer(
+                output_file, format="GIF", duration=1000 / fps, loop=0
+            )
+        return lambda: imageio.get_writer(output_file, format="GIF", fps=fps, subrectangles=True)
+    if ext == ".webm":
+        params = ["-crf", str(crf), "-b:v", "0"] + (["-lossless", "1"] if crf == 0 else [])
+        return lambda: imageio.get_writer(
+            output_file, format="FFMPEG", fps=fps, codec="libvpx-vp9", quality=None,
+            pixelformat="yuv420p", macro_block_size=1, output_params=params,
+        )
+    if ext not in (".mp4", ".avi"):
+        logger.warning(f"Unrecognized extension {ext}, using MP4 settings")
+    # Lossless keeps full colour (yuv444p), which not every player can show
+    return lambda: imageio.get_writer(
+        output_file, format="FFMPEG", fps=fps, codec="libx264", quality=None,
+        pixelformat="yuv444p" if crf == 0 else "yuv420p", macro_block_size=1,
+        output_params=["-crf", str(crf)],
+    )
+
+
+class _PngFrames:
+    """Writes each frame as a numbered PNG next to ``name.png``."""
+
+    def __init__(self, output_file):
+        self._stem = os.path.splitext(output_file)[0]
+        self.written = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def append_data(self, frame):
+        path = f"{self._stem}_{len(self.written) + 1:04d}.png"
+        imageio.imwrite(path, frame)
+        self.written.append(path)
+
+
 def prepare_video_options(files, options):
     """Fill in ``options`` with what all frames of a video share: the frame
     count, the region (with even dimensions), the frame size, the coordinate
@@ -1148,55 +1212,8 @@ def create_video(files, output_file, options, progress_callback=None):
         # Ensure output file has extension
         if not os.path.splitext(output_file)[1]:
             output_file += ".mp4"  # Default to MP4 if no extension
+        writer_factory = video_writer(output_file, options)
 
-        # Handle case-insensitive file extensions
-        output_ext = os.path.splitext(output_file)[1].lower()
-
-        # Determine the video writer based on the file extension
-        if output_ext == ".mp4":
-            # MP4 format with H.264 codec
-            writer_kwargs = {
-                "format": "FFMPEG",
-                "fps": options.get("fps", 15),
-                "codec": "libx264",
-                "quality": None,
-                "bitrate": str(options.get("quality", 8) * 100000),
-                "pixelformat": "yuv420p",
-                "macro_block_size": 1,  # Important: Use 1 to prevent resizing issues
-            }
-        elif output_ext == ".gif":
-            # GIF format
-            writer_kwargs = {
-                "format": "GIF",
-                "fps": options.get("fps", 15),
-                "subrectangles": True,
-            }
-        elif output_ext == ".avi":
-            # AVI format
-            writer_kwargs = {
-                "format": "FFMPEG",
-                "fps": options.get("fps", 15),
-                "codec": "libx264",
-                "pixelformat": "yuv420p",
-                "quality": None,
-                "bitrate": str(options.get("quality", 8) * 100000),
-                "macro_block_size": 1,  # Important: Use 1 to prevent resizing issues
-            }
-        else:
-            # Default to MP4 for other extensions
-            logger.warning(f"Unrecognized extension {output_ext}, using MP4 settings")
-            writer_kwargs = {
-                "format": "FFMPEG",
-                "fps": options.get("fps", 15),
-                "codec": "libx264",
-                "quality": None,
-                "bitrate": str(options.get("quality", 8) * 100000),
-                "pixelformat": "yuv420p",
-                "macro_block_size": 1,  # Important: Use 1 to prevent resizing issues
-            }
-
-        # Add fps and quality info to the options for reference
-        options["fps"] = writer_kwargs.get("fps", 15)
 
         options = prepare_video_options(files, options)
         total_frames = options["total_frames"]
@@ -1214,7 +1231,7 @@ def create_video(files, output_file, options, progress_callback=None):
         frames = _frames_in_order(files, options, global_stats, frame_contours)
         cancelled = False
         try:
-            with imageio.get_writer(output_file, **writer_kwargs) as writer:
+            with writer_factory() as writer:
                 for i, frame in frames:
                     if frame is not None:
                         writer.append_data(ensure_even_dimensions(frame))
@@ -1229,10 +1246,11 @@ def create_video(files, output_file, options, progress_callback=None):
 
         if cancelled:
             logger.info("Video creation cancelled by user")
-            try:
-                os.remove(output_file)
-            except OSError:
-                pass
+            for path in getattr(writer, "written", [output_file]):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
             return None
 
         render_time = time.time() - render_start
@@ -1285,17 +1303,41 @@ class VideoProgress:
         return self.thread
 
 
+def main(argv=None):
+    """Command line:
+    python -m solar_radio_image_viewer.video.creator OUTPUT FILE.fits [FILE.fits ...]
+    python -m solar_radio_image_viewer.video.creator --preset SETTINGS.json OUTPUT
+    (a preset saved from the Create Video window makes the same video)
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        prog="python -m solar_radio_image_viewer.video.creator",
+        description="Make a video from FITS images.",
+    )
+    parser.add_argument("--preset", help="settings saved from the Create Video window")
+    parser.add_argument("output", help="video file (.mp4, .webm, .gif, .avi or .png frames)")
+    parser.add_argument("files", nargs="*", help="FITS images, one per frame")
+    args = parser.parse_args(argv)
+
+    if args.preset:
+        with open(args.preset) as f:
+            video = json.load(f).get("video")
+        if not video:
+            parser.error("the preset has no frames (its settings had a problem when saved)")
+        files, options = video["files"], video["options"]
+        if args.files:
+            parser.error("give either --preset or files, not both")
+    elif args.files:
+        files = sorted(args.files)
+        options = {"width": 0, "height": 0, "fps": 10, "timestamp": True, "colorbar": True}
+    else:
+        parser.error("give FITS files or --preset")
+    return 0 if create_video(files, args.output, options) else 1
+
+
 if __name__ == "__main__":
-    # python -m solar_radio_image_viewer.video.creator OUTPUT.mp4 FILE.fits [FILE.fits ...]
     import sys
 
-    if len(sys.argv) < 3:
-        sys.exit(
-            "usage: python -m solar_radio_image_viewer.video.creator "
-            "OUTPUT.mp4 FILE.fits [FILE.fits ...]"
-        )
-    create_video(
-        sorted(sys.argv[2:]),
-        sys.argv[1],
-        {"width": 0, "height": 0, "fps": 10, "timestamp": True, "colorbar": True},
-    )
+    sys.exit(main())

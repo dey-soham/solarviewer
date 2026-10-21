@@ -55,8 +55,27 @@ import matplotlib.style as mplstyle
 mplstyle.use("fast")
 
 
+OUTPUT_FORMATS = [
+    ("MP4 (H.264)", ".mp4"),
+    ("WebM (VP9)", ".webm"),
+    ("GIF", ".gif"),
+    ("AVI", ".avi"),
+    ("PNG frames", ".png"),
+]
+
+SIZE_PRESETS = [
+    ("Auto (1000 px)", 0),
+    ("720 px tall", 720),
+    ("1080 px tall", 1080),
+    ("1440 px tall", 1440),
+    ("2160 px tall (4K)", 2160),
+]
+
+
 def _format_duration(seconds):
-    """'45 s', '3 min', '1 h 20 min'."""
+    """'0.3 s', '45 s', '3 min', '1 h 20 min'."""
+    if seconds < 10:
+        return f"{seconds:.1f} s"
     seconds = int(round(seconds))
     if seconds < 60:
         return f"{seconds} s"
@@ -78,6 +97,7 @@ def wait_cursor():
 
 from ..processing.colormaps import ensure_solar_colormaps
 from .creator import (
+    QUALITY_CRF,
     load_fits_data,
     get_norm,
     observation_sort_key,
@@ -444,6 +464,8 @@ class VideoCreationDialog(QDialog):
             panel.show_message("Could not render this frame")
             return
         panel.show_frame(frame)
+        self._last_preview_frame = frame
+        self._update_estimate()
         height, width = frame.shape[:2]
         panel.status_label.setText(
             f"{os.path.basename(self._preview_files[panel.slider.value()])} · "
@@ -631,6 +653,14 @@ class VideoCreationDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(12)
         button_layout.addStretch()
+
+        save_btn = QPushButton("Save Settings...")
+        save_btn.setToolTip("Save all settings (and the frames) as a preset file")
+        save_btn.clicked.connect(self.save_settings)
+        button_layout.insertWidget(0, save_btn)
+        load_btn = QPushButton("Load Settings...")
+        load_btn.clicked.connect(self.load_settings)
+        button_layout.insertWidget(1, load_btn)
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setMinimumWidth(100)
@@ -976,6 +1006,15 @@ class VideoCreationDialog(QDialog):
         )
         frame_form.addRow("Size:", size_widget)
 
+        self.size_preset_combo = QComboBox()
+        for text, height in SIZE_PRESETS:
+            self.size_preset_combo.addItem(text, height)
+        self.size_preset_combo.setToolTip(
+            "Frame height in pixels; the width follows the image's shape"
+        )
+        self.size_preset_combo.activated.connect(self._apply_size_preset)
+        frame_form.addRow("Preset:", self.size_preset_combo)
+
         display_layout.addWidget(frame_group)
 
         # WCS Coordinates section
@@ -1277,6 +1316,17 @@ class VideoCreationDialog(QDialog):
         file_layout.addWidget(browse_output_btn)
 
         file_form.addRow("Path:", file_widget)
+
+        self.format_combo = QComboBox()
+        for text, ext in OUTPUT_FORMATS:
+            self.format_combo.addItem(text, ext)
+        self.format_combo.setToolTip(
+            "MP4 plays almost everywhere; WebM is smaller for the same quality;\n"
+            "PNG frames saves each frame as name_0001.png, name_0002.png, ..."
+        )
+        self.format_combo.currentIndexChanged.connect(self._on_format_changed)
+        self.output_file_edit.textChanged.connect(self._sync_format_to_path)
+        file_form.addRow("Format:", self.format_combo)
         output_layout.addWidget(file_group)
 
         # Video settings section
@@ -1291,25 +1341,24 @@ class VideoCreationDialog(QDialog):
         self.fps_spinbox.setValue(10)
         video_form.addRow("Frames Per Second:", self.fps_spinbox)
 
-        quality_widget = QWidget()
-        quality_layout = QHBoxLayout(quality_widget)
-        quality_layout.setContentsMargins(0, 0, 0, 0)
-        quality_layout.setSpacing(10)
-
-        self.quality_spinbox = QSpinBox()
-        self.quality_spinbox.setRange(1, 10)
-        self.quality_spinbox.setValue(10)
-        self.quality_spinbox.setToolTip(
-            "Higher values mean better quality but larger file size"
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems(list(QUALITY_CRF))
+        self.quality_combo.setCurrentText("High")
+        self.quality_combo.setToolTip(
+            "Low: smallest files, visible blocks on fine structure\n"
+            "Medium: good for sharing\n"
+            "High: hard to tell from the frames themselves\n"
+            "Lossless: exact pixels, large files (MP4 lossless may not play everywhere)"
         )
-        quality_layout.addWidget(self.quality_spinbox)
+        video_form.addRow("Quality:", self.quality_combo)
 
-        quality_label = QLabel("(1=low, 10=high)")
-        quality_label.setObjectName("SecondaryText")
-        quality_layout.addWidget(quality_label)
-        quality_layout.addStretch()
-
-        video_form.addRow("Quality:", quality_widget)
+        self.estimate_label = QLabel()
+        self.estimate_label.setObjectName("SecondaryText")
+        self.estimate_label.setWordWrap(True)
+        video_form.addRow("Result:", self.estimate_label)
+        self.fps_spinbox.valueChanged.connect(self._update_estimate)
+        self.quality_combo.currentIndexChanged.connect(self._update_estimate)
+        self.format_combo.currentIndexChanged.connect(self._update_estimate)
         output_layout.addWidget(video_group)
 
         # Performance section
@@ -1743,7 +1792,7 @@ class VideoCreationDialog(QDialog):
             "contour_options": dict(self.contour_options),
             # Output
             "fps": self.fps_spinbox.value(),
-            "quality": self.quality_spinbox.value(),
+            "quality": self.quality_combo.currentText(),
         }
 
     def _frame_plan(self, layers):
@@ -1870,6 +1919,171 @@ class VideoCreationDialog(QDialog):
         )
         if path:
             self.single_image_edit.setText(path)
+
+    # ---------- Output ----------
+
+    def _on_format_changed(self, _index):
+        """Give the output file the chosen format's extension."""
+        path = self.output_file_edit.text().strip()
+        if path:
+            stem, ext = os.path.splitext(path)
+            new_ext = self.format_combo.currentData()
+            if ext.lower() != new_ext:
+                self.output_file_edit.setText(stem + new_ext)
+
+    def _sync_format_to_path(self, path):
+        index = self.format_combo.findData(os.path.splitext(path)[1].lower())
+        if index >= 0 and index != self.format_combo.currentIndex():
+            self.format_combo.blockSignals(True)
+            self.format_combo.setCurrentIndex(index)
+            self.format_combo.blockSignals(False)
+            self._update_estimate()
+
+    def _apply_size_preset(self, index):
+        height = self.size_preset_combo.itemData(index)
+        self.width_spinbox.setValue(0)
+        self.height_spinbox.setValue(height)
+
+    def _update_estimate(self, *_):
+        """Duration, frame count and size, and a rough file size from
+        encoding the frame in the preview."""
+        frames = len(self._preview_files)
+        frame = getattr(self, "_last_preview_frame", None)
+        if not frames or frame is None:
+            self.estimate_label.setText("")
+            return
+        fps = self.fps_spinbox.value()
+        height, width = frame.shape[:2]
+        text = (
+            f"{frames} frames, {_format_duration(frames / fps)} at {fps} fps, "
+            f"{width}×{height} px"
+        )
+        size = self._estimate_size(frame, frames)
+        if size:
+            text += f"; roughly {size / 1e6:.1f} MB" if size < 1e9 else f"; roughly {size / 1e9:.1f} GB"
+        self.estimate_label.setText(text)
+
+    def _estimate_size(self, frame, frames):
+        """Rough output size in bytes: the preview frame encoded alone (or as
+        PNG), times the frames; later video frames take about half as much,
+        as solar images change little from frame to frame."""
+        import tempfile
+
+        from .creator import ensure_even_dimensions, video_writer
+
+        ext = self.format_combo.currentData()
+        options = {"fps": self.fps_spinbox.value(), "quality": self.quality_combo.currentText()}
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "estimate" + ext)
+                with video_writer(path, options)() as writer:
+                    writer.append_data(ensure_even_dimensions(frame))
+                written = [p for p in os.listdir(tmp)]
+                one = sum(os.path.getsize(os.path.join(tmp, p)) for p in written)
+        except Exception:
+            return None
+        if ext in (".png", ".gif"):
+            return one * frames
+        return one * (1 + 0.5 * (frames - 1))
+
+    # ---------- Settings presets ----------
+
+    _PRESET_WIDGETS = (
+        "input_directory_edit", "input_pattern_edit", "sort_combo", "stokes_combo",
+        "image_series_radio", "image_single_radio", "single_image_edit",
+        "frame_start_edit", "frame_end_edit", "frame_every_spinbox",
+        "colormap_combo", "stretch_combo", "gamma_spinbox", "range_mode_combo",
+        "vmin_spinbox", "vmax_spinbox", "lower_percentile_spinbox",
+        "upper_percentile_spinbox", "colorbar_check", "width_spinbox", "height_spinbox",
+        "wcs_coords_check", "region_enabled", "x_min_spinbox", "x_max_spinbox",
+        "y_min_spinbox", "y_max_spinbox", "timestamp_check", "frame_number_check",
+        "filename_check", "minmax_timeline_check", "timeline_source_combo",
+        "timeline_log_scale_check", "output_file_edit", "format_combo", "fps_spinbox",
+        "quality_combo", "multiprocessing_check", "cores_spinbox",
+    )
+
+    def _settings_state(self):
+        """All settings, as JSON-ready values."""
+        widgets = {}
+        for name in self._PRESET_WIDGETS:
+            widget = getattr(self, name)
+            if isinstance(widget, QLineEdit):
+                widgets[name] = widget.text()
+            elif isinstance(widget, QComboBox):
+                widgets[name] = widget.currentText()
+            elif isinstance(widget, (QCheckBox, QRadioButton)):
+                widgets[name] = widget.isChecked()
+            else:
+                widgets[name] = widget.value()
+        return {
+            "widgets": widgets,
+            "contour_layers": self.contour_layers,
+            "contour_options": self.contour_options,
+            "excluded_frames": sorted(self._excluded_frames),
+        }
+
+    def _apply_settings_state(self, state):
+        for name, value in state.get("widgets", {}).items():
+            widget = getattr(self, name, None)
+            if widget is None:
+                continue
+            if isinstance(widget, QLineEdit):
+                widget.setText(value)
+            elif isinstance(widget, QComboBox):
+                if widget.findText(value) < 0:
+                    widget.addItem(value)
+                widget.setCurrentText(value)
+            elif isinstance(widget, (QCheckBox, QRadioButton)):
+                widget.setChecked(bool(value))
+            else:
+                widget.setValue(value)
+        self._excluded_frames = set(state.get("excluded_frames", []))
+        self._shown_frame_rows = None
+        self._set_contour_layers(state.get("contour_layers", []), state.get("contour_options"))
+        self.schedule_preview()
+
+    def save_settings(self):
+        """Save all settings, and the frames they give, as a JSON preset:
+        load it here again, or make the same video with
+        python -m solar_radio_image_viewer.video.creator --preset FILE OUTPUT"""
+        import json
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Video Settings",
+            self.get_smart_start_directory(),
+            "Video settings (*.json)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        state = self._settings_state()
+        options = self._video_options()
+        files, problem = self._video_files(options)
+        if not problem:
+            state["video"] = {"files": files, "options": options}
+        with open(path, "w") as f:
+            json.dump(state, f, indent=1, default=list)
+
+    def load_settings(self):
+        import json
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Video Settings",
+            self.get_smart_start_directory(),
+            "Video settings (*.json)",
+        )
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                state = json.load(f)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Could Not Load Settings", str(e))
+            return
+        self._apply_settings_state(state)
 
     # ---------- Contour layers ----------
 
