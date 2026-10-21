@@ -14,7 +14,7 @@ Description:
         5. Save the cleaned dynamic spectrum as a FITS file.
 
 Features:
-    - Interactive visualization using Matplotlib integrated with PyQt5.
+    - Fast interactive display (PyQtGraph); files on SSH servers read in pieces.
     - ROI (Region of Interest) selection for RFI (Radio Frequency Interference) flagging.
     - Cross-section mode for extracting and analyzing time and frequency slices.
     - Auto-scaling and adjustable visualization parameters.
@@ -25,7 +25,7 @@ Dependencies:
     - Python 3.x
     - NumPy, SciPy
     - Astropy
-    - Matplotlib
+    - Matplotlib, PyQtGraph
     - PyQt5
 
 Tested Environment:
@@ -58,6 +58,7 @@ import os
 import gc
 import json
 import posixpath
+import re
 import threading
 import warnings
 import numpy as np
@@ -104,7 +105,7 @@ from PyQt5.QtGui import QFont, QColor
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, Normalize, PowerNorm
-from .simpl_theme import apply_theme, get_matplotlib_params, get_palette
+from .simpl_theme import apply_theme, get_palette
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
@@ -278,7 +279,6 @@ class PyQtGraphSpectrumCanvas(QWidget):
         """Build a 256-color LUT from a matplotlib colormap."""
         try:
             import matplotlib.cm as cm
-            from pyqtgraph.colormap import ColorMap
             import numpy as np
 
             mpl_cmap = cm.get_cmap(cmap_name)
@@ -584,7 +584,6 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 ax = time_axis
 
             # Format the label with the reference date
-            time_mjd = self._time_axis[0] / 86400.0
             dt = datetime(1858, 11, 17) + timedelta(seconds=float(self._time_axis[0]))
             start_date = dt.strftime("%Y-%m-%d")
 
@@ -1024,17 +1023,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
             else:
                 self.hover_label.hide()
 
-        except Exception as e:
-            # self.logger.error(f"Hover error: {e}")
-            pass
-
-            self.hover_label.setText(msg)
-            vb = self.plot_item.getViewBox()
-            self.hover_label.setPos(vb.viewRect().right(), vb.viewRect().top())
-            self.hover_label.show()
-
         except Exception:
-            self.hover_label.hide()
+            pass  # (e.g. the mouse left while data changed)
 
     def _update_mode_overlay(self, text):
         """Update the mode indicator text."""
@@ -1149,7 +1139,6 @@ class MinimapCanvas(FigureCanvas):
             parent = parent.parent()
 
         theme_name = getattr(parent, "current_theme", "dark")
-        params = get_matplotlib_params(theme_name)
         palette = get_palette(theme_name)
 
         # Use figure facecolor for background consistency
@@ -1166,7 +1155,7 @@ class MinimapCanvas(FigureCanvas):
         if data_downsampled is not None:
             # 1. Bandpass normalization (normalize by median of each channel across time)
             # data_downsampled is typically (freq, time)
-            med = np.nanmedian(data_downsampled, axis=1, keepdims=True)
+            med = _channel_medians(data_downsampled.T)[:, None]
             med[np.isnan(med)] = 1e-20
             med[med == 0] = 1e-20
             data_normed = data_downsampled / med
@@ -1379,6 +1368,17 @@ def rebin(data, factor, axis):
     return means.astype(data.dtype if data.dtype.kind == "f" else np.float64)
 
 
+def _channel_medians(data):
+    """Median over time (axis 0) of each channel; NaN for channels without
+    values (computed only where there are some: no warnings, which can't be
+    silenced safely from the background thread saving a file)."""
+    medians = np.full(data.shape[1], np.nan, dtype=np.float64)
+    has_values = np.isfinite(data).any(axis=0)
+    if has_values.any():
+        medians[has_values] = np.nanmedian(data[:, has_values], axis=0)
+    return medians
+
+
 R_SUN_KM = 695700.0
 
 
@@ -1435,13 +1435,13 @@ class MainWindow(QMainWindow):
         self._image_index = 0  # HDU of the image shown (_image)
         self._goto_time = None  # time to center on once its page is shown
         self._images = []  # [(HDU index, name)] that can be shown
-        self._original_unmodified = None  # For revert
         self._original_data = None  # Working data (float array with NaNs)
         self._time_axis = None
         self._freq_axis = None
 
         # Navigation / Paging state
-        self._nav_mode = "Full"  # "Full" or "Windowed"
+        self._nav_mode = "Full"  # "Full", "Windowed" or "Range"
+        self._range = None  # (start, stop) rows of the file shown in Range mode
         self._current_page = 0
         self._total_pages = 1
         self._window_duration_min = 15.0
@@ -1456,10 +1456,9 @@ class MainWindow(QMainWindow):
         self._full_lowres_data = None  # Downsampled full spectrum in RAM
         self._lowres_skip = 1  # Skip factor for lowres data
 
-        # Mask persistence
-        self._pending_user_mask = (
-            None  # Temporary storage for user mask during bandpass toggle
-        )
+        # Masks, for the whole file: [(t0, t1, f0, f1)] ranges of the file's
+        # samples and channels (stop excluded), applied to each page shown
+        self._masks = []
         self._global_masked_freq_indices = (
             set()
         )  # Set of freq indices to be masked globally (Extend Mask)
@@ -1469,11 +1468,10 @@ class MainWindow(QMainWindow):
         self._metadata = ""  # Keep for compatibility, but _all_headers is primary
         self._metadata_dialog = None  # Track the non-modal metadata window
 
-        # Undo/Redo stacks (store deltas, not full copies)
-        # Delta format: {"slices": (time_slice, freq_slice), "old_values": array}
+        # Undo/Redo stacks of mask edits (for the whole file):
+        # ("add", mask), ("extend", channels added), ("clear", (masks, channels))
         self.undo_stack = []
         self.redo_stack = []
-        self.MAX_UNDO_STACK_SIZE = 10  # Limit stack size for memory efficiency
 
         # Theme management
         self.current_theme = (
@@ -1573,6 +1571,11 @@ class MainWindow(QMainWindow):
         self.redoAct.triggered.connect(self.redo)
 
         # New action for viewing metadata
+        self.rangeAct = QAction("&Time Range...", self)
+        self.rangeAct.setShortcut("Ctrl+T")
+        self.rangeAct.setStatusTip("Show the data between two times")
+        self.rangeAct.triggered.connect(self.showRangeControls)
+
         self.gotoAct = QAction("&Go to Time...", self)
         self.gotoAct.setShortcut("Ctrl+G")
         self.gotoAct.triggered.connect(
@@ -1613,6 +1616,7 @@ class MainWindow(QMainWindow):
         viewMenu = menubar.addMenu("&View")
         viewMenu.addAction(self.viewMetaAct)
         viewMenu.addAction(self.gotoAct)
+        viewMenu.addAction(self.rangeAct)
         viewMenu.addAction(self.smoothAct)
         self.imageMenu = viewMenu.addMenu("&Image")
         self.imageMenu.setEnabled(False)
@@ -1659,7 +1663,6 @@ class MainWindow(QMainWindow):
         self.minimap_layout.addWidget(self.minimap)
 
         # PyQtGraph has built-in navigation - no separate toolbar needed
-        # self.navbar = NavigationToolbar(self.canvas, self)
 
         # Add canvas components
         leftLayout.addWidget(self.canvas, 1)
@@ -1667,6 +1670,7 @@ class MainWindow(QMainWindow):
 
         # --- RIGHT SIDE: CONTROL PANEL ---
         rightScroll = QScrollArea()
+        self.controlScroll = rightScroll
         rightScroll.setWidgetResizable(True)
         rightScroll.setFrameShape(QFrame.NoFrame)
         rightScroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1914,11 +1918,6 @@ class MainWindow(QMainWindow):
         binLayout.addWidget(self.freqBinSpin, 1)
         toolsLayout.addLayout(binLayout)
 
-        """self.hoverCheck = QCheckBox("Show Hover Info")
-        self.hoverCheck.setChecked(True)
-        self.hoverCheck.toggled.connect(self.onHoverInfoToggled)
-        toolsLayout.addWidget(self.hoverCheck)"""
-
         rightLayout.addWidget(toolsGroup)
 
         # 3. Navigation Group
@@ -1928,7 +1927,7 @@ class MainWindow(QMainWindow):
 
         modeForm = QFormLayout()
         self.navModeCombo = QComboBox()
-        self.navModeCombo.addItems(["Full Spectrum", "Windowed"])
+        self.navModeCombo.addItems(["Full Spectrum", "Windowed", "Time Range"])
         self.navModeCombo.currentTextChanged.connect(self.onNavModeChanged)
         modeForm.addRow("View Mode:", self.navModeCombo)
 
@@ -1941,6 +1940,27 @@ class MainWindow(QMainWindow):
         modeForm.addRow(self.navDurationLabel, self.navDurationSpin)
 
         navLayout.addLayout(modeForm)
+
+        # Time Range mode: the data between two times
+        self.rangeWidget = QWidget()
+        rangeLayout = QFormLayout(self.rangeWidget)
+        rangeLayout.setContentsMargins(0, 0, 0, 0)
+        self.rangeFromEdit = QLineEdit()
+        self.rangeToEdit = QLineEdit()
+        for edit in (self.rangeFromEdit, self.rangeToEdit):
+            edit.setPlaceholderText("HH:MM:SS")
+            edit.setToolTip("UTC: HH:MM[:SS] on the observation's date, or YYYY-MM-DD HH:MM:SS")
+            edit.returnPressed.connect(self.onShowRange)
+        rangeLayout.addRow("From:", self.rangeFromEdit)
+        rangeLayout.addRow("To:", self.rangeToEdit)
+        self.rangeShowBtn = QPushButton("Show Range")
+        self.rangeShowBtn.setToolTip(
+            "Show the data between these times (clicking the overview moves the range)"
+        )
+        self.rangeShowBtn.clicked.connect(self.onShowRange)
+        rangeLayout.addRow(self.rangeShowBtn)
+        self.rangeWidget.setVisible(False)
+        navLayout.addWidget(self.rangeWidget)
 
         navBtnLayout = QHBoxLayout()
         navBtnLayout.setSpacing(8)
@@ -2406,8 +2426,8 @@ class MainWindow(QMainWindow):
             self._current_page = 0
         self._updateNavigationStats()
 
-        if self._nav_mode == "Windowed":
-            self.loadSlice()  # Initial load
+        if self._nav_mode != "Full":
+            self.loadSlice()  # Initial load (a page, or the time range)
         else:
             # Load everything (copy to RAM)
             raw_data = self._image()
@@ -2543,10 +2563,11 @@ class MainWindow(QMainWindow):
                 self._stop_remote_reads()
                 self._remote = remote
                 self._goto_time = None
+                self._range = None
                 self.canvas.mark_time(None)
                 self._cached_bandpass_profile = None  # Invalidate bandpass cache
                 self._global_masked_freq_indices.clear()  # Clear stale masks
-                self._pending_user_mask = None
+                self._masks = []
                 self.undo_stack.clear()
                 gc.collect()  # Force memory release
 
@@ -2769,7 +2790,7 @@ class MainWindow(QMainWindow):
             lambda *_: self.openFile(name, remote=remote),
         )
 
-    def _server_work(self, label, work, threaded=False):
+    def _server_work(self, label, work, threaded=False, title="Server"):
         """``work(progress, cancelled)``, reading from the server, with a
         progress dialog; returns what it returns (raises Cancelled if the
         dialog is cancelled). Unless ``threaded``, it runs here, and the
@@ -2778,7 +2799,7 @@ class MainWindow(QMainWindow):
 
         state = {"done": 0, "total": 0, "cancel": False}
         dialog = QProgressDialog(label, "Cancel", 0, 0, self)
-        dialog.setWindowTitle("Server")
+        dialog.setWindowTitle(title)
         dialog.setWindowModality(Qt.WindowModal)
         dialog.setMinimumDuration(500)
         dialog.setAutoReset(False)
@@ -2900,6 +2921,18 @@ class MainWindow(QMainWindow):
             self._remote_files.connection.disconnect()
         super().closeEvent(event)
 
+    def _page_bounds(self, page_idx):
+        """(start, stop) rows of the file shown as page ``page_idx``: a
+        window (Windowed), the time range (Time Range) or all (Full)."""
+        total = len(self._full_time_axis)
+        if self._nav_mode == "Range" and self._range is not None:
+            return self._range
+        if self._nav_mode != "Windowed":
+            return 0, total
+        window = self._calculate_window_samples()
+        start = page_idx * window
+        return start, min(start + window, total)
+
     def _calculate_window_samples(self):
         """Safely calculate window samples from time axis and duration."""
         if self._full_time_axis is None or len(self._full_time_axis) < 2:
@@ -2937,12 +2970,13 @@ class MainWindow(QMainWindow):
             self.navDurationSpin.setEnabled(is_windowed)
             self.navDurationLabel.setEnabled(is_windowed)
             self.pageLabel.setEnabled(is_windowed)
+            self.rangeWidget.setVisible(self._nav_mode == "Range")
             return
 
         total_samples = len(self._full_time_axis)
         window_samples = self._calculate_window_samples()
 
-        if self._nav_mode == "Full":
+        if self._nav_mode != "Windowed":
             self._total_pages = 1
         else:
             self._total_pages = max(1, int(np.ceil(total_samples / window_samples)))
@@ -2965,6 +2999,7 @@ class MainWindow(QMainWindow):
         self.navDurationSpin.setEnabled(is_windowed)
         self.navDurationLabel.setEnabled(is_windowed)
         self.pageLabel.setEnabled(is_windowed)
+        self.rangeWidget.setVisible(self._nav_mode == "Range")
 
         # Feature 2: Update Minimap Highlight & Markers
         if self._full_time_axis is not None:
@@ -2979,6 +3014,12 @@ class MainWindow(QMainWindow):
                 end_pct = end_idx / total_samples
                 self.minimap.update_view_percent(start_pct, end_pct)
                 self.minimap.draw_page_markers(total_samples, window_samples)
+            elif self._nav_mode == "Range" and self._range is not None:
+                start_idx, end_idx = self._range
+                self.minimap.update_view_percent(
+                    start_idx / total_samples, end_idx / total_samples
+                )
+                self.minimap.draw_page_markers(total_samples, total_samples)
             else:
                 self.minimap.update_view_percent(0, 1)
                 self.minimap.draw_page_markers(total_samples, total_samples)
@@ -2989,10 +3030,7 @@ class MainWindow(QMainWindow):
             return None, None, None
 
         total_samples = len(self._full_time_axis)
-        window_samples = self._calculate_window_samples()
-
-        start_idx = page_idx * window_samples
-        end_idx = min(start_idx + window_samples, total_samples)
+        start_idx, end_idx = self._page_bounds(page_idx)
 
         if start_idx >= total_samples or start_idx < 0:
             return None, None, None
@@ -3028,29 +3066,11 @@ class MainWindow(QMainWindow):
         if self._full_lowres_data is None or self._full_time_axis is None:
             return None, None, None
 
-        total_samples = len(self._full_time_axis)
-        window_samples = self._calculate_window_samples()
-
-        start_idx = page_idx * window_samples
-        end_idx = min(start_idx + window_samples, total_samples)
+        start_idx, end_idx = self._page_bounds(page_idx)
 
         # Map to low-res indices
         low_start = start_idx // self._lowres_skip
         low_end = end_idx // self._lowres_skip
-
-        if (
-            low_start
-            >= self._full_lowres_data.shape[
-                0
-                if self._full_lowres_data.ndim == 2
-                and self._full_lowres_data.shape[0]
-                == (total_samples // self._lowres_skip)
-                else 1
-            ]
-            or low_start < 0
-        ):
-            # Re-check shape logic based on orientation in openFile
-            pass
 
         # Robust slicing: _full_lowres_data is now guaranteed to be (time, freq)
         try:
@@ -3153,16 +3173,11 @@ class MainWindow(QMainWindow):
             if cached is not None and cached[0] == freq_bin:
                 profile = cached[1]
             else:
-                # Suppress "All-NaN slice encountered" warning for empty/noisy channels
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", category=RuntimeWarning)
-                    profile = np.nanmedian(rebin(overview, freq_bin, axis=1), axis=0)
+                profile = _channel_medians(rebin(overview, freq_bin, axis=1))
                 self._cached_bandpass_profile = (freq_bin, profile)
             if profile.shape[0] == data.shape[1]:
                 return profile
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            return np.nanmedian(data, axis=0)  # Axis 0 is time
+        return _channel_medians(data)
 
     def _apply_bandpass_to_data(self, data):
         """Helper to apply bandpass normalization to a 2D data array: divided
@@ -3184,63 +3199,15 @@ class MainWindow(QMainWindow):
         return normed
 
     def _display_data(self, data, time_axis, freq_axis, fast=False):
-        """Shared logic to update canvas and stats.
-
-        Memory optimized: Uses references where possible, copies only when needed.
-        The undo history is cleared: it holds values of the data replaced
-        (another page, or before normalisation).
-        """
-        self.undo_stack.clear()
-        self.redo_stack.clear()
-        # As read; then averaged as asked (Average: time × freq)
+        """Show ``data`` (a page as read, (time, freq)): with the masks,
+        averaged, and normalised as set. Copies only when it must."""
         self._shown_raw = (data, time_axis, freq_axis, fast)
-        time_bin, freq_bin = self._bin
-        if time_bin > 1 or freq_bin > 1:
-            data = rebin(rebin(data, time_bin, 0), freq_bin, 1)
-            if time_axis is not None:
-                time_axis = rebin(np.asarray(time_axis, np.float64), time_bin, 0)
-            if freq_axis is not None:
-                freq_axis = rebin(np.asarray(freq_axis, np.float64), freq_bin, 0)
-        # Keep reference to raw data for revert (no copy - source is from file/cache)
-        self._original_unmodified = data
-
-        # Apply persistent bandpass if enabled
+        data = self._apply_masks(data, time_axis)
+        time_axis, freq_axis = self._binned_axes(time_axis, freq_axis)
+        data = self._binned(data)
         if self._is_bandpass_enabled:
-            # _apply_bandpass_to_data creates a new array
-            data_to_show = self._apply_bandpass_to_data(data)
-        else:
-            # No bandpass - we need a copy only if we will modify it later
-            # Check if modifications are pending
-            has_pending_mask = (
-                hasattr(self, "_pending_user_mask")
-                and self._pending_user_mask is not None
-            )
-            has_global_mask = bool(self._global_masked_freq_indices)
-
-            if has_pending_mask or has_global_mask:
-                data_to_show = data.copy()  # Need copy since we'll modify
-            else:
-                data_to_show = data  # Safe to use reference
-
-        self._original_data = data_to_show
-
-        # Apply pending user mask if it exists (e.g. from bandpass toggle)
-        if hasattr(self, "_pending_user_mask") and self._pending_user_mask is not None:
-            # Ensure shapes match (e.g. skip if fast preview has different shape)
-            if self._original_data.shape == self._pending_user_mask.shape:
-                self._original_data[self._pending_user_mask] = np.nan
-
-            # Clear the pending mask only after the full load (not fast preview)
-            if not fast:
-                self._pending_user_mask = None
-
-        # Apply Global Frequency Mask (Extend Mask feature)
-        if self._global_masked_freq_indices and self._original_data is not None:
-            # Standardized: self._original_data is always (Time, Freq); the
-            # masks are the file's channels (averaged: any of a block masks it)
-            freq_bin = self._bin[1]
-            bad_freqs = sorted({i // freq_bin for i in self._global_masked_freq_indices})
-            self._original_data[:, bad_freqs] = np.nan
+            data = self._apply_bandpass_to_data(data)
+        self._original_data = data
 
         self._time_axis = time_axis
         self._freq_axis = freq_axis
@@ -3258,10 +3225,84 @@ class MainWindow(QMainWindow):
             if time_axis is not None and time_axis[0] <= target <= time_axis[-1]:
                 self._center_on_time(target)
 
+    def _binned(self, data):
+        """``data`` averaged as set (Averaging)."""
+        time_bin, freq_bin = self._bin
+        if time_bin > 1 or freq_bin > 1:
+            return rebin(rebin(data, time_bin, 0), freq_bin, 1)
+        return data
+
+    def _binned_axes(self, time_axis, freq_axis):
+        time_bin, freq_bin = self._bin
+        if time_axis is not None and time_bin > 1:
+            time_axis = rebin(np.asarray(time_axis, np.float64), time_bin, 0)
+        if freq_axis is not None and freq_bin > 1:
+            freq_axis = rebin(np.asarray(freq_axis, np.float64), freq_bin, 0)
+        return time_axis, freq_axis
+
+    def _unmodified(self):
+        """The data shown without masks or normalisation (averaged as set)."""
+        if self._shown_raw is None:
+            return None
+        return self._binned(self._shown_raw[0])
+
+    def _apply_masks(self, data, time_axis):
+        """``data`` (rows at times ``time_axis``, all the file's channels)
+        with the masks applied: a copy if any falls on it."""
+        channels = [c for c in sorted(self._global_masked_freq_indices) if c < data.shape[1]]
+        rows = []
+        if self._masks and time_axis is not None and len(time_axis):
+            full = self._full_time_axis
+            for t0, t1, f0, f1 in self._masks:
+                lo = np.searchsorted(time_axis, full[t0], "left")
+                hi = np.searchsorted(time_axis, full[t1 - 1], "right")
+                if lo < hi:
+                    rows.append((lo, hi, f0, f1))
+        if not channels and not rows:
+            return data
+        data = data.copy()
+        if channels:
+            data[:, channels] = np.nan
+        for lo, hi, f0, f1 in rows:
+            data[lo:hi, f0:f1] = np.nan
+        return data
+
+    def _file_ranges(self, ixmin, ixmax, iymin, iymax):
+        """The file's (t0, t1, f0, f1) under samples ixmin..ixmax (time) and
+        iymin..iymax (frequency) of the data shown (averaged or not)."""
+        raw_time = self._shown_raw[1]
+        time_bin, freq_bin = self._bin
+        r0 = ixmin * time_bin
+        r1 = min((ixmax + 1) * time_bin, len(raw_time))
+        full = self._full_time_axis
+        t0 = int(np.searchsorted(full, raw_time[r0], "left"))
+        t1 = int(np.searchsorted(full, raw_time[r1 - 1], "right"))
+        nf = self._shown_raw[0].shape[1]
+        return t0, max(t1, t0 + 1), iymin * freq_bin, min((iymax + 1) * freq_bin, nf)
+
+    def _redisplay(self):
+        """Show the page again (after a change of masks or settings)."""
+        if self._shown_raw is not None:
+            with self.wait_cursor():
+                self._display_data(*self._shown_raw)
+
     def onNavModeChanged(self, mode):
         if not self.hdul:
             return
-        self._nav_mode = "Windowed" if "Windowed" in mode else "Full"
+        self._stop_remote_reads()  # (reads of the previous mode's pages)
+        previous = self._page_bounds(self._current_page) if self._full_time_axis is not None else None
+        self._nav_mode = "Windowed" if "Windowed" in mode else "Range" if "Range" in mode else "Full"
+
+        if self._nav_mode == "Range":
+            # From the page shown (the first window on the first visit)
+            if self._range is None:
+                self._range = previous if previous and previous != (0, len(self._full_time_axis)) else (
+                    0, min(self._calculate_window_samples(), len(self._full_time_axis))
+                )
+            self._set_range_edits(*self._range)
+            self._show_range(*self._range)
+            self._reveal_range_controls()
+            return
 
         if self._nav_mode == "Full":
             # Warning for very large files
@@ -3312,6 +3353,79 @@ class MainWindow(QMainWindow):
         # Switching/Returning to Windowed mode
         self._data_cache.clear()
         self._current_page = 0
+        with self.wait_cursor():
+            self.loadSlice()
+
+    def showRangeControls(self):
+        """Time Range mode, with its From/To boxes in view and focused."""
+        if self._full_time_axis is None:
+            QMessageBox.information(self, "Info", "No data loaded.")
+            return
+        if self._nav_mode != "Range":
+            self.navModeCombo.setCurrentText("Time Range")
+        self._reveal_range_controls()
+
+    def _reveal_range_controls(self):
+        # (the panel scrolls: Time Navigation is below the other controls)
+        QTimer.singleShot(0, lambda: self.controlScroll.ensureWidgetVisible(self.rangeWidget))
+        self.rangeFromEdit.setFocus()
+        self.rangeFromEdit.selectAll()
+
+    def _time_text(self, index):
+        """UTC of the file's sample ``index``, as typed in the range boxes."""
+        when = datetime(1858, 11, 17) + timedelta(seconds=float(self._full_time_axis[index]))
+        return when.strftime("%H:%M:%S.%f")[:-4]
+
+    def _set_range_edits(self, start, stop):
+        self.rangeFromEdit.setText(self._time_text(start))
+        self.rangeToEdit.setText(self._time_text(stop - 1))
+
+    def onShowRange(self):
+        """Show the data between the times typed (Time Range)."""
+        if self._full_time_axis is None:
+            return
+        try:
+            t0 = self._parse_time(self.rangeFromEdit.text())
+            t1 = self._parse_time(self.rangeToEdit.text())
+        except Exception as e:
+            self.statusBar().showMessage(f"Not a time: {e}", 5000)
+            return
+        if t1 < t0:
+            t0, t1 = t1, t0
+        times = self._full_time_axis
+        start = int(np.searchsorted(times, t0, "left"))
+        stop = int(np.searchsorted(times, t1, "right"))
+        if stop <= start:
+            self.statusBar().showMessage("No data between those times.", 5000)
+            return
+        if self._nav_mode != "Range":
+            self._range = (start, stop)
+            self.navModeCombo.setCurrentText("Time Range")  # (shows it)
+            return
+        self._show_range(start, stop)
+
+    def _show_range(self, start, stop):
+        """Show rows ``start``..``stop`` of the file (Time Range mode)."""
+        nf = len(self._full_freq_axis) if self._full_freq_axis is not None else 1
+        values = (stop - start) * nf
+        if values > 50_000_000:
+            reply = QMessageBox.warning(
+                self,
+                "Large Range",
+                f"This range holds {values / 1e6:.0f} million values "
+                f"({_size_text(values * 4)} in memory). Show it?\n\n"
+                "(Averaging time samples keeps what is drawn small.)",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        self._range = (start, stop)
+        self._set_range_edits(start, stop)
+        self._stop_remote_reads()
+        self._data_cache.clear()
+        self._current_page = 0
+        self._updateNavigationStats()
         with self.wait_cursor():
             self.loadSlice()
 
@@ -3379,6 +3493,13 @@ class MainWindow(QMainWindow):
             # Map percentage directly to sample index
             target_idx = int(pct * total_samples)
 
+            if self._nav_mode == "Range" and self._range is not None:
+                # The same range length, centered on the click
+                length = self._range[1] - self._range[0]
+                start = max(0, min(total_samples - length, target_idx - length // 2))
+                self._show_range(start, start + length)
+                return
+
             # Determine which page contains this sample
             window_samples = self._calculate_window_samples()
 
@@ -3397,20 +3518,59 @@ class MainWindow(QMainWindow):
                     start_idx / total_samples, end_idx / total_samples
                 )
 
+    def _ask_save_extent(self):
+        """"file" (the whole file, cleaned page by page) or "shown" (the
+        data shown), as the user chooses; None if cancelled. Without pages
+        (Full Spectrum) what is shown is the whole file."""
+        if self._nav_mode == "Full" or (self._nav_mode == "Windowed" and self._total_pages <= 1):
+            return "shown"
+        box = QMessageBox(self)
+        box.setWindowTitle("Save Cleaned FITS")
+        box.setText("Save the whole file, or only what is shown?")
+        box.setInformativeText(
+            "The whole file is cleaned and saved page by page (masks, "
+            "averaging and normalisation as shown), never all in memory."
+        )
+        whole = box.addButton("Whole File", QMessageBox.AcceptRole)
+        shown = box.addButton(
+            "This Range" if self._nav_mode == "Range" else "This Page", QMessageBox.AcceptRole
+        )
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(whole)
+        box.exec_()
+        return {whole: "file", shown: "shown"}.get(box.clickedButton())
+
+    def _save_to(self, fileName, extent):
+        """Write the cleaned data (``extent`` "file" or "shown") to
+        ``fileName``; raises Cancelled if the user stops it."""
+        if extent == "shown":
+            with self.wait_cursor():
+                self._write_cleaned(fileName)
+            return
+        self._server_work(
+            "Saving the whole file...",
+            lambda progress, cancelled: self._write_whole(fileName, progress, cancelled),
+            threaded=True,
+            title="Save",
+        )
+
     def saveCleanedData(self):
         if self._original_data is None:
             QMessageBox.information(self, "Info", "No data to save.")
+            return
+        extent = self._ask_save_extent()
+        if extent is None:
             return
         fileName, _ = QFileDialog.getSaveFileName(
             self, "Save Cleaned FITS", "", "FITS Files (*.fits)"
         )
         if not fileName:
             return
-        with self.wait_cursor():
-            try:
-                self._write_cleaned(fileName)
-                self.statusBar().showMessage(f"Saved cleaned data to {fileName}", 5000)
-            except Exception as e:
+        try:
+            self._save_to(fileName, extent)
+            self.statusBar().showMessage(f"Saved cleaned data to {fileName}", 5000)
+        except Exception as e:
+            if type(e).__name__ != "Cancelled":
                 QMessageBox.critical(self, "Error", f"Failed to save FITS:\n{e}")
 
     def saveCleanedToServer(self):
@@ -3418,6 +3578,9 @@ class MainWindow(QMainWindow):
         folder by default)."""
         if self._original_data is None:
             QMessageBox.information(self, "Info", "No data to save.")
+            return
+        extent = self._ask_save_extent()
+        if extent is None:
             return
         files = self._server()
         if files is None:
@@ -3457,8 +3620,7 @@ class MainWindow(QMainWindow):
 
         local = os.path.join(tempfile.mkdtemp(prefix="solarviewer-"), name)
         try:
-            with self.wait_cursor():
-                self._write_cleaned(local)
+            self._save_to(local, extent)
             self._server_work(
                 f"Uploading {name}...",
                 lambda progress, cancelled: files.upload(local, path, progress, cancelled),
@@ -3473,38 +3635,173 @@ class MainWindow(QMainWindow):
 
             shutil.rmtree(os.path.dirname(local), ignore_errors=True)
 
+    # Header cards not carried over to a cleaned file (structure and WCS,
+    # which the cleaned file has its own of)
+    _NOT_COPIED = re.compile(
+        r"^(SIMPLE|BITPIX|NAXIS\d*|EXTEND|BSCALE|BZERO|BLANK|CHECKSUM|DATASUM|EXTNAME|"
+        r"CTYPE\d|CRVAL\d|CDELT\d|CRPIX\d|CUNIT\d|CROTA\d|PC\d_\d|CD\d_\d|"
+        r"PCOUNT|GCOUNT|XTENSION)$"
+    )
+
+    def _cleaned_header(self, shape, time_axis, freq_axis):
+        """Header of a cleaned file of ``shape`` (time, freq): the original's
+        cards, a linear WCS of the axes, and what was done."""
+        header = fits.Header()
+        header["SIMPLE"] = True
+        header["BITPIX"] = -32
+        header["NAXIS"] = 2
+        header["NAXIS1"] = shape[1]
+        header["NAXIS2"] = shape[0]
+        header["EXTEND"] = True
+        if time_axis is not None and freq_axis is not None:
+            nt, nf = len(time_axis), len(freq_axis)
+            header["CTYPE1"] = "FREQ"
+            header["CUNIT1"] = "MHz"
+            header["CRPIX1"] = 1.0
+            header["CRVAL1"] = float(freq_axis[0])
+            header["CDELT1"] = float((freq_axis[-1] - freq_axis[0]) / (nf - 1)) if nf > 1 else 1.0
+            header["CTYPE2"] = "TIME"
+            header["CUNIT2"] = "d"
+            header["CRPIX2"] = 1.0
+            header["CRVAL2"] = float(time_axis[0]) / 86400.0  # MJD
+            header["CDELT2"] = (
+                float((time_axis[-1] - time_axis[0]) / (nt - 1)) / 86400.0 if nt > 1 else 1.0
+            )
+        source = self.hdul[self._image_index].header if self.hdul else fits.Header()
+        for card in source.cards:
+            if card.keyword in ("COMMENT", "HISTORY", ""):
+                header.append(card)
+            elif not self._NOT_COPIED.match(card.keyword) and card.keyword not in header:
+                header.append(card)
+        header.add_history("Cleaned with the SolarViewer Dynamic Spectrum Viewer:")
+        if self._masks or self._global_masked_freq_indices:
+            header.add_history(
+                f"  {len(self._masks)} masked regions, "
+                f"{len(self._global_masked_freq_indices)} channels masked at all times"
+            )
+        if self._bin != (1, 1):
+            header.add_history(f"  averaged {self._bin[0]} time samples x {self._bin[1]} channels")
+        if self._is_bandpass_enabled:
+            header.add_history(
+                f"  {'divided by' if self._bandpass_method == 'divide' else 'minus'} the "
+                f"median of each channel over {'each page' if self._bandpass_scope == 'page' else 'the file'}"
+            )
+        return header
+
+    def _axis_tables(self, time_axis, freq_axis):
+        """TIME_AXIS (TIME_MJD, UTC) and FREQ_AXIS (FREQ_MHz) tables."""
+        tables = []
+        if time_axis is not None:
+            mjd = np.asarray(time_axis, np.float64) / 86400.0
+            try:
+                from astropy.time import Time as AstroTime
+
+                utc = AstroTime(mjd, format="mjd", scale="utc").iso
+            except Exception:
+                utc = np.array([""] * len(mjd))
+            tables.append(
+                fits.BinTableHDU.from_columns(
+                    [
+                        fits.Column(name="TIME_MJD", format="D", array=mjd),
+                        fits.Column(name="UTC", format="23A", array=np.asarray(utc)),
+                    ],
+                    name="TIME_AXIS",
+                )
+            )
+        if freq_axis is not None:
+            tables.append(
+                fits.BinTableHDU.from_columns(
+                    [fits.Column(name="FREQ_MHz", format="D", array=np.asarray(freq_axis, np.float64))],
+                    name="FREQ_AXIS",
+                )
+            )
+        return tables
+
     def _write_cleaned(self, fileName):
         """Write the data shown (and its axes) to FITS file ``fileName``."""
-        hdu = fits.PrimaryHDU(self._original_data)
-        hdul = fits.HDUList([hdu])
-        if self._time_axis is not None:
-            from astropy.table import Table
-
-            t = Table()
-            t["TIME_MJD"] = self._time_axis / 86400.0
-            time_hdu = fits.BinTableHDU(t, name="TIME_AXIS")
-            hdul.append(time_hdu)
-        if self._freq_axis is not None:
-            from astropy.table import Table
-
-            t = Table()
-            t["FREQ_MHz"] = self._freq_axis
-            freq_hdu = fits.BinTableHDU(t, name="FREQ_AXIS")
-            hdul.append(freq_hdu)
-        hdu.header.add_history(
-            "Cleaned/processed with SolarViewer Dynamic Spectrum Viewer"
+        data = np.asarray(self._original_data, np.float32)
+        header = self._cleaned_header(data.shape, self._time_axis, self._freq_axis)
+        hdul = fits.HDUList(
+            [fits.PrimaryHDU(data, header)] + self._axis_tables(self._time_axis, self._freq_axis)
         )
         hdul.writeto(fileName, overwrite=True)
 
+    def _cleaning_chunks(self):
+        """(start, stop) rows of the file cleaned together when saving it:
+        the pages (as shown: averaging and per-page medians match), or
+        without pages blocks of ~16 million values."""
+        total = len(self._full_time_axis)
+        if self._nav_mode == "Windowed":
+            window = self._calculate_window_samples()
+        else:
+            nf = len(self._full_freq_axis) if self._full_freq_axis is not None else 1
+            time_bin = self._bin[0]
+            window = max(time_bin, (16_000_000 // max(nf, 1)) // time_bin * time_bin)
+        return [(s, min(s + window, total)) for s in range(0, total, window)]
+
+    def _write_whole(self, fileName, progress, cancelled):
+        """Write the whole file, cleaned as shown, to ``fileName``: read,
+        cleaned and written page by page (runs in a background thread)."""
+        image = self._image()
+        full_time = self._full_time_axis
+        total = len(full_time)
+        time_major = image.shape[0] == total
+        chunks = self._cleaning_chunks()
+        time_bin, freq_bin = self._bin
+        time_out = np.concatenate([rebin(full_time[s:e].astype(np.float64), time_bin, 0) for s, e in chunks])
+        _, freq_out = self._binned_axes(None, self._full_freq_axis)
+        nf = image.shape[1] if time_major else image.shape[0]
+        nf_out = -(-nf // freq_bin)
+        header = self._cleaned_header((len(time_out), nf_out), time_out, freq_out)
+
+        partial = f"{fileName}.part"
+        if os.path.exists(partial):
+            os.remove(partial)
+        stream = fits.StreamingHDU(partial, header)
+        try:
+            self._stream_chunks(stream, image, chunks, time_major, nf, total, progress, cancelled)
+        except BaseException:
+            stream.close()
+            os.remove(partial)
+            raise
+        stream.close()
+        with fits.open(partial, mode="append") as hdul:
+            for table in self._axis_tables(time_out, freq_out):
+                hdul.append(table)
+        os.replace(partial, fileName)
+
+    def _stream_chunks(self, stream, image, chunks, time_major, nf, total, progress, cancelled):
+        """Clean the file's rows ``chunks`` and write them to ``stream``."""
+        from ..remote.remote_fits import Cancelled, reporting
+
+        full_time = self._full_time_axis
+        done = 0
+        for s, e in chunks:
+            if cancelled():
+                raise Cancelled()
+            key = np.s_[s:e, :] if time_major else np.s_[:, s:e]
+            # (inner reads only stop when cancelled: progress is by page)
+            with reporting(None, cancelled):
+                raw = image.read(key, cache=False) if hasattr(image, "read") else image[key]
+            data = np.array(raw if time_major else raw.T, dtype=np.float32)
+            data[np.isinf(data)] = np.nan
+            data = self._binned(self._apply_masks(data, full_time[s:e]))
+            if self._is_bandpass_enabled:
+                data = self._apply_bandpass_to_data(data)
+            stream.write(np.ascontiguousarray(data, dtype=">f4"))
+            done += e - s
+            progress(done * nf * 4, total * nf * 4)
+
     def compareOriginalCleaned(self):
-        if self._original_unmodified is None or self._original_data is None:
+        original = self._unmodified()
+        if original is None or self._original_data is None:
             QMessageBox.information(self, "Info", "No data loaded.")
             return
         with self.wait_cursor():
             fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
         axes[0].set_title("Original Unmodified")
         axes[1].set_title("Current Cleaned")
-        orig_ma = ma.masked_invalid(self._original_unmodified)
+        orig_ma = ma.masked_invalid(original)
         cle_ma = ma.masked_invalid(self._original_data)
 
         # Apply the same scaling as the current view
@@ -3554,86 +3851,66 @@ class MainWindow(QMainWindow):
         fig.show()
 
     def revertToOriginal(self):
-        if self._original_unmodified is None:
-            QMessageBox.warning(self, "Warning", "No original data to revert to.")
+        """Remove all masks, drawn and extended (Undo brings them back)."""
+        if not self._masks and not self._global_masked_freq_indices:
+            self.statusBar().showMessage("There are no masks.", 5000)
             return
-        self._original_data = self._original_unmodified.copy()
-
-        # Also clear any extended frequency masks and undo history
-        self._global_masked_freq_indices.clear()
-        self.undo_stack.clear()
-
-        self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
-        self.canvas.draw_spectrum()
+        self._do(("clear", (list(self._masks), frozenset(self._global_masked_freq_indices))))
         self.statusBar().showMessage(
             "Reverted to original data (all masks cleared).", 5000
         )
 
     # ----------------------- Undo/Redo Functionality ----------------------------
-    def _push_undo_delta(self, time_slice, freq_slice):
-        """Push a delta to the undo stack (memory-efficient)."""
-        if self._original_data is None:
-            return
 
-        delta = {
-            "slices": (time_slice, freq_slice),
-            "old_values": self._original_data[time_slice, freq_slice].copy(),
-        }
 
-        # Limit stack size
-        if len(self.undo_stack) >= self.MAX_UNDO_STACK_SIZE:
-            self.undo_stack.pop(0)  # Remove oldest
+    def _apply_edit(self, edit, undo=False):
+        kind, value = edit
+        if kind == "add":
+            if undo:
+                self._masks.remove(value)
+            else:
+                self._masks.append(value)
+        elif kind == "extend":
+            if undo:
+                self._global_masked_freq_indices.difference_update(value)
+            else:
+                self._global_masked_freq_indices.update(value)
+        elif kind == "clear":
+            if undo:
+                self._masks = list(value[0])
+                self._global_masked_freq_indices = set(value[1])
+            else:
+                self._masks = []
+                self._global_masked_freq_indices = set()
 
-        self.undo_stack.append(delta)
+    def _do(self, edit):
+        """Make a mask edit (undoable) and show the page with it."""
+        self._apply_edit(edit)
+        self.undo_stack.append(edit)
         self.redo_stack.clear()
+        self._redisplay()
 
     def undo(self):
         if not self.undo_stack:
-            QMessageBox.information(self, "Undo", "No more actions to undo.")
+            self.statusBar().showMessage("Nothing to undo.", 3000)
             return
-
-        delta = self.undo_stack.pop()
-        time_slice, freq_slice = delta["slices"]
-
-        # Save current state for redo
-        redo_delta = {
-            "slices": delta["slices"],
-            "old_values": self._original_data[time_slice, freq_slice].copy(),
-        }
-        self.redo_stack.append(redo_delta)
-
-        # Restore old values
-        self._original_data[time_slice, freq_slice] = delta["old_values"]
-
-        # Update display
-        self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
-        self.canvas.draw_spectrum()
+        edit = self.undo_stack.pop()
+        self._apply_edit(edit, undo=True)
+        self.redo_stack.append(edit)
+        self._redisplay()
 
     def redo(self):
         if not self.redo_stack:
-            QMessageBox.information(self, "Redo", "No more actions to redo.")
+            self.statusBar().showMessage("Nothing to redo.", 3000)
             return
-
-        delta = self.redo_stack.pop()
-        time_slice, freq_slice = delta["slices"]
-
-        # Save current state for undo
-        undo_delta = {
-            "slices": delta["slices"],
-            "old_values": self._original_data[time_slice, freq_slice].copy(),
-        }
-        self.undo_stack.append(undo_delta)
-
-        # Apply redo values
-        self._original_data[time_slice, freq_slice] = delta["old_values"]
-
-        # Update display
-        self.canvas.set_data(self._original_data, self._time_axis, self._freq_axis)
-        self.canvas.draw_spectrum()
+        edit = self.redo_stack.pop()
+        self._apply_edit(edit)
+        self.undo_stack.append(edit)
+        self._redisplay()
 
     def onBandpassNorm(self, checked):
         """Toggle persistent bandpass normalization."""
-        if self._original_unmodified is None:
+        if self._shown_raw is None:
             if checked:
                 self.normBtn.blockSignals(True)
                 self.normBtn.setChecked(False)
@@ -3652,14 +3929,14 @@ class MainWindow(QMainWindow):
 
     def onBandpassScopeChanged(self, index):
         scope = self.bandpassScopeCombo.itemData(index)
-        if self._is_bandpass_enabled and self._original_unmodified is not None:
+        if self._is_bandpass_enabled and self._shown_raw is not None:
             self._redisplay_bandpass(True, scope)
         else:
             self._bandpass_scope = scope
 
     def onBandpassMethodChanged(self, index):
         method = self.bandpassMethodCombo.itemData(index)
-        if self._is_bandpass_enabled and self._original_unmodified is not None:
+        if self._is_bandpass_enabled and self._shown_raw is not None:
             self._redisplay_bandpass(True, self._bandpass_scope, method)
         else:
             self._bandpass_method = method
@@ -3670,98 +3947,32 @@ class MainWindow(QMainWindow):
         if binning == self._bin:
             return
         self._bin = binning
-        if self._shown_raw is not None:
-            with self.wait_cursor():
-                self._display_data(*self._shown_raw)
-            self.statusBar().showMessage(
-                f"Averaging {binning[0]} time samples × {binning[1]} channels "
-                "(masks drawn on this page were cleared)", 5000
-            )
+        self._redisplay()
+        self.statusBar().showMessage(
+            f"Averaging {binning[0]} time samples × {binning[1]} channels", 5000
+        )
 
     def _redisplay_bandpass(self, enabled, scope, method=None):
-        """Show the data shown with bandpass normalisation ``enabled`` (the
-        median over ``scope``, divided or subtracted by ``method``), keeping
-        the masks drawn on it."""
-        # Capture user mask before changing state
-        # The mask is the difference between current data and what the data SHOULD be (baseline)
-        # We need to compute baseline based on the CURRENT state (before toggle)
-        if self._is_bandpass_enabled:
-            baseline = self._apply_bandpass_to_data(self._original_unmodified)
-        else:
-            baseline = self._original_unmodified
-
-        # Identify manual edits: where data is NaN but baseline is NOT NaN
-        if (
-            self._original_data is not None
-            and baseline is not None
-            and self._original_data.shape == baseline.shape
-        ):
-            user_mask = np.isnan(self._original_data) & (~np.isnan(baseline))
-        else:
-            user_mask = None
-
+        """Show the page with bandpass normalisation ``enabled`` (the median
+        over ``scope``, divided or subtracted by ``method``)."""
         self._is_bandpass_enabled = enabled
         self._bandpass_scope = scope
         if method is not None:
             self._bandpass_method = method
-        # Store mask for re-application
-        self._pending_user_mask = user_mask
-
-        # The page caches hold the data before normalisation: redrawing the
-        # data shown is enough (a page still loading is normalised when shown)
-        with self.wait_cursor():
-            self._display_data(*self._shown_raw)
+        # The page caches hold the data as read: redrawing is enough (a page
+        # still loading is normalised when shown)
+        self._redisplay()
 
     def _mask_roi_values(self, ixmin, ixmax, iymin, iymax):
-        """Mask a region of interest with NaN values."""
-        with self.wait_cursor():
-            try:
-                self.logger.info(
-                    f"Masking ROI: time=[{ixmin},{ixmax}], freq=[{iymin},{iymax}]"
-                )
-
-                # Validate indices
-                if ixmax < ixmin or iymax < iymin:
-                    self.logger.warning("Invalid ROI coordinates: Empty region")
-                    return
-
-                # Validate against data dimensions
-                if self._original_data is None:
-                    self.logger.error("No data loaded")
-                    return
-
-                # Save delta for undo (memory-efficient)
-                time_slice = slice(ixmin, ixmax + 1)
-                freq_slice = slice(iymin, iymax + 1)
-                self._push_undo_delta(time_slice, freq_slice)
-
-                # Copy-on-write: ensure we don't modify _original_unmodified
-                # (they can share a reference when no bandpass/global mask is active)
-                if self._original_data is self._original_unmodified:
-                    self._original_data = self._original_data.copy()
-
-                # Apply the mask
-                self._original_data[ixmin : ixmax + 1, iymin : iymax + 1] = np.nan
-
-                # Update the display
-                self.canvas.set_data(
-                    self._original_data, self._time_axis, self._freq_axis
-                )
-                self.canvas.draw_spectrum()
-
-                # Update status
-                self.statusBar().showMessage(
-                    f"ROI masked: time=[{ixmin},{ixmax}], freq=[{iymin},{iymax}] => NaN",
-                    5000,
-                )
-                self.logger.info("ROI masked successfully")
-            except Exception as e:
-                self.logger.exception(f"Error masking ROI: {e}")
-                QMessageBox.warning(self, "Error", f"Failed to mask region: {str(e)}")
-                # Disable ROI selector on error
-                self.roiButton.setChecked(False)
-                self.canvas.enable_roi_selector(False)
-                self.statusBar().showMessage("ROI masking failed", 5000)
+        """Mask a region of interest (samples of the data shown): kept for
+        the whole file, as a range of its samples and channels."""
+        if self._shown_raw is None or ixmax < ixmin or iymax < iymin:
+            return
+        mask = self._file_ranges(ixmin, ixmax, iymin, iymax)
+        self._do(("add", mask))
+        self.statusBar().showMessage(
+            f"Masked {mask[1] - mask[0]} time samples × {mask[3] - mask[2]} channels", 5000
+        )
 
     # ----------------------- Scale / Colormap Controls --------------------------
     @pyqtSlot(str)
@@ -3835,13 +4046,6 @@ class MainWindow(QMainWindow):
                 if self.imageAtTimeBtn.isChecked():
                     self.imageAtTimeBtn.setChecked(False)
 
-                # Deactivate Pan/Zoom in toolbar to avoid cursor conflicts
-                if hasattr(self, "navbar"):
-                    if self.navbar.mode == "zoom":
-                        self.navbar.zoom()
-                    elif self.navbar.mode == "pan":
-                        self.navbar.pan()
-
                 self.logger.info("Enabling ROI selector...")
                 self.canvas.enable_roi_selector(True, self._mask_roi_values)
                 self.statusBar().showMessage(
@@ -3860,9 +4064,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "ROI Selection Error",
-                f"{error_msg}\n\n"
-                "This may be due to compatibility issues with your Matplotlib version.\n"
-                "Please try updating Matplotlib or using a different selection method.",
+                error_msg,
             )
 
             # Reset button state
@@ -3876,29 +4078,6 @@ class MainWindow(QMainWindow):
 
             # Update the status bar
             self.statusBar().showMessage("ROI selection disabled due to an error", 5000)
-
-    def onHoverInfoToggled(self, checked):
-        """Toggle the mouse hover info display on/off."""
-        if hasattr(self.canvas, "hover_info_enabled"):
-            self.canvas.hover_info_enabled = checked
-        else:
-            # For backwards compatibility, set the attribute
-            self.canvas.hover_info_enabled = checked
-
-        # Clear hover text and reset cache if disabled
-        if not checked and hasattr(self.canvas, "_hover_text"):
-            self.canvas._hover_text.set_text("")
-            if hasattr(self.canvas, "_last_hover_text"):
-                self.canvas._last_hover_text = ""
-            self.canvas.draw_idle()
-
-    def onHoverFrequencyChanged(self, value):
-        """Update the hover throttle limit for performance tuning."""
-        if hasattr(self.canvas, "_hover_throttle_limit"):
-            self.canvas._hover_throttle_limit = value
-            # Reset counter to apply change immediately
-            if hasattr(self.canvas, "_hover_throttle_counter"):
-                self.canvas._hover_throttle_counter = 0
 
     def onCrossSectionToggled(self, checked):
         if self._original_data is None:
@@ -3914,13 +4093,6 @@ class MainWindow(QMainWindow):
                 self.driftBtn.setChecked(False)
             if self.imageAtTimeBtn.isChecked():
                 self.imageAtTimeBtn.setChecked(False)
-
-            # Deactivate Pan/Zoom in toolbar to avoid cursor conflicts
-            if hasattr(self, "navbar"):
-                if self.navbar.mode == "zoom":
-                    self.navbar.zoom()
-                elif self.navbar.mode == "pan":
-                    self.navbar.pan()
 
         self.canvas.enable_cross_section(checked)
         if checked:
@@ -4032,6 +4204,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("That time is outside the data.", 5000)
             return
         index = int(np.searchsorted(times, target))
+        if self._nav_mode == "Range" and self._range is not None:
+            if not self._range[0] <= index < self._range[1]:
+                self.statusBar().showMessage(
+                    "That time is outside the range shown (change From/To).", 5000
+                )
+                return
         page = index // self._calculate_window_samples() if self._nav_mode == "Windowed" else 0
         page = min(page, self._total_pages - 1)
         if page != self._current_page:
@@ -4046,48 +4224,29 @@ class MainWindow(QMainWindow):
         self.canvas.mark_time(target)
 
     def onExtendMask(self):
-        """Extend the current mask across frequency (i.e. Global Frequency Masking)."""
-        if self._original_data is None:
+        """Mask, across all time, the channels masked on the page shown."""
+        if self._shown_raw is None:
             return
-
-        with self.wait_cursor():
-            # Identify only USER-INTRODUCED NaN values by comparing against
-            # the original unmodified data.  Pre-existing NaN (e.g. from the
-            # FITS file itself) must NOT be treated as user masks.
-            if self._original_unmodified is not None:
-                user_mask = np.isnan(self._original_data) & ~np.isnan(
-                    self._original_unmodified
-                )
-            else:
-                # Fallback: treat all NaN as user mask
-                user_mask = np.isnan(self._original_data)
-
-            # Standardized orientation is always (Time, Freq)
-            # Axis 0 is Time → any() over time gives per-freq flag
-            masked_freqs = np.where(np.any(user_mask, axis=0))[0]
-
-            if len(masked_freqs) == 0:
-                self.statusBar().showMessage(
-                    "No user-masked frequencies found to extend.", 5000
-                )
-                return
-
-            # Kept as the file's channels (whatever the averaging)
-            freq_bin = self._bin[1]
-            nf = len(self._full_freq_axis) if self._full_freq_axis is not None else None
-            for k in masked_freqs:
-                stop = (k + 1) * freq_bin if nf is None else min((k + 1) * freq_bin, nf)
-                self._global_masked_freq_indices.update(range(k * freq_bin, stop))
-
-            # Apply immediately to current view
-            self._display_data(*self._shown_raw)
+        times = self._shown_raw[1]
+        full = self._full_time_axis
+        channels = set()
+        for t0, t1, f0, f1 in self._masks:
+            if times is not None and full[t0] <= times[-1] and full[t1 - 1] >= times[0]:
+                channels.update(range(f0, f1))
+        added = frozenset(channels - self._global_masked_freq_indices)
+        if not added:
             self.statusBar().showMessage(
-                f"Extended mask to {len(self._global_masked_freq_indices)} channels globally.",
-                5000,
+                "No masked channels on this page to extend.", 5000
             )
+            return
+        self._do(("extend", added))
+        self.statusBar().showMessage(
+            f"Extended mask to {len(self._global_masked_freq_indices)} channels globally.",
+            5000,
+        )
 
     def onClearMasks(self):
-        """Clear all masks: local manual masks, global extended masks, and undo history."""
+        """Clear all masks: drawn and extended (Undo brings them back)."""
         reply = QMessageBox.question(
             self,
             "Clear Masks",
@@ -4095,17 +4254,8 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
-
         if reply == QMessageBox.Yes:
-            self._global_masked_freq_indices.clear()
-            self._pending_user_mask = None
-
-            # Revert current view to raw
-            if self._original_unmodified is not None:
-                self._original_data = self._original_unmodified.copy()
-                self._display_data(*self._shown_raw)
-
-            self.statusBar().showMessage("All masks cleared.", 5000)
+            self.revertToOriginal()
 
     def resizeEvent(self, event):
         """Handle window resize events to ensure canvas redraws properly"""
