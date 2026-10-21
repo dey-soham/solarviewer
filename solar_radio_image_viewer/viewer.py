@@ -1,4 +1,5 @@
 import os
+import threading
 
 import numpy as np
 
@@ -99,6 +100,16 @@ from .core import (
 from .processing.fits_io import readable_image_path
 from .processing.image_meta import casa_info, fits_header
 from .processing.prefetch import image_prefetcher
+
+
+def _preload_display_modules():
+    """Import modules that drawing the first image otherwise waits ~1 s for:
+    astropy.wcs (plot axes) and sunpy's coordinates (solar disk size)."""
+    try:
+        import astropy.wcs  # noqa: F401
+        import sunpy.coordinates.sun  # noqa: F401
+    except Exception:
+        pass
 
 
 class CheckUpdateThread(QThread):
@@ -3330,6 +3341,9 @@ class SolarRadioImageViewerApp(
         self._update_thread = CheckUpdateThread()
         self._update_thread.update_available.connect(self._on_update_available)
         self._update_thread.start()
+
+        # Import what the first image will need while the user picks one
+        threading.Thread(target=_preload_display_modules, daemon=True).start()
 
         # Register for theme changes
         theme_manager.register_callback(self._on_theme_changed)

@@ -342,7 +342,8 @@ class PresetsMixin:
 
     ``cmap_combo``, ``current_header``, ``current_image_data``, ``gamma_entry``,
     ``imagename``, ``plot_image``, ``set_range``, ``show_status_message``,
-    ``stretch_combo``, ``vmax_entry``, ``vmin_entry``
+    ``stretch_combo``, ``update_gamma_slider_state``, ``vmax_entry``,
+    ``vmin_entry``
     """
 
     def _current_gamma(self):
@@ -394,9 +395,20 @@ class PresetsMixin:
 
         self.vmin_entry.setText(f"{vmin:.3f}")
         self.vmax_entry.setText(f"{vmax:.3f}")
+        # Without signals: their handlers would each redraw the image, only
+        # for the plot_image below to draw it again
+        self.stretch_combo.blockSignals(True)
         self.stretch_combo.setCurrentText(preset.stretch)
+        self.stretch_combo.blockSignals(False)
+        self.update_gamma_slider_state()
+        self.cmap_combo.blockSignals(True)
         self.cmap_combo.setCurrentText(cmap)
+        self.cmap_combo.blockSignals(False)
         self.gamma_entry.setText(_format_gamma(gamma))
+        # A redraw still queued from an earlier widget change (schedule_plot)
+        # would replace this one with the rounded values in the entry boxes
+        if getattr(self, "_plot_timer", None) is not None:
+            self._plot_timer.stop()
         self.plot_image(
             vmin, vmax, preset.stretch, cmap, gamma, interpolation="nearest"
         )

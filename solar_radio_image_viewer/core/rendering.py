@@ -7,6 +7,7 @@ import os
 import matplotlib
 import numpy as np
 from astropy.time import Time
+from matplotlib.axes import Axes
 from matplotlib.colors import LogNorm, Normalize
 from matplotlib.patches import Ellipse
 from PyQt5.QtCore import Qt
@@ -477,7 +478,11 @@ class RenderingMixin:
         if wcs_obj is not None:
             try:
                 ax = self.figure.add_subplot(111, projection=wcs_obj)
-                im = ax.imshow(
+                # Matplotlib's imshow directly: WCSAxes.imshow only adds
+                # handling for PIL images, behind a version check that scans
+                # every installed package's metadata on each call
+                im = Axes.imshow(
+                    ax,
                     transposed_data,
                     origin="lower",
                     cmap=cmap,
