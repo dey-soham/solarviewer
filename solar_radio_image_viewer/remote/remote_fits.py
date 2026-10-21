@@ -355,6 +355,11 @@ class RemoteArray:
         return data if dtype is None else data.astype(dtype, copy=False)
 
     def __getitem__(self, key):
+        return self.read(key)
+
+    def read(self, key, cache=True):
+        """``self[key]``; with ``cache`` False not kept in the local cache
+        (e.g. reading the whole file once to save it)."""
         if not isinstance(key, tuple):
             key = (key,)
         key = key + (slice(None),) * (2 - len(key))
@@ -367,6 +372,8 @@ class RemoteArray:
         if not rows or not cols:
             return np.empty((len(rows), len(cols)), np.float32)
         key = (rows.start, rows.stop, rows.step, cols.start, cols.stop, cols.step)
+        if not cache:
+            return self._read(rows, cols)
         # (the offset tells the file's images apart)
         return self._file.piece(("data", self._offset) + key, lambda: self._read(rows, cols))
 
