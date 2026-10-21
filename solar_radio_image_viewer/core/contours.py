@@ -1,30 +1,35 @@
 """
-Contour overlays: settings, loading/reprojecting contour data, drawing.
+Contour overlays: settings, loading contour data, drawing.
+
+Contours from another image are traced on that image's own pixel grid and
+the lines are mapped onto the base image through both images' WCS.
 """
 
 import os
 
 import numpy as np
+from matplotlib.transforms import Transform
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialogButtonBox, QMessageBox
 
 from ..processing.dependencies import IA
 from ..processing.image_data import get_pixel_values_from_image
 from ..processing.fits_io import readable_image_path
+from ..processing.image_meta import casa_info, fits_header
 
 
 class ContoursMixin:
-    """Contour settings dialog, contour data loading/reprojection and drawing.
+    """Contour settings dialog, contour data loading and drawing.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
 
     Host attributes/methods used:
 
-    ``_cached_csys``, ``_cached_fits_flag``, ``_cached_fits_header``,
-    ``_cached_summary``, ``contour_settings``, ``current_image_data``,
+    ``_build_display_wcs``, ``_cached_csys``, ``_cached_fits_flag``,
+    ``_cached_fits_header``, ``_cached_summary``, ``_cached_wcs_obj``,
+    ``contour_settings``, ``current_image_data``,
     ``_get_coordinate_system_from_image``, ``imagename``, ``_open_dialogs``,
-    ``parent``, ``_reproject_cache``, ``show_status_message``,
-    ``_temp_file_id``, ``window``
+    ``parent``, ``show_status_message``, ``_temp_file_id``, ``window``
     """
 
     def show_contour_settings(self):
@@ -595,12 +600,9 @@ class ContoursMixin:
             print("[ERROR] draw_contours: current_contour_wcs is None")
             return
 
-        # Reset contour offset (will be set if extended reprojection is used)
-        self._contour_offset = [0, 0]
-
         # OPTIMIZATION: Fast path for same-image contours
         # When contour source is the current image, skip expensive metadata loading
-        # and reprojection since the data is already aligned
+        # since the data is already aligned
         is_same_image = self.contour_settings["source"] == "same"
 
         metadata = self._contour_source_metadata(is_same_image)
@@ -609,85 +611,28 @@ class ContoursMixin:
         fits_flag, header, csys, summary = metadata
 
         try:
-            # Check if the contour and image projection match
             self.show_status_message("Drawing contours.... Please wait...")
-            image_wcs_obj = None
-            if hasattr(self, "_cached_wcs_obj"):
-                image_wcs_obj = self._cached_wcs_obj
-
-            # Calculate contour levels
+            image_wcs_obj = getattr(self, "_cached_wcs_obj", None)
 
             contour_data = self.contour_settings["contour_data"]
             abs_max = np.nanmax(np.abs(contour_data))
 
             pos_levels, neg_levels = self._compute_contour_levels(contour_data, abs_max)
 
-            (
-                contour_wcs_obj,
-                fits_flag,
-                image_wcs_for_reproject,
-                needs_reprojection,
-            ) = self._prepare_contour_reprojection(
-                contour_data,
-                csys,
-                fits_flag,
-                header,
-                image_wcs_obj,
-                is_same_image,
-                summary,
-            )
+            transform = None
+            if not is_same_image and image_wcs_obj is not None:
+                transform = self._contour_transform(
+                    contour_data, fits_flag, header, csys, summary, image_wcs_obj
+                )
+                if transform is False:
+                    return
 
-            contour_data = self._downsample_contour_for_display(
-                contour_data, needs_reprojection
-            )
-
-            proceed, contour_data = self._reproject_contour_data(
-                contour_data,
-                contour_wcs_obj,
-                image_wcs_for_reproject,
-                fits_flag,
-                is_same_image,
-                main_window,
-                needs_reprojection,
-            )
-            if not proceed:
-                return
-
-            # For reprojected data, the output matches the base image orientation
-            # so we transpose to match how the base image is displayed
-            display_contour_data = contour_data.transpose()
-
-            # Get offset for extended canvas positioning
-            contour_offset = getattr(self, "_contour_offset", [0, 0])
-
-            # Calculate extent for proper positioning when using extended canvas
-            # extent = [left, right, bottom, top] in data coordinates
-
-            ds_factor = getattr(self, "_contour_ds_factor", 1)
-
-            # Apply extent if offset is non-zero OR downsampling is active (since pixels differ from base)
-            if contour_offset != [0, 0] or ds_factor > 1:
-                extent = [
-                    -contour_offset[1],  # left (shifted by x offset)
-                    -contour_offset[1]
-                    + (
-                        display_contour_data.shape[0] * ds_factor
-                    ),  # right (add Width / shape[0])
-                    -contour_offset[0],  # bottom (shifted by y offset)
-                    -contour_offset[0]
-                    + (
-                        display_contour_data.shape[1] * ds_factor
-                    ),  # top (add Height / shape[1])
-                ]
+            if transform is None:
+                self._draw_aligned_contours(ax, contour_data, pos_levels, neg_levels)
             else:
-                extent = None  # Use default (0 to shape)
-
-            self._draw_contour_set(
-                ax, display_contour_data, extent, pos_levels, "pos", "positive"
-            )
-            self._draw_contour_set(
-                ax, display_contour_data, extent, neg_levels, "neg", "negative"
-            )
+                self._draw_transformed_contours(
+                    ax, contour_data, transform, pos_levels, neg_levels
+                )
 
             if main_window:
 
@@ -702,10 +647,92 @@ class ContoursMixin:
             if main_window:
                 self.show_status_message(f"Error drawing contours: {str(e)}")
 
-    def _draw_contour_set(self, ax, display_contour_data, extent, levels, sign, label):
-        """Draw one set of contour levels; sign is "pos" or "neg"."""
+    def _draw_aligned_contours(self, ax, contour_data, pos_levels, neg_levels):
+        """Draw contours whose pixel grid is the base image's."""
+        contour_data = self._downsample_contour_for_display(contour_data)
+        display_contour_data = contour_data.transpose()
+        # Pixel centres in base-image pixels (the image's pixel i is centred on i)
+        ds_factor = self._contour_ds_factor
+        rows = np.arange(display_contour_data.shape[0]) * ds_factor
+        cols = np.arange(display_contour_data.shape[1]) * ds_factor
+        args = (cols, rows, display_contour_data)
+        for levels, sign, label in (
+            (pos_levels, "pos", "positive"),
+            (neg_levels, "neg", "negative"),
+        ):
+            self._draw_contour_set(ax, args, {}, levels, sign, label)
+
+    def _draw_transformed_contours(
+        self, ax, contour_data, transform, pos_levels, neg_levels
+    ):
+        """Trace contours on the contour image's own pixel grid and map the
+        lines onto the base image with ``transform``."""
+        display_contour_data = contour_data.transpose()
+        step = 1
+        if self.contour_settings.get("downsample", True):
+            step = max(1, int(np.ceil(max(display_contour_data.shape) / 2048.0)))
+        rows = np.arange(0, display_contour_data.shape[0], step)
+        cols = np.arange(0, display_contour_data.shape[1], step)
+        args = (cols, rows, display_contour_data[::step, ::step])
+        kwargs = {"transform": transform + ax.transData}
+
+        clip = None
+        if not self.contour_settings.get("show_full_extent", True):
+            # Only within the base image extended by 25% on each side. A clip
+            # box, so the usual clipping to the axes still applies too
+            from matplotlib.transforms import Bbox, TransformedBbox
+
+            width, height = self.current_image_data.shape
+            clip = TransformedBbox(
+                Bbox(
+                    [
+                        [-0.25 * width - 0.5, -0.25 * height - 0.5],
+                        [1.25 * width - 0.5, 1.25 * height - 0.5],
+                    ]
+                ),
+                ax.transData,
+            )
+
+        vertices = []
+        for levels, sign, label in (
+            (pos_levels, "pos", "positive"),
+            (neg_levels, "neg", "negative"),
+        ):
+            cs = self._draw_contour_set(ax, args, kwargs, levels, sign, label)
+            if cs is not None:
+                for artist in _contour_artists(cs):
+                    if clip is not None:
+                        artist.set_clip_box(clip)
+                    vertices.extend(p.vertices for p in artist.get_paths())
+
+        vertices = np.concatenate(vertices) if vertices else np.empty((0, 2))
+        width, height = self.current_image_data.shape
+        inside = (
+            np.isfinite(vertices).all(axis=1)
+            & (vertices[:, 0] >= -0.5)
+            & (vertices[:, 0] <= width - 0.5)
+            & (vertices[:, 1] >= -0.5)
+            & (vertices[:, 1] <= height - 0.5)
+        )
+        if len(vertices) and not inside.any():
+            QMessageBox.warning(
+                self,
+                "No Coordinate Overlap",
+                "None of the contours fall on the base image.\n\n"
+                "This typically happens when the base image and contour image "
+                "are from different observation times, causing them to point at "
+                "different sky coordinates.\n\n"
+                "Please ensure both images are from the same or similar observation time.",
+            )
+
+    def _draw_contour_set(self, ax, args, kwargs, levels, sign, label):
+        """Draw one set of contour levels; sign is "pos" or "neg".
+
+        ``args``/``kwargs`` give the data (and coordinates/transform) for
+        ``ax.contour``. Returns the ContourSet, or None.
+        """
         if not levels or len(levels) == 0:
-            return
+            return None
         settings = self.contour_settings
         style = dict(
             levels=levels,
@@ -714,25 +741,19 @@ class ContoursMixin:
             linestyles=settings[f"{sign}_linestyle"],
         )
         try:
-            if extent:
-                # display_contour_data is transposed (X, Y): rows map to the
-                # vertical axis (X-range extent[0:2]), columns to the horizontal
-                # axis (Y-range extent[2:4]).
-                y = np.linspace(extent[0], extent[1], display_contour_data.shape[0])
-                x = np.linspace(extent[2], extent[3], display_contour_data.shape[1])
-                cs = ax.contour(x, y, display_contour_data, **style)
-            else:
-                cs = ax.contour(display_contour_data, origin="lower", **style)
+            cs = ax.contour(*args, **kwargs, **style)
 
             # Add contour labels if enabled
             if settings.get("show_labels", False):
                 ax.clabel(cs, inline=True, fontsize=8, fmt="%.2g")
+            return cs
 
         except Exception as e:
             print(f"[ERROR] Error drawing {label} contours: {e}, levels: {levels}")
             self.show_status_message(
                 f"Error drawing {label} contours: {e}, levels: {levels}"
             )
+            return None
 
     def _contour_source_metadata(self, is_same_image):
         """FITS header / CASA coordsys of the contour source image.
@@ -768,22 +789,17 @@ class ContoursMixin:
                 ".fts"
             ):
 
-                from astropy.io import fits
-
                 fits_flag = True
                 try:
-                    with fits.open(readable_image_path(contour_imagename), memmap=True) as hdul:
-                        header = dict(hdul[0].header)
+                    header = dict(fits_header(contour_imagename))
                 except Exception as e:
                     print(f"[ERROR] Error getting contour FITS header: {e}")
                     header = {}
 
             try:
-                ia_tool = IA()
-                ia_tool.open(readable_image_path(contour_imagename))
-                csys = ia_tool.coordsys()
-                summary = ia_tool.summary()
-                ia_tool.close()
+                info = casa_info(contour_imagename)
+                csys = info.coordsys()
+                summary = info.summary
             except Exception as e:
                 print(f"[ERROR] Error getting metadata: {e}")
                 self.show_status_message(f"Error getting metadata: {e}")
@@ -846,714 +862,173 @@ class ContoursMixin:
             )
         return pos_levels, neg_levels
 
-    def _prepare_contour_reprojection(
-        self,
-        contour_data,
-        csys,
-        fits_flag,
-        header,
-        image_wcs_obj,
-        is_same_image,
-        summary,
+    def _contour_transform(
+        self, contour_data, fits_flag, header, csys, summary, image_wcs_obj
     ):
-        """Build the contour image's WCS and decide whether it must be reprojected.
+        """Mapping from contour-image pixels to base-image pixels.
 
-        Returns (contour_wcs_obj, fits_flag, image_wcs_for_reproject,
-        needs_reprojection).
+        None if the two share a pixel grid (contours can be drawn as they are),
+        False if the contour image's coordinates can't be mapped onto the base
+        image (the reason has been shown), else a matplotlib Transform.
         """
-        image_wcs_for_reproject = None
-        contour_wcs_obj = None  # Initialize before the condition block
-
-        # Check if reprojection is needed (WCS differs between contour and image)
-        # OPTIMIZATION: Skip reprojection check for same-image contours - they're already aligned
-        needs_reprojection = False
-
-        if (
-            not is_same_image
-            and self.current_contour_wcs is not None
-            and image_wcs_obj is not None
-        ):
-            contour_wcs_obj, fits_flag = self._build_contour_wcs(
-                csys, fits_flag, header, image_wcs_obj, summary
-            )
-
-            image_wcs_for_reproject = self._swapped_image_wcs(image_wcs_obj)
-
-            # Check for different projections and warn user
-            # Extract projection type from ctype (e.g., "SIN" from "RA---SIN" or "DEC--SIN")
-            def get_projection_type(ctype):
-                if not ctype:
-                    return ""
-                # SOLAR-X/SOLAR-Y are equivalent to TAN projection
-                if "SOLAR-X" in ctype.upper() or "SOLAR-Y" in ctype.upper():
-                    return "TAN"
-                if len(ctype) >= 3:
-                    return ctype[-3:]  # Get last 3 chars (SIN, TAN, etc.)
-                return ""
-
-            contour_proj = get_projection_type(contour_wcs_obj.wcs.ctype[0])
-            image_proj = get_projection_type(image_wcs_for_reproject.wcs.ctype[0])
-
-            if contour_proj != image_proj:
-                # Show warning dialog to user
-                QMessageBox.warning(
-                    self,
-                    "Projection Mismatch",
-                    f"The contour image uses a different projection than the base image:\n\n"
-                    f"Base image: {image_proj}\n"
-                    f"Contour image: {contour_proj}\n\n"
-                    f"Contours will be plotted but may not align perfectly.",
-                )
-
-            # Check for different increments (pixel scales)
-            contour_cdelt = np.abs(contour_wcs_obj.wcs.cdelt)
-            image_cdelt = np.abs(image_wcs_obj.wcs.cdelt)
-            scale_ratio_x = contour_cdelt[0] / image_cdelt[0]
-            scale_ratio_y = contour_cdelt[1] / image_cdelt[1]
-
-            if (np.abs(scale_ratio_x - 1) > 1e-3) or (np.abs(scale_ratio_y - 1) > 1e-3):
-                needs_reprojection = True
-
-            # Check for different reference pixels
-            contour_crpix = np.array(contour_wcs_obj.wcs.crpix)
-            image_crpix = np.array(image_wcs_obj.wcs.crpix)
-            if np.any(np.abs(contour_crpix - image_crpix) > 1e-3):
-                needs_reprojection = True
-
-            # Check for different reference values
-            contour_crval = np.array(contour_wcs_obj.wcs.crval)
-            image_crval = np.array(image_wcs_obj.wcs.crval)
-            if np.any(np.abs(contour_crval - image_crval) > 1e-6):
-                needs_reprojection = True
-
-            # Check if image shapes differ
-            if contour_data.shape != self.current_image_data.shape:
-                needs_reprojection = True
-        return contour_wcs_obj, fits_flag, image_wcs_for_reproject, needs_reprojection
-
-    def _build_contour_wcs(self, csys, fits_flag, header, image_wcs_obj, summary):
-        """2D astropy WCS for the contour image (axes swapped to match the base image).
-
-        Returns (contour_wcs_obj, fits_flag).
-        """
-        # Build the contour WCS object
-        from astropy.wcs import WCS
-
-        contour_wcs_obj = WCS(naxis=2)
-
-        # For FITS files, we need to handle the WCS carefully:
-        # - Use current_contour_wcs for CRPIX/CRVAL/CDELT (which is adjusted for downsampling)
-        # - But for HPC FITS files, CASA misinterprets the CTYPE, so use header for CTYPE
-        if fits_flag and header:
-            try:
-                # Get downsampling-adjusted values from CASA coordsys
-                ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
-                ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
-                increment = self.current_contour_wcs.increment()["numeric"][0:2]
-
-                # Swap axes for numpy (row, col) = (y, x) order
-                contour_wcs_obj.wcs.crpix = [
-                    ref_pix[1] + 1,
-                    ref_pix[0] + 1,
-                ]  # CASA 0-indexed -> FITS 1-indexed
-
-                # Get CTYPE from FITS header (correct for HPC)
-                ctype1 = header.get("CTYPE1", "")
-                ctype2 = header.get("CTYPE2", "")
-                is_hpc = (
-                    "HPLN" in ctype1
-                    or "HPLT" in ctype1
-                    or "HPLN" in ctype2
-                    or "HPLT" in ctype2
-                    or "SOLAR-X" in ctype1.upper()
-                    or "SOLAR-Y" in ctype2.upper()
-                )
-
-                if is_hpc:
-                    # Distinguish HPLN-TAN (CASA stores in radians) from
-                    # SOLAR-X (CASA stores as linear coords in arcsec)
-                    is_solar_xy = (
-                        "SOLAR-X" in ctype1.upper() or "SOLAR-Y" in ctype2.upper()
-                    )
-                    if is_solar_xy:
-                        # SOLAR-X/Y: CASA coordsys has arcsec values
-                        # Convert arcsec → degrees for astropy WCS
-                        crval1 = ref_val[0] / 3600.0
-                        crval2 = ref_val[1] / 3600.0
-                        cdelt1 = increment[0] / 3600.0
-                        cdelt2 = increment[1] / 3600.0
-                    else:
-                        # HPLN/HPLT: CASA coordsys is in radians
-                        # Convert to degrees for WCS reprojection
-                        crval1 = ref_val[0] * 180.0 / np.pi
-                        crval2 = ref_val[1] * 180.0 / np.pi
-                        cdelt1 = increment[0] * 180.0 / np.pi
-                        cdelt2 = increment[1] * 180.0 / np.pi
-                else:
-                    # For RA/Dec, CASA coordsys is already in radians, convert to degrees
-                    crval1 = ref_val[0] * 180.0 / np.pi
-                    crval2 = ref_val[1] * 180.0 / np.pi
-                    cdelt1 = increment[0] * 180.0 / np.pi
-                    cdelt2 = increment[1] * 180.0 / np.pi
-
-                contour_wcs_obj.wcs.crval = [crval2, crval1]  # Swapped
-                contour_wcs_obj.wcs.cdelt = [cdelt2, cdelt1]  # Swapped
-
-                # Map SOLAR-X/Y to standard celestial types for reproject
-                def _to_celestial_ctype(ct):
-                    ct_upper = ct.upper()
-                    if "SOLAR-X" in ct_upper:
-                        return "HPLN-TAN"
-                    elif "SOLAR-Y" in ct_upper:
-                        return "HPLT-TAN"
-                    return ct
-
-                contour_wcs_obj.wcs.ctype = [
-                    _to_celestial_ctype(ctype2),
-                    _to_celestial_ctype(ctype1),
-                ]  # Map to celestial types for reproject
-            except Exception as e:
-
-                print(f"[ERROR] Failed to build WCS from FITS header: {e}")
-                # Fall back to CASA coordsys without FITS header
-                fits_flag = False
-
-        if not fits_flag:
-            # Use CASA coordsys (for CASA images or as fallback)
-            ref_val = self.current_contour_wcs.referencevalue()["numeric"][0:2]
-            ref_pix = self.current_contour_wcs.referencepixel()["numeric"][0:2]
-            increment = self.current_contour_wcs.increment()["numeric"][0:2]
-
-            # IMPORTANT: CASA WCS stores in (RA, Dec) = (x, y) order
-            # But numpy arrays are (row, col) = (y, x)
-            # We need to SWAP the axes for proper alignment with reproject
-            contour_wcs_obj.wcs.crpix = [
-                ref_pix[1] + 1,
-                ref_pix[0] + 1,
-            ]  # Swap to (y, x); CASA 0-indexed -> FITS 1-indexed
-
-            if "Right Ascension" in summary["axisnames"]:
-                contour_wcs_obj.wcs.crval = [
-                    ref_val[1] * 180 / np.pi,  # Dec first
-                    ref_val[0] * 180 / np.pi,  # RA second
-                ]
-                contour_wcs_obj.wcs.cdelt = [
-                    increment[1] * 180 / np.pi,
-                    increment[0] * 180 / np.pi,
-                ]
-                contour_wcs_obj.wcs.ctype = ["DEC--SIN", "RA---SIN"]
-            else:
-                contour_wcs_obj.wcs.crval = [ref_val[1], ref_val[0]]
-                contour_wcs_obj.wcs.cdelt = [increment[1], increment[0]]
-
-        # Set projection type for contour WCS (swapped to match axis order)
-        if fits_flag:
-            try:
-                # Swap CTYPE order to match swapped axes
-                # Map SOLAR-X/Y to celestial types for reproject
-                def _to_celestial_ctype2(ct):
-                    ct_upper = ct.upper()
-                    if "SOLAR-X" in ct_upper:
-                        return "HPLN-TAN"
-                    elif "SOLAR-Y" in ct_upper:
-                        return "HPLT-TAN"
-                    return ct
-
-                contour_wcs_obj.wcs.ctype = [
-                    _to_celestial_ctype2(header["CTYPE2"]),
-                    _to_celestial_ctype2(header["CTYPE1"]),
-                ]
-            except Exception as e:
-                print(f"[ERROR] Error getting projection type from FITS: {e}")
-                self.show_status_message(
-                    f"Error getting projection type from FITS: {e}"
-                )
-                # Use swapped image ctype, mapping SOLAR-X/Y if needed
-                ct0 = image_wcs_obj.wcs.ctype[1]
-                ct1 = image_wcs_obj.wcs.ctype[0]
-                if "SOLAR-X" in ct1.upper():
-                    ct1 = "HPLN-TAN"
-                if "SOLAR-Y" in ct0.upper():
-                    ct0 = "HPLT-TAN"
-                contour_wcs_obj.wcs.ctype = [ct0, ct1]
-        elif (csys.projection()["type"] == "SIN") and (
-            "Right Ascension" in summary["axisnames"]
-        ):
-            contour_wcs_obj.wcs.ctype = ["DEC--SIN", "RA---SIN"]  # Swapped
-        elif (csys.projection()["type"] == "TAN") and (
-            "Right Ascension" in summary["axisnames"]
-        ):
-            contour_wcs_obj.wcs.ctype = ["DEC--TAN", "RA---TAN"]  # Swapped
-        else:
-            # Use swapped image ctype, mapping SOLAR-X/Y if needed
-            ct0 = image_wcs_obj.wcs.ctype[1]
-            ct1 = image_wcs_obj.wcs.ctype[0]
-            if "SOLAR-X" in ct1.upper():
-                ct1 = "HPLN-TAN"
-            if "SOLAR-Y" in ct0.upper():
-                ct0 = "HPLT-TAN"
-            contour_wcs_obj.wcs.ctype = [ct0, ct1]
-        return contour_wcs_obj, fits_flag
-
-    def _swapped_image_wcs(self, image_wcs_obj):
-        """Base-image WCS with axes swapped (and SOLAR-X/Y converted to degrees)
-        for use as the reprojection target."""
-        from astropy.wcs import WCS
-
-        # IMPORTANT: Also swap the image WCS to match!
-        # Create a copy with swapped axes for reprojection
-        image_wcs_swapped = WCS(naxis=2)
-        image_wcs_swapped.wcs.crpix = [
-            image_wcs_obj.wcs.crpix[1],
-            image_wcs_obj.wcs.crpix[0],
-        ]
-
-        # Check if base image uses SOLAR-X/Y (non-celestial in astropy)
-        # If so, convert values from arcsec to degrees and remap CTYPE
-        img_ctype0 = image_wcs_obj.wcs.ctype[0]
-        img_ctype1 = image_wcs_obj.wcs.ctype[1]
-        is_base_solar_xy = (
-            "SOLAR-X" in img_ctype0.upper() or "SOLAR-Y" in img_ctype1.upper()
-        )
-
-        if is_base_solar_xy:
-            # SOLAR-X/Y: values are in arcsec, convert to degrees
-            image_wcs_swapped.wcs.crval = [
-                image_wcs_obj.wcs.crval[1] / 3600.0,
-                image_wcs_obj.wcs.crval[0] / 3600.0,
-            ]
-            image_wcs_swapped.wcs.cdelt = [
-                image_wcs_obj.wcs.cdelt[1] / 3600.0,
-                image_wcs_obj.wcs.cdelt[0] / 3600.0,
-            ]
-            image_wcs_swapped.wcs.ctype = ["HPLT-TAN", "HPLN-TAN"]
-        else:
-            image_wcs_swapped.wcs.crval = [
-                image_wcs_obj.wcs.crval[1],
-                image_wcs_obj.wcs.crval[0],
-            ]
-            image_wcs_swapped.wcs.cdelt = [
-                image_wcs_obj.wcs.cdelt[1],
-                image_wcs_obj.wcs.cdelt[0],
-            ]
-            image_wcs_swapped.wcs.ctype = [
-                image_wcs_obj.wcs.ctype[1],
-                image_wcs_obj.wcs.ctype[0],
-            ]
-
-        # Use the swapped WCS for reprojection
-        image_wcs_for_reproject = image_wcs_swapped
-        return image_wcs_for_reproject
-
-    def _downsample_contour_for_display(self, contour_data, needs_reprojection):
-        """Downsample large, non-reprojected contour data for plotting speed."""
-        # Handle manual downsampling for "Same Image" or aligned images (no reprojection needed)
-        # This ensures large images are still downsampled for performance
-        if not needs_reprojection:
-            self._contour_ds_factor = 1  # Default
-            if self.contour_settings.get("downsample", True):
-                max_dim = max(contour_data.shape)
-                if max_dim > 2048:
-                    factor = int(np.ceil(max_dim / 2048.0))
-                    print(
-                        f"[INFO] Downsampling aligned contour by {factor}x (original size: {contour_data.shape})"
-                    )
-                    # Simple slicing is sufficient for aligned data
-                    contour_data = contour_data[::factor, ::factor]
-                    self._contour_ds_factor = factor
-        return contour_data
-
-    def _reproject_contour_data(
-        self,
-        contour_data,
-        contour_wcs_obj,
-        image_wcs_for_reproject,
-        fits_flag,
-        is_same_image,
-        main_window,
-        needs_reprojection,
-    ):
-        """Reproject contour data onto the base image grid (if needed).
-
-        Returns (proceed, contour_data); proceed is False if drawing should
-        stop (user cancelled, or no overlap).
-        """
-        if needs_reprojection and contour_wcs_obj is not None:
-            try:
-                from reproject import reproject_interp
-
-                if main_window:
-                    self.show_status_message("Reprojecting.. Please wait...")
-
-                # print("Reprojecting contour data to match base image WCS...")
-                # print(f"  Contour data shape: {contour_data.shape}")
-                # print(f"  Image data shape: {self.current_image_data.shape}")
-                # print(f"  Contour WCS (swapped): crpix={contour_wcs_obj.wcs.crpix}, crval={contour_wcs_obj.wcs.crval}, cdelt={contour_wcs_obj.wcs.cdelt}, ctype={contour_wcs_obj.wcs.ctype}")
-                # print(f"  Image WCS (swapped):   crpix={image_wcs_for_reproject.wcs.crpix}, crval={image_wcs_for_reproject.wcs.crval}, cdelt={image_wcs_for_reproject.wcs.cdelt}, ctype={image_wcs_for_reproject.wcs.ctype}")
-
-                # Set the array shape in the WCS header for reproject
-                # Note: contour_data shape is (height, width) but WCS uses (NAXIS1=width, NAXIS2=height)
-                contour_wcs_obj.array_shape = contour_data.shape
-                image_wcs_for_reproject.array_shape = self.current_image_data.shape
-
-                canvas = self._extended_contour_canvas(
-                    contour_data, contour_wcs_obj, image_wcs_for_reproject, main_window
-                )
-                if canvas is None:
-                    return False, contour_data
-                extended_shape, extended_wcs, contour_offset, show_full_extent = canvas
-
-                # Store offset for contour drawing
-                self._contour_offset = contour_offset
-
-                array, ds_factor, extended_shape = self._reproject_with_cache(
-                    contour_data,
-                    contour_wcs_obj,
-                    image_wcs_for_reproject,
-                    extended_shape,
-                    extended_wcs,
-                    fits_flag,
-                    is_same_image,
-                    main_window,
-                    show_full_extent,
-                )
-
-                # Replace the NaNs with zeros
-                array = np.nan_to_num(array, nan=0.0)
-
-                # Check if reprojection produced valid data
-                if np.all(array == 0):
-                    # Re-run with footprint to diagnose coverage
-                    if main_window:
-                        self.show_status_message(
-                            "Reprojection yielded zeros, checking overlap..."
-                        )
-
-                    _, footprint = reproject_interp(
-                        (contour_data, contour_wcs_obj),
-                        extended_wcs,
-                        shape_out=extended_shape,
-                        return_footprint=True,
-                    )
-                    footprint_pct = np.sum(footprint > 0) / footprint.size * 100
-                    if main_window:
-                        self.show_status_message(
-                            "WARNING: Reprojection produced all zeros ..."
-                        )
-                    print(
-                        "[WARNING] Reprojection produced all zeros - checking footprint coverage"
-                    )
-                    print(f"  Footprint coverage: {footprint_pct:.1f}%")
-                    if footprint_pct < 1.0:
-                        # Show warning dialog about no overlap
-                        QMessageBox.warning(
-                            self,
-                            "No Coordinate Overlap",
-                            "Contour reprojection produced no valid data (0% footprint).\n\n"
-                            "This typically happens when the base image and contour image "
-                            "are from different observation times, causing them to point at "
-                            "different sky coordinates.\n\n"
-                            "Please ensure both images are from the same or similar observation time.",
-                        )
-                        return False, contour_data  # Don't try to draw empty contours
-                else:
-
-                    if main_window:
-                        self.show_status_message(
-                            "Reprojection done.. plotting... Please wait..."
-                        )
-
-                contour_data = array
-
-                # Store factor for extent calculation
-                self._contour_ds_factor = ds_factor
-
-            except ImportError as e:
-                print(f"[ERROR] reproject library not available: {e}")
-                # print("Install with: pip install reproject")
-                QMessageBox.warning(
-                    self,
-                    "Reprojection Not Available",
-                    "The 'reproject' library is required to align contours from images "
-                    "with different pixel scales.\n\nInstall with: pip install reproject",
-                )
-            except Exception as e:
-                print(f"[ERROR] Error reprojecting contour data: {e}")
-                contour_data = self._fallback_reproject_contour(
-                    contour_data, contour_wcs_obj, image_wcs_for_reproject
-                )
-        return True, contour_data
-
-    def _extended_contour_canvas(
-        self, contour_data, contour_wcs_obj, image_wcs_for_reproject, main_window
-    ):
-        """Output grid for reprojection: the base image extended to cover the
-        contour image (capped at 1.5x unless show_full_extent).
-
-        Returns (extended_shape, extended_wcs, contour_offset, show_full_extent),
-        or None if the user cancelled a very large reprojection.
-        """
-        # Calculate extended or clipped bounds based on show_full_extent setting
-        extended_shape = self.current_image_data.shape
-        contour_offset = [0, 0]  # Offset for contour plotting (y, x)
-        extended_wcs = image_wcs_for_reproject
-
-        show_full_extent = self.contour_settings.get("show_full_extent", False)
-
-        # Always try to extend canvas (default: 1.5x cap, full extent: no cap)
         try:
-            # Get world coordinates of contour image corners
-            contour_corners_pix = np.array(
-                [
-                    [0, 0],
-                    [contour_data.shape[1] - 1, 0],
-                    [0, contour_data.shape[0] - 1],
-                    [contour_data.shape[1] - 1, contour_data.shape[0] - 1],
-                ]
+            contour_wcs = self._build_display_wcs(
+                self.current_contour_wcs, fits_flag, header, csys, summary
             )
-            contour_corners_world = contour_wcs_obj.wcs_pix2world(
-                contour_corners_pix, 0
-            )
-            image_corners_pix = image_wcs_for_reproject.wcs_world2pix(
-                contour_corners_world, 0
-            )
-
-            # Calculate the extent of contour in base image coordinates
-            min_x = min(np.min(image_corners_pix[:, 0]), 0)
-            max_x = max(
-                np.max(image_corners_pix[:, 0]),
-                self.current_image_data.shape[1] - 1,
-            )
-            min_y = min(np.min(image_corners_pix[:, 1]), 0)
-            max_y = max(
-                np.max(image_corners_pix[:, 1]),
-                self.current_image_data.shape[0] - 1,
-            )
-
-            # Calculate extended dimensions
-            extended_width = int(np.ceil(max_x - min_x)) + 1
-            extended_height = int(np.ceil(max_y - min_y)) + 1
-
-            # Check for large reprojected matrix size when show_full_extent is enabled
-            if show_full_extent:
-                max_dim = max(extended_width, extended_height)
-                if max_dim > 5000:
-                    reply = QMessageBox.warning(
-                        self,
-                        "Large Reprojection Size",
-                        f"The reprojected matrix size ({extended_width} x {extended_height}) "
-                        f"exceeds 5000 pixels in at least one dimension.\n\n"
-                        f"This may consume significant memory and take a long time to compute.\n\n"
-                        f"Do you want to continue?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No,
-                    )
-                    if reply == QMessageBox.No:
-                        self.show_status_message("Contour drawing cancelled by user.")
-                        return None
-
-            # Apply 1.5x cap by default (unless show_full_extent is enabled)
-            if not show_full_extent:
-                max_width = int(self.current_image_data.shape[1] * 1.5)
-                max_height = int(self.current_image_data.shape[0] * 1.5)
-
-                # Recalculate bounds if capped
-                if extended_width > max_width:
-                    center_x = self.current_image_data.shape[1] / 2
-                    min_x = center_x - max_width / 2
-                    max_x = center_x + max_width / 2 - 1
-                    extended_width = max_width
-                if extended_height > max_height:
-                    center_y = self.current_image_data.shape[0] / 2
-                    min_y = center_y - max_height / 2
-                    max_y = center_y + max_height / 2 - 1
-                    extended_height = max_height
-
-            extended_shape = (extended_height, extended_width)
-
-            # Calculate offset (how much the base image is shifted in the extended canvas)
-            # Use floats to preserve sub-pixel accuracy
-            contour_offset = [-min_y, -min_x]
-
-            # Adjust WCS reference pixel for the extended shape
-            extended_wcs = image_wcs_for_reproject.deepcopy()
-            extended_wcs.wcs.crpix = [
-                image_wcs_for_reproject.wcs.crpix[0] - min_x,
-                image_wcs_for_reproject.wcs.crpix[1] - min_y,
-            ]
-            extended_wcs.array_shape = extended_shape
-
         except Exception as e:
-            if main_window:
-                self.show_status_message(f"Could not compute extended bounds: {e}")
-            print(f"[ERROR] Could not compute extended bounds: {e}")
-            extended_wcs = image_wcs_for_reproject
-            extended_shape = self.current_image_data.shape
-            contour_offset = [0, 0]
-        return extended_shape, extended_wcs, contour_offset, show_full_extent
-
-    def _reproject_with_cache(
-        self,
-        contour_data,
-        contour_wcs_obj,
-        image_wcs_for_reproject,
-        extended_shape,
-        extended_wcs,
-        fits_flag,
-        is_same_image,
-        main_window,
-        show_full_extent,
-    ):
-        """Reproject onto the extended grid, using self._reproject_cache.
-
-        Returns (array, ds_factor, extended_shape); large outputs are
-        downsampled by ds_factor.
-        """
-        from reproject import reproject_interp
-
-        # Check cache for reprojected data
-        original_contour_source = (
-            self.imagename
-            if is_same_image
-            else self.contour_settings.get("external_image")
-        )
-
-        # Create a comprehensive cache key
-        cache_key = (
-            self.imagename,  # Base image
-            original_contour_source,  # Contour image source
-            self.contour_settings.get("stokes", ""),  # Stokes parameter (crucial!)
-            contour_data.shape,  # Original contour shape
-            "fits_header" if fits_flag else "casa_csys",  # Source type
-            str(contour_wcs_obj.wcs.crval),  # Contour WCS params
-            str(contour_wcs_obj.wcs.cdelt),
-            str(
-                image_wcs_for_reproject.wcs.crval
-            ),  # Base image WCS params (includes downsampling state)
-            str(image_wcs_for_reproject.wcs.cdelt),
-            show_full_extent,  # Extent setting
-            self.contour_settings.get("downsample", True),  # Downsample setting
-        )
-
-        cached_result = self._reproject_cache.get(cache_key)
-
-        if cached_result is not None:
-            # cache hit
-            # print("Using cached reprojected contour data")
-            if main_window:
-                self.show_status_message("Using cached contour alignment...")
-            array, offset, ds_factor = cached_result
-            self._contour_offset = offset
-
-            # Apply downsampling factor to offset if needed for plotting calculations
-            # Note: The array itself is already downsampled, so we just use it.
-            # The offset is in base image pixels, which is correct for placement.
-        else:
-            # Cache miss - perform reprojection
-
-            # OPTIMIZATION: Downsample large arrays to save memory/time
-            # Contours don't need pixel-perfect 4k resolution
-            contour_ds_factor = 1
-            max_dim = max(extended_shape)
-            downsample_enabled = self.contour_settings.get("downsample", True)
-
-            if downsample_enabled and max_dim > 2048:
-                contour_ds_factor = int(np.ceil(max_dim / 2048.0))
-                print(
-                    f"[INFO] Downsampling contour reprojection by {contour_ds_factor}x (original size: {extended_shape})"
-                )
-
-                # Adjust shape
-                new_height = extended_shape[0] // contour_ds_factor
-                new_width = extended_shape[1] // contour_ds_factor
-                extended_shape = (new_height, new_width)
-
-                # Adjust WCS
-                extended_wcs.wcs.cdelt *= contour_ds_factor
-                extended_wcs.wcs.crpix /= contour_ds_factor
-
-            # Reproject the contour data to the extended/clipped WCS
-            # OPTIMIZATION: Don't calculate footprint unless needed (2x speedup)
-            array = reproject_interp(
-                (contour_data, contour_wcs_obj),
-                extended_wcs,
-                shape_out=extended_shape,
-                return_footprint=False,
-            )
-
-            # Store in cache
-            self._reproject_cache[cache_key] = (
-                array,
-                self._contour_offset,
-                contour_ds_factor,
-            )
-        if cached_result is not None:
-            return array, ds_factor, extended_shape
-        return array, contour_ds_factor, extended_shape
-
-    def _fallback_reproject_contour(
-        self, contour_data, contour_wcs_obj, image_wcs_for_reproject
-    ):
-        """Simpler reprojection onto the base image grid after the main path failed."""
-        import traceback
-
-        traceback.print_exc()
-
-        # Fallback: try scipy-based scaling using pixel scale ratio
-        # This is useful when WCS reprojection fails (e.g., HPC observer=None)
-        try:
-            from scipy.ndimage import zoom
-
+            contour_wcs = None
+            print(f"[ERROR] Could not read the contour image's coordinates: {e}")
+        if contour_wcs is None:
             self.show_status_message(
-                "WCS reprojection failed, trying pixel-scale fallback..."
+                "Contours not drawn: could not read the contour image's coordinates"
             )
+            return False
 
-            # Calculate scale factors from CDELT
-            scale_x = (
-                contour_wcs_obj.wcs.cdelt[0] / image_wcs_for_reproject.wcs.cdelt[0]
+        if _same_pixel_grid(contour_wcs, image_wcs_obj) and (
+            contour_data.shape == self.current_image_data.shape
+        ):
+            return None
+
+        base_header = getattr(self, "_cached_fits_header", None)
+        mapping = _pixel_mapping(
+            _transformable_wcs(contour_wcs, header),
+            _transformable_wcs(image_wcs_obj, base_header),
+        )
+        try:
+            _check_mapping(mapping, contour_data.shape)
+        except Exception as e:
+            # Without observation time and observer for both images: treat the
+            # two coordinate frames as the same
+            print(f"[INFO] Mapping contours without observer information: {e}")
+            mapping = _pixel_mapping(
+                _transformable_wcs(contour_wcs, None),
+                _transformable_wcs(image_wcs_obj, None),
             )
-            scale_y = (
-                contour_wcs_obj.wcs.cdelt[1] / image_wcs_for_reproject.wcs.cdelt[1]
-            )
+            try:
+                _check_mapping(mapping, contour_data.shape)
+            except Exception as e2:
+                print(f"[ERROR] Cannot map contour coordinates onto the image: {e2}")
+                self.show_status_message(
+                    f"Contours not drawn: cannot map their coordinates onto the image ({e2})"
+                )
+                return False
+        return _PixelToPixel(mapping)
 
-            # Zoom to match pixel scales
-            zoomed = zoom(
-                contour_data,
-                [abs(scale_y), abs(scale_x)],
-                order=1,
-                mode="constant",
-                cval=0,
-            )
-
-            # Pad or crop to match target shape
-            target_shape = self.current_image_data.shape
-            result = np.zeros(target_shape)
-
-            # Calculate the offset to center the contour
-            # Use reference value difference to determine shift
-            dcrval = contour_wcs_obj.wcs.crval - image_wcs_for_reproject.wcs.crval
-            offset_x = int(dcrval[0] / image_wcs_for_reproject.wcs.cdelt[0])
-            offset_y = int(dcrval[1] / image_wcs_for_reproject.wcs.cdelt[1])
-
-            # Calculate copy ranges
-            src_start_y = max(0, -offset_y)
-            src_end_y = min(zoomed.shape[0], target_shape[0] - offset_y)
-            src_start_x = max(0, -offset_x)
-            src_end_x = min(zoomed.shape[1], target_shape[1] - offset_x)
-
-            dst_start_y = max(0, offset_y)
-            dst_end_y = dst_start_y + (src_end_y - src_start_y)
-            dst_start_x = max(0, offset_x)
-            dst_end_x = dst_start_x + (src_end_x - src_start_x)
-
-            if src_end_y > src_start_y and src_end_x > src_start_x:
-                result[dst_start_y:dst_end_y, dst_start_x:dst_end_x] = zoomed[
-                    src_start_y:src_end_y, src_start_x:src_end_x
-                ]
-
-            contour_data = result
-            self.show_status_message("Fallback reprojection done")
-            print("[INFO] Fallback pixel-scale reprojection successful")
-        except Exception as fallback_e:
-            print(f"[ERROR] Fallback reprojection also failed: {fallback_e}")
+    def _downsample_contour_for_display(self, contour_data):
+        """Downsample large contour data that is aligned with the base image."""
+        # Handle manual downsampling for "Same Image" or aligned images
+        # This ensures large images are still downsampled for performance
+        self._contour_ds_factor = 1  # Default
+        if self.contour_settings.get("downsample", True):
+            max_dim = max(contour_data.shape)
+            if max_dim > 2048:
+                factor = int(np.ceil(max_dim / 2048.0))
+                print(
+                    f"[INFO] Downsampling aligned contour by {factor}x (original size: {contour_data.shape})"
+                )
+                # Simple slicing is sufficient for aligned data
+                contour_data = contour_data[::factor, ::factor]
+                self._contour_ds_factor = factor
         return contour_data
+
+
+def _contour_artists(cs):
+    """The artists holding a ContourSet's paths (itself on Matplotlib >= 3.8)."""
+    from matplotlib.collections import Collection
+
+    return [cs] if isinstance(cs, Collection) else list(cs.collections)
+
+
+def _same_pixel_grid(wcs_a, wcs_b):
+    """True if two display WCSs describe the same pixel grid."""
+    return (
+        list(wcs_a.wcs.ctype) == list(wcs_b.wcs.ctype)
+        and np.allclose(wcs_a.wcs.crpix, wcs_b.wcs.crpix, rtol=0, atol=1e-3)
+        and np.allclose(wcs_a.wcs.crval, wcs_b.wcs.crval, rtol=0, atol=1e-6)
+        and np.allclose(wcs_a.wcs.cdelt, wcs_b.wcs.cdelt, rtol=1e-3, atol=0)
+    )
+
+
+def _transformable_wcs(display_wcs, header):
+    """Copy of a display WCS that astropy can transform between frames.
+
+    SOLAR-X/Y (linear, in arcsec) becomes HPLN/HPLT-TAN in degrees, and the
+    observation time and observer position are taken from ``header`` when
+    it has them.
+    """
+    wcs = display_wcs.deepcopy()
+    if "SOLAR" in wcs.wcs.ctype[0].upper():
+        wcs.wcs.crval = np.asarray(display_wcs.wcs.crval) / 3600.0
+        wcs.wcs.cdelt = np.asarray(display_wcs.wcs.cdelt) / 3600.0
+        wcs.wcs.ctype = ["HPLN-TAN", "HPLT-TAN"]
+    header = header or {}
+    date_obs = header.get("DATE-OBS") or header.get("DATE_OBS")
+    if date_obs:
+        wcs.wcs.dateobs = str(date_obs)
+    if wcs.wcs.ctype[0].startswith("HPLN"):
+        for key in ("HGLN_OBS", "HGLT_OBS", "DSUN_OBS", "RSUN_REF"):
+            if header.get(key) is not None:
+                setattr(wcs.wcs.aux, key.lower(), float(header[key]))
+    wcs.wcs.set()
+    return wcs
+
+
+def _pixel_mapping(src_wcs, dst_wcs):
+    """Function mapping (n, 2) pixel positions of ``src_wcs`` to ``dst_wcs``.
+
+    Between helioprojective frames of different observers, points are taken
+    to lie on a sphere through the Sun's centre as seen from the source's
+    observer, so off-limb (coronal) emission maps as well.
+    """
+    import contextlib
+
+    from astropy.wcs.utils import pixel_to_pixel, wcs_to_celestial_frame
+
+    observer = None
+    try:
+        from sunpy.coordinates import Helioprojective
+
+        frame = wcs_to_celestial_frame(src_wcs)
+        if isinstance(frame, Helioprojective):
+            observer = frame.observer
+    except Exception:
+        pass
+
+    def mapping(xy):
+        xy = np.asarray(xy, dtype=float).reshape(-1, 2)
+        if not len(xy):
+            return xy
+        if observer is None:
+            screen = contextlib.nullcontext()
+        else:
+            screen = Helioprojective.assume_spherical_screen(observer)
+        with screen:
+            x, y = pixel_to_pixel(src_wcs, dst_wcs, xy[:, 0], xy[:, 1])
+        return np.column_stack([x, y])
+
+    return mapping
+
+
+def _check_mapping(mapping, shape):
+    """Raise if ``mapping`` fails on the corners and centre of an image."""
+    nx, ny = shape
+    probe = np.array(
+        [[0, 0], [nx - 1, 0], [0, ny - 1], [nx - 1, ny - 1], [nx / 2, ny / 2]]
+    )
+    if not np.isfinite(mapping(probe)).any():
+        raise ValueError("no point of the contour image maps onto the base image")
+
+
+class _PixelToPixel(Transform):
+    """Matplotlib transform wrapping a pixel-to-pixel mapping function.
+
+    WCSAxes.contour applies it once to all contour vertices."""
+
+    input_dims = output_dims = 2
+
+    def __init__(self, mapping):
+        super().__init__()
+        self._mapping = mapping
+
+    def transform_non_affine(self, values):
+        return self._mapping(values)

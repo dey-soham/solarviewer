@@ -373,95 +373,105 @@ class RenderingMixin:
                 self._cached_wcs_id != id(self.current_wcs)
             ):
                 try:
-                    from astropy.wcs import WCS
-
-                    ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
-                    ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
-                    increment = self.current_wcs.increment()["numeric"][0:2]
-                    self._cached_wcs_obj = WCS(naxis=2)
-                    self._cached_wcs_obj.wcs.crpix = [
-                        ref_pix[0] + 1,
-                        ref_pix[1] + 1,
-                    ]  # CASA 0-indexed -> FITS 1-indexed
-                    temp_flag = False
-                    if fits_flag:
-                        if (
-                            header["CTYPE1"] == "HPLN-TAN"
-                            or header["CTYPE1"] == "RA---SIN"
-                            or header["CTYPE1"] == "RA---TAN"
-                        ):
-                            self._cached_wcs_obj.wcs.crval = [
-                                ref_val[0] * 180 / np.pi,
-                                ref_val[1] * 180 / np.pi,
-                            ]
-                            self._cached_wcs_obj.wcs.cdelt = [
-                                increment[0] * 180 / np.pi,
-                                increment[1] * 180 / np.pi,
-                            ]
-                            temp_flag = True
-                        elif header["CTYPE1"] == "SOLAR-X":
-                            self._cached_wcs_obj.wcs.crval = ref_val
-                            self._cached_wcs_obj.wcs.cdelt = increment
-                            temp_flag = True
-                    if not temp_flag:
-                        if "Right Ascension" in summary["axisnames"]:
-                            self._cached_wcs_obj.wcs.crval = [
-                                ref_val[0] * 180 / np.pi,
-                                ref_val[1] * 180 / np.pi,
-                            ]
-                            self._cached_wcs_obj.wcs.cdelt = [
-                                increment[0] * 180 / np.pi,
-                                increment[1] * 180 / np.pi,
-                            ]
-                        else:
-                            self._cached_wcs_obj.wcs.crval = ref_val
-                            self._cached_wcs_obj.wcs.cdelt = increment
-                    try:
-                        if fits_flag:
-                            try:
-                                self._cached_wcs_obj.wcs.ctype = [
-                                    header["CTYPE1"],
-                                    header["CTYPE2"],
-                                ]
-                            except Exception as e:
-                                print(f"[ERROR] Error getting projection: {e}")
-                                self.show_status_message(
-                                    f"Error getting projection: {e}"
-                                )
-                                self._cached_wcs_obj = None
-                        elif (csys.projection()["type"] == "SIN") and (
-                            "Right Ascension" in summary["axisnames"]
-                        ):
-                            self._cached_wcs_obj.wcs.ctype = [
-                                "RA---SIN",
-                                "DEC--SIN",
-                            ]
-                        elif (csys.projection()["type"] == "TAN") and (
-                            "Right Ascension" in summary["axisnames"]
-                        ):
-                            self._cached_wcs_obj.wcs.ctype = [
-                                "RA---TAN",
-                                "DEC--TAN",
-                            ]
-
-                        else:
-                            projection = csys.projection()["type"]
-                            print(f"[ERROR] Unsupported projection: {projection}")
-                            self.show_status_message(
-                                f"Unsupported projection: {projection}"
-                            )
-                            self._cached_wcs_obj = None
-
-                    except Exception as e:
-                        print(f"[ERROR] Error getting projection: {e}")
-                        self.show_status_message(f"Error getting projection: {e}")
-                        self._cached_wcs_obj = None
+                    self._cached_wcs_obj = self._build_display_wcs(
+                        self.current_wcs, fits_flag, header, csys, summary
+                    )
                     self._cached_wcs_id = id(self.current_wcs)
                 except Exception as e:
                     print(f"[ERROR] Error creating WCS: {e}")
                     self.show_status_message(f"Error creating WCS: {e}")
                     self._cached_wcs_obj = None
             wcs_obj = self._cached_wcs_obj
+        return wcs_obj
+
+    def _build_display_wcs(self, csys_tool, fits_flag, header, csys, summary):
+        """2D astropy WCS for an image's pixel grid, from its CASA coordsys
+        ``csys_tool`` (as loaded, so including any downsampling) and its FITS
+        header / full coordsys / summary. None if the projection is unsupported.
+        """
+        from astropy.wcs import WCS
+
+        ref_val = csys_tool.referencevalue()["numeric"][0:2]
+        ref_pix = csys_tool.referencepixel()["numeric"][0:2]
+        increment = csys_tool.increment()["numeric"][0:2]
+        wcs_obj = WCS(naxis=2)
+        wcs_obj.wcs.crpix = [
+            ref_pix[0] + 1,
+            ref_pix[1] + 1,
+        ]  # CASA 0-indexed -> FITS 1-indexed
+        temp_flag = False
+        if fits_flag:
+            if (
+                header["CTYPE1"] == "HPLN-TAN"
+                or header["CTYPE1"] == "RA---SIN"
+                or header["CTYPE1"] == "RA---TAN"
+            ):
+                wcs_obj.wcs.crval = [
+                    ref_val[0] * 180 / np.pi,
+                    ref_val[1] * 180 / np.pi,
+                ]
+                wcs_obj.wcs.cdelt = [
+                    increment[0] * 180 / np.pi,
+                    increment[1] * 180 / np.pi,
+                ]
+                temp_flag = True
+            elif header["CTYPE1"] == "SOLAR-X":
+                wcs_obj.wcs.crval = ref_val
+                wcs_obj.wcs.cdelt = increment
+                temp_flag = True
+        if not temp_flag:
+            if "Right Ascension" in summary["axisnames"]:
+                wcs_obj.wcs.crval = [
+                    ref_val[0] * 180 / np.pi,
+                    ref_val[1] * 180 / np.pi,
+                ]
+                wcs_obj.wcs.cdelt = [
+                    increment[0] * 180 / np.pi,
+                    increment[1] * 180 / np.pi,
+                ]
+            else:
+                wcs_obj.wcs.crval = ref_val
+                wcs_obj.wcs.cdelt = increment
+        try:
+            if fits_flag:
+                try:
+                    wcs_obj.wcs.ctype = [
+                        header["CTYPE1"],
+                        header["CTYPE2"],
+                    ]
+                except Exception as e:
+                    print(f"[ERROR] Error getting projection: {e}")
+                    self.show_status_message(
+                        f"Error getting projection: {e}"
+                    )
+                    wcs_obj = None
+            elif (csys.projection()["type"] == "SIN") and (
+                "Right Ascension" in summary["axisnames"]
+            ):
+                wcs_obj.wcs.ctype = [
+                    "RA---SIN",
+                    "DEC--SIN",
+                ]
+            elif (csys.projection()["type"] == "TAN") and (
+                "Right Ascension" in summary["axisnames"]
+            ):
+                wcs_obj.wcs.ctype = [
+                    "RA---TAN",
+                    "DEC--TAN",
+                ]
+
+            else:
+                projection = csys.projection()["type"]
+                print(f"[ERROR] Unsupported projection: {projection}")
+                self.show_status_message(
+                    f"Unsupported projection: {projection}"
+                )
+                wcs_obj = None
+
+        except Exception as e:
+            print(f"[ERROR] Error getting projection: {e}")
+            self.show_status_message(f"Error getting projection: {e}")
+            wcs_obj = None
         return wcs_obj
 
     def _draw_image_axes(

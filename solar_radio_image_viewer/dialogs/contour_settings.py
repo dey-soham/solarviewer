@@ -554,17 +554,17 @@ class ContourSettingsDialog(QDialog):
 
         self.show_full_extent_checkbox = QCheckBox("Full extent")
         self.show_full_extent_checkbox.setChecked(
-            self.settings.get("show_full_extent", False)
+            self.settings.get("show_full_extent", True)
         )
         self.show_full_extent_checkbox.setToolTip(
-            "Show contours beyond 1.5x image boundaries (uses more memory)"
+            "Show contours beyond 1.5x image boundaries"
         )
         options_row.addWidget(self.show_full_extent_checkbox)
 
         self.downsample_checkbox = QCheckBox("Downsample")
         self.downsample_checkbox.setChecked(self.settings.get("downsample", True))
         self.downsample_checkbox.setToolTip(
-            "Automatically downsample large contour images to 2048x2048 for faster reprojection"
+            "Trace contours on at most 2048x2048 pixels of large contour images (faster)"
         )
         options_row.addWidget(self.downsample_checkbox)
 
@@ -833,7 +833,7 @@ class ContourSettingsDialog(QDialog):
         self.neg_linestyle_combo.setCurrentIndex(1)  # Dashed
         if hasattr(self, "show_labels_checkbox"):
             self.show_labels_checkbox.setChecked(False)
-        self.show_full_extent_checkbox.setChecked(False)
+        self.show_full_extent_checkbox.setChecked(True)
         if hasattr(self, "downsample_checkbox"):
             self.downsample_checkbox.setChecked(True)
 

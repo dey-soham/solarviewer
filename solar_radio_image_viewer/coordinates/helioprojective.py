@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 # Only set QT_QPA_PLATFORM to offscreen when running this script directly
 # This prevents issues when importing this module from other scripts
@@ -107,6 +108,33 @@ def convert_to_hpc(
     Convert a FITS file to helioprojective coordinates
     TODO: Redundantly written for ndim>2 and ndim=2, should be refactored
     """
+    maps, csys, psf = convert_to_hpc_planes(
+        fits_file, [Stokes], thres, lat, long, height, observatory, rms_box
+    )
+    if maps is None:
+        return None, None, None
+    return maps[0], csys, psf
+
+
+def convert_to_hpc_planes(
+    fits_file,
+    stokes_list,
+    thres=10,
+    lat=None,
+    long=None,
+    height=None,
+    observatory=None,
+    rms_box=(0, 200, 0, 130),
+):
+    """
+    Like :func:`convert_to_hpc`, for several Stokes products of one image.
+
+    The file is read and the helioprojective header worked out once, and the
+    planes are rotated to solar north in parallel. Returns ``(maps, csys,
+    psf)`` with one map per entry of ``stokes_list`` (None where that product
+    could not be made), or ``(None, None, None)`` if the image can't be read.
+    Only a single product is supported for 2D images.
+    """
     fits_file = readable_image_path(fits_file)
     if not sunpy_imported:
         print("[ERROR] Cannot convert to helioprojective coordinates without sunpy")
@@ -184,6 +212,11 @@ def convert_to_hpc(
 
             data_all = hdu[0].data
             # print(f"[DEBUG] Data from FITS file: {data_all.shape}")
+        except Exception as e:
+            # print(f"[ERROR] {str(e)}")
+            return None, None, None
+
+        def select(Stokes):
             if Stokes in ["I", "Q", "U", "V"]:
                 idx = stokes_map.get(Stokes)
                 if idx is None:
@@ -358,10 +391,18 @@ def convert_to_hpc(
                 slice_list_I[stokes_axis] = 0
                 slice_list_I[freq_axis] = 0
                 data = data_all[tuple(slice_list_I)]
+            return data
 
-        except Exception as e:
-            # print(f"[ERROR] {str(e)}")
+        planes = []
+        for Stokes in stokes_list:
+            try:
+                planes.append(select(Stokes))
+            except Exception:
+                planes.append(None)
+        data = next((plane for plane in planes if plane is not None), None)
+        if data is None:
             return None, None, None
+
 
         # Get frequency from the appropriate header keyword based on the original FITS axis
         if freq_axis is not None:
@@ -460,9 +501,6 @@ def convert_to_hpc(
         else:
             new_header["HISTORY"] = new_history
 
-        # Add information about the Stokes parameter
-        new_header["STOKES"] = Stokes
-
         # Add beam information if available (adjust BPA by P-angle rotation)
         if psf:
             new_header["BMAJ"] = header["BMAJ"]
@@ -484,36 +522,51 @@ def convert_to_hpc(
             elif waveunit == "hz":
                 new_header["waveunit"] = "Hz"
 
-        map = sunpy.map.Map(data, new_header)
-        try:
-            map_rotated = map.rotate(P_angle)
-        except Exception as e:
-            print(f"[WARNING] Error rotating map: {e}. Trying another method.")
+        def to_hpc_map(Stokes, plane):
+            if plane is None:
+                return None
+            plane_header = new_header.copy()
+            # Add information about the Stokes parameter
+            plane_header["STOKES"] = Stokes
+            map = sunpy.map.Map(plane, plane_header)
             try:
-                P_angle_deg = P_angle.to(u.deg).value
-
-                def deg_to_dms_str(deg):
-                    # Determine the sign and work with the absolute value
-                    sign = "-" if deg < 0 else ""
-                    abs_deg = abs(deg)
-
-                    # Extract degrees, minutes, and seconds
-                    degrees = int(abs_deg)
-                    minutes_full = (abs_deg - degrees) * 60
-                    minutes = int(minutes_full)
-                    seconds = (minutes_full - minutes) * 60
-
-                    # Format string: you can adjust the precision of seconds as needed
-                    # print(f"[DEBUG] Rotating by {sign}{degrees}d{minutes}m{seconds:.1f}s")
-                    return f"{sign}{degrees}d{minutes}m{seconds:.1f}s"
-
-                map_rotated = map.rotate(deg_to_dms_str(P_angle_deg))
+                map_rotated = map.rotate(P_angle)
             except Exception as e:
-                print(f"[ERROR] Error rotating map: {e}")
-                map_rotated = None
+                print(f"[WARNING] Error rotating map: {e}. Trying another method.")
+                try:
+                    P_angle_deg = P_angle.to(u.deg).value
 
-        return map_rotated, csys, psf
+                    def deg_to_dms_str(deg):
+                        # Determine the sign and work with the absolute value
+                        sign = "-" if deg < 0 else ""
+                        abs_deg = abs(deg)
+
+                        # Extract degrees, minutes, and seconds
+                        degrees = int(abs_deg)
+                        minutes_full = (abs_deg - degrees) * 60
+                        minutes = int(minutes_full)
+                        seconds = (minutes_full - minutes) * 60
+
+                        # Format string: you can adjust the precision of seconds as needed
+                        # print(f"[DEBUG] Rotating by {sign}{degrees}d{minutes}m{seconds:.1f}s")
+                        return f"{sign}{degrees}d{minutes}m{seconds:.1f}s"
+
+                    map_rotated = map.rotate(deg_to_dms_str(P_angle_deg))
+                except Exception as e:
+                    print(f"[ERROR] Error rotating map: {e}")
+                    map_rotated = None
+
+            return map_rotated
+
+        if len(planes) == 1:
+            maps = [to_hpc_map(stokes_list[0], planes[0])]
+        else:
+            # The rotations dominate and run in parallel (scipy releases the GIL)
+            with ThreadPoolExecutor(len(planes)) as pool:
+                maps = list(pool.map(to_hpc_map, stokes_list, planes))
+        return maps, csys, psf
     elif ndim == 2:
+        Stokes = stokes_list[0]
         data = hdu[0].data
         try:
             # Try CRVAL3 first, then fallback to RESTFRQ or FREQ
@@ -621,7 +674,7 @@ def convert_to_hpc(
                 print(f"[ERROR] Error rotating map: {e}")
                 map_rotated = None
 
-        return map_rotated, csys, psf
+        return [map_rotated], csys, psf
     else:
         return None, None, None
 
@@ -1010,34 +1063,29 @@ def convert_and_save_hpc_all_stokes(
         stokes_maps = []
         reference_header = None
 
-        for stokes in stokes_list:
-            # print(f"Converting Stokes {stokes} to helioprojective...")
-            try:
-                map_obj, csys, psf = convert_to_hpc(
-                    input_fits_file,
-                    Stokes=stokes,
-                    thres=thres,
-                    lat=lat,
-                    long=long,
-                    height=height,
-                    observatory=observatory,
-                )
-                if map_obj is not None:
-                    stokes_maps.append(map_obj.data)
-                    if reference_header is None:
-                        reference_header = dict(map_obj.meta)
-                else:
-                    print(f"[ERROR] Failed to convert Stokes {stokes}, using zeros")
-                    if stokes_maps:
-                        stokes_maps.append(np.zeros_like(stokes_maps[0]))
-                    else:
-                        raise RuntimeError(f"Failed to convert first Stokes {stokes}")
-            except Exception as e:
-                print(f"[ERROR] Error converting Stokes {stokes}: {e}")
+        # All planes in one go: the file is read and the geometry worked out once
+        map_objs, _, _ = convert_to_hpc_planes(
+            input_fits_file,
+            stokes_list,
+            thres=thres,
+            lat=lat,
+            long=long,
+            height=height,
+            observatory=observatory,
+        )
+        if map_objs is None:
+            raise RuntimeError(f"Failed to convert first Stokes {stokes_list[0]}")
+        for stokes, map_obj in zip(stokes_list, map_objs):
+            if map_obj is not None:
+                stokes_maps.append(map_obj.data)
+                if reference_header is None:
+                    reference_header = dict(map_obj.meta)
+            else:
+                print(f"[ERROR] Failed to convert Stokes {stokes}, using zeros")
                 if stokes_maps:
                     stokes_maps.append(np.zeros_like(stokes_maps[0]))
                 else:
-                    raise
+                    raise RuntimeError(f"Failed to convert first Stokes {stokes}")
 
         if not_fits_flag:
             # Remove the temp file

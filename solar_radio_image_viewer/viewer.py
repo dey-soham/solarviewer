@@ -83,7 +83,6 @@ from .tools import (
     ImageStatsMixin,
     SolarEventsMixin,
 )
-from .core.cache import ReprojectionCache
 from .core.presets import display_range
 from .processing.colormaps import ensure_solar_colormaps
 from .core import (
@@ -280,11 +279,6 @@ class SolarRadioImageTab(
         self._cached_summary = None  # CASA summary cache
         self._cached_csys_record = None  # CASA csys record cache
 
-        # Cache for reprojected contours to avoid redundant heavy computations
-        # Key: (base_image_path, contour_image_path, stokes, visualization_params...)
-        # Value: (reprojected_data, extended_wcs, extended_shape, contour_offset)
-        self._reproject_cache = ReprojectionCache()
-
         # Debounce timers for UI responsiveness
         self._gamma_debounce_timer = None
 
@@ -304,7 +298,7 @@ class SolarRadioImageTab(
             "contour_data": None,
             "use_default_rms_region": True,
             "rms_box": (0, 200, 0, 130),
-            "show_full_extent": False,  # If True, show full contour extent (Default: capped at 1.5x base image)
+            "show_full_extent": True,  # If False, only contours within 1.5x the base image
             "dim_h": 0,
             "dim_w": 0,
         }
@@ -1810,9 +1804,6 @@ class SolarRadioImageTab(
                 self, "No Image", "Please select a CASA image directory first!"
             )
             return
-
-        if dir_load:
-            self._reproject_cache = ReprojectionCache()
 
         tight_layout = False
         """if dir_load:

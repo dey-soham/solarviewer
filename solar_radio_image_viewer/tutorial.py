@@ -850,7 +850,7 @@ class TutorialDialog(QDialog):
                 "🔄",
                 "Coordinate Matching",
                 [
-                    "Contours automatically reprojected to match base image",
+                    "Contours automatically aligned to the base image",
                     "Works across RA/Dec ↔ Helioprojective transformations",
                     "Different pixel scales handled automatically",
                     "Enable 'Show full extent' for contours beyond image boundaries",
