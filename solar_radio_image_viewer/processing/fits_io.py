@@ -16,6 +16,10 @@ FITS_SUFFIXES = (".fits", ".fts", ".fit", ".fits.fz", ".fz", ".fits.gz", ".fts.g
 
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "solarviewer_fits_cache")
 
+# (abspath, mtime_ns, size) -> path returned for it, so an unchanged file is
+# not reopened on every call
+_resolved = {}
+
 
 def _image_hdu_index(hdul):
     """Index of the HDU holding the image, or None if it is the primary HDU."""
@@ -38,15 +42,38 @@ def readable_image_path(path):
     if not path or not os.path.isfile(path) or not path.lower().endswith(FITS_SUFFIXES):
         return path
 
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return path
+    signature = (os.path.abspath(path), stat.st_mtime_ns, stat.st_size)
+    resolved = _resolved.get(signature)
+    if resolved is not None:
+        if resolved == signature[0]:
+            return path
+        if os.path.exists(resolved):
+            return resolved
+
+    resolved = _resolve(path, stat)
+    if resolved is not None:
+        _resolved[signature] = resolved
+        return path if resolved == signature[0] else resolved
+    return path
+
+
+def _resolve(path, stat):
+    """Absolute path of ``path`` itself, or of its cached single-HDU copy.
+
+    None if the file could not be read.
+    """
     from astropy.io import fits
 
     try:
         with fits.open(path, memmap=True) as hdul:
             index = _image_hdu_index(hdul)
             if index is None:
-                return path
+                return os.path.abspath(path)
 
-            stat = os.stat(path)
             key = f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}"
             name = os.path.basename(path)
             for suffix in (".fz", ".gz"):
@@ -79,10 +106,11 @@ def readable_image_path(path):
                     header.append(card)
 
             os.makedirs(cache_dir, exist_ok=True)
-            tmp = cached + ".part"
+            # Per process, so a background read of the same file cannot clash
+            tmp = f"{cached}.{os.getpid()}.part"
             fits.PrimaryHDU(data=hdu.data, header=header).writeto(tmp, overwrite=True)
             os.replace(tmp, cached)
             return cached
     except Exception as e:
         print(f"[WARNING] Could not prepare {path} for reading: {e}")
-        return path
+        return None

@@ -10,6 +10,7 @@ from .dependencies import CASA_AVAILABLE, IA
 from .immath import run_immath_subprocess
 from .rms import estimate_rms_near_Sun, remove_pixels_away_from_sun
 from .fits_io import readable_image_path
+from .image_meta import CasaInfo, file_signature, remember_casa_info
 
 
 # TODO: Handle single stokes case, return flag so that some features can be disabled
@@ -59,6 +60,7 @@ def get_pixel_values_from_image(
         raise RuntimeError("CASA is not available")
 
     single_stokes_flag = False
+    signature = file_signature(imagename)
     try:
         ia_tool = IA()
         ia_tool.open(readable_image_path(imagename))
@@ -67,6 +69,13 @@ def get_pixel_values_from_image(
 
     try:
         summary = ia_tool.summary()
+        # Spare the viewer's header/coordsys readers another open of this file
+        try:
+            remember_casa_info(
+                signature, CasaInfo.from_image_tool(ia_tool, summary).copy()
+            )
+        except Exception:
+            pass
         dimension_names = summary.get("axisnames")
         dimension_shapes = summary.get("shape")
         if dimension_names is None:

@@ -13,7 +13,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
 from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
-from ..processing.dependencies import IA
+from ..processing.image_meta import casa_info, fits_header
 from ..processing.colormaps import ensure_solar_colormaps
 from .presets import display_range
 from ..processing.fits_io import readable_image_path
@@ -260,9 +260,7 @@ class RenderingMixin:
 
                 try:
                     self._cached_fits_flag = True
-                    with fits.open(readable_image_path(self.imagename), memmap=True) as hdul:
-                        # Make a copy of header so we don't hold the file open
-                        self._cached_fits_header = dict(hdul[0].header)
+                    self._cached_fits_header = dict(fits_header(self.imagename))
                 except Exception as e:
                     try:
                         self._cached_fits_header = dict(fits.getheader(readable_image_path(self.imagename)))
@@ -272,12 +270,10 @@ class RenderingMixin:
                         self._cached_fits_flag = False
 
             try:
-                ia_tool = IA()
-                ia_tool.open(readable_image_path(self.imagename))
-                self._cached_csys = ia_tool.coordsys()
-                self._cached_summary = ia_tool.summary()
-                self._cached_csys_record = ia_tool.coordsys().torecord()
-                ia_tool.close()
+                info = casa_info(self.imagename)
+                self._cached_csys = info.coordsys()
+                self._cached_summary = info.summary
+                self._cached_csys_record = info.csys_record
             except Exception as e:
                 print(f"[ERROR] Error getting image metadata: {e}")
                 self.show_status_message(f"Error getting image metadata: {e}")

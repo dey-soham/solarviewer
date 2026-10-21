@@ -97,6 +97,8 @@ from .core import (
     RemoteModeMixin,
 )
 from .processing.fits_io import readable_image_path
+from .processing.image_meta import casa_info, fits_header
+from .processing.prefetch import image_prefetcher
 
 
 class CheckUpdateThread(QThread):
@@ -1877,6 +1879,8 @@ class SolarRadioImageTab(
             # Only reload data if needed (new image, stokes change, etc.)
             # Skip for visualization-only changes (colormap, stretch, gamma, vmin/vmax)
             if reload_data:
+                # Let a background read of this file finish before reading it here
+                image_prefetcher.settle(self.imagename)
                 # Validate Stokes selection when loading a new image
                 if dir_load:
                     stokes = self._validate_and_switch_stokes(self.imagename, stokes)
@@ -1952,6 +1956,9 @@ class SolarRadioImageTab(
                     self.show_status_message(f"Loaded {img_name}")
                 else:
                     self.show_status_message("Display updated")
+            if dir_load:
+                # After the caller has rescanned the directory
+                QTimer.singleShot(0, self._prefetch_neighbour_files)
         except Exception as e:
             if main_window:
                 self.show_status_message(f"Error: {str(e)}")
@@ -2315,6 +2322,12 @@ class SolarRadioImageTab(
 
         raise RuntimeError(f"Cannot handle {stokes} for this FITS structure")
 
+    def _load_target_size(self):
+        """Max dimension to downsample loads to in fast load mode, 0 for none."""
+        if hasattr(self, "downsample_toggle") and self.downsample_toggle.isChecked():
+            return 800  # Smart downsampling to ~800px max dimension
+        return 0
+
     def load_data(self, imagename, stokes, threshold, auto_adjust_rms=False):
         # Clear WCS cache so new images don't accidentally reuse old WCS objects
         # if the new dictionary falls on the same memory address (id)
@@ -2327,21 +2340,22 @@ class SolarRadioImageTab(
             # Use the current RMS box when loading data
             from .processing.image_data import get_pixel_values_from_image
 
-            # Calculate target size for fast load mode
-            target_size = 0  # 0 = no downsampling
-            if (
-                hasattr(self, "downsample_toggle")
-                and self.downsample_toggle.isChecked()
-            ):
-                target_size = 800  # Smart downsampling to ~800px max dimension
+            target_size = self._load_target_size()
 
-            pix, csys, psf = get_pixel_values_from_image(
-                imagename,
-                stokes,
-                threshold,
-                rms_box=tuple(self.current_rms_box),
-                target_size=target_size,
+            image_prefetcher.settle(imagename)
+            prefetched = image_prefetcher.take(
+                imagename, stokes, threshold, tuple(self.current_rms_box), target_size
             )
+            if prefetched is not None:
+                pix, csys, psf = prefetched
+            else:
+                pix, csys, psf = get_pixel_values_from_image(
+                    imagename,
+                    stokes,
+                    threshold,
+                    rms_box=tuple(self.current_rms_box),
+                    target_size=target_size,
+                )
 
             self.current_image_data = pix
             self.current_wcs = csys
@@ -2433,68 +2447,62 @@ class SolarRadioImageTab(
             )
 
             if imagename.endswith(".fits") or imagename.endswith(".fts"):
-                with fits.open(readable_image_path(imagename)) as hdul:
-                    self.current_header = dict(hdul[0].header)
-                    bunit = self.current_header.get("BUNIT", "").lower()
-                    self._current_bunit = self.current_header.get("BUNIT", "")
+                self.current_header = dict(fits_header(imagename))
+                bunit = self.current_header.get("BUNIT", "").lower()
+                self._current_bunit = self.current_header.get("BUNIT", "")
 
-                    # Enable TB/Flux button if units are Jy/beam or K (not for TB temp file)
-                    if hasattr(self, "tb_btn") and not is_tb_temp:
-                        is_jy_beam = "jy" in bunit and "beam" in bunit
-                        is_kelvin = bunit.strip().lower() == "k"
-                        self.tb_btn.setEnabled(is_jy_beam or is_kelvin)
+                # Enable TB/Flux button if units are Jy/beam or K (not for TB temp file)
+                if hasattr(self, "tb_btn") and not is_tb_temp:
+                    is_jy_beam = "jy" in bunit and "beam" in bunit
+                    is_kelvin = bunit.strip().lower() == "k"
+                    self.tb_btn.setEnabled(is_jy_beam or is_kelvin)
 
-                        if is_kelvin:
-                            self.tb_btn.setText("FLUX")
-                            self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
-                        elif is_jy_beam:
-                            self.tb_btn.setText("TB")
-                            self.tb_btn.setToolTip(
-                                "Convert to Brightness Temperature (K)"
-                            )
-                        else:
-                            self.tb_btn.setText("FLUX")
-                            self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
-
-                        # Reset TB mode when loading new image (not when loading TB temp)
-                        if (
-                            not hasattr(self, "_tb_original_imagename")
-                            or not self._tb_original_imagename
-                        ):
-                            self._tb_mode = False
-                            self.tb_btn.setChecked(False)
-
-                    # Update HPC button based on coordinate system
-                    if hasattr(self, "hpc_btn"):
-                        ctype1 = self.current_header.get("CTYPE1", "").upper()
-                        ctype2 = self.current_header.get("CTYPE2", "").upper()
-                        is_hpc = (
-                            "HPLN" in ctype1 or "HPLT" in ctype2 or "SOLAR" in ctype1
+                    if is_kelvin:
+                        self.tb_btn.setText("FLUX")
+                        self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
+                    elif is_jy_beam:
+                        self.tb_btn.setText("TB")
+                        self.tb_btn.setToolTip(
+                            "Convert to Brightness Temperature (K)"
                         )
+                    else:
+                        self.tb_btn.setText("FLUX")
+                        self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
 
-                        if is_hpc:
-                            self.hpc_btn.setText("RA/DEC")
-                            self.hpc_btn.setToolTip("Convert to RA/DEC coordinates")
-                        else:
-                            self.hpc_btn.setText("HPC")
-                            self.hpc_btn.setToolTip("Convert to Helioprojective view")
+                    # Reset TB mode when loading new image (not when loading TB temp)
+                    if (
+                        not hasattr(self, "_tb_original_imagename")
+                        or not self._tb_original_imagename
+                    ):
+                        self._tb_mode = False
+                        self.tb_btn.setChecked(False)
+
+                # Update HPC button based on coordinate system
+                if hasattr(self, "hpc_btn"):
+                    ctype1 = self.current_header.get("CTYPE1", "").upper()
+                    ctype2 = self.current_header.get("CTYPE2", "").upper()
+                    is_hpc = (
+                        "HPLN" in ctype1 or "HPLT" in ctype2 or "SOLAR" in ctype1
+                    )
+
+                    if is_hpc:
+                        self.hpc_btn.setText("RA/DEC")
+                        self.hpc_btn.setToolTip("Convert to RA/DEC coordinates")
+                    else:
+                        self.hpc_btn.setText("HPC")
+                        self.hpc_btn.setToolTip("Convert to Helioprojective view")
             else:
                 # Try to get header from CASA image
                 try:
-                    from casatools import image as IA
-
-                    ia = IA()
-                    ia.open(readable_image_path(imagename))
-
                     # Get CASA image info
-                    summary = ia.summary()
-                    csys = ia.coordsys()
+                    info = casa_info(imagename)
+                    csys = info.coordsys()
 
                     # Build header dict from CASA info
                     self.current_header = {}
 
                     # Get beam info
-                    beam = ia.restoringbeam()
+                    beam = info.beam
                     if beam and "major" in beam:
                         self.current_header["BMAJ"] = (
                             beam["major"]["value"] / 3600
@@ -2516,14 +2524,12 @@ class SolarRadioImageTab(
                                 break
 
                     # Get units
-                    bunit = ia.brightnessunit()
+                    bunit = info.brightness_unit
                     self.current_header["BUNIT"] = bunit
                     self._current_bunit = bunit
 
                     # Get coordinate names for HPC detection (before closing ia)
                     dimension_names = [n.upper() for n in csys.names()]
-
-                    ia.close()
 
                     # Enable TB/Flux button if units are Jy/beam or K
                     if hasattr(self, "tb_btn"):
@@ -4863,6 +4869,7 @@ class SolarRadioImageViewerApp(
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        image_prefetcher.shutdown()
         try:
             casa_logs = [
                 f

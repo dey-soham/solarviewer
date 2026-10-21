@@ -7,6 +7,7 @@ import os
 
 from ..processing.dependencies import IA
 from ..processing.fits_io import readable_image_path
+from ..processing.image_meta import casa_info, fits_header
 
 
 class HpcViewMixin:
@@ -358,11 +359,8 @@ class HpcViewMixin:
         """Check if the current image is already in helioprojective coordinates (Solar-X/Y)"""
         try:
             # Check via CASA image tool
-            ia_tool = IA()
-            ia_tool.open(readable_image_path(self.imagename))
-            csys = ia_tool.coordsys()
+            csys = casa_info(self.imagename).coordsys()
             dimension_names = [n.upper() for n in csys.names()]
-            ia_tool.close()
 
             # Check for Solar-X/Solar-Y in coordinate names
             if "SOLAR-X" in dimension_names or "HPLN-TAN" in dimension_names:
@@ -370,9 +368,7 @@ class HpcViewMixin:
 
             # Also check FITS header if it's a FITS file
             if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
-                from astropy.io import fits
-
-                header = fits.getheader(readable_image_path(self.imagename))
+                header = fits_header(self.imagename)
                 ctype1 = header.get("CTYPE1", "").upper()
                 ctype2 = header.get("CTYPE2", "").upper()
                 if (

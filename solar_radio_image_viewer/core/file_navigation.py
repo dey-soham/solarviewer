@@ -23,7 +23,8 @@ class FileNavigationMixin:
     ``contour_settings``, ``dir_entry``, ``figure``, ``_file_pos_label``,
     ``_first_file_btn``, ``_last_file_btn``, ``_next_file_btn``,
     ``on_visualization_changed``, ``_open_dialogs``, ``_prev_file_btn``,
-    ``radio_casa_image``, ``_reset_hpc_state``, ``show_status_message``,
+    ``_load_target_size``, ``radio_casa_image``, ``_reset_hpc_state``,
+    ``show_status_message``, ``stokes_combo``, ``threshold_entry``,
     ``update_tab_name_from_path``, ``window``
     """
 
@@ -259,6 +260,34 @@ class FileNavigationMixin:
                 break
 
         self._update_nav_buttons()
+
+    def _prefetch_neighbour_files(self):
+        """Start reading the files either side of the current one in the
+        background, with the settings the next load will use."""
+        from ..processing.prefetch import image_prefetcher
+
+        index = getattr(self, "_file_list_index", -1)
+        if getattr(self, "_is_remote_mode", False) or index < 0:
+            return
+        stokes = self.stokes_combo.currentText() if self.stokes_combo else "I"
+        if stokes == "Lfrac":
+            return  # its read writes a temporary image in the working directory
+        try:
+            threshold = float(self.threshold_entry.text())
+        except (ValueError, AttributeError):
+            return
+        neighbours = [
+            self._file_list[i]
+            for i in (index + 1, index - 1)
+            if 0 <= i < len(self._file_list)
+        ]
+        image_prefetcher.schedule(
+            neighbours,
+            stokes,
+            threshold,
+            tuple(self.current_rms_box),
+            self._load_target_size(),
+        )
 
     def _update_nav_buttons(self):
         """Update navigation button states and position label"""
