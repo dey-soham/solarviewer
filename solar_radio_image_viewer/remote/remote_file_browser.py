@@ -317,6 +317,8 @@ class RemoteFileBrowser(QDialog):
     """
 
     fileSelected = pyqtSignal(str, bool)  # (local_path, is_remote)
+    # With pick="folder" / "file": the server path chosen, nothing downloaded
+    pathPicked = pyqtSignal(str)
 
     # Class-level variable to remember last browsed directory per host
     _last_paths: dict = {}  # {host: last_path}
@@ -343,12 +345,21 @@ class RemoteFileBrowser(QDialog):
         cache: Optional[RemoteFileCache] = None,
         parent=None,
         casa_mode: bool = False,
+        pick: Optional[str] = None,
     ):
         super().__init__(parent)
+        # "folder": choose a folder; "file": choose an image (a FITS file or
+        # a CASA image folder); both emit pathPicked with the server path
+        # instead of downloading anything
+        self.pick = pick
 
         # CASA mode selects directories, FITS mode selects files
         self.casa_mode = casa_mode
         mode_str = "CASA Images" if casa_mode else "FITS Files"
+        if pick == "folder":
+            mode_str = "Folder"
+        elif pick == "file":
+            mode_str = "Image"
         self.setWindowTitle(f"Browse Remote {mode_str} - {connection.connection_info}")
         self.setMinimumSize(500, 500)
         self.resize(800, 600)
@@ -559,6 +570,7 @@ class RemoteFileBrowser(QDialog):
         self.browse_local_btn.setCursor(Qt.PointingHandCursor)
         self.browse_local_btn.clicked.connect(self._browse_local)
         button_layout.addWidget(self.browse_local_btn)
+        self.browse_local_btn.setVisible(self.pick is None)
 
         button_layout.addStretch()
 
@@ -576,7 +588,11 @@ class RemoteFileBrowser(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(self.cancel_btn)
 
-        self.open_btn = QPushButton("Select" if self.casa_mode else "Open")
+        self.open_btn = QPushButton(
+            {"folder": "Use This Folder", "file": "Choose"}.get(
+                self.pick, "Select" if self.casa_mode else "Open"
+            )
+        )
         self.open_btn.setObjectName("PrimaryButton")
         self.open_btn.setEnabled(False)
         self.open_btn.setDefault(True)
@@ -1277,6 +1293,8 @@ class RemoteFileBrowser(QDialog):
                 return
                 
             self._set_loading_state(False)
+            if self.pick == "folder":
+                self.open_btn.setEnabled(True)  # the folder shown
     
             # Store in cache if this was a fresh fetch
             if not from_cache:
@@ -1346,6 +1364,15 @@ class RemoteFileBrowser(QDialog):
     def _on_selection_changed(self):
         """Update UI when selection changes."""
         items = self.tree.selectedItems()
+        if self.pick == "folder":
+            # The selected folder, or the one shown
+            self.open_btn.setEnabled(True)
+            return
+        if self.pick == "file":
+            entry = items[0].data(0, Qt.UserRole) if items else None
+            # A FITS file, or a folder (a CASA image)
+            self.open_btn.setEnabled(entry is not None and (entry.is_dir or entry.is_fits))
+            return
         if items:
             entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
             if entry is None:  # Safeguard against missing data
@@ -1383,6 +1410,12 @@ class RemoteFileBrowser(QDialog):
         entry: RemoteFileInfo = item.data(0, Qt.UserRole)
         if entry is None:  # Safeguard
             return
+        if self.pick:
+            if entry.is_dir:
+                self._navigate_to(entry.path)
+            elif self.pick == "file" and entry.is_fits:
+                self._pick(entry.path)
+            return
 
         if entry.is_dir:
             self._navigate_to(entry.path)
@@ -1414,9 +1447,22 @@ class RemoteFileBrowser(QDialog):
             self.fileSelected.emit(local_path, False)  # is_remote = False
             self.accept()
 
+    def _pick(self, path):
+        self.pathPicked.emit(path)
+        self.accept()
+
     def _open_selected(self):
         """Open the selected file or directory (in CASA mode)."""
         items = self.tree.selectedItems()
+        if self.pick == "folder":
+            entry = items[0].data(0, Qt.UserRole) if items else None
+            self._pick(entry.path if entry is not None and entry.is_dir else self.current_path)
+            return
+        if self.pick == "file":
+            entry = items[0].data(0, Qt.UserRole) if items else None
+            if entry is not None:
+                self._pick(entry.path)
+            return
         if not items:
             return
 
