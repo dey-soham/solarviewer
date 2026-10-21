@@ -98,6 +98,7 @@ def wait_cursor():
 from ..processing.colormaps import ensure_solar_colormaps
 from .creator import (
     QUALITY_CRF,
+    apply_difference,
     load_fits_data,
     get_norm,
     observation_sort_key,
@@ -890,6 +891,20 @@ class VideoCreationDialog(QDialog):
         self.colorbar_check.stateChanged.connect(self.update_preview_settings)
         viz_form.addRow("", self.colorbar_check)
 
+        self.difference_combo = QComboBox()
+        for text, mode in (
+            ("None", "none"),
+            ("Running (each frame minus the previous)", "running"),
+            ("Base (each frame minus the first)", "base"),
+        ):
+            self.difference_combo.addItem(text, mode)
+        self.difference_combo.setToolTip(
+            "Difference movies show what changes. Auto ranges become symmetric\n"
+            "about zero; a diverging colormap (e.g. RdBu_r, coolwarm) suits them.\n"
+            "A running difference starts at the second frame."
+        )
+        viz_form.addRow("Difference:", self.difference_combo)
+
         display_layout.addWidget(viz_group)
 
         # Range settings section
@@ -1142,6 +1157,13 @@ class VideoCreationDialog(QDialog):
         select_from_preview_btn = QPushButton("Select Region from Preview...")
         select_from_preview_btn.clicked.connect(self.select_region_from_preview)
         region_main_layout.addWidget(select_from_preview_btn)
+
+        self.track_rotation_check = QCheckBox("Follow solar rotation")
+        self.track_rotation_check.setToolTip(
+            "Move the region with the Sun's differential rotation from the first\n"
+            "frame, so a feature stays in view (helioprojective images, on the disk)"
+        )
+        region_main_layout.addWidget(self.track_rotation_check)
 
         region_layout.addWidget(region_group)
 
@@ -1777,6 +1799,8 @@ class VideoCreationDialog(QDialog):
             "width": self.width_spinbox.value(),
             "height": self.height_spinbox.value(),
             "wcs_enabled": self.wcs_coords_check.isChecked(),
+            "difference": self.difference_combo.currentData(),
+            "track_rotation": self.track_rotation_check.isChecked(),
             # Overlays
             "timestamp": self.timestamp_check.isChecked(),
             "frame_number": self.frame_number_check.isChecked(),
@@ -1859,7 +1883,13 @@ class VideoCreationDialog(QDialog):
             layer.pop("series_files", None)  # not needed by the frames
             layers.append(layer)
         options["contour_layers"] = layers
-        return [plan["image_files"][i] for i in keep], None
+        files, difference_options = apply_difference(
+            [plan["image_files"][i] for i in keep], options
+        )
+        options.update(difference_options)
+        if not files:
+            return [], ("No Frames", "A running difference needs at least two frames.")
+        return files, None
 
     def _show_frames(self, plan):
         """List the frames of ``plan`` in the Frames tab."""
@@ -1995,7 +2025,7 @@ class VideoCreationDialog(QDialog):
         "colormap_combo", "stretch_combo", "gamma_spinbox", "range_mode_combo",
         "vmin_spinbox", "vmax_spinbox", "lower_percentile_spinbox",
         "upper_percentile_spinbox", "colorbar_check", "width_spinbox", "height_spinbox",
-        "wcs_coords_check", "region_enabled", "x_min_spinbox", "x_max_spinbox",
+        "wcs_coords_check", "difference_combo", "track_rotation_check", "region_enabled", "x_min_spinbox", "x_max_spinbox",
         "y_min_spinbox", "y_max_spinbox", "timestamp_check", "frame_number_check",
         "filename_check", "minmax_timeline_check", "timeline_source_combo",
         "timeline_log_scale_check", "output_file_edit", "format_combo", "fps_spinbox",

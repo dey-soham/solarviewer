@@ -407,9 +407,26 @@ def process_image(
                 options, "Blank/constant data", frame_idx, os.path.basename(file_path)
             )
 
+        # Contours of the image itself are of the image, not of a difference
+        full_data = data
+
+        # Difference movies: subtract the previous / first image
+        difference_files = options.get("difference_files")
+        if difference_files:
+            other, _ = load_fits_data(
+                difference_files[frame_idx], stokes=options.get("stokes", "I")
+            )
+            if other is None or other.shape != data.shape:
+                return create_error_frame(
+                    options,
+                    "Cannot subtract: image missing or of another size",
+                    frame_idx,
+                    os.path.basename(file_path),
+                )
+            data = data - other
+
         # Region shown, as (x_min, y_min) of the full image (for WCS and contours)
         region_origin = (0, 0)
-        full_data = data
 
         # Apply region selection if enabled
         if options.get("region_enabled", False):
@@ -422,6 +439,10 @@ def process_image(
             # Ensure proper order
             x_min, x_max = min(x_min, x_max), max(x_min, x_max)
             y_min, y_max = min(y_min, y_max), max(y_min, y_max)
+
+            # Follow solar rotation: move the region with the feature in it
+            dx, dy = _rotation_shift(options, header)
+            x_min, x_max, y_min, y_max = x_min + dx, x_max + dx, y_min + dy, y_max + dy
 
             # Apply consistent region dimensions if provided
             if "region_width" in options and "region_height" in options:
@@ -519,6 +540,12 @@ def process_image(
                 upper_percentile = options.get("upper_percentile", 100)
                 vmin = np.nanpercentile(data, lower_percentile)
                 vmax = np.nanpercentile(data, upper_percentile)
+
+        # Difference images: a range symmetric about zero, so brightening
+        # and dimming look alike
+        if options.get("difference_files") and range_mode != 0:
+            limit = max(abs(vmin), abs(vmax))
+            vmin, vmax = -limit, limit
 
         # Ensure min/max are proper
         if vmin >= vmax:
@@ -697,12 +724,18 @@ def calculate_global_stats(files, options):
     if len(sample_files) == 0:
         sample_files = files[:1]
 
-    for file_path in tqdm(sample_files, desc="Calculating global stats"):
+    difference_files = options.get("difference_files")
+    for i, file_path in enumerate(tqdm(sample_files, desc="Calculating global stats")):
         try:
             data, _ = load_fits_data(file_path, stokes=options.get("stokes", "I"))
 
             if data is None:
                 continue
+            if difference_files:
+                other, _ = load_fits_data(difference_files[i], stokes=options.get("stokes", "I"))
+                if other is None or other.shape != data.shape:
+                    continue
+                data = data - other
 
             # Apply region selection if enabled
             if options.get("region_enabled", False):
@@ -1023,6 +1056,63 @@ class _PngFrames:
         self.written.append(path)
 
 
+def apply_difference(files, options):
+    """(files, options) for a difference movie (options["difference"]:
+    "running" subtracts the previous image, so the video starts at the
+    second; "base" subtracts the first). Records the image subtracted from
+    each frame in options["difference_files"]; series contour layers are
+    shifted along with the frames."""
+    mode = options.get("difference", "none")
+    if "difference_files" in options or mode not in ("running", "base") or not files:
+        return files, options
+    options = dict(options)
+    if mode == "base":
+        options["difference_files"] = [files[0]] * len(files)
+        return files, options
+    if len(files) < 2:
+        return files, options
+    options["difference_files"] = list(files[:-1])
+    options["contour_layers"] = [
+        dict(layer, frame_files=layer["frame_files"][1:]) if "frame_files" in layer else layer
+        for layer in options.get("contour_layers") or []
+    ]
+    return list(files[1:]), options
+
+
+def _rotation_shift(options, header):
+    """(dx, dy) pixels by which a region following solar rotation has moved
+    in the image with ``header`` since the reference image."""
+    reference = options.get("track_reference")
+    if not reference or header is None:
+        return 0, 0
+    try:
+        import warnings
+
+        from astropy.wcs import WCS
+        from sunpy.physics.differential_rotation import solar_rotate_coordinate
+
+        from ..processing.image_meta import fits_header
+
+        cx, cy = reference["center"]
+        start = WCS(fits_header(reference["file"]), naxis=2).pixel_to_world(cx, cy)
+        wcs = WCS(header, naxis=2)
+        frame = wcs.pixel_to_world(cx, cy).frame
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # The observer carries its time; without one, rotate to the time
+            if frame.observer is not None:
+                moved = solar_rotate_coordinate(start, observer=frame.observer)
+            else:
+                moved = solar_rotate_coordinate(start, time=frame.obstime)
+        x, y = wcs.world_to_pixel(moved)
+        if not (np.isfinite(x) and np.isfinite(y)):
+            return 0, 0  # off the disk: no rotation to follow
+        return int(round(float(x) - cx)), int(round(float(y) - cy))
+    except Exception as e:
+        logger.warning(f"Could not follow solar rotation: {e}")
+        return 0, 0
+
+
 def prepare_video_options(files, options):
     """Fill in ``options`` with what all frames of a video share: the frame
     count, the region (with even dimensions), the frame size, the coordinate
@@ -1095,6 +1185,23 @@ def prepare_video_options(files, options):
             )
         else:
             logger.warning("Could not determine region dimensions from first file")
+
+    # A region following solar rotation: its centre in the first image
+    options.pop("track_reference", None)
+    if options.get("track_rotation") and options.get("region_enabled") and files:
+        from ..processing.image_meta import fits_header
+        from .utils import coordinate_type
+
+        if coordinate_type(fits_header(files[0])) == "hpc":
+            options["track_reference"] = {
+                "file": files[0],
+                "center": (
+                    (options.get("x_min", 0) + options.get("x_max", 0)) / 2,
+                    (options.get("y_min", 0) + options.get("y_max", 0)) / 2,
+                ),
+            }
+        else:
+            logger.warning("Following solar rotation needs helioprojective images")
 
     # One frame size for the whole video, from the first image (or region)
     if "frame_size" not in options:
@@ -1215,6 +1322,7 @@ def create_video(files, output_file, options, progress_callback=None):
         writer_factory = video_writer(output_file, options)
 
 
+        files, options = apply_difference(files, options)
         options = prepare_video_options(files, options)
         total_frames = options["total_frames"]
         logger.info(f"Creating video from {total_frames} files...")
