@@ -70,6 +70,9 @@ def pixel_mapping(src_wcs, dst_wcs):
         frame = wcs_to_celestial_frame(src_wcs)
         if isinstance(frame, Helioprojective):
             observer = frame.observer
+            dst_frame = wcs_to_celestial_frame(dst_wcs)
+            if isinstance(dst_frame, Helioprojective) and dst_frame.observer is not None:
+                return _sun_fixed_mapping(src_wcs, dst_wcs, frame, dst_frame)
     except Exception:
         pass
 
@@ -79,6 +82,38 @@ def pixel_mapping(src_wcs, dst_wcs):
             return xy
         with _spherical_screen(observer):
             x, y = pixel_to_pixel(src_wcs, dst_wcs, xy[:, 0], xy[:, 1])
+        return np.column_stack([x, y])
+
+    return mapping
+
+
+def _sun_fixed_mapping(src_wcs, dst_wcs, src_frame, dst_frame):
+    """Pixel mapping between two helioprojective images in which points
+    stay fixed relative to the Sun (Heliographic Stonyhurst: its centre,
+    rotation axis and the direction of Earth), not in space.
+
+    Solar images are compared that way: a point fixed in space would be
+    seen from a direction that turns with Earth's orbit, about 1° a day, so
+    the contours of an image taken months away would be squeezed and moved
+    (by cos 70° between May and March). Differential rotation is not
+    applied. For images taken at the same time this is the same as
+    transforming between the frames directly.
+    """
+    from astropy.coordinates import SkyCoord
+    from sunpy.coordinates import HeliographicStonyhurst
+
+    def mapping(xy):
+        xy = np.asarray(xy, dtype=float).reshape(-1, 2)
+        if not len(xy):
+            return xy
+        world = src_wcs.pixel_to_world(xy[:, 0], xy[:, 1])
+        with _spherical_screen(src_frame.observer):
+            sun = world.transform_to(HeliographicStonyhurst(obstime=src_frame.obstime))
+        # The same point on the Sun, at the other image's time
+        moved = SkyCoord(
+            sun.lon, sun.lat, sun.radius, frame=HeliographicStonyhurst(obstime=dst_frame.obstime)
+        )
+        x, y = dst_wcs.world_to_pixel(moved.transform_to(dst_frame))
         return np.column_stack([x, y])
 
     return mapping
