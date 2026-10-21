@@ -97,6 +97,8 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QTabWidget,
     QProgressDialog,
+    QGridLayout,
+    QButtonGroup,
 )
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt, pyqtSlot, pyqtSignal, QTimer, QThread
@@ -1674,274 +1676,59 @@ class MainWindow(QMainWindow):
         rightScroll.setWidgetResizable(True)
         rightScroll.setFrameShape(QFrame.NoFrame)
         rightScroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        rightScroll.setMinimumWidth(320)
 
         controlPanel = QWidget()
         rightLayout = QVBoxLayout(controlPanel)
         rightLayout.setContentsMargins(10, 0, 5, 0)
-        rightLayout.setSpacing(15)
+        rightLayout.setSpacing(8)
 
-        # 1. Visualization Settings Group
-        visGroup = QGroupBox("Visualization")
-        visLayout = QVBoxLayout(visGroup)
-        visLayout.setSpacing(12)
+        palette = get_palette(self.current_theme)
+        self._palette = palette
 
-        scaleForm = QFormLayout()
-        scaleForm.setSpacing(10)
+        # The panel follows the order of work: where in the file (Navigate),
+        # how it looks (Display), what the mouse does (Mouse), and the
+        # changes that are saved (Clean). Controls show only when they apply.
 
-        self.scaleCombo = QComboBox()
-        self.scaleCombo.addItems(["Linear", "Log", "Sqrt", "Gamma"])
-        self.scaleCombo.setCurrentText("Linear")
-        self.scaleCombo.currentTextChanged.connect(self.onScaleModeChanged)
-        scaleForm.addRow("Intensity Scale:", self.scaleCombo)
-
-        self.cmapCombo = QComboBox()
-        cmaps = [
-            "inferno",
-            "viridis",
-            "plasma",
-            "magma",
-            "cividis",
-            "turbo",
-            "jet",
-            "gray",
-            "bone",
-            "afmhot",
-            "cubehelix",
-            "Greens",
-            "gist_heat",
-        ]
-        self.cmapCombo.addItems(cmaps)
-        self.cmapCombo.setCurrentText("inferno")
-        self.cmapCombo.currentTextChanged.connect(self.onCmapChanged)
-        scaleForm.addRow("Colormap:", self.cmapCombo)
-
-        self.scaleRangeCombo = QComboBox()
-        self.scaleRangeCombo.addItems(
-            ["0-100%", "0.1-99.9%", "0.5-99.5%", "1-99%", "5-95%", "Manual"]
-        )
-        self.scaleRangeCombo.setCurrentText("0.5-99.5%")
-        self.scaleRangeCombo.currentTextChanged.connect(self.onScaleRangeChanged)
-        scaleForm.addRow("Intensity Range:", self.scaleRangeCombo)
-
-        # Min/Max Manual Controls
-        self.vminEntry = QLineEdit()
-        # self.vminEntry.setFixedWidth(60)
-        self.vminEntry.setMinimumWidth(50)
-        self.vminEntry.setPlaceholderText("Min")
-        self.vminEntry.editingFinished.connect(self.onManualRangeChanged)
-
-        self.vmaxEntry = QLineEdit()
-        # self.vmaxEntry.setFixedWidth(60)
-        self.vmaxEntry.setMinimumWidth(50)
-        self.vmaxEntry.setPlaceholderText("Max")
-        self.vmaxEntry.editingFinished.connect(self.onManualRangeChanged)
-
-        rangeInputLayout = QHBoxLayout()
-        rangeInputLayout.addStretch()
-        rangeInputLayout.addWidget(self.vminEntry)
-        rangeInputLayout.addWidget(QLabel("-"))
-        rangeInputLayout.addWidget(self.vmaxEntry)
-        rangeInputLayout.addStretch()
-        self.manualLimitsLabel = QLabel("Manual Limits:")
-        scaleForm.addRow(self.manualLimitsLabel, rangeInputLayout)
-
-        self.vminEntry.setEnabled(False)
-        self.vmaxEntry.setEnabled(False)
-        self.manualLimitsLabel.setEnabled(False)
-
-        visLayout.addLayout(scaleForm)
-
-        self.gammaLabel = QLabel("Gamma:")
-        self.gammaSlider = QSlider(Qt.Horizontal)
-        self.gammaSlider.setObjectName("GammaSlider")
-        self.gammaSlider.setRange(1, 300)
-        self.gammaSlider.setValue(100)
-        self.gammaSlider.valueChanged.connect(self.onGammaChanged)
-        self.gammaSlider.sliderReleased.connect(self._apply_gamma_change)
-        self.gammaLabel.setEnabled(False)
-        self.gammaSlider.setEnabled(False)
-
-        # Gamma section wrapped in its own layout for tight spacing
-        gammaControlLayout = QVBoxLayout()
-        gammaControlLayout.setSpacing(4)
-        gammaControlLayout.setContentsMargins(0, 0, 0, 0)
-        gammaControlLayout.addWidget(self.gammaLabel)
-        gammaControlLayout.addWidget(self.gammaSlider)
-
-        visLayout.addLayout(gammaControlLayout)
-
-        rightLayout.addWidget(visGroup)
-
-        # 2. Tools Group
-        toolsGroup = QGroupBox("Processing")
-        toolsLayout = QVBoxLayout(toolsGroup)
-        toolsLayout.setSpacing(10)
-
-        # --- RFI Masking Section ---
-        maskLabel = QLabel("RFI Masking")
-        maskLabel.setStyleSheet(
-            "color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;"
-        )
-        toolsLayout.addWidget(maskLabel)
-
-        self.roiButton = QPushButton("✂️ Draw Mask Region")
-        self.roiButton.setCheckable(True)
-        self.roiButton.setToolTip("Click and drag to mask a region (time & frequency).")
-        self.roiButton.toggled.connect(self.onRoiToggled)
-        toolsLayout.addWidget(self.roiButton)
-
-        # Mask Extensions
-        maskToolsLayout = QHBoxLayout()
-        maskToolsLayout.setSpacing(10)
-
-        self.extendMaskBtn = QPushButton("↔️ Extend")
-        self.extendMaskBtn.setToolTip(
-            "Mask the currently flagged frequencies across all time."
-        )
-        self.extendMaskBtn.clicked.connect(self.onExtendMask)
-
-        self.clearMaskBtn = QPushButton("🗑️ Clear")
-        self.clearMaskBtn.setToolTip(
-            "Clear all manual masks and global frequency masks."
-        )
-        self.clearMaskBtn.clicked.connect(self.onClearMasks)
-
-        maskToolsLayout.addWidget(self.extendMaskBtn)
-        maskToolsLayout.addWidget(self.clearMaskBtn)
-        toolsLayout.addLayout(maskToolsLayout)
-
-        # TODO: RFI mitigation (automatic flagging of RFI) needs to be
-        # implemented; until then RFI is masked by hand (ROI, Extend).
-
-        # Separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setFrameShadow(QFrame.Sunken)
-        # sep.setStyleSheet("background-color: rgba(128, 128, 128, 0.2); margin-top: 5px; margin-bottom: 5px;")
-        sep.setStyleSheet(
-            "background-color: transparent; margin-top: 5px; margin-bottom: 5px;"
-        )
-        toolsLayout.addWidget(sep)
-
-        # --- Analysis Section ---
-        analysisLabel = QLabel("Analysis")
-        analysisLabel.setStyleSheet(
-            "color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;"
-        )
-        toolsLayout.addWidget(analysisLabel)
-
-        self.crossBtn = QPushButton("➕  Cross Section")
-        self.crossBtn.setCheckable(True)
-        self.crossBtn.setToolTip(
-            "Click on the plot to view 1D time or frequency profiles."
-        )
-        self.crossBtn.toggled.connect(self.onCrossSectionToggled)
-        toolsLayout.addWidget(self.crossBtn)
-
-        self.driftBtn = QPushButton("📐 Drift Rate")
-        self.driftBtn.setCheckable(True)
-        self.driftBtn.setToolTip(
-            "Click the start and the end of a burst: its frequency drift and "
-            "the speed it implies (Newkirk density model)."
-        )
-        self.driftBtn.toggled.connect(self.onDriftToggled)
-        toolsLayout.addWidget(self.driftBtn)
-        self.driftLabel = QLabel()
-        self.driftLabel.setWordWrap(True)
-        self.driftLabel.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.driftLabel.hide()
-        toolsLayout.addWidget(self.driftLabel)
-
-        self.imageAtTimeBtn = QPushButton("🖼️ Image at Time")
-        self.imageAtTimeBtn.setCheckable(True)
-        self.imageAtTimeBtn.setToolTip(
-            "Click the spectrum: SolarViewer shows the image of its folder "
-            "nearest that time."
-        )
-        self.imageAtTimeBtn.toggled.connect(self.onImageAtTimeToggled)
-        # Only when launched from SolarViewer (it listens for the times)
-        self.imageAtTimeBtn.setVisible(bool(os.environ.get("SOLARVIEWER_LINK")))
-        toolsLayout.addWidget(self.imageAtTimeBtn)
-
-        self.normBtn = QPushButton("📊 Bandpass Norm")
-        self.normBtn.setCheckable(True)
-        self.normBtn.setToolTip(
-            "Normalize spectrum by time-averaged frequency profile."
-        )
-        self.normBtn.toggled.connect(self.onBandpassNorm)
-        self.bandpassScopeCombo = QComboBox()
-        self.bandpassScopeCombo.addItem("This page", "page")
-        self.bandpassScopeCombo.addItem("Whole file", "file")
-        self.bandpassScopeCombo.setToolTip(
-            "Median profile over the page shown, or over the whole file "
-            "(the same on every page)."
-        )
-        self.bandpassScopeCombo.currentIndexChanged.connect(self.onBandpassScopeChanged)
-        self.bandpassMethodCombo = QComboBox()
-        self.bandpassMethodCombo.addItem("÷ Divide", "divide")
-        self.bandpassMethodCombo.addItem("− Subtract", "subtract")
-        self.bandpassMethodCombo.setToolTip(
-            "Divide each channel by its median (bandpass normalisation), or "
-            "subtract it (background subtraction)."
-        )
-        self.bandpassMethodCombo.currentIndexChanged.connect(self.onBandpassMethodChanged)
-        toolsLayout.addWidget(self.normBtn)
-        bandpassLayout = QHBoxLayout()
-        bandpassLayout.setSpacing(10)
-        bandpassLayout.addWidget(self.bandpassScopeCombo, 1)
-        bandpassLayout.addWidget(self.bandpassMethodCombo, 1)
-        toolsLayout.addLayout(bandpassLayout)
-
-        # Averaging (rebinning) for display and saving
-        self.timeBinSpin = QSpinBox()
-        self.timeBinSpin.setRange(1, 10000)
-        self.timeBinSpin.setPrefix("Time ×")
-        self.timeBinSpin.setToolTip("Average this many time samples into one.")
-        self.freqBinSpin = QSpinBox()
-        self.freqBinSpin.setRange(1, 4096)
-        self.freqBinSpin.setPrefix("Freq ×")
-        self.freqBinSpin.setToolTip("Average this many channels into one.")
-        self._bin_timer = QTimer(self)
-        self._bin_timer.setSingleShot(True)
-        self._bin_timer.timeout.connect(self._apply_binning)
-        for spin in (self.timeBinSpin, self.freqBinSpin):
-            spin.valueChanged.connect(lambda _: self._bin_timer.start(400))
-        averageLabel = QLabel("Averaging")
-        averageLabel.setStyleSheet(
-            "color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;"
-        )
-        toolsLayout.addWidget(averageLabel)
-        binLayout = QHBoxLayout()
-        binLayout.setSpacing(10)
-        binLayout.addWidget(self.timeBinSpin, 1)
-        binLayout.addWidget(self.freqBinSpin, 1)
-        toolsLayout.addLayout(binLayout)
-
-        rightLayout.addWidget(toolsGroup)
-
-        # 3. Navigation Group
-        self.navGroup = QGroupBox("Time Navigation")
+        # ---------------- 1. Navigate ----------------
+        self.navGroup = QGroupBox("Navigate")
         navLayout = QVBoxLayout(self.navGroup)
         navLayout.setSpacing(10)
 
-        modeForm = QFormLayout()
+        # The mode as a switch; navModeCombo (hidden) holds it for the code
         self.navModeCombo = QComboBox()
         self.navModeCombo.addItems(["Full Spectrum", "Windowed", "Time Range"])
         self.navModeCombo.currentTextChanged.connect(self.onNavModeChanged)
-        modeForm.addRow("View Mode:", self.navModeCombo)
+        self.navModeCombo.hide()
+        modeSwitch, self._modeButtons = self._segmented(
+            [
+                ("All", "Full Spectrum", "The whole file at once"),
+                ("Pages", "Windowed", "The file a page at a time (large files)"),
+                ("Range", "Time Range", "The data between two times (Ctrl+T)"),
+            ],
+            self.navModeCombo.setCurrentText,
+        )
+        navLayout.addWidget(modeSwitch)
 
+        # Pages: their length, and the pager
+        self.pagesWidget = QWidget()
+        pagesLayout = QVBoxLayout(self.pagesWidget)
+        pagesLayout.setContentsMargins(0, 0, 0, 0)
+        pagesLayout.setSpacing(8)
         self.navDurationSpin = QDoubleSpinBox()
         self.navDurationSpin.setRange(1.0, 1440.0)
         self.navDurationSpin.setValue(15.0)
         self.navDurationSpin.setSuffix(" min")
+        self.navDurationSpin.setToolTip("How much time a page holds")
         self.navDurationSpin.valueChanged.connect(self.onNavDurationChanged)
-        self.navDurationLabel = QLabel("Window Size:")
-        modeForm.addRow(self.navDurationLabel, self.navDurationSpin)
+        self.navDurationLabel = QLabel("Page length:")
+        durationForm = QFormLayout()
+        durationForm.setContentsMargins(0, 0, 0, 0)
+        durationForm.addRow(self.navDurationLabel, self.navDurationSpin)
+        pagesLayout.addLayout(durationForm)
+        pagesLayout.addLayout(self._pager(palette))
+        navLayout.addWidget(self.pagesWidget)
 
-        navLayout.addLayout(modeForm)
-
-        # Time Range mode: the data between two times
+        # Range: the data between two times
         self.rangeWidget = QWidget()
         rangeLayout = QFormLayout(self.rangeWidget)
         rangeLayout.setContentsMargins(0, 0, 0, 0)
@@ -1962,16 +1749,308 @@ class MainWindow(QMainWindow):
         self.rangeWidget.setVisible(False)
         navLayout.addWidget(self.rangeWidget)
 
-        navBtnLayout = QHBoxLayout()
-        navBtnLayout.setSpacing(8)
-        navBtnLayout.setAlignment(Qt.AlignCenter)
+        self.gotoEdit = QLineEdit()
+        self.gotoEdit.setPlaceholderText("Go to time (UTC), e.g. 07:45:30")
+        self.gotoEdit.setToolTip(
+            "HH:MM[:SS] on the observation's date, or YYYY-MM-DD HH:MM:SS (Ctrl+G)"
+        )
+        self.gotoEdit.returnPressed.connect(self.onGoToTime)
+        navLayout.addWidget(self.gotoEdit)
+        rightLayout.addWidget(self.navGroup)
 
-        # Get palette for consistent styling
-        palette = get_palette(self.current_theme)
+        # ---------------- 2. Display ----------------
+        visGroup = QGroupBox("Display")
+        visLayout = QGridLayout(visGroup)
+        visLayout.setHorizontalSpacing(10)
+        visLayout.setVerticalSpacing(10)
+        visLayout.setColumnStretch(1, 1)
+
+        def addRow(label, field):
+            row = visLayout.rowCount()
+            if isinstance(label, str):
+                label = QLabel(label)
+            visLayout.addWidget(label, row, 0)
+            visLayout.addWidget(field, row, 1)
+
+        self.cmapCombo = QComboBox()
+        cmaps = [
+            "inferno",
+            "viridis",
+            "plasma",
+            "magma",
+            "cividis",
+            "turbo",
+            "jet",
+            "gray",
+            "bone",
+            "afmhot",
+            "cubehelix",
+            "Greens",
+            "gist_heat",
+        ]
+        self.cmapCombo.addItems(cmaps)
+        self.cmapCombo.setCurrentText("inferno")
+        self.cmapCombo.currentTextChanged.connect(self.onCmapChanged)
+        addRow("Colormap:", self.cmapCombo)
+
+        self.scaleCombo = QComboBox()
+        self.scaleCombo.addItems(["Linear", "Log", "Sqrt", "Gamma"])
+        self.scaleCombo.setCurrentText("Linear")
+        self.scaleCombo.currentTextChanged.connect(self.onScaleModeChanged)
+        addRow("Scale:", self.scaleCombo)
+
+        self.gammaLabel = QLabel("Gamma:")
+        self.gammaSlider = QSlider(Qt.Horizontal)
+        self.gammaSlider.setObjectName("GammaSlider")
+        self.gammaSlider.setRange(1, 300)
+        self.gammaSlider.setValue(100)
+        self.gammaSlider.valueChanged.connect(self.onGammaChanged)
+        self.gammaSlider.sliderReleased.connect(self._apply_gamma_change)
+        addRow(self.gammaLabel, self.gammaSlider)
+
+        self.scaleRangeCombo = QComboBox()
+        self.scaleRangeCombo.addItems(
+            ["0-100%", "0.1-99.9%", "0.5-99.5%", "1-99%", "5-95%", "Manual"]
+        )
+        self.scaleRangeCombo.setCurrentText("0.5-99.5%")
+        self.scaleRangeCombo.setToolTip("The values the colours span: percentiles, or set by hand")
+        self.scaleRangeCombo.currentTextChanged.connect(self.onScaleRangeChanged)
+        addRow("Limits:", self.scaleRangeCombo)
+
+        self.vminEntry = QLineEdit()
+        self.vminEntry.setMinimumWidth(50)
+        self.vminEntry.setPlaceholderText("Min")
+        self.vminEntry.editingFinished.connect(self.onManualRangeChanged)
+        self.vmaxEntry = QLineEdit()
+        self.vmaxEntry.setMinimumWidth(50)
+        self.vmaxEntry.setPlaceholderText("Max")
+        self.vmaxEntry.editingFinished.connect(self.onManualRangeChanged)
+        self.manualLimitsWidget = QWidget()
+        manualLayout = QHBoxLayout(self.manualLimitsWidget)
+        manualLayout.setContentsMargins(0, 0, 0, 0)
+        manualLayout.addWidget(self.vminEntry)
+        manualLayout.addWidget(QLabel("–"))
+        manualLayout.addWidget(self.vmaxEntry)
+        self.manualLimitsLabel = QLabel("Min – max:")
+        addRow(self.manualLimitsLabel, self.manualLimitsWidget)
+        self._show_row(self.gammaLabel, self.gammaSlider, False)
+        self._show_row(self.manualLimitsLabel, self.manualLimitsWidget, False)
+        rightLayout.addWidget(visGroup)
+
+        # ---------------- 3. Mouse ----------------
+        # One tool at a time: what a click or drag on the spectrum does
+        toolsGroup = QGroupBox("Mouse")
+        toolsLayout = QVBoxLayout(toolsGroup)
+        toolsLayout.setSpacing(8)
+
+        self.panBtn = QPushButton("✋ Pan")
+        self.panBtn.setToolTip("Pan / Zoom: drag to pan, scroll to zoom")
+        self.roiButton = QPushButton("✂️ Mask")
+        self.roiButton.setToolTip("Mask: drag over a region to mask it (for the whole file)")
+        self.crossBtn = QPushButton("➕ Profile")
+        self.crossBtn.setToolTip(
+            "Cross-section: click a point for the light curve or spectrum through it"
+        )
+        self.driftBtn = QPushButton("📐 Drift")
+        self.driftBtn.setToolTip(
+            "Drift rate: click the start and the end of a burst for its frequency "
+            "drift and the speed it implies (Newkirk density model)"
+        )
+        self.imageAtTimeBtn = QPushButton("🖼️ Image")
+        self.imageAtTimeBtn.setToolTip(
+            "Image at time: click the spectrum and SolarViewer shows its image "
+            "nearest that time and frequency"
+        )
+        # Only when launched from SolarViewer (it listens for the times)
+        linked = bool(os.environ.get("SOLARVIEWER_LINK"))
+        tools = [self.panBtn, self.roiButton, self.crossBtn, self.driftBtn]
+        if linked:
+            tools.append(self.imageAtTimeBtn)
+        else:
+            self.imageAtTimeBtn.hide()
+        toolGrid = QGridLayout()
+        toolGrid.setSpacing(8)
+        for i, button in enumerate(tools):
+            button.setCheckable(True)
+            toolGrid.addWidget(button, i // 3, i % 3)
+        self.imageAtTimeBtn.setCheckable(True)
+        toolsLayout.addLayout(toolGrid)
+        self.panBtn.setChecked(True)
+        self.panBtn.clicked.connect(self._choose_pan)
+        self.roiButton.toggled.connect(self.onRoiToggled)
+        self.crossBtn.toggled.connect(self.onCrossSectionToggled)
+        self.driftBtn.toggled.connect(self.onDriftToggled)
+        self.imageAtTimeBtn.toggled.connect(self.onImageAtTimeToggled)
+        for button in (self.roiButton, self.crossBtn, self.driftBtn, self.imageAtTimeBtn):
+            button.toggled.connect(lambda _: self._update_tool_hint())
+
+        self.driftLabel = QLabel()
+        self.driftLabel.setWordWrap(True)
+        self.driftLabel.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.driftLabel.hide()
+        toolsLayout.addWidget(self.driftLabel)
+        self._update_tool_hint()
+        rightLayout.addWidget(toolsGroup)
+
+        # ---------------- 4. Clean ----------------
+        # Changes to the data, kept for the whole file and saved with it
+        cleanGroup = QGroupBox("Clean")
+        cleanLayout = QVBoxLayout(cleanGroup)
+        cleanLayout.setSpacing(6)
+
+        self.maskSummary = self._sublabel("Masks")
+        cleanLayout.addWidget(self.maskSummary)
+        self.extendMaskBtn = QPushButton("↔️ Extend")
+        self.extendMaskBtn.setToolTip(
+            "Mask, at all times, the channels masked on the page shown."
+        )
+        self.extendMaskBtn.clicked.connect(self.onExtendMask)
+        self.clearMaskBtn = QPushButton("🗑️ Clear")
+        self.clearMaskBtn.setToolTip("Remove all masks (Undo brings them back).")
+        self.clearMaskBtn.clicked.connect(self.onClearMasks)
+        maskButtons = QHBoxLayout()
+        maskButtons.setSpacing(8)
+        maskButtons.addWidget(self.extendMaskBtn, 1)
+        maskButtons.addWidget(self.clearMaskBtn, 1)
+        cleanLayout.addLayout(maskButtons)
+        # TODO: RFI mitigation (automatic flagging of RFI) needs to be
+        # implemented; until then RFI is masked by hand (Mask, Extend).
+
+        background = self._sublabel("Background")
+        background.setToolTip("Each channel's median over time, divided out or subtracted")
+        cleanLayout.addWidget(background)
+        self.normBtn = QPushButton("Normalise")
+        self.normBtn.setCheckable(True)
+        self.normBtn.setToolTip(
+            "Divide each channel by its median over time (bandpass), or "
+            "subtract it (background subtraction)."
+        )
+        self.normBtn.toggled.connect(self.onBandpassNorm)
+        self.bandpassScopeCombo = QComboBox()
+        self.bandpassScopeCombo.addItem("Page", "page")
+        self.bandpassScopeCombo.addItem("File", "file")
+        self.bandpassScopeCombo.setToolTip(
+            "The median over the page shown, or over the whole file (the same on every page)"
+        )
+        self.bandpassScopeCombo.currentIndexChanged.connect(self.onBandpassScopeChanged)
+        self.bandpassMethodCombo = QComboBox()
+        self.bandpassMethodCombo.addItem("÷", "divide")
+        self.bandpassMethodCombo.addItem("−", "subtract")
+        self.bandpassMethodCombo.setToolTip(
+            "÷ divide by the median (bandpass normalisation), − subtract it "
+            "(background subtraction)"
+        )
+        self.bandpassMethodCombo.currentIndexChanged.connect(self.onBandpassMethodChanged)
+        bandpassLayout = QHBoxLayout()
+        bandpassLayout.setSpacing(8)
+        bandpassLayout.addWidget(self.normBtn, 2)
+        bandpassLayout.addWidget(self.bandpassScopeCombo, 1)
+        bandpassLayout.addWidget(self.bandpassMethodCombo, 1)
+        cleanLayout.addLayout(bandpassLayout)
+
+        cleanLayout.addWidget(self._sublabel("Average"))
+        self.timeBinSpin = QSpinBox()
+        self.timeBinSpin.setRange(1, 10000)
+        self.timeBinSpin.setPrefix("Time ×")
+        self.timeBinSpin.setToolTip("Average this many time samples into one.")
+        self.freqBinSpin = QSpinBox()
+        self.freqBinSpin.setRange(1, 4096)
+        self.freqBinSpin.setPrefix("Freq ×")
+        self.freqBinSpin.setToolTip("Average this many channels into one.")
+        self._bin_timer = QTimer(self)
+        self._bin_timer.setSingleShot(True)
+        self._bin_timer.timeout.connect(self._apply_binning)
+        for spin in (self.timeBinSpin, self.freqBinSpin):
+            spin.valueChanged.connect(lambda _: self._bin_timer.start(400))
+        binLayout = QHBoxLayout()
+        binLayout.setSpacing(8)
+        binLayout.addWidget(self.timeBinSpin, 1)
+        binLayout.addWidget(self.freqBinSpin, 1)
+        cleanLayout.addLayout(binLayout)
+        rightLayout.addWidget(cleanGroup)
+        self._update_mask_summary()
+
+        # Connect canvas hover signal
+        self.canvas.hoverChanged.connect(self.updateHoverInfo)
+        self.canvas.driftMeasured.connect(self.onDriftMeasured)
+        self.canvas.timePicked.connect(self.sendTimeToViewer)
+
+        rightLayout.addStretch()
+
+        rightScroll.setWidget(controlPanel)
+        # As wide as the controls need (never clipped; the canvas takes the rest)
+        rightScroll.setMinimumWidth(
+            max(320, controlPanel.minimumSizeHint().width() + rightScroll.verticalScrollBar().sizeHint().width() + 12)
+        )
+
+        # Add widgets to splitter
+        self.mainSplitter.addWidget(leftWidget)
+        self.mainSplitter.addWidget(rightScroll)
+
+        # Initial proportions
+        self.mainSplitter.setStretchFactor(0, 4)
+        self.mainSplitter.setStretchFactor(1, 1)
+
+        mainLayout.addWidget(self.mainSplitter)
+
+    def _sublabel(self, text):
+        label = QLabel(text)
+        label.setStyleSheet(
+            "color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;"
+        )
+        return label
+
+    @staticmethod
+    def _show_row(label, field, visible):
+        label.setVisible(visible)
+        field.setVisible(visible)
+
+    def _segmented(self, items, choose):
+        """A row of buttons, one of which is on: [(text, value, tip)];
+        ``choose(value)`` when one is clicked. (widget, {value: button})"""
+        palette = self._palette
+        widget = QFrame()
+        widget.setObjectName("Segmented")
+        widget.setStyleSheet(f"""
+            QFrame#Segmented {{
+                border: 1px solid {palette.get("border", "#3a3a5a")};
+                border-radius: 8px;
+                background: transparent;
+            }}
+            QFrame#Segmented QPushButton {{
+                border: none;
+                border-radius: 6px;
+                padding: 5px 4px;
+                background: transparent;
+            }}
+            QFrame#Segmented QPushButton:hover {{
+                background: rgba(99, 102, 241, 0.15);
+            }}
+            QFrame#Segmented QPushButton:checked {{
+                background: {palette["highlight"]};
+                color: #ffffff;
+            }}
+        """)
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(3)
+        group = QButtonGroup(widget)
+        group.setExclusive(True)
+        buttons = {}
+        for text, value, tip in items:
+            button = QPushButton(text)
+            button.setCheckable(True)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _=False, v=value: choose(v))
+            group.addButton(button)
+            layout.addWidget(button, 1)
+            buttons[value] = button
+        return widget, buttons
+
+    def _pager(self, palette):
+        """« ‹ page/pages › » (Pages mode)."""
         disabled_color = palette["disabled"]
         highlight = palette["highlight"]
-
-        # Premium style for navigation buttons
         nav_btn_style = f"""
             QPushButton {{
                 background-color: transparent;
@@ -1994,83 +2073,89 @@ class MainWindow(QMainWindow):
             QPushButton:disabled {{
                 border-color: transparent;
                 color: {disabled_color};
-                opacity: 0.5;
             }}
         """
-
         self.firstBtn = QPushButton("«")
         self.firstBtn.setToolTip("First Page")
-        self.firstBtn.setStyleSheet(nav_btn_style)
         self.firstBtn.clicked.connect(self.onFirstPage)
-
         self.prevBtn = QPushButton("‹")
         self.prevBtn.setToolTip("Previous Page")
-        self.prevBtn.setStyleSheet(nav_btn_style)
         self.prevBtn.clicked.connect(self.onPrevPage)
-
         self.nextBtn = QPushButton("›")
         self.nextBtn.setToolTip("Next Page")
-        self.nextBtn.setStyleSheet(nav_btn_style)
         self.nextBtn.clicked.connect(self.onNextPage)
-
         self.lastBtn = QPushButton("»")
         self.lastBtn.setToolTip("Last Page")
-        self.lastBtn.setStyleSheet(nav_btn_style)
         self.lastBtn.clicked.connect(self.onLastPage)
-
-        # Arrange in a single row: [First] [Prev]  Page X of Y  [Next] [Last]
+        for button in (self.firstBtn, self.prevBtn, self.nextBtn, self.lastBtn):
+            button.setStyleSheet(nav_btn_style)
         self.pageLabel = QLabel("1/1")
         self.pageLabel.setAlignment(Qt.AlignCenter)
         self.pageLabel.setStyleSheet(f"""
             QLabel {{
                 font-size: 10pt;
                 font-weight: 500;
-                min-width: 25px;
+                min-width: 50px;
                 color: {palette["text"]};
             }}
             QLabel:disabled {{
                 color: {disabled_color};
             }}
         """)
+        layout = QHBoxLayout()
+        layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.firstBtn)
+        layout.addWidget(self.prevBtn)
+        layout.addWidget(self.pageLabel)
+        layout.addWidget(self.nextBtn)
+        layout.addWidget(self.lastBtn)
+        return layout
 
-        navBtnLayout.addWidget(self.firstBtn)
-        navBtnLayout.addWidget(self.prevBtn)
-        navBtnLayout.addSpacing(10)
-        navBtnLayout.addWidget(self.pageLabel)
-        navBtnLayout.addSpacing(10)
-        navBtnLayout.addWidget(self.nextBtn)
-        navBtnLayout.addWidget(self.lastBtn)
+    _TOOL_HINTS = {
+        "pan": "Drag to pan, scroll to zoom; right-click the plot to reset the view.",
+        "roi": "Drag over a region to mask it. Masks hold for the whole file (Ctrl+Z undoes).",
+        "cross": "Click a point: its light curve or its spectrum.",
+        "drift": "Click the start of a burst, then its end.",
+        "image": "Click the spectrum: SolarViewer shows the image at that time and frequency.",
+    }
 
-        navLayout.addLayout(navBtnLayout)
+    def _choose_pan(self):
+        for button in (self.roiButton, self.crossBtn, self.driftBtn, self.imageAtTimeBtn):
+            button.setChecked(False)
+        self.panBtn.setChecked(True)
 
-        self.gotoEdit = QLineEdit()
-        self.gotoEdit.setPlaceholderText("Go to UTC time, e.g. 07:45:30")
-        self.gotoEdit.setToolTip(
-            "HH:MM[:SS] on the observation's date, or YYYY-MM-DD HH:MM:SS (Ctrl+G)"
+    def _update_tool_hint(self):
+        """Pan/Zoom is on when no other tool is; the status bar says how to
+        use the tool chosen."""
+        tools = {
+            "roi": self.roiButton,
+            "cross": self.crossBtn,
+            "drift": self.driftBtn,
+            "image": self.imageAtTimeBtn,
+        }
+        active = next((name for name, b in tools.items() if b.isChecked()), "pan")
+        changed = active != getattr(self, "_active_tool", "pan")
+        self._active_tool = active
+        self.panBtn.setChecked(active == "pan")
+        if changed:
+            self.statusBar().showMessage(self._TOOL_HINTS[active], 8000)
+        self.driftLabel.setVisible(active == "drift" and bool(self.driftLabel.text()))
+
+    def _update_mask_summary(self):
+        regions, channels = len(self._masks), len(self._global_masked_freq_indices)
+        parts = []
+        if regions:
+            parts.append(f"{regions} region{'s' * (regions != 1)}")
+        if channels:
+            parts.append(f"{channels} channel{'s' * (channels != 1)}")
+        self.maskSummary.setText("Masks · " + (", ".join(parts) if parts else "none yet"))
+        self.maskSummary.setToolTip(
+            "Draw masks with the Mask tool; they hold for the whole file"
+            + (f" ({channels} channels masked at all times)" if channels else "")
         )
-        self.gotoEdit.returnPressed.connect(self.onGoToTime)
-        navLayout.addWidget(self.gotoEdit)
-
-        rightLayout.addWidget(self.navGroup)
-
-        # Connect canvas hover signal
-        self.canvas.hoverChanged.connect(self.updateHoverInfo)
-        self.canvas.driftMeasured.connect(self.onDriftMeasured)
-        self.canvas.timePicked.connect(self.sendTimeToViewer)
-
-        rightLayout.addStretch()
-
-        rightScroll.setWidget(controlPanel)
-
-        # Add widgets to splitter
-        self.mainSplitter.addWidget(leftWidget)
-        self.mainSplitter.addWidget(rightScroll)
-
-        # Initial proportions
-        self.mainSplitter.setStretchFactor(0, 4)
-        self.mainSplitter.setStretchFactor(1, 1)
-
-        mainLayout.addWidget(self.mainSplitter)
+        self.extendMaskBtn.setEnabled(bool(regions))
+        self.clearMaskBtn.setEnabled(bool(regions or channels))
 
     def updateHoverInfo(self, time_str, freq_str, val):
         """Update the hover info in the status bar."""
@@ -2568,6 +2653,7 @@ class MainWindow(QMainWindow):
                 self._cached_bandpass_profile = None  # Invalidate bandpass cache
                 self._global_masked_freq_indices.clear()  # Clear stale masks
                 self._masks = []
+                self._update_mask_summary()
                 self.undo_stack.clear()
                 gc.collect()  # Force memory release
 
@@ -2955,6 +3041,13 @@ class MainWindow(QMainWindow):
             return len(self._full_time_axis)
 
     # -------------------------- Paging & Navigation -----------------------------
+    def _show_nav_mode(self):
+        """The mode switch, and only the mode's controls."""
+        value = {"Full": "Full Spectrum", "Windowed": "Windowed", "Range": "Time Range"}[self._nav_mode]
+        self._modeButtons[value].setChecked(True)
+        self.pagesWidget.setVisible(self._nav_mode == "Windowed")
+        self.rangeWidget.setVisible(self._nav_mode == "Range")
+
     def _updateNavigationStats(self):
         """Calculate total pages and update UI labels."""
         if self._full_time_axis is None:
@@ -2965,12 +3058,7 @@ class MainWindow(QMainWindow):
             self.nextBtn.setEnabled(False)
             self.lastBtn.setEnabled(False)
 
-            # Initial disabling based on default "Full" mode
-            is_windowed = self._nav_mode == "Windowed"
-            self.navDurationSpin.setEnabled(is_windowed)
-            self.navDurationLabel.setEnabled(is_windowed)
-            self.pageLabel.setEnabled(is_windowed)
-            self.rangeWidget.setVisible(self._nav_mode == "Range")
+            self._show_nav_mode()
             return
 
         total_samples = len(self._full_time_axis)
@@ -2994,12 +3082,7 @@ class MainWindow(QMainWindow):
         self.nextBtn.setEnabled(self._current_page < self._total_pages - 1)
         self.lastBtn.setEnabled(self._current_page < self._total_pages - 1)
 
-        # Visually disable "Window Size" and "Page Number" in Full mode
-        is_windowed = self._nav_mode == "Windowed"
-        self.navDurationSpin.setEnabled(is_windowed)
-        self.navDurationLabel.setEnabled(is_windowed)
-        self.pageLabel.setEnabled(is_windowed)
-        self.rangeWidget.setVisible(self._nav_mode == "Range")
+        self._show_nav_mode()
 
         # Feature 2: Update Minimap Highlight & Markers
         if self._full_time_axis is not None:
@@ -3886,6 +3969,7 @@ class MainWindow(QMainWindow):
     def _do(self, edit):
         """Make a mask edit (undoable) and show the page with it."""
         self._apply_edit(edit)
+        self._update_mask_summary()
         self.undo_stack.append(edit)
         self.redo_stack.clear()
         self._redisplay()
@@ -3896,6 +3980,7 @@ class MainWindow(QMainWindow):
             return
         edit = self.undo_stack.pop()
         self._apply_edit(edit, undo=True)
+        self._update_mask_summary()
         self.redo_stack.append(edit)
         self._redisplay()
 
@@ -3905,6 +3990,7 @@ class MainWindow(QMainWindow):
             return
         edit = self.redo_stack.pop()
         self._apply_edit(edit)
+        self._update_mask_summary()
         self.undo_stack.append(edit)
         self._redisplay()
 
@@ -3978,12 +4064,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def onScaleModeChanged(self, mode):
         self.canvas.set_scale_mode(mode)
-        if mode == "Gamma":
-            self.gammaLabel.setEnabled(True)
-            self.gammaSlider.setEnabled(True)
-        else:
-            self.gammaLabel.setEnabled(False)
-            self.gammaSlider.setEnabled(False)
+        self._show_row(self.gammaLabel, self.gammaSlider, mode == "Gamma")
 
     @pyqtSlot(int)
     def onGammaChanged(self, sliderValue):
@@ -4010,10 +4091,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def onScaleRangeChanged(self, scale_option):
         """Handle changes to the scale range dropdown."""
-        is_manual = scale_option == "Manual"
-        self.vminEntry.setEnabled(is_manual)
-        self.vmaxEntry.setEnabled(is_manual)
-        self.manualLimitsLabel.setEnabled(is_manual)
+        self._show_row(self.manualLimitsLabel, self.manualLimitsWidget, scale_option == "Manual")
         self.canvas.set_smart_scale(scale_option)
 
     @pyqtSlot()
@@ -4169,7 +4247,7 @@ class MainWindow(QMainWindow):
             f"  harmonic {speed(d['v_h'])}"
         )
         self.driftLabel.setText(text)
-        self.driftLabel.show()
+        self._update_tool_hint()
         self.statusBar().showMessage(f"Drift: {d['rate']:.3f} MHz/s", 10000)
 
     def _parse_time(self, text):
