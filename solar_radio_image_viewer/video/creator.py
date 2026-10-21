@@ -867,6 +867,132 @@ def _frames_in_order(files, options, global_stats, contour_processor):
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def prepare_video_options(files, options):
+    """Fill in ``options`` with what all frames of a video share: the frame
+    count, the region (with even dimensions), the frame size, the coordinate
+    system and the min/max timeline. Used for the video and its preview, so
+    the preview frame is the video frame. Returns ``options``.
+    """
+    # Calculate total frames
+    total_frames = len(files)
+    options["total_frames"] = total_frames
+
+    # If region selection is enabled, pre-scan the first file to determine dimensions
+    if options.get("region_enabled", False):
+        logger.info("Determining region dimensions...")
+
+        # Load the first file
+        first_data, _ = load_fits_data(files[0], stokes=options.get("stokes", "I"))
+
+        if first_data is not None:
+            # Get region coordinates
+            x_min = options.get("x_min", 0)
+            x_max = options.get("x_max", first_data.shape[1] - 1)
+            y_min = options.get("y_min", 0)
+            y_max = options.get("y_max", first_data.shape[0] - 1)
+
+            # Ensure proper order and boundaries
+            x_min, x_max = min(x_min, x_max), max(x_min, x_max)
+            y_min, y_max = min(y_min, y_max), max(y_min, y_max)
+            x_min = max(0, min(x_min, first_data.shape[1] - 1))
+            x_max = max(0, min(x_max, first_data.shape[1] - 1))
+            y_min = max(0, min(y_min, first_data.shape[0] - 1))
+            y_max = max(0, min(y_max, first_data.shape[0] - 1))
+
+            # Calculate region dimensions
+            region_width = x_max - x_min + 1
+            region_height = y_max - y_min + 1
+
+            # Ensure dimensions are even (required for H.264 codec)
+            if region_width % 2 != 0:
+                # If width is odd, increase by 1 if possible
+                if x_max < first_data.shape[1] - 1:
+                    x_max += 1
+                    region_width += 1
+                elif x_min > 0:
+                    x_min -= 1
+                    region_width += 1
+
+            if region_height % 2 != 0:
+                # If height is odd, increase by 1 if possible
+                if y_max < first_data.shape[0] - 1:
+                    y_max += 1
+                    region_height += 1
+                elif y_min > 0:
+                    y_min -= 1
+                    region_height += 1
+
+            # Update the region coordinates in options
+            options["x_min"] = x_min
+            options["x_max"] = x_max
+            options["y_min"] = y_min
+            options["y_max"] = y_max
+
+            # Store dimensions for consistent region extraction
+            options["region_width"] = region_width
+            options["region_height"] = region_height
+
+            logger.info(
+                f"Region dimensions: {region_width}x{region_height} (adjusted to ensure even dimensions)"
+            )
+        else:
+            logger.warning("Could not determine region dimensions from first file")
+
+    # One frame size for the whole video, from the first image (or region)
+    if "frame_size" not in options:
+        first_data, _ = load_fits_data(files[0], stokes=options.get("stokes", "I"))
+        shape = first_data.shape if first_data is not None else (1, 1)
+        if options.get("region_enabled", False) and "region_width" in options:
+            shape = (options["region_height"], options["region_width"])
+        options["frame_size"] = frame_size(options, shape)
+        logger.info(f"Frame size: {options['frame_size'][0]}x{options['frame_size'][1]}")
+
+    # Initialize WCS coordinate detection if enabled
+    if options.get("wcs_enabled", False):
+        logger.info("Detecting coordinate system from first file...")
+        coord_info = detect_coordinate_system(files[0])
+        options["coord_info"] = coord_info
+        logger.info(f"Coordinate system: {coord_info.get('type', 'unknown')}")
+
+    # Initialize MinMax timeline if enabled (unless one was given)
+    if options.get("minmax_timeline_enabled", False) and "minmax_timeline" not in options:
+        logger.info("Precomputing min/max statistics for timeline...")
+        position_map = {
+            0: "bottom-left",
+            1: "bottom-right",
+            2: "top-left",
+            3: "top-right",
+        }
+        position = position_map.get(
+            options.get("timeline_position", 0), "bottom-left"
+        )
+
+        # Determine which files to use for timeline stats
+        timeline_source = options.get(
+            "timeline_source", 0
+        )  # 0=Colormap, 1=Contours
+        timeline_files = files  # Default to colormap files
+
+        # In contour mode with source=1, use contour files instead
+        if options.get("contour_video_enabled", False) and timeline_source == 1:
+            contour_files = options.get("contour_files", [])
+            if contour_files:
+                timeline_files = contour_files
+                logger.info(
+                    f"Timeline will use contour files ({len(timeline_files)} files)"
+                )
+
+        log_scale = options.get("timeline_log_scale", False)
+        timeline = MinMaxTimeline(
+            total_frames=len(files), position=position, log_scale=log_scale
+        )
+        timeline.precompute_stats(timeline_files, options, load_fits_data)
+        options["minmax_timeline"] = timeline
+        logger.info("Timeline statistics computed")
+
+    return options
+
+
 def create_video(files, output_file, options, progress_callback=None):
     """
     Create a video from a list of FITS files.
@@ -978,124 +1104,9 @@ def create_video(files, output_file, options, progress_callback=None):
         # Add fps and quality info to the options for reference
         options["fps"] = writer_kwargs.get("fps", 15)
 
-        # Calculate total frames
-        total_frames = len(files)
-        options["total_frames"] = total_frames
-
+        options = prepare_video_options(files, options)
+        total_frames = options["total_frames"]
         logger.info(f"Creating video from {total_frames} files...")
-
-        # If region selection is enabled, pre-scan the first file to determine dimensions
-        if options.get("region_enabled", False):
-            logger.info("Determining region dimensions...")
-
-            # Load the first file
-            first_data, _ = load_fits_data(files[0], stokes=options.get("stokes", "I"))
-
-            if first_data is not None:
-                # Get region coordinates
-                x_min = options.get("x_min", 0)
-                x_max = options.get("x_max", first_data.shape[1] - 1)
-                y_min = options.get("y_min", 0)
-                y_max = options.get("y_max", first_data.shape[0] - 1)
-
-                # Ensure proper order and boundaries
-                x_min, x_max = min(x_min, x_max), max(x_min, x_max)
-                y_min, y_max = min(y_min, y_max), max(y_min, y_max)
-                x_min = max(0, min(x_min, first_data.shape[1] - 1))
-                x_max = max(0, min(x_max, first_data.shape[1] - 1))
-                y_min = max(0, min(y_min, first_data.shape[0] - 1))
-                y_max = max(0, min(y_max, first_data.shape[0] - 1))
-
-                # Calculate region dimensions
-                region_width = x_max - x_min + 1
-                region_height = y_max - y_min + 1
-
-                # Ensure dimensions are even (required for H.264 codec)
-                if region_width % 2 != 0:
-                    # If width is odd, increase by 1 if possible
-                    if x_max < first_data.shape[1] - 1:
-                        x_max += 1
-                        region_width += 1
-                    elif x_min > 0:
-                        x_min -= 1
-                        region_width += 1
-
-                if region_height % 2 != 0:
-                    # If height is odd, increase by 1 if possible
-                    if y_max < first_data.shape[0] - 1:
-                        y_max += 1
-                        region_height += 1
-                    elif y_min > 0:
-                        y_min -= 1
-                        region_height += 1
-
-                # Update the region coordinates in options
-                options["x_min"] = x_min
-                options["x_max"] = x_max
-                options["y_min"] = y_min
-                options["y_max"] = y_max
-
-                # Store dimensions for consistent region extraction
-                options["region_width"] = region_width
-                options["region_height"] = region_height
-
-                logger.info(
-                    f"Region dimensions: {region_width}x{region_height} (adjusted to ensure even dimensions)"
-                )
-            else:
-                logger.warning("Could not determine region dimensions from first file")
-
-        # One frame size for the whole video, from the first image (or region)
-        if "frame_size" not in options:
-            first_data, _ = load_fits_data(files[0], stokes=options.get("stokes", "I"))
-            shape = first_data.shape if first_data is not None else (1, 1)
-            if options.get("region_enabled", False) and "region_width" in options:
-                shape = (options["region_height"], options["region_width"])
-            options["frame_size"] = frame_size(options, shape)
-            logger.info(f"Frame size: {options['frame_size'][0]}x{options['frame_size'][1]}")
-
-        # Initialize WCS coordinate detection if enabled
-        if options.get("wcs_enabled", False):
-            logger.info("Detecting coordinate system from first file...")
-            coord_info = detect_coordinate_system(files[0])
-            options["coord_info"] = coord_info
-            logger.info(f"Coordinate system: {coord_info.get('type', 'unknown')}")
-
-        # Initialize MinMax timeline if enabled
-        if options.get("minmax_timeline_enabled", False):
-            logger.info("Precomputing min/max statistics for timeline...")
-            position_map = {
-                0: "bottom-left",
-                1: "bottom-right",
-                2: "top-left",
-                3: "top-right",
-            }
-            position = position_map.get(
-                options.get("timeline_position", 0), "bottom-left"
-            )
-
-            # Determine which files to use for timeline stats
-            timeline_source = options.get(
-                "timeline_source", 0
-            )  # 0=Colormap, 1=Contours
-            timeline_files = files  # Default to colormap files
-
-            # In contour mode with source=1, use contour files instead
-            if options.get("contour_video_enabled", False) and timeline_source == 1:
-                contour_files = options.get("contour_files", [])
-                if contour_files:
-                    timeline_files = contour_files
-                    logger.info(
-                        f"Timeline will use contour files ({len(timeline_files)} files)"
-                    )
-
-            log_scale = options.get("timeline_log_scale", False)
-            timeline = MinMaxTimeline(
-                total_frames=len(files), position=position, log_scale=log_scale
-            )
-            timeline.precompute_stats(timeline_files, options, load_fits_data)
-            options["minmax_timeline"] = timeline
-            logger.info("Timeline statistics computed")
 
         # Contour processor (worker processes make their own)
         contour_processor = make_contour_processor(options)

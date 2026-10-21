@@ -5,7 +5,6 @@ import os
 import sys
 from PyQt5.QtWidgets import (
     QDialog,
-    QMainWindow,
     QVBoxLayout,
     QHBoxLayout,
     QGridLayout,
@@ -25,11 +24,16 @@ from PyQt5.QtWidgets import (
     QWidget,
     QProgressDialog,
     QFormLayout,
+    QSlider,
+    QSplitter,
+    QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import QImage, QPixmap
+from collections import OrderedDict
+import logging
+import threading
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import numpy as np
 import glob
 import time
@@ -72,43 +76,176 @@ from .creator import (
 )
 
 
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 
 
-class PreviewWindow(QMainWindow):
+logger = logging.getLogger(__name__)
+
+
+class PreviewRenderer(QObject):
+    """Renders preview frames in a background thread, newest request first.
+
+    Frames are made by the video code itself (prepare_video_options,
+    process_image), so the preview frame is exactly the video frame. The
+    shared setup (timeline, global range) and recent frames are kept, so
+    stepping through frames and replaying them is quick.
     """
-    Separate window for previewing images
-    """
+
+    rendered = pyqtSignal(int, object)  # request id, RGB frame or None
+    status = pyqtSignal(int, str)  # request id, what is being done
+
+    def __init__(self):
+        super().__init__()
+        self._condition = threading.Condition()
+        self._request = None
+        self._stopped = False
+        self._prepared = OrderedDict()  # setup key -> (options, global stats)
+        self._frames = OrderedDict()  # (setup key, frame index) -> frame
+        self._contours = (None, None)  # (contour settings key, processor)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def request(self, request_id, files, index, options):
+        """Render frame ``index``; replaces any request not yet started."""
+        with self._condition:
+            self._request = (request_id, list(files), index, dict(options))
+            self._condition.notify()
+
+    def stop(self):
+        with self._condition:
+            self._stopped = True
+            self._condition.notify()
+
+    def _run(self):
+        while True:
+            with self._condition:
+                while self._request is None and not self._stopped:
+                    self._condition.wait()
+                if self._stopped:
+                    return
+                request, self._request = self._request, None
+            request_id = request[0]
+            try:
+                frame = self._render(*request)
+            except Exception as e:
+                logger.error(f"Preview failed: {e}")
+                self.status.emit(request_id, f"Preview failed: {e}")
+                frame = None
+            self.rendered.emit(request_id, frame)
+
+    def _render(self, request_id, files, index, options):
+        from .creator import (
+            calculate_global_stats,
+            make_contour_processor,
+            prepare_video_options,
+            process_image,
+        )
+
+        setup_key = repr((files, sorted((k, repr(v)) for k, v in options.items())))
+        frame_key = (setup_key, index)
+        if frame_key in self._frames:
+            self._frames.move_to_end(frame_key)
+            return self._frames[frame_key]
+
+        prepared = self._prepared.get(setup_key)
+        if prepared is None:
+            if options.get("range_mode") == 2 or options.get("minmax_timeline_enabled"):
+                self.status.emit(
+                    request_id, f"Reading all {len(files)} frames for the range / timeline..."
+                )
+            prepared_options = prepare_video_options(files, dict(options))
+            prepared = (prepared_options, calculate_global_stats(files, prepared_options))
+            self._prepared[setup_key] = prepared
+            while len(self._prepared) > 4:
+                self._prepared.popitem(last=False)
+        prepared_options, global_stats = prepared
+
+        contour_key = repr(
+            sorted((k, repr(v)) for k, v in options.items() if "contour" in k or k in (
+                "level_type", "pos_levels", "neg_levels", "pos_color", "neg_color", "linewidth"
+            ))
+        )
+        if self._contours[0] != contour_key:
+            self._contours = (contour_key, make_contour_processor(prepared_options))
+
+        self.status.emit(request_id, "Rendering...")
+        frame = process_image(
+            files[index],
+            dict(prepared_options, current_frame=index),
+            global_stats,
+            contour_processor=self._contours[1],
+            frame_idx=index,
+        )
+        self._frames[frame_key] = frame
+        while len(self._frames) > 60:
+            self._frames.popitem(last=False)
+        return frame
+
+
+class PreviewPanel(QWidget):
+    """The video frame being previewed, with a frame slider and Play."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Preview")
-        self.resize(600, 500)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 16, 16, 16)
+        layout.setSpacing(8)
 
-        # Central widget and layout
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        header = QLabel("Preview (exactly as in the video)")
+        header.setStyleSheet("font-weight: 600;")
+        layout.addWidget(header)
 
-        # Matplotlib figure
-        self.figure = Figure(figsize=(5, 4), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setMinimumSize(320, 240)
+        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self.image_label, 1)
 
-        # Toolbar
-        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        self.status_label = QLabel()
+        self.status_label.setObjectName("SecondaryText")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
 
-        layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas)
+        controls = QHBoxLayout()
+        self.play_button = QPushButton("▶ Play")
+        self.play_button.setCheckable(True)
+        self.play_button.setToolTip("Play the preview at the video's frame rate")
+        controls.addWidget(self.play_button)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 0)
+        self.slider.setEnabled(False)  # until the frames are known
+        self.slider.setToolTip("Frame to preview (arrow keys step one frame)")
+        controls.addWidget(self.slider, 1)
+        self.frame_label = QLabel()
+        self.frame_label.setMinimumWidth(110)
+        controls.addWidget(self.frame_label)
+        layout.addLayout(controls)
 
-        # Ensure cleanup on close?
-        # Actually we want to keep it alive via the parent reference but just hide/show
-        # self.setAttribute(Qt.WA_DeleteOnClose) # Don't delete, just hide
+        self._pixmap = None
+        self.show_message("Choose input files to see the preview")
 
-    def closeEvent(self, event):
-        # Just hide instead of closing/destroying to keep state
-        # user can re-open via button
-        self.hide()
-        event.ignore()
+    def show_frame(self, frame):
+        frame = np.ascontiguousarray(frame)
+        height, width = frame.shape[:2]
+        image = QImage(frame.data, width, height, 3 * width, QImage.Format_RGB888)
+        self._pixmap = QPixmap.fromImage(image.copy())
+        self._update_pixmap()
+
+    def show_message(self, text):
+        self._pixmap = None
+        self.image_label.clear()
+        self.image_label.setText(text)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_pixmap()
+
+    def _update_pixmap(self):
+        if self._pixmap is not None:
+            self.image_label.setPixmap(
+                self._pixmap.scaled(
+                    self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+            )
 
 
 class VideoCreationDialog(QDialog):
@@ -129,16 +266,25 @@ class VideoCreationDialog(QDialog):
         self.reference_image = None
 
         self.setWindowTitle("Create Video")
-        self.resize(650, 700)
+        self.resize(1250, 780)
+
+        # Preview: rendered in the background, shortly after settings change
+        self._preview_files = []
+        self._preview_request = 0
+        self._preview_shown = 0
+        self._preview_renderer = PreviewRenderer()
+        self._preview_renderer.rendered.connect(self._on_preview_rendered)
+        self._preview_renderer.status.connect(self._on_preview_status)
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(self._request_preview)
+        self._play_timer = QTimer(self)
+        self._play_timer.timeout.connect(self._play_step)
 
         from ..ui.styles import set_hand_cursor
 
         self.setup_ui()
         set_hand_cursor(self)
-
-        # Initialize the separate preview window FIRST (before any methods that access figure)
-        self._preview_window = PreviewWindow(self)
-        self._preview_window.show()
 
         # Initialize stretch controls
         self.update_gamma_controls()
@@ -234,25 +380,174 @@ class VideoCreationDialog(QDialog):
             except ValueError:
                 pass
 
-    @property
-    def figure(self):
-        return self._preview_window.figure
+    # ---------- Preview ----------
 
-    @property
-    def canvas(self):
-        return self._preview_window.canvas
+    def schedule_preview(self, *_, delay=250):
+        """Re-render the preview shortly (settings often change in bursts)."""
+        self._preview_timer.start(delay)
 
-    def show_preview_window(self):
-        """Show the preview window if it's hidden or raise it"""
-        self._preview_window.show()
-        self._preview_window.raise_()
-        self._preview_window.activateWindow()
+    def _request_preview(self):
+        options = self._video_options()
+        files, problem = self._video_files(options)
+        panel = self.preview_panel
+        if problem:
+            self._preview_files = []
+            panel.slider.setEnabled(False)
+            panel.frame_label.setText("")
+            panel.status_label.setText("")
+            panel.show_message(problem[1])
+            return
+
+        if files != self._preview_files:
+            current = (
+                self._preview_files[panel.slider.value()]
+                if self._preview_files
+                else self.reference_image
+            )
+            self._preview_files = files
+            panel.slider.blockSignals(True)
+            panel.slider.setRange(0, len(files) - 1)
+            panel.slider.setValue(files.index(current) if current in files else 0)
+            panel.slider.blockSignals(False)
+        panel.slider.setEnabled(len(files) > 1)
+
+        index = panel.slider.value()
+        file_path = files[index]
+        panel.frame_label.setText(f"{index + 1} / {len(files)}")
+        panel.frame_label.setToolTip(file_path)
+        # The frame shown is the reference for presets and region selection
+        if self.reference_image != file_path:
+            self.reference_image = file_path
+            self.reference_image_edit.setText(file_path)
+
+        self._preview_request += 1
+        self._preview_renderer.request(self._preview_request, files, index, options)
+
+    def _on_preview_status(self, request_id, text):
+        if request_id == self._preview_request:
+            self.preview_panel.status_label.setText(text)
+
+    def _on_preview_rendered(self, request_id, frame):
+        if request_id != self._preview_request:
+            return  # a newer frame is on its way
+        self._preview_shown = request_id
+        panel = self.preview_panel
+        if frame is None:
+            panel.show_message("Could not render this frame")
+            return
+        panel.show_frame(frame)
+        height, width = frame.shape[:2]
+        panel.status_label.setText(
+            f"{os.path.basename(self._preview_files[panel.slider.value()])} · "
+            f"frame size {width}×{height}"
+        )
+
+    def _on_preview_slider(self, _value):
+        self.schedule_preview(delay=0)
+
+    def _toggle_play(self, playing):
+        panel = self.preview_panel
+        panel.play_button.setText("⏸ Pause" if playing else "▶ Play")
+        if playing:
+            self._play_timer.start(max(40, int(1000 / self.fps_spinbox.value())))
+        else:
+            self._play_timer.stop()
+
+    def _play_step(self):
+        panel = self.preview_panel
+        if not self._preview_files or self._preview_shown != self._preview_request:
+            return  # wait for the frame being rendered
+        panel.slider.setValue((panel.slider.value() + 1) % len(self._preview_files))
+
+    def _watch_settings(self):
+        """Re-render the preview when any setting that changes the frames does."""
+        for widget in self.tab_widget.findChildren(QWidget):
+            if self._output_tab.isAncestorOf(widget):
+                continue  # file, frame rate, quality: same frames
+            if isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self.schedule_preview)
+            elif isinstance(widget, QCheckBox):
+                widget.toggled.connect(self.schedule_preview)
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                widget.valueChanged.connect(self.schedule_preview)
+            elif isinstance(widget, QLineEdit) and not isinstance(
+                widget.parent(), (QSpinBox, QDoubleSpinBox, QComboBox)
+            ):
+                widget.textChanged.connect(self.schedule_preview)
+        self.contour_video_enabled.toggled.connect(self.schedule_preview)
+
+    def _use_current_view(self):
+        """Take the display settings, range and visible area of the main
+        window's current image."""
+        main_window = self._main_window
+        tab = main_window.tab_widget.currentWidget() if main_window else None
+        imagename = getattr(tab, "imagename", None)
+        if tab is None or getattr(tab, "current_image_data", None) is None:
+            QMessageBox.information(self, "No Image", "Open an image in the main window first.")
+            return
+
+        if imagename and imagename.lower().endswith((".fits", ".fts")):
+            directory = os.path.dirname(os.path.abspath(imagename))
+            self.input_directory_edit.setText(directory)
+            self.input_pattern_edit.setText("*" + os.path.splitext(imagename)[1])
+            self.reference_image = os.path.abspath(imagename)
+            self.reference_image_edit.setText(self.reference_image)
+
+        self._copy_viewer_settings(main_window)
+        self.range_mode_combo.setCurrentIndex(0)  # the viewer's min/max
+        self.wcs_coords_check.setChecked(getattr(tab, "current_wcs", None) is not None)
+
+        # Visible area as the region, in the file's pixels (the viewer may
+        # show a downsampled copy)
+        ax = tab.figure.axes[0] if tab.figure.axes else None
+        shown_w, shown_h = tab.current_image_data.shape[:2]
+        scale = 1.0
+        try:
+            from ..processing.image_meta import fits_header
+
+            scale = fits_header(imagename).get("NAXIS1", shown_w) / shown_w
+        except Exception:
+            pass
+        if ax is not None:
+            (x0, x1), (y0, y1) = sorted(ax.get_xlim()), sorted(ax.get_ylim())
+            x_min, x_max = max(0, x0 + 0.5), min(shown_w - 1, x1 - 0.5)
+            y_min, y_max = max(0, y0 + 0.5), min(shown_h - 1, y1 - 0.5)
+            zoomed = bool(
+                x_min > 0.5 or y_min > 0.5 or x_max < shown_w - 1.5 or y_max < shown_h - 1.5
+            )
+            self.region_enabled.setChecked(zoomed)
+            if zoomed:
+                for spinbox, value in (
+                    (self.x_min_spinbox, x_min),
+                    (self.x_max_spinbox, x_max),
+                    (self.y_min_spinbox, y_min),
+                    (self.y_max_spinbox, y_max),
+                ):
+                    spinbox.setValue(int(round(value * scale)))
+        if imagename and imagename.lower().endswith((".fits", ".fts")):
+            self.preview_input_files()
+        self.schedule_preview()
 
     def setup_ui(self):
         """Set up the UI elements"""
         self.setSizeGripEnabled(True)
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(16, 16, 16, 16)
+        # Settings on the left, the preview on the right
+        outer_layout = QHBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        splitter = QSplitter(Qt.Horizontal)
+        outer_layout.addWidget(splitter)
+        settings_panel = QWidget()
+        splitter.addWidget(settings_panel)
+        self.preview_panel = PreviewPanel()
+        splitter.addWidget(self.preview_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([560, 690])
+        self.preview_panel.slider.valueChanged.connect(self._on_preview_slider)
+        self.preview_panel.play_button.toggled.connect(self._toggle_play)
+
+        main_layout = QVBoxLayout(settings_panel)
+        main_layout.setContentsMargins(16, 16, 8, 16)
         main_layout.setSpacing(12)
 
         # Create tab widget
@@ -272,23 +567,20 @@ class VideoCreationDialog(QDialog):
         region_layout = QVBoxLayout(region_tab)  # Layout for the new region tab
         output_layout = QVBoxLayout(output_tab)
 
-        # Create the preview control section
-        preview_controls_group = QGroupBox("Preview Controls")
+        # Start from the main window's view, or set things up below
+        preview_controls_group = QGroupBox("Start")
         preview_controls_layout = QHBoxLayout(preview_controls_group)
         preview_controls_layout.setContentsMargins(10, 8, 10, 8)
         preview_controls_layout.setSpacing(12)
 
-        # Add "Show Preview Window" button
-        show_preview_btn = QPushButton("Show Preview")
-        show_preview_btn.setMinimumWidth(140)
-        show_preview_btn.clicked.connect(self.show_preview_window)
-        preview_controls_layout.addWidget(show_preview_btn)
-
-        # Add "Update Preview" button
-        update_preview_btn = QPushButton("Update")
-        update_preview_btn.setMinimumWidth(140)
-        update_preview_btn.clicked.connect(self.update_preview_from_reference)
-        preview_controls_layout.addWidget(update_preview_btn)
+        use_view_btn = QPushButton("Use Current View")
+        use_view_btn.setToolTip(
+            "Take the files, colormap, stretch, range and visible area\n"
+            "of the image open in the main window"
+        )
+        use_view_btn.setEnabled(self._main_window is not None)
+        use_view_btn.clicked.connect(self._use_current_view)
+        preview_controls_layout.addWidget(use_view_btn)
 
         preview_controls_layout.addStretch()
 
@@ -310,6 +602,7 @@ class VideoCreationDialog(QDialog):
         overlay_scroll = self._create_overlay_tab(overlay_layout)
 
         output_scroll = self._create_output_tab(output_layout)
+        self._output_tab = output_scroll
 
         contours_scroll = self._create_contours_tab()
 
@@ -345,6 +638,8 @@ class VideoCreationDialog(QDialog):
         button_layout.addWidget(self.create_btn)
 
         main_layout.addLayout(button_layout)
+
+        self._watch_settings()
 
     def _create_input_tab(self, input_layout):
         """Input tab: directory, file pattern, sorting, Stokes. Returns the tab's scroll area."""
@@ -1438,289 +1733,166 @@ class VideoCreationDialog(QDialog):
 
     def update_preview_settings(self):
         """Update the preview with new settings"""
-        self.update_preview()
+        self.schedule_preview()
 
-    @wait_cursor()
     def update_preview(self, preview_file=None):
-        """Update the preview image"""
-        try:
-            # Clear the figure
-            self.figure.clear()
-            ax = self.figure.add_subplot(111)
+        """Show ``preview_file``'s frame (if it is one) in the preview."""
+        if preview_file and preview_file in self._preview_files:
+            self.preview_panel.slider.setValue(self._preview_files.index(preview_file))
+        self.schedule_preview()
 
-            if not preview_file and self.reference_image:
-                preview_file = self.reference_image
-
-            if preview_file:
-                # Load the data
-                data, header = load_fits_data(
-                    preview_file, stokes=self.stokes_combo.currentText()
-                )
-
-                if data is not None:
-                    original_data = data.copy()  # Save original data for region overlay
-
-                    # Apply region selection if enabled
-                    if self.region_enabled.isChecked():
-                        x_min = self.x_min_spinbox.value()
-                        x_max = self.x_max_spinbox.value()
-                        y_min = self.y_min_spinbox.value()
-                        y_max = self.y_max_spinbox.value()
-
-                        # Ensure proper order of min/max
-                        x_min, x_max = min(x_min, x_max), max(x_min, x_max)
-                        y_min, y_max = min(y_min, y_max), max(y_min, y_max)
-
-                        # Check boundaries
-                        x_min = max(0, min(x_min, data.shape[1] - 1))
-                        x_max = max(0, min(x_max, data.shape[1] - 1))
-                        y_min = max(0, min(y_min, data.shape[0] - 1))
-                        y_max = max(0, min(y_max, data.shape[0] - 1))
-
-                        # Extract the region
-                        data = data[y_min : y_max + 1, x_min : x_max + 1]
-
-                    # Determine vmin/vmax based on range mode
-                    range_mode = self.range_mode_combo.currentIndex()
-
-                    if range_mode == 0:  # Fixed Range
-                        vmin = self.vmin_spinbox.value()
-                        vmax = self.vmax_spinbox.value()
-                    else:  # Auto: the percentile range the video will use
-                        vmin = np.nanpercentile(
-                            data, self.lower_percentile_spinbox.value()
-                        )
-                        vmax = np.nanpercentile(
-                            data, self.upper_percentile_spinbox.value()
-                        )
-
-                        # Update spinboxes for reference (without triggering events)
-                        self.vmin_spinbox.blockSignals(True)
-                        self.vmax_spinbox.blockSignals(True)
-                        self.vmin_spinbox.setValue(vmin)
-                        self.vmax_spinbox.setValue(vmax)
-                        self.vmin_spinbox.blockSignals(False)
-                        self.vmax_spinbox.blockSignals(False)
-
-                    # Ensure min/max are proper
-                    if vmin >= vmax:
-                        vmax = vmin + 1.0
-
-                    # Apply visualization settings
-                    stretch = self.stretch_combo.currentText().lower()
-                    gamma = self.gamma_spinbox.value()
-                    cmap = self.colormap_combo.currentText()
-
-                    # Create the appropriate normalization
-                    norm = get_norm(stretch, vmin, vmax, gamma)
-
-                    # Decide whether to show the full image or the region
-                    display_data = data
-
-                    # Show title with filename and region info if applicable
-                    title = os.path.basename(preview_file)
-                    if self.region_enabled.isChecked():
-                        region_dims = f"{data.shape[1]}×{data.shape[0]}"
-                        title += f" - Region: {region_dims} pixels"
-
-                    title += f"\nRange: [{vmin:.1f}, {vmax:.1f}]"
-                    ax.set_title(title, fontsize=10)
-
-                    # Display the image
-                    im = ax.imshow(
-                        display_data,
-                        cmap=cmap,
-                        norm=norm,
-                        origin="lower",
-                        interpolation="none",
-                    )
-
-                    # If region is enabled and showing the preview,
-                    # draw a red rectangle to indicate the region
-                    if self.region_enabled.isChecked():
-                        # Show the full image with a rectangle for the region
-                        # Store current axes for restoring after showing full image
-                        ax.set_xticks([])
-                        ax.set_yticks([])
-
-                        # Add a second axes to show full image with region overlay
-                        # overlay_ax = self.figure.add_axes([0.65, 0.65, 0.3, 0.3])
-                        overlay_ax = self.figure.add_axes([0.05, 0.05, 0.3, 0.3])
-                        overlay_ax.imshow(
-                            original_data,
-                            cmap=cmap,
-                            norm=norm,
-                            origin="lower",
-                            interpolation="none",
-                        )
-
-                        # Draw region rectangle on the overlay
-                        x_min = self.x_min_spinbox.value()
-                        x_max = self.x_max_spinbox.value()
-                        y_min = self.y_min_spinbox.value()
-                        y_max = self.y_max_spinbox.value()
-
-                        # Ensure proper order
-                        x_min, x_max = min(x_min, x_max), max(x_min, x_max)
-                        y_min, y_max = min(y_min, y_max), max(y_min, y_max)
-
-                        from matplotlib.patches import Rectangle
-
-                        overlay_ax.add_patch(
-                            Rectangle(
-                                (x_min, y_min),
-                                x_max - x_min,
-                                y_max - y_min,
-                                fill=False,
-                                edgecolor="red",
-                                linewidth=2,
-                            )
-                        )
-
-                        # Turn off overlay axis labels and ticks
-                        overlay_ax.set_xticks([])
-                        overlay_ax.set_yticks([])
-                        overlay_ax.set_title("Region Location", fontsize=8)
-
-                    # Add colorbar if checked
-                    if self.colorbar_check.isChecked():
-                        cbar = self.figure.colorbar(im, ax=ax)
-
-                    self.preview_image = preview_file
-
-                    # Turn off axis labels
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-                else:
-                    ax.text(
-                        0.5,
-                        0.5,
-                        "Could not load preview image",
-                        ha="center",
-                        va="center",
-                        transform=ax.transAxes,
-                    )
+    def _input_files(self):
+        """(files, problem): the Input tab's files in the chosen order, or
+        ([], a message saying why there are none)."""
+        input_dir = self.input_directory_edit.text()
+        if not input_dir or not os.path.isdir(input_dir):
+            return [], ("Invalid Directory", "The specified input directory does not exist.")
+        input_path = os.path.join(input_dir, self.input_pattern_edit.text())
+        files = glob.glob(input_path)
+        if not files:
+            return [], ("No Files Found", f"No files match the pattern: {input_path}")
+        invalid = [
+            os.path.basename(f)
+            for f in files
+            if os.path.splitext(f)[1].lower() not in (".fits", ".fts")
+        ]
+        if invalid:
+            msg = (
+                f"Found {len(invalid)} files with invalid extensions.\n"
+                "Only .fits and .fts files are supported."
+            )
+            if len(invalid) > 5:
+                msg += "\n\nExamples:\n" + "\n".join(invalid[:5]) + "\n..."
             else:
-                ax.text(
-                    0.5,
-                    0.5,
-                    "No preview image available\nSelect a reference image first",
-                    ha="center",
-                    va="center",
-                    transform=ax.transAxes,
+                msg += "\n\nFiles:\n" + "\n".join(invalid)
+            return [], ("Invalid File Extensions", msg)
+
+        sort_method = self.sort_combo.currentText().lower()
+        if sort_method == "filename":
+            files.sort()
+        elif sort_method == "date/time":
+            # Observation time (header or file name), not file dates
+            files.sort(key=observation_sort_key)
+        elif sort_method == "extension":
+            files.sort(key=lambda x: os.path.splitext(x)[1])
+        return files, None
+
+    def _video_options(self):
+        """The settings of all tabs, as options for create_video."""
+        region_options = {
+            "region_enabled": self.region_enabled.isChecked(),
+            "x_min": self.x_min_spinbox.value(),
+            "x_max": self.x_max_spinbox.value(),
+            "y_min": self.y_min_spinbox.value(),
+            "y_max": self.y_max_spinbox.value(),
+        }
+        # Ensure proper order of min/max values
+        if region_options["region_enabled"]:
+            for low, high in (("x_min", "x_max"), ("y_min", "y_max")):
+                region_options[low], region_options[high] = sorted(
+                    (region_options[low], region_options[high])
                 )
+        return {
+            # Display
+            "stokes": self.stokes_combo.currentText(),
+            "colormap": self.colormap_combo.currentText(),
+            "stretch": self.stretch_combo.currentText().lower(),
+            "gamma": self.gamma_spinbox.value(),
+            "range_mode": self.range_mode_combo.currentIndex(),  # 0: Fixed Range, 1: Auto Per Frame, 2: Global Auto
+            "vmin": self.vmin_spinbox.value(),
+            "vmax": self.vmax_spinbox.value(),
+            "lower_percentile": self.lower_percentile_spinbox.value(),
+            "upper_percentile": self.upper_percentile_spinbox.value(),
+            "colorbar": self.colorbar_check.isChecked(),
+            "width": self.width_spinbox.value(),
+            "height": self.height_spinbox.value(),
+            "wcs_enabled": self.wcs_coords_check.isChecked(),
+            # Overlays
+            "timestamp": self.timestamp_check.isChecked(),
+            "frame_number": self.frame_number_check.isChecked(),
+            "filename": self.filename_check.isChecked(),
+            "minmax_timeline_enabled": self.minmax_timeline_check.isChecked(),
+            "timeline_position": 0,  # Position selector removed - using default bottom dock
+            "timeline_source": self.timeline_source_combo.currentIndex(),  # 0=Colormap, 1=Contours
+            "timeline_log_scale": self.timeline_log_scale_check.isChecked(),
+            # Region
+            **region_options,
+            # Contours
+            "contour_video_enabled": self.contour_video_enabled.isChecked(),
+            "contour_mode": self.contour_mode_combo.currentIndex(),  # 0=A, 1=B, 2=C
+            "base_file": self.contour_base_file_edit.text().strip(),
+            "contour_files": list(getattr(self, "_cached_contour_files", [])),
+            "fixed_contour_file": self.contour_fixed_file_edit.text().strip(),
+            "colormap_files": list(getattr(self, "_cached_colormap_files", [])),
+            "level_type": ["fraction", "sigma", "absolute"][
+                self.contour_level_type_combo.currentIndex()
+            ],
+            "pos_levels": self._parse_levels(self.contour_pos_levels_edit.text()),
+            "neg_levels": self._parse_levels(self.contour_neg_levels_edit.text()),
+            "pos_color": self.contour_pos_color_combo.currentText(),
+            "neg_color": self.contour_neg_color_combo.currentText(),
+            "linewidth": self.contour_linewidth_spin.value(),
+            # Output
+            "fps": self.fps_spinbox.value(),
+            "quality": self.quality_spinbox.value(),
+        }
 
-            # Refresh the canvas
-            self.canvas.draw()
+    def _video_files(self, options):
+        """(files, problem): the image shown in each frame for ``options``
+        (and ``options`` adjusted to match), or ([], (title, message))."""
+        if not options.get("contour_video_enabled", False):
+            return self._input_files()
 
-        except RuntimeError as re:
-            # Handle specific Qt/Matplotlib runtime errors (deleted objects)
-            print(f"RuntimeError updating preview: {re}")
-            try:
-                # If the figure/canvas is corrupted, try to recreate the figure content cleanly
-                # Don't try self.figure.clear() if it caused the error
+        contour_mode = options.get("contour_mode", 0)
+        base_file = options.get("base_file", "")
+        contour_files = options.get("contour_files", [])
+        colormap_files = options.get("colormap_files", [])
+        fixed_contour = options.get("fixed_contour_file", "")
 
-                # We interpret "wrapped C/C++ object of type QAction has been deleted"
-                # as a sign that the toolbar or canvas state is invalid.
-                # Simplest recovery is to just show an error text on a fresh axes if possible,
-                # or just log it and return to avoid crashing.
+        if contour_mode == 0:  # Mode A: Fixed base + evolving contours
+            if not base_file or not os.path.exists(base_file):
+                return [], ("Error", "Contour Mode A requires a base image file")
+            if not contour_files:
+                return [], ("Error", "Contour Mode A requires a contour directory")
+            # The base image is displayed in every frame, contours evolve
+            return [base_file] * len(contour_files), None
 
-                # Check if we can access the figure at all
-                if hasattr(self, "figure"):
-                    # Try to reset the figure completely
-                    self.figure = Figure(figsize=(5, 4), dpi=100)
-                    self.canvas.figure = self.figure
-                    self.canvas.draw()
+        if contour_mode == 1:  # Mode B: Fixed contours + evolving colormap
+            if not fixed_contour or not os.path.exists(fixed_contour):
+                return [], ("Error", "Contour Mode B requires a fixed contour file")
+            if not colormap_files:
+                return [], ("Error", "Contour Mode B requires a colormap directory")
+            return colormap_files, None
 
-                    # Try to show error on new figure
-                    ax = self.figure.add_subplot(111)
-                    ax.text(
-                        0.5, 0.5, "Preview Error (Recovered)", ha="center", va="center"
-                    )
-                    self.canvas.draw()
-            except Exception as e2:
-                print(f"Could not recover from preview error: {e2}")
-
-        except Exception as e:
-            print(f"Error updating preview: {e}")
-            try:
-                # Clear the figure
-                self.figure.clear()
-                ax = self.figure.add_subplot(111)
-                ax.text(
-                    0.5,
-                    0.5,
-                    f"Error loading preview: {str(e)}",
-                    ha="center",
-                    va="center",
-                    transform=ax.transAxes,
-                )
-                self.canvas.draw()
-            except Exception as e2:
-                print(f"Error in exception handler: {e2}")
+        # Mode C: Both evolve, frame by frame
+        if not colormap_files:
+            return [], ("Error", "Contour Mode C requires a colormap directory")
+        if not contour_files:
+            return [], ("Error", "Contour Mode C requires a contour directory")
+        count = min(len(colormap_files), len(contour_files))
+        options["contour_files"] = contour_files[:count]
+        return colormap_files[:count], None
 
     def create_video(self):
         """Create a video from the selected files"""
         try:
-            # Initialize matching_files - will be set differently for contour mode
-            matching_files = []
-
-            # Check if we're in contour mode - skip Input tab validation
-            if not self.contour_video_enabled.isChecked():
-                # Get input files from Input tab
-                input_dir = self.input_directory_edit.text()
-                if not input_dir or not os.path.isdir(input_dir):
-                    QMessageBox.warning(
-                        self,
-                        "Invalid Directory",
-                        "The specified input directory does not exist.",
-                    )
-                    return
-
-                input_pattern = self.input_pattern_edit.text()
-                input_path = os.path.join(input_dir, input_pattern)
-
-                # Verify files exist
-                matching_files = glob.glob(input_path)
-                if not matching_files:
-                    QMessageBox.warning(
-                        self,
-                        "No Files Found",
-                        f"No files match the pattern: {input_path}",
-                    )
-                    return
-
-                # Validate extensions
-                invalid_extensions = []
-                for f in matching_files:
-                    ext = os.path.splitext(f)[1].lower()
-                    if ext not in [".fits", ".fts"]:
-                        invalid_extensions.append(os.path.basename(f))
-
-                if invalid_extensions:
-                    # Show first few invalid files
-                    msg = f"Found {len(invalid_extensions)} files with invalid extensions.\nOnly .fits and .fts files are supported."
-                    if len(invalid_extensions) > 5:
-                        msg += (
-                            "\n\nExamples:\n"
-                            + "\n".join(invalid_extensions[:5])
-                            + "\n..."
-                        )
-                    else:
-                        msg += "\n\nFiles:\n" + "\n".join(invalid_extensions)
-
-                    QMessageBox.warning(self, "Invalid File Extensions", msg)
-                    return
-
-                # Sort the files based on selected method
-                sort_method = self.sort_combo.currentText().lower()
-                if sort_method == "filename":
-                    matching_files.sort()
-                elif sort_method == "date/time":
-                    # Observation time (header or file name), not file dates
-                    matching_files.sort(key=observation_sort_key)
-                elif sort_method == "extension":
-                    matching_files.sort(key=lambda x: os.path.splitext(x)[1])
+            options = self._video_options()
+            counts = (len(options["colormap_files"]), len(options["contour_files"]))
+            video_files, problem = self._video_files(options)
+            if problem:
+                QMessageBox.warning(self, *problem)
+                return
+            if (
+                options["contour_video_enabled"]
+                and options["contour_mode"] == 2
+                and counts[0] != counts[1]
+            ):
+                QMessageBox.warning(
+                    self,
+                    "Warning",
+                    f"Colormap ({counts[0]}) and contour ({counts[1]}) file counts "
+                    "don't match. Using minimum.",
+                )
 
             # Get output file
             output_file = self.output_file_edit.text().strip()
@@ -1772,70 +1944,6 @@ class VideoCreationDialog(QDialog):
                 if reply == QMessageBox.No:
                     return
 
-            # Get display options
-            display_options = {
-                "stokes": self.stokes_combo.currentText(),
-                "colormap": self.colormap_combo.currentText(),
-                "stretch": self.stretch_combo.currentText().lower(),
-                "gamma": self.gamma_spinbox.value(),
-                "range_mode": self.range_mode_combo.currentIndex(),  # 0: Fixed Range, 1: Auto Per Frame, 2: Global Auto
-                "vmin": self.vmin_spinbox.value(),
-                "vmax": self.vmax_spinbox.value(),
-                "lower_percentile": self.lower_percentile_spinbox.value(),
-                "upper_percentile": self.upper_percentile_spinbox.value(),
-                "colorbar": self.colorbar_check.isChecked(),
-                "width": self.width_spinbox.value(),
-                "height": self.height_spinbox.value(),
-                "wcs_enabled": self.wcs_coords_check.isChecked(),
-            }
-
-            # Get overlay options
-            overlay_options = {
-                "timestamp": self.timestamp_check.isChecked(),
-                "frame_number": self.frame_number_check.isChecked(),
-                "filename": self.filename_check.isChecked(),
-                "minmax_timeline_enabled": self.minmax_timeline_check.isChecked(),
-                "timeline_position": 0,  # Position selector removed - using default bottom dock
-                "timeline_source": self.timeline_source_combo.currentIndex(),  # 0=Colormap, 1=Contours
-                "timeline_log_scale": self.timeline_log_scale_check.isChecked(),
-            }
-
-            # Get region selection options
-            region_options = {
-                "region_enabled": self.region_enabled.isChecked(),
-                "x_min": self.x_min_spinbox.value(),
-                "x_max": self.x_max_spinbox.value(),
-                "y_min": self.y_min_spinbox.value(),
-                "y_max": self.y_max_spinbox.value(),
-            }
-
-            # Ensure proper order of min/max values
-            if region_options["region_enabled"]:
-                region_options["x_min"], region_options["x_max"] = min(
-                    region_options["x_min"], region_options["x_max"]
-                ), max(region_options["x_min"], region_options["x_max"])
-                region_options["y_min"], region_options["y_max"] = min(
-                    region_options["y_min"], region_options["y_max"]
-                ), max(region_options["y_min"], region_options["y_max"])
-
-            # Get contour video options
-            contour_options = {
-                "contour_video_enabled": self.contour_video_enabled.isChecked(),
-                "contour_mode": self.contour_mode_combo.currentIndex(),  # 0=A, 1=B, 2=C
-                "base_file": self.contour_base_file_edit.text().strip(),
-                "contour_files": getattr(self, "_cached_contour_files", []),
-                "fixed_contour_file": self.contour_fixed_file_edit.text().strip(),
-                "colormap_files": getattr(self, "_cached_colormap_files", []),
-                "level_type": ["fraction", "sigma", "absolute"][
-                    self.contour_level_type_combo.currentIndex()
-                ],
-                "pos_levels": self._parse_levels(self.contour_pos_levels_edit.text()),
-                "neg_levels": self._parse_levels(self.contour_neg_levels_edit.text()),
-                "pos_color": self.contour_pos_color_combo.currentText(),
-                "neg_color": self.contour_neg_color_combo.currentText(),
-                "linewidth": self.contour_linewidth_spin.value(),
-            }
-
             # Check system resources
             # 1. Disk Space
             try:
@@ -1877,127 +1985,16 @@ class VideoCreationDialog(QDialog):
             except Exception as e:
                 print(f"Warning: Could not check memory: {e}")
 
-            # Get video options
-            video_options = {
-                "fps": self.fps_spinbox.value(),
-                "quality": self.quality_spinbox.value(),
-            }
-
             # Additional validation for dimensions
-            width = self.width_spinbox.value()
-            height = self.height_spinbox.value()
-
-            if width > 0 and width % 2 != 0:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Width",
-                    "Video width must be an even number.",
-                )
-                return
-
-            if height > 0 and height % 2 != 0:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Height",
-                    "Video height must be an even number.",
-                )
-                return
-
-            # Merge all options
-            options = {
-                **display_options,
-                **overlay_options,
-                **region_options,
-                **contour_options,
-                **video_options,
-            }
-
-            # Create the video
-            from solar_radio_image_viewer.video.creator import (
-                create_video as create_video_function,
-            )
-
-            # Determine which files to use based on contour mode
-            video_files = matching_files  # Default: use Input tab files
-
-            if options.get("contour_video_enabled", False):
-                contour_mode = options.get("contour_mode", 0)
-                base_file = options.get("base_file", "")
-                contour_files = options.get("contour_files", [])
-                colormap_files = options.get("colormap_files", [])
-                fixed_contour = options.get("fixed_contour_file", "")
-
-                if contour_mode == 0:  # Mode A: Fixed base + evolving contours
-                    # The base image is displayed repeatedly, contours evolve
-                    if not base_file or not os.path.exists(base_file):
-                        QMessageBox.warning(
-                            self, "Error", "Contour Mode A requires a base image file"
-                        )
-                        return
-                    if not contour_files:
-                        QMessageBox.warning(
-                            self, "Error", "Contour Mode A requires a contour directory"
-                        )
-                        return
-                    # Create list of base_file repeated for each contour frame
-                    video_files = [base_file] * len(contour_files)
-                    print(
-                        f"Mode A: {len(contour_files)} contour frames, base image: {os.path.basename(base_file)}"
+            for name, value in (
+                ("Width", options["width"]),
+                ("Height", options["height"]),
+            ):
+                if value > 0 and value % 2 != 0:
+                    QMessageBox.warning(
+                        self, f"Invalid {name}", f"Video {name.lower()} must be an even number."
                     )
-
-                elif contour_mode == 1:  # Mode B: Fixed contours + evolving colormap
-                    # Colormap images evolve, fixed contour overlaid on each
-                    if not fixed_contour or not os.path.exists(fixed_contour):
-                        QMessageBox.warning(
-                            self,
-                            "Error",
-                            "Contour Mode B requires a fixed contour file",
-                        )
-                        return
-                    if not colormap_files:
-                        QMessageBox.warning(
-                            self,
-                            "Error",
-                            "Contour Mode B requires a colormap directory",
-                        )
-                        return
-                    video_files = colormap_files
-                    print(
-                        f"Mode B: {len(colormap_files)} colormap frames, fixed contour: {os.path.basename(fixed_contour)}"
-                    )
-
-                elif contour_mode == 2:  # Mode C: Both evolve
-                    # Both colormap and contours evolve frame by frame
-                    if not colormap_files:
-                        QMessageBox.warning(
-                            self,
-                            "Error",
-                            "Contour Mode C requires a colormap directory",
-                        )
-                        return
-                    if not contour_files:
-                        QMessageBox.warning(
-                            self, "Error", "Contour Mode C requires a contour directory"
-                        )
-                        return
-                    # Match file counts
-                    if len(colormap_files) != len(contour_files):
-                        QMessageBox.warning(
-                            self,
-                            "Warning",
-                            f"Colormap ({len(colormap_files)}) and contour ({len(contour_files)}) file counts don't match. Using minimum.",
-                        )
-                        min_count = min(len(colormap_files), len(contour_files))
-                        colormap_files = colormap_files[:min_count]
-                        options["contour_files"] = contour_files[:min_count]
-                    video_files = colormap_files
-                    print(
-                        f"Mode C: {len(colormap_files)} colormap frames, {len(contour_files)} contour frames"
-                    )
-
-                print(
-                    f"Contour Mode {contour_mode}: Using {len(video_files)} files for video"
-                )
+                    return
 
             options["use_multiprocessing"] = self.multiprocessing_check.isChecked()
             options["cpu_count"] = self.cores_spinbox.value()
@@ -2626,6 +2623,8 @@ class VideoCreationDialog(QDialog):
 
     def closeEvent(self, event):
         """Handle dialog close event"""
+        self._play_timer.stop()
+        self._preview_renderer.stop()
         # Stop worker thread if running
         if hasattr(self, "worker") and self.worker.isRunning():
             self.worker.cancel()
@@ -2635,6 +2634,8 @@ class VideoCreationDialog(QDialog):
 
     def reject(self):
         """Handle dialog rejection (Cancel button or Esc key)"""
+        self._play_timer.stop()
+        self._preview_renderer.stop()
         # Stop worker thread if running
         if hasattr(self, "worker") and self.worker.isRunning():
             self.worker.cancel()
