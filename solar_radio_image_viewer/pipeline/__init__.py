@@ -20,8 +20,8 @@ LOG_VIEWER_AVAILABLE = False
 
 # Check dependencies for each tool
 try:
-    import cv2
     import numpy as np
+    import pyqtgraph
     from astropy.io import fits
 
     DYNAMIC_SPECTRUM_AVAILABLE = True
@@ -72,8 +72,8 @@ def launch_dynamic_spectrum_viewer(parent=None, fits_file=None):
         QMessageBox.warning(
             parent,
             "Missing Dependencies",
-            "Dynamic Spectrum Viewer requires: opencv-python, numpy, astropy\n\n"
-            "Install with: pip install opencv-python astropy",
+            "Dynamic Spectrum Viewer requires: numpy, astropy, pyqtgraph\n\n"
+            "Install with: pip install astropy pyqtgraph",
         )
         return None
 
