@@ -341,12 +341,20 @@ def load_frame_data(path, options):
 
 
 def process_image(
-    file_path, options, global_stats=None, frame_contours=None, frame_idx=0, problems=None
+    file_path,
+    options,
+    global_stats=None,
+    frame_contours=None,
+    frame_idx=0,
+    problems=None,
+    geometry=None,
 ):
     """Process a FITS image and return a frame for the video.
 
     Messages about what could not be drawn (contours that can't be placed,
-    an image without a beam, ...) are added to the list ``problems``.
+    an image without a beam, ...) are added to the list ``problems``. The
+    dict ``geometry`` is filled with where the image is in the frame (see
+    _frame_geometry), so a point of the frame can be found in the image.
     """
 
     def report(message):
@@ -397,7 +405,8 @@ def process_image(
 
         # The region shown, and its lower left corner in the full image (for
         # WCS and contours)
-        data, region_origin = crop_region(data, options, header)
+        shift = _rotation_shift(options, header)
+        data, region_origin = crop_region(data, options, shift=shift)
 
         # Get filename for display
         filename = os.path.basename(file_path)
@@ -626,6 +635,10 @@ def process_image(
         # Adjust layout and render
         _keep_labels_in_frame(fig, ax)
         canvas.draw()
+        if geometry is not None:
+            geometry.update(
+                _frame_geometry(fig, ax, header, full_data.shape, region_origin, shift)
+            )
 
         # Convert to numpy array
         # Convert to numpy array
@@ -641,6 +654,36 @@ def process_image(
         return create_error_frame(
             options, f"Error: {str(e)[:30]}", frame_idx, os.path.basename(file_path)
         )
+
+
+def _frame_geometry(fig, ax, header, image_shape, region_origin, shift):
+    """Where the image is in a rendered frame: the axes box in frame pixels
+    (left, top, right, bottom, from the top left corner), the axes limits in
+    pixels of the region shown, its lower left corner in the full image
+    (``image_shape``, rows and columns), the solar rotation shift of this
+    frame's region, and the pixel size in degrees (None without sky
+    coordinates)."""
+    box = ax.get_window_extent()
+    height = fig.bbox.height
+    scale = None
+    try:
+        from astropy.wcs import WCS
+        from astropy.wcs.utils import proj_plane_pixel_scales
+
+        wcs = WCS(header, naxis=2)
+        if wcs.has_celestial:
+            scale = tuple(float(abs(v)) for v in proj_plane_pixel_scales(wcs.celestial))
+    except Exception:
+        pass
+    return {
+        "axes": (box.x0, height - box.y1, box.x1, height - box.y0),
+        "xlim": tuple(float(v) for v in ax.get_xlim()),
+        "ylim": tuple(float(v) for v in ax.get_ylim()),
+        "origin": tuple(int(v) for v in region_origin),
+        "shift": tuple(int(v) for v in shift),
+        "image_shape": tuple(int(v) for v in image_shape[:2]),
+        "pixel_scale_deg": scale,
+    }
 
 
 def _keep_labels_in_frame(fig, ax):
@@ -798,7 +841,7 @@ def process_image_wrapper(args):
     """
     Wrapper function for process_image to use with multiprocessing.
     Takes a tuple of (file_path, index, options, global_stats) and returns
-    (index, processed_frame, problems)
+    (index, processed_frame, problems, geometry); see process_image.
     """
     # Configure matplotlib for non-interactive backend to avoid thread safety issues
     import matplotlib
@@ -807,7 +850,7 @@ def process_image_wrapper(args):
 
     _quiet_warnings()
     file_path, idx, options, global_stats = args
-    problems = []
+    problems, geometry = [], {}
     try:
         options = dict(options, current_frame=idx)
         key = options.get("video_id")
@@ -820,11 +863,12 @@ def process_image_wrapper(args):
             frame_contours=_worker_contours["contours"],
             frame_idx=idx,
             problems=problems,
+            geometry=geometry,
         )
-        return idx, result, problems
+        return idx, result, problems, geometry
     except Exception as e:
         logger.error(f"Error processing frame {idx} ({file_path}): {e}")
-        return idx, None, problems
+        return idx, None, problems, geometry
 
 
 def _frames_in_order(files, options, global_stats, frame_contours):
@@ -873,7 +917,7 @@ def _frames_in_order(files, options, global_stats, frame_contours):
                     (files[next_to_submit], next_to_submit, worker_options, global_stats),
                 )
                 next_to_submit += 1
-            _, frame, problems = pending.pop(i).result()
+            _, frame, problems, _ = pending.pop(i).result()
             yield i, frame, problems
     finally:
         for future in pending.values():
@@ -1158,11 +1202,13 @@ def region_bounds(options, shape, shift=(0, 0)):
     return x_min, x_max, y_min, y_max
 
 
-def crop_region(data, options, header=None):
+def crop_region(data, options, header=None, shift=None):
     """(data cut to the region shown, its lower left corner (x, y) in
     ``data``). The region follows solar rotation if chosen (needs the
-    frame's ``header``)."""
-    bounds = region_bounds(options, data.shape, _rotation_shift(options, header))
+    frame's ``header``, or the ``shift`` from _rotation_shift)."""
+    if shift is None:
+        shift = _rotation_shift(options, header)
+    bounds = region_bounds(options, data.shape, shift)
     if bounds is None:
         return data, (0, 0)
     x_min, x_max, y_min, y_max = bounds

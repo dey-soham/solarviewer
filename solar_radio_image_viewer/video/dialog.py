@@ -36,8 +36,8 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialogButtonBox,
 )
-from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import QRect, QSize, Qt, QObject, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import QIcon, QImage, QPixmap
 from collections import OrderedDict
 import logging
 import threading
@@ -96,7 +96,6 @@ from ..processing.colormaps import ensure_solar_colormaps
 from .creator import (
     QUALITY_CRF,
     apply_difference,
-    get_norm,
     observation_sort_key,
 )
 from ..processing.contour_layers import (
@@ -150,9 +149,8 @@ class PreviewRenderer(QObject):
     replaying them is quick.
     """
 
-    rendered = pyqtSignal(
-        int, object, object
-    )  # request id, RGB frame or None, problems
+    # request id, RGB frame or None, problems, geometry (see creator.process_image)
+    rendered = pyqtSignal(int, object, object, object)
     status = pyqtSignal(int, str)  # request id, what is being done
 
     def __init__(self):
@@ -161,7 +159,8 @@ class PreviewRenderer(QObject):
         self._request = None
         self._stopped = False
         self._prepared = OrderedDict()  # setup key -> (options, global stats)
-        self._frames = OrderedDict()  # (setup key, frame index) -> (frame, problems)
+        # (setup key, frame index) -> (frame, problems, geometry)
+        self._frames = OrderedDict()
         self._executor = None  # one worker process, started on first use
         self._converted = {}  # (coordinates, cache folder) -> images converted
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -190,12 +189,12 @@ class PreviewRenderer(QObject):
                 request, self._request = self._request, None
             request_id = request[0]
             try:
-                frame, problems = self._render(*request)
+                frame, problems, geometry = self._render(*request)
             except Exception as e:
                 logger.error(f"Preview failed: {e}")
                 self.status.emit(request_id, f"Preview failed: {e}")
-                frame, problems = None, []
-            self.rendered.emit(request_id, frame, problems)
+                frame, problems, geometry = None, [], {}
+            self.rendered.emit(request_id, frame, problems, geometry)
 
     def _render(self, request_id, files, index, options):
         from ..processing.workers import process_pool_executor
@@ -239,7 +238,7 @@ class PreviewRenderer(QObject):
         # The worker keeps its contour images between frames (one video id)
         options = dict(prepared_options, video_id=f"preview-{id(self)}")
         try:
-            _, frame, problems = self._executor.submit(
+            _, frame, problems, geometry = self._executor.submit(
                 process_image_wrapper, (files[index], index, options, global_stats)
             ).result()
         except Exception:
@@ -247,10 +246,10 @@ class PreviewRenderer(QObject):
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
             raise
-        self._frames[frame_key] = (frame, problems)
+        self._frames[frame_key] = (frame, problems, geometry)
         while len(self._frames) > 60:
             self._frames.popitem(last=False)
-        return frame, problems
+        return frame, problems, geometry
 
     def _convert(self, request_id, files, index, options):
         """Convert the images this preview reads to the video's coordinates,
@@ -279,6 +278,97 @@ class PreviewRenderer(QObject):
         self._converted.setdefault((target, cache_dir), set()).update(todo)
 
 
+class PreviewImage(QLabel):
+    """The preview frame; dragging a box on it emits ``dragged`` with the
+    box in pixels of the frame (left, top, right, bottom)."""
+
+    dragged = pyqtSignal(float, float, float, float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.frame_size = None  # (width, height) of the frame shown
+        self._start = None  # (widget point, frame point) where the drag began
+        self._box = None  # QRect being dragged, in widget pixels
+
+    def _frame_point(self, pos):
+        """Point of the frame at widget position ``pos`` (the frame is drawn
+        scaled to fit, centred)."""
+        width, height = self.frame_size
+        scale = min(self.width() / width, self.height() / height)
+        left = (self.width() - width * scale) / 2
+        top = (self.height() - height * scale) / 2
+        return (pos.x() - left) / scale, (pos.y() - top) / scale
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.frame_size:
+            # In frame pixels now: the preview may be resized while dragging
+            self._start = (event.pos(), self._frame_point(event.pos()))
+            self._box = QRect(event.pos(), QSize())
+            self.update()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._start is not None:
+            self._box = QRect(self._start[0], event.pos()).normalized()
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._start is not None and event.button() == Qt.LeftButton:
+            (start, (x0, y0)), self._start, self._box = self._start, None, None
+            self.update()
+            if (event.pos() - start).manhattanLength() >= 6:  # not a click
+                x1, y1 = self._frame_point(event.pos())
+                self.dragged.emit(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._box is not None:
+            from PyQt5.QtGui import QColor, QPainter, QPen
+
+            painter = QPainter(self)
+            # Orange of the colour-blind safe palette, seen on light and dark
+            pen = QPen(QColor("#e69f00"), 2, Qt.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(QColor(230, 159, 0, 40))
+            painter.drawRect(self._box)
+            painter.end()
+
+
+def frame_point_to_region(geometry, x, y):
+    """Point (x, y) of a rendered frame (pixels from its top left) as image
+    pixels in the region's coordinates (those of the region settings: the
+    first frame's, when the region follows solar rotation)."""
+    left, top, right, bottom = geometry["axes"]
+    (x_lo, x_hi), (y_lo, y_hi) = geometry["xlim"], geometry["ylim"]
+    data_x = x_lo + (x - left) / (right - left) * (x_hi - x_lo)
+    data_y = y_lo + (bottom - y) / (bottom - top) * (y_hi - y_lo)
+    origin_x, origin_y = geometry["origin"]
+    shift_x, shift_y = geometry["shift"]
+    return data_x + origin_x - shift_x, data_y + origin_y - shift_y
+
+
+def zoom_region(bounds, image_shape, factor=None, size=None):
+    """Region (x_min, x_max, y_min, y_max, inclusive) around the middle of
+    ``bounds`` (None: the whole image of ``image_shape``, rows and columns),
+    ``factor`` times its size or ``size`` (width, height) pixels, kept
+    inside the image. None if it would show the whole image."""
+    rows, cols = image_shape
+    x_min, x_max, y_min, y_max = bounds or (0, cols - 1, 0, rows - 1)
+    if size is None:
+        size = ((x_max - x_min + 1) * factor, (y_max - y_min + 1) * factor)
+    new = []
+    for low, high, length, limit in ((x_min, x_max, size[0], cols), (y_min, y_max, size[1], rows)):
+        length = int(round(min(max(length, 2), limit)))
+        start = int(round((low + high) / 2 - (length - 1) / 2))
+        start = max(0, min(start, limit - length))
+        new += [start, start + length - 1]
+    if new == [0, cols - 1, 0, rows - 1]:
+        return None
+    return tuple(new)
+
+
 class PreviewPanel(QWidget):
     """The video frame being previewed, with a frame slider and Play."""
 
@@ -288,19 +378,45 @@ class PreviewPanel(QWidget):
         layout.setContentsMargins(8, 16, 16, 16)
         layout.setSpacing(8)
 
+        header_row = QHBoxLayout()
         header = QLabel("Preview")
         header.setStyleSheet("font-weight: 600;")
-        layout.addWidget(header)
+        header_row.addWidget(header)
+        header_row.addStretch()
+        # Zoom buttons as in the main window; they set the video's region
+        self.zoom_buttons = {}
+        self._zoom_icons = {}
+        for name, icon, tip in (
+            ("in", "zoom_in.png", "Zoom in: show the middle half of the region"),
+            ("out", "zoom_out.png", "Zoom out: show twice the region"),
+            ("reset", "reset.png", "Show the whole image (no region)"),
+            ("degree", "zoom_60arcmin.png", "1°×1°: show 1°×1° around the middle of the region"),
+        ):
+            button = QPushButton()
+            button.setObjectName("IconOnlyButton")
+            self._zoom_icons[name] = icon
+            button.setIconSize(QSize(20, 20))
+            button.setFixedHeight(28)
+            button.setToolTip(tip)
+            header_row.addWidget(button)
+            self.zoom_buttons[name] = button
+        layout.addLayout(header_row)
+        self._update_icons()
+        from ..ui.styles import theme_manager
 
-        self.image_label = QLabel()
+        theme_manager.register_callback(self._update_icons)
+
+        self.image_label = PreviewImage()
+        self.image_label.setToolTip("Drag a box to show only that part of the image")
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setMinimumSize(320, 240)
         self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.image_label, 1)
 
+        # One line, cut off if long, so the preview above keeps its size
         self.status_label = QLabel()
         self.status_label.setObjectName("SecondaryText")
-        self.status_label.setWordWrap(True)
+        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         layout.addWidget(self.status_label)
 
         # What could not be drawn on the frame shown
@@ -333,7 +449,21 @@ class PreviewPanel(QWidget):
         height, width = frame.shape[:2]
         image = QImage(frame.data, width, height, 3 * width, QImage.Format_RGB888)
         self._pixmap = QPixmap.fromImage(image.copy())
+        self.image_label.frame_size = (width, height)
         self._update_pixmap()
+
+    def _update_icons(self, *_):
+        """Icons for the current (light or dark) theme."""
+        from ..ui.icons import themed_icon
+
+        for name, button in self.zoom_buttons.items():
+            button.setIcon(QIcon(themed_icon(self._zoom_icons[name])))
+
+    def release(self):
+        """Stop following theme changes (the window is closing)."""
+        from ..ui.styles import theme_manager
+
+        theme_manager.unregister_callback(self._update_icons)
 
     def show_problems(self, problems):
         """List what could not be drawn (or hide the list if nothing)."""
@@ -342,6 +472,7 @@ class PreviewPanel(QWidget):
 
     def show_message(self, text):
         self._pixmap = None
+        self.image_label.frame_size = None
         self.image_label.clear()
         self.image_label.setText(text)
 
@@ -569,10 +700,11 @@ class VideoCreationDialog(QDialog):
         if request_id == self._preview_request:
             self.preview_panel.status_label.setText(text)
 
-    def _on_preview_rendered(self, request_id, frame, problems):
+    def _on_preview_rendered(self, request_id, frame, problems, geometry):
         if request_id != self._preview_request:
             return  # a newer frame is on its way
         self._preview_shown = request_id
+        self._preview_geometry = geometry or None
         panel = self.preview_panel
         panel.show_problems(problems)
         if frame is None:
@@ -586,6 +718,75 @@ class VideoCreationDialog(QDialog):
             f"{os.path.basename(self._preview_files[panel.slider.value()])} · "
             f"frame size {width}×{height}"
         )
+
+    # ---------- Region from the preview (drag, zoom buttons) ----------
+
+    def _current_region(self):
+        """The region as (x_min, x_max, y_min, y_max), or None (whole image)."""
+        if not self.region_enabled.isChecked():
+            return None
+        x_min, x_max = sorted((self.x_min_spinbox.value(), self.x_max_spinbox.value()))
+        y_min, y_max = sorted((self.y_min_spinbox.value(), self.y_max_spinbox.value()))
+        return x_min, x_max, y_min, y_max
+
+    def _set_region(self, bounds):
+        """Show ``bounds`` (x_min, x_max, y_min, y_max) of the image, or the
+        whole image for None."""
+        if bounds is None:
+            self.region_enabled.setChecked(False)
+            self.show_status_message("Whole image")
+            return
+        for spinbox, value in zip(
+            (self.x_min_spinbox, self.x_max_spinbox, self.y_min_spinbox, self.y_max_spinbox),
+            bounds,
+        ):
+            spinbox.setValue(int(value))
+        self.region_enabled.setChecked(True)
+        x_min, x_max, y_min, y_max = bounds
+        self.show_status_message(
+            f"Region {x_max - x_min + 1}×{y_max - y_min + 1} px "
+            f"(x {x_min}–{x_max}, y {y_min}–{y_max})"
+        )
+
+    def _shown_geometry(self):
+        """Geometry of the frame in the preview, or None (and a note)."""
+        geometry = getattr(self, "_preview_geometry", None)
+        if not geometry:
+            self.show_status_message("Wait for the preview to choose a region")
+        return geometry
+
+    def _on_region_dragged(self, left, top, right, bottom):
+        """A box dragged on the preview: show only that part of the image."""
+        geometry = self._shown_geometry()
+        if not geometry:
+            return
+        x0, y0 = frame_point_to_region(geometry, left, bottom)
+        x1, y1 = frame_point_to_region(geometry, right, top)
+        rows, cols = geometry["image_shape"]
+        x_min, x_max = (max(0, min(int(round(v)), cols - 1)) for v in sorted((x0, x1)))
+        y_min, y_max = (max(0, min(int(round(v)), rows - 1)) for v in sorted((y0, y1)))
+        if x_max - x_min < 1 or y_max - y_min < 1:
+            self.show_status_message("Drag over the image to choose a region")
+            return
+        self._set_region((x_min, x_max, y_min, y_max))
+
+    def _zoom(self, factor):
+        geometry = self._shown_geometry()
+        if geometry:
+            self._set_region(
+                zoom_region(self._current_region(), geometry["image_shape"], factor=factor)
+            )
+
+    def _zoom_one_degree(self):
+        geometry = self._shown_geometry()
+        if not geometry:
+            return
+        scale = geometry.get("pixel_scale_deg")
+        if not scale:
+            self.show_status_message("1°×1° needs images with sky coordinates")
+            return
+        size = (1.0 / scale[0], 1.0 / scale[1])
+        self._set_region(zoom_region(self._current_region(), geometry["image_shape"], size=size))
 
     def _on_preview_slider(self, _value):
         self.schedule_preview(delay=0)
@@ -705,6 +906,12 @@ class VideoCreationDialog(QDialog):
         splitter.setSizes([640, 680])
         self.preview_panel.slider.valueChanged.connect(self._on_preview_slider)
         self.preview_panel.play_button.toggled.connect(self._toggle_play)
+        self.preview_panel.image_label.dragged.connect(self._on_region_dragged)
+        buttons = self.preview_panel.zoom_buttons
+        buttons["in"].clicked.connect(lambda: self._zoom(factor=0.5))
+        buttons["out"].clicked.connect(lambda: self._zoom(factor=2.0))
+        buttons["reset"].clicked.connect(lambda: self._set_region(None))
+        buttons["degree"].clicked.connect(self._zoom_one_degree)
 
         main_layout = QVBoxLayout(settings_panel)
         main_layout.setContentsMargins(16, 16, 8, 16)
@@ -1274,10 +1481,13 @@ class VideoCreationDialog(QDialog):
 
         region_main_layout.addLayout(coord_form)
 
-        # Interactive selection button
-        select_from_preview_btn = QPushButton("Select Region from Preview...")
-        select_from_preview_btn.clicked.connect(self.select_region_from_preview)
-        region_main_layout.addWidget(select_from_preview_btn)
+        drag_hint = QLabel(
+            "Or drag a box on the preview, and use the zoom buttons above it "
+            "(zoom in / out, whole image, 1°×1°) as in the main window."
+        )
+        drag_hint.setWordWrap(True)
+        drag_hint.setObjectName("SecondaryText")
+        region_main_layout.addWidget(drag_hint)
 
         self.track_rotation_check = QCheckBox("Follow solar rotation")
         self.track_rotation_check.setToolTip(
@@ -1310,8 +1520,8 @@ class VideoCreationDialog(QDialog):
 
         # Help text at the bottom
         help_label = QLabel(
-            "Create a video focused on a specific region of interest. "
-            "The selected region will be shown with a red rectangle in the preview."
+            "Make a video of only part of the image. Region pixels are those of "
+            "the images in the video's coordinates (Display tab)."
         )
         help_label.setWordWrap(True)
         help_label.setObjectName("SecondaryText")
@@ -2784,155 +2994,6 @@ class VideoCreationDialog(QDialog):
             f"Error creating video: {error_message}",
         )
 
-    @wait_cursor()
-    def select_region_from_preview(self, *args):
-        """Let the user select a region from the preview image"""
-        if not self.reference_image:
-            QMessageBox.warning(
-                self, "No Preview", "Please load a reference image first."
-            )
-            return
-
-        try:
-            # Enable region selection
-            self.region_enabled.setChecked(True)
-
-            # Create a separate figure/canvas for selection to avoid parenting issues
-            from matplotlib.figure import Figure as MplFigure
-            from matplotlib.backends.backend_qt5agg import (
-                FigureCanvasQTAgg as MplCanvas,
-            )
-
-            selection_figure = MplFigure(figsize=(5, 4), dpi=100)
-            selection_canvas = MplCanvas(selection_figure)
-            ax = selection_figure.add_subplot(111)
-
-            # Load data
-            data = self._load_reference()
-
-            if data is None:
-                return
-
-            # Display image for selection
-            stretch = self.stretch_combo.currentText().lower()
-            gamma = self.gamma_spinbox.value()
-            cmap = self.colormap_combo.currentText()
-
-            # Determine vmin/vmax
-            if self.range_mode_combo.currentIndex() == 0:  # Fixed
-                vmin = self.vmin_spinbox.value()
-                vmax = self.vmax_spinbox.value()
-            else:  # Auto
-                vmin = np.nanpercentile(data, 0)
-                vmax = np.nanpercentile(data, 100)
-
-            # Create normalization
-            norm = get_norm(stretch, vmin, vmax, gamma)
-
-            # Display the image
-            ax.imshow(
-                data, cmap=cmap, norm=norm, origin="lower", interpolation="nearest"
-            )
-
-            ax.set_title("Click and drag to select region", fontsize=10)
-
-            # Add interactive rectangle selector
-            from matplotlib.widgets import RectangleSelector
-
-            def onselect(eclick, erelease):
-                """Handle region selection event"""
-                # Get coordinates in data space
-                x1, y1 = eclick.xdata, eclick.ydata
-                x2, y2 = erelease.xdata, erelease.ydata
-
-                # Check for None (outside axes)
-                if None in (x1, y1, x2, y2):
-                    return
-
-                # Ensure proper min/max
-                x_min, x_max = int(min(x1, x2)), int(max(x1, x2))
-                y_min, y_max = int(min(y1, y2)), int(max(y1, y2))
-
-                # Update spinboxes with selected region
-                self.x_min_spinbox.setValue(max(0, x_min))
-                self.x_max_spinbox.setValue(min(data.shape[1] - 1, x_max))
-                self.y_min_spinbox.setValue(max(0, y_min))
-                self.y_max_spinbox.setValue(min(data.shape[0] - 1, y_max))
-
-                # We don't update the main preview here to keep things fast/safe
-                # The main preview will update when the dialog closes via the changed spinboxes if needed
-                # or we can update it explicitly at the end
-
-            # Draw rectangle selector
-            rect_selector = RectangleSelector(
-                ax,
-                onselect,
-                useblit=True,
-                button=[1],  # Left mouse button only
-                minspanx=5,
-                minspany=5,
-                spancoords="pixels",
-                interactive=True,
-                props=dict(facecolor="none", edgecolor="red", linewidth=2),
-            )
-
-            # Need to keep a reference to prevent garbage collection
-            self._rect_selector = rect_selector
-
-            # Show message
-            """status_text = ax.text(
-                0.5,
-                0.02,
-                "Click and drag to select region, then close this window",
-                transform=ax.transAxes,
-                ha="center",
-                va="bottom",
-                bbox=dict(boxstyle="round", fc="white", alpha=0.8),
-            )"""
-
-            # Refresh canvas
-            selection_canvas.draw()
-
-            # Create a modal dialog to use for selection
-            selector_dialog = QDialog(self)
-            selector_dialog.setWindowTitle("Select Region")
-            selector_layout = QVBoxLayout(selector_dialog)
-
-            # Add the canvas to the dialog
-            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
-
-            toolbar = NavigationToolbar2QT(selection_canvas, selector_dialog)
-            selector_layout.addWidget(toolbar)
-            selector_layout.addWidget(selection_canvas)
-
-            # Add instructions
-            instructions = QLabel(
-                "Click and drag to select a region. Use toolbar to pan/zoom if needed. "
-                "Close this dialog when finished."
-            )
-            instructions.setWordWrap(True)
-            selector_layout.addWidget(instructions)
-
-            # Add done button
-            done_btn = QPushButton("Done")
-            done_btn.clicked.connect(selector_dialog.accept)
-            selector_layout.addWidget(done_btn)
-
-            # Set a reasonable size
-            selector_dialog.resize(800, 600)
-
-            # Execute dialog
-            selector_dialog.exec_()
-
-            # Clean up selector to break circular references
-            self._rect_selector = None
-
-            # Update the preview after dialog closes
-            self.schedule_preview()
-
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not select region: {str(e)}")
-
     def apply_auto_minmax(self):
         """Apply Auto Min/Max preset to the display range"""
         if not self.reference_image:
@@ -3128,6 +3189,7 @@ class VideoCreationDialog(QDialog):
             # Stops after the frame being rendered
             self.worker.wait(30000)
         self._remove_coordinate_cache()
+        self.preview_panel.release()
         event.accept()
 
     def reject(self):
@@ -3140,6 +3202,7 @@ class VideoCreationDialog(QDialog):
             # Stops after the frame being rendered
             self.worker.wait(30000)
         self._remove_coordinate_cache()
+        self.preview_panel.release()
         super().reject()
 
     def update_gamma_controls(self):
