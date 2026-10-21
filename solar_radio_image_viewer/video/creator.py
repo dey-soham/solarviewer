@@ -34,6 +34,7 @@ from ..processing.norms import (
 from ..processing.colormaps import ensure_solar_colormaps
 from ..processing.fits_io import readable_image_path
 from ..processing.workers import process_pool_executor
+from .coordinates import ConversionError, conversion_cache, frame_file
 from .utils import (
     detect_coordinate_system,
     get_wcs_axis_labels,
@@ -386,6 +387,13 @@ def _frame_contour_file(options, frame_idx):
     return None
 
 
+def load_frame_data(path, options):
+    """(data, header) of frame image ``path`` in the video's coordinates
+    (options["coordinates"], see video.coordinates) and Stokes. Raises
+    ConversionError if it can't be converted."""
+    return load_fits_data(frame_file(path, options), stokes=options.get("stokes", "I"))
+
+
 def process_image(
     file_path, options, global_stats=None, frame_contours=None, frame_idx=0, problems=None
 ):
@@ -400,8 +408,14 @@ def process_image(
             problems.append(message)
 
     try:
-        # Load FITS data
-        data, header = load_fits_data(file_path, stokes=options.get("stokes", "I"))
+        # Load FITS data (converted to the video's coordinates if chosen)
+        try:
+            data, header = load_frame_data(file_path, options)
+        except ConversionError as e:
+            report(f"Frame not shown: {e}")
+            return create_error_frame(
+                options, "Cannot convert coordinates", frame_idx, os.path.basename(file_path)
+            )
 
         if data is None:
             logger.warning(f"Could not load data from {file_path}")
@@ -422,9 +436,10 @@ def process_image(
         # Difference movies: subtract the previous / first image
         difference_files = options.get("difference_files")
         if difference_files:
-            other, _ = load_fits_data(
-                difference_files[frame_idx], stokes=options.get("stokes", "I")
-            )
+            try:
+                other, _ = load_frame_data(difference_files[frame_idx], options)
+            except ConversionError:
+                other = None
             if other is None or other.shape != data.shape:
                 return create_error_frame(
                     options,
@@ -705,7 +720,7 @@ def process_image(
             timeline.draw_timeline(fig, current_frame, ax=timeline_ax)
 
         # Adjust layout and render
-        # fig.tight_layout(pad=0.01)
+        _keep_labels_in_frame(fig, ax)
         canvas.draw()
 
         # Convert to numpy array
@@ -722,6 +737,24 @@ def process_image(
         return create_error_frame(
             options, f"Error: {str(e)[:30]}", frame_idx, os.path.basename(file_path)
         )
+
+
+def _keep_labels_in_frame(fig, ax):
+    """Widen the left / bottom margin if the axis and tick labels of ``ax``
+    stick out of the frame (long tick labels, e.g. of a large field in
+    arcsec); frames whose labels fit are left as they are."""
+    try:
+        box = ax.get_tightbbox(fig.canvas.get_renderer())
+    except Exception:
+        return
+    if box is None:
+        return
+    pad = 4  # pixels
+    params = fig.subplotpars
+    left = params.left + max(0.0, pad - box.x0) / fig.bbox.width
+    bottom = params.bottom + max(0.0, pad - box.y0) / fig.bbox.height
+    if (left, bottom) != (params.left, params.bottom) and left < params.right and bottom < params.top:
+        fig.subplots_adjust(left=left, bottom=bottom)
 
 
 def _draw_plot_overlays(ax, header, options, region_origin, report):
@@ -813,12 +846,12 @@ def calculate_global_stats(files, options):
     difference_files = options.get("difference_files")
     for i, file_path in enumerate(tqdm(sample_files, desc="Calculating global stats")):
         try:
-            data, _ = load_fits_data(file_path, stokes=options.get("stokes", "I"))
+            data, _ = load_frame_data(file_path, options)
 
             if data is None:
                 continue
             if difference_files:
-                other, _ = load_fits_data(difference_files[i], stokes=options.get("stokes", "I"))
+                other, _ = load_frame_data(difference_files[i], options)
                 if other is None or other.shape != data.shape:
                     continue
                 data = data - other
@@ -1210,6 +1243,20 @@ def _rotation_shift(options, header):
         return 0, 0
 
 
+def _first_frame_file(files, options):
+    """The file to read for the first frame that can be shown in the video's
+    coordinates (frame size, region and axes come from it); frames that
+    can't be converted are reported when drawn. Raises ConversionError if
+    none can."""
+    problem = None
+    for path in files:
+        try:
+            return frame_file(path, options)
+        except ConversionError as e:
+            problem = problem or e
+    raise problem or ConversionError("no images")
+
+
 def prepare_video_options(files, options):
     """Fill in ``options`` with what all frames of a video share: the frame
     count, the region (with even dimensions), the frame size, the coordinate
@@ -1227,7 +1274,9 @@ def prepare_video_options(files, options):
         logger.info("Determining region dimensions...")
 
         # Load the first file
-        first_data, _ = load_fits_data(files[0], stokes=options.get("stokes", "I"))
+        first_data, _ = load_fits_data(
+            _first_frame_file(files, options), stokes=options.get("stokes", "I")
+        )
 
         if first_data is not None:
             # Get region coordinates
@@ -1289,9 +1338,10 @@ def prepare_video_options(files, options):
         from ..processing.image_meta import fits_header
         from .utils import coordinate_type
 
-        if coordinate_type(fits_header(files[0])) == "hpc":
+        first = _first_frame_file(files, options)
+        if coordinate_type(fits_header(first)) == "hpc":
             options["track_reference"] = {
-                "file": files[0],
+                "file": first,
                 "center": (
                     (options.get("x_min", 0) + options.get("x_max", 0)) / 2,
                     (options.get("y_min", 0) + options.get("y_max", 0)) / 2,
@@ -1302,7 +1352,9 @@ def prepare_video_options(files, options):
 
     # One frame size for the whole video, from the first image (or region)
     if "frame_size" not in options:
-        first_data, _ = load_fits_data(files[0], stokes=options.get("stokes", "I"))
+        first_data, _ = load_fits_data(
+            _first_frame_file(files, options), stokes=options.get("stokes", "I")
+        )
         shape = first_data.shape if first_data is not None else (1, 1)
         if options.get("region_enabled", False) and "region_width" in options:
             shape = (options["region_height"], options["region_width"])
@@ -1312,7 +1364,7 @@ def prepare_video_options(files, options):
     # Initialize WCS coordinate detection if enabled
     if options.get("wcs_enabled", False):
         logger.info("Detecting coordinate system from first file...")
-        coord_info = detect_coordinate_system(files[0])
+        coord_info = detect_coordinate_system(_first_frame_file(files, options))
         options["coord_info"] = coord_info
         logger.info(f"Coordinate system: {coord_info.get('type', 'unknown')}")
 
@@ -1348,14 +1400,71 @@ def prepare_video_options(files, options):
         timeline = MinMaxTimeline(
             total_frames=len(files), position=position, log_scale=log_scale
         )
-        timeline.precompute_stats(timeline_files, options, load_fits_data)
+        timeline.precompute_stats(
+            timeline_files,
+            options,
+            lambda path, stokes: load_fits_data(frame_file(path, options), stokes=stokes),
+        )
         options["minmax_timeline"] = timeline
         logger.info("Timeline statistics computed")
 
     return options
 
 
-def create_video(files, output_file, options, progress_callback=None, problems=None):
+def _convert_frames(files, options, progress_callback=None, status_callback=None):
+    """Convert the frames (and difference images) to the video's coordinates
+    up front, in parallel if allowed; the frames then read the converted
+    copies. Frames that can't be converted are left for process_image to
+    report. Returns False if cancelled through ``progress_callback``."""
+    target = options.get("coordinates") or "native"
+    if target == "native":
+        return True
+    paths = list(dict.fromkeys(list(files) + list(options.get("difference_files") or [])))
+    cache_dir = options["coordinate_cache"]
+    name = "helioprojective" if target == "hpc" else "RA/Dec"
+    num_cores = options.get("cpu_count", max(1, cpu_count() - 1))
+    workers = num_cores if options.get("use_multiprocessing") else 1
+
+    def done(count):
+        if status_callback:
+            status_callback(f"Converting images to {name} coordinates: {count} of {len(paths)}")
+        return not progress_callback or progress_callback(0, len(files))
+
+    if not done(0):
+        return False
+    if workers > 1 or options.get("render_in_worker"):
+        executor = process_pool_executor(workers, preload=["solar_radio_image_viewer.video.creator"])
+        try:
+            futures = [executor.submit(_convert_one, (p, target, cache_dir)) for p in paths]
+            for count, future in enumerate(futures, 1):
+                future.result()
+                if not done(count):
+                    return False
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+    else:
+        for count, path in enumerate(paths, 1):
+            _convert_one((path, target, cache_dir))
+            if not done(count):
+                return False
+    return True
+
+
+def _convert_one(args):
+    """Convert one frame image (in a worker); failures are reported when
+    the frame is drawn."""
+    path, target, cache_dir = args
+    from .coordinates import converted_file
+
+    try:
+        converted_file(path, target, cache_dir)
+    except ConversionError as e:
+        logger.warning(str(e))
+
+
+def create_video(
+    files, output_file, options, progress_callback=None, problems=None, status_callback=None
+):
     """
     Create a video from a list of FITS files.
 
@@ -1392,6 +1501,9 @@ def create_video(files, output_file, options, progress_callback=None, problems=N
     problems : dict, optional
         Filled with what could not be drawn (see process_image), each
         message with the number of frames it applies to.
+    status_callback : callable, optional
+        Told (with a text) what is being prepared before frames are drawn,
+        such as converting the images to the video's coordinates.
 
     Returns
     -------
@@ -1399,6 +1511,12 @@ def create_video(files, output_file, options, progress_callback=None, problems=N
         Path to the created video file, or None if progress_callback
         cancelled it (no file is left behind).
     """
+    with conversion_cache(options) as options:
+        return _create_video(files, output_file, options, progress_callback, problems, status_callback)
+
+
+def _create_video(files, output_file, options, progress_callback, problems, status_callback):
+    """create_video, with a folder for converted frames if needed."""
     start_time = time.time()
     try:
         # Call progress callback once at the beginning to indicate initialization
@@ -1423,6 +1541,9 @@ def create_video(files, output_file, options, progress_callback=None, problems=N
 
 
         files, options = apply_difference(files, options)
+        if not _convert_frames(files, options, progress_callback, status_callback):
+            logger.info("Video creation cancelled by user")
+            return None
         options = prepare_video_options(files, options)
         total_frames = options["total_frames"]
         logger.info(f"Creating video from {total_frames} files...")

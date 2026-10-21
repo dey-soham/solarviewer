@@ -99,7 +99,6 @@ from ..processing.colormaps import ensure_solar_colormaps
 from .creator import (
     QUALITY_CRF,
     apply_difference,
-    load_fits_data,
     get_norm,
     observation_sort_key,
 )
@@ -110,6 +109,7 @@ from ..processing.contour_layers import (
     default_contour_options,
     new_contour_layer,
 )
+from .coordinates import COORDINATE_NAMES, COORDINATES
 from ..processing.plot_style import (
     DEFAULT_BEAM_STYLE,
     DEFAULT_GRID_STYLE,
@@ -119,9 +119,27 @@ from ..processing.plot_style import (
 )
 
 
-
-
 logger = logging.getLogger(__name__)
+
+
+def viewer_image(main_window):
+    """(image file, coordinates) shown in the main window's current tab: the
+    original file and "hpc" / "radec" when it shows a converted copy of it
+    (its HPC / RA-Dec button), else (its file, "native")."""
+    tab_widget = getattr(main_window, "tab_widget", None)
+    tab = tab_widget.currentWidget() if tab_widget is not None else None
+    name = getattr(tab, "imagename", None)
+    if not name:
+        return None, "native"
+    if name == getattr(tab, "_hpc_temp_file", None) and getattr(
+        tab, "_original_imagename", None
+    ):
+        return tab._original_imagename, "hpc"
+    if name == getattr(tab, "_radec_temp_file", None) and getattr(
+        tab, "_hpc_original_imagename", None
+    ):
+        return tab._hpc_original_imagename, "radec"
+    return name, "native"
 
 
 class PreviewRenderer(QObject):
@@ -135,7 +153,9 @@ class PreviewRenderer(QObject):
     replaying them is quick.
     """
 
-    rendered = pyqtSignal(int, object, object)  # request id, RGB frame or None, problems
+    rendered = pyqtSignal(
+        int, object, object
+    )  # request id, RGB frame or None, problems
     status = pyqtSignal(int, str)  # request id, what is being done
 
     def __init__(self):
@@ -146,6 +166,7 @@ class PreviewRenderer(QObject):
         self._prepared = OrderedDict()  # setup key -> (options, global stats)
         self._frames = OrderedDict()  # (setup key, frame index) -> (frame, problems)
         self._executor = None  # one worker process, started on first use
+        self._converted = {}  # (coordinates, cache folder) -> images converted
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -181,7 +202,11 @@ class PreviewRenderer(QObject):
 
     def _render(self, request_id, files, index, options):
         from ..processing.workers import process_pool_executor
-        from .creator import calculate_global_stats, prepare_video_options, process_image_wrapper
+        from .creator import (
+            calculate_global_stats,
+            prepare_video_options,
+            process_image_wrapper,
+        )
 
         setup_key = repr((files, sorted((k, repr(v)) for k, v in options.items())))
         frame_key = (setup_key, index)
@@ -189,24 +214,29 @@ class PreviewRenderer(QObject):
             self._frames.move_to_end(frame_key)
             return self._frames[frame_key]
 
-        prepared = self._prepared.get(setup_key)
-        if prepared is None:
-            if options.get("range_mode") == 2 or options.get("minmax_timeline_enabled"):
-                self.status.emit(
-                    request_id, f"Reading all {len(files)} frames for the range / timeline..."
-                )
-            prepared_options = prepare_video_options(files, dict(options))
-            prepared = (prepared_options, calculate_global_stats(files, prepared_options))
-            self._prepared[setup_key] = prepared
-            while len(self._prepared) > 4:
-                self._prepared.popitem(last=False)
-        prepared_options, global_stats = prepared
-
         if self._executor is None:
             self.status.emit(request_id, "Starting the preview renderer...")
             self._executor = process_pool_executor(
                 1, preload=["solar_radio_image_viewer.video.creator"]
             )
+        self._convert(request_id, files, index, options)
+
+        prepared = self._prepared.get(setup_key)
+        if prepared is None:
+            if options.get("range_mode") == 2 or options.get("minmax_timeline_enabled"):
+                self.status.emit(
+                    request_id,
+                    f"Reading all {len(files)} frames for the range / timeline...",
+                )
+            prepared_options = prepare_video_options(files, dict(options))
+            prepared = (
+                prepared_options,
+                calculate_global_stats(files, prepared_options),
+            )
+            self._prepared[setup_key] = prepared
+            while len(self._prepared) > 4:
+                self._prepared.popitem(last=False)
+        prepared_options, global_stats = prepared
 
         self.status.emit(request_id, "Rendering...")
         # The worker keeps its contour images between frames (one video id)
@@ -225,6 +255,32 @@ class PreviewRenderer(QObject):
             self._frames.popitem(last=False)
         return frame, problems
 
+    def _convert(self, request_id, files, index, options):
+        """Convert the images this preview reads to the video's coordinates,
+        in the worker (not in the app): the first and shown frames, or all
+        of them for a range or timeline over all frames."""
+        target = options.get("coordinates") or "native"
+        if target == "native":
+            return
+        from .creator import _convert_one
+
+        everything = options.get("range_mode") == 2 or options.get("minmax_timeline_enabled")
+        indices = range(len(files)) if everything else sorted({0, index})
+        difference = options.get("difference_files") or []
+        paths = [files[i] for i in indices] + [difference[i] for i in indices if i < len(difference)]
+        paths = list(dict.fromkeys(paths))
+        cache_dir = options["coordinate_cache"]
+        todo = [p for p in paths if p not in self._converted.get((target, cache_dir), set())]
+        if not todo:
+            return
+        self.status.emit(
+            request_id,
+            f"Converting {len(todo)} image{'s' if len(todo) > 1 else ''} to "
+            f"{'helioprojective' if target == 'hpc' else 'RA/Dec'} coordinates...",
+        )
+        list(self._executor.map(_convert_one, [(p, target, cache_dir) for p in todo]))
+        self._converted.setdefault((target, cache_dir), set()).update(todo)
+
 
 class PreviewPanel(QWidget):
     """The video frame being previewed, with a frame slider and Play."""
@@ -235,7 +291,7 @@ class PreviewPanel(QWidget):
         layout.setContentsMargins(8, 16, 16, 16)
         layout.setSpacing(8)
 
-        header = QLabel("Preview (exactly as in the video)")
+        header = QLabel("Preview")
         header.setStyleSheet("font-weight: 600;")
         layout.addWidget(header)
 
@@ -345,6 +401,11 @@ class VideoCreationDialog(QDialog):
         self.grid_style = default_style(DEFAULT_GRID_STYLE)
         self.plot_settings = None
 
+        # Images converted to the video's coordinates, while the window is open
+        import tempfile
+
+        self._coordinate_cache = tempfile.mkdtemp(prefix="solarviewer-video-")
+
         from ..ui.styles import set_hand_cursor
 
         self.setup_ui()
@@ -355,6 +416,19 @@ class VideoCreationDialog(QDialog):
 
         # Initialize range mode controls (for default "Auto per Frame")
         self.toggle_range_mode(self.range_mode_combo.currentIndex())
+
+        # Opened from the main window showing a converted (HPC or RA/Dec)
+        # copy of an image: the image itself, in the coordinates shown
+        if current_file and parent is not None:
+            original, coordinates = viewer_image(parent)
+            if original and current_file == getattr(
+                parent.tab_widget.currentWidget(), "imagename", None
+            ):
+                current_file = original
+                self.current_file = original
+                self.coordinates_combo.setCurrentIndex(
+                    self.coordinates_combo.findData(coordinates)
+                )
 
         # Initialize with current file if provided
         if current_file:
@@ -414,7 +488,11 @@ class VideoCreationDialog(QDialog):
         def text(name):
             widget = getattr(tab, name, None)
             try:
-                return widget.currentText() if hasattr(widget, "currentText") else widget.text()
+                return (
+                    widget.currentText()
+                    if hasattr(widget, "currentText")
+                    else widget.text()
+                )
             except Exception:
                 return ""
 
@@ -553,14 +631,19 @@ class VideoCreationDialog(QDialog):
         tab = main_window.tab_widget.currentWidget() if main_window else None
         imagename = getattr(tab, "imagename", None)
         if tab is None or getattr(tab, "current_image_data", None) is None:
-            QMessageBox.information(self, "No Image", "Open an image in the main window first.")
+            QMessageBox.information(
+                self, "No Image", "Open an image in the main window first."
+            )
             return
 
-        if imagename and imagename.lower().endswith((".fits", ".fts")):
-            directory = os.path.dirname(os.path.abspath(imagename))
+        # The image itself, also when the main window shows a converted copy
+        original, coordinates = viewer_image(main_window)
+        self.coordinates_combo.setCurrentIndex(self.coordinates_combo.findData(coordinates))
+        if original and original.lower().endswith((".fits", ".fts")):
+            directory = os.path.dirname(os.path.abspath(original))
             self.input_directory_edit.setText(directory)
-            self.input_pattern_edit.setText("*" + os.path.splitext(imagename)[1])
-            self.reference_image = os.path.abspath(imagename)
+            self.input_pattern_edit.setText("*" + os.path.splitext(original)[1])
+            self.reference_image = os.path.abspath(original)
             self.reference_image_edit.setText(self.reference_image)
 
         self._copy_viewer_settings(main_window)
@@ -584,7 +667,10 @@ class VideoCreationDialog(QDialog):
             x_min, x_max = max(0, x0 + 0.5), min(shown_w - 1, x1 - 0.5)
             y_min, y_max = max(0, y0 + 0.5), min(shown_h - 1, y1 - 0.5)
             zoomed = bool(
-                x_min > 0.5 or y_min > 0.5 or x_max < shown_w - 1.5 or y_max < shown_h - 1.5
+                x_min > 0.5
+                or y_min > 0.5
+                or x_max < shown_w - 1.5
+                or y_max < shown_h - 1.5
             )
             self.region_enabled.setChecked(zoomed)
             if zoomed:
@@ -596,7 +682,9 @@ class VideoCreationDialog(QDialog):
                 ):
                     spinbox.setValue(int(round(value * scale)))
         # Its contour layers, if contours are shown
-        if tab.show_contours_checkbox.isChecked() and getattr(tab, "contour_layers", None):
+        if tab.show_contours_checkbox.isChecked() and getattr(
+            tab, "contour_layers", None
+        ):
             self._set_contour_layers(tab.contour_layers, tab.contour_options)
         if imagename and imagename.lower().endswith((".fits", ".fts")):
             self.image_series_radio.setChecked(True)
@@ -660,7 +748,6 @@ class VideoCreationDialog(QDialog):
 
         preview_controls_layout.addStretch()
 
-
         # Add preview controls to the main layout first
         main_layout.addWidget(preview_controls_group)
 
@@ -689,7 +776,6 @@ class VideoCreationDialog(QDialog):
 
         # Add the tab widget to the main layout (after the preview)
         main_layout.addWidget(self.tab_widget)
-
 
         # Buttons at the bottom
         button_layout = QHBoxLayout()
@@ -1079,6 +1165,17 @@ class VideoCreationDialog(QDialog):
         wcs_form.setContentsMargins(12, 16, 12, 12)
         wcs_form.setVerticalSpacing(8)
 
+        self.coordinates_combo = QComboBox()
+        for key in COORDINATES:
+            self.coordinates_combo.addItem(COORDINATE_NAMES[key], key)
+        self.coordinates_combo.setToolTip(
+            "Show every frame in these coordinates, converting images that are\n"
+            "in the other system as the main window's HPC / RA-Dec button does\n"
+            "(rotated to solar north for helioprojective). Converted images are\n"
+            "kept while this window is open, so each is converted once."
+        )
+        wcs_form.addRow("Video in:", self.coordinates_combo)
+
         self.wcs_coords_check = QCheckBox("Show WCS Coordinates in Video")
         self.wcs_coords_check.setChecked(True)
         self.wcs_coords_check.setToolTip(
@@ -1086,7 +1183,7 @@ class VideoCreationDialog(QDialog):
         )
         wcs_form.addRow("", self.wcs_coords_check)
 
-        self.wcs_info_label = QLabel("Coordinates will be detected from FITS header")
+        self.wcs_info_label = QLabel("Axes are labelled in the video's coordinates")
         self.wcs_info_label.setObjectName("SecondaryText")
         wcs_form.addRow("", self.wcs_info_label)
 
@@ -1356,13 +1453,25 @@ class VideoCreationDialog(QDialog):
         grid = QGridLayout(group)
         grid.setContentsMargins(12, 16, 12, 12)
         rows = (
-            ("show_solar_disk_check", "Solar disk", self._edit_solar_disk_style,
-             "Circle of the Sun's apparent size at each frame's time, centred\n"
-             "where the Sun is in that frame (from its FITS header)"),
-            ("show_beam_check", "Beam", self._edit_beam_style,
-             "Restoring beam (BMAJ, BMIN, BPA in the header) in the lower left corner"),
-            ("show_grid_check", "Coordinate grid", self._edit_grid_style,
-             "Grid of the image's coordinates (needs WCS coordinates, Display tab)"),
+            (
+                "show_solar_disk_check",
+                "Solar disk",
+                self._edit_solar_disk_style,
+                "Circle of the Sun's apparent size at each frame's time, centred\n"
+                "where the Sun is in that frame (from its FITS header)",
+            ),
+            (
+                "show_beam_check",
+                "Beam",
+                self._edit_beam_style,
+                "Restoring beam (BMAJ, BMIN, BPA in the header) in the lower left corner",
+            ),
+            (
+                "show_grid_check",
+                "Coordinate grid",
+                self._edit_grid_style,
+                "Grid of the image's coordinates (needs WCS coordinates, Display tab)",
+            ),
         )
         for row, (name, text, edit, tip) in enumerate(rows):
             check = QCheckBox(text)
@@ -1370,7 +1479,9 @@ class VideoCreationDialog(QDialog):
             setattr(self, name, check)
             grid.addWidget(check, row, 0)
             button = QPushButton("Style…")
-            button.setToolTip(f"Colour and line style of the {text.lower()}, as in the main window")
+            button.setToolTip(
+                f"Colour and line style of the {text.lower()}, as in the main window"
+            )
             button.clicked.connect(edit)
             grid.addWidget(button, row, 1)
         grid.setColumnStretch(0, 1)
@@ -1389,7 +1500,9 @@ class VideoCreationDialog(QDialog):
         self.appearance_label = QLabel()
         row.addWidget(self.appearance_label, 1)
         customize = QPushButton("Customize…")
-        customize.setToolTip("Labels, title, fonts, colours, ticks, borders and padding")
+        customize.setToolTip(
+            "Labels, title, fonts, colours, ticks, borders and padding"
+        )
         customize.clicked.connect(self._edit_plot_settings)
         row.addWidget(customize)
         reset = QPushButton("Reset")
@@ -1404,7 +1517,9 @@ class VideoCreationDialog(QDialog):
             "Take the solar disk, beam and grid (on/off and style) and the plot\n"
             "appearance of the main window's current tab"
         )
-        copy_btn.clicked.connect(lambda: self._copy_viewer_look(self._main_window, notify=True))
+        copy_btn.clicked.connect(
+            lambda: self._copy_viewer_look(self._main_window, notify=True)
+        )
         copy_btn.setEnabled(self._main_window is not None)
         copy_row.addWidget(copy_btn)
         copy_row.addStretch()
@@ -1414,7 +1529,7 @@ class VideoCreationDialog(QDialog):
             "Opened from the main window, this window starts with the main window's "
             "solar disk, beam, grid and plot appearance. Change them here, or set "
             "them up in the main window and press Copy from Main Window. "
-            "\"auto\" colours are those of the light theme."
+            '"auto" colours are those of the light theme.'
         )
         note.setWordWrap(True)
         note.setObjectName("SecondaryText")
@@ -1474,7 +1589,9 @@ class VideoCreationDialog(QDialog):
         tab = tab_widget.currentWidget() if tab_widget is not None else None
         if tab is None or not hasattr(tab, "plot_settings"):
             if notify:
-                QMessageBox.information(self, "No Image", "Open an image in the main window first.")
+                QMessageBox.information(
+                    self, "No Image", "Open an image in the main window first."
+                )
             return
         self.solar_disk_style = dict(tab.solar_disk_style)
         self.beam_style = dict(tab.beam_style)
@@ -1629,7 +1746,9 @@ class VideoCreationDialog(QDialog):
         edit_btn.clicked.connect(self._edit_contour_layers)
         buttons.addWidget(edit_btn)
         copy_btn = QPushButton("Copy from Main Window")
-        copy_btn.setToolTip("Use the contour layers of the image open in the main window")
+        copy_btn.setToolTip(
+            "Use the contour layers of the image open in the main window"
+        )
         copy_btn.clicked.connect(self._copy_viewer_contours)
         buttons.addWidget(copy_btn)
         clear_btn = QPushButton("Remove All")
@@ -1653,10 +1772,14 @@ class VideoCreationDialog(QDialog):
 
         form = QFormLayout()
         self.frame_start_edit = QLineEdit()
-        self.frame_start_edit.setPlaceholderText("YYYY-MM-DD HH:MM:SS (empty: from the first)")
+        self.frame_start_edit.setPlaceholderText(
+            "YYYY-MM-DD HH:MM:SS (empty: from the first)"
+        )
         form.addRow("From:", self.frame_start_edit)
         self.frame_end_edit = QLineEdit()
-        self.frame_end_edit.setPlaceholderText("YYYY-MM-DD HH:MM:SS (empty: to the last)")
+        self.frame_end_edit.setPlaceholderText(
+            "YYYY-MM-DD HH:MM:SS (empty: to the last)"
+        )
         form.addRow("To:", self.frame_end_edit)
         self.frame_every_spinbox = QSpinBox()
         self.frame_every_spinbox.setRange(1, 1000)
@@ -1925,7 +2048,10 @@ class VideoCreationDialog(QDialog):
         ([], a message saying why there are none)."""
         input_dir = self.input_directory_edit.text()
         if not input_dir or not os.path.isdir(input_dir):
-            return [], ("Invalid Directory", "The specified input directory does not exist.")
+            return [], (
+                "Invalid Directory",
+                "The specified input directory does not exist.",
+            )
         input_path = os.path.join(input_dir, self.input_pattern_edit.text())
         files = glob.glob(input_path)
         if not files:
@@ -1986,6 +2112,8 @@ class VideoCreationDialog(QDialog):
             "width": self.width_spinbox.value(),
             "height": self.height_spinbox.value(),
             "wcs_enabled": self.wcs_coords_check.isChecked(),
+            "coordinates": self.coordinates_combo.currentData(),
+            "coordinate_cache": self._coordinate_cache,
             "difference": self.difference_combo.currentData(),
             "track_rotation": self.track_rotation_check.isChecked(),
             # Overlays
@@ -2035,10 +2163,15 @@ class VideoCreationDialog(QDialog):
             is_series = True
 
         bounds = []
-        for edit, name in ((self.frame_start_edit, "From"), (self.frame_end_edit, "To")):
+        for edit, name in (
+            (self.frame_start_edit, "From"),
+            (self.frame_end_edit, "To"),
+        ):
             text = edit.text().strip()
             try:
-                bounds.append(datetime.fromisoformat(text.replace("T", " ")) if text else None)
+                bounds.append(
+                    datetime.fromisoformat(text.replace("T", " ")) if text else None
+                )
             except ValueError:
                 return None, ("Invalid Time", f"{name}: use YYYY-MM-DD HH:MM:SS")
 
@@ -2049,13 +2182,20 @@ class VideoCreationDialog(QDialog):
                 pattern = os.path.join(
                     layer.get("series_dir", ""), layer.get("series_pattern") or "*.fits"
                 )
-                layer["series_files"] = sorted(glob.glob(pattern), key=observation_sort_key)
+                layer["series_files"] = sorted(
+                    glob.glob(pattern), key=observation_sort_key
+                )
                 if layer.get("enabled", True) and not layer["series_files"]:
                     return None, ("No Contour Files", f"No files match {pattern}")
             scanned.append(layer)
 
         plan = frame_plan(
-            image_files, is_series, scanned, bounds[0], bounds[1], self.frame_every_spinbox.value()
+            image_files,
+            is_series,
+            scanned,
+            bounds[0],
+            bounds[1],
+            self.frame_every_spinbox.value(),
         )
         if not plan["image_files"]:
             return None, ("No Frames", "No frames in the chosen time range.")
@@ -2069,7 +2209,11 @@ class VideoCreationDialog(QDialog):
         if problem:
             return [], problem
         self._show_frames(plan)
-        keep = [i for i, f in enumerate(plan["driver_files"]) if f not in self._excluded_frames]
+        keep = [
+            i
+            for i, f in enumerate(plan["driver_files"])
+            if f not in self._excluded_frames
+        ]
         if not keep:
             return [], ("No Frames", "All frames are unticked in the Frames tab.")
         layers = []
@@ -2103,11 +2247,15 @@ class VideoCreationDialog(QDialog):
         for row, (driver, image, when) in enumerate(rows):
             tick = QTableWidgetItem()
             tick.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            tick.setCheckState(Qt.Unchecked if driver in self._excluded_frames else Qt.Checked)
+            tick.setCheckState(
+                Qt.Unchecked if driver in self._excluded_frames else Qt.Checked
+            )
             tick.setData(Qt.UserRole, driver)
             table.setItem(row, 0, tick)
             table.setItem(
-                row, 1, QTableWidgetItem(when.strftime("%Y-%m-%d %H:%M:%S") if when else "?")
+                row,
+                1,
+                QTableWidgetItem(when.strftime("%Y-%m-%d %H:%M:%S") if when else "?"),
             )
             table.setItem(row, 2, QTableWidgetItem(os.path.basename(image)))
             pairs = []
@@ -2187,7 +2335,11 @@ class VideoCreationDialog(QDialog):
         )
         size = self._estimate_size(frame, frames)
         if size:
-            text += f"; roughly {size / 1e6:.1f} MB" if size < 1e9 else f"; roughly {size / 1e9:.1f} GB"
+            text += (
+                f"; roughly {size / 1e6:.1f} MB"
+                if size < 1e9
+                else f"; roughly {size / 1e9:.1f} GB"
+            )
         self.estimate_label.setText(text)
 
     def _estimate_size(self, frame, frames):
@@ -2199,7 +2351,10 @@ class VideoCreationDialog(QDialog):
         from .creator import ensure_even_dimensions, video_writer
 
         ext = self.format_combo.currentData()
-        options = {"fps": self.fps_spinbox.value(), "quality": self.quality_combo.currentText()}
+        options = {
+            "fps": self.fps_spinbox.value(),
+            "quality": self.quality_combo.currentText(),
+        }
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 path = os.path.join(tmp, "estimate" + ext)
@@ -2216,18 +2371,51 @@ class VideoCreationDialog(QDialog):
     # ---------- Settings presets ----------
 
     _PRESET_WIDGETS = (
-        "input_directory_edit", "input_pattern_edit", "sort_combo", "stokes_combo",
-        "image_series_radio", "image_single_radio", "single_image_edit",
-        "frame_start_edit", "frame_end_edit", "frame_every_spinbox",
-        "colormap_combo", "stretch_combo", "gamma_spinbox", "range_mode_combo",
-        "vmin_spinbox", "vmax_spinbox", "lower_percentile_spinbox",
-        "upper_percentile_spinbox", "colorbar_check", "width_spinbox", "height_spinbox",
-        "wcs_coords_check", "difference_combo", "track_rotation_check", "region_enabled", "x_min_spinbox", "x_max_spinbox",
-        "y_min_spinbox", "y_max_spinbox", "timestamp_check", "frame_number_check",
-        "filename_check", "minmax_timeline_check", "timeline_source_combo",
-        "timeline_log_scale_check", "show_solar_disk_check", "show_beam_check",
-        "show_grid_check", "output_file_edit", "format_combo", "fps_spinbox",
-        "quality_combo", "multiprocessing_check", "cores_spinbox",
+        "input_directory_edit",
+        "input_pattern_edit",
+        "sort_combo",
+        "stokes_combo",
+        "image_series_radio",
+        "image_single_radio",
+        "single_image_edit",
+        "frame_start_edit",
+        "frame_end_edit",
+        "frame_every_spinbox",
+        "colormap_combo",
+        "stretch_combo",
+        "gamma_spinbox",
+        "range_mode_combo",
+        "vmin_spinbox",
+        "vmax_spinbox",
+        "lower_percentile_spinbox",
+        "upper_percentile_spinbox",
+        "colorbar_check",
+        "width_spinbox",
+        "height_spinbox",
+        "coordinates_combo",
+        "wcs_coords_check",
+        "difference_combo",
+        "track_rotation_check",
+        "region_enabled",
+        "x_min_spinbox",
+        "x_max_spinbox",
+        "y_min_spinbox",
+        "y_max_spinbox",
+        "timestamp_check",
+        "frame_number_check",
+        "filename_check",
+        "minmax_timeline_check",
+        "timeline_source_combo",
+        "timeline_log_scale_check",
+        "show_solar_disk_check",
+        "show_beam_check",
+        "show_grid_check",
+        "output_file_edit",
+        "format_combo",
+        "fps_spinbox",
+        "quality_combo",
+        "multiprocessing_check",
+        "cores_spinbox",
     )
 
     def _settings_state(self):
@@ -2272,7 +2460,9 @@ class VideoCreationDialog(QDialog):
                 widget.setValue(value)
         self._excluded_frames = set(state.get("excluded_frames", []))
         self._shown_frame_rows = None
-        self._set_contour_layers(state.get("contour_layers", []), state.get("contour_options"))
+        self._set_contour_layers(
+            state.get("contour_layers", []), state.get("contour_options")
+        )
         for name, defaults in (
             ("solar_disk_style", DEFAULT_SOLAR_DISK_STYLE),
             ("beam_style", DEFAULT_BEAM_STYLE),
@@ -2281,7 +2471,10 @@ class VideoCreationDialog(QDialog):
             setattr(self, name, dict(defaults, **(state.get(name) or {})))
         settings = state.get("plot_settings")
         self._set_plot_settings(
-            settings, state.get("plot_settings_source", "customized") if settings else "video default"
+            settings,
+            state.get("plot_settings_source", "customized")
+            if settings
+            else "video default",
         )
         self.schedule_preview()
 
@@ -2305,6 +2498,8 @@ class VideoCreationDialog(QDialog):
         options = self._video_options()
         files, problem = self._video_files(options)
         if not problem:
+            # The folder of converted images is this window's own
+            options.pop("coordinate_cache", None)
             state["video"] = {"files": files, "options": options}
         with open(path, "w") as f:
             json.dump(state, f, indent=1, default=list)
@@ -2352,7 +2547,9 @@ class VideoCreationDialog(QDialog):
         from ..dialogs.contour_settings import ContourSettingsDialog
 
         layers = self.contour_layers or [new_contour_layer()]
-        dialog = ContourSettingsDialog(self, layers, self.contour_options, for_video=True)
+        dialog = ContourSettingsDialog(
+            self, layers, self.contour_options, for_video=True
+        )
         box = dialog.findChild(QDialogButtonBox)
         if box is not None:
             box.button(QDialogButtonBox.Ok).setText("OK")
@@ -2368,11 +2565,16 @@ class VideoCreationDialog(QDialog):
         )
         layers = getattr(tab, "contour_layers", None)
         if not layers:
-            QMessageBox.information(self, "No Contours", "The main window has no contour layers.")
+            QMessageBox.information(
+                self, "No Contours", "The main window has no contour layers."
+            )
             return
         enabled = tab.show_contours_checkbox.isChecked()
         self._set_contour_layers(
-            [dict(layer, enabled=layer.get("enabled", True) and enabled) for layer in layers],
+            [
+                dict(layer, enabled=layer.get("enabled", True) and enabled)
+                for layer in layers
+            ],
             tab.contour_options,
         )
 
@@ -2443,7 +2645,7 @@ class VideoCreationDialog(QDialog):
                     reply = QMessageBox.warning(
                         self,
                         "Low Disk Space",
-                        f"Free disk space on {output_dir} is low ({free / (1024*1024):.1f} MB).\nVideo creation might fail or produce incomplete files.\n\nDo you want to continue?",
+                        f"Free disk space on {output_dir} is low ({free / (1024 * 1024):.1f} MB).\nVideo creation might fail or produce incomplete files.\n\nDo you want to continue?",
                         QMessageBox.Yes | QMessageBox.No,
                         QMessageBox.No,
                     )
@@ -2467,7 +2669,7 @@ class VideoCreationDialog(QDialog):
                     reply = QMessageBox.warning(
                         self,
                         "Low Memory",
-                        f"System memory is low ({vm.available / (1024*1024*1024):.1f} GB available).\nUsing {self.cores_spinbox.value()} cores might cause system instability.\n\nDo you want to continue?",
+                        f"System memory is low ({vm.available / (1024 * 1024 * 1024):.1f} GB available).\nUsing {self.cores_spinbox.value()} cores might cause system instability.\n\nDo you want to continue?",
                         QMessageBox.Yes | QMessageBox.No,
                         QMessageBox.No,
                     )
@@ -2483,7 +2685,9 @@ class VideoCreationDialog(QDialog):
             ):
                 if value > 0 and value % 2 != 0:
                     QMessageBox.warning(
-                        self, f"Invalid {name}", f"Video {name.lower()} must be an even number."
+                        self,
+                        f"Invalid {name}",
+                        f"Video {name.lower()} must be an even number.",
                     )
                     return
 
@@ -2496,9 +2700,12 @@ class VideoCreationDialog(QDialog):
             self.worker.error.connect(self.on_video_creation_error)
             self.worker.cancelled.connect(self.on_video_creation_cancelled)
             self.worker.progress.connect(self.on_video_progress)
+            self.worker.status.connect(self._on_video_status)
 
             # Progress dialog: busy while preparing, then counts frames
-            self.progress_dialog = QProgressDialog("Preparing frames...", "Cancel", 0, 0, self)
+            self.progress_dialog = QProgressDialog(
+                "Preparing frames...", "Cancel", 0, 0, self
+            )
             self.progress_dialog.setWindowTitle("Creating Video")
             self.progress_dialog.setWindowModality(Qt.WindowModal)
             self.progress_dialog.setMinimumDuration(0)
@@ -2522,6 +2729,12 @@ class VideoCreationDialog(QDialog):
                 "Error",
                 f"Error creating video: {str(e)}",
             )
+
+    def _on_video_status(self, text):
+        """What is being prepared, before frames are rendered."""
+        dialog = getattr(self, "progress_dialog", None)
+        if dialog is not None and self._render_start is None:
+            dialog.setLabelText(text)
 
     def on_video_progress(self, done, total):
         """Show how many frames are written, and an estimate of the time left."""
@@ -2562,7 +2775,9 @@ class VideoCreationDialog(QDialog):
         """The video was cancelled: nothing was written."""
         self._close_progress_dialog()
         QMessageBox.information(
-            self, "Video Cancelled", "Video creation was cancelled; no file was written."
+            self,
+            "Video Cancelled",
+            "Video creation was cancelled; no file was written.",
         )
 
     def on_video_creation_finished(self, output_file):
@@ -2573,7 +2788,8 @@ class VideoCreationDialog(QDialog):
         if problems:
             frames = len(self.worker.files)
             lines = "\n".join(
-                f"• {message} ({count} of {frames} frames)" for message, count in problems.items()
+                f"• {message} ({count} of {frames} frames)"
+                for message, count in problems.items()
             )
             QMessageBox.warning(
                 self,
@@ -2622,9 +2838,7 @@ class VideoCreationDialog(QDialog):
             ax = selection_figure.add_subplot(111)
 
             # Load data
-            data, _ = load_fits_data(
-                self.reference_image, stokes=self.stokes_combo.currentText()
-            )
+            data = self._load_reference()
 
             if data is None:
                 return
@@ -2754,9 +2968,7 @@ class VideoCreationDialog(QDialog):
         if not self.reference_image:
             return
 
-        data, _ = load_fits_data(
-            self.reference_image, stokes=self.stokes_combo.currentText()
-        )
+        data = self._load_reference()
         if data is None:
             return
 
@@ -2777,9 +2989,7 @@ class VideoCreationDialog(QDialog):
         if not self.reference_image:
             return
 
-        data, _ = load_fits_data(
-            self.reference_image, stokes=self.stokes_combo.currentText()
-        )
+        data = self._load_reference()
         if data is None:
             return
 
@@ -2800,9 +3010,7 @@ class VideoCreationDialog(QDialog):
         if not self.reference_image:
             return
 
-        data, _ = load_fits_data(
-            self.reference_image, stokes=self.stokes_combo.currentText()
-        )
+        data = self._load_reference()
         if data is None:
             return
 
@@ -2873,9 +3081,7 @@ class VideoCreationDialog(QDialog):
 
         try:
             # Load the reference image data
-            data, _ = load_fits_data(
-                self.reference_image, stokes=self.stokes_combo.currentText()
-            )
+            data = self._load_reference()
 
             if data is None:
                 return
@@ -2931,6 +3137,24 @@ class VideoCreationDialog(QDialog):
         if self.region_enabled.isChecked():
             self.update_preview()
 
+    def _load_reference(self):
+        """Data of the reference (previewed) image as the video shows it, in
+        the video's coordinates; None (and a message) if it can't be read."""
+        from .coordinates import ConversionError
+        from .creator import load_frame_data
+
+        try:
+            data, _ = load_frame_data(self.reference_image, self._video_options())
+        except ConversionError as e:
+            QMessageBox.warning(self, "Cannot Convert", str(e))
+            return None
+        return data
+
+    def _remove_coordinate_cache(self):
+        import shutil
+
+        shutil.rmtree(self._coordinate_cache, ignore_errors=True)
+
     def closeEvent(self, event):
         """Handle dialog close event"""
         self._play_timer.stop()
@@ -2940,6 +3164,7 @@ class VideoCreationDialog(QDialog):
             self.worker.cancel()
             # Stops after the frame being rendered
             self.worker.wait(30000)
+        self._remove_coordinate_cache()
         event.accept()
 
     def reject(self):
@@ -2951,6 +3176,7 @@ class VideoCreationDialog(QDialog):
             self.worker.cancel()
             # Stops after the frame being rendered
             self.worker.wait(30000)
+        self._remove_coordinate_cache()
         super().reject()
 
     def update_gamma_controls(self):
@@ -2982,6 +3208,7 @@ class VideoWorker(QThread):
     error = pyqtSignal(str)
     cancelled = pyqtSignal()
     progress = pyqtSignal(int, int)  # frames written, total frames
+    status = pyqtSignal(str)  # what is being prepared
 
     def __init__(self, files, output_file, options):
         super().__init__()
@@ -3006,6 +3233,7 @@ class VideoWorker(QThread):
                 self.options,
                 progress_callback=on_progress,
                 problems=self.problems,
+                status_callback=self.status.emit,
             )
         except Exception as e:
             if self.is_cancelled:
