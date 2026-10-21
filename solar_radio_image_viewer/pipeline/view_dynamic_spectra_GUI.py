@@ -117,19 +117,88 @@ import pyqtgraph as pg
 from pyqtgraph import ColorMap
 
 
+class _AxisLayout:
+    """Where the samples of an axis are drawn: each covers [lo, hi] around
+    its value, and the axis splits into stretches of even spacing
+    (``segments``, (start, stop) indices), drawn as separate images so gaps
+    stay empty and uneven channels sit at their own frequencies."""
+
+    MAX_SEGMENTS = 64  # more (e.g. every channel spaced differently): one stretch
+
+    def __init__(self, values, n):
+        if values is None:
+            values = np.arange(n, dtype=np.float64)
+        c = np.asarray(values, dtype=np.float64)
+        self.centers = c
+        if n == 1:
+            self.segments = [(0, 1)]
+            self.lo, self.hi = c - 0.5, c + 0.5
+            self.step = [1.0]
+        else:
+            d = np.diff(c)
+            # A new stretch where the spacing differs by more than half (or
+            # in direction) from the stretch's first: gaps, bands of other
+            # spacing, and every 1.5x of a gradual (e.g. log) change
+            starts = [0]
+            ref = None
+            for i, di in enumerate(d):
+                if ref is None:
+                    # The stretch's first spacing, unless it is a gap after
+                    # a lone sample
+                    if i + 1 < len(d) and abs(di) > 1.5 * abs(d[i + 1]):
+                        starts.append(i + 1)
+                    else:
+                        ref = di
+                elif di == 0 or np.sign(di) != np.sign(ref) or not 0.67 <= di / ref <= 1.5:
+                    starts.append(i + 1)
+                    ref = None
+            if len(starts) > self.MAX_SEGMENTS:
+                starts = [0]
+            self.segments = [(a, b) for a, b in zip(starts, starts[1:] + [n]) if b > a]
+            typical = float(np.median(np.abs(d))) or 1.0
+            self.lo = np.empty(n)
+            self.hi = np.empty(n)
+            self.step = []
+            for a, b in self.segments:
+                step = abs(c[b - 1] - c[a]) / (b - a - 1) if b - a > 1 else typical
+                step = step or typical
+                self.step.append(step)
+                seg = c[a:b]
+                self.lo[a:b] = seg - step / 2
+                self.hi[a:b] = seg + step / 2
+        self.order = np.argsort(c, kind="stable")
+        self.sorted = c[self.order]
+
+    def index(self, x, clip=False):
+        """The sample at ``x`` (None in a gap or outside, unless ``clip``:
+        then the nearest)."""
+        j = int(np.searchsorted(self.sorted, x))
+        near = [k for k in (j - 1, j) if 0 <= k < len(self.sorted)]
+        k = min(near, key=lambda k: abs(self.sorted[k] - x))
+        i = int(self.order[k])
+        if clip or self.lo[i] <= x <= self.hi[i]:
+            return i
+        return None
+
+    def extent(self, a=0, b=None):
+        """(low, high) edges of samples a..b."""
+        b = len(self.centers) if b is None else b
+        return float(self.lo[a:b].min()), float(self.hi[a:b].max())
+
+
 class TimeAxisItem(pg.AxisItem):
     """A custom AxisItem that formats MJD seconds into UTC HH:MM:SS strings."""
 
     def tickStrings(self, values, scale, spacing):
-        strings = []
-        for v in values:
-            try:
-                # MJD 0 = 1858-11-17
-                utc = datetime(1858, 11, 17) + timedelta(seconds=float(v))
-                strings.append(utc.strftime("%H:%M:%S"))
-            except Exception:
-                strings.append(f"{v:.0f}")
-        return strings
+        try:
+            # MJD 0 = 1858-11-17
+            times = [datetime(1858, 11, 17) + timedelta(seconds=float(v)) for v in values]
+        except (OverflowError, ValueError):
+            return [f"{v:.0f}" for v in values]
+        # With the date when the ticks span more than a day
+        days = {t.date() for t in times}
+        fmt = "%m-%d %H:%M" if len(days) > 1 else "%H:%M:%S"
+        return [t.strftime(fmt) for t in times]
 
 
 ###############################################################################
@@ -184,10 +253,14 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self.cross_section_active = False
         self.drift_active = False
         self.time_pick_active = False
+        self._popups = []  # profile windows (closed with the viewer)
         self._drift_points = []
         self._drift_items = []
         self._time_marker = None
-        self._extent = None  # data extent the view was last fitted to
+        self._extent = None
+        self._layouts = None  # (_AxisLayout time, _AxisLayout freq) of the data
+        self._extra_items = []  # images of further stretches (uneven axes)
+        self._auto_downsample = True  # data extent the view was last fitted to
         self.hover_info_enabled = False
 
         # Setup PyQtGraph
@@ -394,6 +467,11 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._data = data
         self._time_axis = time_axis
         self._freq_axis = freq_axis
+        axes = (time_axis, freq_axis) if time_axis is not None and freq_axis is not None else (None, None)
+        self._layouts = (
+            _AxisLayout(axes[0], data.shape[0]),
+            _AxisLayout(axes[1], data.shape[1]),
+        )
         if filename:
             self._filename = filename
 
@@ -411,26 +489,28 @@ class PyQtGraphSpectrumCanvas(QWidget):
             if not self.main_window.vmaxEntry.hasFocus():
                 self.main_window.vmaxEntry.setText(f"{self._vmax:.4g}")
 
-        t0, dt, f0, df = self._axes_steps()
-        nt, nf = self._data.shape
         image = self._to_lut_indices(self._data)
-        # Shown with time and frequency increasing (the indices of the data
-        # stay as they are; _index_at maps back)
-        if dt < 0:
-            image = image[::-1, :]
-        if df < 0:
-            image = image[:, ::-1]
+        time_layout, freq_layout = self._layouts
+        blocks = [
+            (ts, fs) for ts in range(len(time_layout.segments)) for fs in range(len(freq_layout.segments))
+        ]
+        items = self._image_items(len(blocks))
+        for item, (ts, fs) in zip(items, blocks):
+            (a, b), (c, d) = time_layout.segments[ts], freq_layout.segments[fs]
+            block = image[a:b, c:d]
+            # Shown with time and frequency increasing
+            if b - a > 1 and time_layout.centers[b - 1] < time_layout.centers[a]:
+                block = block[::-1, :]
+            if d - c > 1 and freq_layout.centers[d - 1] < freq_layout.centers[c]:
+                block = block[:, ::-1]
+            item.setImage(block, autoLevels=False)
+            item.setLookupTable(self._transparent_lut)
+            item.setLevels([0, 255])
+            (x0, x1), (y0, y1) = time_layout.extent(a, b), freq_layout.extent(c, d)
+            item.setRect(pg.QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
 
-        # Set image with the cached transparent LUT
-        self.image_item.setImage(image, autoLevels=False)
-        self.image_item.setLookupTable(self._transparent_lut)
-        self.image_item.setLevels([0, 255])
-
-        # Each sample covers its own width: edges half a step either side
-        x_low = min(t0, t0 + (nt - 1) * dt) - abs(dt) / 2
-        y_low = min(f0, f0 + (nf - 1) * df) - abs(df) / 2
-        width, height = nt * abs(dt), nf * abs(df)
-        self.image_item.setRect(pg.QtCore.QRectF(x_low, y_low, width, height))
+        (x_low, x_high), (y_low, y_high) = time_layout.extent(), freq_layout.extent()
+        width, height = x_high - x_low, y_high - y_low
         # Other data (a page, a file): show all of it; the same data redrawn
         # (a mask, a scale) keeps the view
         extent = (x_low, width, y_low, height)
@@ -514,31 +594,32 @@ class PyQtGraphSpectrumCanvas(QWidget):
             out[start : start + self.CHUNK] = indices
         return out.reshape(data.shape)
 
-    def _axes_steps(self):
-        """(t0, dt, f0, df): the first sample's time and frequency and the
-        steps between samples (negative for a decreasing axis); sample
-        indices when there are no axes."""
-        nt, nf = self._data.shape
-        if self._time_axis is None or self._freq_axis is None:
-            return 0.0, 1.0, 0.0, 1.0
-        t0, t1 = float(self._time_axis[0]), float(self._time_axis[-1])
-        f0, f1 = float(self._freq_axis[0]), float(self._freq_axis[-1])
-        dt = (t1 - t0) / (nt - 1) if nt > 1 else 1.0
-        df = (f1 - f0) / (nf - 1) if nf > 1 else 1.0
-        return t0, dt or 1.0, f0, df or 1.0
+    def _image_items(self, count):
+        """``count`` image items: the main one and further ones (removed
+        when no longer needed)."""
+        while len(self._extra_items) < count - 1:
+            item = pg.ImageItem()
+            item.setAutoDownsample(self._auto_downsample)
+            self.plot_item.addItem(item)
+            self._extra_items.append(item)
+        while len(self._extra_items) > count - 1:
+            self.plot_item.removeItem(self._extra_items.pop())
+        return [self.image_item] + self._extra_items
+
+    def set_auto_downsample(self, enabled):
+        """Each screen pixel the mean of its samples (or a subset of them)."""
+        self._auto_downsample = enabled
+        for item in [self.image_item] + self._extra_items:
+            item.setAutoDownsample(enabled)
 
     def _index_at(self, x, y, clip=False):
         """(time index, frequency index) of the sample at view position
-        (x, y); None outside the data unless ``clip``."""
-        t0, dt, f0, df = self._axes_steps()
-        nt, nf = self._data.shape
-        ti = int(np.floor((x - t0) / dt + 0.5))
-        fi = int(np.floor((y - f0) / df + 0.5))
-        if clip:
-            return min(max(ti, 0), nt - 1), min(max(fi, 0), nf - 1)
-        if 0 <= ti < nt and 0 <= fi < nf:
-            return ti, fi
-        return None
+        (x, y); None outside the data or in a gap, unless ``clip``."""
+        time_layout, freq_layout = self._layouts
+        ti, fi = time_layout.index(x, clip), freq_layout.index(y, clip)
+        if ti is None or fi is None:
+            return None
+        return ti, fi
 
     def _sample_labels(self, ti, fi):
         """(time, frequency) labels of sample (ti, fi)."""
@@ -613,7 +694,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._update_colorbar()  # Update colorbar gradient
         if self._data is not None:
             # Re-apply LUT to current image
-            self.image_item.setLookupTable(self._transparent_lut)
+            for item in [self.image_item] + self._extra_items:
+                item.setLookupTable(self._transparent_lut)
 
     def set_smart_scale(self, scale_option):
         """Set the percentile scale option."""
@@ -940,6 +1022,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         title = f"Time Slice @ {freq_label}"
         win = pg.plot(title=title)
+        self._popups.append(win)
         win.setWindowTitle(title)
         win.setBackground(bg_color)
         win.setLabel("left", "Intensity", color=text_color)
@@ -975,6 +1058,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         title = f"Freq Slice @ {time_label}"
         win = pg.plot(title=title)
+        self._popups.append(win)
         win.setWindowTitle(title)
         win.setBackground(bg_color)
         win.setLabel("left", "Intensity", color=text_color)
@@ -1434,6 +1518,7 @@ class MainWindow(QMainWindow):
         self._remote = None
         self._remote_files = None
         self._remote_reads = {}  # page index -> _RemoteRead
+        self._spectrum_index = 0  # HDU of the spectrum (the first 2-D image)
         self._image_index = 0  # HDU of the image shown (_image)
         self._goto_time = None  # time to center on once its page is shown
         self._images = []  # [(HDU index, name)] that can be shown
@@ -1543,6 +1628,13 @@ class MainWindow(QMainWindow):
         )
         self.openRemoteAct.triggered.connect(self.openRemote)
 
+        self.saveMasksAct = QAction("Save &Masks...", self)
+        self.saveMasksAct.setStatusTip("Save the masks as times and frequencies")
+        self.saveMasksAct.triggered.connect(self.saveMasks)
+        self.loadMasksAct = QAction("&Load Masks...", self)
+        self.loadMasksAct.setStatusTip("Add masks saved before (this file or another)")
+        self.loadMasksAct.triggered.connect(self.loadMasks)
+
         self.saveRemoteAct = QAction("Save to Ser&ver...", self)
         self.saveRemoteAct.setStatusTip("Save the cleaned data to a folder on an SSH server")
         self.saveRemoteAct.triggered.connect(self.saveCleanedToServer)
@@ -1556,7 +1648,7 @@ class MainWindow(QMainWindow):
         self.exitAct.triggered.connect(self.close)
 
         self.compareAct = QAction("Compare &Original vs Cleaned", self)
-        self.compareAct.setShortcut("Ctrl+C")
+        self.compareAct.setShortcut("Ctrl+Shift+C")
         self.compareAct.triggered.connect(self.compareOriginalCleaned)
 
         self.revertAct = QAction("&Revert to Original", self)
@@ -1608,6 +1700,9 @@ class MainWindow(QMainWindow):
         fileMenu.addAction(self.openRemoteAct)
         fileMenu.addAction(self.saveAct)
         fileMenu.addAction(self.saveRemoteAct)
+        fileMenu.addSeparator()
+        fileMenu.addAction(self.saveMasksAct)
+        fileMenu.addAction(self.loadMasksAct)
         fileMenu.addSeparator()
         fileMenu.addAction(self.exitAct)
 
@@ -2142,6 +2237,151 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(self._TOOL_HINTS[active], 8000)
         self.driftLabel.setVisible(active == "drift" and bool(self.driftLabel.text()))
 
+    def _masks_file(self):
+        """Where the open file's masks are kept between sessions (by the
+        file: path, size and time; on a server, its host too)."""
+        import hashlib
+
+        if self._remote is not None:
+            key = os.path.basename(self._remote._dir)
+        else:
+            try:
+                st = os.stat(self.current_filename)
+            except OSError:
+                return None
+            key = hashlib.sha1(
+                f"{os.path.realpath(self.current_filename)}\0{st.st_size}\0{st.st_mtime}".encode()
+            ).hexdigest()
+        folder = os.path.join(os.path.expanduser("~"), ".cache", "solarviewer", "dynspec_masks")
+        return os.path.join(folder, f"{key}.json")
+
+    def _autosave_masks(self):
+        """Keep the masks for when the file is opened again."""
+        path = self._masks_file()
+        if path is None:
+            return
+        try:
+            if not self._masks and not self._global_masked_freq_indices:
+                if os.path.exists(path):
+                    os.remove(path)
+                return
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path + ".part", "w") as f:
+                json.dump(
+                    {
+                        "masks": [list(map(int, m)) for m in self._masks],
+                        "channels": sorted(int(c) for c in self._global_masked_freq_indices),
+                    },
+                    f,
+                )
+            os.replace(path + ".part", path)
+        except OSError as e:
+            self.logger.warning(f"Masks not kept: {e}")
+
+    def _restore_masks(self):
+        """The masks kept from the last time this file was open."""
+        path = self._masks_file()
+        if path is None or not os.path.exists(path):
+            return
+        try:
+            with open(path) as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            return
+        nt = len(self._full_time_axis)
+        nf = len(self._full_freq_axis) if self._full_freq_axis is not None else 0
+        masks = [
+            tuple(m) for m in saved.get("masks", [])
+            if len(m) == 4 and 0 <= m[0] < m[1] <= nt and 0 <= m[2] < m[3] <= nf
+        ]
+        channels = {c for c in saved.get("channels", []) if 0 <= c < nf}
+        if masks or channels:
+            self._masks = masks
+            self._global_masked_freq_indices = channels
+            self._update_mask_summary()
+            self.statusBar().showMessage(
+                f"Restored the masks from last time ({len(masks)} regions, "
+                f"{len(channels)} channels); Clear removes them.", 8000
+            )
+
+    def saveMasks(self):
+        """Save the masks as times and frequencies (for this file or others)."""
+        if not self._masks and not self._global_masked_freq_indices:
+            QMessageBox.information(self, "Save Masks", "There are no masks.")
+            return
+        fileName, _ = QFileDialog.getSaveFileName(
+            self, "Save Masks", "masks.json", "Masks (*.json)"
+        )
+        if not fileName:
+            return
+        times, freqs = self._full_time_axis, self._full_freq_axis
+        regions = []
+        for t0, t1, f0, f1 in self._masks:
+            region = {"from_mjd": times[t0] / 86400.0, "to_mjd": times[t1 - 1] / 86400.0}
+            if freqs is not None:
+                band = freqs[f0:f1]
+                region.update(from_mhz=float(np.min(band)), to_mhz=float(np.max(band)))
+            else:
+                region.update(from_channel=int(f0), to_channel=int(f1 - 1))
+            regions.append(region)
+        channels = sorted(self._global_masked_freq_indices)
+        saved = {
+            "source": self.current_filename,
+            "regions": regions,
+            "channels_mhz": [float(freqs[c]) for c in channels] if freqs is not None else [],
+            "channels": [int(c) for c in channels] if freqs is None else [],
+        }
+        with open(fileName, "w") as f:
+            json.dump(saved, f, indent=1)
+        self.statusBar().showMessage(f"Saved {len(regions)} masks to {fileName}", 5000)
+
+    def loadMasks(self):
+        """Add masks saved with Save Masks (matched by time and frequency)."""
+        if self._full_time_axis is None:
+            QMessageBox.information(self, "Info", "No data loaded.")
+            return
+        fileName, _ = QFileDialog.getOpenFileName(self, "Load Masks", "", "Masks (*.json)")
+        if not fileName:
+            return
+        try:
+            with open(fileName) as f:
+                saved = json.load(f)
+        except (OSError, ValueError) as e:
+            QMessageBox.critical(self, "Error", f"Failed to read the masks:\n{e}")
+            return
+        times, freqs = self._full_time_axis, self._full_freq_axis
+        nf = len(freqs) if freqs is not None else self._image().shape[1]
+        masks = []
+        for region in saved.get("regions", []):
+            t0 = int(np.searchsorted(times, region["from_mjd"] * 86400.0 - 1e-3, "left"))
+            t1 = int(np.searchsorted(times, region["to_mjd"] * 86400.0 + 1e-3, "right"))
+            if "from_mhz" in region and freqs is not None:
+                inside = np.flatnonzero((freqs >= region["from_mhz"] - 1e-6) & (freqs <= region["to_mhz"] + 1e-6))
+                if not len(inside):
+                    continue
+                f0, f1 = int(inside[0]), int(inside[-1]) + 1
+            else:
+                f0, f1 = region.get("from_channel", 0), region.get("to_channel", nf - 1) + 1
+            if t0 < t1 and 0 <= f0 < f1 <= nf:
+                masks.append((t0, t1, f0, f1))
+        channels = set(c for c in saved.get("channels", []) if 0 <= c < nf)
+        if freqs is not None:
+            # Within half a channel of a channel here
+            tolerance = 1e-3 + (0.5 * np.median(np.abs(np.diff(freqs))) if nf > 1 else np.inf)
+            for mhz in saved.get("channels_mhz", []):
+                c = int(np.argmin(np.abs(freqs - mhz)))
+                if abs(freqs[c] - mhz) <= tolerance:
+                    channels.add(c)
+        if not masks and not channels:
+            self.statusBar().showMessage("None of those masks fall on this file.", 5000)
+            return
+        before = (list(self._masks), set(self._global_masked_freq_indices))
+        after = (before[0] + masks, before[1] | channels)
+        self._do(("set", (before, after)))
+        self.statusBar().showMessage(
+            f"Loaded {len(masks)} masked regions and {len(channels)} channels.", 5000
+        )
+
     def _update_mask_summary(self):
         regions, channels = len(self._masks), len(self._global_masked_freq_indices)
         parts = []
@@ -2417,24 +2657,57 @@ class MainWindow(QMainWindow):
 
     # ---------------------------- File Operations -------------------------------
 
+    @staticmethod
+    def _image_data(hdu, index):
+        """An HDU's image as 2-D (leading axes of length 1 dropped), or None."""
+        if index != 0 and not getattr(hdu, "is_image", True):
+            return None  # a table
+        data = hdu.data
+        if data is None or getattr(data, "ndim", 0) < 2:
+            return None
+        while data.ndim > 2 and data.shape[0] == 1:
+            data = data[0]
+        return data if data.ndim == 2 else None
+
+    def _find_spectrum(self):
+        """Index of the file's first 2-D image (None if it has none)."""
+        for i, hdu in enumerate(self.hdul):
+            if self._image_data(hdu, i) is not None:
+                return i
+        return None
+
+    def _header_of(self, index):
+        """HDU ``index``'s header, with the primary header's cards it lacks
+        (e.g. DATE-OBS, when the image is in an extension)."""
+        header = self.hdul[index].header
+        if index == 0:
+            return header
+        header = header.copy()
+        for card in self.hdul[0].header.cards:
+            if card.keyword and card.keyword not in header and card.keyword not in (
+                "SIMPLE", "BITPIX", "NAXIS", "EXTEND", "COMMENT", "HISTORY",
+            ):
+                header.append(card)
+        return header
+
     def _image(self):
-        """The image shown: the primary HDU's, or another of the file's
-        images of the same shape (View > Image), e.g. a noise image."""
-        return self.hdul[self._image_index].data
+        """The image shown: the spectrum, or another of the file's images
+        of the same shape (View > Image), e.g. a noise image."""
+        return self._image_data(self.hdul[self._image_index], self._image_index)
 
     def _find_images(self):
         """The file's images that can be shown in place of the spectrum
         (the primary image and extensions of its shape), in View > Image."""
-        primary = self.hdul[0].data
+        shape = self._image_data(self.hdul[self._spectrum_index], self._spectrum_index).shape
         self._images = []
         for i, hdu in enumerate(self.hdul):
-            data = hdu.data if i == 0 or getattr(hdu, "is_image", True) else None
-            if data is not None and getattr(data, "shape", None) == primary.shape:
+            data = self._image_data(hdu, i)
+            if data is not None and data.shape == shape:
                 self._images.append((i, hdu.name or f"HDU {i}"))
         self.imageMenu.clear()
         group = QtWidgets.QActionGroup(self.imageMenu)
         for i, name in self._images:
-            act = self.imageMenu.addAction("Spectrum" if i == 0 else name.title())
+            act = self.imageMenu.addAction("Spectrum" if i == self._spectrum_index else name.title())
             act.setCheckable(True)
             act.setChecked(i == self._image_index)
             act.triggered.connect(lambda _=False, i=i: self.showImage(i))
@@ -2463,7 +2736,8 @@ class MainWindow(QMainWindow):
             if type(e).__name__ != "Cancelled":
                 QMessageBox.critical(self, "Error", f"Failed to show {name}:\n{e}")
             return
-        self.statusBar().showMessage(f"Showing {name.title() if index else 'the spectrum'}", 5000)
+        shown = "the spectrum" if index == self._spectrum_index else name.title()
+        self.statusBar().showMessage(f"Showing {shown}", 5000)
 
     def _show_image(self, choose_mode=False):
         """Read the overview of the image shown (_image) and show it: the
@@ -2659,8 +2933,13 @@ class MainWindow(QMainWindow):
 
                 self.logger.info(f"Opening FITS file: {fileName}")
                 self.hdul = remote.hdul if remote else fits.open(fileName, memmap=True)
-                header = self.hdul[0].header
-                data_ref = self.hdul[0].data
+                # The spectrum: the first 2-D image, primary or extension
+                self._spectrum_index = self._find_spectrum()
+                if self._spectrum_index is None:
+                    raise ValueError("the file has no 2-D image (dynamic spectrum)")
+                self._image_index = self._spectrum_index
+                header = self._header_of(self._spectrum_index)
+                data_ref = self._image()
 
                 # Capture metadata from all HDUs
                 self._all_headers = []
@@ -2753,8 +3032,8 @@ class MainWindow(QMainWindow):
                 self._full_time_axis = time_axis
                 self._full_freq_axis = freq_axis
 
-                self._image_index = 0
                 self._find_images()
+                self._restore_masks()
                 self._show_image(choose_mode=True)
 
                 self.undo_stack.clear()
@@ -3001,6 +3280,8 @@ class MainWindow(QMainWindow):
         self.current_filename = ""
 
     def closeEvent(self, event):
+        for popup in self.canvas._popups:
+            popup.close()
         self._stop_remote_reads(wait=True)
         if self._remote_files is not None:
             self._remote_files.close()
@@ -3024,7 +3305,10 @@ class MainWindow(QMainWindow):
         if self._full_time_axis is None or len(self._full_time_axis) < 2:
             return 1
 
-        dt = abs(self._full_time_axis[1] - self._full_time_axis[0])
+        # The typical spacing (not just the first two samples': cadences
+        # can be uneven, with gaps)
+        sample = self._full_time_axis[:100_001]
+        dt = float(np.median(np.abs(np.diff(sample))))
         if dt == 0:
             self.logger.warning(
                 "Zero time delta detected in time axis. Using total samples as window."
@@ -3299,7 +3583,7 @@ class MainWindow(QMainWindow):
             self._original_data,
             self._time_axis,
             self._freq_axis,
-            filename=self.current_filename,
+            filename=self.current_filename + (" (loading full resolution...)" if fast else ""),
         )
         self.canvas.draw_spectrum(fast=fast)
         self._updateNavigationStats()
@@ -3626,6 +3910,8 @@ class MainWindow(QMainWindow):
     def _save_to(self, fileName, extent):
         """Write the cleaned data (``extent`` "file" or "shown") to
         ``fileName``; raises Cancelled if the user stops it."""
+        if extent == "shown" and self._previewing():
+            raise ValueError("the page is still loading: save it once it shows in full")
         if extent == "shown":
             with self.wait_cursor():
                 self._write_cleaned(fileName)
@@ -3750,7 +4036,7 @@ class MainWindow(QMainWindow):
             header["CDELT2"] = (
                 float((time_axis[-1] - time_axis[0]) / (nt - 1)) / 86400.0 if nt > 1 else 1.0
             )
-        source = self.hdul[self._image_index].header if self.hdul else fits.Header()
+        source = self._header_of(self._image_index) if self.hdul else fits.Header()
         for card in source.cards:
             if card.keyword in ("COMMENT", "HISTORY", ""):
                 header.append(card)
@@ -3948,6 +4234,11 @@ class MainWindow(QMainWindow):
 
     def _apply_edit(self, edit, undo=False):
         kind, value = edit
+        if kind == "set":  # (before, after): each (masks, channels)
+            masks, channels = value[0] if undo else value[1]
+            self._masks = list(masks)
+            self._global_masked_freq_indices = set(channels)
+            return
         if kind == "add":
             if undo:
                 self._masks.remove(value)
@@ -3970,6 +4261,7 @@ class MainWindow(QMainWindow):
         """Make a mask edit (undoable) and show the page with it."""
         self._apply_edit(edit)
         self._update_mask_summary()
+        self._autosave_masks()
         self.undo_stack.append(edit)
         self.redo_stack.clear()
         self._redisplay()
@@ -3981,6 +4273,7 @@ class MainWindow(QMainWindow):
         edit = self.undo_stack.pop()
         self._apply_edit(edit, undo=True)
         self._update_mask_summary()
+        self._autosave_masks()
         self.redo_stack.append(edit)
         self._redisplay()
 
@@ -3991,6 +4284,7 @@ class MainWindow(QMainWindow):
         edit = self.redo_stack.pop()
         self._apply_edit(edit)
         self._update_mask_summary()
+        self._autosave_masks()
         self.undo_stack.append(edit)
         self._redisplay()
 
@@ -4011,7 +4305,7 @@ class MainWindow(QMainWindow):
         )
 
     def canvas_auto_downsample(self, enabled):
-        self.canvas.image_item.setAutoDownsample(enabled)
+        self.canvas.set_auto_downsample(enabled)
 
     def onBandpassScopeChanged(self, index):
         scope = self.bandpassScopeCombo.itemData(index)
@@ -4049,10 +4343,20 @@ class MainWindow(QMainWindow):
         # still loading is normalised when shown)
         self._redisplay()
 
+    def _previewing(self):
+        """Whether the page shown is still its quick preview (every few
+        samples) while the full page loads."""
+        return self._shown_raw is not None and bool(self._shown_raw[3])
+
     def _mask_roi_values(self, ixmin, ixmax, iymin, iymax):
         """Mask a region of interest (samples of the data shown): kept for
         the whole file, as a range of its samples and channels."""
         if self._shown_raw is None or ixmax < ixmin or iymax < iymin:
+            return
+        if self._previewing():
+            self.statusBar().showMessage(
+                "The page is still loading: mask it once it shows in full.", 5000
+            )
             return
         mask = self._file_ranges(ixmin, ixmax, iymin, iymax)
         self._do(("add", mask))

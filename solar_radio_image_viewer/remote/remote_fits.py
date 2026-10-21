@@ -60,6 +60,18 @@ def _padded(size):
     return -(-size // BLOCK) * BLOCK
 
 
+def _image_axes(header):
+    """The axes of an image header (numpy order) when it is 2-D once
+    leading axes of length 1 are dropped, else None."""
+    naxis = header.get("NAXIS", 0)
+    if naxis < 2:
+        return None
+    axes = [header.get(f"NAXIS{i}", 0) for i in range(naxis, 0, -1)]
+    while len(axes) > 2 and axes[0] == 1:
+        axes.pop(0)
+    return axes if len(axes) == 2 and all(axes) else None
+
+
 def _data_size(header):
     """Bytes of an HDU's data (unpadded)."""
     naxis = header.get("NAXIS", 0)
@@ -94,15 +106,26 @@ class RemoteFits:
         self._open_channels()
 
         self._hdus = self._walk()  # [(header, header offset, data offset, data size)]
+        if any(h.get("ZIMAGE") for h, *_ in self._hdus):
+            raise NotSliceable("its image is tile-compressed")
+        # The spectrum: the first 2-D image, primary or extension
+        spectrum = next(
+            (
+                i
+                for i, (h, *_) in enumerate(self._hdus)
+                if _image_axes(h) and (i == 0 or str(h.get("XTENSION", "")).strip() == "IMAGE")
+            ),
+            None,
+        )
+        if spectrum is None:
+            raise NotSliceable("it has no 2-D image")
         primary = self._hdus[0][0]
-        if primary.get("NAXIS", 0) < 2 or any(h.get("ZIMAGE") for h, *_ in self._hdus):
-            raise NotSliceable("its image isn't a plain 2-D primary image")
-        self.data = RemoteArray(self, primary, self._hdus[0][2])
+        self._spectrum = spectrum
         self._tables = self._read_tables()
-        hdus = [RemoteHDU(primary, self.data)]
+        hdus = [RemoteHDU(primary, RemoteArray(self, primary, self._hdus[0][2]) if spectrum == 0 else None)]
         read = iter(self._tables[1:] if self._tables else [])
-        for header, _, data_offset, size in self._hdus[1:]:
-            if self._read_whole(header, size):
+        for i, (header, _, data_offset, size) in enumerate(self._hdus[1:], 1):
+            if i != spectrum and self._read_whole(header, size):
                 hdus.append(next(read))
             else:
                 try:
@@ -110,6 +133,7 @@ class RemoteFits:
                 except NotSliceable:
                     data = None
                 hdus.append(RemoteHDU(header, data))
+        self.data = hdus[spectrum].data  # the spectrum, read in pieces
         self.hdul = RemoteHDUList(hdus, self._tables)
 
     def _open_channels(self):
@@ -172,8 +196,7 @@ class RemoteFits:
                     length = _padded(i + 80)
                     return data[:length].decode("ascii", "replace"), length
 
-    @staticmethod
-    def _read_whole(header, size):
+    def _read_whole(self, header, size):
         """Whether an extension is read whole when opening: tables (the
         viewer's axes are tables) and small ones."""
         return header.get("XTENSION", "").strip() in ("BINTABLE", "TABLE") or size <= SMALL
@@ -182,8 +205,8 @@ class RemoteFits:
         """The extensions read whole (_read_whole), as a local FITS file, opened."""
         ranges = [
             (header_offset, min(self.size, data_offset + _padded(size)) - header_offset)
-            for header, header_offset, data_offset, size in self._hdus[1:]
-            if self._read_whole(header, size)
+            for i, (header, header_offset, data_offset, size) in enumerate(self._hdus[1:], 1)
+            if i != self._spectrum and self._read_whole(header, size)
         ]
         if not ranges:
             return None
