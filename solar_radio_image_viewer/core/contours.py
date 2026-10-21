@@ -1,11 +1,15 @@
 """
 Contour overlays: settings, loading contour data, drawing.
 
+A tab draws up to ten contour layers, each from the current image or
+another file with its own Stokes, levels and style, plus a legend.
+
 Contours from another image are traced on that image's own pixel grid and
 the lines are mapped onto the base image through both images' WCS.
 """
 
 import os
+import uuid
 
 import numpy as np
 from matplotlib.transforms import Transform
@@ -18,8 +22,170 @@ from ..processing.fits_io import readable_image_path
 from ..processing.image_meta import casa_info, fits_header
 
 
+MAX_CONTOUR_LAYERS = 10
+
+# Default colours of new layers, in order: the Okabe-Ito palette, which stays
+# distinguishable with the common kinds of colour blindness, plus white, grey
+# and black; brightest first for dark solar images
+CONTOUR_LAYER_COLORS = [
+    "white",
+    "#E69F00",
+    "#56B4E9",
+    "#F0E442",
+    "#D55E00",
+    "#009E73",
+    "#CC79A7",
+    "#0072B2",
+    "#999999",
+    "black",
+]
+CONTOUR_COLOR_NAMES = {
+    "white": "White",
+    "#E69F00": "Orange",
+    "#56B4E9": "Sky blue",
+    "#F0E442": "Yellow",
+    "#D55E00": "Vermillion",
+    "#009E73": "Bluish green",
+    "#CC79A7": "Reddish purple",
+    "#0072B2": "Blue",
+    "#999999": "Grey",
+    "black": "Black",
+}
+
+# Keys of a layer that hold loaded data rather than settings
+_LAYER_RUNTIME_KEYS = ("contour_data", "contour_wcs", "loaded_path", "dim_w", "dim_h")
+
+# Settings whose change means a layer's data must be loaded again
+_LAYER_LOAD_KEYS = (
+    "source",
+    "external_image",
+    "stokes",
+    "threshold",
+    "use_default_rms_region",
+    "rms_box",
+)
+
+
+def new_contour_layer(index=0, **settings):
+    """A contour layer: one contour set (source, Stokes, levels, style).
+
+    ``index`` picks its default colour. Runtime keys (``contour_data``,
+    ``contour_wcs``, ...) hold the loaded data and are filled in by
+    :meth:`ContoursMixin.load_contour_data`.
+    """
+    color = CONTOUR_LAYER_COLORS[index % len(CONTOUR_LAYER_COLORS)]
+    layer = {
+        "id": uuid.uuid4().hex,
+        "enabled": True,
+        "label": "",  # empty: named after its source and Stokes
+        "source": "same",
+        "external_image": "",
+        "stokes": "I",
+        "threshold": 5.0,
+        "pos_levels": [0.1, 0.3, 0.5, 0.7, 0.9],
+        "neg_levels": [0.1, 0.3, 0.5, 0.7, 0.9],
+        "level_type": "fraction",
+        "pos_color": color,
+        "neg_color": color,
+        "pos_linewidth": 1.0,
+        "neg_linewidth": 1.0,
+        "pos_linestyle": "-",
+        "neg_linestyle": "--",
+        "show_labels": False,
+        "use_default_rms_region": True,
+        "rms_box": (0, 200, 0, 130),
+        "contour_data": None,
+        "contour_wcs": None,
+        "loaded_path": None,
+        "dim_h": 0,
+        "dim_w": 0,
+    }
+    layer.update(settings)
+    return layer
+
+
+def default_contour_options():
+    """Settings shared by all contour layers."""
+    return {
+        "show_legend": True,
+        "legend_loc": "upper right",
+        "legend_fontsize": 8,
+        "legend_show_negative": False,  # entries for negative contours too
+        "show_full_extent": True,  # If False, only contours within 1.5x the base image
+        "downsample": True,
+    }
+
+
+def contour_layer_name(layer):
+    """The layer's label, or one made from its source and Stokes."""
+    if layer.get("label"):
+        return layer["label"]
+    if layer.get("source") == "external" and layer.get("external_image"):
+        source = _short_source_name(layer["external_image"])
+    else:
+        source = "Current image"
+    return f"{source} · {layer.get('stokes', 'I')}"
+
+
+def _short_source_name(path):
+    """The telescope that took an image (from its header), else its file name."""
+    try:
+        if os.path.isdir(path):
+            telescope = casa_info(path).csys_record.get("telescope", "")
+        else:
+            telescope = fits_header(path).get("TELESCOP", "")
+        telescope = str(telescope).strip()
+        if telescope and telescope.upper() not in ("UNKNOWN", "NONE"):
+            return telescope
+    except Exception:
+        pass
+    name = os.path.basename(os.path.normpath(path))
+    for suffix in (".fits", ".fts", ".fit", ".image"):
+        if name.lower().endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name if len(name) <= 24 else name[:23] + "…"
+
+
+def contour_layer_settings(layer):
+    """Copy of a layer without its loaded data."""
+    return {k: v for k, v in layer.items() if k not in _LAYER_RUNTIME_KEYS}
+
+
+def merge_contour_layers(old_layers, new_layers):
+    """``new_layers`` (settings from the dialog), keeping the loaded data of
+    layers whose source settings did not change."""
+    old_by_id = {layer.get("id"): layer for layer in old_layers}
+    def same_source(old, new):
+        keys = _LAYER_LOAD_KEYS
+        if old.get("use_default_rms_region", True) and new.get(
+            "use_default_rms_region", True
+        ):
+            # The box is then worked out when loading, not set by the user
+            keys = [k for k in keys if k != "rms_box"]
+        return all(old.get(k) == new.get(k) for k in keys)
+
+    merged = []
+    for layer in new_layers:
+        layer = dict(layer)
+        old = old_by_id.get(layer.get("id"))
+        if old is not None and same_source(old, layer):
+            for key in _LAYER_RUNTIME_KEYS:
+                layer[key] = old.get(key)
+        else:
+            layer.update({k: None for k in ("contour_data", "contour_wcs", "loaded_path")})
+            layer.setdefault("dim_h", 0)
+            layer.setdefault("dim_w", 0)
+        merged.append(layer)
+    return merged
+
+
 class ContoursMixin:
     """Contour settings dialog, contour data loading and drawing.
+
+    A tab draws up to ``MAX_CONTOUR_LAYERS`` contour layers
+    (``contour_layers``, see :func:`new_contour_layer`), with options shared
+    by all of them in ``contour_options``.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
 
@@ -27,10 +193,19 @@ class ContoursMixin:
 
     ``_build_display_wcs``, ``_cached_csys``, ``_cached_fits_flag``,
     ``_cached_fits_header``, ``_cached_summary``, ``_cached_wcs_obj``,
-    ``contour_settings``, ``current_image_data``,
-    ``_get_coordinate_system_from_image``, ``imagename``, ``_open_dialogs``,
-    ``parent``, ``show_status_message``, ``_temp_file_id``, ``window``
+    ``contour_layers``, ``_contour_conversions``, ``contour_options``,
+    ``current_image_data``, ``_get_coordinate_system_from_image``,
+    ``imagename``, ``_open_dialogs``, ``parent``, ``show_contours_checkbox``,
+    ``show_status_message``, ``_temp_file_id``, ``window``
     """
+
+    def invalidate_contours(self):
+        """Forget all layers' loaded contour data (e.g. the base image changed),
+        so they are loaded again when next drawn."""
+        for layer in self.contour_layers:
+            layer["contour_data"] = None
+            layer["contour_wcs"] = None
+            layer["loaded_path"] = None
 
     def show_contour_settings(self):
         """Show non-modal contour settings dialog."""
@@ -49,7 +224,7 @@ class ContoursMixin:
             except RuntimeError:
                 self._contour_settings_dialog = None
 
-        dialog = ContourSettingsDialog(self, self.contour_settings)
+        dialog = ContourSettingsDialog(self, self.contour_layers, self.contour_options)
         self._contour_settings_dialog = dialog
 
         # Store reference to viewer
@@ -71,18 +246,20 @@ class ContoursMixin:
                         pass
                     return
 
-                viewer.contour_settings = dialog.get_settings()
+                viewer.contour_layers = merge_contour_layers(
+                    viewer.contour_layers, dialog.get_layers()
+                )
+                viewer.contour_options = dialog.get_options()
                 if viewer.show_contours_checkbox.isChecked():
-                    viewer.load_contour_data()
-                    viewer.on_visualization_changed()
+                    # Layers whose source settings changed have no data and are
+                    # loaded while drawing; the others keep theirs
+                    viewer.on_visualization_changed(reload_data=False)
 
                     # Update dialog with captured dimensions
-                    w = viewer.contour_settings.get("dim_w", 0)
-                    h = viewer.contour_settings.get("dim_h", 0)
-                    if hasattr(dialog, "update_dimensions_label") and not sip.isdeleted(
+                    if hasattr(dialog, "update_layer_dimensions") and not sip.isdeleted(
                         dialog
                     ):
-                        dialog.update_dimensions_label(w, h)
+                        dialog.update_layer_dimensions(viewer.contour_layers)
 
                 viewer.show_status_message("Contour settings applied")
             except RuntimeError:
@@ -165,18 +342,22 @@ class ContoursMixin:
 
         return height, width
 
-    def load_contour_data(self):
+    def load_contour_data(self, layer=None):
+        """Load the contour data of ``layer``, or of every enabled layer."""
+        if layer is None:
+            for each in self.contour_layers:
+                if each.get("enabled", True):
+                    self.load_contour_data(each)
+            return
         try:
-            if self.contour_settings["source"] == "external":
-                h, w = self._get_image_dimensions(
-                    self.contour_settings["external_image"]
-                )
+            if layer["source"] == "external":
+                h, w = self._get_image_dimensions(layer["external_image"])
             else:
                 h, w = self._get_image_dimensions(self.imagename)
 
             if h > 0 and w > 0:
-                self.contour_settings["dim_h"] = h
-                self.contour_settings["dim_w"] = w
+                layer["dim_h"] = h
+                layer["dim_w"] = w
                 # use default region logic
                 rms_x1 = int(w * 0.05)
                 rms_y1 = int(h * 0.05)
@@ -201,69 +382,67 @@ class ContoursMixin:
                 target_size = 800  # Smart downsampling to ~800px max dimension
                 rms_box = (40, 400, 40, 160)
 
-            if not self.contour_settings.get("use_default_rms_region", True):
-                rms_box = self.contour_settings.get("rms_box", rms_box)
+            if not layer.get("use_default_rms_region", True):
+                rms_box = layer.get("rms_box", rms_box)
             else:
-                self.contour_settings["rms_box"] = rms_box
+                layer["rms_box"] = rms_box
 
-            contour_csys = None
+            self._validate_contour_stokes(layer)
 
-            self._validate_contour_stokes()
-
-            if self.contour_settings["source"] == "same":
-                if self.imagename:
-                    stokes = self.contour_settings["stokes"]
-                    threshold = self.contour_settings.get("threshold", 5.0)
-
-                    contour_csys = self._load_contour_stokes(
-                        self.imagename, stokes, threshold, rms_box, target_size
-                    )
-                    self.current_contour_wcs = contour_csys
-                else:
-                    self.contour_settings["contour_data"] = None
-                    self.current_contour_wcs = None
+            layer["contour_data"] = None
+            layer["contour_wcs"] = None
+            layer["loaded_path"] = None
+            if layer["source"] == "same":
+                image_to_load = self.imagename or None
             else:
-                external_image = self.contour_settings["external_image"]
+                external_image = layer["external_image"]
                 if external_image and os.path.exists(external_image):
-                    stokes = self.contour_settings["stokes"]
-                    threshold = self.contour_settings.get("threshold", 5.0)
-
                     image_to_load = self._resolve_contour_image(external_image)
-
-                    contour_csys = self._load_contour_stokes(
-                        image_to_load, stokes, threshold, rms_box, target_size
-                    )
-                    self.current_contour_wcs = contour_csys
                 else:
                     print(
                         "[ERROR] load_contour_data: external image not found or empty"
                     )
-                    self.contour_settings["contour_data"] = None
-                    self.current_contour_wcs = None
+                    image_to_load = None
+
+            if image_to_load:
+                contour_data, contour_csys = self._load_contour_stokes(
+                    image_to_load,
+                    layer["stokes"],
+                    layer.get("threshold", 5.0),
+                    rms_box,
+                    target_size,
+                )
+                layer["contour_data"] = contour_data
+                layer["contour_wcs"] = contour_csys
+                layer["loaded_path"] = image_to_load
 
             main_window = self.parent()
             if main_window:
-                if self.contour_settings["contour_data"] is not None:
+                if layer["contour_data"] is not None:
                     self.show_status_message(
-                        f"Contour data loaded: {self.contour_settings['source']} image, Stokes {self.contour_settings['stokes']}"
+                        f"Contour data loaded: {contour_layer_name(layer)}"
                     )
                 else:
-                    self.show_status_message("Failed to load contour data")
+                    self.show_status_message(
+                        f"Failed to load contour data: {contour_layer_name(layer)}"
+                    )
         except Exception as e:
             print(f"[ERROR] Error loading contour data: {e}")
-            self.show_status_message(f"Error loading contour data: {e}")
-            self.contour_settings["contour_data"] = None
+            self.show_status_message(
+                f"Error loading contour data ({contour_layer_name(layer)}): {e}"
+            )
+            layer["contour_data"] = None
 
-    def _validate_contour_stokes(self):
+    def _validate_contour_stokes(self, layer):
         """Fall back to an available Stokes if the requested one isn't in the source image."""
         # Validate contour Stokes before loading
-        contour_stokes = self.contour_settings.get("stokes", "I")
+        contour_stokes = layer.get("stokes", "I")
         source_image = None
 
-        if self.contour_settings["source"] == "same":
+        if layer["source"] == "same":
             source_image = self.imagename
         else:
-            source_image = self.contour_settings.get("external_image")
+            source_image = layer.get("external_image")
 
         if source_image:
             from ..processing.stokes import get_available_stokes
@@ -297,133 +476,100 @@ class ContoursMixin:
                 QMessageBox.warning(
                     self,
                     "Contour Stokes Unavailable",
-                    f"The contour Stokes parameter '{contour_stokes}' requires "
+                    f"The contour Stokes parameter '{contour_stokes}' of "
+                    f"'{contour_layer_name(layer)}' requires "
                     f"polarization data ({', '.join(set(missing_stokes))}) that is not available "
                     f"in the source image.\n\n"
                     f"Available Stokes: {', '.join(available_stokes)}\n\n"
                     f"Switching contour to Stokes I.",
                 )
-                self.contour_settings["stokes"] = "I"
+                layer["stokes"] = "I"
                 contour_stokes = "I"
 
     def _resolve_contour_image(self, external_image):
         """Path of the contour image to load, converting its coordinate system
-        (RA/Dec <-> helioprojective) to match the base image if needed."""
-        # Check if we need to transform coordinate systems
+        (RA/Dec <-> helioprojective) to match the base image if needed.
+
+        Conversions are kept per source file (all Stokes are converted at
+        once), so layers from the same file share one.
+        """
         # Detect coordinate systems of base image and contour image
         base_csys_type = self._get_coordinate_system_from_image(self.imagename)
         contour_csys_type = self._get_coordinate_system_from_image(external_image)
-
-        # Use cached transformed file if available and from same source
-        image_to_load = external_image
-
         if (
-            self._contour_transformed_file
-            and self._contour_transformed_from == external_image
-            and os.path.exists(self._contour_transformed_file)
+            base_csys_type == "unknown"
+            or contour_csys_type == "unknown"
+            or base_csys_type == contour_csys_type
         ):
-            # Check if transformation is still needed
-            transformed_csys = self._get_coordinate_system_from_image(
-                self._contour_transformed_file
-            )
-            if transformed_csys == base_csys_type:
-                image_to_load = self._contour_transformed_file
+            return external_image
+
+        cached = self._contour_conversions.get(external_image)
+        if cached and os.path.exists(cached):
+            if self._get_coordinate_system_from_image(cached) == base_csys_type:
                 self.show_status_message(
                     f"Using cached transformed contour ({contour_csys_type}→{base_csys_type})"
                 )
-            else:
-                # Transformation no longer matches (base image changed), cleanup and retransform
-                try:
-                    os.remove(self._contour_transformed_file)
-                except Exception:
-                    pass
-                self._contour_transformed_file = None
-                self._contour_transformed_from = None
+                return cached
+            # Converted for a base image in another coordinate system
+            try:
+                os.remove(cached)
+            except Exception:
+                pass
+        self._contour_conversions.pop(external_image, None)
 
-        # Check if transformation is needed
-        if (
-            base_csys_type != "unknown"
-            and contour_csys_type != "unknown"
-            and base_csys_type != contour_csys_type
-            and image_to_load == external_image
-        ):
+        # Create temp file for coordinate-transformed contour
+        import hashlib
+        import tempfile
 
-            # Clear old cached file if external image changed
-            if self._contour_transformed_from != external_image:
-                if self._contour_transformed_file and os.path.exists(
-                    self._contour_transformed_file
-                ):
-                    try:
-                        os.remove(self._contour_transformed_file)
-                    except Exception:
-                        pass
-                self._contour_transformed_file = None
-                self._contour_transformed_from = None
+        source_id = hashlib.sha1(os.path.abspath(external_image).encode()).hexdigest()[:8]
+        transformed_path = os.path.join(
+            tempfile.gettempdir(),
+            f"sv_contour_transformed_{self._temp_file_id}_{source_id}.fits",
+        )
 
-            # Create temp file for coordinate-transformed contour
-            import tempfile
+        transform_success = False
+        if base_csys_type == "hpc" and contour_csys_type == "radec":
+            # Convert RA/Dec contour to HPC (all Stokes for full flexibility)
+            self.show_status_message("Transforming contour from RA/Dec to HPC...")
+            from ..coordinates.helioprojective import convert_and_save_hpc_all_stokes
 
-            temp_dir = tempfile.gettempdir()
-            temp_filename = f"sv_contour_transformed_{self._temp_file_id}.fits"
-            transformed_path = os.path.join(temp_dir, temp_filename)
+            transform_success = convert_and_save_hpc_all_stokes(
+                external_image, transformed_path, overwrite=True
+            )
+        elif base_csys_type == "radec" and contour_csys_type == "hpc":
+            # Convert HPC contour to RA/Dec
+            self.show_status_message("Transforming contour from HPC to RA/Dec...")
+            from ..coordinates.helioprojective import convert_hpc_to_radec
 
-            transform_success = False
+            transform_success = convert_hpc_to_radec(
+                external_image, transformed_path, overwrite=True
+            )
 
-            if base_csys_type == "hpc" and contour_csys_type == "radec":
-                # Convert RA/Dec contour to HPC (all Stokes for full flexibility)
-                self.show_status_message("Transforming contour from RA/Dec to HPC...")
-                from ..coordinates.helioprojective import (
-                    convert_and_save_hpc_all_stokes,
-                )
+        if transform_success and os.path.exists(transformed_path):
+            self._contour_conversions[external_image] = transformed_path
+            self.show_status_message(
+                f"Contour transformed ({contour_csys_type}→{base_csys_type})"
+            )
+            return transformed_path
+        print(f"[ERROR] Transformation failed, using original: {external_image}")
+        self.show_status_message(
+            "Coordinate transformation failed, using original contour"
+        )
+        return external_image
 
-                transform_success = convert_and_save_hpc_all_stokes(
-                    external_image, transformed_path, overwrite=True
-                )
-
-            elif base_csys_type == "radec" and contour_csys_type == "hpc":
-                # Convert HPC contour to RA/Dec
-                self.show_status_message("Transforming contour from HPC to RA/Dec...")
-                from ..coordinates.helioprojective import convert_hpc_to_radec
-
-                transform_success = convert_hpc_to_radec(
-                    external_image, transformed_path, overwrite=True
-                )
-
-            if transform_success and os.path.exists(transformed_path):
-                image_to_load = transformed_path
-                self._contour_transformed_file = transformed_path
-                self._contour_transformed_from = external_image
-                self.show_status_message(
-                    f"Contour transformed ({contour_csys_type}→{base_csys_type})"
-                )
-            else:
-                print(
-                    f"[ERROR] Transformation failed, using original: {external_image}"
-                )
-                self.show_status_message(
-                    "Coordinate transformation failed, using original contour"
-                )
-
-        elif (
-            contour_csys_type != "unknown"
-            and base_csys_type == contour_csys_type
-            and self._contour_transformed_from == external_image
-        ):
-            # Coordinates now match (base image changed back), cleanup temp file
-            if self._contour_transformed_file and os.path.exists(
-                self._contour_transformed_file
-            ):
-                try:
-                    os.remove(self._contour_transformed_file)
-                except Exception:
-                    pass
-            self._contour_transformed_file = None
-            self._contour_transformed_from = None
-        return image_to_load
+    def remove_contour_conversions(self):
+        """Delete the temporary converted contour images."""
+        for path in self._contour_conversions.values():
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+        self._contour_conversions.clear()
 
     def _load_contour_stokes(self, image_path, stokes, threshold, rms_box, target_size):
-        """Load contour data for a Stokes product (I/Q/U/V, X/I, L, Lfrac, PANG)
-        into contour_settings["contour_data"]; returns the image's coordsys."""
+        """Contour data for a Stokes product (I/Q/U/V, X/I, L, Lfrac, PANG):
+        returns (data, the image's coordsys)."""
         if stokes in ["I", "Q", "U", "V"]:
             pix, contour_csys, _ = get_pixel_values_from_image(
                 image_path,
@@ -432,7 +578,7 @@ class ContoursMixin:
                 rms_box,
                 target_size=target_size,
             )
-            self.contour_settings["contour_data"] = pix
+            contour_data = pix
 
         elif stokes in ["Q/I", "U/I", "V/I"]:
             from ..processing.rms import estimate_rms_near_Sun
@@ -470,7 +616,7 @@ class ContoursMixin:
             div_mask = denominator_pix != 0
             ratio = np.zeros_like(numerator_pix)
             ratio[div_mask] = numerator_pix_masked[div_mask] / denominator_pix[div_mask]
-            self.contour_settings["contour_data"] = ratio
+            contour_data = ratio
         elif stokes == "L":
             q_pix, contour_csys, _ = get_pixel_values_from_image(
                 image_path,
@@ -487,7 +633,7 @@ class ContoursMixin:
                 target_size=target_size,
             )
             l_pix = np.sqrt(q_pix**2 + u_pix**2)
-            self.contour_settings["contour_data"] = l_pix
+            contour_data = l_pix
         elif stokes == "Lfrac":
             from ..processing.rms import estimate_rms_near_Sun
 
@@ -534,7 +680,7 @@ class ContoursMixin:
             div_mask = i_pix != 0
             lfrac = np.zeros_like(l_pix)
             lfrac[div_mask] = l_pix_masked[div_mask] / i_pix[div_mask]
-            self.contour_settings["contour_data"] = lfrac
+            contour_data = lfrac
         elif stokes == "PANG":
             from ..processing.rms import estimate_rms_near_Sun
 
@@ -573,7 +719,7 @@ class ContoursMixin:
             # Mask pixels below threshold with NaN
             noise_mask = l_pix < (threshold * l_rms)
             pang[noise_mask] = np.nan
-            self.contour_settings["contour_data"] = pang
+            contour_data = pang
         else:
             pix, contour_csys, _ = get_pixel_values_from_image(
                 image_path,
@@ -582,73 +728,115 @@ class ContoursMixin:
                 rms_box,
                 target_size=target_size,
             )
-            self.contour_settings["contour_data"] = pix
-        return contour_csys
+            contour_data = pix
+        return contour_data, contour_csys
 
     def draw_contours(self, ax):
-        main_window = self.window()
-        if self.contour_settings["contour_data"] is None:
-            self.load_contour_data()
+        """Draw every enabled contour layer, and their legend."""
+        options = self.contour_options
+        layers = [layer for layer in self.contour_layers if layer.get("enabled", True)]
 
-        if self.contour_settings["contour_data"] is None:
-            print(
-                "[ERROR] draw_contours: contour_data is None after load_contour_data()"
+        # Contours never change which part of the image is shown. Matplotlib
+        # autoscales to each contour set, and one from another image is traced
+        # in that image's pixels before being mapped onto this one
+        xlim, ylim = ax.get_xlim(), ax.get_ylim()
+        data_lim = ax.dataLim.frozen()
+        autoscale = ax.get_autoscalex_on(), ax.get_autoscaley_on()
+
+        handles = []
+        for layer in layers:
+            drawn = self._draw_contour_layer(ax, layer)
+            if not options.get("legend_show_negative", False):
+                drawn = [sign for sign in drawn if sign == "pos"]
+            handles.extend(_legend_handles(layer, drawn))
+
+        ax.dataLim.set(data_lim)
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.set_autoscalex_on(autoscale[0])
+        ax.set_autoscaley_on(autoscale[1])
+
+        if handles and options.get("show_legend", True):
+            legend = ax.legend(
+                handles=handles,
+                loc=options.get("legend_loc", "upper right"),
+                fontsize=options.get("legend_fontsize", 8),
+                framealpha=0.6,
             )
-            return
+            legend.set_zorder(10)
 
-        if self.current_contour_wcs is None:
-            print("[ERROR] draw_contours: current_contour_wcs is None")
-            return
+    def _draw_contour_layer(self, ax, layer):
+        """Draw one layer; returns the signs ("pos"/"neg") it drew."""
+        main_window = self.window()
+        name = contour_layer_name(layer)
+        if layer.get("contour_data") is None:
+            self.load_contour_data(layer)
+
+        if layer.get("contour_data") is None:
+            print(f"[ERROR] draw_contours: no contour data for {name}")
+            return []
+
+        if layer.get("contour_wcs") is None:
+            print(f"[ERROR] draw_contours: no coordinate system for {name}")
+            return []
 
         # OPTIMIZATION: Fast path for same-image contours
         # When contour source is the current image, skip expensive metadata loading
         # since the data is already aligned
-        is_same_image = self.contour_settings["source"] == "same"
+        is_same_image = layer["source"] == "same"
 
-        metadata = self._contour_source_metadata(is_same_image)
+        metadata = self._contour_source_metadata(layer, is_same_image)
         if metadata is None:
-            return
+            return []
         fits_flag, header, csys, summary = metadata
 
         try:
-            self.show_status_message("Drawing contours.... Please wait...")
+            self.show_status_message(f"Drawing contours ({name}).... Please wait...")
             image_wcs_obj = getattr(self, "_cached_wcs_obj", None)
 
-            contour_data = self.contour_settings["contour_data"]
+            contour_data = layer["contour_data"]
             abs_max = np.nanmax(np.abs(contour_data))
 
-            pos_levels, neg_levels = self._compute_contour_levels(contour_data, abs_max)
+            pos_levels, neg_levels = self._compute_contour_levels(
+                layer, contour_data, abs_max
+            )
 
             transform = None
             if not is_same_image and image_wcs_obj is not None:
                 transform = self._contour_transform(
-                    contour_data, fits_flag, header, csys, summary, image_wcs_obj
+                    layer, contour_data, fits_flag, header, csys, summary, image_wcs_obj
                 )
                 if transform is False:
-                    return
+                    return []
 
             if transform is None:
-                self._draw_aligned_contours(ax, contour_data, pos_levels, neg_levels)
+                drawn = self._draw_aligned_contours(
+                    ax, layer, contour_data, pos_levels, neg_levels
+                )
             else:
-                self._draw_transformed_contours(
-                    ax, contour_data, transform, pos_levels, neg_levels
+                drawn = self._draw_transformed_contours(
+                    ax, layer, contour_data, transform, pos_levels, neg_levels
                 )
 
             if main_window:
 
                 self.show_status_message("Done. ")
+            return drawn
 
         except Exception as e:
-            print(f"[ERROR] Error drawing contours: {e}")
+            print(f"[ERROR] Error drawing contours ({name}): {e}")
             import traceback
 
             traceback.print_exc()
             main_window = self.parent()
             if main_window:
-                self.show_status_message(f"Error drawing contours: {str(e)}")
+                self.show_status_message(f"Error drawing contours ({name}): {str(e)}")
+            return []
 
-    def _draw_aligned_contours(self, ax, contour_data, pos_levels, neg_levels):
-        """Draw contours whose pixel grid is the base image's."""
+    def _draw_aligned_contours(self, ax, layer, contour_data, pos_levels, neg_levels):
+        """Draw contours whose pixel grid is the base image's.
+
+        Returns the signs ("pos"/"neg") that were drawn."""
         contour_data = self._downsample_contour_for_display(contour_data)
         display_contour_data = contour_data.transpose()
         # Pixel centres in base-image pixels (the image's pixel i is centred on i)
@@ -656,20 +844,25 @@ class ContoursMixin:
         rows = np.arange(display_contour_data.shape[0]) * ds_factor
         cols = np.arange(display_contour_data.shape[1]) * ds_factor
         args = (cols, rows, display_contour_data)
+        drawn = []
         for levels, sign, label in (
             (pos_levels, "pos", "positive"),
             (neg_levels, "neg", "negative"),
         ):
-            self._draw_contour_set(ax, args, {}, levels, sign, label)
+            if self._draw_contour_set(ax, layer, args, {}, levels, sign, label):
+                drawn.append(sign)
+        return drawn
 
     def _draw_transformed_contours(
-        self, ax, contour_data, transform, pos_levels, neg_levels
+        self, ax, layer, contour_data, transform, pos_levels, neg_levels
     ):
         """Trace contours on the contour image's own pixel grid and map the
-        lines onto the base image with ``transform``."""
+        lines onto the base image with ``transform``.
+
+        Returns the signs ("pos"/"neg") that were drawn."""
         display_contour_data = contour_data.transpose()
         step = 1
-        if self.contour_settings.get("downsample", True):
+        if self.contour_options.get("downsample", True):
             step = max(1, int(np.ceil(max(display_contour_data.shape) / 2048.0)))
         rows = np.arange(0, display_contour_data.shape[0], step)
         cols = np.arange(0, display_contour_data.shape[1], step)
@@ -677,7 +870,7 @@ class ContoursMixin:
         kwargs = {"transform": transform + ax.transData}
 
         clip = None
-        if not self.contour_settings.get("show_full_extent", True):
+        if not self.contour_options.get("show_full_extent", True):
             # Only within the base image extended by 25% on each side. A clip
             # box, so the usual clipping to the axes still applies too
             from matplotlib.transforms import Bbox, TransformedBbox
@@ -694,12 +887,14 @@ class ContoursMixin:
             )
 
         vertices = []
+        drawn = []
         for levels, sign, label in (
             (pos_levels, "pos", "positive"),
             (neg_levels, "neg", "negative"),
         ):
-            cs = self._draw_contour_set(ax, args, kwargs, levels, sign, label)
+            cs = self._draw_contour_set(ax, layer, args, kwargs, levels, sign, label)
             if cs is not None:
+                drawn.append(sign)
                 for artist in _contour_artists(cs):
                     if clip is not None:
                         artist.set_clip_box(clip)
@@ -718,14 +913,16 @@ class ContoursMixin:
             QMessageBox.warning(
                 self,
                 "No Coordinate Overlap",
-                "None of the contours fall on the base image.\n\n"
+                f"None of the contours of '{contour_layer_name(layer)}' fall on "
+                "the base image.\n\n"
                 "This typically happens when the base image and contour image "
                 "are from different observation times, causing them to point at "
                 "different sky coordinates.\n\n"
                 "Please ensure both images are from the same or similar observation time.",
             )
+        return drawn
 
-    def _draw_contour_set(self, ax, args, kwargs, levels, sign, label):
+    def _draw_contour_set(self, ax, layer, args, kwargs, levels, sign, label):
         """Draw one set of contour levels; sign is "pos" or "neg".
 
         ``args``/``kwargs`` give the data (and coordinates/transform) for
@@ -733,18 +930,17 @@ class ContoursMixin:
         """
         if not levels or len(levels) == 0:
             return None
-        settings = self.contour_settings
         style = dict(
             levels=levels,
-            colors=settings.get(f"{sign}_color", settings["color"]),
-            linewidths=settings.get(f"{sign}_linewidth", settings["linewidth"]),
-            linestyles=settings[f"{sign}_linestyle"],
+            colors=layer.get(f"{sign}_color", "white"),
+            linewidths=layer.get(f"{sign}_linewidth", 1.0),
+            linestyles=layer.get(f"{sign}_linestyle", "-" if sign == "pos" else "--"),
         )
         try:
             cs = ax.contour(*args, **kwargs, **style)
 
             # Add contour labels if enabled
-            if settings.get("show_labels", False):
+            if layer.get("show_labels", False):
                 ax.clabel(cs, inline=True, fontsize=8, fmt="%.2g")
             return cs
 
@@ -755,8 +951,8 @@ class ContoursMixin:
             )
             return None
 
-    def _contour_source_metadata(self, is_same_image):
-        """FITS header / CASA coordsys of the contour source image.
+    def _contour_source_metadata(self, layer, is_same_image):
+        """FITS header / CASA coordsys of the layer's contour source image.
 
         Returns (fits_flag, header, csys, summary), or None if it can't be read.
         """
@@ -771,24 +967,14 @@ class ContoursMixin:
             header = self._cached_fits_header or {}
             csys = self._cached_csys
             summary = self._cached_summary
-            contour_imagename = self.imagename
         else:
             # External image - need to load metadata
-            # Use transformed file if coordinate transformation was applied
-            if (
-                self._contour_transformed_file
-                and os.path.exists(self._contour_transformed_file)
-                and self._contour_transformed_from
-                == self.contour_settings.get("external_image")
-            ):
-                contour_imagename = self._contour_transformed_file
-            else:
-                contour_imagename = self.contour_settings["external_image"]
+            # (the coordinate-transformed copy if one was loaded)
+            contour_imagename = layer.get("loaded_path") or layer["external_image"]
 
             if contour_imagename.endswith(".fits") or contour_imagename.endswith(
                 ".fts"
             ):
-
                 fits_flag = True
                 try:
                     header = dict(fits_header(contour_imagename))
@@ -806,30 +992,26 @@ class ContoursMixin:
                 return None
         return fits_flag, header, csys, summary
 
-    def _compute_contour_levels(self, contour_data, abs_max):
-        """Positive/negative contour levels for the configured level_type."""
-        if self.contour_settings["level_type"] == "fraction":
+    def _compute_contour_levels(self, layer, contour_data, abs_max):
+        """Positive/negative contour levels for the layer's level_type."""
+        if layer["level_type"] == "fraction":
             vmax = np.nanmax(contour_data)
             vmin = np.nanmin(contour_data)
             if vmax > 0:
-                pos_levels = sorted(
-                    [level * abs_max for level in self.contour_settings["pos_levels"]]
-                )
+                pos_levels = sorted([level * abs_max for level in layer["pos_levels"]])
             else:
                 pos_levels = []
 
             if vmin < 0:
-                neg_levels = sorted(
-                    [level * abs_max for level in self.contour_settings["neg_levels"]]
-                )
+                neg_levels = sorted([level * abs_max for level in layer["neg_levels"]])
                 neg_levels = [-level for level in reversed(neg_levels)]
             else:
                 neg_levels = []
 
-        elif self.contour_settings["level_type"] == "sigma":
+        elif layer["level_type"] == "sigma":
             # For sigma levels, calculate RMS from the RMS box region of the contour data
             # This gives a proper noise estimate without source contamination
-            rms_box = self.contour_settings.get("rms_box", (0, 200, 0, 130))
+            rms_box = layer.get("rms_box", (0, 200, 0, 130))
 
             try:
                 # Calculate RMS from the specified region
@@ -846,24 +1028,18 @@ class ContoursMixin:
                 rms = np.nanstd(contour_data)
 
             # Positive levels: level * rms (e.g., 3σ, 6σ, 9σ...)
-            pos_levels = sorted(
-                [level * rms for level in self.contour_settings["pos_levels"]]
-            )
+            pos_levels = sorted([level * rms for level in layer["pos_levels"]])
             # Negative levels: -level * rms (e.g., -3σ, -6σ, -9σ...)
             # Must be in increasing order for matplotlib (-30, -20, -10)
-            neg_levels = sorted(
-                [-level * rms for level in self.contour_settings["neg_levels"]]
-            )
+            neg_levels = sorted([-level * rms for level in layer["neg_levels"]])
 
         else:
-            pos_levels = sorted(self.contour_settings["pos_levels"])
-            neg_levels = sorted(
-                [-level for level in reversed(self.contour_settings["neg_levels"])]
-            )
+            pos_levels = sorted(layer["pos_levels"])
+            neg_levels = sorted([-level for level in reversed(layer["neg_levels"])])
         return pos_levels, neg_levels
 
     def _contour_transform(
-        self, contour_data, fits_flag, header, csys, summary, image_wcs_obj
+        self, layer, contour_data, fits_flag, header, csys, summary, image_wcs_obj
     ):
         """Mapping from contour-image pixels to base-image pixels.
 
@@ -873,14 +1049,15 @@ class ContoursMixin:
         """
         try:
             contour_wcs = self._build_display_wcs(
-                self.current_contour_wcs, fits_flag, header, csys, summary
+                layer["contour_wcs"], fits_flag, header, csys, summary
             )
         except Exception as e:
             contour_wcs = None
             print(f"[ERROR] Could not read the contour image's coordinates: {e}")
         if contour_wcs is None:
             self.show_status_message(
-                "Contours not drawn: could not read the contour image's coordinates"
+                f"Contours not drawn ({contour_layer_name(layer)}): "
+                "could not read the contour image's coordinates"
             )
             return False
 
@@ -909,7 +1086,8 @@ class ContoursMixin:
             except Exception as e2:
                 print(f"[ERROR] Cannot map contour coordinates onto the image: {e2}")
                 self.show_status_message(
-                    f"Contours not drawn: cannot map their coordinates onto the image ({e2})"
+                    f"Contours not drawn ({contour_layer_name(layer)}): cannot map "
+                    f"their coordinates onto the image ({e2})"
                 )
                 return False
         return _PixelToPixel(mapping)
@@ -919,7 +1097,7 @@ class ContoursMixin:
         # Handle manual downsampling for "Same Image" or aligned images
         # This ensures large images are still downsampled for performance
         self._contour_ds_factor = 1  # Default
-        if self.contour_settings.get("downsample", True):
+        if self.contour_options.get("downsample", True):
             max_dim = max(contour_data.shape)
             if max_dim > 2048:
                 factor = int(np.ceil(max_dim / 2048.0))
@@ -930,6 +1108,26 @@ class ContoursMixin:
                 contour_data = contour_data[::factor, ::factor]
                 self._contour_ds_factor = factor
         return contour_data
+
+
+def _legend_handles(layer, drawn):
+    """Legend entries for a layer's drawn positive/negative contours."""
+    from matplotlib.lines import Line2D
+
+    name = contour_layer_name(layer)
+    handles = []
+    for sign in drawn:
+        handles.append(
+            Line2D(
+                [],
+                [],
+                color=layer.get(f"{sign}_color", "white"),
+                linewidth=layer.get(f"{sign}_linewidth", 1.0),
+                linestyle=layer.get(f"{sign}_linestyle", "-" if sign == "pos" else "--"),
+                label=name if sign == "pos" else f"{name} (−)",
+            )
+        )
+    return handles
 
 
 def _contour_artists(cs):

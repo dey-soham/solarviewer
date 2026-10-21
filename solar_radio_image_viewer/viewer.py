@@ -97,6 +97,7 @@ from .core import (
     RemoteModeMixin,
 )
 from .processing.fits_io import readable_image_path
+from .core.contours import default_contour_options, new_contour_layer
 from .processing.image_meta import casa_info, fits_header
 from .processing.prefetch import image_prefetcher
 
@@ -170,7 +171,6 @@ class SolarRadioImageTab(
         self.stokes_combo = None
         self.current_image_data = None
         self.current_wcs = None
-        self.current_contour_wcs = None
         self.psf = None
         self.current_roi = None
         self.roi_selector = None
@@ -251,16 +251,8 @@ class SolarRadioImageTab(
         )
         self._radec_temp_file = None  # Path to RA/Dec temp file (from HPC->RA/Dec)
 
-        # Contour coordinate transformation state
-        self._contour_transformed_file = (
-            None  # Path to coordinate-transformed contour file
-        )
-        self._contour_transformed_from = (
-            None  # Original external image that was transformed
-        )
-        self._contour_was_transformed = (
-            False  # Flag to skip reprojection when transformation aligned coordinates
-        )
+        # Coordinate-transformed copies of contour images, by source path
+        self._contour_conversions = {}
 
         # Track non-modal dialogs to prevent garbage collection
         self._open_dialogs = []
@@ -282,26 +274,9 @@ class SolarRadioImageTab(
         # Debounce timers for UI responsiveness
         self._gamma_debounce_timer = None
 
-        self.contour_settings = {
-            "source": "same",
-            "external_image": "",
-            "stokes": "I",
-            "pos_levels": [0.1, 0.3, 0.5, 0.7, 0.9],
-            "neg_levels": [0.1, 0.3, 0.5, 0.7, 0.9],
-            "levels": [0.1, 0.3, 0.5, 0.7, 0.9],
-            "level_type": "fraction",
-            "color": "white",
-            "linewidth": 1.0,
-            "pos_linestyle": "-",
-            "neg_linestyle": "--",
-            "linestyle": "-",
-            "contour_data": None,
-            "use_default_rms_region": True,
-            "rms_box": (0, 200, 0, 130),
-            "show_full_extent": True,  # If False, only contours within 1.5x the base image
-            "dim_h": 0,
-            "dim_w": 0,
-        }
+        # Contour layers (up to MAX_CONTOUR_LAYERS) and options shared by all
+        self.contour_layers = [new_contour_layer()]
+        self.contour_options = default_contour_options()
 
         # Plot customization settings
         self.plot_settings = {
@@ -610,8 +585,7 @@ class SolarRadioImageTab(
 
             # Invalidate contour data when downsample mode changes
             # This ensures contour data will be reloaded at the correct resolution
-            self.contour_settings["contour_data"] = None
-            self.current_contour_wcs = None
+            self.invalidate_contours()
 
             # If image is already loaded, reload it with new downsample setting
             if self.current_image_data is not None and self.imagename:
@@ -2372,7 +2346,9 @@ class SolarRadioImageTab(
                     y1 = int(0.02 * height)
                     y2 = int(0.20 * height)
                     self.current_rms_box = [x1, x2, y1, y2]
-                    self.contour_settings["rms_box"] = tuple(self.current_rms_box)
+                    for layer in self.contour_layers:
+                        if layer["source"] == "same":
+                            layer["rms_box"] = tuple(self.current_rms_box)
 
                 # Update image stats when data is loaded
                 try:
@@ -3058,16 +3034,9 @@ class SolarRadioImageTab(
                     os.remove(self._tb_temp_file)
                 except Exception:
                     pass
-        # Clean up contour coordinate transformation temp file if exists
-        if (
-            hasattr(self, "_contour_transformed_file")
-            and self._contour_transformed_file
-        ):
-            if os.path.exists(self._contour_transformed_file):
-                try:
-                    os.remove(self._contour_transformed_file)
-                except Exception:
-                    pass
+        # Clean up coordinate-transformed contour images
+        if hasattr(self, "_contour_conversions"):
+            self.remove_contour_conversions()
         super().closeEvent(event)
 
     def _update_overlay_toggle_styles(self):

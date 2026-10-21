@@ -802,7 +802,10 @@ class TutorialDialog(QDialog):
         layout.setContentsMargins(0, 0, 15, 15)
         layout.setSpacing(15)
 
-        intro = QLabel("Overlay contours from the current image or external images.")
+        intro = QLabel(
+            "Overlay contours from the current image or external images, "
+            "up to ten layers at once."
+        )
         intro.setWordWrap(True)
         intro.setStyleSheet(
             f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
@@ -846,6 +849,18 @@ class TutorialDialog(QDialog):
         )
 
         layout.addWidget(
+            self._create_step(
+                5,
+                "Add More Layers",
+                "Use '+ Add' or 'Duplicate' in the Layers list to overlay up to ten "
+                "contour sets, e.g. Stokes I and V of one file, or several files. "
+                "Each layer has its own source, levels and colour; untick a layer "
+                "to hide it. 'Show legend' names each layer on the image; its "
+                "position and font size can be set there too.",
+            )
+        )
+
+        layout.addWidget(
             self._create_info_box(
                 "🔄",
                 "Coordinate Matching",
@@ -853,7 +868,7 @@ class TutorialDialog(QDialog):
                     "Contours automatically aligned to the base image",
                     "Works across RA/Dec ↔ Helioprojective transformations",
                     "Different pixel scales handled automatically",
-                    "Enable 'Show full extent' for contours beyond image boundaries",
+                    "Untick 'Full extent' to keep contours within 1.5x the image",
                 ],
             )
         )

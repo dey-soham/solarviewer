@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import QApplication
 from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
 from ..processing.image_meta import casa_info, fits_header
 from ..processing.colormaps import ensure_solar_colormaps
+from .contours import contour_layer_settings
 from .display_resolution import draw_at_screen_resolution
 from .presets import display_range
 from ..processing.fits_io import readable_image_path
@@ -31,7 +32,7 @@ class RenderingMixin:
 
     Host attributes/methods used:
 
-    ``arrow_annotations``, ``beam_style``, ``canvas``, ``contour_settings``,
+    ``arrow_annotations``, ``beam_style``, ``canvas``, ``contour_layers``,
     ``current_image_data``, ``current_wcs``, ``draw_contours``,
     ``_draw_solar_disk``, ``figure``, ``grid_style``, ``imagename``,
     ``init_region_editor``, ``plot_settings``, ``psf``, ``shape_annotations``,
@@ -60,28 +61,13 @@ class RenderingMixin:
             "show_contours": self.show_contours_checkbox.isChecked(),
         }
 
-        # Settings snapshots
-        exclude_keys = {
-            "contour_data",
-            "contour_wcs",
-            "contour_header",
-            "wcs",
-            "header",
-            "data",
-        }
-        cs_snap = {
-            k: self.contour_settings[k]
-            for k in self.contour_settings
-            if k not in exclude_keys
-        }
-
-        # Track identity of heavy objects separately if needed (only if they exist)
-        if "contour_data" in self.contour_settings:
-            state["contour_data_id"] = id(self.contour_settings["contour_data"])
-        else:
-            state["contour_data_id"] = None
-
-        state["contour_settings"] = str(cs_snap)
+        # Settings snapshots (identity of loaded contour data tracked separately)
+        state["contour_data_id"] = tuple(
+            id(layer.get("contour_data")) for layer in self.contour_layers
+        )
+        state["contour_settings"] = str(
+            [contour_layer_settings(layer) for layer in self.contour_layers]
+        ) + str(self.contour_options)
 
         state["grid_settings"] = str(self.grid_style)
         state["beam_settings"] = str(self.beam_style)

@@ -20,7 +20,7 @@ class FileNavigationMixin:
 
     Host attributes/methods used:
 
-    ``contour_settings``, ``dir_entry``, ``figure``, ``_file_pos_label``,
+    ``contour_layers``, ``dir_entry``, ``figure``, ``_file_pos_label``,
     ``_first_file_btn``, ``_last_file_btn``, ``_next_file_btn``,
     ``on_visualization_changed``, ``_open_dialogs``, ``_prev_file_btn``,
     ``_load_target_size``, ``radio_casa_image``, ``_reset_hpc_state``,
@@ -71,8 +71,7 @@ class FileNavigationMixin:
                 self.imagename = directory
                 self.dir_entry.setText(directory)
                 # Clear contour data so it gets reloaded for new image
-                self.contour_settings["contour_data"] = None
-                self.current_contour_wcs = None
+                self.invalidate_contours()
                 # Clear figure to prevent restoring old view limits
                 self.figure.clear()
                 self.on_visualization_changed(dir_load=True)
@@ -97,8 +96,7 @@ class FileNavigationMixin:
                 self.imagename = file_path
                 self.dir_entry.setText(file_path)
                 # Clear contour data so it gets reloaded for new image
-                self.contour_settings["contour_data"] = None
-                self.current_contour_wcs = None
+                self.invalidate_contours()
                 # Clear figure to prevent restoring old view limits
                 self.figure.clear()
                 self.on_visualization_changed(dir_load=True)
@@ -139,8 +137,7 @@ class FileNavigationMixin:
                 self._reset_hpc_state()
                 self.imagename = local_path
                 self.dir_entry.setText(local_path)
-                self.contour_settings["contour_data"] = None
-                self.current_contour_wcs = None
+                self.invalidate_contours()
                 self.figure.clear()
                 self.on_visualization_changed(dir_load=True)
                 self.update_tab_name_from_path(local_path)
@@ -692,8 +689,7 @@ except Exception:
             self._reset_hpc_state()
             self.imagename = local_path
             self.dir_entry.setText(local_path)
-            self.contour_settings["contour_data"] = None
-            self.current_contour_wcs = None
+            self.invalidate_contours()
             self.figure.clear()
             self.on_visualization_changed(dir_load=True)
             self.update_tab_name_from_path(local_path)
@@ -731,8 +727,7 @@ except Exception:
         # Load the file
         self.imagename = new_path
         self.dir_entry.setText(new_path)
-        self.contour_settings["contour_data"] = None
-        self.current_contour_wcs = None
+        self.invalidate_contours()
         # Clear figure to prevent restoring old view limits
         self.figure.clear()
         self.on_visualization_changed(dir_load=True)
@@ -766,8 +761,7 @@ except Exception:
         # Load the file
         self.imagename = new_path
         self.dir_entry.setText(new_path)
-        self.contour_settings["contour_data"] = None
-        self.current_contour_wcs = None
+        self.invalidate_contours()
         # Clear figure to prevent restoring old view limits
         self.figure.clear()
         self.on_visualization_changed(dir_load=True)
@@ -800,8 +794,7 @@ except Exception:
         # Load the file
         self.imagename = new_path
         self.dir_entry.setText(new_path)
-        self.contour_settings["contour_data"] = None
-        self.current_contour_wcs = None
+        self.invalidate_contours()
         # Clear figure to prevent restoring old view limits
         self.figure.clear()
         self.on_visualization_changed(dir_load=True)
@@ -834,8 +827,7 @@ except Exception:
         # Load the file
         self.imagename = new_path
         self.dir_entry.setText(new_path)
-        self.contour_settings["contour_data"] = None
-        self.current_contour_wcs = None
+        self.invalidate_contours()
         # Clear figure to prevent restoring old view limits
         self.figure.clear()
         self.on_visualization_changed(dir_load=True)
@@ -1105,8 +1097,7 @@ except Exception:
                 # Load the file
                 viewer.imagename = new_path
                 viewer.dir_entry.setText(new_path)
-                viewer.contour_settings["contour_data"] = None
-                viewer.current_contour_wcs = None
+                viewer.invalidate_contours()
                 # Clear figure to prevent restoring old view limits
                 viewer.figure.clear()
                 viewer.on_visualization_changed(dir_load=True)

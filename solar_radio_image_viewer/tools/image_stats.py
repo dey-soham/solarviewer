@@ -27,7 +27,7 @@ class ImageStatsMixin:
 
     Host attributes/methods used:
 
-    ``cmap_combo``, ``contour_settings``, ``gamma_entry``, ``image_info_label``,
+    ``cmap_combo``, ``contour_layers``, ``gamma_entry``, ``image_info_label``,
     ``image_stats_table``, ``imagename``, ``plot_image``,
     ``show_status_message``, ``stokes_combo``, ``stretch_combo``,
     ``threshold_entry``, ``vmax_entry``, ``vmin_entry``
@@ -278,8 +278,10 @@ class ImageStatsMixin:
             # Store the current RMS box values
             self.current_rms_box = [x1, x2, y1, y2]
 
-            # Update the contour settings RMS box as well
-            self.contour_settings["rms_box"] = tuple(self.current_rms_box)
+            # Update the RMS box of contours from this image as well
+            for layer in self.contour_layers:
+                if layer["source"] == "same":
+                    layer["rms_box"] = tuple(self.current_rms_box)
 
             # Update image stats with new RMS box
             if self.current_image_data is not None:

@@ -123,8 +123,7 @@ class RemoteModeMixin:
             current_tab._reset_hpc_state()
             current_tab.imagename = local_path
             current_tab.dir_entry.setText(local_path)
-            current_tab.contour_settings["contour_data"] = None
-            current_tab.current_contour_wcs = None
+            current_tab.invalidate_contours()
             current_tab.figure.clear()
             current_tab.on_visualization_changed(dir_load=True)
             current_tab.update_tab_name_from_path(local_path)

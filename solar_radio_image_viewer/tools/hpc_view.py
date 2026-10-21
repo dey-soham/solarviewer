@@ -17,7 +17,7 @@ class HpcViewMixin:
 
     Host attributes/methods used:
 
-    ``contour_settings``, ``figure``, ``hpc_btn``, ``load_contour_data``,
+    ``contour_layers``, ``figure``, ``hpc_btn``, ``load_contour_data``,
     ``on_visualization_changed``, ``schedule_plot``, ``show_contours_checkbox``,
     ``show_status_message``, ``tb_btn``, ``_temp_file_id``, ``threshold_entry``,
     ``update_tab_name_from_path``
@@ -102,8 +102,7 @@ class HpcViewMixin:
             self._hpc_temp_file = temp_hpc_file
 
             # Clear old contour data (stale WCS would cause reprojection failures)
-            self.contour_settings["contour_data"] = None
-            self.current_contour_wcs = None
+            self.invalidate_contours()
 
             # Load the HPC FITS file in the main canvas
             self.imagename = temp_hpc_file
@@ -199,8 +198,7 @@ class HpcViewMixin:
                 self.imagename = self._radec_temp_file
 
             # Clear old contour data (stale WCS would cause reprojection failures)
-            self.contour_settings["contour_data"] = None
-            self.current_contour_wcs = None
+            self.invalidate_contours()
 
             # Reload image
             # Clear figure to prevent restoring old view limits
@@ -275,8 +273,7 @@ class HpcViewMixin:
                 self._radec_temp_file = None
 
             # Clear old contour data
-            self.contour_settings["contour_data"] = None
-            self.current_contour_wcs = None
+            self.invalidate_contours()
 
             # Reload HPC image
             # Clear figure to prevent restoring old view limits

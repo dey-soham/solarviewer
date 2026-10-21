@@ -17,24 +17,62 @@ from PyQt5.QtWidgets import (
     QWidget,
     QFrame,
     QTabWidget,
+    QListWidget,
+    QListWidgetItem,
+    QAbstractItemView,
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt
 import os
 
+from ..core.contours import (
+    CONTOUR_COLOR_NAMES,
+    CONTOUR_LAYER_COLORS,
+    MAX_CONTOUR_LAYERS,
+    contour_layer_name,
+    contour_layer_settings,
+    default_contour_options,
+    new_contour_layer,
+)
 from ..ui.icons import get_resource_path
 from ..ui.styles import set_hand_cursor
 
+# Offered after the default palette; not all of these suit colour-blind viewers
+EXTRA_COLORS = [
+    ("Red", "red"),
+    ("Green", "green"),
+    ("Pure blue", "blue"),
+    ("Cyan", "cyan"),
+    ("Magenta", "magenta"),
+    ("Lime", "lime"),
+]
 
+LEGEND_POSITIONS = [
+    ("Upper right", "upper right"),
+    ("Upper left", "upper left"),
+    ("Lower right", "lower right"),
+    ("Lower left", "lower left"),
+    ("Best", "best"),
+]
 
 
 class ContourSettingsDialog(QDialog):
-    """Dialog for configuring contour settings with a more compact layout."""
+    """Dialog for configuring contour layers (up to MAX_CONTOUR_LAYERS).
 
-    def __init__(self, parent=None, settings=None):
+    The list on the left holds the layers; the tabs edit the selected one.
+    """
+
+    def __init__(self, parent=None, layers=None, options=None):
         super().__init__(parent)
         self.setWindowTitle("Contour Settings")
-        self.settings = settings.copy() if settings else {}
+        self.layers = [contour_layer_settings(layer) for layer in (layers or [])]
+        if not self.layers:
+            self.layers = [contour_layer_settings(new_contour_layer())]
+        self.options = dict(default_contour_options(), **(options or {}))
+        self._current_row = 0
+        self._loading_layer = False
+        # Widgets are built from the first layer's settings
+        self.settings = self.layers[0]
 
         # Import theme manager for theme-aware styling
         try:
@@ -153,6 +191,21 @@ class ContourSettingsDialog(QDialog):
             QLabel:disabled {{
                 color: {disabled_color};
             }}
+            QListWidget {{
+                background-color: {base_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 4px;
+            }}
+            QListWidget::item {{
+                padding: 6px 4px;
+                border-radius: 4px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {highlight_color};
+                color: #ffffff;
+            }}
         """
         )
 
@@ -164,8 +217,6 @@ class ContourSettingsDialog(QDialog):
         set_hand_cursor(self)
 
     def setup_ui(self):
-        from PyQt5.QtGui import QPixmap, QColor
-
         # Get theme colors for styling
         try:
             from ..ui.styles import theme_manager
@@ -191,6 +242,23 @@ class ContourSettingsDialog(QDialog):
         source_layout = QVBoxLayout(source_tab)
         source_layout.setSpacing(20)
         source_layout.setContentsMargins(20, 20, 20, 20)
+
+        # Layer label (legend text)
+        label_row = QHBoxLayout()
+        label_row.setSpacing(20)
+        layer_label_label = QLabel("Label:")
+        layer_label_label.setStyleSheet("font-weight: 600;")
+        label_row.addWidget(layer_label_label)
+        self.layer_label_edit = QLineEdit(self.settings.get("label", ""))
+        self.layer_label_edit.setPlaceholderText(
+            contour_layer_name(dict(self.settings, label=""))
+        )
+        self.layer_label_edit.setToolTip(
+            "Name of this layer in the legend.\n"
+            "Leave empty to name it after its source and Stokes."
+        )
+        label_row.addWidget(self.layer_label_edit, 1)
+        source_layout.addLayout(label_row)
 
         # Source selection
         source_row = QHBoxLayout()
@@ -424,30 +492,16 @@ class ContourSettingsDialog(QDialog):
         appearance_layout.setSpacing(16)
         appearance_layout.setContentsMargins(20, 20, 20, 20)
 
-        colors = [
-            "white",
-            "black",
-            "red",
-            "green",
-            "blue",
-            "yellow",
-            "cyan",
-            "magenta",
-            "orange",
-            "lime",
-        ]
-
-        # Helper to create color combo
+        # Helper to create color combo: the default palette, then the extras
         def create_color_combo(default_color):
             combo = QComboBox()
-            for color in colors:
-                combo.addItem(color)
-                idx = combo.count() - 1
-                pixmap = QPixmap(16, 16)
-                pixmap.fill(QColor(color))
-                combo.setItemIcon(idx, QIcon(pixmap))
-            combo.setCurrentText(default_color)
-            combo.setMinimumWidth(110)
+            for color in CONTOUR_LAYER_COLORS:
+                self._add_color_item(combo, CONTOUR_COLOR_NAMES[color], color)
+            combo.insertSeparator(combo.count())
+            for name, color in EXTRA_COLORS:
+                self._add_color_item(combo, name, color)
+            self._set_color(combo, default_color)
+            combo.setMinimumWidth(140)
             return combo
 
         # ===== Positive Contours Section =====
@@ -552,22 +606,6 @@ class ContourSettingsDialog(QDialog):
         )
         options_row.addWidget(self.show_labels_checkbox)
 
-        self.show_full_extent_checkbox = QCheckBox("Full extent")
-        self.show_full_extent_checkbox.setChecked(
-            self.settings.get("show_full_extent", True)
-        )
-        self.show_full_extent_checkbox.setToolTip(
-            "Show contours beyond 1.5x image boundaries"
-        )
-        options_row.addWidget(self.show_full_extent_checkbox)
-
-        self.downsample_checkbox = QCheckBox("Downsample")
-        self.downsample_checkbox.setChecked(self.settings.get("downsample", True))
-        self.downsample_checkbox.setToolTip(
-            "Trace contours on at most 2048x2048 pixels of large contour images (faster)"
-        )
-        options_row.addWidget(self.downsample_checkbox)
-
         options_row.addStretch()
         appearance_layout.addLayout(options_row)
 
@@ -645,13 +683,90 @@ class ContourSettingsDialog(QDialog):
 
         self.tab_widget.addTab(rms_tab, "RMS")
 
-        main_layout.addWidget(self.tab_widget)
+        body_row = QHBoxLayout()
+        body_row.setSpacing(12)
+        body_row.addWidget(self._build_layer_panel(text_secondary))
+        body_row.addWidget(self.tab_widget, 1)
+        main_layout.addLayout(body_row)
+
+        # ========== OPTIONS SHARED BY ALL LAYERS ==========
+        legend_row = QHBoxLayout()
+        legend_row.setSpacing(12)
+
+        self.show_legend_checkbox = QCheckBox("Show legend")
+        self.show_legend_checkbox.setChecked(self.options.get("show_legend", True))
+        self.show_legend_checkbox.setToolTip("Show a legend naming each contour layer")
+        legend_row.addWidget(self.show_legend_checkbox)
+
+        self.legend_loc_combo = QComboBox()
+        for text, value in LEGEND_POSITIONS:
+            self.legend_loc_combo.addItem(text, value)
+        index = self.legend_loc_combo.findData(self.options.get("legend_loc", "upper right"))
+        self.legend_loc_combo.setCurrentIndex(max(index, 0))
+        self.legend_loc_combo.setToolTip("Where the legend is placed on the image")
+        legend_row.addWidget(self.legend_loc_combo)
+
+        self.legend_fontsize_label = QLabel("Font size:")
+        legend_row.addWidget(self.legend_fontsize_label)
+        self.legend_fontsize_spin = QSpinBox()
+        self.legend_fontsize_spin.setRange(5, 24)
+        self.legend_fontsize_spin.setValue(int(self.options.get("legend_fontsize", 8)))
+        self.legend_fontsize_spin.setToolTip("Size of the legend text, in points")
+        legend_row.addWidget(self.legend_fontsize_spin)
+
+        self.legend_negative_checkbox = QCheckBox("Include negative contours")
+        self.legend_negative_checkbox.setChecked(
+            self.options.get("legend_show_negative", False)
+        )
+        self.legend_negative_checkbox.setToolTip(
+            "Also list each layer's negative (dashed) contours in the legend"
+        )
+        legend_row.addWidget(self.legend_negative_checkbox)
+        legend_row.addStretch()
+
+        legend_controls = (
+            self.legend_loc_combo,
+            self.legend_fontsize_label,
+            self.legend_fontsize_spin,
+            self.legend_negative_checkbox,
+        )
+
+        def enable_legend_controls(enabled):
+            for widget in legend_controls:
+                widget.setEnabled(enabled)
+
+        self.show_legend_checkbox.toggled.connect(enable_legend_controls)
+        enable_legend_controls(self.show_legend_checkbox.isChecked())
+        main_layout.addLayout(legend_row)
+
+        shared_row = QHBoxLayout()
+        shared_row.setSpacing(20)
+
+        self.show_full_extent_checkbox = QCheckBox("Full extent")
+        self.show_full_extent_checkbox.setChecked(
+            self.options.get("show_full_extent", True)
+        )
+        self.show_full_extent_checkbox.setToolTip(
+            "Show contours beyond 1.5x image boundaries"
+        )
+        shared_row.addWidget(self.show_full_extent_checkbox)
+
+        self.downsample_checkbox = QCheckBox("Downsample")
+        self.downsample_checkbox.setChecked(self.options.get("downsample", True))
+        self.downsample_checkbox.setToolTip(
+            "Trace contours on at most 2048x2048 pixels of large contour images (faster)"
+        )
+        shared_row.addWidget(self.downsample_checkbox)
+
+        shared_row.addStretch()
+        main_layout.addLayout(shared_row)
 
         # ========== BUTTON BOX ==========
         button_row = QHBoxLayout()
         button_row.setSpacing(12)
 
-        reset_btn = QPushButton("Reset to Defaults")
+        reset_btn = QPushButton("Reset Layer")
+        reset_btn.setToolTip("Reset the selected layer's settings to the defaults")
         reset_btn.setStyleSheet(
             f"""
             QPushButton {{
@@ -810,7 +925,10 @@ class ContourSettingsDialog(QDialog):
             self.neg_levels_edit.setText(", ".join(str(l) for l in neg))
 
     def _reset_to_defaults(self):
-        """Reset all dialog settings to default values."""
+        """Reset the selected layer's settings to default values."""
+        color = CONTOUR_LAYER_COLORS[self._current_row % len(CONTOUR_LAYER_COLORS)]
+        self.layer_label_edit.clear()
+
         # Source
         self.same_image_radio.setChecked(True)
         self.file_path_edit.clear()
@@ -825,17 +943,14 @@ class ContourSettingsDialog(QDialog):
         self.neg_levels_edit.setText("0.1, 0.3, 0.5, 0.7, 0.9")
 
         # Appearance
-        self.pos_color_combo.setCurrentText("white")
-        self.neg_color_combo.setCurrentText("white")
+        self._set_color(self.pos_color_combo, color)
+        self._set_color(self.neg_color_combo, color)
         self.pos_linewidth_spin.setValue(1.0)
         self.neg_linewidth_spin.setValue(1.0)
         self.pos_linestyle_combo.setCurrentIndex(0)  # Solid
         self.neg_linestyle_combo.setCurrentIndex(1)  # Dashed
         if hasattr(self, "show_labels_checkbox"):
             self.show_labels_checkbox.setChecked(False)
-        self.show_full_extent_checkbox.setChecked(True)
-        if hasattr(self, "downsample_checkbox"):
-            self.downsample_checkbox.setChecked(True)
 
         # RMS
         self.use_default_rms_box.setChecked(True)
@@ -995,20 +1110,13 @@ class ContourSettingsDialog(QDialog):
                 self._update_stokes_combo_for_external(external_path)
 
     def update_dimensions_label(self, w, h):
-        """Update the image dimensions label and settings."""
+        """Update the image dimensions label."""
         try:
             if hasattr(self, "rms_dims_label") and self.rms_dims_label:
                 dim_text = f"{w} x {h}" if w > 0 and h > 0 else "Unknown"
                 self.rms_dims_label.setText(f"Contour Dimensions: {dim_text}")
         except RuntimeError:
             # Handle case where QLabel has been deleted
-            pass
-            
-        # Also update internal settings to reflect current state
-        try:
-            self.settings["dim_w"] = w
-            self.settings["dim_h"] = h
-        except (RuntimeError, AttributeError):
             pass
 
     def _update_threshold_visibility(self):
@@ -1022,8 +1130,273 @@ class ContourSettingsDialog(QDialog):
         self.threshold_label.setEnabled(is_derived)
         self.threshold_spin.setEnabled(is_derived)
 
-    def get_settings(self):
-        settings = {}
+    # ---------- Layers ----------
+
+    def _build_layer_panel(self, text_secondary):
+        """The layer list with Add / Duplicate / Remove."""
+        panel = QWidget()
+        panel.setFixedWidth(280)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header = QLabel("Layers")
+        header.setStyleSheet("font-weight: 600; font-size: 11pt;")
+        layout.addWidget(header)
+
+        self.layer_list = QListWidget()
+        self.layer_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.layer_list.setToolTip(
+            "Contour layers drawn on the image.\n"
+            "Tick to show, untick to hide; select one to edit it."
+        )
+        layout.addWidget(self.layer_list, 1)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        self.add_layer_btn = QPushButton("+ Add")
+        self.add_layer_btn.setToolTip("Add a contour layer")
+        self.add_layer_btn.clicked.connect(self._add_layer)
+        buttons.addWidget(self.add_layer_btn)
+        self.duplicate_layer_btn = QPushButton("Duplicate")
+        self.duplicate_layer_btn.setToolTip(
+            "Copy the selected layer, e.g. to show another Stokes of the same file"
+        )
+        self.duplicate_layer_btn.clicked.connect(self._duplicate_layer)
+        buttons.addWidget(self.duplicate_layer_btn)
+        self.remove_layer_btn = QPushButton("Remove")
+        self.remove_layer_btn.clicked.connect(self._remove_layer)
+        buttons.addWidget(self.remove_layer_btn)
+        layout.addLayout(buttons)
+
+        self.layer_count_label = QLabel()
+        self.layer_count_label.setStyleSheet(f"color: {text_secondary}; font-size: 9pt;")
+        layout.addWidget(self.layer_count_label)
+
+        for layer in self.layers:
+            self.layer_list.addItem(self._new_layer_item(layer))
+        self.layer_list.setCurrentRow(0)
+        self.layer_list.currentRowChanged.connect(self._on_layer_selected)
+        self.layer_list.itemChanged.connect(self._on_layer_item_changed)
+        self._update_layer_buttons()
+
+        # Keep the list entry's name and colour in step with the edits
+        self.layer_label_edit.textChanged.connect(self._on_layer_edited)
+        self.stokes_combo.currentTextChanged.connect(self._on_layer_edited)
+        self.file_path_edit.textChanged.connect(self._on_layer_edited)
+        self.same_image_radio.toggled.connect(self._on_layer_edited)
+        self.pos_color_combo.currentIndexChanged.connect(self._on_pos_color_changed)
+        return panel
+
+    def _new_layer_item(self, layer):
+        item = QListWidgetItem()
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        self._show_layer_on_item(item, layer)
+        return item
+
+    def _show_layer_on_item(self, item, layer):
+        from PyQt5.QtGui import QColor, QPainter, QPixmap
+
+        self.layer_list.blockSignals(True)
+        item.setText(contour_layer_name(layer))
+        # Colour swatch with an outline, so white and black show on any theme
+        pixmap = QPixmap(14, 14)
+        pixmap.fill(QColor(layer.get("pos_color", "white")))
+        painter = QPainter(pixmap)
+        painter.setPen(QColor(128, 128, 128))
+        painter.drawRect(0, 0, 13, 13)
+        painter.end()
+        item.setIcon(QIcon(pixmap))
+        item.setCheckState(Qt.Checked if layer.get("enabled", True) else Qt.Unchecked)
+        self.layer_list.blockSignals(False)
+
+    def _update_layer_buttons(self):
+        count = len(self.layers)
+        full = count >= MAX_CONTOUR_LAYERS
+        self.add_layer_btn.setEnabled(not full)
+        self.duplicate_layer_btn.setEnabled(not full)
+        self.remove_layer_btn.setEnabled(count > 1)
+        self.layer_count_label.setText(
+            f"{count} of {MAX_CONTOUR_LAYERS} layers"
+            + (" (maximum reached)" if full else "")
+        )
+
+    def _unused_color(self):
+        used = {layer.get(key) for layer in self.layers for key in ("pos_color", "neg_color")}
+        for color in CONTOUR_LAYER_COLORS:
+            if color not in used:
+                return color
+        return CONTOUR_LAYER_COLORS[len(self.layers) % len(CONTOUR_LAYER_COLORS)]
+
+    def _append_layer(self, layer):
+        self._store_current_layer()
+        self.layers.append(layer)
+        self.layer_list.addItem(self._new_layer_item(layer))
+        self.layer_list.setCurrentRow(len(self.layers) - 1)
+        self._update_layer_buttons()
+
+    def _add_layer(self):
+        if len(self.layers) >= MAX_CONTOUR_LAYERS:
+            return
+        color = self._unused_color()
+        layer = contour_layer_settings(
+            new_contour_layer(pos_color=color, neg_color=color)
+        )
+        self._append_layer(layer)
+        self.tab_widget.setCurrentIndex(0)
+
+    def _duplicate_layer(self):
+        if len(self.layers) >= MAX_CONTOUR_LAYERS:
+            return
+        self._store_current_layer()
+        color = self._unused_color()
+        layer = dict(self.layers[self._current_row])
+        layer.update(
+            id=new_contour_layer()["id"], label="", pos_color=color, neg_color=color
+        )
+        self._append_layer(layer)
+        # Most often the copy is for another Stokes of the same source
+        self.tab_widget.setCurrentIndex(0)
+        self.stokes_combo.setFocus()
+
+    def _remove_layer(self):
+        if len(self.layers) <= 1:
+            return
+        row = self._current_row
+        del self.layers[row]
+        self._loading_layer = True  # the removed layer must not be stored back
+        self.layer_list.takeItem(row)
+        self._loading_layer = False
+        self._current_row = min(row, len(self.layers) - 1)
+        self.layer_list.setCurrentRow(self._current_row)
+        self._load_layer_into_widgets(self.layers[self._current_row])
+        self._update_layer_buttons()
+
+    def _on_layer_selected(self, row):
+        if self._loading_layer or row < 0 or row >= len(self.layers):
+            return
+        self._store_current_layer()
+        self._current_row = row
+        self._load_layer_into_widgets(self.layers[row])
+
+    def _on_layer_item_changed(self, item):
+        row = self.layer_list.row(item)
+        if 0 <= row < len(self.layers):
+            self.layers[row]["enabled"] = item.checkState() == Qt.Checked
+
+    def _on_pos_color_changed(self, *_):
+        """Negative contours keep matching the positive ones unless they were
+        given a colour of their own."""
+        if not self._loading_layer and 0 <= self._current_row < len(self.layers):
+            layer = self.layers[self._current_row]
+            if self._color(self.neg_color_combo) == layer.get("pos_color"):
+                self._set_color(self.neg_color_combo, self._color(self.pos_color_combo))
+        self._on_layer_edited()
+
+    @staticmethod
+    def _add_color_item(combo, name, color):
+        from PyQt5.QtGui import QColor, QPainter, QPixmap
+
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(QColor(color))
+        painter = QPainter(pixmap)
+        painter.setPen(QColor(128, 128, 128))
+        painter.drawRect(0, 0, 15, 15)
+        painter.end()
+        combo.addItem(QIcon(pixmap), name, color)
+
+    def _set_color(self, combo, color):
+        """Select ``color`` (a Matplotlib colour) in a colour combo, adding it
+        if it isn't offered (e.g. a colour from an older version)."""
+        index = combo.findData(color)
+        if index < 0:
+            self._add_color_item(combo, str(color), color)
+            index = combo.count() - 1
+        combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _color(combo):
+        return combo.currentData() or combo.currentText()
+
+    def _on_layer_edited(self, *_):
+        if self._loading_layer:
+            return
+        self._store_current_layer()
+
+    def _store_current_layer(self):
+        """Save the widgets into the selected layer and refresh its list entry."""
+        if self._loading_layer or not (0 <= self._current_row < len(self.layers)):
+            return
+        layer = self._layer_from_widgets(self.layers[self._current_row])
+        self.layers[self._current_row] = layer
+        item = self.layer_list.item(self._current_row)
+        if item is not None:
+            self._show_layer_on_item(item, layer)
+
+    def _load_layer_into_widgets(self, layer):
+        """Show ``layer``'s settings in the tabs."""
+        self._loading_layer = True
+        try:
+            self.layer_label_edit.setText(layer.get("label", ""))
+            self.layer_label_edit.setPlaceholderText(
+                contour_layer_name(dict(layer, label=""))
+            )
+
+            external = layer.get("source") == "external"
+            self.external_image_radio.setChecked(external)
+            self.same_image_radio.setChecked(not external)
+            path = layer.get("external_image", "")
+            if path:
+                if os.path.isdir(path):
+                    self.radio_casa_image.setChecked(True)
+                else:
+                    self.radio_fits_file.setChecked(True)
+            self.file_path_edit.setText(path)
+            self._update_stokes_for_current_source()
+            self.stokes_combo.setCurrentText(layer.get("stokes", "I"))
+            self.threshold_spin.setValue(layer.get("threshold", 5.0))
+
+            # Without its signal: changing the type resets the levels
+            self.level_type_combo.blockSignals(True)
+            self.level_type_combo.setCurrentText(layer.get("level_type", "fraction"))
+            self.level_type_combo.blockSignals(False)
+            self.pos_levels_edit.setText(
+                ", ".join(str(l) for l in layer.get("pos_levels", []))
+            )
+            self.neg_levels_edit.setText(
+                ", ".join(str(l) for l in layer.get("neg_levels", []))
+            )
+
+            linestyle_map = {"-": 0, "--": 1, "-.": 2, ":": 3}
+            self._set_color(self.pos_color_combo, layer.get("pos_color", "white"))
+            self._set_color(self.neg_color_combo, layer.get("neg_color", "white"))
+            self.pos_linewidth_spin.setValue(layer.get("pos_linewidth", 1.0))
+            self.neg_linewidth_spin.setValue(layer.get("neg_linewidth", 1.0))
+            self.pos_linestyle_combo.setCurrentIndex(
+                linestyle_map.get(layer.get("pos_linestyle", "-"), 0)
+            )
+            self.neg_linestyle_combo.setCurrentIndex(
+                linestyle_map.get(layer.get("neg_linestyle", "--"), 1)
+            )
+            self.show_labels_checkbox.setChecked(layer.get("show_labels", False))
+
+            self.use_default_rms_box.setChecked(
+                layer.get("use_default_rms_region", True)
+            )
+            rms_box = layer.get("rms_box", (0, 200, 0, 130))
+            for spin, value in zip(
+                (self.rms_xmin, self.rms_xmax, self.rms_ymin, self.rms_ymax), rms_box
+            ):
+                spin.setValue(value)
+            self.toggle_rms_inputs()
+            self.update_dimensions_label(layer.get("dim_w", 0), layer.get("dim_h", 0))
+        finally:
+            self._loading_layer = False
+
+    def _layer_from_widgets(self, layer):
+        """``layer`` updated with the settings shown in the tabs."""
+        settings = dict(layer)
+        settings["label"] = self.layer_label_edit.text().strip()
         settings["source"] = (
             "external" if self.external_image_radio.isChecked() else "same"
         )
@@ -1049,7 +1422,6 @@ class ContourSettingsDialog(QDialog):
             ]
         except ValueError:
             settings["neg_levels"] = [0.1, 0.3, 0.5, 0.7, 0.9]
-        settings["levels"] = settings["pos_levels"]
         settings["use_default_rms_region"] = self.use_default_rms_box.isChecked()
         settings["rms_box"] = (
             self.rms_xmin.value(),
@@ -1057,14 +1429,8 @@ class ContourSettingsDialog(QDialog):
             self.rms_ymin.value(),
             self.rms_ymax.value(),
         )
-        settings["color"] = (
-            self.pos_color_combo.currentText()
-        )  # For backward compatibility
-        settings["linewidth"] = (
-            self.pos_linewidth_spin.value()
-        )  # For backward compatibility
-        settings["pos_color"] = self.pos_color_combo.currentText()
-        settings["neg_color"] = self.neg_color_combo.currentText()
+        settings["pos_color"] = self._color(self.pos_color_combo)
+        settings["neg_color"] = self._color(self.neg_color_combo)
         settings["pos_linewidth"] = self.pos_linewidth_spin.value()
         settings["neg_linewidth"] = self.neg_linewidth_spin.value()
 
@@ -1078,23 +1444,33 @@ class ContourSettingsDialog(QDialog):
         settings["neg_linestyle"] = (
             linestyle_values[neg_idx] if 0 <= neg_idx < len(linestyle_values) else "--"
         )
-        settings["linestyle"] = settings["pos_linestyle"]
-
-        settings["show_labels"] = (
-            self.show_labels_checkbox.isChecked()
-            if hasattr(self, "show_labels_checkbox")
-            else False
-        )
-        settings["show_full_extent"] = self.show_full_extent_checkbox.isChecked()
-        settings["downsample"] = (
-            self.downsample_checkbox.isChecked()
-            if hasattr(self, "downsample_checkbox")
-            else True
-        )
-        if "contour_data" in self.settings:
-            settings["contour_data"] = self.settings["contour_data"]
-        else:
-            settings["contour_data"] = None
+        settings["show_labels"] = self.show_labels_checkbox.isChecked()
         return settings
 
+    def get_layers(self):
+        """The layers' settings, the selected one as currently edited."""
+        self._store_current_layer()
+        return [dict(layer) for layer in self.layers]
 
+    def get_options(self):
+        """Settings shared by all layers."""
+        return {
+            "show_legend": self.show_legend_checkbox.isChecked(),
+            "legend_loc": self.legend_loc_combo.currentData(),
+            "legend_fontsize": self.legend_fontsize_spin.value(),
+            "legend_show_negative": self.legend_negative_checkbox.isChecked(),
+            "show_full_extent": self.show_full_extent_checkbox.isChecked(),
+            "downsample": self.downsample_checkbox.isChecked(),
+        }
+
+    def update_layer_dimensions(self, layers):
+        """Record the image dimensions found when the layers were loaded."""
+        dims = {layer.get("id"): layer for layer in layers}
+        for layer in self.layers:
+            loaded = dims.get(layer.get("id"))
+            if loaded is not None:
+                layer["dim_w"] = loaded.get("dim_w", 0)
+                layer["dim_h"] = loaded.get("dim_h", 0)
+        if 0 <= self._current_row < len(self.layers):
+            layer = self.layers[self._current_row]
+            self.update_dimensions_label(layer.get("dim_w", 0), layer.get("dim_h", 0))
