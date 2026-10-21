@@ -107,7 +107,7 @@ def conversion_cache(options):
     ):
         yield options
         return
-    cache_dir = tempfile.mkdtemp(prefix="solarviewer-video-")
+    cache_dir = tempfile.mkdtemp(prefix=f"solarviewer-video-p{os.getpid()}-")
     try:
         yield dict(options, coordinate_cache=cache_dir)
     finally:

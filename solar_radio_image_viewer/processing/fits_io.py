@@ -87,6 +87,7 @@ def _resolve(path, stat):
             )
             cached = os.path.join(cache_dir, name)
             if os.path.exists(cached):
+                _touch(cached)
                 return cached
 
             hdu = hdul[index]
@@ -117,6 +118,15 @@ def _resolve(path, stat):
         return None
 
 
+def _touch(path):
+    """Mark a cache file as used now (old and unused ones are removed, see
+    temp_files.clean_temp_files)."""
+    try:
+        os.utime(path)
+    except OSError:
+        pass
+
+
 def is_casa_image(path):
     """Whether ``path`` is a CASA image (a directory holding an image table)."""
     return bool(path) and os.path.isfile(os.path.join(path, "table.info"))
@@ -141,6 +151,7 @@ def fits_image_path(path):
     signature = file_signature(path)
     exported = _exported.get(signature)
     if exported and os.path.exists(exported):
+        _touch(exported)
         return exported
 
     key = repr(signature)

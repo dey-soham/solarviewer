@@ -249,10 +249,12 @@ class SolarRadioImageTab(
         # Track non-modal dialogs to prevent garbage collection
         self._open_dialogs = []
 
-        # Unique ID for temp file naming (prevents collisions in multi-tab)
-        import uuid
+        # Unique ID for temp file naming (prevents collisions in multi-tab);
+        # it carries the process id, so leftovers of closed sessions can be
+        # told apart (processing.temp_files)
+        from .processing.temp_files import session_id
 
-        self._temp_file_id = uuid.uuid4().hex[:8]
+        self._temp_file_id = session_id()
 
         # Image metadata cache for lazy WCS/colorbar computation
         # These are expensive to compute and only need to refresh when imagename changes

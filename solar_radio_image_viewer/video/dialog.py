@@ -565,7 +565,7 @@ class VideoCreationDialog(QDialog):
         # Images converted to the video's coordinates, while the window is open
         import tempfile
 
-        self._coordinate_cache = tempfile.mkdtemp(prefix="solarviewer-video-")
+        self._coordinate_cache = tempfile.mkdtemp(prefix=f"solarviewer-video-p{os.getpid()}-")
 
         from ..ui.styles import set_hand_cursor
 

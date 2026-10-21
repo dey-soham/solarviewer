@@ -333,6 +333,12 @@ Examples:
                 target=ensure_solar_colormaps, name="solar-colormaps", daemon=True
             ).start()
 
+            # Temporary files left by sessions that crashed or were killed,
+            # and cache entries long unused (processing.temp_files)
+            from .processing.temp_files import clean_temp_files_in_background
+
+            clean_temp_files_in_background()
+
         except Exception as e:
             import traceback
 
