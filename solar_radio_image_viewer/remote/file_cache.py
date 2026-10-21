@@ -146,6 +146,15 @@ class RemoteFileCache:
 
         return local_path
 
+    def remote_source(self, local_path) -> Optional[Tuple[str, str]]:
+        """(host, remote path) of the server file ``local_path`` is a
+        cached copy of, or None."""
+        local = os.path.realpath(str(local_path))
+        for entry in self._metadata.values():
+            if os.path.realpath(entry.local_path) == local:
+                return entry.remote_host, entry.remote_path
+        return None
+
     def mark_cached(
         self,
         host: str,

@@ -360,6 +360,38 @@ class RemoteFiles:
                 os.remove(partial)
             raise
 
+    # ---------- Uploading ----------
+
+    def exists(self, path):
+        try:
+            self._stat(path, refresh=True)
+            return True
+        except OSError:
+            return False
+
+    def upload(self, local, path, progress=None, cancelled=None):
+        """Copy file ``local`` to ``path`` on the server (replacing it), via
+        a partial file renamed at the end. ``progress(done_bytes,
+        total_bytes)``; ``cancelled()`` returning True stops it (raises
+        Cancelled; nothing is left on the server)."""
+        partial = f"{path}.{os.getpid()}.part"
+
+        def callback(transferred, total):
+            if progress:
+                progress(transferred, total)
+            if cancelled and cancelled():
+                raise Cancelled()
+
+        with self._sftp() as sftp:
+            try:
+                sftp.put(local, partial, callback=callback)
+                sftp.posix_rename(partial, path)
+            except BaseException:
+                with contextlib.suppress(Exception):  # (the channel may be gone)
+                    sftp.remove(partial)
+                raise
+        self._stats.pop(path, None)
+
     def _get_dir(self, path, target, report, cancelled):
         import shutil
 
