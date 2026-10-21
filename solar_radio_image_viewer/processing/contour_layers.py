@@ -180,9 +180,21 @@ def merge_contour_layers(old_layers, new_layers):
     return merged
 
 
-def contour_levels(layer, contour_data, abs_max=None):
+def box_rms(contour_data, rms_box):
+    """RMS of ``contour_data`` in ``rms_box`` (the std of all of it if the
+    box can't be used): the noise that sigma levels are multiples of."""
+    try:
+        region = contour_data[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
+        return np.sqrt(np.nanmean(region**2))
+    except Exception as e:
+        print(f"[WARNING] Could not calculate RMS from box, using std: {e}")
+        return np.nanstd(contour_data)
+
+
+def contour_levels(layer, contour_data, abs_max=None, rms=None):
     """(positive, negative) contour levels of ``layer`` for ``contour_data``:
     fractions of the peak, multiples of the RMS in its RMS box, or absolute.
+    ``abs_max`` / ``rms`` give the peak / RMS to use instead of the data's.
     """
     if abs_max is None:
         abs_max = np.nanmax(np.abs(contour_data))
@@ -203,18 +215,8 @@ def contour_levels(layer, contour_data, abs_max=None):
     elif layer["level_type"] == "sigma":
         # For sigma levels, calculate RMS from the RMS box region of the contour data
         # This gives a proper noise estimate without source contamination
-        rms_box = layer.get("rms_box", (0, 200, 0, 130))
-
-        try:
-            # Calculate RMS from the specified region
-            rms_region = contour_data[
-                rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]
-            ]
-            rms = np.sqrt(np.nanmean(rms_region**2))
-        except Exception as e:
-            # Fallback to using std of entire image if RMS box fails
-            print(f"[WARNING] Could not calculate RMS from box, using std: {e}")
-            rms = np.nanstd(contour_data)
+        if rms is None:
+            rms = box_rms(contour_data, layer.get("rms_box", (0, 200, 0, 130)))
 
         # Positive levels: level * rms (e.g., 3σ, 6σ, 9σ...)
         pos_levels = sorted([level * rms for level in layer["pos_levels"]])

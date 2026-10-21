@@ -223,19 +223,25 @@ class PreviewRenderer(QObject):
 
         if self._executor is None:
             self.status.emit(request_id, "Starting the preview renderer...")
+            # Frames are rendered one at a time; reading all of them (range,
+            # timeline, steady levels) uses all the processes
+            self._workers = max(1, min(4, multiprocessing.cpu_count() - 1))
             self._executor = process_pool_executor(
-                1, preload=["solar_radio_image_viewer.video.creator"]
+                self._workers, preload=["solar_radio_image_viewer.video.creator"]
             )
         self._convert(request_id, files, index, options)
+        # The workers keep contour images between frames (one video id)
+        options = dict(options, video_id=f"preview-{id(self)}")
 
         prepared = self._prepared.get(setup_key)
         if prepared is None:
-            if options.get("range_mode") == 2 or options.get("minmax_timeline_enabled"):
-                self.status.emit(
-                    request_id,
-                    f"Reading all {len(files)} frames for the range / timeline...",
-                )
-            prepared_options = prepare_video_options(files, dict(options))
+
+            def progress(done, total):
+                self.status.emit(request_id, f"Reading frames {done} of {total}...")
+
+            prepared_options = prepare_video_options(
+                files, dict(options), self._executor, progress
+            )
             prepared = (
                 prepared_options,
                 calculate_global_stats(files, prepared_options),
@@ -246,8 +252,7 @@ class PreviewRenderer(QObject):
         prepared_options, global_stats = prepared
 
         self.status.emit(request_id, "Rendering...")
-        # The worker keeps its contour images between frames (one video id)
-        options = dict(prepared_options, video_id=f"preview-{id(self)}")
+        options = prepared_options
         try:
             _, frame, problems, geometry = self._executor.submit(
                 process_image_wrapper, (files[index], index, options, global_stats)
@@ -1969,6 +1974,27 @@ class VideoCreationDialog(QDialog):
         buttons.addWidget(clear_btn)
         buttons.addStretch()
         layout.addLayout(buttons)
+
+        levels_row = QHBoxLayout()
+        levels_row.addWidget(QLabel("Levels from:"))
+        self.contour_level_combo = QComboBox()
+        for text, mode in (
+            ("Each frame", "frame"),
+            ("The first frame", "first"),
+            ("All frames", "all"),
+        ):
+            self.contour_level_combo.addItem(text, mode)
+        self.contour_level_combo.setToolTip(
+            "What fraction (of the peak) and sigma (× RMS) levels are relative to.\n"
+            "Each frame: its own peak / RMS, so levels change as the peak does.\n"
+            "The first frame: that frame's, the same in every frame.\n"
+            "All frames: the highest peak / the median RMS of all frames,\n"
+            "the same in every frame. Absolute levels never change."
+        )
+        levels_row.addWidget(self.contour_level_combo)
+        levels_row.addStretch()
+        layout.addLayout(levels_row)
+
         layout.addStretch()
         self._show_contour_layers()
         return scroll
@@ -2292,6 +2318,7 @@ class VideoCreationDialog(QDialog):
             # Contours (series layers get their files per frame in _video_files)
             "contour_layers": [dict(layer) for layer in self.contour_layers],
             "contour_options": dict(self.contour_options),
+            "contour_level_mode": self.contour_level_combo.currentData(),
             # Frames are drawn in worker processes, as the preview is, so
             # the app's theme doesn't change them
             "render_in_worker": True,
@@ -2575,6 +2602,7 @@ class VideoCreationDialog(QDialog):
         "minmax_timeline_check",
         "timeline_source_combo",
         "timeline_log_scale_check",
+        "contour_level_combo",
         "show_solar_disk_check",
         "show_beam_check",
         "show_grid_check",

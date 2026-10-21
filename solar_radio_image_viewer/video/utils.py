@@ -212,6 +212,12 @@ class MinMaxTimeline:
         self.min_values.append(vmin)
         self.max_values.append(vmax)
 
+    def set_stats(self, mins, maxs):
+        """The min and max of every frame (NaN where unknown)."""
+        self.min_values = list(mins)
+        self.max_values = list(maxs)
+        self.frame_numbers = list(range(len(self.min_values)))
+
     def precompute_stats(self, files, options, load_func):
         """
         Precompute min/max statistics for all frames.
@@ -246,9 +252,7 @@ class MinMaxTimeline:
                 all_mins.append(np.nan)
                 all_maxs.append(np.nan)
 
-        self.min_values = all_mins
-        self.max_values = all_maxs
-        self.frame_numbers = list(range(len(files)))
+        self.set_stats(all_mins, all_maxs)
 
         return all_mins, all_maxs
 
@@ -486,11 +490,13 @@ class FrameContours:
         region_origin=(0, 0),
         legend_options=None,
         report=None,
+        level_scales=None,
     ):
         """Draw ``layers`` for frame ``frame_idx`` on ``ax``, which shows
         ``image_data`` (the full image of ``image_path``, before any region
         is cut out; ``region_origin`` is the region's lower left corner).
-        ``report(message)`` hears of layers that could not be drawn.
+        ``report(message)`` hears of layers that could not be drawn;
+        ``level_scales`` (layer id -> see level_scale) fixes levels.
         """
         from ..processing.contour_layers import contour_layer_name, legend_handles
 
@@ -515,10 +521,9 @@ class FrameContours:
             path = layer_file(layer, frame_idx, image_path)
             if not path:
                 continue
-            if path == image_path and layer.get("stokes", "I") == image_stokes:
-                data, wcs = image_data, target_wcs
-            else:
-                data, wcs = self.contour_image(path, layer.get("stokes", "I"), image_header)
+            data, wcs = self.layer_data(
+                layer, frame_idx, image_path, image_header, image_data, image_stokes, target_wcs
+            )
             if data is None:
                 key = (path, layer.get("stokes", "I"), coordinate_type(image_header))
                 problem(
@@ -534,6 +539,7 @@ class FrameContours:
                 image_data.shape,
                 region_origin,
                 lambda reason, layer=layer: problem(layer, reason),
+                (level_scales or {}).get(layer.get("id")),
             )
             if not legend_options.get("legend_show_negative", False):
                 drawn = [sign for sign in drawn if sign == "pos"]
@@ -548,8 +554,35 @@ class FrameContours:
             )
             legend.set_zorder(10)
 
+    def layer_data(
+        self, layer, frame_idx, image_path, image_header, image_data, image_stokes, target_wcs=None
+    ):
+        """(data, wcs) ``layer`` contours on frame ``frame_idx`` (whose image
+        ``image_path`` has ``image_data`` and ``image_header``), in the
+        frame's coordinates; (None, None) if it has none or can't be read."""
+        path = layer_file(layer, frame_idx, image_path)
+        if not path:
+            return None, None
+        if path == image_path and layer.get("stokes", "I") == image_stokes:
+            if target_wcs is None and image_header is not None:
+                try:
+                    target_wcs = WCS(image_header, naxis=2)
+                except Exception:
+                    pass
+            return image_data, target_wcs
+        return self.contour_image(path, layer.get("stokes", "I"), image_header)
+
     def _draw_layer(
-        self, ax, layer, data, contour_wcs, target_wcs, target_shape, region_origin, problem
+        self,
+        ax,
+        layer,
+        data,
+        contour_wcs,
+        target_wcs,
+        target_shape,
+        region_origin,
+        problem,
+        scale=None,
     ):
         """Draw one layer; returns the signs ("pos"/"neg") drawn. Calls
         ``problem(reason)`` if it can't be drawn."""
@@ -577,7 +610,7 @@ class FrameContours:
         # Trace large contour images on at most about 2048 x 2048 pixels
         step = max(1, int(np.ceil(max(data.shape) / 2048.0)))
         drawn = []
-        for sign, levels in zip(("pos", "neg"), frame_levels(layer, data)):
+        for sign, levels in zip(("pos", "neg"), frame_levels(layer, data, scale)):
             if not levels:
                 continue
             try:
@@ -611,16 +644,42 @@ def layer_file(layer, frame_idx, image_path):
     return image_path
 
 
-def frame_levels(layer, data):
-    """(positive, negative) levels of ``layer`` for ``data`` (rows = y), as
-    the main viewer works them out (its data is x-first, hence the .T)."""
-    from ..processing.contour_layers import contour_levels
-
+def _with_rms_box(layer, data):
+    """``layer`` with its RMS box for ``data`` (rows = y): the main viewer's
+    default box (5-95 % across, 5-20 % up) unless one was chosen."""
     if layer.get("level_type") == "sigma" and layer.get("use_default_rms_region", True):
-        # The main viewer's default RMS box: 5-95 % across, 5-20 % up
         rows, cols = data.shape
         layer = dict(
             layer,
             rms_box=(int(cols * 0.05), int(cols * 0.95), int(rows * 0.05), int(rows * 0.20)),
         )
-    return contour_levels(layer, data.T)
+    return layer
+
+
+def level_scale(layer, data):
+    """What ``layer``'s levels are relative to in ``data`` (rows = y): the
+    peak |value| for fraction levels, the RMS for sigma levels, else None."""
+    from ..processing.contour_layers import box_rms
+
+    kind = layer.get("level_type")
+    if kind == "fraction":
+        return float(np.nanmax(np.abs(data)))
+    if kind == "sigma":
+        layer = _with_rms_box(layer, data)
+        return float(box_rms(data.T, layer.get("rms_box", (0, 200, 0, 130))))
+    return None
+
+
+def frame_levels(layer, data, scale=None):
+    """(positive, negative) levels of ``layer`` for ``data`` (rows = y), as
+    the main viewer works them out (its data is x-first, hence the .T).
+    ``scale`` (see level_scale) fixes the peak / RMS the levels are
+    relative to, e.g. the same in every frame."""
+    from ..processing.contour_layers import contour_levels
+
+    layer = _with_rms_box(layer, data)
+    if scale is None:
+        return contour_levels(layer, data.T)
+    if layer.get("level_type") == "sigma":
+        return contour_levels(layer, data.T, rms=scale)
+    return contour_levels(layer, data.T, abs_max=scale)

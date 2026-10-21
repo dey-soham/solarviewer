@@ -7,12 +7,12 @@ import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
+from matplotlib import rcParams
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from astropy.io import fits
 import imageio
-from tqdm import tqdm
 import time
 from multiprocessing import cpu_count
 from astropy.visualization import (
@@ -35,9 +35,9 @@ from ..processing.fits_io import casa_observation_date, fits_image_path, is_casa
 from ..processing.workers import process_pool_executor
 from .coordinates import ConversionError, conversion_cache, frame_file
 from .utils import (
+    level_scale,
     detect_coordinate_system,
     get_wcs_axis_labels,
-    create_wcs_axes,
     MinMaxTimeline,
     FrameContours,
     layer_file,
@@ -89,7 +89,8 @@ def canvas_to_rgb_array(canvas):
         buf = canvas.buffer_rgba()
         img_data = np.frombuffer(buf, dtype=np.uint8)
         img_data = img_data.reshape(height, width, 4)
-        return img_data[:, :, :3]  # Return RGB
+        # RGB, copied: the canvas (and its buffer) is reused for the next frame
+        return np.ascontiguousarray(img_data[:, :, :3])
     except AttributeError:
         # Fallback for older Matplotlib
         img_data = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
@@ -420,14 +421,11 @@ def process_image(
         # Get filename for display
         filename = os.path.basename(file_path)
 
-        # Create figure (all frames of a video share one size)
-        dpi = 100
+        # Figure (all frames of a video share one size)
         width, height = options.get("frame_size") or frame_size(options, data.shape)
-        fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
-        canvas = FigureCanvas(fig)
 
-        # Create axes - use WCS projection if enabled: this frame's own WCS,
-        # cut to the region shown
+        # Axes - use WCS projection if enabled: this frame's own WCS, cut to
+        # the region shown
         wcs_enabled = options.get("wcs_enabled", False)
         coord_info = options.get("coord_info", None)
         frame_wcs = None
@@ -441,28 +439,16 @@ def process_image(
             x0, y0 = region_origin
             frame_wcs = frame_wcs[y0 : y0 + data.shape[0], x0 : x0 + data.shape[1]]
 
-        # Check if timeline is enabled to use GridSpec layout
+        # The previous frame's figure when this one has the same layout
+        # (building axes and colorbar is a third of a frame's time)
         timeline_enabled = options.get("minmax_timeline_enabled", False)
-        timeline_ax = None
-
-        if timeline_enabled:
-            # Use GridSpec for bottom dock panel layout: 88% image, 12% timeline
-            gs = GridSpec(2, 1, height_ratios=[88, 12], hspace=0.25, figure=fig)
-
-            if frame_wcs is not None:
-                ax = fig.add_subplot(gs[0], projection=frame_wcs)
-            else:
-                ax = fig.add_subplot(gs[0])
-
-            # Create timeline axes
-            timeline_ax = fig.add_subplot(gs[1])
-            # timeline_ax.set_facecolor('#1a1a2e')  # Removed to support dynamic themes
-        else:
-            # No timeline - use full figure for image
-            if frame_wcs is not None:
-                ax = create_wcs_axes(fig, frame_wcs)
-            else:
-                ax = fig.add_subplot(111)
+        frame = _frame_figure(
+            (width, height, frame_wcs is not None, timeline_enabled, data.shape,
+             bool(options.get("colorbar", False))),
+            frame_wcs,
+            options.get("reuse_figures", True),
+        )
+        fig, canvas, ax, timeline_ax = frame.fig, frame.canvas, frame.ax, frame.timeline_ax
 
         # Determine min/max values based on range_mode
         range_mode = options.get("range_mode", 1)  # Default to Auto Per Frame
@@ -506,14 +492,20 @@ def process_image(
         cmap = options.get("colormap", "viridis")
         if cmap not in plt.colormaps():
             ensure_solar_colormaps()
-        img = ax.imshow(
-            data,
-            cmap=cmap,
-            norm=norm,
-            origin="lower",
-            interpolation="none",
-            # aspect="auto",
-        )
+        if frame.img is None:
+            frame.img = ax.imshow(
+                data,
+                cmap=cmap,
+                norm=norm,
+                origin="lower",
+                interpolation="none",
+            )
+        else:
+            frame.img.set_data(data)
+            frame.img.set_cmap(cmap)
+            frame.img.set_norm(norm)
+            frame.img.set_extent((-0.5, data.shape[1] - 0.5, -0.5, data.shape[0] - 0.5))
+        img = frame.img
 
         # Draw the contour layers
         layers = [l for l in options.get("contour_layers") or [] if l.get("enabled", True)]
@@ -530,6 +522,7 @@ def process_image(
                     region_origin=region_origin,
                     legend_options=options.get("contour_options"),
                     report=report,
+                    level_scales=options.get("contour_level_scales"),
                 )
             except Exception as e:
                 logger.error(f"Error drawing contours: {e}")
@@ -604,13 +597,19 @@ def process_image(
             #    horizontalalignment="right",
             # )
             ax.set_title("\n".join(overlay_text))
+        else:
+            ax.set_title("")
 
         # Add colorbar if requested
         if options.get("colorbar", False):
             import matplotlib.ticker as mticker
 
             # Create colorbar with proper sizing that works with GridSpec
-            cbar = fig.colorbar(img, ax=ax, shrink=0.9, aspect=30, pad=0.05)
+            if frame.cbar is None:
+                frame.cbar = fig.colorbar(img, ax=ax, shrink=0.9, aspect=30, pad=0.05)
+            else:
+                frame.cbar.update_normal(img)
+            cbar = frame.cbar
 
             # Format the colorbar nicely
             cbar.ax.tick_params(labelsize=12)
@@ -621,8 +620,7 @@ def process_image(
             cbar.ax.yaxis.get_offset_text().set_fontsize(12)
 
             # Add units if available
-            if header and "BUNIT" in header:
-                cbar.set_label(header["BUNIT"], fontsize=12)
+            cbar.set_label(header["BUNIT"] if header and "BUNIT" in header else "", fontsize=12)
         else:
             cbar = None
 
@@ -649,20 +647,77 @@ def process_image(
                 _frame_geometry(fig, ax, header, full_data.shape, region_origin, shift)
             )
 
-        # Convert to numpy array
-        # Convert to numpy array
-        img_data = canvas_to_rgb_array(canvas)
-
-        # Clean up
-        plt.close(fig)
-
-        return img_data
+        return canvas_to_rgb_array(canvas)
 
     except Exception as e:
         logger.error(f"Error processing image {file_path}: {e}")
+        _frame_figures.clear()  # may be half drawn
         return create_error_frame(
             options, f"Error: {str(e)[:30]}", frame_idx, os.path.basename(file_path)
         )
+
+
+class _FrameFigure:
+    """A frame's figure, axes, image and colorbar, kept for the next frame
+    of the same layout."""
+
+    def __init__(self, width, height, use_wcs, timeline, frame_wcs):
+        dpi = 100
+        self.fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
+        self.canvas = FigureCanvas(self.fig)
+        self.timeline_ax = None
+        projection = frame_wcs if use_wcs else None
+        if timeline:
+            # Bottom dock panel layout: 88% image, 12% timeline
+            gs = GridSpec(2, 1, height_ratios=[88, 12], hspace=0.25, figure=self.fig)
+            self.ax = self.fig.add_subplot(gs[0], projection=projection)
+            self.timeline_ax = self.fig.add_subplot(gs[1])
+        else:
+            self.ax = self.fig.add_subplot(111, projection=projection)
+        self.img = None
+        self.cbar = None
+
+    def clear(self, frame_wcs):
+        """Back to the state of a new figure, keeping the axes, image and
+        colorbar: what frames draw on top goes, and the layout is reset."""
+        from matplotlib.transforms import Bbox
+
+        ax = self.ax
+        self.fig.subplots_adjust(
+            **{k: rcParams[f"figure.subplot.{k}"] for k in ("left", "right", "bottom", "top", "wspace", "hspace")}
+        )
+        if frame_wcs is not None:
+            ax.reset_wcs(frame_wcs)
+        for artist in list(ax.collections) + list(ax.patches) + list(ax.lines) + list(ax.texts):
+            artist.remove()
+        if ax.get_legend() is not None:
+            ax.get_legend().remove()
+        ax.dataLim = Bbox.null()
+        ax.ignore_existing_data_limits = True
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        if self.timeline_ax is not None:
+            self.timeline_ax.clear()
+
+
+# The last frame's figure in this process: (layout key, _FrameFigure)
+_frame_figures = {}
+
+
+def _frame_figure(key, frame_wcs, reuse=True):
+    """A figure for a frame of layout ``key`` (frame size, WCS axes or not,
+    timeline, data shape, colorbar): the previous frame's, cleared, if it
+    had the same layout, else a new one."""
+    frame = _frame_figures.get(key) if reuse else None
+    if frame is None:
+        width, height, use_wcs, timeline = key[:4]
+        frame = _FrameFigure(width, height, use_wcs, timeline, frame_wcs)
+        _frame_figures.clear()
+        if reuse:
+            _frame_figures[key] = frame
+    else:
+        frame.clear(frame_wcs)
+    return frame
 
 
 def _frame_geometry(fig, ax, header, image_shape, region_origin, shift):
@@ -779,61 +834,126 @@ def _apply_frame_plot_settings(fig, ax, cbar, header, plot_settings, report):
 
 
 def calculate_global_stats(files, options):
-    """Calculate global statistics for all frames (for Global Auto mode)"""
-    # Check if we need global stats
-    if options.get("range_mode", 1) != 2:  # Not Global Auto
+    """(vmin, vmax) over all frames for the Global Auto range (None in the
+    other modes): worked out by prepare_video_options, else read now."""
+    if options.get("range_mode", 1) != 2:
         return None
+    if "global_range" not in options:
+        results = _scan_frames(files, options, {"range"})
+        options["global_range"] = _global_range(results)
+    return options["global_range"]
 
-    # Only log the message if we're actually calculating global stats
-    logger.info("Calculating global statistics...")
 
-    all_mins = []
-    all_maxs = []
+def _global_range(results):
+    ranges = [r["range"] for r in results if r.get("range")]
+    if not ranges:
+        return None
+    return (min(low for low, _ in ranges), max(high for _, high in ranges))
 
-    # Sample frames to calculate global stats (using every 10th frame or at least 10 frames)
-    # sample_step = max(1, len(files) // 10)
-    sample_step = 1  # Sample every frame
-    sample_files = files[::sample_step]
 
-    # Ensure we have at least some files
-    if len(sample_files) == 0:
-        sample_files = files[:1]
+class _Cancelled(Exception):
+    pass
 
-    difference_files = options.get("difference_files")
-    for i, file_path in enumerate(tqdm(sample_files, desc="Calculating global stats")):
-        try:
-            data, header = load_frame_data(file_path, options)
 
-            if data is None:
+def _scan_frames(files, options, needs, timeline_files=None, executor=None, progress=None):
+    """Read every frame once (in ``executor``'s worker processes if given)
+    for what the whole video needs: ``needs`` among "range" (the frame's
+    colour range, as Auto Per Frame would give), "minmax" (min and max of
+    ``timeline_files``, default the frames) and "levels" (each contour
+    layer's peak or RMS, see level_scale; of the first frame only with
+    contour_level_mode "first"). Returns one dict per frame.
+
+    ``progress(done, total)`` is told how far it got; returning False
+    cancels (raises _Cancelled).
+    """
+    timeline_files = timeline_files or files
+    first_only = options.get("contour_level_mode") == "first"
+    tasks = []
+    for i, path in enumerate(files):
+        frame_needs = set(needs)
+        if first_only and i > 0:
+            frame_needs.discard("levels")
+        tasks.append((i, path, timeline_files[i], options, frame_needs))
+
+    results = [{} for _ in files]
+    if executor is None:
+        done = (_scan_one(task) for task in tasks)
+    else:
+        futures = [executor.submit(_scan_one, task) for task in tasks]
+        done = (future.result() for future in futures)
+    try:
+        for count, (i, result) in enumerate(done, 1):
+            results[i] = result
+            if progress and progress(count, len(tasks)) is False:
+                raise _Cancelled()
+    finally:
+        if executor is not None:
+            for future in futures:
+                future.cancel()
+    return results
+
+
+def _scan_one(args):
+    """See _scan_frames (in a worker)."""
+    _quiet_warnings()
+    i, path, timeline_path, options, needs = args
+    result = {}
+    try:
+        data, header = load_frame_data(path, options)
+    except Exception as e:
+        logger.warning(f"Could not read {os.path.basename(path)}: {e}")
+        return i, result
+    if data is None:
+        return i, result
+    shift = _rotation_shift(options, header) if needs & {"range", "minmax"} else (0, 0)
+
+    if "levels" in needs:
+        scales = result["levels"] = {}
+        contours = _worker_frame_contours(options)
+        for layer in options.get("contour_layers") or []:
+            if not layer.get("enabled", True) or layer.get("level_type") not in ("fraction", "sigma"):
                 continue
+            try:
+                layer_data, _ = contours.layer_data(
+                    layer, i, path, header, data, options.get("stokes", "I")
+                )
+                if layer_data is not None:
+                    scales[layer.get("id")] = level_scale(layer, layer_data)
+            except Exception as e:
+                logger.warning(f"Contour levels of frame {i}: {e}")
+
+    if "minmax" in needs:
+        try:
+            if timeline_path == path:
+                shown = crop_region(data, options, shift=shift)[0]
+            else:
+                other, other_header = load_fits_data(
+                    frame_file(timeline_path, options), stokes=options.get("stokes", "I")
+                )
+                shown = None if other is None else crop_region(other, options, other_header)[0]
+            result["minmax"] = (
+                (np.nan, np.nan) if shown is None else (np.nanmin(shown), np.nanmax(shown))
+            )
+        except Exception as e:
+            logger.warning(f"Error computing stats for {timeline_path}: {e}")
+            result["minmax"] = (np.nan, np.nan)
+
+    if "range" in needs:
+        try:
+            difference_files = options.get("difference_files")
             if difference_files:
                 other, _ = load_frame_data(difference_files[i], options)
                 if other is None or other.shape != data.shape:
-                    continue
+                    return i, result
                 data = data - other
-
-            # The region shown in this frame
-            data, _ = crop_region(data, options, header)
-
-            # Calculate percentiles
-            lower_percentile = options.get("lower_percentile", 0)
-            upper_percentile = options.get("upper_percentile", 100)
-            vmin = np.nanpercentile(data, lower_percentile)
-            vmax = np.nanpercentile(data, upper_percentile)
-
-            all_mins.append(vmin)
-            all_maxs.append(vmax)
-
+            shown = crop_region(data, options, shift=shift)[0]
+            result["range"] = (
+                np.nanpercentile(shown, options.get("lower_percentile", 0)),
+                np.nanpercentile(shown, options.get("upper_percentile", 100)),
+            )
         except Exception as e:
-            logger.error(f"Error calculating stats for {file_path}: {e}")
-
-    # Calculate overall min/max from the sampled frames
-    if all_mins and all_maxs:
-        global_vmin = np.min(all_mins)
-        global_vmax = np.max(all_maxs)
-        return (global_vmin, global_vmax)
-
-    return None
+            logger.error(f"Error calculating stats for {path}: {e}")
+    return i, result
 
 
 def make_frame_contours(options):
@@ -844,6 +964,15 @@ def make_frame_contours(options):
 # In a worker process: the FrameContours of the video being made, kept
 # between frames so a fixed contour image is read (and converted) once
 _worker_contours = {"key": None, "contours": None}
+
+
+def _worker_frame_contours(options):
+    """This process's FrameContours for the video of ``options`` (kept
+    between its frames, so contour images are read once)."""
+    key = options.get("video_id")
+    if _worker_contours["key"] != key or _worker_contours["contours"] is None:
+        _worker_contours.update(key=key, contours=FrameContours())
+    return _worker_contours["contours"]
 
 
 def process_image_wrapper(args):
@@ -862,14 +991,11 @@ def process_image_wrapper(args):
     problems, geometry = [], {}
     try:
         options = dict(options, current_frame=idx)
-        key = options.get("video_id")
-        if _worker_contours["key"] != key:
-            _worker_contours.update(key=key, contours=make_frame_contours(options))
         result = process_image(
             file_path,
             options,
             global_stats,
-            frame_contours=_worker_contours["contours"],
+            frame_contours=_worker_frame_contours(options),
             frame_idx=idx,
             problems=problems,
             geometry=geometry,
@@ -880,20 +1006,16 @@ def process_image_wrapper(args):
         return idx, None, problems, geometry
 
 
-def _frames_in_order(files, options, global_stats, frame_contours):
+def _frames_in_order(files, options, global_stats, frame_contours, executor=None, workers=1):
     """Render the frames, yielding (index, frame, problems) in order as they
     are ready (problems: see process_image).
 
-    With multiprocessing, up to two frames per core are rendered ahead, so
-    memory stays bounded; closing the generator (e.g. on cancel) stops
-    submitting frames and waits only for those already being rendered.
+    In ``executor`` (with ``workers`` processes) up to two frames per
+    process are rendered ahead, so memory stays bounded; closing the
+    generator (e.g. on cancel) stops submitting frames and drops those not
+    started. Without one, frames are rendered here.
     """
-    num_cores = options.get("cpu_count", max(1, cpu_count() - 1))
-    parallel = options.get("use_multiprocessing", False) and num_cores > 1 and len(files) > 1
-    # render_in_worker: render even without multiprocessing in a worker,
-    # whose matplotlib settings are the defaults, not those of the app
-    # (whose theme changes them)
-    if not parallel and not options.get("render_in_worker"):
+    if executor is None:
         for i, file_path in enumerate(files):
             problems = []
             frame = process_image(
@@ -907,23 +1029,15 @@ def _frames_in_order(files, options, global_stats, frame_contours):
             yield i, frame, problems
         return
 
-    # Worker processes make their own FrameContours (see process_image_wrapper)
-    worker_options = dict(options)
-    worker_options["video_id"] = f"{os.getpid()}-{time.time()}"
-    if not parallel:
-        num_cores = 1
-    logger.info(f"Rendering frames with {num_cores} processes")
-    executor = process_pool_executor(
-        num_cores, preload=["solar_radio_image_viewer.video.creator"]
-    )
+    logger.info(f"Rendering frames with {workers} processes")
     pending = {}
     try:
         next_to_submit = 0
         for i in range(len(files)):
-            while next_to_submit < len(files) and next_to_submit < i + 2 * num_cores:
+            while next_to_submit < len(files) and next_to_submit < i + 2 * workers:
                 pending[next_to_submit] = executor.submit(
                     process_image_wrapper,
-                    (files[next_to_submit], next_to_submit, worker_options, global_stats),
+                    (files[next_to_submit], next_to_submit, options, global_stats),
                 )
                 next_to_submit += 1
             _, frame, problems, _ = pending.pop(i).result()
@@ -931,7 +1045,6 @@ def _frames_in_order(files, options, global_stats, frame_contours):
     finally:
         for future in pending.values():
             future.cancel()
-        executor.shutdown(wait=True, cancel_futures=True)
 
 
 def file_times(paths):
@@ -1236,11 +1349,14 @@ def _first_frame_file(files, options):
     raise problem or ConversionError("no images")
 
 
-def prepare_video_options(files, options):
+def prepare_video_options(files, options, executor=None, scan_progress=None):
     """Fill in ``options`` with what all frames of a video share: the frame
     count, the region (with even dimensions), the frame size, the coordinate
-    system and the min/max timeline. Used for the video and its preview, so
-    the preview frame is the video frame. Returns ``options``.
+    system, and from one read of every frame (see _scan_frames; in
+    ``executor``'s processes if given, telling ``scan_progress``) the global
+    colour range, the min/max timeline and steady contour levels. Used for
+    the video and its preview, so the preview frame is the video frame.
+    Returns ``options``.
     """
     _layers_from_contour_mode(options)
 
@@ -1339,50 +1455,70 @@ def prepare_video_options(files, options):
         options["coord_info"] = coord_info
         logger.info(f"Coordinate system: {coord_info.get('type', 'unknown')}")
 
-    # Initialize MinMax timeline if enabled (unless one was given)
+    # One read of every frame for the global range, the timeline and steady
+    # contour levels, whichever are needed
+    needs = set()
+    if options.get("range_mode", 1) == 2 and "global_range" not in options:
+        needs.add("range")
+    timeline_files = None
     if options.get("minmax_timeline_enabled", False) and "minmax_timeline" not in options:
-        logger.info("Precomputing min/max statistics for timeline...")
-        position_map = {
-            0: "bottom-left",
-            1: "bottom-right",
-            2: "top-left",
-            3: "top-right",
-        }
-        position = position_map.get(
-            options.get("timeline_position", 0), "bottom-left"
-        )
-
-        # Determine which files to use for timeline stats
-        timeline_source = options.get(
-            "timeline_source", 0
-        )  # 0=Colormap, 1=Contours
-        timeline_files = files  # Default to colormap files
-
-        # In contour mode with source=1, use contour files instead
-        if timeline_source == 1:
+        needs.add("minmax")
+        timeline_files = files
+        # Timeline of the contour images (source 1), if each frame has one
+        if options.get("timeline_source", 0) == 1:
             contour_files = [_frame_contour_file(options, i) for i in range(len(files))]
             if all(contour_files):
                 timeline_files = contour_files
-                logger.info(
-                    f"Timeline will use contour files ({len(timeline_files)} files)"
-                )
+    if options.get("contour_level_mode", "frame") != "frame" and any(
+        layer.get("enabled", True) and layer.get("level_type") in ("fraction", "sigma")
+        for layer in options.get("contour_layers") or []
+    ):
+        needs.add("levels")
 
-        log_scale = options.get("timeline_log_scale", False)
-        timeline = MinMaxTimeline(
-            total_frames=len(files), position=position, log_scale=log_scale
-        )
-        def load_region(path, stokes):
-            data, header = load_fits_data(frame_file(path, options), stokes=stokes)
-            return (None if data is None else crop_region(data, options, header)[0]), header
-
-        timeline.precompute_stats(timeline_files, options, load_region)
-        options["minmax_timeline"] = timeline
-        logger.info("Timeline statistics computed")
+    if needs:
+        logger.info(f"Reading all {len(files)} frames for: {', '.join(sorted(needs))}")
+        results = _scan_frames(files, options, needs, timeline_files, executor, scan_progress)
+        if "range" in needs:
+            options["global_range"] = _global_range(results)
+        if "minmax" in needs:
+            position = {0: "bottom-left", 1: "bottom-right", 2: "top-left", 3: "top-right"}
+            timeline = MinMaxTimeline(
+                total_frames=len(files),
+                position=position.get(options.get("timeline_position", 0), "bottom-left"),
+                log_scale=options.get("timeline_log_scale", False),
+            )
+            minmax = [r.get("minmax", (np.nan, np.nan)) for r in results]
+            timeline.set_stats([low for low, _ in minmax], [high for _, high in minmax])
+            options["minmax_timeline"] = timeline
+        if "levels" in needs:
+            options["contour_level_scales"] = _steady_level_scales(
+                options.get("contour_layers") or [], results, options["contour_level_mode"]
+            )
 
     return options
 
 
-def _convert_frames(files, options, progress_callback=None, status_callback=None):
+def _steady_level_scales(layers, results, mode):
+    """Layer id -> the peak / RMS all frames' levels are relative to: the
+    first frame's (mode "first"), or over all frames (mode "all") the
+    highest peak (fraction levels) or the median RMS (sigma levels)."""
+    scales = {}
+    for layer in layers:
+        key = layer.get("id")
+        values = [r["levels"][key] for r in results if key in r.get("levels", {})]
+        values = [v for v in values if v is not None and np.isfinite(v)]
+        if not values:
+            continue
+        if mode == "first":
+            scales[key] = values[0]
+        elif layer.get("level_type") == "sigma":
+            scales[key] = float(np.median(values))
+        else:
+            scales[key] = float(max(values))
+    return scales
+
+
+def _convert_frames(files, options, progress_callback=None, status_callback=None, executor=None):
     """Convert the frames (and difference images) to the video's coordinates,
     and export CASA images to FITS, up front, in parallel if allowed; the
     frames then read the copies. Frames that can't be converted are left for
@@ -1399,9 +1535,6 @@ def _convert_frames(files, options, progress_callback=None, status_callback=None
         what = "Reading CASA images"
     else:
         what = f"Converting images to {'helioprojective' if target == 'hpc' else 'RA/Dec'} coordinates"
-    num_cores = options.get("cpu_count", max(1, cpu_count() - 1))
-    workers = num_cores if options.get("use_multiprocessing") else 1
-
     def done(count):
         if status_callback:
             status_callback(f"{what}: {count} of {len(paths)}")
@@ -1409,16 +1542,16 @@ def _convert_frames(files, options, progress_callback=None, status_callback=None
 
     if not done(0):
         return False
-    if workers > 1 or options.get("render_in_worker"):
-        executor = process_pool_executor(workers, preload=["solar_radio_image_viewer.video.creator"])
+    if executor is not None:
+        futures = [executor.submit(_convert_one, (p, target, cache_dir)) for p in paths]
         try:
-            futures = [executor.submit(_convert_one, (p, target, cache_dir)) for p in paths]
             for count, future in enumerate(futures, 1):
                 future.result()
                 if not done(count):
                     return False
         finally:
-            executor.shutdown(wait=True, cancel_futures=True)
+            for future in futures:
+                future.cancel()
     else:
         for count, path in enumerate(paths, 1):
             _convert_one((path, target, cache_dir))
@@ -1522,63 +1655,104 @@ def _create_video(files, output_file, options, progress_callback, problems, stat
 
 
         files, options = apply_difference(files, options)
-        if not _convert_frames(files, options, progress_callback, status_callback):
-            logger.info("Video creation cancelled by user")
-            return None
-        options = prepare_video_options(files, options)
-        total_frames = options["total_frames"]
-        logger.info(f"Creating video from {total_frames} files...")
 
-        # Contour drawing (worker processes make their own)
-        frame_contours = make_frame_contours(options)
-
-        # Calculate global stats if needed
-        global_stats = calculate_global_stats(files, options)
-
-        # Render and write the frames in order, one at a time
-        render_start = time.time()
-        written = 0
-        frames = _frames_in_order(files, options, global_stats, frame_contours)
-        cancelled = False
-        try:
-            with writer_factory() as writer:
-                for i, frame, frame_problems in frames:
-                    for message in frame_problems:
-                        if problems is not None:
-                            problems[message] = problems.get(message, 0) + 1
-                    if frame is not None:
-                        writer.append_data(ensure_even_dimensions(frame))
-                        written += 1
-                    else:
-                        logger.warning(f"Could not process frame {i} ({files[i]})")
-                    if progress_callback and not progress_callback(i + 1, total_frames):
-                        cancelled = True
-                        break
-        finally:
-            frames.close()
-
-        if cancelled:
-            logger.info("Video creation cancelled by user")
-            for path in getattr(writer, "written", [output_file]):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-            return None
-
-        render_time = time.time() - render_start
-        logger.info(
-            f"Rendered {written} of {total_frames} frames in {render_time:.2f}s "
-            f"({total_frames / render_time if render_time > 0 else 0:.2f} frames/sec)"
+        # One pool of worker processes converts, reads and renders the frames
+        # (none: all here); render_in_worker renders even without
+        # multiprocessing in a worker, whose matplotlib settings are the
+        # defaults, not those of the app (whose theme changes them)
+        num_cores = options.get("cpu_count", max(1, cpu_count() - 1))
+        parallel = options.get("use_multiprocessing", False) and num_cores > 1 and len(files) > 1
+        workers = num_cores if parallel else (1 if options.get("render_in_worker") else 0)
+        executor = (
+            process_pool_executor(workers, preload=["solar_radio_image_viewer.video.creator"])
+            if workers
+            else None
         )
-
-        total_time = time.time() - start_time
-        logger.info(f"Video created successfully: {output_file} in {total_time:.2f}s")
-        return output_file
+        options = dict(options, video_id=f"{os.getpid()}-{time.time()}")
+        try:
+            return _render_video(
+                files, output_file, options, progress_callback, problems, status_callback,
+                writer_factory, executor, workers, start_time,
+            )
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
 
     except Exception as e:
         logger.error(f"Error creating video: {e}")
         raise
+
+
+def _render_video(
+    files, output_file, options, progress_callback, problems, status_callback,
+    writer_factory, executor, workers, start_time,
+):
+    """The rest of _create_video, with the worker pool ``executor``."""
+    if not _convert_frames(files, options, progress_callback, status_callback, executor):
+        logger.info("Video creation cancelled by user")
+        return None
+
+    def scan_progress(done, total):
+        if status_callback:
+            status_callback(f"Reading frames for the range, timeline and levels: {done} of {total}")
+        return not progress_callback or progress_callback(0, total)
+
+    try:
+        options = prepare_video_options(files, options, executor, scan_progress)
+    except _Cancelled:
+        logger.info("Video creation cancelled by user")
+        return None
+    total_frames = options["total_frames"]
+    logger.info(f"Creating video from {total_frames} files...")
+
+    # Contour drawing (worker processes make their own)
+    frame_contours = make_frame_contours(options)
+
+    # Calculate global stats if needed
+    global_stats = calculate_global_stats(files, options)
+
+    # Render and write the frames in order, one at a time
+    render_start = time.time()
+    written = 0
+    frames = _frames_in_order(
+        files, options, global_stats, frame_contours, executor, max(workers, 1)
+    )
+    cancelled = False
+    try:
+        with writer_factory() as writer:
+            for i, frame, frame_problems in frames:
+                for message in frame_problems:
+                    if problems is not None:
+                        problems[message] = problems.get(message, 0) + 1
+                if frame is not None:
+                    writer.append_data(ensure_even_dimensions(frame))
+                    written += 1
+                else:
+                    logger.warning(f"Could not process frame {i} ({files[i]})")
+                if progress_callback and not progress_callback(i + 1, total_frames):
+                    cancelled = True
+                    break
+    finally:
+        frames.close()
+
+    if cancelled:
+        logger.info("Video creation cancelled by user")
+        for path in getattr(writer, "written", [output_file]):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        return None
+
+    render_time = time.time() - render_start
+    logger.info(
+        f"Rendered {written} of {total_frames} frames in {render_time:.2f}s "
+        f"({total_frames / render_time if render_time > 0 else 0:.2f} frames/sec)"
+    )
+
+    total_time = time.time() - start_time
+    logger.info(f"Video created successfully: {output_file} in {total_time:.2f}s")
+    return output_file
 
 
 def main(argv=None):
