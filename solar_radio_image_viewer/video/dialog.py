@@ -110,6 +110,13 @@ from ..processing.contour_layers import (
     default_contour_options,
     new_contour_layer,
 )
+from ..processing.plot_style import (
+    DEFAULT_BEAM_STYLE,
+    DEFAULT_GRID_STYLE,
+    DEFAULT_PLOT_SETTINGS,
+    DEFAULT_SOLAR_DISK_STYLE,
+    default_style,
+)
 
 
 
@@ -121,12 +128,14 @@ class PreviewRenderer(QObject):
     """Renders preview frames in a background thread, newest request first.
 
     Frames are made by the video code itself (prepare_video_options,
-    process_image), so the preview frame is exactly the video frame. The
-    shared setup (timeline, global range) and recent frames are kept, so
-    stepping through frames and replaying them is quick.
+    process_image), in a worker process like the video's frames, so the
+    preview frame is exactly the video frame (this process's matplotlib
+    settings follow the app's theme). The shared setup (timeline, global
+    range) and recent frames are kept, so stepping through frames and
+    replaying them is quick.
     """
 
-    rendered = pyqtSignal(int, object)  # request id, RGB frame or None
+    rendered = pyqtSignal(int, object, object)  # request id, RGB frame or None, problems
     status = pyqtSignal(int, str)  # request id, what is being done
 
     def __init__(self):
@@ -135,8 +144,8 @@ class PreviewRenderer(QObject):
         self._request = None
         self._stopped = False
         self._prepared = OrderedDict()  # setup key -> (options, global stats)
-        self._frames = OrderedDict()  # (setup key, frame index) -> frame
-        self._contours = None  # FrameContours, keeping contour images read
+        self._frames = OrderedDict()  # (setup key, frame index) -> (frame, problems)
+        self._executor = None  # one worker process, started on first use
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -150,6 +159,8 @@ class PreviewRenderer(QObject):
         with self._condition:
             self._stopped = True
             self._condition.notify()
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _run(self):
         while True:
@@ -161,16 +172,16 @@ class PreviewRenderer(QObject):
                 request, self._request = self._request, None
             request_id = request[0]
             try:
-                frame = self._render(*request)
+                frame, problems = self._render(*request)
             except Exception as e:
                 logger.error(f"Preview failed: {e}")
                 self.status.emit(request_id, f"Preview failed: {e}")
-                frame = None
-            self.rendered.emit(request_id, frame)
+                frame, problems = None, []
+            self.rendered.emit(request_id, frame, problems)
 
     def _render(self, request_id, files, index, options):
-        from .creator import calculate_global_stats, prepare_video_options, process_image
-        from .utils import FrameContours
+        from ..processing.workers import process_pool_executor
+        from .creator import calculate_global_stats, prepare_video_options, process_image_wrapper
 
         setup_key = repr((files, sorted((k, repr(v)) for k, v in options.items())))
         frame_key = (setup_key, index)
@@ -191,21 +202,28 @@ class PreviewRenderer(QObject):
                 self._prepared.popitem(last=False)
         prepared_options, global_stats = prepared
 
-        if self._contours is None:
-            self._contours = FrameContours()
+        if self._executor is None:
+            self.status.emit(request_id, "Starting the preview renderer...")
+            self._executor = process_pool_executor(
+                1, preload=["solar_radio_image_viewer.video.creator"]
+            )
 
         self.status.emit(request_id, "Rendering...")
-        frame = process_image(
-            files[index],
-            dict(prepared_options, current_frame=index),
-            global_stats,
-            frame_contours=self._contours,
-            frame_idx=index,
-        )
-        self._frames[frame_key] = frame
+        # The worker keeps its contour images between frames (one video id)
+        options = dict(prepared_options, video_id=f"preview-{id(self)}")
+        try:
+            _, frame, problems = self._executor.submit(
+                process_image_wrapper, (files[index], index, options, global_stats)
+            ).result()
+        except Exception:
+            # A broken worker: start a new one next time
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
+            raise
+        self._frames[frame_key] = (frame, problems)
         while len(self._frames) > 60:
             self._frames.popitem(last=False)
-        return frame
+        return frame, problems
 
 
 class PreviewPanel(QWidget):
@@ -232,6 +250,13 @@ class PreviewPanel(QWidget):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        # What could not be drawn on the frame shown
+        self.problems_label = QLabel()
+        self.problems_label.setWordWrap(True)
+        self.problems_label.setStyleSheet("color: #e69f00; font-weight: 600;")
+        self.problems_label.hide()
+        layout.addWidget(self.problems_label)
+
         controls = QHBoxLayout()
         self.play_button = QPushButton("▶ Play")
         self.play_button.setCheckable(True)
@@ -256,6 +281,11 @@ class PreviewPanel(QWidget):
         image = QImage(frame.data, width, height, 3 * width, QImage.Format_RGB888)
         self._pixmap = QPixmap.fromImage(image.copy())
         self._update_pixmap()
+
+    def show_problems(self, problems):
+        """List what could not be drawn (or hide the list if nothing)."""
+        self.problems_label.setText("\n".join(f"⚠ {message}" for message in problems))
+        self.problems_label.setVisible(bool(problems))
 
     def show_message(self, text):
         self._pixmap = None
@@ -308,6 +338,13 @@ class VideoCreationDialog(QDialog):
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_step)
 
+        # Solar disk, beam and grid styles, and plot appearance (None: the
+        # video's own look), as in the main window
+        self.solar_disk_style = default_style(DEFAULT_SOLAR_DISK_STYLE)
+        self.beam_style = default_style(DEFAULT_BEAM_STYLE)
+        self.grid_style = default_style(DEFAULT_GRID_STYLE)
+        self.plot_settings = None
+
         from ..ui.styles import set_hand_cursor
 
         self.setup_ui()
@@ -341,8 +378,9 @@ class VideoCreationDialog(QDialog):
             # Set default output file
             self.output_file_edit.setText(os.path.join(dir_path, "output_video.mp4"))
 
-            # Start from the current tab's display settings
+            # Start from the current tab's display settings and look
             self._copy_viewer_settings(parent)
+            self._copy_viewer_look(parent)
 
             # Auto-scan for files
             self.preview_input_files()
@@ -425,6 +463,7 @@ class VideoCreationDialog(QDialog):
             panel.frame_label.setText("")
             panel.status_label.setText("")
             panel.show_message(problem[1])
+            panel.show_problems([])
             return
 
         if files != self._preview_files:
@@ -456,11 +495,12 @@ class VideoCreationDialog(QDialog):
         if request_id == self._preview_request:
             self.preview_panel.status_label.setText(text)
 
-    def _on_preview_rendered(self, request_id, frame):
+    def _on_preview_rendered(self, request_id, frame, problems):
         if request_id != self._preview_request:
             return  # a newer frame is on its way
         self._preview_shown = request_id
         panel = self.preview_panel
+        panel.show_problems(problems)
         if frame is None:
             panel.show_message("Could not render this frame")
             return
@@ -526,6 +566,7 @@ class VideoCreationDialog(QDialog):
         self._copy_viewer_settings(main_window)
         self.range_mode_combo.setCurrentIndex(0)  # the viewer's min/max
         self.wcs_coords_check.setChecked(getattr(tab, "current_wcs", None) is not None)
+        self._copy_viewer_look(main_window)
 
         # Visible area as the region, in the file's pixels (the viewer may
         # show a downsampled copy)
@@ -1242,6 +1283,9 @@ class VideoCreationDialog(QDialog):
         overlay_main_layout.addLayout(overlay_form)
         overlay_layout.addWidget(overlay_group)
 
+        overlay_layout.addWidget(self._create_plot_elements_group())
+        overlay_layout.addWidget(self._create_appearance_group())
+
         # Min/Max Timeline section
         timeline_group = QGroupBox("Min/Max Timeline")
         timeline_layout = QVBoxLayout(timeline_group)
@@ -1305,6 +1349,149 @@ class VideoCreationDialog(QDialog):
         # Add spacer to push controls to the top
         overlay_layout.addStretch()
         return overlay_scroll
+
+    def _create_plot_elements_group(self):
+        """Solar disk, beam and grid, each with its main-window style dialog."""
+        group = QGroupBox("Solar Disk, Beam and Grid")
+        grid = QGridLayout(group)
+        grid.setContentsMargins(12, 16, 12, 12)
+        rows = (
+            ("show_solar_disk_check", "Solar disk", self._edit_solar_disk_style,
+             "Circle of the Sun's apparent size at each frame's time, centred\n"
+             "where the Sun is in that frame (from its FITS header)"),
+            ("show_beam_check", "Beam", self._edit_beam_style,
+             "Restoring beam (BMAJ, BMIN, BPA in the header) in the lower left corner"),
+            ("show_grid_check", "Coordinate grid", self._edit_grid_style,
+             "Grid of the image's coordinates (needs WCS coordinates, Display tab)"),
+        )
+        for row, (name, text, edit, tip) in enumerate(rows):
+            check = QCheckBox(text)
+            check.setToolTip(tip)
+            setattr(self, name, check)
+            grid.addWidget(check, row, 0)
+            button = QPushButton("Style…")
+            button.setToolTip(f"Colour and line style of the {text.lower()}, as in the main window")
+            button.clicked.connect(edit)
+            grid.addWidget(button, row, 1)
+        grid.setColumnStretch(0, 1)
+        self.wcs_coords_check.toggled.connect(self._update_grid_check)
+        self._update_grid_check()
+        return group
+
+    def _create_appearance_group(self):
+        """Plot appearance (main window's Plot Customization) and copying
+        the look of the main window."""
+        group = QGroupBox("Plot Appearance")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(12, 16, 12, 12)
+
+        row = QHBoxLayout()
+        self.appearance_label = QLabel()
+        row.addWidget(self.appearance_label, 1)
+        customize = QPushButton("Customize…")
+        customize.setToolTip("Labels, title, fonts, colours, ticks, borders and padding")
+        customize.clicked.connect(self._edit_plot_settings)
+        row.addWidget(customize)
+        reset = QPushButton("Reset")
+        reset.setToolTip("Back to the video's own default look")
+        reset.clicked.connect(lambda: self._set_plot_settings(None, "video default"))
+        row.addWidget(reset)
+        layout.addLayout(row)
+
+        copy_row = QHBoxLayout()
+        copy_btn = QPushButton("Copy from Main Window")
+        copy_btn.setToolTip(
+            "Take the solar disk, beam and grid (on/off and style) and the plot\n"
+            "appearance of the main window's current tab"
+        )
+        copy_btn.clicked.connect(lambda: self._copy_viewer_look(self._main_window, notify=True))
+        copy_btn.setEnabled(self._main_window is not None)
+        copy_row.addWidget(copy_btn)
+        copy_row.addStretch()
+        layout.addLayout(copy_row)
+
+        note = QLabel(
+            "Opened from the main window, this window starts with the main window's "
+            "solar disk, beam, grid and plot appearance. Change them here, or set "
+            "them up in the main window and press Copy from Main Window. "
+            "\"auto\" colours are those of the light theme."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("SecondaryText")
+        layout.addWidget(note)
+        self._set_plot_settings(None, "video default")
+        return group
+
+    def _update_grid_check(self, *_):
+        wcs = self.wcs_coords_check.isChecked()
+        self.show_grid_check.setEnabled(wcs)
+        if not wcs:
+            self.show_grid_check.setChecked(False)
+
+    # The main window's style dialogs apply to their parent through these
+    def schedule_plot(self):
+        self.schedule_preview()
+
+    def show_status_message(self, text):
+        self.preview_panel.status_label.setText(text)
+
+    def _edit_solar_disk_style(self):
+        from ..dialogs.solar_disk_style import SolarDiskStyleDialog
+
+        SolarDiskStyleDialog(self, self.solar_disk_style).exec_()
+
+    def _edit_beam_style(self):
+        from ..dialogs.beam_settings import BeamSettingsDialog
+
+        BeamSettingsDialog(self, self.beam_style).exec_()
+
+    def _edit_grid_style(self):
+        from ..dialogs.grid_settings import GridSettingsDialog
+
+        GridSettingsDialog(self, self.grid_style).exec_()
+
+    def _edit_plot_settings(self):
+        from ..dialogs.plot_customization import PlotCustomizationDialog
+
+        dialog = PlotCustomizationDialog(
+            self, self.plot_settings or default_style(DEFAULT_PLOT_SETTINGS)
+        )
+        if dialog.exec_() == QDialog.Accepted:
+            self._set_plot_settings(dialog.get_settings(), "customized")
+
+    def _set_plot_settings(self, settings, source):
+        """Plot appearance ``settings`` (None: the video's own look), and
+        where they came from, for the label."""
+        self.plot_settings = settings
+        self._plot_settings_source = source
+        self.appearance_label.setText(f"Plot appearance: {source}")
+        self.schedule_preview()
+
+    def _copy_viewer_look(self, main_window, notify=False):
+        """Solar disk, beam, grid and plot appearance of the main window's
+        current tab."""
+        tab_widget = getattr(main_window, "tab_widget", None)
+        tab = tab_widget.currentWidget() if tab_widget is not None else None
+        if tab is None or not hasattr(tab, "plot_settings"):
+            if notify:
+                QMessageBox.information(self, "No Image", "Open an image in the main window first.")
+            return
+        self.solar_disk_style = dict(tab.solar_disk_style)
+        self.beam_style = dict(tab.beam_style)
+        self.grid_style = dict(tab.grid_style)
+        self.show_solar_disk_check.setChecked(tab.show_solar_disk_checkbox.isChecked())
+        # The main window draws the beam only for images that have one
+        self.show_beam_check.setChecked(
+            tab.show_beam_checkbox.isChecked() and bool(getattr(tab, "psf", None))
+        )
+        self.show_grid_check.setChecked(
+            tab.show_grid_checkbox.isChecked() and self.wcs_coords_check.isChecked()
+        )
+        self._set_plot_settings(dict(tab.plot_settings), "from the main window")
+        if notify:
+            self.show_status_message(
+                "Copied the solar disk, beam, grid and plot appearance from the main window"
+            )
 
     def _create_output_tab(self, output_layout):
         """Output tab: file name, fps, quality, multiprocessing. Returns the tab's scroll area."""
@@ -1809,11 +1996,21 @@ class VideoCreationDialog(QDialog):
             "timeline_position": 0,  # Position selector removed - using default bottom dock
             "timeline_source": self.timeline_source_combo.currentIndex(),  # 0=Colormap, 1=Contours
             "timeline_log_scale": self.timeline_log_scale_check.isChecked(),
+            "show_solar_disk": self.show_solar_disk_check.isChecked(),
+            "solar_disk_style": dict(self.solar_disk_style),
+            "show_beam": self.show_beam_check.isChecked(),
+            "beam_style": dict(self.beam_style),
+            "show_grid": self.show_grid_check.isChecked(),
+            "grid_style": dict(self.grid_style),
+            "plot_settings": dict(self.plot_settings) if self.plot_settings else None,
             # Region
             **region_options,
             # Contours (series layers get their files per frame in _video_files)
             "contour_layers": [dict(layer) for layer in self.contour_layers],
             "contour_options": dict(self.contour_options),
+            # Frames are drawn in worker processes, as the preview is, so
+            # the app's theme doesn't change them
+            "render_in_worker": True,
             # Output
             "fps": self.fps_spinbox.value(),
             "quality": self.quality_combo.currentText(),
@@ -2028,7 +2225,8 @@ class VideoCreationDialog(QDialog):
         "wcs_coords_check", "difference_combo", "track_rotation_check", "region_enabled", "x_min_spinbox", "x_max_spinbox",
         "y_min_spinbox", "y_max_spinbox", "timestamp_check", "frame_number_check",
         "filename_check", "minmax_timeline_check", "timeline_source_combo",
-        "timeline_log_scale_check", "output_file_edit", "format_combo", "fps_spinbox",
+        "timeline_log_scale_check", "show_solar_disk_check", "show_beam_check",
+        "show_grid_check", "output_file_edit", "format_combo", "fps_spinbox",
         "quality_combo", "multiprocessing_check", "cores_spinbox",
     )
 
@@ -2050,6 +2248,11 @@ class VideoCreationDialog(QDialog):
             "contour_layers": self.contour_layers,
             "contour_options": self.contour_options,
             "excluded_frames": sorted(self._excluded_frames),
+            "solar_disk_style": self.solar_disk_style,
+            "beam_style": self.beam_style,
+            "grid_style": self.grid_style,
+            "plot_settings": self.plot_settings,
+            "plot_settings_source": self._plot_settings_source,
         }
 
     def _apply_settings_state(self, state):
@@ -2070,6 +2273,16 @@ class VideoCreationDialog(QDialog):
         self._excluded_frames = set(state.get("excluded_frames", []))
         self._shown_frame_rows = None
         self._set_contour_layers(state.get("contour_layers", []), state.get("contour_options"))
+        for name, defaults in (
+            ("solar_disk_style", DEFAULT_SOLAR_DISK_STYLE),
+            ("beam_style", DEFAULT_BEAM_STYLE),
+            ("grid_style", DEFAULT_GRID_STYLE),
+        ):
+            setattr(self, name, dict(defaults, **(state.get(name) or {})))
+        settings = state.get("plot_settings")
+        self._set_plot_settings(
+            settings, state.get("plot_settings_source", "customized") if settings else "video default"
+        )
         self.schedule_preview()
 
     def save_settings(self):
@@ -2356,6 +2569,18 @@ class VideoCreationDialog(QDialog):
         """Handle successful video creation"""
         self._close_progress_dialog()
 
+        problems = self.worker.problems
+        if problems:
+            frames = len(self.worker.files)
+            lines = "\n".join(
+                f"• {message} ({count} of {frames} frames)" for message, count in problems.items()
+            )
+            QMessageBox.warning(
+                self,
+                "Video Created, With Problems",
+                f"Video created: {output_file}\n\nSome things could not be drawn:\n{lines}",
+            )
+            return
         QMessageBox.information(
             self,
             "Video Created",
@@ -2764,6 +2989,8 @@ class VideoWorker(QThread):
         self.output_file = output_file
         self.options = options
         self.is_cancelled = False
+        # What could not be drawn: message -> number of frames
+        self.problems = {}
 
     def run(self):
         from .creator import create_video
@@ -2774,7 +3001,11 @@ class VideoWorker(QThread):
 
         try:
             result = create_video(
-                self.files, self.output_file, self.options, progress_callback=on_progress
+                self.files,
+                self.output_file,
+                self.options,
+                progress_callback=on_progress,
+                problems=self.problems,
             )
         except Exception as e:
             if self.is_cancelled:

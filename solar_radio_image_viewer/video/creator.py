@@ -387,9 +387,18 @@ def _frame_contour_file(options, frame_idx):
 
 
 def process_image(
-    file_path, options, global_stats=None, frame_contours=None, frame_idx=0
+    file_path, options, global_stats=None, frame_contours=None, frame_idx=0, problems=None
 ):
-    """Process a FITS image and return a frame for the video"""
+    """Process a FITS image and return a frame for the video.
+
+    Messages about what could not be drawn (contours that can't be placed,
+    an image without a beam, ...) are added to the list ``problems``.
+    """
+
+    def report(message):
+        if problems is not None and message not in problems:
+            problems.append(message)
+
     try:
         # Load FITS data
         data, header = load_fits_data(file_path, stokes=options.get("stokes", "I"))
@@ -583,9 +592,14 @@ def process_image(
                     image_stokes=options.get("stokes", "I"),
                     region_origin=region_origin,
                     legend_options=options.get("contour_options"),
+                    report=report,
                 )
             except Exception as e:
                 logger.error(f"Error drawing contours: {e}")
+                report(f"Contours not drawn: {e}")
+
+        # Solar disk, beam and grid, styled as in the main window
+        _draw_plot_overlays(ax, header, options, region_origin, report)
 
         # Handle axis labels based on WCS mode
         if wcs_enabled and coord_info:
@@ -672,6 +686,13 @@ def process_image(
             # Add units if available
             if header and "BUNIT" in header:
                 cbar.set_label(header["BUNIT"], fontsize=12)
+        else:
+            cbar = None
+
+        # Labels, fonts, colours, ticks and borders as in the main window
+        plot_settings = options.get("plot_settings")
+        if plot_settings:
+            _apply_frame_plot_settings(fig, ax, cbar, header, plot_settings, report)
 
         # Draw min/max timeline if enabled (using the pre-created timeline_ax from GridSpec)
         timeline = options.get("minmax_timeline", None)
@@ -700,6 +721,71 @@ def process_image(
         logger.error(f"Error processing image {file_path}: {e}")
         return create_error_frame(
             options, f"Error: {str(e)[:30]}", frame_idx, os.path.basename(file_path)
+        )
+
+
+def _draw_plot_overlays(ax, header, options, region_origin, report):
+    """Solar disk, beam and coordinate grid, if chosen (video.overlays)."""
+    from ..processing.plot_style import (
+        DEFAULT_BEAM_STYLE,
+        DEFAULT_GRID_STYLE,
+        DEFAULT_SOLAR_DISK_STYLE,
+    )
+    from .overlays import draw_beam, draw_grid, draw_solar_disk
+
+    header = header or {}
+    if options.get("show_solar_disk"):
+        style = dict(DEFAULT_SOLAR_DISK_STYLE, **(options.get("solar_disk_style") or {}))
+        draw_solar_disk(ax, header, style, region_origin, report)
+    if options.get("show_beam"):
+        style = dict(DEFAULT_BEAM_STYLE, **(options.get("beam_style") or {}))
+        draw_beam(ax, header, style, report)
+    if options.get("show_grid"):
+        style = dict(DEFAULT_GRID_STYLE, **(options.get("grid_style") or {}))
+        draw_grid(ax, style, report)
+
+
+def _apply_frame_plot_settings(fig, ax, cbar, header, plot_settings, report):
+    """Plot customization settings of the main window on a frame. A custom
+    title goes above the time / frame / file lines; "auto" colours are
+    those of the light theme, and the layout is the main window's padding."""
+    from ..processing.plot_style import DEFAULT_PLOT_SETTINGS, apply_plot_settings
+
+    settings = dict(DEFAULT_PLOT_SETTINGS, **plot_settings)
+    # Light theme backgrounds, not those of the process (the preview is
+    # rendered in the app, whose theme may be dark)
+    for key in ("plot_bg_color", "figure_bg_color"):
+        if settings.get(key) == "auto":
+            settings[key] = "white"
+    if settings.get("title") and ax.get_title():
+        settings["title"] = settings["title"] + "\n" + ax.get_title()
+    apply_plot_settings(
+        ax,
+        cbar,
+        settings,
+        fig,
+        dark=False,
+        bunit=(header or {}).get("BUNIT"),
+        on_error=report,
+    )
+    if settings.get("use_tight_layout"):
+        fig.tight_layout()
+    else:
+        # The main window's padding leaves the right edge to its colorbar;
+        # without one, keep a margin there like the left one, or the plot
+        # runs off the frame
+        right = settings["pad_right"]
+        if cbar is None:
+            right = min(right, 1 - settings["pad_left"])
+        if right <= settings["pad_left"]:
+            right = settings["pad_right"]
+        fig.subplots_adjust(
+            left=settings["pad_left"],
+            right=right,
+            top=settings["pad_top"],
+            bottom=settings["pad_bottom"],
+            wspace=settings["pad_wspace"],
+            hspace=settings["pad_hspace"],
         )
 
 
@@ -791,7 +877,7 @@ def process_image_wrapper(args):
     """
     Wrapper function for process_image to use with multiprocessing.
     Takes a tuple of (file_path, index, options, global_stats) and returns
-    (index, processed_frame)
+    (index, processed_frame, problems)
     """
     # Configure matplotlib for non-interactive backend to avoid thread safety issues
     import matplotlib
@@ -799,6 +885,7 @@ def process_image_wrapper(args):
     matplotlib.use("Agg")  # Use non-interactive backend
 
     file_path, idx, options, global_stats = args
+    problems = []
     try:
         options = dict(options, current_frame=idx)
         key = options.get("video_id")
@@ -810,36 +897,46 @@ def process_image_wrapper(args):
             global_stats,
             frame_contours=_worker_contours["contours"],
             frame_idx=idx,
+            problems=problems,
         )
-        return idx, result
+        return idx, result, problems
     except Exception as e:
         logger.error(f"Error processing frame {idx} ({file_path}): {e}")
-        return idx, None
+        return idx, None, problems
 
 
 def _frames_in_order(files, options, global_stats, frame_contours):
-    """Render the frames, yielding (index, frame) in order as they are ready.
+    """Render the frames, yielding (index, frame, problems) in order as they
+    are ready (problems: see process_image).
 
     With multiprocessing, up to two frames per core are rendered ahead, so
     memory stays bounded; closing the generator (e.g. on cancel) stops
     submitting frames and waits only for those already being rendered.
     """
     num_cores = options.get("cpu_count", max(1, cpu_count() - 1))
-    if not (options.get("use_multiprocessing", False) and num_cores > 1 and len(files) > 1):
+    parallel = options.get("use_multiprocessing", False) and num_cores > 1 and len(files) > 1
+    # render_in_worker: render even without multiprocessing in a worker,
+    # whose matplotlib settings are the defaults, not those of the app
+    # (whose theme changes them)
+    if not parallel and not options.get("render_in_worker"):
         for i, file_path in enumerate(files):
+            problems = []
             frame = process_image(
                 file_path,
                 dict(options, current_frame=i),
                 global_stats,
                 frame_contours=frame_contours,
                 frame_idx=i,
+                problems=problems,
             )
-            yield i, frame
+            yield i, frame, problems
         return
 
     # Worker processes make their own FrameContours (see process_image_wrapper)
     worker_options = dict(options)
     worker_options["video_id"] = f"{os.getpid()}-{time.time()}"
+    if not parallel:
+        num_cores = 1
     logger.info(f"Rendering frames with {num_cores} processes")
     executor = process_pool_executor(
         num_cores, preload=["solar_radio_image_viewer.video.creator"]
@@ -854,8 +951,8 @@ def _frames_in_order(files, options, global_stats, frame_contours):
                     (files[next_to_submit], next_to_submit, worker_options, global_stats),
                 )
                 next_to_submit += 1
-            _, frame = pending.pop(i).result()
-            yield i, frame
+            _, frame, problems = pending.pop(i).result()
+            yield i, frame, problems
     finally:
         for future in pending.values():
             future.cancel()
@@ -1258,7 +1355,7 @@ def prepare_video_options(files, options):
     return options
 
 
-def create_video(files, output_file, options, progress_callback=None):
+def create_video(files, output_file, options, progress_callback=None, problems=None):
     """
     Create a video from a list of FITS files.
 
@@ -1292,6 +1389,9 @@ def create_video(files, output_file, options, progress_callback=None):
         - total_frames : int, Total number of frames
         Returns:
         - continue_processing : bool, Whether to continue processing
+    problems : dict, optional
+        Filled with what could not be drawn (see process_image), each
+        message with the number of frames it applies to.
 
     Returns
     -------
@@ -1340,7 +1440,10 @@ def create_video(files, output_file, options, progress_callback=None):
         cancelled = False
         try:
             with writer_factory() as writer:
-                for i, frame in frames:
+                for i, frame, frame_problems in frames:
+                    for message in frame_problems:
+                        if problems is not None:
+                            problems[message] = problems.get(message, 0) + 1
                     if frame is not None:
                         writer.append_data(ensure_even_dimensions(frame))
                         written += 1
@@ -1442,7 +1545,11 @@ def main(argv=None):
         options = {"width": 0, "height": 0, "fps": 10, "timestamp": True, "colorbar": True}
     else:
         parser.error("give FITS files or --preset")
-    return 0 if create_video(files, args.output, options) else 1
+    problems = {}
+    created = create_video(files, args.output, options, problems=problems)
+    for message, count in problems.items():
+        print(f"Warning: {message} ({count} of {len(files)} frames)")
+    return 0 if created else 1
 
 
 if __name__ == "__main__":

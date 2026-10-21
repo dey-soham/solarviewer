@@ -9,6 +9,8 @@ This module provides:
 - Contour layers of video frames
 """
 
+import os
+
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
@@ -421,6 +423,8 @@ class FrameContours:
     def __init__(self):
         # (path, stokes, coordinate system) -> (data, wcs), see contour_image
         self._contour_images = {}
+        # Same keys -> why the image could not be read or converted
+        self._failures = {}
 
     def contour_image(self, path, stokes, base_header, load_func=None):
         """(data, wcs) of contour image ``path`` in the coordinate system of
@@ -443,7 +447,9 @@ class FrameContours:
 
         result = (None, None)
         data, header = load_func(path, stokes=stokes)
-        if data is not None:
+        if data is None:
+            self._failures[key] = f"could not read {os.path.basename(path)}"
+        else:
             own = coordinate_type(header)
             try:
                 if target == "hpc" and own == "radec":
@@ -452,7 +458,6 @@ class FrameContours:
                     hpc_map, _, _ = convert_to_hpc(path, Stokes=stokes)
                     result = (np.asarray(hpc_map.data), hpc_map.wcs)
                 elif target == "radec" and own == "hpc":
-                    import os
                     import tempfile
 
                     from ..coordinates.helioprojective import convert_hpc_to_radec
@@ -462,10 +467,12 @@ class FrameContours:
                         if convert_hpc_to_radec(path, converted):
                             data, header = load_func(converted, stokes=stokes)
                             result = (data, WCS(header, naxis=2))
+                        else:
+                            self._failures[key] = "could not convert it to RA/Dec"
                 else:
                     result = (data, WCS(header, naxis=2))
             except Exception as e:
-                logger.warning(f"Could not prepare contour image {path}: {e}")
+                self._failures[key] = f"could not convert {os.path.basename(path)} ({e})"
 
         self._contour_images[key] = result
         while len(self._contour_images) > 4:
@@ -483,12 +490,20 @@ class FrameContours:
         image_stokes="I",
         region_origin=(0, 0),
         legend_options=None,
+        report=None,
     ):
         """Draw ``layers`` for frame ``frame_idx`` on ``ax``, which shows
         ``image_data`` (the full image of ``image_path``, before any region
         is cut out; ``region_origin`` is the region's lower left corner).
+        ``report(message)`` hears of layers that could not be drawn.
         """
-        from ..processing.contour_layers import legend_handles
+        from ..processing.contour_layers import contour_layer_name, legend_handles
+
+        def problem(layer, reason):
+            message = f"Contours {contour_layer_name(layer, 'Image')} not drawn: {reason}"
+            logger.warning(f"Frame {frame_idx}: {message}")
+            if report:
+                report(message)
 
         legend_options = legend_options or {}
         target_wcs = None
@@ -510,9 +525,21 @@ class FrameContours:
             else:
                 data, wcs = self.contour_image(path, layer.get("stokes", "I"), image_header)
             if data is None:
-                logger.warning(f"Frame {frame_idx}: no contour data from {path}")
+                key = (path, layer.get("stokes", "I"), coordinate_type(image_header))
+                problem(
+                    layer, self._failures.get(key, f"could not read {os.path.basename(path)}")
+                )
                 continue
-            drawn = self._draw_layer(ax, layer, data, wcs, target_wcs, image_data.shape, region_origin)
+            drawn = self._draw_layer(
+                ax,
+                layer,
+                data,
+                wcs,
+                target_wcs,
+                image_data.shape,
+                region_origin,
+                lambda reason, layer=layer: problem(layer, reason),
+            )
             if not legend_options.get("legend_show_negative", False):
                 drawn = [sign for sign in drawn if sign == "pos"]
             handles.extend(legend_handles(layer, drawn, image_name="Image"))
@@ -526,8 +553,11 @@ class FrameContours:
             )
             legend.set_zorder(10)
 
-    def _draw_layer(self, ax, layer, data, contour_wcs, target_wcs, target_shape, region_origin):
-        """Draw one layer; returns the signs ("pos"/"neg") drawn."""
+    def _draw_layer(
+        self, ax, layer, data, contour_wcs, target_wcs, target_shape, region_origin, problem
+    ):
+        """Draw one layer; returns the signs ("pos"/"neg") drawn. Calls
+        ``problem(reason)`` if it can't be drawn."""
         from astropy.wcs import WCSCOMPARE_ANCILLARY
 
         from ..processing.contour_mapping import draw_mapped_contours, mapping_between
@@ -543,13 +573,10 @@ class FrameContours:
                         contour_wcs, target_wcs, (data.shape[1], data.shape[0])
                     )
                 except Exception as e:
-                    logger.warning(f"Contours not drawn: cannot place them on the image ({e})")
+                    problem(f"cannot place them on the image ({e})")
                     return []
         elif data.shape != tuple(target_shape):
-            logger.warning(
-                "Contours not drawn: the images differ in size and have no "
-                "coordinates to align them"
-            )
+            problem("the images differ in size and have no coordinates to align them")
             return []
 
         # Trace large contour images on at most about 2048 x 2048 pixels
@@ -574,7 +601,7 @@ class FrameContours:
                     ax.clabel(cs, inline=True, fontsize=8, fmt="%.2g")
                 drawn.append(sign)
             except Exception as e:
-                logger.warning(f"Error drawing {sign} contours: {e}")
+                problem(f"error drawing the {'negative' if sign == 'neg' else 'positive'} levels ({e})")
         return drawn
 
 

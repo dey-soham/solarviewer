@@ -100,6 +100,13 @@ from .processing.fits_io import readable_image_path
 from .processing.contour_layers import default_contour_options, new_contour_layer
 from .processing.image_meta import casa_info, fits_header
 from .processing.prefetch import image_prefetcher
+from .processing.plot_style import (
+    DEFAULT_BEAM_STYLE,
+    DEFAULT_GRID_STYLE,
+    DEFAULT_PLOT_SETTINGS,
+    DEFAULT_SOLAR_DISK_STYLE,
+    default_style,
+)
 
 
 def _preload_display_modules():
@@ -179,13 +186,7 @@ class SolarRadioImageTab(
         self.solar_disk_diameter_arcmin = 32.0
         self.solar_disk_auto_compute = True
         # Solar disk style properties
-        self.solar_disk_style = {
-            "color": "white",
-            "linestyle": "--",
-            "linewidth": 1.8,
-            "alpha": 0.6,
-            "show_center": False,
-        }
+        self.solar_disk_style = default_style(DEFAULT_SOLAR_DISK_STYLE)
 
         # Annotations (tracked for remove/clear support)
         self.shape_annotations = []
@@ -193,19 +194,10 @@ class SolarRadioImageTab(
         self.arrow_annotations = []
 
         # Beam style properties
-        self.beam_style = {
-            "edgecolor": "black",
-            "facecolor": "white",
-            "linewidth": 1.5,
-            "alpha": 0.4,
-        }
+        self.beam_style = default_style(DEFAULT_BEAM_STYLE)
 
         # Grid style properties
-        self.grid_style = {
-            "color": "white",
-            "linestyle": "--",
-            "alpha": 0.5,
-        }
+        self.grid_style = default_style(DEFAULT_GRID_STYLE)
 
         # Initialize RMS box values
         self.current_rms_box = [0, 200, 0, 130]
@@ -279,35 +271,7 @@ class SolarRadioImageTab(
         self.contour_options = default_contour_options()
 
         # Plot customization settings
-        self.plot_settings = {
-            "xlabel": "",
-            "ylabel": "",
-            "title": "",
-            "colorbar_label": "",
-            "axis_label_fontsize": 12,
-            "axis_tick_fontsize": 10,
-            "title_fontsize": 12,
-            "colorbar_label_fontsize": 10,
-            "colorbar_tick_fontsize": 10,
-            "plot_bg_color": "auto",
-            "figure_bg_color": "auto",
-            "text_color": "auto",
-            "tick_color": "auto",
-            "border_color": "auto",
-            "border_width": 1.0,
-            "tick_direction": "out",
-            "tick_length": 4,
-            "tick_width": 1.0,
-            # Padding settings
-            "pad_left": 0.135,
-            "pad_right": 1.0,
-            "pad_top": 0.95,
-            # "pad_bottom": 0.05,
-            "pad_bottom": 0.08,
-            "pad_wspace": 0.2,
-            "pad_hspace": 0.2,
-            "use_tight_layout": False,
-        }
+        self.plot_settings = default_style(DEFAULT_PLOT_SETTINGS)
 
         # Rendering optimization state
         self._last_rendered_state = {}

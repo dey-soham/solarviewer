@@ -7,11 +7,9 @@ import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -22,6 +20,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..dialogs.solar_disk_style import SolarDiskStyleWidget
 from ..ui.styles import set_hand_cursor
 
 
@@ -184,79 +183,8 @@ class SolarDiskMixin:
         style_tab = QWidget()
         style_layout = QVBoxLayout(style_tab)
 
-        # Color selection
-        color_group = QGroupBox("Color")
-        color_layout = QHBoxLayout(color_group)
-
-        color_label = QLabel("Disk Color:")
-        color_combo = QComboBox()
-        colors = ["yellow", "white", "red", "green", "blue", "cyan", "magenta", "black"]
-        for color in colors:
-            color_combo.addItem(color)
-        color_combo.setCurrentText(self.solar_disk_style["color"])
-        color_layout.addWidget(color_label)
-        color_layout.addWidget(color_combo)
-        style_layout.addWidget(color_group)
-
-        # Line style
-        line_group = QGroupBox("Line Style")
-        line_layout = QGridLayout(line_group)
-
-        # Line style
-        linestyle_label = QLabel("Line Style:")
-        linestyle_combo = QComboBox()
-        linestyles = [
-            ("-", "Solid"),
-            ("--", "Dashed"),
-            (":", "Dotted"),
-            ("-.", "Dash-dot"),
-        ]
-        for style_code, style_name in linestyles:
-            linestyle_combo.addItem(style_name, style_code)
-
-        # Set current line style
-        current_style = self.solar_disk_style["linestyle"]
-        for i in range(linestyle_combo.count()):
-            if linestyle_combo.itemData(i) == current_style:
-                linestyle_combo.setCurrentIndex(i)
-                break
-
-        line_layout.addWidget(linestyle_label, 0, 0)
-        line_layout.addWidget(linestyle_combo, 0, 1)
-
-        # Line width
-        linewidth_label = QLabel("Line Width:")
-        linewidth_spinbox = QDoubleSpinBox()
-        linewidth_spinbox.setRange(0.5, 5.0)
-        linewidth_spinbox.setSingleStep(0.5)
-        linewidth_spinbox.setValue(self.solar_disk_style["linewidth"])
-        line_layout.addWidget(linewidth_label, 1, 0)
-        line_layout.addWidget(linewidth_spinbox, 1, 1)
-
-        # Alpha/transparency
-        alpha_label = QLabel("Opacity:")
-        alpha_spinbox = QDoubleSpinBox()
-        alpha_spinbox.setRange(0.1, 1.0)
-        alpha_spinbox.setSingleStep(0.1)
-        alpha_spinbox.setValue(self.solar_disk_style["alpha"])
-        line_layout.addWidget(alpha_label, 2, 0)
-        line_layout.addWidget(alpha_spinbox, 2, 1)
-
-        style_layout.addWidget(line_group)
-
-        # Center marker toggle
-        center_marker_group = QGroupBox("Center Marker")
-        center_marker_layout = QVBoxLayout(center_marker_group)
-
-        # Add a checkbox to toggle the center marker
-        show_center_checkbox = QCheckBox("Show center marker (+)")
-        # Initialize checkbox state - if not in the dictionary, default to True
-        if "show_center" not in self.solar_disk_style:
-            self.solar_disk_style["show_center"] = True
-        show_center_checkbox.setChecked(self.solar_disk_style["show_center"])
-        center_marker_layout.addWidget(show_center_checkbox)
-
-        style_layout.addWidget(center_marker_group)
+        style_widget = SolarDiskStyleWidget(self.solar_disk_style)
+        style_layout.addWidget(style_widget)
         style_layout.addStretch()
 
         # Position tab
@@ -448,13 +376,7 @@ class SolarDiskMixin:
                 viewer.solar_disk_diameter_arcmin = float(diameter_spinbox.value())
 
                 # Update style properties
-                viewer.solar_disk_style["color"] = color_combo.currentText()
-                viewer.solar_disk_style["linestyle"] = linestyle_combo.currentData()
-                viewer.solar_disk_style["linewidth"] = linewidth_spinbox.value()
-                viewer.solar_disk_style["alpha"] = alpha_spinbox.value()
-                viewer.solar_disk_style["show_center"] = (
-                    show_center_checkbox.isChecked()
-                )
+                viewer.solar_disk_style.update(style_widget.get_style())
 
                 # Directly update solar disk without full replot for instant feedback
                 ax = viewer.figure.gca()

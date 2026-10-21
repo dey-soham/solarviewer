@@ -775,174 +775,22 @@ class RenderingMixin:
 
     def _apply_plot_customization(self, ax, cb):
         """Apply self.plot_settings: labels, fonts, colors, ticks, borders."""
-        # Apply plot customization settings
-        ps = self.plot_settings
-
-        # Helper to resolve "auto" colors based on theme
+        from ..processing.plot_style import apply_plot_settings
         from ..ui.styles import theme_manager
 
-        is_dark = theme_manager.is_dark
-        theme_text = "#ffffff" if is_dark else "#000000"
-        theme_tick = "#e0e0e0" if is_dark else "#333333"
-        theme_border = "#ffffff" if is_dark else "#000000"
+        def on_error(message):
+            print(f"[ERROR] {message}")
+            self.show_status_message(message)
 
-        # Get text color for labels and title
-        text_color = ps.get("text_color", "auto")
-        if text_color == "auto":
-            text_color = theme_text  # Explicitly set based on theme
-
-        # Get tick color for tick marks and tick labels (separate from text_color)
-        tick_color = ps.get("tick_color", "auto")
-        if tick_color == "auto":
-            tick_color = theme_tick  # Explicitly set based on theme
-
-        # Build label kwargs with color if specified
-        label_kwargs = {"fontsize": ps.get("axis_label_fontsize", 12)}
-        title_kwargs = {"fontsize": ps.get("title_fontsize", 12)}
-        if text_color:
-            label_kwargs["color"] = text_color
-            title_kwargs["color"] = text_color
-
-        # Apply custom labels and fontsizes
-        # For WCS axes, we need to re-set the label to apply fontsize
-        if ps.get("xlabel"):
-            ax.set_xlabel(ps["xlabel"], **label_kwargs)
-        else:
-            # Get existing label and re-set with new fontsize
-            current_xlabel = ax.get_xlabel()
-            ax.set_xlabel(current_xlabel, **label_kwargs)
-
-        if ps.get("ylabel"):
-            ax.set_ylabel(ps["ylabel"], **label_kwargs)
-        else:
-            current_ylabel = ax.get_ylabel()
-            ax.set_ylabel(current_ylabel, **label_kwargs)
-
-        if ps.get("title"):
-            ax.set_title(ps["title"], **title_kwargs)
-        else:
-            current_title = ax.get_title()
-            ax.set_title(current_title, **title_kwargs)
-
-        # Apply tick settings with separate tick color (tick marks only)
-        tick_params = {
-            "axis": "both",
-            "which": "major",
-            "labelsize": ps.get("axis_tick_fontsize", 10),
-            "direction": ps.get("tick_direction", "in"),
-            "length": ps.get("tick_length", 4),
-            "width": ps.get("tick_width", 1.0),
-        }
-        if tick_color:
-            tick_params["color"] = tick_color  # Only tick marks, not labels
-        if text_color:
-            tick_params["labelcolor"] = text_color  # Tick labels use text color
-        ax.tick_params(**tick_params)
-
-        # For WCSAxes, also apply tick mark colors via coords (not tick labels)
-        if hasattr(ax, "coords"):
-            try:
-                for coord in ax.coords:
-                    if tick_color:
-                        coord.set_ticks(color=tick_color)
-                    if text_color:
-                        coord.set_ticklabel(color=text_color)
-            except Exception as e:
-                print(f"[ERROR] Error setting WCSAxes tick colors: {e}")
-                self.show_status_message(f"Error setting WCSAxes tick colors: {e}")
-
-        # Apply colorbar settings with separate tick color
-        cb_tick_params = {
-            "labelsize": ps.get("colorbar_tick_fontsize", 10),
-            "direction": ps.get("tick_direction", "in"),
-            "length": ps.get("tick_length", 4),
-            "width": ps.get("tick_width", 1.0),
-        }
-        if tick_color:
-            cb_tick_params["color"] = tick_color  # Only tick marks
-        if text_color:
-            cb_tick_params["labelcolor"] = text_color  # Tick labels use text color
-        cb.ax.tick_params(**cb_tick_params)
-
-        # Set colorbar label - use custom label or BUNIT from image
-        colorbar_label = ps.get("colorbar_label", "")
-        if (
-            not colorbar_label
-            and hasattr(self, "_current_bunit")
-            and self._current_bunit
-        ):
-            colorbar_label = self._current_bunit
-
-        if colorbar_label:
-            label_kwargs = {"fontsize": ps.get("colorbar_label_fontsize", 10)}
-            if text_color:
-                label_kwargs["color"] = text_color
-            cb.set_label(colorbar_label, **label_kwargs)
-
-        # Apply text color to labels and title
-        if text_color:
-            ax.xaxis.label.set_color(text_color)
-            ax.yaxis.label.set_color(text_color)
-            ax.title.set_color(text_color)
-
-        # Apply background colors
-        plot_bg = ps.get("plot_bg_color", "auto")
-        figure_bg = ps.get("figure_bg_color", "auto")
-
-        # Resolve defaults from current theme (stored in rcParams)
-        from matplotlib import rcParams
-
-        if plot_bg == "auto":
-            plot_bg = rcParams.get("axes.facecolor", "white")
-        if figure_bg == "auto":
-            figure_bg = rcParams.get("figure.facecolor", "white")
-
-        if plot_bg:
-            try:
-                ax.set_facecolor(plot_bg)
-            except ValueError:
-                pass  # Invalid color, ignore
-
-        if figure_bg:
-            try:
-                self.figure.patch.set_facecolor(figure_bg)
-                self.figure.set_facecolor(figure_bg)
-            except ValueError:
-                pass  # Invalid color, ignore
-
-        # Apply border (spine) color and width
-        border_color = ps.get("border_color", "auto")
-        border_width = ps.get("border_width", 1.0)
-
-        if border_color == "auto":
-            border_color = theme_border
-
-        if border_color:
-
-            for spine in ax.spines.values():
-                spine.set_color(border_color)
-            # For WCSAxes, also set frame color
-            if hasattr(ax, "coords") and hasattr(ax.coords, "frame"):
-                try:
-                    ax.coords.frame.set_color(border_color)
-                except Exception:
-                    pass
-            # Apply to colorbar borders
-            for spine in cb.ax.spines.values():
-                spine.set_color(border_color)
-
-        # Apply border width to main axes
-        for spine in ax.spines.values():
-            spine.set_linewidth(border_width)
-        # For WCSAxes frame width
-        if hasattr(ax, "coords") and hasattr(ax.coords, "frame"):
-            try:
-                ax.coords.frame.set_linewidth(border_width)
-            except Exception:
-                pass
-        # Apply border width to colorbar
-        for spine in cb.ax.spines.values():
-            spine.set_linewidth(border_width)
+        apply_plot_settings(
+            ax,
+            cb,
+            self.plot_settings,
+            self.figure,
+            dark=theme_manager.is_dark,
+            bunit=getattr(self, "_current_bunit", None),
+            on_error=on_error,
+        )
 
     def _draw_beam(self, ax):
         """Draw the restoring beam ellipse if enabled."""
