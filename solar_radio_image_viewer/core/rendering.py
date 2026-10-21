@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import QApplication
 from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
 from ..processing.image_meta import casa_info, fits_header
 from ..processing.colormaps import ensure_solar_colormaps
+from .display_resolution import draw_at_screen_resolution
 from .presets import display_range
 from ..processing.fits_io import readable_image_path
 
@@ -177,6 +178,7 @@ class RenderingMixin:
             header,
             csys_record,
         )
+        draw_at_screen_resolution(im)
 
         if stored_xlim is not None and stored_ylim is not None:
             ax.set_xlim(stored_xlim)
