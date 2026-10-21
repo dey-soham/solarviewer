@@ -632,6 +632,11 @@ def process_image(
             formatter.set_powerlimits((-2, 3))
             cbar.ax.yaxis.set_major_formatter(formatter)
             cbar.ax.yaxis.get_offset_text().set_fontsize(12)
+            if cbar.ax.get_yscale() != "linear":
+                # Not the labels of ticks outside the range at the ends
+                from ..processing.plot_style import drop_outside_ticks
+
+                drop_outside_ticks(cbar, norm.vmin, norm.vmax)
 
             # Add units if available
             cbar.set_label(header["BUNIT"] if header and "BUNIT" in header else "", fontsize=12)
@@ -782,7 +787,8 @@ def _keep_labels_in_frame(fig, ax):
 
 
 def _draw_plot_overlays(ax, header, options, region_origin, report):
-    """Solar disk, beam and coordinate grid, if chosen (video.overlays)."""
+    """Solar disk, beam and coordinate grid, if chosen (video.overlays), and
+    the main window's annotations (video.annotations)."""
     from ..processing.plot_style import (
         DEFAULT_BEAM_STYLE,
         DEFAULT_GRID_STYLE,
@@ -800,6 +806,10 @@ def _draw_plot_overlays(ax, header, options, region_origin, report):
     if options.get("show_grid"):
         style = dict(DEFAULT_GRID_STYLE, **(options.get("grid_style") or {}))
         draw_grid(ax, style, report)
+    if options.get("annotations"):
+        from .annotations import draw_annotations
+
+        draw_annotations(ax, options["annotations"], header, region_origin, report)
 
 
 def _draw_curve_box(ax, line_plot, region_origin, shift):

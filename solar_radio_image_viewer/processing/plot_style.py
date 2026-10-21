@@ -225,3 +225,13 @@ def apply_plot_settings(ax, cb, ps, figure, dark=False, bunit=None, on_error=Non
     # Apply border width to colorbar
     for spine in cb_spines:
         spine.set_linewidth(border_width)
+
+
+def drop_outside_ticks(cbar, vmin, vmax):
+    """Keep only the colorbar ticks within [vmin, vmax]. A non-linear norm
+    clips values outside its range to the ends, so Matplotlib would draw
+    those ticks' labels squeezed at the ends of the colorbar."""
+    low, high = min(vmin, vmax), max(vmin, vmax)
+    valid = [t for t in cbar.ax.get_yticks() if low <= t <= high]
+    if len(valid) >= 2:
+        cbar.ax.set_yticks(valid)

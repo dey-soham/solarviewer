@@ -760,10 +760,9 @@ class RenderingMixin:
                 aspect=30,
             )
             # Remove ticks that are outside the actual data range
-            ticks = cb.ax.get_yticks()
-            valid_ticks = [t for t in ticks if vmin_val <= t <= vmax_val]
-            if len(valid_ticks) >= 2:
-                cb.ax.set_yticks(valid_ticks)
+            from ..processing.plot_style import drop_outside_ticks
+
+            drop_outside_ticks(cb, vmin_val, vmax_val)
         else:
             cb = self.figure.colorbar(
                 im,

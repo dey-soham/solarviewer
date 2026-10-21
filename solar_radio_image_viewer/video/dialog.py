@@ -1669,10 +1669,35 @@ class VideoCreationDialog(QDialog):
             )
             button.clicked.connect(edit)
             grid.addWidget(button, row, 1)
+        # The main window's shapes, text and arrows, tied to the sky
+        self.annotations = None
+        self.show_annotations_check = QCheckBox("Main window annotations")
+        self.show_annotations_check.setToolTip(
+            "Shapes, text and arrows drawn in the main window, at the same\n"
+            "sky positions (and sizes in arcsec) in every frame. Taken with\n"
+            "Copy from Main Window (Plot Appearance)."
+        )
+        grid.addWidget(self.show_annotations_check, len(rows), 0)
+        self.annotations_label = QLabel()
+        self.annotations_label.setObjectName("SecondaryText")
+        grid.addWidget(self.annotations_label, len(rows), 1)
+        self._set_annotations(None)
+
         grid.setColumnStretch(0, 1)
         self.wcs_coords_check.toggled.connect(self._update_grid_check)
         self._update_grid_check()
         return group
+
+    def _set_annotations(self, annotations):
+        """The main window's annotations (see video.annotations), or None."""
+        from .annotations import annotation_counts, has_annotations
+
+        self.annotations = annotations if has_annotations(annotations) else None
+        self.show_annotations_check.setEnabled(self.annotations is not None)
+        self.show_annotations_check.setChecked(self.annotations is not None)
+        self.annotations_label.setText(
+            annotation_counts(self.annotations) if self.annotations else "none copied"
+        )
 
     def _create_appearance_group(self):
         """Plot appearance (main window's Plot Customization) and copying
@@ -1965,6 +1990,9 @@ class VideoCreationDialog(QDialog):
             tab.show_grid_checkbox.isChecked() and self.wcs_coords_check.isChecked()
         )
         self._set_plot_settings(dict(tab.plot_settings), "from the main window")
+        from .annotations import annotations_from_viewer
+
+        self._set_annotations(annotations_from_viewer(tab))
         if notify:
             self.show_status_message(
                 "Copied the solar disk, beam, grid and plot appearance from the main window"
@@ -2454,6 +2482,9 @@ class VideoCreationDialog(QDialog):
             "show_grid": self.show_grid_check.isChecked(),
             "grid_style": dict(self.grid_style),
             "plot_settings": dict(self.plot_settings) if self.plot_settings else None,
+            "annotations": (
+                self.annotations if self.show_annotations_check.isChecked() else None
+            ),
             # Region
             **region_options,
             # Contours (series layers get their files per frame in _video_files)
@@ -2751,6 +2782,7 @@ class VideoCreationDialog(QDialog):
         "show_solar_disk_check",
         "show_beam_check",
         "show_grid_check",
+        "show_annotations_check",
         "output_file_edit",
         "format_combo",
         "fps_spinbox",
@@ -2784,6 +2816,7 @@ class VideoCreationDialog(QDialog):
             "grid_style": self.grid_style,
             "plot_settings": self.plot_settings,
             "plot_settings_source": self._plot_settings_source,
+            "annotations": self.annotations,
         }
 
     def _apply_settings_state(self, state):
@@ -2820,6 +2853,7 @@ class VideoCreationDialog(QDialog):
             ("grid_style", DEFAULT_GRID_STYLE),
         ):
             setattr(self, name, dict(defaults, **(state.get(name) or {})))
+        self._set_annotations(state.get("annotations"))
         settings = state.get("plot_settings")
         self._set_plot_settings(
             settings,
