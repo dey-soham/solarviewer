@@ -236,8 +236,9 @@ def write_fits(all_times, dynamic_spectra, subband_freqs, outfits):
     hdr["COMMENT"] = "Axis0 = time (s), Axis1 = subband (sorted by _SBxxx_ in filename)"
 
     # BinTable HDU for time axis.
-    col_time = fits.Column(name="TIME_MJD", format="E", array=time_mjd)
-    col_utc = fits.Column(name="UTC", format="20A", array=np.array(utc_times))
+    # Double precision: in single precision MJDs are ~5.6 minutes apart
+    col_time = fits.Column(name="TIME_MJD", format="D", array=time_mjd)
+    col_utc = fits.Column(name="UTC", format="23A", array=np.array(utc_times))
     time_hdu = fits.BinTableHDU.from_columns([col_time, col_utc])
     time_hdu.name = "TIME_AXIS"
 
