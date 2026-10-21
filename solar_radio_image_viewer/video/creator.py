@@ -34,11 +34,21 @@ from ..processing.colormaps import ensure_solar_colormaps
 from ..processing.fits_io import casa_observation_date, fits_image_path, is_casa_image
 from ..processing.workers import process_pool_executor
 from .coordinates import ConversionError, conversion_cache, frame_file
+from .lightcurve import (
+    MAX_CURVES,
+    LightCurves,
+    curve_label,
+    curve_unit,
+    curve_value,
+    line_plot_options,
+    lightcurve_csv_path,
+    sum_scale,
+)
 from .utils import (
+    frame_levels,
     level_scale,
     detect_coordinate_system,
     get_wcs_axis_labels,
-    MinMaxTimeline,
     FrameContours,
     layer_file,
 )
@@ -441,10 +451,10 @@ def process_image(
 
         # The previous frame's figure when this one has the same layout
         # (building axes and colorbar is a third of a frame's time)
-        timeline_enabled = options.get("minmax_timeline_enabled", False)
+        line_plot = line_plot_options(options)
         frame = _frame_figure(
-            (width, height, frame_wcs is not None, timeline_enabled, data.shape,
-             bool(options.get("colorbar", False))),
+            (width, height, frame_wcs is not None, line_plot["height"] if line_plot else 0,
+             data.shape, bool(options.get("colorbar", False))),
             frame_wcs,
             options.get("reuse_figures", True),
         )
@@ -530,6 +540,10 @@ def process_image(
 
         # Solar disk, beam and grid, styled as in the main window
         _draw_plot_overlays(ax, header, options, region_origin, report)
+
+        # The line plot's light-curve box
+        if line_plot:
+            _draw_curve_box(ax, line_plot, region_origin, shift)
 
         # Handle axis labels based on WCS mode
         if wcs_enabled and coord_info:
@@ -629,15 +643,12 @@ def process_image(
         if plot_settings:
             _apply_frame_plot_settings(fig, ax, cbar, header, plot_settings, report)
 
-        # Draw min/max timeline if enabled (using the pre-created timeline_ax from GridSpec)
-        timeline = options.get("minmax_timeline", None)
-        if (
-            timeline
-            and options.get("minmax_timeline_enabled", False)
-            and timeline_ax is not None
-        ):
-            current_frame = options.get("current_frame", 0)
-            timeline.draw_timeline(fig, current_frame, ax=timeline_ax)
+        # The line plot under the image
+        light_curves = options.get("light_curves")
+        if light_curves is not None and timeline_ax is not None:
+            light_curves.draw(
+                timeline_ax, options.get("current_frame", 0), options.get("plot_settings")
+            )
 
         # Adjust layout and render
         _keep_labels_in_frame(fig, ax)
@@ -661,15 +672,17 @@ class _FrameFigure:
     """A frame's figure, axes, image and colorbar, kept for the next frame
     of the same layout."""
 
-    def __init__(self, width, height, use_wcs, timeline, frame_wcs):
+    def __init__(self, width, height, use_wcs, plot_height, frame_wcs):
         dpi = 100
         self.fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
         self.canvas = FigureCanvas(self.fig)
         self.timeline_ax = None
         projection = frame_wcs if use_wcs else None
-        if timeline:
-            # Bottom dock panel layout: 88% image, 12% timeline
-            gs = GridSpec(2, 1, height_ratios=[88, 12], hspace=0.25, figure=self.fig)
+        if plot_height:
+            # The line plot under the image, ``plot_height`` % of the frame
+            gs = GridSpec(
+                2, 1, height_ratios=[100 - plot_height, plot_height], hspace=0.25, figure=self.fig
+            )
             self.ax = self.fig.add_subplot(gs[0], projection=projection)
             self.timeline_ax = self.fig.add_subplot(gs[1])
         else:
@@ -706,12 +719,12 @@ _frame_figures = {}
 
 def _frame_figure(key, frame_wcs, reuse=True):
     """A figure for a frame of layout ``key`` (frame size, WCS axes or not,
-    timeline, data shape, colorbar): the previous frame's, cleared, if it
-    had the same layout, else a new one."""
+    line plot height (0: none), data shape, colorbar): the previous
+    frame's, cleared, if it had the same layout, else a new one."""
     frame = _frame_figures.get(key) if reuse else None
     if frame is None:
-        width, height, use_wcs, timeline = key[:4]
-        frame = _FrameFigure(width, height, use_wcs, timeline, frame_wcs)
+        width, height, use_wcs, plot_height = key[:4]
+        frame = _FrameFigure(width, height, use_wcs, plot_height, frame_wcs)
         _frame_figures.clear()
         if reuse:
             _frame_figures[key] = frame
@@ -789,6 +802,30 @@ def _draw_plot_overlays(ax, header, options, region_origin, report):
         draw_grid(ax, style, report)
 
 
+def _draw_curve_box(ax, line_plot, region_origin, shift):
+    """The light-curve box on the image, if it is used and shown."""
+    from matplotlib.patches import Rectangle
+
+    from .lightcurve import COLORS
+
+    box = line_plot.get("box")
+    users = [
+        k for k, c in enumerate(line_plot["curves"][:MAX_CURVES])
+        if c.get("source") == "image" and c.get("area") == "box"
+    ]
+    if not box or not users or not line_plot.get("show_box", True):
+        return
+    x_min, x_max, y_min, y_max = box
+    x0 = x_min + shift[0] - region_origin[0] - 0.5
+    y0 = y_min + shift[1] - region_origin[1] - 0.5
+    ax.add_patch(
+        Rectangle(
+            (x0, y0), x_max - x_min + 1, y_max - y_min + 1, fill=False,
+            edgecolor=COLORS[users[0] % len(COLORS)], linewidth=1.5, linestyle="--",
+        )
+    )
+
+
 def _apply_frame_plot_settings(fig, ax, cbar, header, plot_settings, report):
     """Plot customization settings of the main window on a frame. A custom
     title goes above the time / frame / file lines; "auto" colours are
@@ -855,25 +892,25 @@ class _Cancelled(Exception):
     pass
 
 
-def _scan_frames(files, options, needs, timeline_files=None, executor=None, progress=None):
+def _scan_frames(files, options, needs, executor=None, progress=None):
     """Read every frame once (in ``executor``'s worker processes if given)
     for what the whole video needs: ``needs`` among "range" (the frame's
-    colour range, as Auto Per Frame would give), "minmax" (min and max of
-    ``timeline_files``, default the frames) and "levels" (each contour
+    colour range, as Auto Per Frame would give), "curves" (the values of
+    the line plot's curves options["_curves_now"], see _curve_values) and
+    "levels" (each contour
     layer's peak or RMS, see level_scale; of the first frame only with
     contour_level_mode "first"). Returns one dict per frame.
 
     ``progress(done, total)`` is told how far it got; returning False
     cancels (raises _Cancelled).
     """
-    timeline_files = timeline_files or files
     first_only = options.get("contour_level_mode") == "first"
     tasks = []
     for i, path in enumerate(files):
         frame_needs = set(needs)
         if first_only and i > 0:
             frame_needs.discard("levels")
-        tasks.append((i, path, timeline_files[i], options, frame_needs))
+        tasks.append((i, path, options, frame_needs))
 
     results = [{} for _ in files]
     if executor is None:
@@ -896,7 +933,7 @@ def _scan_frames(files, options, needs, timeline_files=None, executor=None, prog
 def _scan_one(args):
     """See _scan_frames (in a worker)."""
     _quiet_warnings()
-    i, path, timeline_path, options, needs = args
+    i, path, options, needs = args
     result = {}
     try:
         data, header = load_frame_data(path, options)
@@ -905,7 +942,7 @@ def _scan_one(args):
         return i, result
     if data is None:
         return i, result
-    shift = _rotation_shift(options, header) if needs & {"range", "minmax"} else (0, 0)
+    shift = _rotation_shift(options, header) if needs & {"range", "curves"} else (0, 0)
 
     if "levels" in needs:
         scales = result["levels"] = {}
@@ -922,21 +959,8 @@ def _scan_one(args):
             except Exception as e:
                 logger.warning(f"Contour levels of frame {i}: {e}")
 
-    if "minmax" in needs:
-        try:
-            if timeline_path == path:
-                shown = crop_region(data, options, shift=shift)[0]
-            else:
-                other, other_header = load_fits_data(
-                    frame_file(timeline_path, options), stokes=options.get("stokes", "I")
-                )
-                shown = None if other is None else crop_region(other, options, other_header)[0]
-            result["minmax"] = (
-                (np.nan, np.nan) if shown is None else (np.nanmin(shown), np.nanmax(shown))
-            )
-        except Exception as e:
-            logger.warning(f"Error computing stats for {timeline_path}: {e}")
-            result["minmax"] = (np.nan, np.nan)
+    if "curves" in needs:
+        result["curves"] = _curve_values(i, path, data, header, shift, options)
 
     if "range" in needs:
         try:
@@ -1354,7 +1378,7 @@ def prepare_video_options(files, options, executor=None, scan_progress=None):
     count, the region (with even dimensions), the frame size, the coordinate
     system, and from one read of every frame (see _scan_frames; in
     ``executor``'s processes if given, telling ``scan_progress``) the global
-    colour range, the min/max timeline and steady contour levels. Used for
+    colour range, the line plot's curves and steady contour levels. Used for
     the video and its preview, so the preview frame is the video frame.
     Returns ``options``.
     """
@@ -1455,20 +1479,24 @@ def prepare_video_options(files, options, executor=None, scan_progress=None):
         options["coord_info"] = coord_info
         logger.info(f"Coordinate system: {coord_info.get('type', 'unknown')}")
 
-    # One read of every frame for the global range, the timeline and steady
+    # One read of every frame for the global range, the line plot and steady
     # contour levels, whichever are needed
     needs = set()
     if options.get("range_mode", 1) == 2 and "global_range" not in options:
         needs.add("range")
-    timeline_files = None
-    if options.get("minmax_timeline_enabled", False) and "minmax_timeline" not in options:
-        needs.add("minmax")
-        timeline_files = files
-        # Timeline of the contour images (source 1), if each frame has one
-        if options.get("timeline_source", 0) == 1:
-            contour_files = [_frame_contour_file(options, i) for i in range(len(files))]
-            if all(contour_files):
-                timeline_files = contour_files
+    line_plot = line_plot_options(options)
+    later = []
+    if line_plot and "light_curves" not in options:
+        needs.add("curves")
+        curves = line_plot["curves"][:MAX_CURVES]
+        # Inside-contour values with steady levels need those levels first
+        if options.get("contour_level_mode", "frame") != "frame":
+            later = [
+                k for k, c in enumerate(curves)
+                if c.get("source") != "image" and c.get("area") == "contour"
+            ]
+        options["_line_plot"] = line_plot
+        options["_curves_now"] = [k for k in range(len(curves)) if k not in later]
     if options.get("contour_level_mode", "frame") != "frame" and any(
         layer.get("enabled", True) and layer.get("level_type") in ("fraction", "sigma")
         for layer in options.get("contour_layers") or []
@@ -1477,25 +1505,105 @@ def prepare_video_options(files, options, executor=None, scan_progress=None):
 
     if needs:
         logger.info(f"Reading all {len(files)} frames for: {', '.join(sorted(needs))}")
-        results = _scan_frames(files, options, needs, timeline_files, executor, scan_progress)
+        results = _scan_frames(files, options, needs, executor, scan_progress)
         if "range" in needs:
             options["global_range"] = _global_range(results)
-        if "minmax" in needs:
-            position = {0: "bottom-left", 1: "bottom-right", 2: "top-left", 3: "top-right"}
-            timeline = MinMaxTimeline(
-                total_frames=len(files),
-                position=position.get(options.get("timeline_position", 0), "bottom-left"),
-                log_scale=options.get("timeline_log_scale", False),
-            )
-            minmax = [r.get("minmax", (np.nan, np.nan)) for r in results]
-            timeline.set_stats([low for low, _ in minmax], [high for _, high in minmax])
-            options["minmax_timeline"] = timeline
         if "levels" in needs:
             options["contour_level_scales"] = _steady_level_scales(
                 options.get("contour_layers") or [], results, options["contour_level_mode"]
             )
+        if "curves" in needs:
+            options["light_curves"] = _light_curves(
+                files, options, line_plot, results, later, executor, scan_progress
+            )
 
     return options
+
+
+def _curve_values(i, path, data, header, shift, options):
+    """(values, units) of the line plot curves options["_curves_now"] in
+    frame ``i`` (image ``path`` with ``data``, before any difference); NaN
+    for the other curves and where a value can't be had."""
+    from ..processing.fits_io import fits_image_path
+    from ..processing.image_meta import fits_header
+
+    line_plot = options["_line_plot"]
+    curves = line_plot["curves"][:MAX_CURVES]
+    values, units = [np.nan] * len(curves), [""] * len(curves)
+    layers = {layer.get("id"): layer for layer in options.get("contour_layers") or []}
+    for k in options.get("_curves_now", range(len(curves))):
+        curve = curves[k]
+        quantity = curve.get("quantity", "max")
+        try:
+            wcs = None
+            if curve.get("source", "image") == "image":
+                image_header = header
+                if curve.get("area") == "box":
+                    if not line_plot.get("box"):
+                        continue
+                    x_min, x_max, y_min, y_max = line_plot["box"]
+                    bounds = region_bounds(
+                        dict(region_enabled=True, x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max),
+                        data.shape,
+                        shift,
+                    )
+                    x0, x1, y0, y1 = bounds
+                    part = data[y0 : y1 + 1, x0 : x1 + 1]
+                else:
+                    part = crop_region(data, options, shift=shift)[0]
+            else:
+                layer = layers.get(curve.get("source"))
+                if layer is None or not layer.get("enabled", True):
+                    continue
+                contours = _worker_frame_contours(options)
+                part, wcs = contours.layer_data(
+                    layer, i, path, header, data, options.get("stokes", "I")
+                )
+                if part is None:
+                    continue
+                layer_path = layer_file(layer, i, path)
+                image_header = header if layer_path == path else fits_header(fits_image_path(layer_path))
+                if curve.get("area") == "contour":
+                    scale = (options.get("contour_level_scales") or {}).get(layer.get("id"))
+                    positive, _ = frame_levels(layer, part, scale)
+                    part = part[part >= positive[0]] if positive else part[:0]
+            value = curve_value(part, quantity)
+            if quantity == "sum":
+                factor, unit = sum_scale(image_header, wcs)
+                value *= factor
+            else:
+                unit = curve_unit(quantity, image_header)
+            values[k], units[k] = value, unit
+        except Exception as e:
+            logger.warning(f"Line plot value {k + 1} of frame {i + 1}: {e}")
+    return values, units
+
+
+def _light_curves(files, options, line_plot, results, later, executor, progress):
+    """The LightCurves of the line plot from the frames' scan ``results``,
+    reading the frames again for the curves ``later`` (inside a contour,
+    with steady levels just worked out)."""
+    from ..processing.contour_layers import contour_layer_name
+
+    names = {
+        layer.get("id"): contour_layer_name(layer, "Image")
+        for layer in options.get("contour_layers") or []
+    }
+    curves = line_plot["curves"][:MAX_CURVES]
+    light_curves = LightCurves(
+        line_plot, [curve_label(c, names) for c in curves], file_times(files), len(files)
+    )
+    for i, result in enumerate(results):
+        if "curves" in result:
+            light_curves.set_frame(i, *result["curves"], only=options["_curves_now"])
+    if later:
+        options["_curves_now"] = later
+        for i, result in enumerate(_scan_frames(files, options, {"curves"}, executor, progress)):
+            if "curves" in result:
+                light_curves.set_frame(i, *result["curves"], only=later)
+    for key in ("_curves_now", "_line_plot"):
+        options.pop(key, None)
+    return light_curves
 
 
 def _steady_level_scales(layers, results, mode):
@@ -1694,7 +1802,7 @@ def _render_video(
 
     def scan_progress(done, total):
         if status_callback:
-            status_callback(f"Reading frames for the range, timeline and levels: {done} of {total}")
+            status_callback(f"Reading frames for the range, line plot and levels: {done} of {total}")
         return not progress_callback or progress_callback(0, total)
 
     try:
@@ -1749,6 +1857,12 @@ def _render_video(
         f"Rendered {written} of {total_frames} frames in {render_time:.2f}s "
         f"({total_frames / render_time if render_time > 0 else 0:.2f} frames/sec)"
     )
+
+    # The line plot's values, next to the video
+    line_plot = line_plot_options(options)
+    if line_plot and line_plot.get("csv") and options.get("light_curves") is not None:
+        csv_path = options["light_curves"].write_csv(lightcurve_csv_path(output_file), files)
+        logger.info(f"Line plot values saved: {csv_path}")
 
     total_time = time.time() - start_time
     logger.info(f"Video created successfully: {output_file} in {total_time:.2f}s")

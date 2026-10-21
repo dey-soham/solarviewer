@@ -106,6 +106,15 @@ from ..processing.contour_layers import (
     new_contour_layer,
 )
 from .coordinates import COORDINATE_NAMES, COORDINATES
+from .lightcurve import (
+    IMAGE_AREAS,
+    LAYER_AREAS,
+    MAX_CURVES,
+    QUANTITIES,
+    default_line_plot,
+    lightcurve_csv_path,
+    line_plot_options,
+)
 from ..processing.fits_io import is_casa_image
 from ..processing.plot_style import (
     DEFAULT_BEAM_STYLE,
@@ -277,7 +286,11 @@ class PreviewRenderer(QObject):
 
         target = options.get("coordinates") or "native"
 
-        everything = options.get("range_mode") == 2 or options.get("minmax_timeline_enabled")
+        everything = (
+            options.get("range_mode") == 2
+            or line_plot_options(options) is not None
+            or options.get("contour_level_mode", "frame") == "all"
+        )
         indices = range(len(files)) if everything else sorted({0, index})
         difference = options.get("difference_files") or []
         paths = [files[i] for i in indices] + [difference[i] for i in indices if i < len(difference)]
@@ -777,9 +790,21 @@ class VideoCreationDialog(QDialog):
         return geometry
 
     def _on_region_dragged(self, left, top, right, bottom):
-        """A box dragged on the preview: show only that part of the image."""
+        """A box dragged on the preview: show only that part of the image
+        (or, after Choose on Preview, the line plot's box)."""
         geometry = self._shown_geometry()
         if not geometry:
+            return
+        if getattr(self, "_drag_target", "region") == "box":
+            self._drag_target = "region"
+            x0, y0 = frame_point_to_region(geometry, left, bottom)
+            x1, y1 = frame_point_to_region(geometry, right, top)
+            rows, cols = geometry["image_shape"]
+            xs = sorted(max(0, min(int(round(v)), cols - 1)) for v in (x0, x1))
+            ys = sorted(max(0, min(int(round(v)), rows - 1)) for v in (y0, y1))
+            if xs[1] - xs[0] >= 1 and ys[1] - ys[0] >= 1:
+                self._set_curve_box((xs[0], xs[1], ys[0], ys[1]))
+                self.schedule_preview()
             return
         x0, y0 = frame_point_to_region(geometry, left, bottom)
         x1, y1 = frame_point_to_region(geometry, right, top)
@@ -1601,65 +1626,7 @@ class VideoCreationDialog(QDialog):
         overlay_layout.addWidget(self._create_plot_elements_group())
         overlay_layout.addWidget(self._create_appearance_group())
 
-        # Min/Max Timeline section
-        timeline_group = QGroupBox("Min/Max Timeline")
-        timeline_layout = QVBoxLayout(timeline_group)
-        timeline_layout.setContentsMargins(12, 16, 12, 12)
-        timeline_layout.setSpacing(8)
-
-        self.minmax_timeline_check = QCheckBox("Show Min/Max Timeline Plot")
-        self.minmax_timeline_check.setChecked(False)
-        self.minmax_timeline_check.setToolTip(
-            "Display a continuous line plot showing min/max values for all frames"
-        )
-        timeline_layout.addWidget(self.minmax_timeline_check)
-
-        # Position selector
-        """position_widget = QWidget()
-        position_layout = QHBoxLayout(position_widget)
-        position_layout.setContentsMargins(0, 0, 0, 0)
-        position_layout.setSpacing(10)
-
-        position_layout.addWidget(QLabel("Position:"))
-        self.timeline_position_combo = QComboBox()
-        self.timeline_position_combo.addItems([
-            "Bottom Left", "Bottom Right", "Top Left", "Top Right"
-        ])
-        self.timeline_position_combo.setCurrentIndex(0)
-        position_layout.addWidget(self.timeline_position_combo)
-        position_layout.addStretch()
-        timeline_layout.addWidget(position_widget)"""
-
-        # Data source selector (for contour mode)
-        source_widget = QWidget()
-        source_layout = QHBoxLayout(source_widget)
-        source_layout.setContentsMargins(0, 0, 0, 0)
-        source_layout.setSpacing(10)
-
-        source_layout.addWidget(QLabel("Data Source:"))
-        self.timeline_source_combo = QComboBox()
-        self.timeline_source_combo.addItems(["Colormap", "Contours"])
-        self.timeline_source_combo.setCurrentIndex(0)
-        self.timeline_source_combo.setToolTip(
-            "Select which data to plot (applies in contour mode)"
-        )
-        source_layout.addWidget(self.timeline_source_combo)
-        source_layout.addStretch()
-        timeline_layout.addWidget(source_widget)
-
-        # Log scale option
-        self.timeline_log_scale_check = QCheckBox("Use Log Scale")
-        self.timeline_log_scale_check.setChecked(False)
-        self.timeline_log_scale_check.setToolTip("Plot values on logarithmic scale")
-        timeline_layout.addWidget(self.timeline_log_scale_check)
-
-        timeline_info = QLabel(
-            "Plots min (blue) and max (orange) pixel values over time"
-        )
-        timeline_info.setObjectName("SecondaryText")
-        timeline_layout.addWidget(timeline_info)
-
-        overlay_layout.addWidget(timeline_group)
+        overlay_layout.addWidget(self._create_line_plot_group())
 
         # Add spacer to push controls to the top
         overlay_layout.addStretch()
@@ -1754,6 +1721,181 @@ class VideoCreationDialog(QDialog):
         layout.addWidget(note)
         self._set_plot_settings(None, "video default")
         return group
+
+    def _create_line_plot_group(self):
+        """The line plot under the image: light curves of the image or of
+        contour images, against time."""
+        group = QGroupBox("Line Plot")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(12, 16, 12, 12)
+        layout.setSpacing(8)
+
+        self.line_plot_check = QCheckBox("Show a line plot under the image")
+        self.line_plot_check.setToolTip(
+            "Curves of the image or of contour images over the frames (light\n"
+            "curves), drawn up to the frame shown"
+        )
+        layout.addWidget(self.line_plot_check)
+
+        self.line_plot_curves = [dict(c) for c in default_line_plot()["curves"]]
+        self._curve_grid = QGridLayout()
+        self._curve_grid.setHorizontalSpacing(6)
+        layout.addLayout(self._curve_grid)
+        self.add_curve_btn = QPushButton("Add Curve")
+        self.add_curve_btn.clicked.connect(self._add_curve)
+        add_row = QHBoxLayout()
+        add_row.addWidget(self.add_curve_btn)
+        add_row.addStretch()
+        layout.addLayout(add_row)
+
+        form = QFormLayout()
+        self.line_plot_x_combo = QComboBox()
+        self.line_plot_x_combo.addItem("Observation time (UT)", "time")
+        self.line_plot_x_combo.addItem("Frame number", "frame")
+        self.line_plot_x_combo.setToolTip(
+            "Observation time shows gaps and changes of cadence (frame numbers\n"
+            "are used if a frame has no time)"
+        )
+        form.addRow("X axis:", self.line_plot_x_combo)
+        y_row = QHBoxLayout()
+        self.line_plot_y_combo = QComboBox()
+        self.line_plot_y_combo.addItem("Shared (in the images' unit)", "shared")
+        self.line_plot_y_combo.addItem("Normalised (each ÷ its largest value)", "normalised")
+        y_row.addWidget(self.line_plot_y_combo)
+        self.line_plot_log_check = QCheckBox("Log scale")
+        y_row.addWidget(self.line_plot_log_check)
+        y_row.addStretch()
+        form.addRow("Y axis:", y_row)
+        self.line_plot_height_spin = QSpinBox()
+        self.line_plot_height_spin.setRange(8, 40)
+        self.line_plot_height_spin.setValue(default_line_plot()["height"])
+        self.line_plot_height_spin.setSuffix(" % of the frame")
+        form.addRow("Height:", self.line_plot_height_spin)
+        layout.addLayout(form)
+
+        box_row = QHBoxLayout()
+        self.curve_box_label = QLabel()
+        box_row.addWidget(self.curve_box_label, 1)
+        choose = QPushButton("Choose on Preview")
+        choose.setToolTip('Drag the box for "box" curves on the preview')
+        choose.clicked.connect(self._choose_curve_box)
+        box_row.addWidget(choose)
+        clear = QPushButton("Clear")
+        clear.clicked.connect(lambda: (self._set_curve_box(None), self.schedule_preview()))
+        box_row.addWidget(clear)
+        layout.addLayout(box_row)
+        self.show_curve_box_check = QCheckBox("Show the box in the video")
+        self.show_curve_box_check.setChecked(True)
+        layout.addWidget(self.show_curve_box_check)
+
+        self.line_plot_csv_check = QCheckBox("Save the values as a CSV file next to the video")
+        self.line_plot_csv_check.setToolTip(
+            "VIDEO_lightcurve.csv: frame, file, time and every curve's value"
+        )
+        layout.addWidget(self.line_plot_csv_check)
+
+        self.curve_box = None
+        self._set_curve_box(None)
+        self._show_curves()
+        return group
+
+    def _line_plot_settings(self):
+        """The line plot's settings (see lightcurve.default_line_plot)."""
+        return dict(
+            default_line_plot(),
+            enabled=self.line_plot_check.isChecked(),
+            curves=[dict(c) for c in self.line_plot_curves],
+            x=self.line_plot_x_combo.currentData(),
+            y=self.line_plot_y_combo.currentData(),
+            log=self.line_plot_log_check.isChecked(),
+            box=tuple(self.curve_box) if self.curve_box else None,
+            show_box=self.show_curve_box_check.isChecked(),
+            height=self.line_plot_height_spin.value(),
+            csv=self.line_plot_csv_check.isChecked(),
+        )
+
+    def _show_curves(self):
+        """One row per curve: source, quantity, area and a remove button."""
+        while self._curve_grid.count():
+            widget = self._curve_grid.takeAt(0).widget()
+            if widget is not None:
+                # Gone now, not when the event loop next deletes it
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+        sources = [("Image", "image")] + [
+            (contour_layer_name(layer, "Image"), layer.get("id"))
+            # (the Overlays tab is made before the Contours tab)
+            for layer in getattr(self, "contour_layers", [])
+            if layer.get("id")
+        ]
+        for row, curve in enumerate(self.line_plot_curves):
+            source = QComboBox()
+            for text, key in sources:
+                source.addItem(text, key)
+            source.setCurrentIndex(max(source.findData(curve.get("source", "image")), 0))
+            curve["source"] = source.currentData()
+            quantity = QComboBox()
+            for key, text in QUANTITIES.items():
+                quantity.addItem(text, key)
+            quantity.setCurrentIndex(max(quantity.findData(curve.get("quantity", "max")), 0))
+            curve["quantity"] = quantity.currentData()
+            quantity.setToolTip(
+                "Sum: of a Jy/beam image, the integrated flux in Jy (÷ the beam area)"
+            )
+            area = QComboBox()
+            areas = IMAGE_AREAS if curve["source"] == "image" else LAYER_AREAS
+            for key, text in areas.items():
+                area.addItem(text, key)
+            area.setCurrentIndex(max(area.findData(curve.get("area")), 0))
+            curve["area"] = area.currentData()
+            remove = QPushButton("✕")
+            remove.setFixedWidth(28)
+            remove.setToolTip("Remove this curve")
+
+            def changed(*_, row=row, source=source, quantity=quantity, area=area):
+                curve = self.line_plot_curves[row]
+                new_source = source.currentData()
+                if new_source != curve.get("source"):
+                    curve.update(source=new_source, area=None)
+                    self._show_curves()  # the other source's areas
+                else:
+                    curve.update(quantity=quantity.currentData(), area=area.currentData())
+                self.schedule_preview()
+
+            source.currentIndexChanged.connect(changed)
+            quantity.currentIndexChanged.connect(changed)
+            area.currentIndexChanged.connect(changed)
+            remove.clicked.connect(lambda *_, row=row: self._remove_curve(row))
+            for column, widget in enumerate((source, quantity, area, remove)):
+                self._curve_grid.addWidget(widget, row, column)
+        self._curve_grid.setColumnStretch(0, 2)
+        self._curve_grid.setColumnStretch(1, 1)
+        self._curve_grid.setColumnStretch(2, 2)
+        self.add_curve_btn.setEnabled(len(self.line_plot_curves) < MAX_CURVES)
+
+    def _add_curve(self):
+        if len(self.line_plot_curves) < MAX_CURVES:
+            self.line_plot_curves.append({"source": "image", "quantity": "mean", "area": "shown"})
+            self._show_curves()
+            self.schedule_preview()
+
+    def _remove_curve(self, row):
+        del self.line_plot_curves[row]
+        self._show_curves()
+        self.schedule_preview()
+
+    def _set_curve_box(self, box):
+        self.curve_box = tuple(int(v) for v in box) if box else None
+        if self.curve_box:
+            x_min, x_max, y_min, y_max = self.curve_box
+            self.curve_box_label.setText(f"Box: x {x_min}–{x_max}, y {y_min}–{y_max} px")
+        else:
+            self.curve_box_label.setText('Box: none (for "box" curves)')
+
+    def _choose_curve_box(self):
+        self._drag_target = "box"
+        self.show_status_message("Drag the line plot's box on the preview")
 
     def _update_grid_check(self, *_):
         wcs = self.wcs_coords_check.isChecked()
@@ -2238,6 +2380,8 @@ class VideoCreationDialog(QDialog):
                 "Invalid Directory",
                 "The specified input directory does not exist.",
             )
+        if not self.input_pattern_edit.text().strip():
+            return [], ("No Pattern", "Enter a file pattern, e.g. *.fits or *.image")
         input_path = os.path.join(input_dir, self.input_pattern_edit.text())
         files = glob.glob(input_path)
         if not files:
@@ -2302,10 +2446,7 @@ class VideoCreationDialog(QDialog):
             "timestamp": self.timestamp_check.isChecked(),
             "frame_number": self.frame_number_check.isChecked(),
             "filename": self.filename_check.isChecked(),
-            "minmax_timeline_enabled": self.minmax_timeline_check.isChecked(),
-            "timeline_position": 0,  # Position selector removed - using default bottom dock
-            "timeline_source": self.timeline_source_combo.currentIndex(),  # 0=Colormap, 1=Contours
-            "timeline_log_scale": self.timeline_log_scale_check.isChecked(),
+            "line_plot": self._line_plot_settings(),
             "show_solar_disk": self.show_solar_disk_check.isChecked(),
             "solar_disk_style": dict(self.solar_disk_style),
             "show_beam": self.show_beam_check.isChecked(),
@@ -2599,9 +2740,13 @@ class VideoCreationDialog(QDialog):
         "timestamp_check",
         "frame_number_check",
         "filename_check",
-        "minmax_timeline_check",
-        "timeline_source_combo",
-        "timeline_log_scale_check",
+        "line_plot_check",
+        "line_plot_x_combo",
+        "line_plot_y_combo",
+        "line_plot_log_check",
+        "show_curve_box_check",
+        "line_plot_height_spin",
+        "line_plot_csv_check",
         "contour_level_combo",
         "show_solar_disk_check",
         "show_beam_check",
@@ -2631,6 +2776,8 @@ class VideoCreationDialog(QDialog):
             "widgets": widgets,
             "contour_layers": self.contour_layers,
             "contour_options": self.contour_options,
+            "line_plot_curves": self.line_plot_curves,
+            "curve_box": self.curve_box,
             "excluded_frames": sorted(self._excluded_frames),
             "solar_disk_style": self.solar_disk_style,
             "beam_style": self.beam_style,
@@ -2659,6 +2806,14 @@ class VideoCreationDialog(QDialog):
         self._set_contour_layers(
             state.get("contour_layers", []), state.get("contour_options")
         )
+        if "line_plot_curves" in state:
+            self.line_plot_curves = [dict(c) for c in state["line_plot_curves"]]
+            self._set_curve_box(state.get("curve_box"))
+        elif state.get("widgets", {}).get("minmax_timeline_check"):
+            # Settings saved with the min/max timeline: its peak and minimum
+            self.line_plot_check.setChecked(True)
+            self.line_plot_curves = [dict(c) for c in default_line_plot()["curves"]]
+        self._show_curves()
         for name, defaults in (
             ("solar_disk_style", DEFAULT_SOLAR_DISK_STYLE),
             ("beam_style", DEFAULT_BEAM_STYLE),
@@ -2726,6 +2881,8 @@ class VideoCreationDialog(QDialog):
         if options is not None:
             self.contour_options = dict(default_contour_options(), **options)
         self._show_contour_layers()
+        if hasattr(self, "line_plot_curves"):
+            self._show_curves()  # their sources include the layers
         self.schedule_preview()
 
     def _show_contour_layers(self):
@@ -2981,6 +3138,9 @@ class VideoCreationDialog(QDialog):
         self._close_progress_dialog()
 
         problems = self.worker.problems
+        csv_path = lightcurve_csv_path(output_file)
+        if self._line_plot_settings().get("csv") and os.path.exists(csv_path):
+            output_file = f"{output_file}\nLine plot values: {csv_path}"
         if problems:
             frames = len(self.worker.files)
             lines = "\n".join(
