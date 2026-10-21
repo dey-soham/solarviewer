@@ -77,15 +77,38 @@ def pixel_mapping(src_wcs, dst_wcs):
         xy = np.asarray(xy, dtype=float).reshape(-1, 2)
         if not len(xy):
             return xy
-        if observer is None:
-            screen = contextlib.nullcontext()
-        else:
-            screen = Helioprojective.assume_spherical_screen(observer)
-        with screen:
+        with _spherical_screen(observer):
             x, y = pixel_to_pixel(src_wcs, dst_wcs, xy[:, 0], xy[:, 1])
         return np.column_stack([x, y])
 
     return mapping
+
+
+@contextlib.contextmanager
+def _spherical_screen(observer):
+    """Context in which helioprojective points off the Sun lie on a sphere
+    through its centre as seen from ``observer`` (nothing if None).
+
+    Points also move with the Sun's centre, not stay fixed in space: the
+    Sun drifts by up to about its radius a year around the solar system's
+    centre of mass, which would shift contours of images taken far apart.
+    """
+    if observer is None:
+        yield
+        return
+    from sunpy.coordinates import transform_with_sun_center
+
+    try:
+        from sunpy.coordinates import SphericalScreen
+
+        screen = SphericalScreen(observer)
+    except ImportError:
+        # sunpy < 6; removed from Helioprojective in sunpy 7
+        from sunpy.coordinates import Helioprojective
+
+        screen = Helioprojective.assume_spherical_screen(observer)
+    with screen, transform_with_sun_center():
+        yield
 
 
 def check_mapping(mapping, shape):
