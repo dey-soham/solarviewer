@@ -39,7 +39,8 @@ from .utils import (
     get_wcs_axis_labels,
     create_wcs_axes,
     MinMaxTimeline,
-    ContourVideoProcessor,
+    FrameContours,
+    layer_file,
 )
 
 # Configure logging
@@ -217,8 +218,8 @@ def observation_time(header, filepath=None):
 
 
 def observation_sort_key(filepath):
-    """Sort key ordering files by observation time; files without one come
-    last, by modification time."""
+    """Sort key ordering files by observation time (then name); files
+    without one come last, by modification time."""
     from ..processing.image_meta import fits_header
 
     try:
@@ -226,8 +227,8 @@ def observation_sort_key(filepath):
     except Exception:
         when = observation_time(None, filepath)
     if when is not None:
-        return (0, when.timestamp())
-    return (1, os.path.getmtime(filepath))
+        return (0, when.timestamp(), filepath)
+    return (1, os.path.getmtime(filepath), filepath)
 
 
 def _plane_index(header, ndim, stokes):
@@ -377,15 +378,16 @@ def get_norm(stretch_type, vmin, vmax, gamma=1.0):
 
 
 def _frame_contour_file(options, frame_idx):
-    """The contour file drawn on frame ``frame_idx``, or None."""
-    if options.get("contour_mode", 0) == 1:  # Mode B: one fixed contour file
-        return options.get("fixed_contour_file") or None
-    contour_files = options.get("contour_files", [])
-    return contour_files[frame_idx] if frame_idx < len(contour_files) else None
+    """The file of the first contour layer that has its own files, drawn on
+    frame ``frame_idx``, or None (for the Contour: overlay)."""
+    for layer in options.get("contour_layers") or []:
+        if layer.get("enabled", True) and layer.get("source") in ("series", "external"):
+            return layer_file(layer, frame_idx, None)
+    return None
 
 
 def process_image(
-    file_path, options, global_stats=None, contour_processor=None, frame_idx=0
+    file_path, options, global_stats=None, frame_contours=None, frame_idx=0
 ):
     """Process a FITS image and return a frame for the video"""
     try:
@@ -407,7 +409,7 @@ def process_image(
 
         # Region shown, as (x_min, y_min) of the full image (for WCS and contours)
         region_origin = (0, 0)
-        full_shape = data.shape
+        full_data = data
 
         # Apply region selection if enabled
         if options.get("region_enabled", False):
@@ -540,39 +542,21 @@ def process_image(
             # aspect="auto",
         )
 
-        # Draw Contours if enabled
-        if contour_processor:
+        # Draw the contour layers
+        layers = [l for l in options.get("contour_layers") or [] if l.get("enabled", True)]
+        if layers:
             try:
-                from astropy.wcs import WCS
-
-                # Mode B: one fixed contour image; A and C: this frame's
-                contour_file = _frame_contour_file(options, frame_idx)
-                c_data, c_wcs = (None, None)
-                if contour_file:
-                    c_data, c_wcs = contour_processor.contour_image(
-                        contour_file, options.get("stokes", "I"), header
-                    )
-                c_levels = None  # from the contour data drawn
-
-                if c_data is not None:
-                    # Contours are placed through the WCS of the full image shown
-                    target_wcs = None
-                    if header:
-                        try:
-                            target_wcs = WCS(header, naxis=2)
-                        except Exception:
-                            pass
-                    contour_processor.draw_contours(
-                        ax,
-                        c_data,
-                        levels=c_levels,
-                        target_wcs=target_wcs,
-                        contour_wcs=c_wcs,
-                        target_shape=full_shape,
-                        region_origin=region_origin,
-                    )
-                else:
-                    logger.warning(f"Frame {frame_idx}: No contour data to draw")
+                (frame_contours or FrameContours()).draw(
+                    ax,
+                    layers,
+                    frame_idx,
+                    file_path,
+                    header,
+                    full_data,
+                    image_stokes=options.get("stokes", "I"),
+                    region_origin=region_origin,
+                    legend_options=options.get("contour_options"),
+                )
             except Exception as e:
                 logger.error(f"Error drawing contours: {e}")
 
@@ -595,26 +579,25 @@ def process_image(
             when = observation_time(header, file_path)
             text = when.strftime("%Y-%m-%d %H:%M:%S") if when else "unknown"
             # Use "Colormap:" prefix in contour mode
-            prefix = "Colormap" if options.get("contour_video_enabled", False) else "Time"
+            contour_file = _frame_contour_file(options, frame_idx)
+            prefix = "Colormap" if contour_file else "Time"
             overlay_text.append(f"{prefix}: {text}")
 
-            # Add contour timestamp if in contour mode
-            if options.get("contour_video_enabled", False):
-                contour_file = _frame_contour_file(options, frame_idx)
-                if contour_file:
-                    try:
-                        c_header = fits.getheader(readable_image_path(contour_file))
-                    except Exception:
-                        c_header = None
-                    c_when = observation_time(c_header, contour_file)
-                    overlay_text.append(
-                        "Contour: "
-                        + (
-                            c_when.strftime("%Y-%m-%d %H:%M:%S")
-                            if c_when
-                            else os.path.basename(contour_file)
-                        )
+            # Add the contour image's time when it has its own file
+            if contour_file:
+                try:
+                    c_header = fits.getheader(readable_image_path(contour_file))
+                except Exception:
+                    c_header = None
+                c_when = observation_time(c_header, contour_file)
+                overlay_text.append(
+                    "Contour: "
+                    + (
+                        c_when.strftime("%Y-%m-%d %H:%M:%S")
+                        if c_when
+                        else os.path.basename(contour_file)
                     )
+                )
 
         # Add frame number if requested
         if options.get("frame_number", False):
@@ -624,17 +607,11 @@ def process_image(
 
         # Add filename if requested
         if options.get("filename", False):
-            # Use "Colormap:" prefix in contour mode
-            if options.get("contour_video_enabled", False):
-                overlay_text.append(f"Colormap: {filename}")
-            else:
-                overlay_text.append(f"File: {filename}")
-
-            # Add contour filename if in contour mode
-            if options.get("contour_video_enabled", False):
-                contour_file = _frame_contour_file(options, frame_idx)
-                if contour_file:
-                    overlay_text.append(f"Contour: {os.path.basename(contour_file)}")
+            # With contours from their own files, name both images
+            contour_file = _frame_contour_file(options, frame_idx)
+            overlay_text.append(f"{'Colormap' if contour_file else 'File'}: {filename}")
+            if contour_file:
+                overlay_text.append(f"Contour: {os.path.basename(contour_file)}")
 
         # Add text overlay
         if overlay_text:
@@ -767,29 +744,14 @@ def calculate_global_stats(files, options):
     return None
 
 
-def make_contour_processor(options):
-    """The ContourVideoProcessor for a contour video's options, or None."""
-    if not options.get("contour_video_enabled", False):
-        return None
-    mode = {0: "A", 1: "B", 2: "C"}.get(options.get("contour_mode", 0), "A")
-    return ContourVideoProcessor(
-        mode=mode,
-        contour_settings={
-            "level_type": options.get("level_type", "fraction"),
-            "pos_levels": options.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
-            "neg_levels": options.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
-            "pos_color": options.get("pos_color", "white"),
-            "neg_color": options.get("neg_color", "cyan"),
-            "linewidth": options.get("linewidth", 1.0),
-            "pos_linestyle": "-",
-            "neg_linestyle": "--",
-        },
-    )
+def make_frame_contours(options):
+    """The FrameContours drawing a video's contour layers, or None."""
+    return FrameContours() if options.get("contour_layers") else None
 
 
-# In a worker process: the contour processor of the video being made, kept
+# In a worker process: the FrameContours of the video being made, kept
 # between frames so a fixed contour image is read (and converted) once
-_worker_contours = {"key": None, "processor": None}
+_worker_contours = {"key": None, "contours": None}
 
 
 def process_image_wrapper(args):
@@ -808,12 +770,12 @@ def process_image_wrapper(args):
         options = dict(options, current_frame=idx)
         key = options.get("video_id")
         if _worker_contours["key"] != key:
-            _worker_contours.update(key=key, processor=make_contour_processor(options))
+            _worker_contours.update(key=key, contours=make_frame_contours(options))
         result = process_image(
             file_path,
             options,
             global_stats,
-            contour_processor=_worker_contours["processor"],
+            frame_contours=_worker_contours["contours"],
             frame_idx=idx,
         )
         return idx, result
@@ -822,7 +784,7 @@ def process_image_wrapper(args):
         return idx, None
 
 
-def _frames_in_order(files, options, global_stats, contour_processor):
+def _frames_in_order(files, options, global_stats, frame_contours):
     """Render the frames, yielding (index, frame) in order as they are ready.
 
     With multiprocessing, up to two frames per core are rendered ahead, so
@@ -836,14 +798,14 @@ def _frames_in_order(files, options, global_stats, contour_processor):
                 file_path,
                 dict(options, current_frame=i),
                 global_stats,
-                contour_processor=contour_processor,
+                frame_contours=frame_contours,
                 frame_idx=i,
             )
             yield i, frame
         return
 
-    # Worker processes build their own contour processor (see process_image_wrapper)
-    worker_options = {k: v for k, v in options.items() if k != "contour_processor"}
+    # Worker processes make their own FrameContours (see process_image_wrapper)
+    worker_options = dict(options)
     worker_options["video_id"] = f"{os.getpid()}-{time.time()}"
     logger.info(f"Rendering frames with {num_cores} processes")
     executor = process_pool_executor(
@@ -867,12 +829,144 @@ def _frames_in_order(files, options, global_stats, contour_processor):
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def file_times(paths):
+    """Observation time (datetime or None) of each file."""
+    from ..processing.image_meta import fits_header
+
+    times = []
+    for path in paths:
+        try:
+            times.append(observation_time(fits_header(path), path))
+        except Exception:
+            times.append(observation_time(None, path))
+    return times
+
+
+def _nearest_files(times, series_files, series_times):
+    """For each of ``times``, the file of ``series_files`` nearest in time,
+    and the gap in seconds (None when times are unknown: then by order)."""
+    known = sorted(
+        ((t.timestamp(), f) for t, f in zip(series_times, series_files) if t is not None),
+        key=lambda item: item[0],
+    )
+    stamps = np.array([t for t, _ in known])
+    files, gaps = [], []
+    for i, when in enumerate(times):
+        if when is None or not known:
+            files.append(series_files[min(i, len(series_files) - 1)])
+            gaps.append(None)
+            continue
+        t = when.timestamp()
+        j = int(np.searchsorted(stamps, t))
+        # The nearer of the neighbours either side (the earlier one on a tie)
+        candidates = [k for k in (j - 1, j) if 0 <= k < len(known)]
+        k = min(candidates, key=lambda k: abs(stamps[k] - t))
+        files.append(known[k][1])
+        gaps.append(abs(stamps[k] - t))
+    return files, gaps
+
+
+def frame_plan(image_files, image_is_series, layers, start=None, end=None, every=1, excluded=()):
+    """Which image and contour files make each frame of a video.
+
+    Frames follow the image series; with a fixed image, the first contour
+    layer that is a series (``layer["series_files"]``), or one frame.
+    ``start``/``end`` (datetimes) and ``every`` select frames, and frames
+    whose driving file is in ``excluded`` are left out. Each series layer
+    gets, for every frame, its file nearest in observation time.
+
+    Returns a dict with ``image_files``, ``times``, ``driver_files`` (the
+    files frames follow), ``layers`` (copies, ``frame_files`` filled in for
+    series layers) and ``gaps`` (per series layer id: seconds between each
+    frame and its contour file).
+    """
+    series_layers = [
+        layer for layer in layers
+        if layer.get("enabled", True) and layer.get("source") == "series" and layer.get("series_files")
+    ]
+    if image_is_series:
+        driver = list(image_files)
+    elif series_layers:
+        driver = list(series_layers[0]["series_files"])
+    else:
+        driver = list(image_files[:1])
+    times = file_times(driver)
+
+    keep = []
+    for i, (path, when) in enumerate(zip(driver, times)):
+        if path in excluded:
+            continue
+        if when is not None and ((start and when < start) or (end and when > end)):
+            continue
+        keep.append(i)
+    keep = keep[:: max(1, int(every))]
+    driver = [driver[i] for i in keep]
+    times = [times[i] for i in keep]
+    if image_is_series:
+        image = driver
+    else:
+        image = [image_files[0]] * len(driver) if image_files else []
+
+    driver_layer = series_layers[0] if not image_is_series and series_layers else None
+    planned, gaps = [], {}
+    for layer in layers:
+        layer = dict(layer)
+        if layer.get("source") == "series" and layer.get("series_files"):
+            if driver_layer is not None and layer.get("id") == driver_layer.get("id"):
+                # The layer frames follow
+                layer["frame_files"] = list(driver)
+                gaps[layer.get("id")] = [0.0 if t is not None else None for t in times]
+            else:
+                layer["frame_files"], gaps[layer.get("id")] = _nearest_files(
+                    times, layer["series_files"], file_times(layer["series_files"])
+                )
+        planned.append(layer)
+    return {
+        "image_files": image,
+        "times": times,
+        "driver_files": driver,
+        "layers": planned,
+        "gaps": gaps,
+    }
+
+
+def _layers_from_contour_mode(options):
+    """Turn the options of the former contour modes (contour_video_enabled,
+    contour_mode A/B/C with contour_files / fixed_contour_file) into one
+    contour layer, for callers that still use them."""
+    if not options.get("contour_video_enabled") or options.get("contour_layers"):
+        return
+    from ..processing.contour_layers import new_contour_layer
+
+    width = options.get("linewidth", 1.0)
+    layer = new_contour_layer(
+        0,
+        label="Contours",
+        level_type=options.get("level_type", "fraction"),
+        pos_levels=options.get("pos_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
+        neg_levels=options.get("neg_levels", [0.1, 0.3, 0.5, 0.7, 0.9]),
+        pos_color=options.get("pos_color", "white"),
+        neg_color=options.get("neg_color", "cyan"),
+        pos_linewidth=width,
+        neg_linewidth=width,
+        stokes=options.get("stokes", "I"),
+    )
+    if options.get("contour_mode", 0) == 1:  # B: one fixed contour file
+        layer.update(source="external", external_image=options.get("fixed_contour_file", ""))
+    else:  # A, C: one contour file per frame
+        layer.update(source="series", frame_files=list(options.get("contour_files", [])))
+    options["contour_layers"] = [layer]
+    options.setdefault("contour_options", {"show_legend": False})
+
+
 def prepare_video_options(files, options):
     """Fill in ``options`` with what all frames of a video share: the frame
     count, the region (with even dimensions), the frame size, the coordinate
     system and the min/max timeline. Used for the video and its preview, so
     the preview frame is the video frame. Returns ``options``.
     """
+    _layers_from_contour_mode(options)
+
     # Calculate total frames
     total_frames = len(files)
     options["total_frames"] = total_frames
@@ -974,9 +1068,9 @@ def prepare_video_options(files, options):
         timeline_files = files  # Default to colormap files
 
         # In contour mode with source=1, use contour files instead
-        if options.get("contour_video_enabled", False) and timeline_source == 1:
-            contour_files = options.get("contour_files", [])
-            if contour_files:
+        if timeline_source == 1:
+            contour_files = [_frame_contour_file(options, i) for i in range(len(files))]
+            if all(contour_files):
                 timeline_files = contour_files
                 logger.info(
                     f"Timeline will use contour files ({len(timeline_files)} files)"
@@ -1108,8 +1202,8 @@ def create_video(files, output_file, options, progress_callback=None):
         total_frames = options["total_frames"]
         logger.info(f"Creating video from {total_frames} files...")
 
-        # Contour processor (worker processes make their own)
-        contour_processor = make_contour_processor(options)
+        # Contour drawing (worker processes make their own)
+        frame_contours = make_frame_contours(options)
 
         # Calculate global stats if needed
         global_stats = calculate_global_stats(files, options)
@@ -1117,7 +1211,7 @@ def create_video(files, output_file, options, progress_callback=None):
         # Render and write the frames in order, one at a time
         render_start = time.time()
         written = 0
-        frames = _frames_in_order(files, options, global_stats, contour_processor)
+        frames = _frames_in_order(files, options, global_stats, frame_contours)
         cancelled = False
         try:
             with imageio.get_writer(output_file, **writer_kwargs) as writer:

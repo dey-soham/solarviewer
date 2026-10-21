@@ -6,7 +6,7 @@ Video utilities for advanced video creation features.
 This module provides:
 - WCS coordinate detection and axes creation
 - Min/Max timeline plotting
-- Contour video processing
+- Contour layers of video frames
 """
 
 import numpy as np
@@ -407,36 +407,18 @@ class MinMaxTimeline:
 # =============================================================================
 
 
-class ContourVideoProcessor:
+class FrameContours:
+    """Draws the contour layers of video frames.
+
+    Layers are those of the main viewer (see processing.contour_layers),
+    with one more kind of source for videos: ``"series"``, whose file for
+    each frame is in ``layer["frame_files"]``. A ``"same"`` layer contours
+    the frame's own image, an ``"external"`` one a fixed file. The last few
+    contour images read (and converted) are kept, so a fixed one is read
+    once.
     """
-    Handles contour processing for video creation.
 
-    Supports three modes:
-    - Mode A: Fixed base image, evolving contours
-    - Mode B: Fixed contours, evolving colormap image
-    - Mode C: Both evolve
-    """
-
-    def __init__(self, mode="A", contour_settings=None):
-        """
-        Initialize the contour processor.
-
-        Parameters
-        ----------
-        mode : str
-            'A', 'B', or 'C'
-        contour_settings : dict
-            Contour configuration dictionary
-        """
-        self.mode = mode.upper()
-        self.contour_settings = contour_settings or self._default_settings()
-
-        # Cache for base image / contour data
-        self.base_image_data = None
-        self.base_image_wcs = None
-        self.fixed_contour_data = None
-        self.fixed_contour_wcs = None
-        self.fixed_contour_levels = None
+    def __init__(self):
         # (path, stokes, coordinate system) -> (data, wcs), see contour_image
         self._contour_images = {}
 
@@ -490,152 +472,80 @@ class ContourVideoProcessor:
             self._contour_images.pop(next(iter(self._contour_images)))
         return result
 
-    def _default_settings(self):
-        """Return default contour settings."""
-        return {
-            "level_type": "fraction",  # 'fraction', 'sigma', 'absolute'
-            "pos_levels": [0.1, 0.3, 0.5, 0.7, 0.9],
-            "neg_levels": [0.1, 0.3, 0.5, 0.7, 0.9],
-            "pos_color": "white",
-            "neg_color": "cyan",
-            "linewidth": 1.0,
-            "pos_linestyle": "-",
-            "neg_linestyle": "--",
-        }
-
-    def load_base_image(self, file_path, stokes="I", load_func=None):
-        """Load the fixed base image (for mode A)."""
-        if load_func is None:
-            from .creator import load_fits_data
-
-            load_func = load_fits_data
-
-        self.base_image_data, header = load_func(file_path, stokes=stokes)
-
-        # Create WCS from the same header used for data loading
-        if header:
-            try:
-                self.base_image_wcs = WCS(header, naxis=2)
-                logger.info(
-                    f"Loaded base_image_wcs: CRPIX={self.base_image_wcs.wcs.crpix}"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to create base_image_wcs: {e}")
-                self.base_image_wcs = None
-        else:
-            self.base_image_wcs = None
-
-    def load_fixed_contour(self, file_path, stokes="I", load_func=None):
-        """Load the fixed contour data (for mode B)."""
-        if load_func is None:
-            from .creator import load_fits_data
-
-            load_func = load_fits_data
-
-        self.fixed_contour_data, header = load_func(file_path, stokes=stokes)
-
-        # Create WCS from the same header used for data loading
-        if header:
-            try:
-                self.fixed_contour_wcs = WCS(header, naxis=2)
-            except Exception:
-                self.fixed_contour_wcs = None
-        else:
-            self.fixed_contour_wcs = None
-
-        # Pre-compute levels
-        self._compute_contour_levels(self.fixed_contour_data)
-
-    def _compute_contour_levels(self, data):
-        """Compute contour levels based on settings."""
-        settings = self.contour_settings
-        level_type = settings.get("level_type", "fraction")
-        pos_levels = settings.get("pos_levels", [])
-        neg_levels = settings.get("neg_levels", [])
-
-        abs_max = np.nanmax(np.abs(data))
-
-        if level_type == "fraction":
-            pos = sorted([level * abs_max for level in pos_levels])
-            neg = sorted([-level * abs_max for level in neg_levels])
-        elif level_type == "sigma":
-            # Use bottom 10% of image (full width, bottom 10% height) for RMS calculation
-            # This avoids including the sun in the noise estimate
-            height = data.shape[0]
-            bottom_10_pct = max(1, int(height * 0.1))  # At least 1 row
-            noise_region = data[:bottom_10_pct, :]  # Bottom rows (low y indices)
-            rms = np.nanstd(noise_region)
-            pos = sorted([level * rms for level in pos_levels])
-            neg = sorted([-level * rms for level in neg_levels])
-        else:  # absolute
-            pos = sorted(pos_levels)
-            neg = sorted([-level for level in neg_levels])
-
-        self.fixed_contour_levels = {"pos": pos, "neg": neg}
-        return self.fixed_contour_levels
-
-    def compute_contour_levels(self, data):
-        """
-        Compute contour levels for given data.
-
-        Parameters
-        ----------
-        data : ndarray
-            Image data
-
-        Returns
-        -------
-        dict
-            {'pos': [...], 'neg': [...]}
-        """
-        return self._compute_contour_levels(data)
-
-    def draw_contours(
+    def draw(
         self,
         ax,
-        contour_data,
-        levels=None,
-        target_wcs=None,
-        contour_wcs=None,
-        target_shape=None,
+        layers,
+        frame_idx,
+        image_path,
+        image_header,
+        image_data,
+        image_stokes="I",
         region_origin=(0, 0),
+        legend_options=None,
     ):
+        """Draw ``layers`` for frame ``frame_idx`` on ``ax``, which shows
+        ``image_data`` (the full image of ``image_path``, before any region
+        is cut out; ``region_origin`` is the region's lower left corner).
         """
-        Draw contours of ``contour_data`` (rows = y) on the image in ``ax``.
+        from ..processing.contour_layers import legend_handles
 
-        Contours are traced on the contour image's own pixels and placed
-        through ``contour_wcs`` and ``target_wcs`` (the WCS of the full image
-        shown, of shape ``target_shape``). ``region_origin`` is the (x, y) of
-        the full image's pixel at the lower left of ``ax``, when only a
-        region of it is shown. Contours that can't be placed are not drawn.
-        """
+        legend_options = legend_options or {}
+        target_wcs = None
+        if image_header is not None:
+            try:
+                target_wcs = WCS(image_header, naxis=2)
+            except Exception:
+                pass
+
+        handles = []
+        for layer in layers:
+            if not layer.get("enabled", True):
+                continue
+            path = layer_file(layer, frame_idx, image_path)
+            if not path:
+                continue
+            if path == image_path and layer.get("stokes", "I") == image_stokes:
+                data, wcs = image_data, target_wcs
+            else:
+                data, wcs = self.contour_image(path, layer.get("stokes", "I"), image_header)
+            if data is None:
+                logger.warning(f"Frame {frame_idx}: no contour data from {path}")
+                continue
+            drawn = self._draw_layer(ax, layer, data, wcs, target_wcs, image_data.shape, region_origin)
+            if not legend_options.get("legend_show_negative", False):
+                drawn = [sign for sign in drawn if sign == "pos"]
+            handles.extend(legend_handles(layer, drawn, image_name="Image"))
+
+        if handles and legend_options.get("show_legend", True):
+            legend = ax.legend(
+                handles=handles,
+                loc=legend_options.get("legend_loc", "upper right"),
+                fontsize=legend_options.get("legend_fontsize", 8),
+                framealpha=0.6,
+            )
+            legend.set_zorder(10)
+
+    def _draw_layer(self, ax, layer, data, contour_wcs, target_wcs, target_shape, region_origin):
+        """Draw one layer; returns the signs ("pos"/"neg") drawn."""
         from astropy.wcs import WCSCOMPARE_ANCILLARY
 
         from ..processing.contour_mapping import draw_mapped_contours, mapping_between
 
-        settings = self.contour_settings
-
-        if levels is None:
-            levels = self.compute_contour_levels(contour_data)
-
         mapping = None
         if target_wcs is not None and contour_wcs is not None:
-            same_grid = contour_data.shape == tuple(target_shape or ()) and (
-                target_wcs.wcs.compare(
-                    contour_wcs.wcs, cmp=WCSCOMPARE_ANCILLARY, tolerance=1e-6
-                )
+            same_grid = data.shape == tuple(target_shape) and target_wcs.wcs.compare(
+                contour_wcs.wcs, cmp=WCSCOMPARE_ANCILLARY, tolerance=1e-6
             )
             if not same_grid:
                 try:
                     mapping = mapping_between(
-                        contour_wcs,
-                        target_wcs,
-                        (contour_data.shape[1], contour_data.shape[0]),
+                        contour_wcs, target_wcs, (data.shape[1], data.shape[0])
                     )
                 except Exception as e:
                     logger.warning(f"Contours not drawn: cannot place them on the image ({e})")
                     return []
-        elif contour_data.shape != tuple(target_shape or contour_data.shape):
+        elif data.shape != tuple(target_shape):
             logger.warning(
                 "Contours not drawn: the images differ in size and have no "
                 "coordinates to align them"
@@ -643,95 +553,52 @@ class ContourVideoProcessor:
             return []
 
         # Trace large contour images on at most about 2048 x 2048 pixels
-        step = max(1, int(np.ceil(max(contour_data.shape) / 2048.0)))
-
-        collections = []
-        for sign in ("pos", "neg"):
-            if not levels.get(sign):
+        step = max(1, int(np.ceil(max(data.shape) / 2048.0)))
+        drawn = []
+        for sign, levels in zip(("pos", "neg"), frame_levels(layer, data)):
+            if not levels:
                 continue
             try:
-                collections.append(
-                    draw_mapped_contours(
-                        ax,
-                        contour_data,
-                        mapping,
-                        step=step,
-                        offset=region_origin,
-                        levels=levels[sign],
-                        colors=settings.get(
-                            f"{sign}_color", "white" if sign == "pos" else "cyan"
-                        ),
-                        linewidths=settings.get("linewidth", 1.0),
-                        linestyles=settings.get(
-                            f"{sign}_linestyle", "-" if sign == "pos" else "--"
-                        ),
-                    )
+                cs = draw_mapped_contours(
+                    ax,
+                    data,
+                    mapping,
+                    step=step,
+                    offset=region_origin,
+                    levels=levels,
+                    colors=layer.get(f"{sign}_color", "white"),
+                    linewidths=layer.get(f"{sign}_linewidth", 1.0),
+                    linestyles=layer.get(f"{sign}_linestyle", "-" if sign == "pos" else "--"),
                 )
+                if layer.get("show_labels", False):
+                    ax.clabel(cs, inline=True, fontsize=8, fmt="%.2g")
+                drawn.append(sign)
             except Exception as e:
                 logger.warning(f"Error drawing {sign} contours: {e}")
+        return drawn
 
-        return collections
 
-    def get_frame_data(
-        self,
-        frame_idx,
-        colormap_files=None,
-        contour_files=None,
-        stokes="I",
-        load_func=None,
-    ):
-        """
-        Get data for a specific frame based on mode.
+def layer_file(layer, frame_idx, image_path):
+    """The file a contour layer draws on frame ``frame_idx``, or None."""
+    source = layer.get("source", "same")
+    if source == "series":
+        frame_files = layer.get("frame_files") or []
+        return frame_files[frame_idx] if frame_idx < len(frame_files) else None
+    if source == "external":
+        return layer.get("external_image") or None
+    return image_path
 
-        Parameters
-        ----------
-        frame_idx : int
-            Frame index
-        colormap_files : list
-            List of colormap image files
-        contour_files : list
-            List of contour image files
-        stokes : str
-            Stokes parameter
-        load_func : callable
-            Function to load FITS data
 
-        Returns
-        -------
-        dict
-            {'colormap_data': ..., 'contour_data': ..., 'contour_levels': ...}
-        """
-        if load_func is None:
-            from .creator import load_fits_data
+def frame_levels(layer, data):
+    """(positive, negative) levels of ``layer`` for ``data`` (rows = y), as
+    the main viewer works them out (its data is x-first, hence the .T)."""
+    from ..processing.contour_layers import contour_levels
 
-            load_func = load_fits_data
-
-        result = {}
-
-        if self.mode == "A":
-            # Fixed base, evolving contours
-            result["colormap_data"] = self.base_image_data
-            if contour_files and frame_idx < len(contour_files):
-                data, _ = load_func(contour_files[frame_idx], stokes=stokes)
-                result["contour_data"] = data
-                result["contour_levels"] = self.compute_contour_levels(data)
-
-        elif self.mode == "B":
-            # Fixed contours, evolving colormap
-            result["contour_data"] = self.fixed_contour_data
-            result["contour_levels"] = self.fixed_contour_levels
-            if colormap_files and frame_idx < len(colormap_files):
-                data, _ = load_func(colormap_files[frame_idx], stokes=stokes)
-                result["colormap_data"] = data
-
-        elif self.mode == "C":
-            # Both evolve
-            if colormap_files and frame_idx < len(colormap_files):
-                data, _ = load_func(colormap_files[frame_idx], stokes=stokes)
-                result["colormap_data"] = data
-            if contour_files and frame_idx < len(contour_files):
-                data, _ = load_func(contour_files[frame_idx], stokes=stokes)
-                result["contour_data"] = data
-                result["contour_levels"] = self.compute_contour_levels(data)
-
-        return result
+    if layer.get("level_type") == "sigma" and layer.get("use_default_rms_region", True):
+        # The main viewer's default RMS box: 5-95 % across, 5-20 % up
+        rows, cols = data.shape
+        layer = dict(
+            layer,
+            rms_box=(int(cols * 0.05), int(cols * 0.95), int(rows * 0.05), int(rows * 0.20)),
+        )
+    return contour_levels(layer, data.T)

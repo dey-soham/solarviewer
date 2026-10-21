@@ -25,7 +25,7 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt
 import os
 
-from ..core.contours import (
+from ..processing.contour_layers import (
     CONTOUR_COLOR_NAMES,
     CONTOUR_LAYER_COLORS,
     MAX_CONTOUR_LAYERS,
@@ -62,8 +62,11 @@ class ContourSettingsDialog(QDialog):
     The list on the left holds the layers; the tabs edit the selected one.
     """
 
-    def __init__(self, parent=None, layers=None, options=None):
+    def __init__(self, parent=None, layers=None, options=None, for_video=False):
         super().__init__(parent)
+        # For videos: layers can also be a series of files (one per frame),
+        # and "the current image" is each frame's own image
+        self.for_video = for_video
         self.setWindowTitle("Contour Settings")
         self.layers = [contour_layer_settings(layer) for layer in (layers or [])]
         if not self.layers:
@@ -251,7 +254,7 @@ class ContourSettingsDialog(QDialog):
         label_row.addWidget(layer_label_label)
         self.layer_label_edit = QLineEdit(self.settings.get("label", ""))
         self.layer_label_edit.setPlaceholderText(
-            contour_layer_name(dict(self.settings, label=""))
+            self._layer_name(dict(self.settings, label=""))
         )
         self.layer_label_edit.setToolTip(
             "Name of this layer in the legend.\n"
@@ -268,14 +271,26 @@ class ContourSettingsDialog(QDialog):
         source_label.setStyleSheet("font-weight: 600;")
         source_row.addWidget(source_label)
 
-        self.same_image_radio = QRadioButton("Current Image")
+        self.same_image_radio = QRadioButton(
+            "Video image" if self.for_video else "Current Image"
+        )
         self.external_image_radio = QRadioButton("External")
-        if self.settings.get("source") == "external":
+        self.series_radio = QRadioButton("Series")
+        self.series_radio.setToolTip(
+            "A file per frame: the files in a folder matching a pattern,\n"
+            "each frame taking the one nearest to it in observation time"
+        )
+        self.series_radio.setVisible(self.for_video)
+        source = self.settings.get("source")
+        if source == "external":
             self.external_image_radio.setChecked(True)
+        elif source == "series" and self.for_video:
+            self.series_radio.setChecked(True)
         else:
             self.same_image_radio.setChecked(True)
         source_row.addWidget(self.same_image_radio)
         source_row.addWidget(self.external_image_radio)
+        source_row.addWidget(self.series_radio)
         source_row.addStretch()
         source_layout.addLayout(source_row)
 
@@ -377,6 +392,29 @@ class ContourSettingsDialog(QDialog):
         self.browse_icon_dark = QIcon(get_resource_path("assets/browse_light.png"))
 
         source_layout.addWidget(self.external_group)
+
+        # Series of files (videos only)
+        self.series_group = QWidget()
+        series_layout = QGridLayout(self.series_group)
+        series_layout.setContentsMargins(0, 12, 0, 0)
+        series_layout.addWidget(QLabel("Folder:"), 0, 0)
+        self.series_dir_edit = QLineEdit(self.settings.get("series_dir", ""))
+        self.series_dir_edit.setPlaceholderText("Folder of the contour images...")
+        series_layout.addWidget(self.series_dir_edit, 0, 1)
+        series_browse = QPushButton("Browse...")
+        series_browse.clicked.connect(self._browse_series_dir)
+        series_layout.addWidget(series_browse, 0, 2)
+        series_layout.addWidget(QLabel("Pattern:"), 1, 0)
+        self.series_pattern_edit = QLineEdit(self.settings.get("series_pattern", "*.fits"))
+        series_layout.addWidget(self.series_pattern_edit, 1, 1)
+        self.series_group.setVisible(self.for_video and self.series_radio.isChecked())
+        def show_series(on):
+            self.series_group.setVisible(self.for_video and on)
+            self.external_group.setVisible(not on)
+
+        self.series_radio.toggled.connect(show_series)
+        self.external_group.setVisible(not self.series_radio.isChecked())
+        source_layout.addWidget(self.series_group)
         source_layout.addStretch()
 
         # Connections
@@ -760,6 +798,9 @@ class ContourSettingsDialog(QDialog):
 
         shared_row.addStretch()
         main_layout.addLayout(shared_row)
+        # Main-viewer options; video frames always show full contours
+        self.show_full_extent_checkbox.setVisible(not self.for_video)
+        self.downsample_checkbox.setVisible(not self.for_video)
 
         # ========== BUTTON BOX ==========
         button_row = QHBoxLayout()
@@ -1090,6 +1131,16 @@ class ContourSettingsDialog(QDialog):
         except Exception as e:
             print(f"[WARNING] Could not detect Stokes from {imagepath}: {e}")
 
+    def _layer_name(self, layer):
+        return contour_layer_name(layer, "Image" if self.for_video else "Current image")
+
+    def _browse_series_dir(self):
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select the folder of the contour images", self.series_dir_edit.text()
+        )
+        if directory:
+            self.series_dir_edit.setText(directory)
+
     def _update_stokes_for_current_source(self):
         """Update stokes combo based on current source selection."""
         if self.same_image_radio.isChecked():
@@ -1185,6 +1236,8 @@ class ContourSettingsDialog(QDialog):
         self.stokes_combo.currentTextChanged.connect(self._on_layer_edited)
         self.file_path_edit.textChanged.connect(self._on_layer_edited)
         self.same_image_radio.toggled.connect(self._on_layer_edited)
+        self.series_radio.toggled.connect(self._on_layer_edited)
+        self.series_dir_edit.textChanged.connect(self._on_layer_edited)
         self.pos_color_combo.currentIndexChanged.connect(self._on_pos_color_changed)
         return panel
 
@@ -1198,7 +1251,7 @@ class ContourSettingsDialog(QDialog):
         from PyQt5.QtGui import QColor, QPainter, QPixmap
 
         self.layer_list.blockSignals(True)
-        item.setText(contour_layer_name(layer))
+        item.setText(self._layer_name(layer))
         # Colour swatch with an outline, so white and black show on any theme
         pixmap = QPixmap(14, 14)
         pixmap.fill(QColor(layer.get("pos_color", "white")))
@@ -1339,12 +1392,18 @@ class ContourSettingsDialog(QDialog):
         try:
             self.layer_label_edit.setText(layer.get("label", ""))
             self.layer_label_edit.setPlaceholderText(
-                contour_layer_name(dict(layer, label=""))
+                self._layer_name(dict(layer, label=""))
             )
 
-            external = layer.get("source") == "external"
-            self.external_image_radio.setChecked(external)
-            self.same_image_radio.setChecked(not external)
+            source = layer.get("source", "same")
+            if source == "series" and self.for_video:
+                self.series_radio.setChecked(True)
+            elif source == "external":
+                self.external_image_radio.setChecked(True)
+            else:
+                self.same_image_radio.setChecked(True)
+            self.series_dir_edit.setText(layer.get("series_dir", ""))
+            self.series_pattern_edit.setText(layer.get("series_pattern", "*.fits"))
             path = layer.get("external_image", "")
             if path:
                 if os.path.isdir(path):
@@ -1397,9 +1456,14 @@ class ContourSettingsDialog(QDialog):
         """``layer`` updated with the settings shown in the tabs."""
         settings = dict(layer)
         settings["label"] = self.layer_label_edit.text().strip()
-        settings["source"] = (
-            "external" if self.external_image_radio.isChecked() else "same"
-        )
+        if self.series_radio.isChecked():
+            settings["source"] = "series"
+        elif self.external_image_radio.isChecked():
+            settings["source"] = "external"
+        else:
+            settings["source"] = "same"
+        settings["series_dir"] = self.series_dir_edit.text().strip()
+        settings["series_pattern"] = self.series_pattern_edit.text().strip() or "*.fits"
         settings["external_image"] = self.file_path_edit.text()
         settings["stokes"] = self.stokes_combo.currentText()
         settings["threshold"] = self.threshold_spin.value()

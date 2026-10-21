@@ -97,7 +97,7 @@ from .core import (
     RemoteModeMixin,
 )
 from .processing.fits_io import readable_image_path
-from .core.contours import default_contour_options, new_contour_layer
+from .processing.contour_layers import default_contour_options, new_contour_layer
 from .processing.image_meta import casa_info, fits_header
 from .processing.prefetch import image_prefetcher
 

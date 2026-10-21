@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import QApplication
 from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
 from ..processing.image_meta import casa_info, fits_header
 from ..processing.colormaps import ensure_solar_colormaps
-from .contours import contour_layer_settings
+from ..processing.contour_layers import contour_layer_settings
 from .display_resolution import draw_at_screen_resolution
 from .presets import display_range
 from ..processing.fits_io import readable_image_path

@@ -27,6 +27,14 @@ from PyQt5.QtWidgets import (
     QSlider,
     QSplitter,
     QSizePolicy,
+    QRadioButton,
+    QButtonGroup,
+    QListWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
+    QDialogButtonBox,
 )
 from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
@@ -74,6 +82,13 @@ from .creator import (
     get_norm,
     observation_sort_key,
 )
+from ..processing.contour_layers import (
+    MAX_CONTOUR_LAYERS,
+    contour_layer_name,
+    contour_layer_settings,
+    default_contour_options,
+    new_contour_layer,
+)
 
 
 
@@ -100,7 +115,7 @@ class PreviewRenderer(QObject):
         self._stopped = False
         self._prepared = OrderedDict()  # setup key -> (options, global stats)
         self._frames = OrderedDict()  # (setup key, frame index) -> frame
-        self._contours = (None, None)  # (contour settings key, processor)
+        self._contours = None  # FrameContours, keeping contour images read
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -133,12 +148,8 @@ class PreviewRenderer(QObject):
             self.rendered.emit(request_id, frame)
 
     def _render(self, request_id, files, index, options):
-        from .creator import (
-            calculate_global_stats,
-            make_contour_processor,
-            prepare_video_options,
-            process_image,
-        )
+        from .creator import calculate_global_stats, prepare_video_options, process_image
+        from .utils import FrameContours
 
         setup_key = repr((files, sorted((k, repr(v)) for k, v in options.items())))
         frame_key = (setup_key, index)
@@ -159,20 +170,15 @@ class PreviewRenderer(QObject):
                 self._prepared.popitem(last=False)
         prepared_options, global_stats = prepared
 
-        contour_key = repr(
-            sorted((k, repr(v)) for k, v in options.items() if "contour" in k or k in (
-                "level_type", "pos_levels", "neg_levels", "pos_color", "neg_color", "linewidth"
-            ))
-        )
-        if self._contours[0] != contour_key:
-            self._contours = (contour_key, make_contour_processor(prepared_options))
+        if self._contours is None:
+            self._contours = FrameContours()
 
         self.status.emit(request_id, "Rendering...")
         frame = process_image(
             files[index],
             dict(prepared_options, current_frame=index),
             global_stats,
-            contour_processor=self._contours[1],
+            frame_contours=self._contours,
             frame_idx=index,
         )
         self._frames[frame_key] = frame
@@ -266,7 +272,7 @@ class VideoCreationDialog(QDialog):
         self.reference_image = None
 
         self.setWindowTitle("Create Video")
-        self.resize(1250, 780)
+        self.resize(1320, 800)
 
         # Preview: rendered in the background, shortly after settings change
         self._preview_files = []
@@ -390,6 +396,8 @@ class VideoCreationDialog(QDialog):
         options = self._video_options()
         files, problem = self._video_files(options)
         panel = self.preview_panel
+        self.create_btn.setEnabled(not problem)
+        self.create_btn.setToolTip(problem[1] if problem else "")
         if problem:
             self._preview_files = []
             panel.slider.setEnabled(False)
@@ -466,7 +474,7 @@ class VideoCreationDialog(QDialog):
                 continue  # file, frame rate, quality: same frames
             if isinstance(widget, QComboBox):
                 widget.currentIndexChanged.connect(self.schedule_preview)
-            elif isinstance(widget, QCheckBox):
+            elif isinstance(widget, (QCheckBox, QRadioButton)):
                 widget.toggled.connect(self.schedule_preview)
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                 widget.valueChanged.connect(self.schedule_preview)
@@ -474,7 +482,6 @@ class VideoCreationDialog(QDialog):
                 widget.parent(), (QSpinBox, QDoubleSpinBox, QComboBox)
             ):
                 widget.textChanged.connect(self.schedule_preview)
-        self.contour_video_enabled.toggled.connect(self.schedule_preview)
 
     def _use_current_view(self):
         """Take the display settings, range and visible area of the main
@@ -524,7 +531,11 @@ class VideoCreationDialog(QDialog):
                     (self.y_max_spinbox, y_max),
                 ):
                     spinbox.setValue(int(round(value * scale)))
+        # Its contour layers, if contours are shown
+        if tab.show_contours_checkbox.isChecked() and getattr(tab, "contour_layers", None):
+            self._set_contour_layers(tab.contour_layers, tab.contour_options)
         if imagename and imagename.lower().endswith((".fits", ".fts")):
+            self.image_series_radio.setChecked(True)
             self.preview_input_files()
         self.schedule_preview()
 
@@ -542,7 +553,8 @@ class VideoCreationDialog(QDialog):
         splitter.addWidget(self.preview_panel)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([560, 690])
+        settings_panel.setMinimumWidth(600)
+        splitter.setSizes([640, 680])
         self.preview_panel.slider.valueChanged.connect(self._on_preview_slider)
         self.preview_panel.play_button.toggled.connect(self._toggle_play)
 
@@ -575,8 +587,8 @@ class VideoCreationDialog(QDialog):
 
         use_view_btn = QPushButton("Use Current View")
         use_view_btn.setToolTip(
-            "Take the files, colormap, stretch, range and visible area\n"
-            "of the image open in the main window"
+            "Take the files, colormap, stretch, range, visible area and\n"
+            "contours of the image open in the main window"
         )
         use_view_btn.setEnabled(self._main_window is not None)
         use_view_btn.clicked.connect(self._use_current_view)
@@ -584,11 +596,6 @@ class VideoCreationDialog(QDialog):
 
         preview_controls_layout.addStretch()
 
-        # Add "Contour Mode" checkbox
-        self.contour_video_enabled = QCheckBox("Contour Mode")
-        self.contour_video_enabled.setChecked(False)
-        self.contour_video_enabled.stateChanged.connect(self.toggle_contour_mode)
-        preview_controls_layout.addWidget(self.contour_video_enabled)
 
         # Add preview controls to the main layout first
         main_layout.addWidget(preview_controls_group)
@@ -605,10 +612,12 @@ class VideoCreationDialog(QDialog):
         self._output_tab = output_scroll
 
         contours_scroll = self._create_contours_tab()
+        frames_scroll = self._create_frames_tab()
 
         # Add tabs to tab widget (Contours is second when in Contour Mode)
         self.tab_widget.addTab(input_scroll, "Input")
-        self.tab_widget.addTab(contours_scroll, "Input")
+        self.tab_widget.addTab(contours_scroll, "Contours")
+        self.tab_widget.addTab(frames_scroll, "Frames")
         self.tab_widget.addTab(display_scroll, "Display")
         self.tab_widget.addTab(region_scroll, "Region")
         self.tab_widget.addTab(overlay_scroll, "Overlays")
@@ -617,8 +626,6 @@ class VideoCreationDialog(QDialog):
         # Add the tab widget to the main layout (after the preview)
         main_layout.addWidget(self.tab_widget)
 
-        # Hide Contours tab by default (shown when Contour Mode checkbox is checked)
-        self.tab_widget.setTabVisible(1, False)
 
         # Buttons at the bottom
         button_layout = QHBoxLayout()
@@ -659,6 +666,23 @@ class VideoCreationDialog(QDialog):
         input_group_layout.setContentsMargins(12, 16, 12, 12)
         input_group_layout.setHorizontalSpacing(10)
         input_group_layout.setVerticalSpacing(8)
+
+        # 0. Image: a series of files, or one image for every frame
+        source_row = QHBoxLayout()
+        self.image_series_radio = QRadioButton("Image series (folder + pattern)")
+        self.image_single_radio = QRadioButton("Single image")
+        self.image_series_radio.setChecked(True)
+        self.image_single_radio.setToolTip(
+            "The same image in every frame; the frames then follow the first\n"
+            "contour layer that is a series"
+        )
+        source_group = QButtonGroup(self)
+        source_group.addButton(self.image_series_radio)
+        source_group.addButton(self.image_single_radio)
+        source_row.addWidget(self.image_series_radio)
+        source_row.addWidget(self.image_single_radio)
+        source_row.addStretch()
+        input_layout.addLayout(source_row)
 
         # 1. Directory field
         input_group_layout.addWidget(QLabel("Input Directory:"), 0, 0)
@@ -703,6 +727,23 @@ class VideoCreationDialog(QDialog):
         input_group_layout.addWidget(self.stokes_combo, 3, 1)
 
         input_layout.addWidget(input_group)
+
+        self.single_image_group = QGroupBox("Single Image")
+        single_layout = QHBoxLayout(self.single_image_group)
+        self.single_image_edit = QLineEdit()
+        self.single_image_edit.setPlaceholderText("FITS image shown in every frame")
+        single_layout.addWidget(self.single_image_edit, 1)
+        single_browse = QPushButton("Browse")
+        single_browse.clicked.connect(self._browse_single_image)
+        single_layout.addWidget(single_browse)
+        input_layout.addWidget(self.single_image_group)
+
+        def show_image_source(series):
+            input_group.setEnabled(series)
+            self.single_image_group.setEnabled(not series)
+
+        self.image_series_radio.toggled.connect(show_image_source)
+        show_image_source(True)
 
         # Files found status (separate from the group) - use theme-compatible styling
         self.files_found_label = QLabel("No files found yet")
@@ -1298,214 +1339,99 @@ class VideoCreationDialog(QDialog):
         return output_scroll
 
     def _create_contours_tab(self):
-        """Contours tab (shown in Contour Mode). Returns the tab's scroll area."""
-        # ------ Contours Tab ------
-        # Create a scroll area for the contours tab
-        contours_scroll = QScrollArea()
-        contours_scroll.setWidgetResizable(True)
-        contours_scroll_content = QWidget()
-        contours_layout = QVBoxLayout(contours_scroll_content)
-        contours_layout.setContentsMargins(12, 12, 12, 12)
-        contours_layout.setSpacing(12)
-        contours_scroll.setWidget(contours_scroll_content)
+        """Contours tab: the video's contour layers. Returns its scroll area."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        scroll.setWidget(content)
 
-        # Enable contours
-        contours_enable_group = QGroupBox("Contour Video")
-        contours_enable_layout = QVBoxLayout(contours_enable_group)
-        contours_enable_layout.setContentsMargins(12, 16, 12, 12)
-        contours_enable_layout.setSpacing(8)
-
-        # Mode selector
-        mode_widget = QWidget()
-        mode_layout = QHBoxLayout(mode_widget)
-        mode_layout.setContentsMargins(0, 0, 0, 0)
-        mode_layout.setSpacing(10)
-
-        mode_layout.addWidget(QLabel("Mode:"))
-        self.contour_mode_combo = QComboBox()
-        self.contour_mode_combo.addItems(
-            [
-                "A: Fixed base, evolving contours",
-                "B: Fixed contours, evolving colormap",
-                "C: Both evolve",
-            ]
+        info = QLabel(
+            f"Up to {MAX_CONTOUR_LAYERS} contour layers, as in the main window. "
+            "Each can contour the video image itself (in any Stokes), a fixed "
+            "file, or a series of files: each frame then takes the file "
+            "nearest to it in observation time."
         )
-        self.contour_mode_combo.currentIndexChanged.connect(self.update_contour_mode_ui)
-        self.contour_mode_combo.currentIndexChanged.connect(
-            self.update_create_button_state
-        )
-        mode_layout.addWidget(self.contour_mode_combo)
-        mode_layout.addStretch()
+        info.setWordWrap(True)
+        info.setObjectName("SecondaryText")
+        layout.addWidget(info)
 
-        contours_enable_layout.addWidget(mode_widget)
-        contours_layout.addWidget(contours_enable_group)
+        self.contour_layers = []
+        self.contour_options = default_contour_options()
+        self.contour_layer_list = QListWidget()
+        self.contour_layer_list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.contour_layer_list.setMinimumHeight(140)
+        layout.addWidget(self.contour_layer_list)
 
-        # File inputs group (changes based on mode)
-        self.contour_files_group = QGroupBox("File Selection")
-        contour_files_layout = QFormLayout(self.contour_files_group)
-        contour_files_layout.setContentsMargins(12, 16, 12, 12)
-        contour_files_layout.setVerticalSpacing(8)
-        contour_files_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        buttons = QHBoxLayout()
+        edit_btn = QPushButton("Edit Layers...")
+        edit_btn.setToolTip("Add, change or remove contour layers, and set the legend")
+        edit_btn.clicked.connect(self._edit_contour_layers)
+        buttons.addWidget(edit_btn)
+        copy_btn = QPushButton("Copy from Main Window")
+        copy_btn.setToolTip("Use the contour layers of the image open in the main window")
+        copy_btn.clicked.connect(self._copy_viewer_contours)
+        buttons.addWidget(copy_btn)
+        clear_btn = QPushButton("Remove All")
+        clear_btn.clicked.connect(lambda: self._set_contour_layers([]))
+        buttons.addWidget(clear_btn)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        layout.addStretch()
+        self._show_contour_layers()
+        return scroll
 
-        # Base image file (for mode A)
-        base_file_widget = QWidget()
-        base_file_layout = QHBoxLayout(base_file_widget)
-        base_file_layout.setContentsMargins(0, 0, 0, 0)
-        base_file_layout.setSpacing(8)
-        self.contour_base_file_edit = QLineEdit()
-        self.contour_base_file_edit.setPlaceholderText("Select base image file...")
-        self.contour_base_file_edit.textChanged.connect(self.update_create_button_state)
-        base_file_layout.addWidget(self.contour_base_file_edit)
-        self.contour_base_file_btn = QPushButton("Browse")
-        self.contour_base_file_btn.clicked.connect(self.browse_contour_base_file)
-        base_file_layout.addWidget(self.contour_base_file_btn)
-        contour_files_layout.addRow("Base Image:", base_file_widget)
+    def _create_frames_tab(self):
+        """Frames tab: which frames make the video. Returns its scroll area."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        scroll.setWidget(content)
 
-        # Contour directory (for modes A and C)
-        contour_dir_widget = QWidget()
-        contour_dir_layout = QHBoxLayout(contour_dir_widget)
-        contour_dir_layout.setContentsMargins(0, 0, 0, 0)
-        contour_dir_layout.setSpacing(8)
-        self.contour_dir_edit = QLineEdit()
-        self.contour_dir_edit.setPlaceholderText("Select contour files directory...")
-        self.contour_dir_edit.textChanged.connect(self.scan_contour_files)
-        self.contour_dir_edit.textChanged.connect(self.update_create_button_state)
-        contour_dir_layout.addWidget(self.contour_dir_edit)
-        self.contour_dir_btn = QPushButton("Browse")
-        self.contour_dir_btn.clicked.connect(self.browse_contour_directory)
-        contour_dir_layout.addWidget(self.contour_dir_btn)
-        contour_files_layout.addRow("Contour Directory:", contour_dir_widget)
+        form = QFormLayout()
+        self.frame_start_edit = QLineEdit()
+        self.frame_start_edit.setPlaceholderText("YYYY-MM-DD HH:MM:SS (empty: from the first)")
+        form.addRow("From:", self.frame_start_edit)
+        self.frame_end_edit = QLineEdit()
+        self.frame_end_edit.setPlaceholderText("YYYY-MM-DD HH:MM:SS (empty: to the last)")
+        form.addRow("To:", self.frame_end_edit)
+        self.frame_every_spinbox = QSpinBox()
+        self.frame_every_spinbox.setRange(1, 1000)
+        self.frame_every_spinbox.setPrefix("every ")
+        self.frame_every_spinbox.setSuffix(" frame(s)")
+        form.addRow("Use:", self.frame_every_spinbox)
+        layout.addLayout(form)
 
-        # Contour file pattern
-        self.contour_pattern_widget = QWidget()
-        contour_pattern_layout = QHBoxLayout(self.contour_pattern_widget)
-        contour_pattern_layout.setContentsMargins(0, 0, 0, 0)
-        contour_pattern_layout.setSpacing(8)
-        self.contour_dir_pattern_edit = QLineEdit("*.fits")
-        self.contour_dir_pattern_edit.textChanged.connect(self.scan_contour_files)
-        contour_pattern_layout.addWidget(self.contour_dir_pattern_edit)
-        self.contour_files_count_label = QLabel("")
-        self.contour_files_count_label.setObjectName("StatusLabel")
-        contour_pattern_layout.addWidget(self.contour_files_count_label)
-        contour_files_layout.addRow("Contour Pattern:", self.contour_pattern_widget)
+        self.frames_summary_label = QLabel()
+        layout.addWidget(self.frames_summary_label)
 
-        # Fixed contour file (for mode B)
-        fixed_contour_widget = QWidget()
-        fixed_contour_layout = QHBoxLayout(fixed_contour_widget)
-        fixed_contour_layout.setContentsMargins(0, 0, 0, 0)
-        fixed_contour_layout.setSpacing(8)
-        self.contour_fixed_file_edit = QLineEdit()
-        self.contour_fixed_file_edit.setPlaceholderText("Select fixed contour file...")
-        self.contour_fixed_file_edit.textChanged.connect(
-            self.update_create_button_state
-        )
-        fixed_contour_layout.addWidget(self.contour_fixed_file_edit)
-        self.contour_fixed_file_btn = QPushButton("Browse")
-        self.contour_fixed_file_btn.clicked.connect(self.browse_contour_fixed_file)
-        fixed_contour_layout.addWidget(self.contour_fixed_file_btn)
-        contour_files_layout.addRow("Fixed Contour:", fixed_contour_widget)
+        self._excluded_frames = set()
+        self.frames_table = QTableWidget(0, 4)
+        self.frames_table.setHorizontalHeaderLabels(["", "Time", "Image", "Contours"])
+        self.frames_table.verticalHeader().setVisible(False)
+        self.frames_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        header = self.frames_table.horizontalHeader()
+        header.setMinimumSectionSize(24)  # the app style's minimum is wide
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        self.frames_table.setColumnWidth(0, 28)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setStretchLastSection(False)
+        self.frames_table.setToolTip("Untick frames to leave them out of the video")
+        self.frames_table.itemChanged.connect(self._on_frame_ticked)
+        self.frames_table.setMinimumHeight(220)
+        layout.addWidget(self.frames_table, 1)
 
-        # Colormap directory (for modes B and C)
-        colormap_dir_widget = QWidget()
-        colormap_dir_layout = QHBoxLayout(colormap_dir_widget)
-        colormap_dir_layout.setContentsMargins(0, 0, 0, 0)
-        colormap_dir_layout.setSpacing(8)
-        self.contour_colormap_dir_edit = QLineEdit()
-        self.contour_colormap_dir_edit.setPlaceholderText(
-            "Select colormap files directory..."
-        )
-        self.contour_colormap_dir_edit.textChanged.connect(self.scan_colormap_files)
-        self.contour_colormap_dir_edit.textChanged.connect(
-            self.update_create_button_state
-        )
-        colormap_dir_layout.addWidget(self.contour_colormap_dir_edit)
-        self.contour_colormap_dir_btn = QPushButton("Browse")
-        self.contour_colormap_dir_btn.clicked.connect(
-            self.browse_contour_colormap_directory
-        )
-        colormap_dir_layout.addWidget(self.contour_colormap_dir_btn)
-        contour_files_layout.addRow("Colormap Directory:", colormap_dir_widget)
-
-        # Colormap file pattern
-        self.colormap_pattern_widget = QWidget()
-        colormap_pattern_layout = QHBoxLayout(self.colormap_pattern_widget)
-        colormap_pattern_layout.setContentsMargins(0, 0, 0, 0)
-        colormap_pattern_layout.setSpacing(8)
-        self.contour_colormap_pattern_edit = QLineEdit("*.fits")
-        self.contour_colormap_pattern_edit.textChanged.connect(self.scan_colormap_files)
-        colormap_pattern_layout.addWidget(self.contour_colormap_pattern_edit)
-        self.colormap_files_count_label = QLabel("")
-        self.colormap_files_count_label.setObjectName("StatusLabel")
-        colormap_pattern_layout.addWidget(self.colormap_files_count_label)
-        contour_files_layout.addRow("Colormap Pattern:", self.colormap_pattern_widget)
-
-        contours_layout.addWidget(self.contour_files_group)
-
-        # Contour settings group
-        contour_settings_group = QGroupBox("Contour Settings")
-        contour_settings_layout = QFormLayout(contour_settings_group)
-        contour_settings_layout.setContentsMargins(12, 16, 12, 12)
-        contour_settings_layout.setVerticalSpacing(8)
-        contour_settings_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-
-        # Level type
-        self.contour_level_type_combo = QComboBox()
-        self.contour_level_type_combo.addItems(
-            ["Fraction of Max", "Sigma (RMS)", "Absolute"]
-        )
-        contour_settings_layout.addRow("Level Type:", self.contour_level_type_combo)
-
-        # Positive levels
-        self.contour_pos_levels_edit = QLineEdit("0.1, 0.3, 0.5, 0.7, 0.9")
-        self.contour_pos_levels_edit.setToolTip(
-            "Comma-separated list of positive contour levels"
-        )
-        contour_settings_layout.addRow("Positive Levels:", self.contour_pos_levels_edit)
-
-        # Negative levels
-        self.contour_neg_levels_edit = QLineEdit("0.1, 0.3, 0.5, 0.7, 0.9")
-        self.contour_neg_levels_edit.setToolTip(
-            "Comma-separated list of negative contour levels"
-        )
-        contour_settings_layout.addRow("Negative Levels:", self.contour_neg_levels_edit)
-
-        # Colors
-        color_widget = QWidget()
-        color_layout = QHBoxLayout(color_widget)
-        color_layout.setContentsMargins(0, 0, 0, 0)
-        color_layout.setSpacing(10)
-
-        color_layout.addWidget(QLabel("Pos:"))
-        self.contour_pos_color_combo = QComboBox()
-        self.contour_pos_color_combo.addItems(
-            ["white", "red", "yellow", "green", "cyan", "blue", "magenta"]
-        )
-        color_layout.addWidget(self.contour_pos_color_combo)
-
-        color_layout.addWidget(QLabel("Neg:"))
-        self.contour_neg_color_combo = QComboBox()
-        self.contour_neg_color_combo.addItems(
-            ["cyan", "blue", "red", "yellow", "green", "white", "magenta"]
-        )
-        color_layout.addWidget(self.contour_neg_color_combo)
-        color_layout.addStretch()
-
-        contour_settings_layout.addRow("Colors:", color_widget)
-
-        # Line width
-        self.contour_linewidth_spin = QDoubleSpinBox()
-        self.contour_linewidth_spin.setRange(0.1, 5.0)
-        self.contour_linewidth_spin.setValue(1.0)
-        self.contour_linewidth_spin.setSingleStep(0.1)
-        contour_settings_layout.addRow("Line Width:", self.contour_linewidth_spin)
-
-        contours_layout.addWidget(contour_settings_group)
-        contours_layout.addStretch()
-
-        # Initially disable contour controls
-        self.toggle_contour_video_controls(False)
-        self.update_contour_mode_ui(0)
-        return contours_scroll
+        include_all = QPushButton("Include All Frames")
+        include_all.clicked.connect(self._include_all_frames)
+        layout.addWidget(include_all, 0, Qt.AlignLeft)
+        return scroll
 
     def toggle_range_mode(self, index):
         """Enable/disable controls based on the range mode selection"""
@@ -1557,11 +1483,6 @@ class VideoCreationDialog(QDialog):
         Returns the first valid directory found.
         """
         candidates = list(extra_paths) + [
-            (
-                self.contour_base_file_edit.text().strip()
-                if hasattr(self, "contour_base_file_edit")
-                else None
-            ),
             self.reference_image,
             (
                 self.input_directory_edit.text().strip()
@@ -1817,82 +1738,195 @@ class VideoCreationDialog(QDialog):
             "timeline_log_scale": self.timeline_log_scale_check.isChecked(),
             # Region
             **region_options,
-            # Contours
-            "contour_video_enabled": self.contour_video_enabled.isChecked(),
-            "contour_mode": self.contour_mode_combo.currentIndex(),  # 0=A, 1=B, 2=C
-            "base_file": self.contour_base_file_edit.text().strip(),
-            "contour_files": list(getattr(self, "_cached_contour_files", [])),
-            "fixed_contour_file": self.contour_fixed_file_edit.text().strip(),
-            "colormap_files": list(getattr(self, "_cached_colormap_files", [])),
-            "level_type": ["fraction", "sigma", "absolute"][
-                self.contour_level_type_combo.currentIndex()
-            ],
-            "pos_levels": self._parse_levels(self.contour_pos_levels_edit.text()),
-            "neg_levels": self._parse_levels(self.contour_neg_levels_edit.text()),
-            "pos_color": self.contour_pos_color_combo.currentText(),
-            "neg_color": self.contour_neg_color_combo.currentText(),
-            "linewidth": self.contour_linewidth_spin.value(),
+            # Contours (series layers get their files per frame in _video_files)
+            "contour_layers": [dict(layer) for layer in self.contour_layers],
+            "contour_options": dict(self.contour_options),
             # Output
             "fps": self.fps_spinbox.value(),
             "quality": self.quality_spinbox.value(),
         }
 
+    def _frame_plan(self, layers):
+        """(plan, problem): frame_plan for the Input and Frames tabs (frames
+        unticked in the Frames tab included), or (None, (title, message))."""
+        from datetime import datetime
+
+        from .creator import frame_plan
+
+        if self.image_single_radio.isChecked():
+            path = self.single_image_edit.text().strip()
+            if not path or not os.path.isfile(path):
+                return None, ("No Image", "Choose the image shown in every frame.")
+            image_files, is_series = [path], False
+        else:
+            image_files, problem = self._input_files()
+            if problem:
+                return None, problem
+            is_series = True
+
+        bounds = []
+        for edit, name in ((self.frame_start_edit, "From"), (self.frame_end_edit, "To")):
+            text = edit.text().strip()
+            try:
+                bounds.append(datetime.fromisoformat(text.replace("T", " ")) if text else None)
+            except ValueError:
+                return None, ("Invalid Time", f"{name}: use YYYY-MM-DD HH:MM:SS")
+
+        scanned = []
+        for layer in layers:
+            layer = dict(layer)
+            if layer.get("source") == "series":
+                pattern = os.path.join(
+                    layer.get("series_dir", ""), layer.get("series_pattern") or "*.fits"
+                )
+                layer["series_files"] = sorted(glob.glob(pattern), key=observation_sort_key)
+                if layer.get("enabled", True) and not layer["series_files"]:
+                    return None, ("No Contour Files", f"No files match {pattern}")
+            scanned.append(layer)
+
+        plan = frame_plan(
+            image_files, is_series, scanned, bounds[0], bounds[1], self.frame_every_spinbox.value()
+        )
+        if not plan["image_files"]:
+            return None, ("No Frames", "No frames in the chosen time range.")
+        return plan, None
+
     def _video_files(self, options):
-        """(files, problem): the image shown in each frame for ``options``
-        (and ``options`` adjusted to match), or ([], (title, message))."""
-        if not options.get("contour_video_enabled", False):
-            return self._input_files()
+        """(files, problem): the image shown in each frame, with the frames
+        unticked in the Frames tab left out and ``options["contour_layers"]``
+        given each series layer's file per frame; or ([], (title, message))."""
+        plan, problem = self._frame_plan(options.get("contour_layers", []))
+        if problem:
+            return [], problem
+        self._show_frames(plan)
+        keep = [i for i, f in enumerate(plan["driver_files"]) if f not in self._excluded_frames]
+        if not keep:
+            return [], ("No Frames", "All frames are unticked in the Frames tab.")
+        layers = []
+        for layer in plan["layers"]:
+            layer = dict(layer)
+            if "frame_files" in layer:
+                layer["frame_files"] = [layer["frame_files"][i] for i in keep]
+            layer.pop("series_files", None)  # not needed by the frames
+            layers.append(layer)
+        options["contour_layers"] = layers
+        return [plan["image_files"][i] for i in keep], None
 
-        contour_mode = options.get("contour_mode", 0)
-        base_file = options.get("base_file", "")
-        contour_files = options.get("contour_files", [])
-        colormap_files = options.get("colormap_files", [])
-        fixed_contour = options.get("fixed_contour_file", "")
+    def _show_frames(self, plan):
+        """List the frames of ``plan`` in the Frames tab."""
+        rows = list(zip(plan["driver_files"], plan["image_files"], plan["times"]))
+        if getattr(self, "_shown_frame_rows", None) == (rows, repr(plan["gaps"])):
+            return
+        self._shown_frame_rows = (rows, repr(plan["gaps"]))
+        series = [
+            l for l in plan["layers"] if l.get("enabled", True) and "frame_files" in l
+        ]
+        table = self.frames_table
+        table.blockSignals(True)
+        table.setRowCount(len(rows))
+        for row, (driver, image, when) in enumerate(rows):
+            tick = QTableWidgetItem()
+            tick.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            tick.setCheckState(Qt.Unchecked if driver in self._excluded_frames else Qt.Checked)
+            tick.setData(Qt.UserRole, driver)
+            table.setItem(row, 0, tick)
+            table.setItem(
+                row, 1, QTableWidgetItem(when.strftime("%Y-%m-%d %H:%M:%S") if when else "?")
+            )
+            table.setItem(row, 2, QTableWidgetItem(os.path.basename(image)))
+            pairs = []
+            for layer in series:
+                gap = plan["gaps"].get(layer.get("id"), [None] * len(rows))[row]
+                name = os.path.basename(layer["frame_files"][row])
+                pairs.append(name + (f" ({gap:+.0f} s)" if gap else ""))
+            table.setItem(row, 3, QTableWidgetItem(", ".join(pairs)))
+        table.setColumnHidden(3, not series)  # contours with their own files only
+        table.blockSignals(False)
+        used = sum(1 for d, _, _ in rows if d not in self._excluded_frames)
+        self.frames_summary_label.setText(f"{used} of {len(rows)} frames in the video")
 
-        if contour_mode == 0:  # Mode A: Fixed base + evolving contours
-            if not base_file or not os.path.exists(base_file):
-                return [], ("Error", "Contour Mode A requires a base image file")
-            if not contour_files:
-                return [], ("Error", "Contour Mode A requires a contour directory")
-            # The base image is displayed in every frame, contours evolve
-            return [base_file] * len(contour_files), None
+    def _on_frame_ticked(self, item):
+        if item.column() != 0:
+            return
+        driver = item.data(Qt.UserRole)
+        if item.checkState() == Qt.Checked:
+            self._excluded_frames.discard(driver)
+        else:
+            self._excluded_frames.add(driver)
+        self._shown_frame_rows = None
+        self.schedule_preview()
 
-        if contour_mode == 1:  # Mode B: Fixed contours + evolving colormap
-            if not fixed_contour or not os.path.exists(fixed_contour):
-                return [], ("Error", "Contour Mode B requires a fixed contour file")
-            if not colormap_files:
-                return [], ("Error", "Contour Mode B requires a colormap directory")
-            return colormap_files, None
+    def _include_all_frames(self):
+        self._excluded_frames.clear()
+        self._shown_frame_rows = None
+        self.schedule_preview()
 
-        # Mode C: Both evolve, frame by frame
-        if not colormap_files:
-            return [], ("Error", "Contour Mode C requires a colormap directory")
-        if not contour_files:
-            return [], ("Error", "Contour Mode C requires a contour directory")
-        count = min(len(colormap_files), len(contour_files))
-        options["contour_files"] = contour_files[:count]
-        return colormap_files[:count], None
+    def _browse_single_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select the Image",
+            self.get_smart_start_directory(self.single_image_edit.text()),
+            "FITS Files (*.fits *.fts);;All Files (*)",
+        )
+        if path:
+            self.single_image_edit.setText(path)
+
+    # ---------- Contour layers ----------
+
+    def _set_contour_layers(self, layers, options=None):
+        self.contour_layers = [contour_layer_settings(layer) for layer in layers]
+        if options is not None:
+            self.contour_options = dict(default_contour_options(), **options)
+        self._show_contour_layers()
+        self.schedule_preview()
+
+    def _show_contour_layers(self):
+        self.contour_layer_list.clear()
+        kinds = {"same": "video image", "external": "fixed file", "series": "series"}
+        for layer in self.contour_layers:
+            state = "" if layer.get("enabled", True) else " (hidden)"
+            self.contour_layer_list.addItem(
+                f"{contour_layer_name(layer, 'Image')}  —  {kinds.get(layer.get('source'), '')}{state}"
+            )
+        if not self.contour_layers:
+            self.contour_layer_list.addItem("No contours")
+
+    def _edit_contour_layers(self):
+        from ..dialogs.contour_settings import ContourSettingsDialog
+
+        layers = self.contour_layers or [new_contour_layer()]
+        dialog = ContourSettingsDialog(self, layers, self.contour_options, for_video=True)
+        box = dialog.findChild(QDialogButtonBox)
+        if box is not None:
+            box.button(QDialogButtonBox.Ok).setText("OK")
+            box.button(QDialogButtonBox.Cancel).setText("Cancel")
+        if dialog.exec_() == QDialog.Accepted:
+            self._set_contour_layers(dialog.get_layers(), dialog.get_options())
+
+    def _copy_viewer_contours(self):
+        tab = (
+            self._main_window.tab_widget.currentWidget()
+            if getattr(self._main_window, "tab_widget", None) is not None
+            else None
+        )
+        layers = getattr(tab, "contour_layers", None)
+        if not layers:
+            QMessageBox.information(self, "No Contours", "The main window has no contour layers.")
+            return
+        enabled = tab.show_contours_checkbox.isChecked()
+        self._set_contour_layers(
+            [dict(layer, enabled=layer.get("enabled", True) and enabled) for layer in layers],
+            tab.contour_options,
+        )
 
     def create_video(self):
         """Create a video from the selected files"""
         try:
             options = self._video_options()
-            counts = (len(options["colormap_files"]), len(options["contour_files"]))
             video_files, problem = self._video_files(options)
             if problem:
                 QMessageBox.warning(self, *problem)
                 return
-            if (
-                options["contour_video_enabled"]
-                and options["contour_mode"] == 2
-                and counts[0] != counts[1]
-            ):
-                QMessageBox.warning(
-                    self,
-                    "Warning",
-                    f"Colormap ({counts[0]}) and contour ({counts[1]}) file counts "
-                    "don't match. Using minimum.",
-                )
 
             # Get output file
             output_file = self.output_file_edit.text().strip()
@@ -2422,199 +2456,6 @@ class VideoCreationDialog(QDialog):
         self.y_min_spinbox.setEnabled(enabled)
         self.y_max_spinbox.setEnabled(enabled)
         self.update_region_preview()
-
-    def toggle_contour_mode(self, enabled):
-        """Toggle Contour Mode - shows/hides Input and Contours tabs"""
-        # Input tab is at index 0, Contours tab is at index 1
-        self.tab_widget.setTabVisible(0, not enabled)
-        self.tab_widget.setTabVisible(1, enabled)
-
-        # Also toggle the contour video controls
-        self.toggle_contour_video_controls(enabled)
-
-        # Update create button state based on contour mode files
-        self.update_create_button_state()
-
-        # If enabling contour mode, switch to Contours tab
-        if enabled:
-            self.tab_widget.setCurrentIndex(1)
-        else:
-            self.tab_widget.setCurrentIndex(0)
-
-    def update_create_button_state(self):
-        """Update Create Video button state based on current mode and inputs"""
-        if self.contour_video_enabled.isChecked():
-            # In contour mode, check if required contour files are specified
-            mode = self.contour_mode_combo.currentIndex()
-            has_valid_input = False
-            missing_fields = []
-
-            if mode == 0:  # Mode A: Fixed base + evolving contours
-                base_file = self.contour_base_file_edit.text().strip()
-                contour_dir = self.contour_dir_edit.text().strip()
-                if not base_file or not os.path.exists(base_file):
-                    missing_fields.append("Base Image")
-                if not contour_dir or not os.path.isdir(contour_dir):
-                    missing_fields.append("Contour Directory")
-                has_valid_input = len(missing_fields) == 0
-
-            elif mode == 1:  # Mode B: Fixed contour + evolving colormap
-                fixed_contour = self.contour_fixed_file_edit.text().strip()
-                colormap_dir = self.contour_colormap_dir_edit.text().strip()
-                if not fixed_contour or not os.path.exists(fixed_contour):
-                    missing_fields.append("Fixed Contour File")
-                if not colormap_dir or not os.path.isdir(colormap_dir):
-                    missing_fields.append("Colormap Directory")
-                has_valid_input = len(missing_fields) == 0
-
-            elif mode == 2:  # Mode C: Both evolve
-                contour_dir = self.contour_dir_edit.text().strip()
-                colormap_dir = self.contour_colormap_dir_edit.text().strip()
-                if not contour_dir or not os.path.isdir(contour_dir):
-                    missing_fields.append("Contour Directory")
-                if not colormap_dir or not os.path.isdir(colormap_dir):
-                    missing_fields.append("Colormap Directory")
-                has_valid_input = len(missing_fields) == 0
-
-            self.create_btn.setEnabled(has_valid_input)
-            if not has_valid_input:
-                self.create_btn.setToolTip(f"Missing: {', '.join(missing_fields)}")
-            else:
-                self.create_btn.setToolTip("")
-        else:
-            # Normal mode - enable button (existing validation on create)
-            self.create_btn.setToolTip("")
-
-    def toggle_contour_video_controls(self, enabled):
-        """Enable or disable contour video controls"""
-        self.contour_mode_combo.setEnabled(enabled)
-        self.contour_files_group.setEnabled(enabled)
-        if enabled:
-            self.update_contour_mode_ui(self.contour_mode_combo.currentIndex())
-
-    def update_contour_mode_ui(self, index):
-        """Update visibility of contour file inputs based on mode"""
-        # Mode A: Base image + contour directory + contour pattern
-        # Mode B: Fixed contour + colormap directory + colormap pattern
-        # Mode C: Contour directory + contour pattern + colormap directory + colormap pattern
-
-        # Get parent widgets for each row
-        base_file_row = self.contour_base_file_edit.parent()
-        contour_dir_row = self.contour_dir_edit.parent()
-        fixed_contour_row = self.contour_fixed_file_edit.parent()
-        colormap_dir_row = self.contour_colormap_dir_edit.parent()
-
-        if index == 0:  # Mode A: Fixed base + evolving contours
-            base_file_row.setVisible(True)
-            contour_dir_row.setVisible(True)
-            self.contour_pattern_widget.setVisible(True)
-            fixed_contour_row.setVisible(False)
-            colormap_dir_row.setVisible(False)
-            self.colormap_pattern_widget.setVisible(False)
-        elif index == 1:  # Mode B: Fixed contours + evolving colormap
-            base_file_row.setVisible(False)
-            contour_dir_row.setVisible(False)
-            self.contour_pattern_widget.setVisible(False)
-            fixed_contour_row.setVisible(True)
-            colormap_dir_row.setVisible(True)
-            self.colormap_pattern_widget.setVisible(True)
-        else:  # Mode C: Both evolve
-            base_file_row.setVisible(False)
-            contour_dir_row.setVisible(True)
-            self.contour_pattern_widget.setVisible(True)
-            fixed_contour_row.setVisible(False)
-            colormap_dir_row.setVisible(True)
-            self.colormap_pattern_widget.setVisible(True)
-
-    def browse_contour_base_file(self):
-        """Browse for base image file"""
-        start_dir = self.get_smart_start_directory(
-            self.contour_base_file_edit.text().strip()
-        )
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Base Image File",
-            start_dir,
-            "FITS Files (*.fits *.fts);;All Files (*)",
-        )
-        if file_path:
-            self.contour_base_file_edit.setText(file_path)
-
-    def browse_contour_directory(self):
-        """Browse for contour files directory"""
-        start_dir = self.get_smart_start_directory(self.contour_dir_edit.text().strip())
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Contour Files Directory", start_dir
-        )
-        if directory:
-            self.contour_dir_edit.setText(directory)
-
-    def browse_contour_fixed_file(self):
-        """Browse for fixed contour file"""
-        start_dir = self.get_smart_start_directory(
-            self.contour_fixed_file_edit.text().strip()
-        )
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Fixed Contour File",
-            start_dir,
-            "FITS Files (*.fits *.fts);;All Files (*)",
-        )
-        if file_path:
-            self.contour_fixed_file_edit.setText(file_path)
-
-    def browse_contour_colormap_directory(self):
-        """Browse for colormap files directory"""
-        start_dir = self.get_smart_start_directory(
-            self.contour_colormap_dir_edit.text().strip()
-        )
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Colormap Files Directory", start_dir
-        )
-        if directory:
-            self.contour_colormap_dir_edit.setText(directory)
-
-    def scan_contour_files(self):
-        """Scan contour directory and update file count label"""
-        directory = self.contour_dir_edit.text().strip()
-        pattern = self.contour_dir_pattern_edit.text().strip() or "*.fits"
-
-        if not directory or not os.path.isdir(directory):
-            self.contour_files_count_label.setText("")
-            self._cached_contour_files = []
-            return
-
-        full_pattern = os.path.join(directory, pattern)
-        files = sorted(glob.glob(full_pattern))
-        self._cached_contour_files = files
-
-        if files:
-            self.contour_files_count_label.setText(f"✓ {len(files)} files")
-            self.contour_files_count_label.setStyleSheet("color: green;")
-        else:
-            self.contour_files_count_label.setText("No files found")
-            self.contour_files_count_label.setStyleSheet("color: red;")
-
-    def scan_colormap_files(self):
-        """Scan colormap directory and update file count label"""
-        directory = self.contour_colormap_dir_edit.text().strip()
-        pattern = self.contour_colormap_pattern_edit.text().strip() or "*.fits"
-
-        if not directory or not os.path.isdir(directory):
-            self.colormap_files_count_label.setText("")
-            self._cached_colormap_files = []
-            return
-
-        full_pattern = os.path.join(directory, pattern)
-        files = sorted(glob.glob(full_pattern))
-        self._cached_colormap_files = files
-
-        if files:
-            self.colormap_files_count_label.setText(f"✓ {len(files)} files")
-            self.colormap_files_count_label.setStyleSheet("color: green;")
-        else:
-            self.colormap_files_count_label.setText("No files found")
-            self.colormap_files_count_label.setStyleSheet("color: red;")
 
     def update_region_preview(self):
         """Update the preview when region controls change"""
