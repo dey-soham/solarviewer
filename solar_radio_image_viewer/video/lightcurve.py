@@ -230,9 +230,17 @@ class LightCurves:
 
         for k, label in enumerate(self.labels):
             color = COLORS[k % len(COLORS)]
-            ax.plot(x[:last], values[k][:last], color=color, linewidth=1.5, label=label)
+            ax.plot(
+                x[:last], values[k][:last], color=color, linewidth=1.5, label=label,
+                marker="." if np.isnan(values[k]).any() else None, markersize=5,
+            )
             if index < self.total_frames - 1:
-                ax.plot(x[index:], values[k][index:], color=color, linewidth=0.8, alpha=0.3)
+                # Dots where values have gaps (e.g. frames not fetched yet),
+                # so values between gaps show
+                ax.plot(
+                    x[index:], values[k][index:], color=color, linewidth=0.8, alpha=0.3,
+                    marker="." if np.isnan(values[k]).any() else None, markersize=4,
+                )
             if index < self.total_frames and np.isfinite(values[k][index]):
                 ax.plot(
                     x[index], values[k][index], "o", color=color, markersize=5,

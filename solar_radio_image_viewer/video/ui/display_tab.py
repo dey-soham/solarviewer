@@ -481,8 +481,15 @@ class DisplayTabMixin:
         from ..coordinates import ConversionError
         from ..creator import load_frame_data
 
+        path = self.reference_image
+        if self.remote is not None:
+            # On the server: its local copy (fetched now if need be)
+            local = self._fetch_now([path], "the image")
+            if not local:
+                return None
+            path = local[path]
         try:
-            data, _ = load_frame_data(self.reference_image, self._video_options())
+            data, _ = load_frame_data(path, self._video_options())
         except ConversionError as e:
             QMessageBox.warning(self, "Cannot Convert", str(e))
             return None

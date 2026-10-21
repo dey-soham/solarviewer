@@ -3,6 +3,7 @@ Input tab: the images (a series or one image).
 """
 
 import os
+import posixpath
 from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
@@ -51,6 +52,9 @@ class InputTabMixin:
         input_group_layout.setContentsMargins(12, 16, 12, 12)
         input_group_layout.setHorizontalSpacing(10)
         input_group_layout.setVerticalSpacing(8)
+
+        # Images on this computer or on a server (ui.remote_source)
+        input_layout.addLayout(self._create_images_on_row())
 
         # 0. Image: a series of files, or one image for every frame
         source_row = QHBoxLayout()
@@ -181,6 +185,12 @@ class InputTabMixin:
 
     def browse_input_directory(self):
         """Browse for input directory"""
+        if self.remote is not None:
+            folder = self._pick_remote("folder", self.input_directory_edit.text())
+            if folder:
+                self.input_directory_edit.setText(folder)
+                self.schedule_preview()
+            return
         start_dir = self.get_smart_start_directory(self.input_directory_edit.text())
 
         directory = QFileDialog.getExistingDirectory(
@@ -202,6 +212,11 @@ class InputTabMixin:
 
     def preview_input_files(self):
         """Find the images matching the input pattern and preview them."""
+        if self.remote is not None:
+            self._forget_remote_lists()
+            self.files_found_label.setText(f"Reading the folder on {self.remote.label}…")
+            self.schedule_preview(delay=0)
+            return
         with wait_cursor():
             if not self.input_directory_edit.text() or not self.input_pattern_edit.text():
                 QMessageBox.warning(
@@ -259,6 +274,8 @@ class InputTabMixin:
         """(files, problem): the Input tab's files in the chosen order, or
         ([], a message saying why there are none)."""
         input_dir = self.input_directory_edit.text()
+        if self.remote is not None:
+            return self._remote_input_files(input_dir)
         if not input_dir or not os.path.isdir(input_dir):
             return [], (
                 "Invalid Directory",
@@ -292,7 +309,33 @@ class InputTabMixin:
             files.sort(key=lambda x: os.path.splitext(x)[1])
         return files, None
 
+    def _remote_input_files(self, folder):
+        """_input_files for images on a server."""
+        pattern = self.input_pattern_edit.text().strip()
+        if not folder:
+            return [], ("No Folder", "Choose the folder of the images on the server.")
+        if not pattern:
+            return [], ("No Pattern", "Enter a file pattern, e.g. *.fits or *.image")
+        files = self._remote_list(folder, pattern)
+        if files is None:
+            return [], ("Reading the Server", f"Reading {folder} on {self.remote.label}…")
+        if not files:
+            return [], ("No Files Found", f"No images match {pattern} in {folder} on the server")
+        sort_method = self.sort_combo.currentText().lower()
+        if sort_method == "date/time":
+            files = sorted(files, key=self._remote_sort_key)
+        elif sort_method == "extension":
+            files = sorted(files, key=lambda x: posixpath.splitext(x)[1])
+        else:
+            files = sorted(files)
+        return files, None
+
     def _browse_single_image(self):
+        if self.remote is not None:
+            path = self._pick_remote("file", posixpath.dirname(self.single_image_edit.text()))
+            if path:
+                self.single_image_edit.setText(path)
+            return
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select the Image",
@@ -303,6 +346,9 @@ class InputTabMixin:
             self.single_image_edit.setText(path)
 
     def _browse_single_casa_image(self):
+        if self.remote is not None:
+            self._browse_single_image()  # images and CASA folders alike
+            return
         path = QFileDialog.getExistingDirectory(
             self,
             "Select the CASA Image",

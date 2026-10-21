@@ -103,9 +103,27 @@ class PresetsMixin:
             "plot_settings": self.plot_settings,
             "plot_settings_source": self._plot_settings_source,
             "annotations": self.annotations,
+            # Images on a server: its host (and user@host to show)
+            "images_on": (
+                {"host": self.remote.host, "label": self.remote.label} if self.remote else None
+            ),
         }
 
     def _apply_settings_state(self, state):
+        server = state.get("images_on")
+        connection = self._main_connection()
+        if server and connection is not None and connection._host == server.get("host"):
+            self._use_server(connection, folder="")
+        elif server:
+            self._use_server(None)
+            QMessageBox.information(
+                self,
+                "Images on a Server",
+                f"These settings use images on {server.get('label', server.get('host'))}. "
+                "Connect to it in the main window, then load them again.",
+            )
+        elif self.remote is not None:
+            self._use_server(None)
         for name, value in state.get("widgets", {}).items():
             widget = getattr(self, name, None)
             if widget is None:
@@ -172,6 +190,9 @@ class PresetsMixin:
             # The folder of converted images is this window's own
             options.pop("coordinate_cache", None)
             state["video"] = {"files": files, "options": options}
+            if self.remote is not None:
+                # Paths on that server, not here
+                state["video"]["server"] = self.remote.label
         with open(path, "w") as f:
             json.dump(state, f, indent=1, default=list)
 

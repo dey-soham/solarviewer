@@ -3,6 +3,7 @@ Frames tab: which frames make the video.
 """
 
 import os
+import posixpath
 from PyQt5.QtWidgets import (
     QVBoxLayout,
     QLabel,
@@ -94,7 +95,8 @@ class FramesTabMixin:
 
         if self.image_single_radio.isChecked():
             path = self.single_image_edit.text().strip()
-            if not path or not is_image(path):
+            on_disk = self.remote.is_image if self.remote is not None else is_image
+            if not path or not on_disk(path):
                 return None, ("No Image", "Choose the image shown in every frame.")
             image_files, is_series = [path], False
         else:
@@ -119,7 +121,15 @@ class FramesTabMixin:
         scanned = []
         for layer in layers:
             layer = dict(layer)
-            if layer.get("source") == "series":
+            if layer.get("source") == "series" and self.remote is not None:
+                # The series folder on the server
+                folder = layer.get("series_dir", "")
+                pattern = posixpath.join(folder, layer.get("series_pattern") or "*.fits")
+                found = self._remote_list(folder, layer.get("series_pattern") or "*.fits")
+                if found is None:
+                    return None, ("Reading the Server", f"Reading {folder} on {self.remote.label}…")
+                layer["series_files"] = sorted(found, key=self._remote_sort_key)
+            elif layer.get("source") == "series":
                 pattern = os.path.join(
                     layer.get("series_dir", ""), layer.get("series_pattern") or "*.fits"
                 )
@@ -137,6 +147,8 @@ class FramesTabMixin:
             bounds[0],
             bounds[1],
             self.frame_every_spinbox.value(),
+            # Times of server files from their headers (read once)
+            times_of=self._remote_times_of if self.remote is not None else None,
         )
         if not plan["image_files"]:
             return None, ("No Frames", "No frames in the chosen time range.")

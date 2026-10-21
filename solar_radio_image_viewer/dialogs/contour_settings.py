@@ -62,11 +62,16 @@ class ContourSettingsDialog(QDialog):
     The list on the left holds the layers; the tabs edit the selected one.
     """
 
-    def __init__(self, parent=None, layers=None, options=None, for_video=False):
+    def __init__(
+        self, parent=None, layers=None, options=None, for_video=False, series_folder_picker=None
+    ):
         super().__init__(parent)
         # For videos: layers can also be a series of files (one per frame),
         # and "the current image" is each frame's own image
         self.for_video = for_video
+        # Choosing the series folder some other way (a server's folder):
+        # series_folder_picker(start) -> folder or None
+        self.series_folder_picker = series_folder_picker
         self.setWindowTitle("Contour Settings")
         self.layers = [contour_layer_settings(layer) for layer in (layers or [])]
         if not self.layers:
@@ -1135,6 +1140,11 @@ class ContourSettingsDialog(QDialog):
         return contour_layer_name(layer, "Image" if self.for_video else "Current image")
 
     def _browse_series_dir(self):
+        if self.series_folder_picker is not None:
+            directory = self.series_folder_picker(self.series_dir_edit.text())
+            if directory:
+                self.series_dir_edit.setText(directory)
+            return
         directory = QFileDialog.getExistingDirectory(
             self, "Select the folder of the contour images", self.series_dir_edit.text()
         )

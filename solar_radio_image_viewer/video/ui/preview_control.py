@@ -47,6 +47,8 @@ class PreviewMixin:
                 else self.reference_image
             )
             self._preview_files = files
+            # Other frames: fetch only the sample until asked for all again
+            self._preview_renderer.render_all = False
             panel.slider.blockSignals(True)
             panel.slider.setRange(0, len(files) - 1)
             panel.slider.setValue(files.index(current) if current in files else 0)
@@ -82,11 +84,37 @@ class PreviewMixin:
         panel.show_frame(frame)
         self._last_preview_frame = frame
         self._update_estimate()
+        self._update_remote_preview()
         height, width = frame.shape[:2]
         panel.status_label.setText(
             f"{os.path.basename(self._preview_files[panel.slider.value()])} · "
             f"frame size {width}×{height}"
         )
+
+    def _update_remote_preview(self):
+        """For images on a server: how many frames the preview has, and Play
+        only once all are fetched."""
+        panel = self.preview_panel
+        renderer = self._preview_renderer
+        if self.remote is None:
+            panel.show_remote(False)
+            panel.play_button.setEnabled(True)
+            return
+        fetched = sum(bool(self.remote.cached(f)) for f in self._preview_files)
+        panel.show_remote(True, renderer.all_fetched, fetched, len(self._preview_files))
+        panel.play_button.setEnabled(renderer.all_fetched)
+        panel.render_all_button.setEnabled(not renderer.render_all)
+        panel.play_button.setToolTip(
+            "Play the preview at the video's frame rate"
+            if renderer.all_fetched
+            else "Render All Frames first, to play the preview"
+        )
+
+    def _render_all_frames(self):
+        """Fetch every frame's images, then preview (and play) all of them."""
+        self._preview_renderer.render_all = True
+        self.preview_panel.render_all_button.setEnabled(False)
+        self.schedule_preview(delay=0)
 
     def _current_region(self):
         """The region as (x_min, x_max, y_min, y_max), or None (whole image)."""

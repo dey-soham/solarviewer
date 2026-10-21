@@ -945,6 +945,8 @@ def _scan_one(args):
     _quiet_warnings()
     i, path, options, needs = args
     result = {}
+    if not os.path.exists(path):
+        return i, result  # e.g. not fetched from a server yet
     try:
         data, header = load_frame_data(path, options)
     except Exception as e:
@@ -1116,7 +1118,10 @@ def _nearest_files(times, series_files, series_times):
     return files, gaps
 
 
-def frame_plan(image_files, image_is_series, layers, start=None, end=None, every=1, excluded=()):
+def frame_plan(
+    image_files, image_is_series, layers, start=None, end=None, every=1, excluded=(),
+    times_of=None,
+):
     """Which image and contour files make each frame of a video.
 
     Frames follow the image series; with a fixed image, the first contour
@@ -1124,6 +1129,8 @@ def frame_plan(image_files, image_is_series, layers, start=None, end=None, every
     ``start``/``end`` (datetimes) and ``every`` select frames, and frames
     whose driving file is in ``excluded`` are left out. Each series layer
     gets, for every frame, its file nearest in observation time.
+    ``times_of(paths)`` gives the observation times (default file_times;
+    e.g. from the headers of files on a server).
 
     Returns a dict with ``image_files``, ``times``, ``driver_files`` (the
     files frames follow), ``layers`` (copies, ``frame_files`` filled in for
@@ -1140,7 +1147,8 @@ def frame_plan(image_files, image_is_series, layers, start=None, end=None, every
         driver = list(series_layers[0]["series_files"])
     else:
         driver = list(image_files[:1])
-    times = file_times(driver)
+    times_of = times_of or file_times
+    times = times_of(driver)
 
     keep = []
     for i, (path, when) in enumerate(zip(driver, times)):
@@ -1168,7 +1176,7 @@ def frame_plan(image_files, image_is_series, layers, start=None, end=None, every
                 gaps[layer.get("id")] = [0.0 if t is not None else None for t in times]
             else:
                 layer["frame_files"], gaps[layer.get("id")] = _nearest_files(
-                    times, layer["series_files"], file_times(layer["series_files"])
+                    times, layer["series_files"], times_of(layer["series_files"])
                 )
         planned.append(layer)
     return {
@@ -1601,7 +1609,11 @@ def _light_curves(files, options, line_plot, results, later, executor, progress)
     }
     curves = line_plot["curves"][:MAX_CURVES]
     light_curves = LightCurves(
-        line_plot, [curve_label(c, names) for c in curves], file_times(files), len(files)
+        line_plot,
+        [curve_label(c, names) for c in curves],
+        # Given (e.g. read from a server), or from the files
+        options.get("frame_times") or file_times(files),
+        len(files),
     )
     for i, result in enumerate(results):
         if "curves" in result:
@@ -1908,6 +1920,11 @@ def main(argv=None):
             video = json.load(f).get("video")
         if not video:
             parser.error("the preset has no frames (its settings had a problem when saved)")
+        if video.get("server"):
+            parser.error(
+                f"the preset's images are on {video['server']}: make this video in the "
+                "Create Video window (it fetches them)"
+            )
         files, options = video["files"], video["options"]
         if args.files:
             parser.error("give either --preset or files, not both")

@@ -47,6 +47,7 @@ from .ui.region_tab import RegionTabMixin
 from .ui.overlays_tab import OverlaysTabMixin
 from .ui.output_tab import OutputTabMixin
 from .ui.presets import PresetsMixin
+from .ui.remote_source import RemoteSourceMixin
 from .ui.helpers import (
     OUTPUT_FORMATS,
     SIZE_PRESETS,
@@ -93,6 +94,7 @@ class VideoCreationDialog(
     OverlaysTabMixin,
     OutputTabMixin,
     PresetsMixin,
+    RemoteSourceMixin,
     QDialog,
 ):
     """
@@ -162,6 +164,20 @@ class VideoCreationDialog(
                     self.coordinates_combo.findData(coordinates)
                 )
 
+        # The main window shows an image of a server: that server's images
+        remote_reference = (
+            self._take_main_window_source(parent.tab_widget.currentWidget())
+            if current_file and parent is not None and hasattr(parent, "tab_widget")
+            else None
+        )
+        if remote_reference:
+            self.output_file_edit.setText(
+                os.path.join(os.path.expanduser("~"), "output_video.mp4")
+            )
+            self._copy_viewer_settings(parent)
+            self._copy_viewer_look(parent)
+            current_file = None
+
         # Initialize with current file if provided
         if current_file:
             dir_path = os.path.dirname(current_file)
@@ -190,7 +206,7 @@ class VideoCreationDialog(
 
             # Auto-scan for files
             self.preview_input_files()
-        else:
+        elif not remote_reference:
             # No file provided - use CWD as default
             cwd = os.getcwd()
             if os.path.isdir(cwd):
@@ -234,6 +250,7 @@ class VideoCreationDialog(
         splitter.setSizes([640, 680])
         self.preview_panel.slider.valueChanged.connect(self._on_preview_slider)
         self.preview_panel.play_button.toggled.connect(self._toggle_play)
+        self.preview_panel.render_all_button.clicked.connect(self._render_all_frames)
         self.preview_panel.image_label.dragged.connect(self._on_region_dragged)
         buttons = self.preview_panel.zoom_buttons
         buttons["in"].clicked.connect(lambda: self._zoom(factor=0.5))
@@ -528,7 +545,7 @@ class VideoCreationDialog(
             options["cpu_count"] = self.cores_spinbox.value()
 
             # Use a worker thread for video creation
-            self.worker = VideoWorker(video_files, output_file, options)
+            self.worker = VideoWorker(video_files, output_file, options, remote=self.remote)
             self.worker.video_created.connect(self.on_video_creation_finished)
             self.worker.error.connect(self.on_video_creation_error)
             self.worker.cancelled.connect(self.on_video_creation_cancelled)
@@ -666,6 +683,8 @@ class VideoCreationDialog(
             # Stops after the frame being rendered
             self.worker.wait(30000)
         self._remove_coordinate_cache()
+        if self.remote is not None:
+            self.remote.close()  # its SFTP channels (the connection stays)
         self.preview_panel.release()
         event.accept()
 
@@ -679,6 +698,8 @@ class VideoCreationDialog(
             # Stops after the frame being rendered
             self.worker.wait(30000)
         self._remove_coordinate_cache()
+        if self.remote is not None:
+            self.remote.close()  # its SFTP channels (the connection stays)
         self.preview_panel.release()
         super().reject()
 

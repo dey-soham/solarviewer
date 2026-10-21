@@ -4,6 +4,7 @@ the frame shown (drag a box on it), and its panel.
 """
 
 import logging
+import os
 from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
@@ -52,6 +53,11 @@ class PreviewRenderer(QObject):
         self._frames = OrderedDict()
         self._executor = None  # one worker process, started on first use
         self._converted = {}  # (coordinates, cache folder) -> images converted
+        # Images on a server (RemoteFiles): fetched as previewed (the first,
+        # middle and last frames, and those shown), or all with render_all
+        self.remote = None
+        self.render_all = False
+        self.all_fetched = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -92,6 +98,9 @@ class PreviewRenderer(QObject):
             prepare_video_options,
             process_image_wrapper,
         )
+
+        if self.remote is not None:
+            files, options = self._fetch(request_id, files, index, options)
 
         setup_key = repr((files, sorted((k, repr(v)) for k, v in options.items())))
         frame_key = (setup_key, index)
@@ -144,6 +153,38 @@ class PreviewRenderer(QObject):
         while len(self._frames) > 60:
             self._frames.popitem(last=False)
         return frame, problems, geometry
+
+    def _fetch(self, request_id, files, index, options):
+        """Fetch from the server what this preview needs (the sample frames
+        and frame ``index``, or all of them with render_all); (files,
+        options) with the local copies (where not fetched yet: where they
+        will be, which can't be read)."""
+        from ..remote_video import frame_paths, localize, remote_times, sample_indices
+
+        remote = self.remote
+        indices = range(len(files)) if self.render_all else sorted(
+            set(sample_indices(len(files))) | {index}
+        )
+        missing = [p for p in frame_paths(files, options, indices) if not remote.cached(p)]
+        if missing:
+            def report(done, total, fetched, count):
+                self.status.emit(
+                    request_id,
+                    f"Fetching from {remote.label}: {fetched} of {count} images "
+                    f"({done / 1e6:.0f} of {total / 1e6:.0f} MB)...",
+                )
+
+            remote.fetch(missing, progress=report)
+        self.all_fetched = all(remote.cached(p) for p in frame_paths(files, options, range(len(files))))
+
+        def local_of(path):
+            return remote.cached(path) or str(remote.cache.get_cache_path(remote.host, path))
+
+        times = remote_times(remote, files)
+        local_files, options = localize(files, options, local_of)
+        available = sum(os.path.exists(p) for p in local_files)
+        # With more frames fetched, the range and line plot are worked out again
+        return local_files, dict(options, frame_times=times, _fetched_frames=available)
 
     def _convert(self, request_id, files, index, options):
         """Convert the images this preview reads to the video's coordinates,
@@ -329,6 +370,21 @@ class PreviewPanel(QWidget):
         self.problems_label.hide()
         layout.addWidget(self.problems_label)
 
+        # Images on a server: what the preview shows so far, and all of it
+        remote_row = QHBoxLayout()
+        self.remote_note = QLabel()
+        self.remote_note.setObjectName("SecondaryText")
+        self.remote_note.setWordWrap(True)
+        remote_row.addWidget(self.remote_note, 1)
+        self.render_all_button = QPushButton("Render All Frames")
+        self.render_all_button.setToolTip(
+            "Fetch every frame's images from the server, so all frames can be\n"
+            "previewed and played (they stay cached for the video)"
+        )
+        remote_row.addWidget(self.render_all_button)
+        layout.addLayout(remote_row)
+        self.show_remote(False)
+
         controls = QHBoxLayout()
         self.play_button = QPushButton("▶ Play")
         self.play_button.setCheckable(True)
@@ -346,6 +402,16 @@ class PreviewPanel(QWidget):
 
         self._pixmap = None
         self.show_message("Choose input files to see the preview")
+
+    def show_remote(self, on, all_fetched=False, fetched=0, total=0):
+        """The note (and Render All button) for images on a server."""
+        self.remote_note.setVisible(on and not all_fetched)
+        self.render_all_button.setVisible(on and not all_fetched)
+        self.remote_note.setText(
+            f"Preview of {fetched} of {total} frames (the first, middle and last, "
+            "and those you go to); the range and line plot use these until all "
+            "are rendered. The video uses all frames."
+        )
 
     def show_frame(self, frame):
         frame = np.ascontiguousarray(frame)

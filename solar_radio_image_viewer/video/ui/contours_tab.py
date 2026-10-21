@@ -121,7 +121,15 @@ class ContoursTabMixin:
 
         layers = self.contour_layers or [new_contour_layer()]
         dialog = ContourSettingsDialog(
-            self, layers, self.contour_options, for_video=True
+            self,
+            layers,
+            self.contour_options,
+            for_video=True,
+            # Images on a server: a contour series there too (a fixed file
+            # is fetched when chosen, as in the main window)
+            series_folder_picker=(
+                (lambda start: self._pick_remote("folder", start)) if self.remote else None
+            ),
         )
         box = dialog.findChild(QDialogButtonBox)
         if box is not None:
