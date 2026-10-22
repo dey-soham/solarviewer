@@ -111,6 +111,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, Normalize, PowerNorm
 from .simpl_theme import apply_theme, get_palette
+from ..ui.free_dialogs import free_modal_dialogs
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
@@ -1865,6 +1866,7 @@ def _size_text(nbytes):
 class MainWindow(QMainWindow):
     def __init__(self, theme="dark"):
         super(MainWindow, self).__init__()
+        free_modal_dialogs(self)  # (its settings, browsers... move on their own)
         self.setWindowTitle("Dynamic Spectra Viewer")
         # Tall enough for the side panel unfolded, as the screen allows
         screen = QApplication.primaryScreen()

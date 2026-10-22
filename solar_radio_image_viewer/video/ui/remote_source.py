@@ -88,7 +88,7 @@ class RemoteSourceMixin:
         """Connect as the main window does, and use the connection."""
         from ...remote import ConnectionDialog
 
-        dialog = ConnectionDialog(self._main_window)
+        dialog = ConnectionDialog(self)
 
         def connected(connection):
             if hasattr(self._main_window, "_on_remote_connected"):

@@ -7,4 +7,5 @@ Shared UI building blocks for SolarViewer.
 - ``custom_tabs``: main-window tab bar / tab widget
 - ``item_delegates``: combo box item delegates
 - ``searchable_combobox``: colormap selector with search
+- ``free_dialogs``: modal dialogs that move apart from their window
 """

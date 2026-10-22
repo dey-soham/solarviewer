@@ -34,6 +34,7 @@ from ..processing.plot_style import (
     default_style,
 )
 from .lightcurve import lightcurve_csv_path
+from ..ui.free_dialogs import free_modal_dialogs
 
 # The window is put together from these (moved here from this module,
 # whose names still import from it)
@@ -107,6 +108,7 @@ class VideoCreationDialog(
         self.setWindowFlags(
             Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
         )
+        free_modal_dialogs(self)  # (its settings, browsers... move on their own)
         self._main_window = parent
         self.current_file = current_file
         self.progress_tracker = None
