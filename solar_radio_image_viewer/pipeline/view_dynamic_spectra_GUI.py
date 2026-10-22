@@ -105,7 +105,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt, pyqtSlot, pyqtSignal, QTimer, QThread
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtGui import QFont, QColor, QKeySequence
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -267,6 +267,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
     hoverChanged = pyqtSignal(str, str, float)
     # Drift-rate mode: two points clicked, (t1, f1, t2, f2) in view coordinates
     driftMeasured = pyqtSignal(float, float, float, float)
+    # Region mode (Mask, Keep): a click, not a drag, at view (x, y)
+    regionClicked = pyqtSignal(float, float)
     # Time-pick mode: the time (MJD seconds) and frequency (MHz, NaN if
     # unknown) of the sample clicked
     timePicked = pyqtSignal(float, float)
@@ -740,17 +742,31 @@ class PyQtGraphSpectrumCanvas(QWidget):
         plot.titleLabel.setMinimumHeight(self.plot_item.titleLabel.height())
         plot.getAxis("bottom").setHeight(self.plot_item.getAxis("bottom").height())
 
-    def set_boxes(self, boxes):
+    def set_boxes(self, boxes, color="#3ddc84"):
         """Dashed outlines of view rectangles (x0, x1, y0, y1)."""
         for item in self._boxes:
             self.plot_item.vb.removeItem(item)
         self._boxes = []
         for x0, x1, y0, y1 in boxes:
             item = QtWidgets.QGraphicsRectItem(x0, y0, x1 - x0, y1 - y0)
-            item.setPen(pg.mkPen("#3ddc84", width=1.5, style=Qt.DashLine))
+            item.setPen(pg.mkPen(color, width=1.5, style=Qt.DashLine))
             item.setZValue(6)
             self.plot_item.vb.addItem(item)
             self._boxes.append(item)
+
+    def set_selected_box(self, box):
+        """A solid highlighted outline of the selected region (x0, x1, y0,
+        y1), or None."""
+        if getattr(self, "_selected_item", None) is not None:
+            self.plot_item.vb.removeItem(self._selected_item)
+            self._selected_item = None
+        if box is not None:
+            x0, x1, y0, y1 = box
+            item = QtWidgets.QGraphicsRectItem(x0, y0, x1 - x0, y1 - y0)
+            item.setPen(pg.mkPen("#ffcc00", width=2.5))
+            item.setZValue(7)
+            self.plot_item.vb.addItem(item)
+            self._selected_item = item
 
     def _image_items(self, count):
         """``count`` image items: the main one and further ones (removed
@@ -879,14 +895,15 @@ class PyQtGraphSpectrumCanvas(QWidget):
             return Normalize(vmin=vmin, vmax=vmax)
 
     # -------------------------- ROI Selector ------------------------------------
-    def enable_roi_selector(self, enable, callback=None):
-        """Enable or disable ROI selection mode."""
+    def enable_roi_selector(self, enable, callback=None, label="MASK"):
+        """Enable or disable ROI selection mode: a drag draws a region
+        (``callback``), a click emits regionClicked."""
         self.roi_active = enable
         self.roi_callback = callback
 
         if enable:
             self.setCursor(Qt.CrossCursor)
-            self._update_mode_overlay("MODE: MASK REGION (Click & Drag)")
+            self._update_mode_overlay(f"MODE: {label} (drag: add; click: select, Delete: remove)")
 
             # Disable default pan/zoom so drag creates ROI instead
             self.plot_item.vb.setMouseEnabled(x=False, y=False)
@@ -903,6 +920,10 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 self.plot_item.scene().sigMouseClicked.disconnect(self._on_mouse_click)
             except:
                 pass
+            try:
+                self.plot_item.scene().sigMouseClicked.connect(self._roi_click)
+            except TypeError:
+                pass
 
             # Override mouseDragEvent — this is what PyQtGraph actually calls
             # during click-and-drag operations (not mouseMoveEvent)
@@ -915,6 +936,10 @@ class PyQtGraphSpectrumCanvas(QWidget):
             self.plot_item.vb.setMouseEnabled(x=True, y=True)
 
             # Restore normal mouse behavior
+            try:
+                self.plot_item.scene().sigMouseClicked.disconnect(self._roi_click)
+            except TypeError:
+                pass
             try:
                 self.plot_item.scene().sigMouseClicked.connect(self._on_mouse_click)
             except:
@@ -931,6 +956,12 @@ class PyQtGraphSpectrumCanvas(QWidget):
             if hasattr(self, "_roi_border_item") and self._roi_border_item is not None:
                 self.plot_item.vb.removeItem(self._roi_border_item)
                 self._roi_border_item = None
+
+    def _roi_click(self, event):
+        """A plain left click in region mode (a drag never comes here)."""
+        if self.roi_active and event.button() == Qt.LeftButton and not event.double():
+            point = self.plot_item.vb.mapSceneToView(event.scenePos())
+            self.regionClicked.emit(point.x(), point.y())
 
     def _roi_drag_event(self, ev, axis=None):
         """Handle the full drag lifecycle for ROI selection.
@@ -1776,6 +1807,7 @@ class MainWindow(QMainWindow):
         self._spectrum_index = 0  # HDU of the spectrum (the first 2-D image)
         self._time_dim = 0  # the image's time axis (numpy order)
         self._image_index = 0  # HDU of the image shown (_image)
+        self._selected_region = None  # ("mask"|"keep", region) for Delete
         self._goto_time = None  # time to center on once its page is shown
         self._images = []  # [(HDU index, name)] that can be shown
         self._original_data = None  # Working data (float array with NaNs)
@@ -1942,6 +1974,18 @@ class MainWindow(QMainWindow):
         self.redoAct.setShortcut("Ctrl+Y")
         self.redoAct.triggered.connect(self.redo)
 
+        # Delete the selected mask or Keep region (selected by a click with
+        # the Mask or Keep tool); typing in a box keeps its own Delete
+        self.deleteRegionAct = QAction("&Delete Region", self)
+        self.deleteRegionAct.setShortcuts([QKeySequence(Qt.Key_Delete), QKeySequence(Qt.Key_Backspace)])
+        self.deleteRegionAct.setStatusTip("Remove the selected mask or Keep region")
+        self.deleteRegionAct.setEnabled(False)
+        self.deleteRegionAct.triggered.connect(self.deleteSelectedRegion)
+        self.deselectAct = QAction("Deselect", self)
+        self.deselectAct.setShortcut(QKeySequence(Qt.Key_Escape))
+        self.deselectAct.triggered.connect(lambda: self._select_region(None))
+        self.addAction(self.deselectAct)
+
         # New action for viewing metadata
         self.rangeAct = QAction("&Time Range...", self)
         self.rangeAct.setShortcut("Ctrl+T")
@@ -1994,6 +2038,8 @@ class MainWindow(QMainWindow):
         editMenu = menubar.addMenu("&Edit")
         editMenu.addAction(self.undoAct)
         editMenu.addAction(self.redoAct)
+        editMenu.addSeparator()
+        editMenu.addAction(self.deleteRegionAct)
 
         viewMenu = menubar.addMenu("&View")
         viewMenu.addAction(self.viewMetaAct)
@@ -2258,13 +2304,13 @@ class MainWindow(QMainWindow):
         self.panBtn = QPushButton("✋ Pan")
         self.panBtn.setToolTip("Pan/Zoom: drag to pan, scroll to zoom")
         self.roiButton = QPushButton("✂️ Mask")
-        self.roiButton.setToolTip("Mask: drag over a region to mask it")
+        self.roiButton.setToolTip("Mask: drag to mask a region (Delete removes)")
         self.crossBtn = QPushButton("➕ Profile")
         self.crossBtn.setToolTip("Profile: click for the light curve or spectrum")
         self.driftBtn = QPushButton("📐 Drift")
         self.driftBtn.setToolTip("Drift rate: click a burst's start, then its end")
         self.keepBtn = QPushButton("🛡️ Keep")
-        self.keepBtn.setToolTip("Keep: drag over what auto-flagging should leave alone")
+        self.keepBtn.setToolTip("Keep: drag to protect from auto-flagging (Delete removes)")
         self.imageAtTimeBtn = QPushButton("🖼️ Image")
         self.imageAtTimeBtn.setToolTip("Image: click to see SolarViewer's image at that time")
         # Only when launched from SolarViewer (it listens for the times)
@@ -2327,9 +2373,53 @@ class MainWindow(QMainWindow):
             cleanLayout.setRowMinimumHeight(row, 4)
 
         # Masks
-        self.extendMaskBtn = QPushButton("↔️ Extend")
-        self.extendMaskBtn.setToolTip("Mask these channels at all times")
-        self.extendMaskBtn.clicked.connect(self.onExtendMask)
+        # Extend: the selected mask's channels, or all masks' on the page
+        self.extendSelectedAct = QAction("Extend the selected mask", self)
+        self.extendSelectedAct.setStatusTip("Mask the selected mask's channels at all times")
+        self.extendSelectedAct.triggered.connect(self.onExtendSelectedMask)
+        self.extendAllAct = QAction("Extend all masks on this page", self)
+        self.extendAllAct.setStatusTip("Mask the channels of every mask on this page at all times")
+        self.extendAllAct.triggered.connect(self.onExtendMask)
+        extendMenu = QtWidgets.QMenu(self)
+        extendMenu.addAction(self.extendSelectedAct)
+        extendMenu.addAction(self.extendAllAct)
+        self.extendMaskBtn = QToolButton()
+        self.extendMaskBtn.setPopupMode(QToolButton.MenuButtonPopup)
+        self.extendMaskBtn.setMenu(extendMenu)
+        self.extendMaskBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.extendMaskBtn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.extendMaskBtn.setToolTip("Mask channels at all times (arrow: choose)")
+        palette = self._palette
+        # (styled like the push buttons beside it)
+        self.extendMaskBtn.setStyleSheet(f"""
+            QToolButton {{
+                background-color: {palette["button"]};
+                color: {palette["text"]};
+                border: 1px solid {palette["border"]};
+                border-radius: 6px;
+                padding: 4px 22px 4px 8px;
+                min-height: 26px;
+                max-height: 40px;
+                font-size: 10pt;
+                font-weight: 500;
+            }}
+            QToolButton:hover {{
+                background-color: {palette["button_hover"]};
+                border-color: {palette["highlight"]};
+            }}
+            QToolButton:pressed {{
+                background-color: {palette["highlight"]};
+                color: white;
+            }}
+            QToolButton:disabled {{ color: {palette["disabled"]}; }}
+            QToolButton::menu-button {{
+                border: none;
+                border-left: 1px solid {palette["border"]};
+                width: 18px;
+            }}
+        """)
+        self.extendMaskBtn.clicked.connect(self.onExtendDefault)
+        self._update_extend_button()
         self.clearMaskBtn = QPushButton("🗑️ Clear")
         self.clearMaskBtn.setToolTip("Remove all masks (Undo restores)")
         self.clearMaskBtn.clicked.connect(self.onClearMasks)
@@ -2394,6 +2484,7 @@ class MainWindow(QMainWindow):
         # Connect canvas hover signal
         self.canvas.hoverChanged.connect(self.updateHoverInfo)
         self.canvas.driftMeasured.connect(self.onDriftMeasured)
+        self.canvas.regionClicked.connect(self._select_region_at)
         self.canvas.timePicked.connect(self.sendTimeToViewer)
 
         rightLayout.addStretch()
@@ -2528,8 +2619,8 @@ class MainWindow(QMainWindow):
 
     _TOOL_HINTS = {
         "pan": "Drag to pan, scroll to zoom; right-click the plot to reset the view.",
-        "roi": "Drag over a region to mask it. Masks hold for the whole file (Ctrl+Z undoes).",
-        "keep": "Drag over a region the automatic RFI flags should leave alone (Ctrl+Z undoes).",
+        "roi": "Drag to mask a region; click a masked area and press Delete to unmask it.",
+        "keep": "Drag over what auto-flagging should spare; click a box and press Delete to remove it.",
         "cross": "Click a point: its light curve or its spectrum.",
         "drift": "Click the start of a burst, then its end.",
         "image": "Click the spectrum: SolarViewer shows the image at that time and frequency.",
@@ -2542,7 +2633,9 @@ class MainWindow(QMainWindow):
 
     def _update_tool_hint(self):
         """Pan/Zoom is on when no other tool is; the status bar says how to
-        use the tool chosen."""
+        use the tool chosen. (Changing tools deselects.)"""
+        if getattr(self, "_selected_region", None) is not None:
+            self._select_region(None)
         tools = {
             "roi": self.roiButton,
             "keep": self.keepBtn,
@@ -2722,6 +2815,7 @@ class MainWindow(QMainWindow):
         self.maskSummary.setText(", ".join(parts) if parts else "None yet: use the Mask tool")
         self.maskSummary.setToolTip("Masks hold for the whole file")
         self.extendMaskBtn.setEnabled(bool(regions))
+        self._update_extend_button()
         self.clearMaskBtn.setEnabled(bool(regions or channels or self._keeps))
 
     def updateHoverInfo(self, time_str, freq_str, val):
@@ -3364,6 +3458,7 @@ class MainWindow(QMainWindow):
                 self._remote = remote
                 self._goto_time = None
                 self._range = None
+                self._select_region(None)
                 self.canvas.mark_time(None)
                 self._cached_bandpass_profile = None  # Invalidate bandpass cache
                 self._global_masked_freq_indices.clear()  # Clear stale masks
@@ -4234,13 +4329,25 @@ class MainWindow(QMainWindow):
                 share = np.nanmean(shares, axis=0)
         self.canvas.set_overlay(overlay)
         self.canvas.set_channel_share(share, freq_axis if share is not None else None)
+        self._show_keep_boxes(time_axis)
+
+    def _show_keep_boxes(self, time_axis=None):
+        """Outline the regions the tool on edits: Keep regions (green) with
+        the Keep tool, masks (red) with the Mask tool; none otherwise."""
+        if time_axis is None:
+            time_axis = self._shown_raw[1] if self._shown_raw is not None else None
+        regions, color = [], "#3ddc84"
+        if self.keepBtn.isChecked():
+            regions = self._keeps
+        elif self.roiButton.isChecked():
+            regions, color = self._masks, "#ff6b6b"
         boxes = []
-        if self._rfi_enabled and time_axis is not None and len(time_axis):
+        if regions and time_axis is not None and len(time_axis):
             full = self._full_time_axis
-            for region in self._keeps:
+            for region in regions:
                 if full[region[0]] <= time_axis[-1] and full[region[1] - 1] >= time_axis[0]:
                     boxes.append(self._view_box(region))
-        self.canvas.set_boxes(boxes)
+        self.canvas.set_boxes(boxes, color)
 
     def openRfiSettings(self):
         """What automatic RFI flagging does: detectors, filling, display."""
@@ -4415,9 +4522,50 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(
                     "Keep regions apply to the automatic RFI flags (Auto-flag RFI)", 6000
                 )
-            self.canvas.enable_roi_selector(True, self._keep_roi_values)
+            self.canvas.enable_roi_selector(True, self._keep_roi_values, "KEEP")
         else:
             self.canvas.enable_roi_selector(False)
+        self._show_keep_boxes()
+
+    def _select_region_at(self, x, y):
+        """Select the mask (Mask tool) or Keep region (Keep tool) the click
+        at view (x, y) is in (the most recent, if several); Delete removes
+        it. A click elsewhere deselects."""
+        sample = self.canvas._index_at(x, y) if self.canvas._data is not None else None
+        hits = []
+        if sample is not None and self._shown_raw is not None and not self._previewing():
+            t, _, f, _ = self._file_ranges(sample[0], sample[0], sample[1], sample[1])
+            regions = self._keeps if self.keepBtn.isChecked() else self._masks
+            hits = [r for r in regions if r[0] <= t < r[1] and r[2] <= f < r[3]]
+        self._select_region(("keep" if self.keepBtn.isChecked() else "mask", hits[-1]) if hits else None)
+        if hits:
+            self.statusBar().showMessage("Selected: press Delete to remove it (Esc: deselect)", 5000)
+
+    def _select_region(self, selection):
+        """Select (kind, region), or nothing (None)."""
+        self._selected_region = selection
+        self.deleteRegionAct.setEnabled(selection is not None)
+        self._update_extend_button()
+        self.canvas.set_selected_box(self._view_box(selection[1]) if selection else None)
+
+    def deleteSelectedRegion(self):
+        """Remove the selected mask or Keep region (Undo restores it)."""
+        selection = getattr(self, "_selected_region", None)
+        if selection is None:
+            return
+        kind, region = selection
+        if region not in (self._keeps if kind == "keep" else self._masks):
+            self._select_region(None)
+            return
+        masks = [r for r in self._masks if not (kind == "mask" and r is region)]
+        keeps = [r for r in self._keeps if not (kind == "keep" and r is region)]
+        before = (list(self._masks), set(self._global_masked_freq_indices), list(self._keeps))
+        after = (masks, set(self._global_masked_freq_indices), keeps)
+        self._select_region(None)
+        self._do(("set", (before, after)))
+        self.statusBar().showMessage(
+            f"Removed the {'Keep region' if kind == 'keep' else 'mask'} (Ctrl+Z restores)", 4000
+        )
 
     def _keep_roi_values(self, ixmin, ixmax, iymin, iymax):
         """A region (samples of the data shown) the automatic flags leave alone."""
@@ -5170,6 +5318,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Nothing to undo.", 3000)
             return
         edit = self.undo_stack.pop()
+        self._select_region(None)
         self._apply_edit(edit, undo=True)
         self._update_mask_summary()
         self._autosave_masks()
@@ -5181,6 +5330,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Nothing to redo.", 3000)
             return
         edit = self.redo_stack.pop()
+        self._select_region(None)
         self._apply_edit(edit)
         self._update_mask_summary()
         self._autosave_masks()
@@ -5331,6 +5481,7 @@ class MainWindow(QMainWindow):
 
                 self.logger.info("Enabling ROI selector...")
                 self.canvas.enable_roi_selector(True, self._mask_roi_values)
+                self._show_keep_boxes()
                 self.statusBar().showMessage(
                     "Mask Region ON: Click and drag to select an area to mask."
                 )
@@ -5338,6 +5489,7 @@ class MainWindow(QMainWindow):
             else:
                 self.logger.info("Disabling ROI selector...")
                 self.canvas.enable_roi_selector(False)
+                self._show_keep_boxes()
                 self.statusBar().clearMessage()
                 self.logger.info("ROI selector disabled")
         except Exception as e:
@@ -5507,6 +5659,44 @@ class MainWindow(QMainWindow):
     def _center_on_time(self, target):
         self.canvas.center_on(target)
         self.canvas.mark_time(target)
+
+    def _selected_mask(self):
+        selection = getattr(self, "_selected_region", None)
+        if selection and selection[0] == "mask" and selection[1] in self._masks:
+            return selection[1]
+        return None
+
+    def _update_extend_button(self):
+        """The button's main part: the selected mask, or all masks."""
+        if not hasattr(self, "extendMaskBtn"):
+            return
+        selected = self._selected_mask() is not None
+        self.extendMaskBtn.setText("↔️ Extend selected" if selected else "↔️ Extend all")
+        self.extendSelectedAct.setEnabled(selected)
+        self.extendAllAct.setEnabled(bool(self._masks))
+
+    def onExtendDefault(self):
+        if self._selected_mask() is not None:
+            self.onExtendSelectedMask()
+        else:
+            self.onExtendMask()
+
+    def onExtendSelectedMask(self):
+        """Mask, at all times, the channels of the selected mask."""
+        region = self._selected_mask()
+        if region is None:
+            self.statusBar().showMessage(
+                "Select a mask first (Mask tool: click inside it).", 5000
+            )
+            return
+        added = frozenset(set(range(region[2], region[3])) - self._global_masked_freq_indices)
+        if not added:
+            self.statusBar().showMessage("Those channels are masked at all times already.", 5000)
+            return
+        self._do(("extend", added))
+        self.statusBar().showMessage(
+            f"Extended the selected mask: {len(added)} channels masked at all times.", 5000
+        )
 
     def onExtendMask(self):
         """Mask, across all time, the channels masked on the page shown."""
