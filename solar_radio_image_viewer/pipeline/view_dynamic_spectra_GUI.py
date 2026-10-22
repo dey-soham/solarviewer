@@ -1546,6 +1546,7 @@ class MainWindow(QMainWindow):
         # Masks, for the whole file: [(t0, t1, f0, f1)] ranges of the file's
         # samples and channels (stop excluded), applied to each page shown
         self._masks = []
+        self._mask_version = 0
         self._global_masked_freq_indices = (
             set()
         )  # Set of freq indices to be masked globally (Extend Mask)
@@ -2298,6 +2299,7 @@ class MainWindow(QMainWindow):
         if masks or channels:
             self._masks = masks
             self._global_masked_freq_indices = channels
+            self._mask_version += 1
             self._update_mask_summary()
             self.statusBar().showMessage(
                 f"Restored the masks from last time ({len(masks)} regions, "
@@ -3216,9 +3218,10 @@ class MainWindow(QMainWindow):
             dialog.close()
             dialog.deleteLater()
 
-    def _read_remote_page(self, page_idx, show=True):
-        """Read page ``page_idx`` from the server in the background; shown
-        when read if it is still the current page, else kept for later."""
+    def _read_page(self, page_idx, show=True):
+        """Read page ``page_idx`` (from the file or the server) in the
+        background; shown when read if it is still the current page, else
+        kept for later."""
         if page_idx in self._remote_reads:
             return
         hdul = self.hdul
@@ -3243,16 +3246,17 @@ class MainWindow(QMainWindow):
                 # The pages either side, ready for paging
                 for near in (page_idx + 1, page_idx - 1):
                     if 0 <= near < self._total_pages and near not in self._data_cache:
-                        self._read_remote_page(near)
+                        self._read_page(near)
 
         def failed(message):
             if hdul is self.hdul and page_idx == self._current_page:
-                self.statusBar().showMessage(f"Reading from the server failed: {message}")
+                where = " from the server" if self._remote else ""
+                self.statusBar().showMessage(f"Reading{where} failed: {message}")
 
         def progress(done_bytes, total):
             if hdul is self.hdul and page_idx == self._current_page and total:
                 self.statusBar().showMessage(
-                    f"Reading page {page_idx + 1} from the server... "
+                    f"Reading page {page_idx + 1}{' from the server' if self._remote else ''}... "
                     f"{_size_text(done_bytes)} of {_size_text(total)}"
                 )
 
@@ -3502,20 +3506,29 @@ class MainWindow(QMainWindow):
         ):
             return
 
-        if self._remote:
-            # From the server in the background (the preview shows meanwhile)
-            self._read_remote_page(page_idx)
-            return
+        # In the background (the preview shows meanwhile; the window stays
+        # responsive however slow the disk or the server)
+        self._read_page(page_idx)
 
-        with self.wait_cursor():
-            self.logger.info(f"Performing full-res load for page {page_idx}")
-            data, time_axis, freq_axis = self._get_slice_data(page_idx, downsample=1)
+    def _read_all(self, raw_data, progress, cancelled):
+        """All of a local image as (time, freq) float32, read in blocks (so
+        it reports progress and can stop)."""
+        from ..remote.remote_fits import Cancelled
 
-            if data is not None:
-                self._cache_page(page_idx, data, time_axis, freq_axis)
-
-                # Use shared completion logic (handles page check and _pending_page)
-                self._completeLoad(page_idx, data, time_axis, freq_axis)
+        time_major = raw_data.shape[0] == len(self._full_time_axis)
+        nt = raw_data.shape[0] if time_major else raw_data.shape[1]
+        nf = raw_data.shape[1] if time_major else raw_data.shape[0]
+        data = np.empty((nt, nf), np.float32)
+        rows = max(1, 16_000_000 // nf)
+        for start in range(0, nt, rows):
+            if cancelled():
+                raise Cancelled()
+            stop = min(start + rows, nt)
+            block = raw_data[start:stop, :] if time_major else raw_data[:, start:stop].T
+            data[start:stop] = block
+            progress(stop * nf * 4, nt * nf * 4)
+        data[np.isinf(data)] = np.nan
+        return data
 
     def _cache_page(self, page_idx, data, time_axis, freq_axis):
         self._data_cache[page_idx] = (data, time_axis, freq_axis)
@@ -3536,12 +3549,16 @@ class MainWindow(QMainWindow):
         freq_bin = self._bin[1]
         whole = self._bandpass_scope == "file" and overview is not None
         if whole:
+            key = (freq_bin, self._mask_version)
             cached = self._cached_bandpass_profile
-            if cached is not None and cached[0] == freq_bin:
+            if cached is not None and cached[0] == key:
                 profile = cached[1]
             else:
-                profile = _channel_medians(rebin(overview, freq_bin, axis=1))
-                self._cached_bandpass_profile = (freq_bin, profile)
+                # The overview's samples, masked as the file is
+                times = self._full_time_axis[:: self._lowres_skip][: len(overview)]
+                masked = self._apply_masks(overview, times)
+                profile = _channel_medians(rebin(masked, freq_bin, axis=1))
+                self._cached_bandpass_profile = (key, profile)
             if profile.shape[0] == data.shape[1]:
                 return profile
         return _channel_medians(data)
@@ -3707,6 +3724,21 @@ class MainWindow(QMainWindow):
                 if raw_data.shape[0] != len(self._full_time_axis):
                     data = np.ascontiguousarray(data.T)
                 data[np.isinf(data)] = np.nan
+                self._display_data(data, self._full_time_axis, self._full_freq_axis)
+                return
+            if self._is_large_file:
+                try:
+                    data = self._server_work(
+                        "Reading the whole spectrum...",
+                        lambda progress, cancelled: self._read_all(raw_data, progress, cancelled),
+                        threaded=True,
+                        title="Loading",
+                    )
+                except Exception as e:
+                    if type(e).__name__ != "Cancelled":
+                        QMessageBox.critical(self, "Error", f"Failed to read the spectrum:\n{e}")
+                    self.navModeCombo.setCurrentText("Windowed")
+                    return
                 self._display_data(data, self._full_time_axis, self._full_freq_axis)
                 return
             with self.wait_cursor():
@@ -4233,6 +4265,7 @@ class MainWindow(QMainWindow):
 
 
     def _apply_edit(self, edit, undo=False):
+        self._mask_version += 1  # (the whole-file median is computed again)
         kind, value = edit
         if kind == "set":  # (before, after): each (masks, channels)
             masks, channels = value[0] if undo else value[1]
