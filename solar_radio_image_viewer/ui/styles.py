@@ -613,6 +613,11 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {palette['highlight']};
         color: #ffffff;
     }}
+
+    QMenu::item:disabled {{
+        color: {palette['disabled']};
+        background-color: transparent;
+    }}
     
     QMenu::separator {{
         height: 1px;
