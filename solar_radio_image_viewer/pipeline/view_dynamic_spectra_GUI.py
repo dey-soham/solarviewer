@@ -1258,13 +1258,24 @@ class MinimapCanvas(FigureCanvas):
             # 3. Always use Linear Scale for minimap
             norm = Normalize(vmin=vmin, vmax=vmax)
 
+            # No more columns than the strip has pixels, each the maximum of
+            # those it stands for: drawing drops columns otherwise (and with
+            # them short bursts). Coordinates stay those of the columns.
+            n, nf = data_normed.shape[1], data_normed.shape[0]
+            width = max(1000, self.width())
+            shown = data_normed
+            if n > width:
+                starts = np.arange(0, n, -(-n // width))
+                with np.errstate(invalid="ignore"):
+                    shown = np.fmax.reduceat(data_normed, starts, axis=1)
             self.ax.imshow(
-                data_normed,
+                shown,
                 aspect="auto",
                 cmap="inferno",
                 interpolation="nearest",
                 origin="lower",
                 norm=norm,
+                extent=(-0.5, n - 0.5, -0.5, nf - 0.5),
             )
             self._total_samples = data_downsampled.shape[1]
 
@@ -1454,6 +1465,33 @@ def rebin(data, factor, axis):
     return means.astype(data.dtype if data.dtype.kind == "f" else np.float64)
 
 
+def _local_block_stats(image, time_dim, skip):
+    """(mean, max) of each block of ``skip`` time samples of a local image
+    (every sample read, in blocks; progress and stopping as set by
+    remote_fits.reporting)."""
+    from ..remote.remote_fits import Cancelled, block_stats, current_reporting
+
+    progress, cancelled = current_reporting()
+    nt = image.shape[0] if time_dim == 0 else image.shape[1]
+    nf = image.shape[1] if time_dim == 0 else image.shape[0]
+    nb = -(-nt // skip)
+    mean = np.empty((nb, nf), np.float32)
+    peak = np.empty((nb, nf), np.float32)
+    per = max(1, (16_000_000 // nf) // skip)  # blocks per read
+    for b0 in range(0, nb, per):
+        if cancelled and cancelled():
+            raise Cancelled()
+        b1 = min(b0 + per, nb)
+        s, e = b0 * skip, min(b1 * skip, nt)
+        raw = image[s:e, :] if time_dim == 0 else image[:, s:e].T
+        x = np.array(raw, dtype=np.float32)
+        x[np.isinf(x)] = np.nan
+        mean[b0:b1], peak[b0:b1] = block_stats(x, skip)
+        if progress:
+            progress(e * nf * 4, nt * nf * 4)
+    return mean, peak
+
+
 def _channel_medians(data):
     """Median over time (axis 0) of each channel; NaN for channels without
     values (computed only where there are some: no warnings, which can't be
@@ -1519,6 +1557,7 @@ class MainWindow(QMainWindow):
         self._remote_files = None
         self._remote_reads = {}  # page index -> _RemoteRead
         self._spectrum_index = 0  # HDU of the spectrum (the first 2-D image)
+        self._time_dim = 0  # the image's time axis (numpy order)
         self._image_index = 0  # HDU of the image shown (_image)
         self._goto_time = None  # time to center on once its page is shown
         self._images = []  # [(HDU index, name)] that can be shown
@@ -1541,6 +1580,9 @@ class MainWindow(QMainWindow):
         self._cache_limit = 2  # Reduced from 10 for memory efficiency
         self._pending_page = -1  # Track page undergoing full-res load
         self._full_lowres_data = None  # Downsampled full spectrum in RAM
+        # (every k-th sample at first; then the mean of every block of k,
+        # with its maximum for the overview strip: _start_overview_stats)
+        self._overview_job = None
         self._lowres_skip = 1  # Skip factor for lowres data
 
         # Masks, for the whole file: [(t0, t1, f0, f1)] ranges of the file's
@@ -1680,6 +1722,12 @@ class MainWindow(QMainWindow):
         self.viewMetaAct = QAction("View &Metadata", self)
         self.viewMetaAct.triggered.connect(self.viewMetadata)
 
+        self.swapAct = QAction("S&wap Time and Frequency", self)
+        self.swapAct.setStatusTip(
+            "Take the image's other axis as time (square images whose header doesn't say)"
+        )
+        self.swapAct.triggered.connect(self.swapTimeAndFrequency)
+
         self.smoothAct = QAction("&Average Samples When Zoomed Out", self, checkable=True)
         self.smoothAct.setChecked(True)
         self.smoothAct.setStatusTip(
@@ -1716,6 +1764,7 @@ class MainWindow(QMainWindow):
         viewMenu.addAction(self.gotoAct)
         viewMenu.addAction(self.rangeAct)
         viewMenu.addAction(self.smoothAct)
+        viewMenu.addAction(self.swapAct)
         self.imageMenu = viewMenu.addMenu("&Image")
         self.imageMenu.setEnabled(False)
         # viewMenu.addSeparator()
@@ -2752,14 +2801,14 @@ class MainWindow(QMainWindow):
         self._lowres_skip = max(1, total_samples // 2000)
         if self._remote:
             # Few enough separate reads from the server
-            time_dim = 0 if data_ref.shape[0] == total_samples else 1
+            time_dim = self._time_dim
             self._lowres_skip = max(
                 self._lowres_skip, data_ref.min_step(time_dim)
             )
         skip = self._lowres_skip
 
         # Slicing the memmapped data carefully
-        if data_ref.shape[0] == total_samples:
+        if self._time_dim == 0:
             # (time, freq)
             mini_data = data_ref[::skip, :]
             self._full_lowres_data = np.array(mini_data, dtype=np.float32)
@@ -2775,6 +2824,9 @@ class MainWindow(QMainWindow):
 
         # Minimap makes its own copy internally, so pass view directly
         self.minimap.set_full_data(mini_data_for_display)
+        # Then, in the background, from every sample (a burst shorter than
+        # a block shows in the strip, as its maximum)
+        self._start_overview_stats()
 
         # Initialize Navigation
         if choose_mode:
@@ -2792,7 +2844,7 @@ class MainWindow(QMainWindow):
         else:
             # Load everything (copy to RAM)
             raw_data = self._image()
-            if raw_data.shape[0] == len(self._full_time_axis):
+            if self._time_dim == 0:
                 data = np.array(raw_data[:, :], dtype=np.float32)
             else:
                 data = np.array(raw_data[:, :].T, dtype=np.float32)
@@ -2802,6 +2854,105 @@ class MainWindow(QMainWindow):
 
             # Use centralized display logic to honor persistent toggles (Bandpass, etc.)
             self._display_data(data, self._full_time_axis, self._full_freq_axis)
+
+    def _guess_time_dim(self, data, header):
+        """Which axis of the image (numpy order) is time: the one as long
+        as the time axis; for a square image the header's (CTYPE), else the
+        rows (View > Swap Time and Frequency corrects it)."""
+        nt = len(self._full_time_axis)
+        if data.shape[0] != data.shape[1]:
+            return 0 if data.shape[0] == nt else 1
+        # numpy axis 0 is FITS axis 2, axis 1 is FITS axis 1
+        ctype1 = str(header.get("CTYPE1", "")).upper()
+        ctype2 = str(header.get("CTYPE2", "")).upper()
+        if "TIME" in ctype1 or "FREQ" in ctype2:
+            return 1
+        return 0
+
+    def swapTimeAndFrequency(self):
+        """Take the image's other axis as time (square images the header
+        doesn't describe)."""
+        if not self.hdul:
+            return
+        data = self._image()
+        if data.shape[0] != data.shape[1]:
+            QMessageBox.information(
+                self,
+                "Swap Time and Frequency",
+                "The image's axes have different lengths, so which is time is certain.",
+            )
+            return
+        self._time_dim = 1 - self._time_dim
+        self._stop_remote_reads()
+        self._data_cache.clear()
+        self._cached_bandpass_profile = None
+        with self.wait_cursor():
+            self._show_image()
+        self.statusBar().showMessage(
+            f"Time is now the image's {'rows' if self._time_dim == 0 else 'columns'}.", 5000
+        )
+
+    def _start_overview_stats(self):
+        """Compute the overview from every sample in the background: each
+        block of _lowres_skip time samples gives its mean (for the quick
+        preview and file medians) and maximum (for the overview strip).
+        Local files are read here; files on a server, on the server."""
+        if self._overview_job is not None:
+            self._overview_job.stopped = True
+            self._overview_job = None
+        skip = self._lowres_skip
+        if skip <= 1:
+            return  # the overview has every sample already
+        image, time_dim, remote = self._image(), self._time_dim, self._remote is not None
+
+        def work():
+            if remote:
+                return image.block_stats(time_dim, skip)
+            return _local_block_stats(image, time_dim, skip)
+
+        job = _RemoteRead(work, self)
+        self._overview_job = job
+        hdul, index = self.hdul, self._image_index
+
+        def current():
+            return job is self._overview_job and hdul is self.hdul and index == self._image_index
+
+        def progress(done, total):
+            if current() and total:
+                self.statusBar().showMessage(
+                    f"Building the overview from every sample... {100 * done // total}%"
+                )
+
+        def done(result):
+            if not current():
+                return
+            self._overview_job = None
+            mean, peak = result
+            if mean.shape != self._full_lowres_data.shape:
+                return
+            self._full_lowres_data = np.ascontiguousarray(mean, dtype=np.float32)
+            self._cached_bandpass_profile = None
+            self.minimap.set_full_data(np.ascontiguousarray(peak.T))
+            self._updateNavigationStats()
+            self.statusBar().showMessage(
+                "Overview built from every sample (the strip shows each block's maximum)", 5000
+            )
+            if self._is_bandpass_enabled and self._bandpass_scope == "file":
+                self._redisplay()
+
+        def failed(message):
+            if current():
+                self._overview_job = None
+                self.logger.info(f"Overview from every k-th sample only: {message}")
+                self.statusBar().showMessage(
+                    f"The overview uses every {skip}th sample ({message})", 8000
+                )
+
+        job.progress.connect(progress)
+        job.done.connect(done)
+        job.failed.connect(failed)
+        job.finished.connect(job.deleteLater)
+        job.start()
 
     def _table_time_axis(self, hdu):
         """MJD seconds from a TIME_AXIS table (TIME_MJD, and UTC strings).
@@ -3033,6 +3184,7 @@ class MainWindow(QMainWindow):
 
                 self._full_time_axis = time_axis
                 self._full_freq_axis = freq_axis
+                self._time_dim = self._guess_time_dim(data_ref, header)
 
                 self._find_images()
                 self._restore_masks()
@@ -3267,6 +3419,9 @@ class MainWindow(QMainWindow):
         read.start()
 
     def _stop_remote_reads(self, wait=False):
+        if wait and self._overview_job is not None:
+            self._overview_job.stopped = True
+            self._overview_job.wait(5000)
         for read in list(self._remote_reads.values()):
             read.stopped = True
             if wait:
@@ -3412,7 +3567,7 @@ class MainWindow(QMainWindow):
         step = max(1, downsample)
 
         try:
-            if raw_data.shape[0] == total_samples:
+            if self._time_dim == 0:
                 # (time, freq)
                 data_slice = raw_data[start_idx:end_idx:step, :]
             else:
@@ -3515,7 +3670,7 @@ class MainWindow(QMainWindow):
         it reports progress and can stop)."""
         from ..remote.remote_fits import Cancelled
 
-        time_major = raw_data.shape[0] == len(self._full_time_axis)
+        time_major = self._time_dim == 0
         nt = raw_data.shape[0] if time_major else raw_data.shape[1]
         nf = raw_data.shape[1] if time_major else raw_data.shape[0]
         data = np.empty((nt, nf), np.float32)
@@ -3721,7 +3876,7 @@ class MainWindow(QMainWindow):
                     self.navModeCombo.blockSignals(False)
                     self._nav_mode = "Windowed"
                     return
-                if raw_data.shape[0] != len(self._full_time_axis):
+                if self._time_dim != 0:
                     data = np.ascontiguousarray(data.T)
                 data[np.isinf(data)] = np.nan
                 self._display_data(data, self._full_time_axis, self._full_freq_axis)
@@ -3742,7 +3897,7 @@ class MainWindow(QMainWindow):
                 self._display_data(data, self._full_time_axis, self._full_freq_axis)
                 return
             with self.wait_cursor():
-                if raw_data.shape[0] == len(self._full_time_axis):
+                if self._time_dim == 0:
                     data = np.array(raw_data, dtype=np.float32)
                 else:
                     data = np.array(raw_data.T, dtype=np.float32)
@@ -4146,7 +4301,7 @@ class MainWindow(QMainWindow):
         image = self._image()
         full_time = self._full_time_axis
         total = len(full_time)
-        time_major = image.shape[0] == total
+        time_major = self._time_dim == 0
         chunks = self._cleaning_chunks()
         time_bin, freq_bin = self._bin
         time_out = np.concatenate([rebin(full_time[s:e].astype(np.float64), time_bin, 0) for s, e in chunks])

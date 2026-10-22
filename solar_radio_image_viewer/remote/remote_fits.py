@@ -14,7 +14,10 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import threading
+import time
+import zlib
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import numpy as np
@@ -54,6 +57,66 @@ def reporting(progress=None, cancelled=None):
         yield
     finally:
         _report.state = before
+
+
+def current_reporting():
+    """(progress, cancelled) set by ``reporting`` in this thread, or Nones."""
+    return getattr(_report, "state", None) or (None, None)
+
+
+def block_stats(x, skip):
+    """Mean and maximum (NaN ignored) of each block of ``skip`` rows of ``x``
+    ((time, freq), float32; the last block may be shorter)."""
+    starts = np.arange(0, x.shape[0], skip)
+    finite = np.isfinite(x)
+    sums = np.add.reduceat(np.where(finite, x, 0), starts, axis=0, dtype=np.float64)
+    counts = np.add.reduceat(finite, starts, axis=0, dtype=np.int64)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = (sums / counts).astype(np.float32)
+    peak = np.fmax.reduceat(np.where(finite, x, np.nan), starts, axis=0).astype(np.float32)
+    return mean, peak
+
+
+# Run on the server (python3 and numpy only): the overview's statistics of
+# every sample, read where the file is; only the result crosses the network.
+# (block_stats, written out again: the server has none of this package.)
+_STATS_SCRIPT = r"""
+import sys, warnings, zlib
+import numpy as np
+warnings.simplefilter("ignore")
+path, offset, dtype, n0, n1, time_dim, skip, scale, zero, blank = sys.argv[1:11]
+offset, n0, n1, time_dim, skip = int(offset), int(n0), int(n1), int(time_dim), int(skip)
+scale, zero = float(scale), float(zero)
+blank = None if blank == "none" else int(blank)
+a = np.memmap(path, dtype=np.dtype(dtype), mode="r", offset=offset, shape=(n0, n1))
+nt, nf = (n0, n1) if time_dim == 0 else (n1, n0)
+nb = -(-nt // skip)
+mean = np.empty((nb, nf), np.float32)
+peak = np.empty((nb, nf), np.float32)
+per = max(1, (16000000 // nf) // skip)
+for b0 in range(0, nb, per):
+    b1 = min(b0 + per, nb)
+    s, e = b0 * skip, min(b1 * skip, nt)
+    raw = a[s:e, :] if time_dim == 0 else a[:, s:e].T
+    x = raw.astype(np.float32)
+    if blank is not None:
+        x[raw == blank] = np.nan
+    if scale != 1 or zero != 0:
+        x = x * np.float32(scale) + np.float32(zero)
+    finite = np.isfinite(x)
+    starts = np.arange(0, e - s, skip)
+    sums = np.add.reduceat(np.where(finite, x, 0), starts, axis=0, dtype=np.float64)
+    counts = np.add.reduceat(finite, starts, axis=0, dtype=np.int64)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean[b0:b1] = sums / counts
+    peak[b0:b1] = np.fmax.reduceat(np.where(finite, x, np.nan), starts, axis=0)
+    sys.stderr.write("P %d %d\n" % (e, nt))
+    sys.stderr.flush()
+out = zlib.compress(mean.tobytes() + peak.tobytes(), 1)
+sys.stdout.buffer.write(("%d %d %d\n" % (nb, nf, len(out))).encode())
+sys.stdout.buffer.write(out)
+sys.stdout.buffer.flush()
+"""
 
 
 def _padded(size):
@@ -372,6 +435,70 @@ class RemoteArray:
             return 1
         per_row = max(1, MAX_RANGES // self.shape[0])
         return max(1, -(-self.shape[1] // per_row))
+
+    def block_stats(self, time_dim, skip):
+        """(mean, max) of each block of ``skip`` time samples, every sample
+        counted ((blocks, freq) float32), computed on the server: kept in
+        the cache. Progress and cancelling as set by ``reporting``. Raises
+        NotSliceable when the server can't (no python3 with numpy)."""
+        key = ("overview", self._offset, time_dim, skip)
+        both = self._file.piece(key, lambda: np.stack(self._server_block_stats(time_dim, skip)))
+        return both[0], both[1]
+
+    def _server_block_stats(self, time_dim, skip):
+        progress, cancelled = current_reporting()
+        raw = self._raw.str  # e.g. ">f4"
+        args = [
+            self._file.path, self._offset, raw, self.shape[0], self.shape[1], time_dim, skip,
+            self._scale, self._zero, "none" if self._blank is None else int(self._blank),
+        ]
+        command = "python3 -c " + shlex.quote(_STATS_SCRIPT) + " " + " ".join(
+            shlex.quote(str(a)) for a in args
+        )
+        connection = self._file.files.connection
+        connection.ensure_connected()
+        channel = connection._client.get_transport().open_session()
+        try:
+            channel.exec_command(command)
+            out = bytearray()
+            err = b""
+            messages = []
+            total = self.nbytes
+            while True:
+                if cancelled and cancelled():
+                    raise Cancelled()
+                busy = False
+                while channel.recv_ready():
+                    out += channel.recv(1 << 20)
+                    busy = True
+                while channel.recv_stderr_ready():
+                    err += channel.recv_stderr(65536)
+                    busy = True
+                *lines, err = err.split(b"\n")
+                for line in lines:
+                    parts = line.split()
+                    if len(parts) == 3 and parts[0] == b"P":
+                        if progress:
+                            done, nt = int(parts[1]), int(parts[2])
+                            progress(total * done // max(nt, 1), total)
+                    elif line.strip():
+                        messages.append(line.decode("utf-8", "replace"))
+                if not busy:
+                    if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                        break
+                    time.sleep(0.02)
+            status = channel.recv_exit_status()
+        finally:
+            channel.close()
+        if status != 0:
+            raise NotSliceable(
+                "the server can't compute it: " + (messages[-1] if messages else f"exit {status}")
+            )
+        head, _, body = bytes(out).partition(b"\n")
+        nb, nf, size = (int(v) for v in head.split())
+        values = np.frombuffer(zlib.decompress(body[:size]), np.float32)
+        mean, peak = values[: nb * nf].reshape(nb, nf), values[nb * nf :].reshape(nb, nf)
+        return mean.copy(), peak.copy()
 
     def __array__(self, dtype=None, copy=None):
         data = self[:, :]
