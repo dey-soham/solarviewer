@@ -6,6 +6,7 @@ import time
 
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib import rcParams
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PyQt5.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer
@@ -27,6 +28,11 @@ MIN_VIEW_PIXELS = 5
 MIN_IMAGE_IN_VIEW = 0.2
 # Arrow keys pan by this fraction of the view
 KEY_PAN_FRACTION = 0.1
+# gid of the text that says how to open an image while there is none
+EMPTY_HINT_GID = "empty-hint"
+EMPTY_HINT = "Drop a FITS file or CASA image here\nor open one from the File menu"
+# Cursor Position text while the mouse is off the image
+READOUT_HINT = "Hover over the image"
 # Arrow key -> (x, y) pan steps; Right shows more of the image to the right
 _ARROW_PAN_STEPS = {
     Qt.Key_Left: (-1, 0),
@@ -131,6 +137,13 @@ def _wheel_steps(event):
     return event.step
 
 
+def _format_value(value, unit):
+    """A pixel value for the cursor readout, e.g. ``-30.42 Jy/beam``."""
+    if np.ma.is_masked(value) or not np.isfinite(value):
+        return "no data"
+    return f"{float(value):.4g} {unit}".strip()
+
+
 def _keep_overlap(lim, lo, hi):
     """``lim`` shifted to overlap ``[lo, hi]`` by MIN_IMAGE_IN_VIEW of its width."""
     v0, v1 = lim
@@ -167,14 +180,10 @@ class CanvasMixin:
         # Ensure canvas background matches theme to avoid white gaps when scaling
         self.canvas.setStyleSheet("background-color: transparent;")
 
+        # Matplotlib's toolbar stays hidden: the figure toolbar has the tools,
+        # and this one only keeps the view history for its Back/Forward
         self.nav_toolbar = NavigationToolbar(self.canvas, self)
-        # Make the matplotlib toolbar more compact
-        self.nav_toolbar.setFixedHeight(24)
-        self.nav_toolbar.setStyleSheet("""
-            NavigationToolbar2QT { padding: 0px; margin: 0px; spacing: 1px; background-color: transparent; }
-            QToolButton { padding: 2px; margin: 0px; }
-        """)
-        parent_layout.addWidget(self.nav_toolbar)
+        self.nav_toolbar.hide()
         parent_layout.addWidget(self.canvas, 1)
 
         self.current_image_data = None
@@ -206,6 +215,19 @@ class CanvasMixin:
         self._settle_timer.setInterval(SETTLE_MS)
         self._settle_timer.timeout.connect(self._settle_view)
         self.canvas.mpl_connect("draw_event", self._on_canvas_drawn)
+
+        self.figure.text(
+            0.5,
+            0.5,
+            EMPTY_HINT,
+            ha="center",
+            va="center",
+            fontsize=13,
+            linespacing=1.8,
+            color=rcParams["text.color"],
+            alpha=0.6,
+            gid=EMPTY_HINT_GID,
+        )
 
     def set_region_mode(self, mode_id):
         self.region_mode = mode_id
@@ -605,7 +627,7 @@ class CanvasMixin:
             return
 
         if not event.inaxes:
-            self.coord_label.setText("")
+            self.coord_label.setText(READOUT_HINT)
             self.canvas.setCursor(Qt.ArrowCursor)
             return
 
@@ -631,11 +653,12 @@ class CanvasMixin:
                 re.sub(r"\s*\[.*?\]$", "", world_str).replace("(world)", "").strip()
             )
 
-            # 2. Get exact Value as Matplotlib would show it
+            # 2. The pixel value, with the image's unit
             cursor_data = im.get_cursor_data(event)
             if cursor_data is not None:
-                # Use Matplotlib's own value formatter for perfect parity
-                val_str = im.format_cursor_data(cursor_data).strip("[]").strip()
+                val_str = _format_value(
+                    cursor_data, getattr(self, "_current_bunit", "") or ""
+                )
 
                 pixel_info = f"<b>Pixel:</b> X={x}, Y={y}<br><b>Value:</b> {val_str}"
                 world_info = f"<b>World:</b> {world_str}"

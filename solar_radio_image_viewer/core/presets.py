@@ -393,8 +393,7 @@ class PresetsMixin:
                 f"Warning: {preset.cmap} colormap not available, using {cmap}"
             )
 
-        self.vmin_entry.setText(f"{vmin:.3f}")
-        self.vmax_entry.setText(f"{vmax:.3f}")
+        self.show_range(vmin, vmax)
         # Without signals: their handlers would each redraw the image, only
         # for the plot_image below to draw it again
         self.stretch_combo.blockSignals(True)

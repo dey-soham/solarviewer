@@ -6,10 +6,10 @@ import os
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
-    QFileDialog,
     QLineEdit,
 )
 
+from ..ui.open_image import choose_image
 from ..ui.styles import set_hand_cursor, theme_manager
 
 
@@ -23,7 +23,7 @@ class FileNavigationMixin:
     ``contour_layers``, ``dir_entry``, ``figure``, ``_file_pos_label``,
     ``_first_file_btn``, ``_last_file_btn``, ``_next_file_btn``,
     ``on_visualization_changed``, ``_open_dialogs``, ``_prev_file_btn``,
-    ``_load_target_size``, ``radio_casa_image``, ``_reset_hpc_state``,
+    ``_load_target_size``, ``_reset_hpc_state``,
     ``show_status_message``, ``stokes_combo``, ``threshold_entry``,
     ``update_tab_name_from_path``, ``window``
     """
@@ -58,55 +58,28 @@ class FileNavigationMixin:
                 self._select_remote_file(main_window)
                 return
 
-        if self.radio_casa_image.isChecked():
-            # Select CASA image directory
-            directory = QFileDialog.getExistingDirectory(
-                self,
-                caption="Select an image",
-                options=QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
-            )
-            if directory:
-                start_time = time.time()
-                self._reset_hpc_state()  # Clear HPC state for new image
-                self.imagename = directory
-                self.dir_entry.setText(directory)
-                # Clear contour data so it gets reloaded for new image
-                self.invalidate_contours()
-                # Clear figure to prevent restoring old view limits
-                self.figure.clear()
-                self.on_visualization_changed(dir_load=True)
-                # self.auto_minmax()
-                self.update_tab_name_from_path(directory)  # Update tab name
-                self.show_status_message(
-                    f"Loaded {directory} in {time.time() - start_time:.2f} seconds"
-                )
-                # Scan directory for file navigation
-                self._scan_directory_files()
-        else:
-            # Select FITS file
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select a FITS file",
-                "",
-                "FITS files (*.fits *.fts);; All files (*)",
-            )
-            if file_path:
-                start_time = time.time()
-                self._reset_hpc_state()  # Clear HPC state for new image
-                self.imagename = file_path
-                self.dir_entry.setText(file_path)
-                # Clear contour data so it gets reloaded for new image
-                self.invalidate_contours()
-                # Clear figure to prevent restoring old view limits
-                self.figure.clear()
-                self.on_visualization_changed(dir_load=True)
-                # self.auto_minmax()
-                self.update_tab_name_from_path(file_path)  # Update tab name
-                self.show_status_message(
-                    f"Loaded {file_path} in {time.time() - start_time:.2f} seconds"
-                )
-                # Scan directory for file navigation
-                self._scan_directory_files()
+        start_dir = ""
+        if self.imagename:
+            start_dir = os.path.dirname(self.imagename.rstrip("/"))
+        path = choose_image(self, directory=start_dir)
+        if not path:
+            return
+
+        start_time = time.time()
+        self._reset_hpc_state()  # Clear HPC state for new image
+        self.imagename = path
+        self.dir_entry.setText(path)
+        # Clear contour data so it gets reloaded for new image
+        self.invalidate_contours()
+        # Clear figure to prevent restoring old view limits
+        self.figure.clear()
+        self.on_visualization_changed(dir_load=True)
+        self.update_tab_name_from_path(path)  # Update tab name
+        self.show_status_message(
+            f"Loaded {path} in {time.time() - start_time:.2f} seconds"
+        )
+        # Scan directory for file navigation
+        self._scan_directory_files()
 
     def _select_remote_file(self, main_window):
         """
@@ -118,14 +91,12 @@ class FileNavigationMixin:
         try:
             from ..remote import RemoteFileBrowser
 
-            # Determine if we're in CASA mode (directories) or FITS mode (files)
-            casa_mode = self.radio_casa_image.isChecked()
-
+            # Either kind of image: a FITS file or a CASA image folder
             browser = RemoteFileBrowser(
                 main_window.remote_connection,
                 cache=main_window.remote_cache,
                 parent=self,
-                casa_mode=casa_mode,
+                casa_mode=None,
             )
 
             # Connect to handle the selected file
@@ -146,6 +117,7 @@ class FileNavigationMixin:
                 self._is_remote_mode = is_remote
 
                 if is_remote:
+                    casa_mode = os.path.isdir(local_path)
                     self._remote_base_dir = browser.current_path
                     # Populate remote file list for navigation
                     self._populate_remote_file_list(

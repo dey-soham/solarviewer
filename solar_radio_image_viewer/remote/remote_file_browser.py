@@ -34,6 +34,7 @@ from .file_cache import RemoteFileCache
 
 
 from .download_thread import DownloadThread
+from ..ui.open_image import choose_image
 
 
 class ListDirectoryThread(QThread):
@@ -344,7 +345,7 @@ class RemoteFileBrowser(QDialog):
         connection: SSHConnection,
         cache: Optional[RemoteFileCache] = None,
         parent=None,
-        casa_mode: bool = False,
+        casa_mode: Optional[bool] = False,
         pick: Optional[str] = None,
     ):
         super().__init__(parent)
@@ -353,9 +354,9 @@ class RemoteFileBrowser(QDialog):
         # instead of downloading anything
         self.pick = pick
 
-        # CASA mode selects directories, FITS mode selects files
+        # CASA mode selects directories, FITS mode selects files, None either
         self.casa_mode = casa_mode
-        mode_str = "CASA Images" if casa_mode else "FITS Files"
+        mode_str = {None: "Images", True: "CASA Images"}.get(casa_mode, "FITS Files")
         if pick == "folder":
             mode_str = "Folder"
         elif pick == "file":
@@ -580,7 +581,7 @@ class RemoteFileBrowser(QDialog):
         self.go_into_btn.setEnabled(False)
         self.go_into_btn.setCursor(Qt.PointingHandCursor)
         self.go_into_btn.clicked.connect(self._go_into_selected)
-        if self.casa_mode:
+        if self.casa_mode is not False:
             button_layout.addWidget(self.go_into_btn)
 
         self.cancel_btn = QPushButton("Close")
@@ -1377,10 +1378,13 @@ class RemoteFileBrowser(QDialog):
             entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
             if entry is None:  # Safeguard against missing data
                 self.open_btn.setEnabled(False)
-                if self.casa_mode:
-                    self.go_into_btn.setEnabled(False)
+                self.go_into_btn.setEnabled(False)
                 return
-            if self.casa_mode:
+            if self.casa_mode is None:
+                # A FITS file, or a folder (a CASA image)
+                self.open_btn.setEnabled(entry.is_dir or entry.is_fits)
+                self.go_into_btn.setEnabled(entry.is_dir)
+            elif self.casa_mode:
                 # In CASA mode, enable Select for directories (CASA images are directories)
                 self.open_btn.setEnabled(entry.is_dir)
                 # Enable Go Into for any directory
@@ -1390,8 +1394,7 @@ class RemoteFileBrowser(QDialog):
                 self.open_btn.setEnabled(not entry.is_dir and entry.is_fits)
         else:
             self.open_btn.setEnabled(False)
-            if self.casa_mode:
-                self.go_into_btn.setEnabled(False)
+            self.go_into_btn.setEnabled(False)
 
     def _go_into_selected(self):
         """Navigate into the selected directory (CASA mode)."""
@@ -1426,7 +1429,9 @@ class RemoteFileBrowser(QDialog):
         """Open native file dialog to browse local filesystem."""
         from PyQt5.QtWidgets import QFileDialog
 
-        if self.casa_mode:
+        if self.casa_mode is None:
+            local_path = choose_image(self, directory=os.path.expanduser("~"))
+        elif self.casa_mode:
             # CASA mode: select directory
             local_path = QFileDialog.getExistingDirectory(
                 self,
@@ -1469,7 +1474,10 @@ class RemoteFileBrowser(QDialog):
         entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
         if entry is None:  # Safeguard
             return
-        if self.casa_mode:
+        if self.casa_mode is None:
+            if entry.is_dir or entry.is_fits:
+                self._download_and_open(entry)
+        elif self.casa_mode:
             if entry.is_dir:
                 self._download_and_open(entry)
         else:

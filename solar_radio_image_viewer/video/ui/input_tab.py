@@ -25,6 +25,7 @@ from ..creator import (
     observation_sort_key,
 )
 from ...processing.fits_io import is_casa_image
+from ...ui.open_image import choose_image
 from .helpers import (
     wait_cursor,
     is_image,
@@ -122,12 +123,9 @@ class InputTabMixin:
         self.single_image_edit.setPlaceholderText("FITS or CASA image shown in every frame")
         single_layout.addWidget(self.single_image_edit, 1)
         single_browse = QPushButton("Browse")
+        single_browse.setToolTip("Choose a FITS file or CASA image")
         single_browse.clicked.connect(self._browse_single_image)
         single_layout.addWidget(single_browse)
-        casa_browse = QPushButton("CASA Image…")
-        casa_browse.setToolTip("Choose a CASA image (a folder)")
-        casa_browse.clicked.connect(self._browse_single_casa_image)
-        single_layout.addWidget(casa_browse)
         input_layout.addWidget(self.single_image_group)
 
         def show_image_source(series):
@@ -258,12 +256,7 @@ class InputTabMixin:
         else:
             start_dir = os.path.expanduser("~")
 
-        filepath, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Reference Image",
-            start_dir,
-            "FITS Files (*.fits *.fit);;All Files (*.*)",
-        )
+        filepath = choose_image(self, "Select Reference Image", start_dir)
 
         if filepath:
             self.reference_image = filepath
@@ -336,26 +329,10 @@ class InputTabMixin:
             if path:
                 self.single_image_edit.setText(path)
             return
-        path, _ = QFileDialog.getOpenFileName(
+        path = choose_image(
             self,
             "Select the Image",
             self.get_smart_start_directory(self.single_image_edit.text()),
-            "FITS Files (*.fits *.fts);;All Files (*)",
         )
         if path:
-            self.single_image_edit.setText(path)
-
-    def _browse_single_casa_image(self):
-        if self.remote is not None:
-            self._browse_single_image()  # images and CASA folders alike
-            return
-        path = QFileDialog.getExistingDirectory(
-            self,
-            "Select the CASA Image",
-            self.get_smart_start_directory(self.single_image_edit.text()),
-        )
-        if path:
-            if not is_casa_image(path):
-                QMessageBox.warning(self, "Not a CASA Image", f"{path} is not a CASA image.")
-                return
             self.single_image_edit.setText(path)

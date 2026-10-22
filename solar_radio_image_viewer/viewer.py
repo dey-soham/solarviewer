@@ -8,9 +8,6 @@ import matplotlib
 matplotlib.use("Qt5Agg")
 import matplotlib.pyplot as plt
 import matplotlib.style as mplstyle
-from matplotlib.backends.backend_qt5agg import (
-    NavigationToolbar2QT as NavigationToolbar,
-)
 from matplotlib import rcParams
 
 from PyQt5.QtWidgets import (
@@ -32,8 +29,6 @@ from PyQt5.QtWidgets import (
     # QInputDialog,
     # QMenuBar,
     QMenu,
-    QRadioButton,
-    QButtonGroup,
     QDialog,
     QDialogButtonBox,
     # QPlainTextEdit,
@@ -64,7 +59,6 @@ from .ui.styles import (
 from .dialogs import UpdateDialog
 from .ui.searchable_combobox import ColormapSelector
 from .ui.icons import get_resource_path, themed_icon
-from .ui.segmented_control import SegmentedControl
 from .ui.custom_tabs import CustomTabWidget
 from .ui.item_delegates import DisabledItemDelegate
 from .utils.update_checker import check_for_updates
@@ -96,6 +90,8 @@ from .core import (
     PresetMenuMixin,
     RemoteModeMixin,
 )
+from .core.canvas import EMPTY_HINT_GID
+from .ui.busy import busy
 from .processing.fits_io import readable_image_path
 from .processing.contour_layers import default_contour_options, new_contour_layer
 from .processing.image_meta import casa_info, fits_header
@@ -107,6 +103,16 @@ from .processing.plot_style import (
     DEFAULT_SOLAR_DISK_STYLE,
     default_style,
 )
+
+
+# Compact buttons for actions on the statistics panels
+_SECONDARY_BUTTON_STYLE = """
+    QPushButton {
+        padding: 4px 10px;
+        font-size: 11pt;
+        min-height: 24px;
+    }
+"""
 
 
 def _preload_display_modules():
@@ -332,8 +338,8 @@ class SolarRadioImageTab(
         control_layout.setContentsMargins(0, 0, 10, 0)
         control_layout.setSpacing(15)
         self.create_file_controls(control_layout)
-        control_layout.addStretch()
         self.create_display_controls(control_layout)
+        control_layout.addStretch()
         splitter.addWidget(control_panel)
 
         # Center Figure Panel
@@ -355,7 +361,6 @@ class SolarRadioImageTab(
         stats_layout.setSpacing(15)
         self.create_stats_table(stats_layout)
         self.create_image_stats_table(stats_layout)
-        self.create_noaa_events_button(stats_layout)
         self.create_coord_display(stats_layout)
         splitter.addWidget(stats_panel)
 
@@ -369,43 +374,16 @@ class SolarRadioImageTab(
         layout = QVBoxLayout(group)
         layout.setSpacing(8)
 
-        # Modern segmented control for file type selection
-        toggle_layout = QHBoxLayout()
-        self.file_type_toggle = SegmentedControl(["CASA Image", "FITS File"])
-        toggle_layout.addWidget(self.file_type_toggle)
-        toggle_layout.addStretch()
-        layout.addLayout(toggle_layout)
-
-        # For backward compatibility with radio button checks
-        # Create hidden radio buttons that stay in sync with segmented control
-        self.selection_type_group = QButtonGroup(self)
-        self.radio_casa_image = QRadioButton()
-        self.radio_fits_file = QRadioButton()
-        self.radio_casa_image.setChecked(True)
-        self.radio_casa_image.hide()
-        self.radio_fits_file.hide()
-        self.selection_type_group.addButton(self.radio_casa_image)
-        self.selection_type_group.addButton(self.radio_fits_file)
-
-        # Sync segmented control with hidden radio buttons
-        def sync_selection(index):
-            if index == 0:
-                self.radio_casa_image.setChecked(True)
-            else:
-                self.radio_fits_file.setChecked(True)
-
-        self.file_type_toggle.selectionChanged.connect(sync_selection)
-
         file_layout = QHBoxLayout()
         file_layout.setSpacing(8)
         self.dir_entry = QLineEdit()
-        self.dir_entry.setPlaceholderText("Select image directory or FITS file...")
+        self.dir_entry.setPlaceholderText("FITS file or CASA image")
         self.dir_entry.setReadOnly(True)
         self.browse_btn = QPushButton()
         self.browse_btn.setObjectName("IconOnlyNBGButton")
         self.browse_btn.setIcon(QIcon(get_resource_path("assets/browse.png")))
         self.browse_btn.setIconSize(QSize(32, 32))
-        self.browse_btn.setToolTip("Browse")
+        self.browse_btn.setToolTip("Open a FITS file or CASA image (Ctrl+O)")
         self.browse_btn.setFixedSize(32, 32)
         self.browse_btn.clicked.connect(self.select_file_or_directory)
         self.browse_btn.setStyleSheet(
@@ -461,6 +439,7 @@ class SolarRadioImageTab(
         self.threshold_entry = QLineEdit("10")
         self.threshold_entry.setFixedWidth(50)
         self.threshold_entry.setToolTip("Threshold in units of sigma (RMS)")
+        self.threshold_entry.editingFinished.connect(self._on_threshold_edited)
 
         stokes_thresh_layout.addWidget(stokes_label)
         stokes_thresh_layout.addWidget(self.stokes_combo, 1)
@@ -573,7 +552,7 @@ class SolarRadioImageTab(
 
         self.rms_settings_btn = QPushButton()
         self.rms_settings_btn.setObjectName("IconOnlyNBGButton")
-        self.rms_settings_btn.setIcon(QIcon(get_resource_path("assets/settings.png")))
+        self.rms_settings_btn.setIcon(QIcon(themed_icon("settings.png")))
         self.rms_settings_btn.setIconSize(QSize(20, 20))
         self.rms_settings_btn.setToolTip(
             "RMS Box Settings - Configure noise estimation region"
@@ -905,8 +884,9 @@ class SolarRadioImageTab(
 
         main_layout.addWidget(intensity_group)
 
-        # Update Display button
-        self.plot_button = QPushButton("Update Display")
+        # Display changes apply as they are made; this reads the image again
+        self.plot_button = QPushButton("Reload Image")
+        self.plot_button.setToolTip("Read the image again from disk")
         self.plot_button.setStyleSheet(
             """
             QPushButton {
@@ -935,113 +915,6 @@ class SolarRadioImageTab(
 
         parent_layout.addWidget(group)
 
-    def create_range_controls(self, parent_layout):
-        group = QGroupBox("Intensity Range")
-        layout = QVBoxLayout(group)
-        range_layout = QHBoxLayout()
-        self.vmin_entry = QLineEdit("0.0")
-        self.vmin_entry.editingFinished.connect(self.update_display)
-        self.vmax_entry = QLineEdit("1.0")
-        self.vmax_entry.editingFinished.connect(self.update_display)
-        range_layout.addWidget(QLabel("Min:"))
-        range_layout.addWidget(self.vmin_entry)
-        range_layout.addWidget(QLabel("Max:"))
-        range_layout.addWidget(self.vmax_entry)
-        gamma_layout = QHBoxLayout()
-        self.gamma_slider = QSlider(Qt.Horizontal)
-        self.gamma_slider.setRange(1, 60)
-        self.gamma_slider.setValue(20)
-        self.gamma_slider.valueChanged.connect(self.update_gamma_value)
-        self.gamma_slider.sliderReleased.connect(self._apply_gamma_change)
-        self.gamma_entry = QLineEdit("1.0")
-        self.gamma_entry.setFixedWidth(60)
-        self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
-        gamma_layout.addWidget(QLabel("Gamma:"))
-        gamma_layout.addWidget(self.gamma_slider)
-        gamma_layout.addWidget(self.gamma_entry)
-        preset_layout = QHBoxLayout()
-        self.auto_minmax_button = QPushButton("Auto")
-        self.auto_minmax_button.clicked.connect(
-            lambda: self.apply_auto_range("minmax")
-        )
-        self.auto_percentile_button = QPushButton("1-99%")
-        self.auto_percentile_button.clicked.connect(
-            lambda: self.apply_auto_range("p1_99")
-        )
-        self.auto_median_button = QPushButton("Med±3σ")
-        self.auto_median_button.clicked.connect(
-            lambda: self.apply_auto_range("median_rms")
-        )
-        preset_layout.addWidget(self.auto_minmax_button)
-        preset_layout.addWidget(self.auto_percentile_button)
-        preset_layout.addWidget(self.auto_median_button)
-        layout.addLayout(range_layout)
-        layout.addLayout(gamma_layout)
-        layout.addLayout(preset_layout)
-        parent_layout.addWidget(group)
-
-    def create_nav_controls(self, parent_layout):
-        group = QGroupBox("Navigation")
-        layout = QVBoxLayout(group)
-        zoom_layout = QHBoxLayout()
-        self.zoom_in_button = QPushButton()
-        self.zoom_in_button.setObjectName("IconOnlyButton")
-        self.zoom_in_button.setIcon(QIcon(get_resource_path("assets/zoom_in.png")))
-        self.zoom_in_button.setIconSize(QSize(24, 24))
-        self.zoom_in_button.setToolTip("Zoom In")
-        # self.zoom_in_button.setFixedSize(32, 32)
-        self.zoom_in_button.setFixedHeight(28)
-
-        self.zoom_in_button.clicked.connect(self.zoom_in)
-        self.zoom_out_button = QPushButton()
-        self.zoom_out_button.setObjectName("IconOnlyButton")
-        self.zoom_out_button.setIcon(QIcon(get_resource_path("assets/zoom_out.png")))
-        self.zoom_out_button.setIconSize(QSize(24, 24))
-        self.zoom_out_button.setToolTip("Zoom Out")
-        # self.zoom_out_button.setFixedSize(32, 32)
-        self.zoom_out_button.setFixedHeight(28)
-        self.zoom_out_button.clicked.connect(self.zoom_out)
-        self.reset_view_button = QPushButton()
-        self.reset_view_button.setObjectName("IconOnlyButton")
-        self.reset_view_button.setIcon(QIcon(get_resource_path("assets/reset.png")))
-        self.reset_view_button.setIconSize(QSize(24, 24))
-        self.reset_view_button.setToolTip("Reset View")
-        # self.reset_view_button.setFixedSize(32, 32)
-        self.reset_view_button.setFixedHeight(28)
-        self.reset_view_button.clicked.connect(
-            lambda: self.reset_view(show_status_message=True, animate=True)
-        )
-        self.reset_view_button.setToolTip("Reset View")
-        self.zoom_60arcmin_button = QPushButton("1°×1°")
-        self.zoom_60arcmin_button.clicked.connect(self.zoom_60arcmin)
-        self.zoom_60arcmin_button.setToolTip("1°×1° Zoom")
-        self.zoom_60arcmin_button.setIconSize(QSize(24, 24))
-        self.zoom_60arcmin_button.setFixedHeight(28)
-        zoom_layout.addWidget(self.zoom_in_button)
-        zoom_layout.addWidget(self.zoom_out_button)
-        zoom_layout.addWidget(self.reset_view_button)
-        zoom_layout.addWidget(self.zoom_60arcmin_button)
-        layout.addLayout(zoom_layout)
-        self.plot_button = QPushButton("Update Display")
-        self.plot_button.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #3871DE; 
-                color: white; 
-                padding: 5px; 
-                font-weight: bold;
-                border-radius: 3px;
-                min-height: 25px;
-            }
-            QPushButton:hover {
-                background-color: #4A82EF;
-            }
-            """
-        )
-        self.plot_button.clicked.connect(self.on_visualization_changed)
-        layout.addWidget(self.plot_button)
-        parent_layout.addWidget(group)
-
     def setup_figure_toolbar(self, parent_layout):
         """Set up the figure toolbar with zoom and other controls"""
         toolbar = QToolBar()
@@ -1061,7 +934,9 @@ class SolarRadioImageTab(
             "",
             self,
         )
-        self.pan_action.setToolTip("Pan")
+        self.pan_action.setToolTip(
+            "Pan: drag, or middle-drag in any mode. Scroll to zoom, arrows to move"
+        )
         self.pan_action.setCheckable(True)
         self.pan_action.setChecked(True)
         self.pan_action.triggered.connect(lambda: self.set_region_mode(RegionMode.PAN))
@@ -1101,21 +976,21 @@ class SolarRadioImageTab(
             "",
             self,
         )
-        self.zoom_in_action.setToolTip("Zoom In")
+        self.zoom_in_action.setToolTip("Zoom In (+)")
         self.zoom_in_action.triggered.connect(self.zoom_in)
         self.zoom_out_action = QAction(
             QIcon(get_resource_path("assets/zoom_out.png")),
             "",
             self,
         )
-        self.zoom_out_action.setToolTip("Zoom Out")
+        self.zoom_out_action.setToolTip("Zoom Out (-)")
         self.zoom_out_action.triggered.connect(self.zoom_out)
         self.reset_view_action = QAction(
             QIcon(get_resource_path("assets/reset.png")),
             "",
             self,
         )
-        self.reset_view_action.setToolTip("Reset View")
+        self.reset_view_action.setToolTip("Reset View (R)")
         self.reset_view_action.triggered.connect(
             lambda: self.reset_view(show_status_message=True, animate=True)
         )
@@ -1124,8 +999,18 @@ class SolarRadioImageTab(
             "",
             self,
         )
-        self.zoom_60arcmin_action.setToolTip("1°×1° Zoom")
+        self.zoom_60arcmin_action.setToolTip("1°×1° Zoom (1)")
         self.zoom_60arcmin_action.triggered.connect(self.zoom_60arcmin)
+
+        # Step back and forward through the views zoomed and panned to
+        self.view_back_action = QAction(self.nav_toolbar._icon("back.png"), "", self)
+        self.view_back_action.setToolTip("Previous View")
+        self.view_back_action.triggered.connect(lambda: self.nav_toolbar.back())
+        self.view_forward_action = QAction(
+            self.nav_toolbar._icon("forward.png"), "", self
+        )
+        self.view_forward_action.setToolTip("Next View")
+        self.view_forward_action.triggered.connect(lambda: self.nav_toolbar.forward())
 
         # Add customize plot action
         self.customize_plot_action = QAction(
@@ -1195,6 +1080,8 @@ class SolarRadioImageTab(
                 self.zoom_out_action,
                 self.reset_view_action,
                 self.zoom_60arcmin_action,
+                self.view_back_action,
+                self.view_forward_action,
                 self.customize_plot_action,
             ]
         )
@@ -1228,6 +1115,7 @@ class SolarRadioImageTab(
         # Style will be applied by _update_special_button_styles()
         self.hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
         toolbar.addWidget(self.hpc_btn)
+        self._update_special_button_styles()
 
         # Add theme-aware separator before file navigation buttons
         # self._hpc_nav_separator = QWidget()
@@ -1411,7 +1299,7 @@ class SolarRadioImageTab(
             self._nav_theme_callback_registered = True
 
     def _update_special_button_styles(self):
-        """Update styles for TB, HPC, NOAA, and Helioviewer buttons based on current theme.
+        """Update styles for the TB and HPC buttons based on current theme.
 
         These buttons have gradient backgrounds and need theme-aware disabled states.
         """
@@ -1485,63 +1373,6 @@ class SolarRadioImageTab(
             )
 
         # NOAA Events Button (purple gradient)
-        if hasattr(self, "noaa_events_btn"):
-            self.noaa_events_btn.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                        stop:0 #7c3aed, stop:1 #a78bfa);
-                    color: white;
-                    border: none;
-                    padding: 5px 10px;
-                    border-radius: 6px;
-                    font-weight: 600;
-                    font-size: 11pt;
-                    min-height: 24px;
-                }}
-                QPushButton:hover {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                        stop:0 #a78bfa, stop:1 #c4b5fd);
-                }}
-                QPushButton:pressed {{
-                    background: #5b21b6;
-                }}
-                QPushButton:disabled {{
-                    background: {disabled_bg};
-                    color: {disabled_text};
-                }}
-            """
-            )
-
-        # Helioviewer Button (cyan gradient)
-        if hasattr(self, "helioviewer_btn"):
-            self.helioviewer_btn.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                        stop:0 #0ea5e9, stop:1 #38bdf8);
-                    color: white;
-                    border: none;
-                    padding: 5px 10px;
-                    border-radius: 6px;
-                    font-weight: 600;
-                    font-size: 11pt;
-                    min-height: 24px;
-                }}
-                QPushButton:hover {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                        stop:0 #38bdf8, stop:1 #7dd3fc);
-                }}
-                QPushButton:pressed {{
-                    background: #0369a1;
-                }}
-                QPushButton:disabled {{
-                    background: {disabled_bg};
-                    color: {disabled_text};
-                }}
-            """
-            )
-
         # Register theme callback if not already done
         if not hasattr(self, "_special_btn_theme_callback_registered"):
             theme_manager.register_callback(
@@ -1553,7 +1384,9 @@ class SolarRadioImageTab(
 
         group = QGroupBox("Region Statistics")
         layout = QVBoxLayout(group)
-        self.info_label = QLabel("No selection")
+        self.info_label = QLabel(
+            "No selection. Draw a rectangle or ellipse on the image."
+        )
         self.info_label.setStyleSheet("font-style: italic; font-size: 10.5pt;")
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
@@ -1582,15 +1415,7 @@ class SolarRadioImageTab(
         # Histogram button - compact styling
         self.histogram_btn = QPushButton("📊 Histogram")
         self.histogram_btn.setToolTip("Show pixel value histogram for current ROI")
-        self.histogram_btn.setStyleSheet(
-            """
-            QPushButton {
-                padding: 4px 10px;
-                font-size: 11pt;
-                min-height: 24px;
-            }
-        """
-        )
+        self.histogram_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
         self.histogram_btn.clicked.connect(self._show_roi_histogram)
         layout.addWidget(self.histogram_btn)
 
@@ -1627,10 +1452,11 @@ class SolarRadioImageTab(
             )
 
         layout.addWidget(self.image_stats_table)
+        self.create_noaa_events_button(layout)
         parent_layout.addWidget(group)
 
     def create_noaa_events_button(self, parent_layout):
-        """Create the NOAA Solar Events button in the right panel."""
+        """Solar Activity and Helioviewer buttons for the image's observation time."""
         # Create horizontal layout for both buttons side-by-side
         buttons_layout = QHBoxLayout()
 
@@ -1642,7 +1468,7 @@ class SolarRadioImageTab(
         )
         self.noaa_events_btn.setEnabled(False)  # Disabled by default
         self.noaa_events_btn.setMinimumWidth(80)
-        # Style will be applied by _update_special_button_styles()
+        self.noaa_events_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
         self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
         buttons_layout.addWidget(self.noaa_events_btn)
 
@@ -1653,15 +1479,12 @@ class SolarRadioImageTab(
         )
         self.helioviewer_btn.setEnabled(False)  # Disabled by default
         self.helioviewer_btn.setMinimumWidth(80)
-        # Style will be applied by _update_special_button_styles()
+        self.helioviewer_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
         self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
         buttons_layout.addWidget(self.helioviewer_btn)
 
         # Add horizontal layout to parent
         parent_layout.addLayout(buttons_layout)
-
-        # Apply theme-aware styles to special buttons (calls this after all 4 buttons exist)
-        self._update_special_button_styles()
 
     def create_coord_display(self, parent_layout):
         group = QGroupBox("Cursor Position")
@@ -1690,6 +1513,7 @@ class SolarRadioImageTab(
                 try:
                     index = main_window.tabs.index(self)
                     tab_widget.setTabText(index, basename)
+                    main_window.update_window_title()
                 except ValueError:
                     pass  # Not found in tabs list
 
@@ -1736,11 +1560,14 @@ class SolarRadioImageTab(
             reload_data: If False, skip load_data and just redraw (faster for viz-only changes)
         """
         if not hasattr(self, "imagename") or not self.imagename:
-            QMessageBox.warning(
-                self, "No Image", "Please select a CASA image directory first!"
-            )
+            QMessageBox.warning(self, "No Image", "Please open an image first.")
             return
 
+        with busy():
+            self._update_visualization(colormap_name, dir_load, reload_data)
+
+    def _update_visualization(self, colormap_name, dir_load, reload_data):
+        """on_visualization_changed's work, run with the wait cursor."""
         tight_layout = False
         """if dir_load:
             tight_layout = True
@@ -1751,7 +1578,8 @@ class SolarRadioImageTab(
         # if main_window and hasattr(main_window, "statusBar"):
         if main_window:
             if reload_data:
-                self.show_status_message("Loading ... Please wait")
+                name = os.path.basename(self.imagename.rstrip("/"))
+                self.show_status_message(f"Loading {name}…")
             else:
                 self.show_status_message("Updating display...")
 
@@ -1913,8 +1741,7 @@ class SolarRadioImageTab(
         if not dmax > dmin:
             # Constant or fully masked map: don't keep the previous range
             low, high = display_range(dmin, dmax)
-            self.vmin_entry.setText(f"{low:.3f}")
-            self.vmax_entry.setText(f"{high:.3f}")
+            self.show_range(low, high)
             return
 
         if vmin_val < dmin:
@@ -1924,8 +1751,26 @@ class SolarRadioImageTab(
         if vmax_val <= vmin_val:
             vmax_val = vmin_val + 1e-6
 
-        self.vmin_entry.setText(f"{vmin_val:.3f}")
-        self.vmax_entry.setText(f"{vmax_val:.3f}")
+        self.show_range(vmin_val, vmax_val)
+
+    def show_range(self, vmin_val, vmax_val):
+        """Write the display range into the Min/Max boxes, showing each start."""
+        for entry, value in ((self.vmin_entry, vmin_val), (self.vmax_entry, vmax_val)):
+            entry.setText(f"{value:.6g}")
+            # A long number would otherwise show its end, hiding sign and digits
+            entry.setCursorPosition(0)
+            entry.setToolTip(f"{value:.10g}")
+
+    def _on_threshold_edited(self):
+        """Reload the image if the threshold was changed."""
+        if self.current_image_data is None:
+            return
+        try:
+            threshold = float(self.threshold_entry.text())
+        except ValueError:
+            return
+        if threshold != getattr(self, "_loaded_threshold", None):
+            self.on_visualization_changed()
 
     def update_gamma_value(self):
         """Update gamma from slider - debounced for responsiveness."""
@@ -2267,6 +2112,7 @@ class SolarRadioImageTab(
         return 0
 
     def load_data(self, imagename, stokes, threshold, auto_adjust_rms=False):
+        self._loaded_threshold = threshold
         # Clear WCS cache so new images don't accidentally reuse old WCS objects
         # if the new dictionary falls on the same memory address (id)
         # self._cached_wcs_obj = None
@@ -2566,7 +2412,8 @@ class SolarRadioImageTab(
                 self.threshold_entry.setText("10.0")
 
         try:
-            self.load_data(self.imagename, stokes, threshold)
+            with busy():
+                self.load_data(self.imagename, stokes, threshold)
             self._range_stokes = stokes
         except RuntimeError as e:
             # Show warning dialog for missing Stokes data
@@ -3113,6 +2960,8 @@ class SolarRadioImageTab(
             self.browse_btn.setIcon(QIcon(themed_icon("browse.png")))
         if hasattr(self, "solar_disk_center_button"):
             self.solar_disk_center_button.setIcon(QIcon(themed_icon("settings.png")))
+        if hasattr(self, "rms_settings_btn"):
+            self.rms_settings_btn.setIcon(QIcon(themed_icon("settings.png")))
         if hasattr(self, "contour_settings_button"):
             self.contour_settings_button.setIcon(QIcon(themed_icon("settings.png")))
         if hasattr(self, "beam_settings_button"):
@@ -3160,44 +3009,10 @@ class SolarRadioImageTab(
                 QIcon(themed_icon("search.png"))
             )
 
-        # Recreate matplotlib NavigationToolbar to pick up new theme colors
-        if hasattr(self, "nav_toolbar") and self.nav_toolbar:
-            self._recreate_nav_toolbar()
-
-    def _recreate_nav_toolbar(self):
-        """Recreate the matplotlib NavigationToolbar to update icon colors for theme."""
-        if not hasattr(self, "nav_toolbar") or not self.nav_toolbar:
-            return
-
-        # Get the parent layout
-        parent = self.nav_toolbar.parent()
-        layout = parent.layout() if parent else None
-
-        if not layout:
-            return
-
-        # Find the toolbar's position in the layout
-        toolbar_index = layout.indexOf(self.nav_toolbar)
-        if toolbar_index < 0:
-            return
-
-        # Store reference and remove from layout
-        old_toolbar = self.nav_toolbar
-        layout.removeWidget(old_toolbar)
-
-        # Disconnect from canvas events and destroy properly
-        old_toolbar.setParent(None)
-        old_toolbar.destroy()
-
-        # Create new toolbar (will pick up current theme colors)
-        self.nav_toolbar = NavigationToolbar(self.canvas, self)
-
-        # Insert at same position
-        layout.insertWidget(toolbar_index, self.nav_toolbar)
-
-        # Ensure hand cursor is applied to the new toolbar buttons
-        self._set_button_cursors()
-
+        # Back/Forward use Matplotlib's icons, coloured for the palette
+        if hasattr(self, "view_back_action"):
+            self.view_back_action.setIcon(self.nav_toolbar._icon("back.png"))
+            self.view_forward_action.setIcon(self.nav_toolbar._icon("forward.png"))
 
 
 class SolarRadioImageViewerApp(
@@ -3229,6 +3044,7 @@ class SolarRadioImageViewerApp(
         self.tab_widget = CustomTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.tab_widget.currentChanged.connect(self.update_window_title)
         self.tab_widget.add_tab_button.clicked.connect(self.handle_add_tab)
 
         self.setCentralWidget(self.tab_widget)
@@ -3288,12 +3104,6 @@ class SolarRadioImageViewerApp(
         if imagename and os.path.exists(imagename):
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
-
-            # Sync CASA/FITS toggle with the loaded file type
-            if os.path.isdir(imagename):
-                first_tab.file_type_toggle.setSelectedIndex(0)  # CASA
-            else:
-                first_tab.file_type_toggle.setSelectedIndex(1)  # FITS
 
             # Delay to setup the tab before calling on_visualization_changed
             QTimer.singleShot(
@@ -3355,15 +3165,6 @@ class SolarRadioImageViewerApp(
                 target_tab = self.add_new_tab(basename)
 
             # Now load the image into the tab
-            if os.path.isdir(file_path):
-                target_tab.file_type_toggle.setSelectedIndex(
-                    0
-                )  # CASA (auto-syncs radio_casa_image)
-            else:
-                target_tab.file_type_toggle.setSelectedIndex(
-                    1
-                )  # FITS (auto-syncs radio_fits_file)
-
             # Reset remote mode for target tab when receiving local dropped file
             target_tab._is_remote_mode = False
             target_tab._remote_file_list = []
@@ -3521,17 +3322,12 @@ class SolarRadioImageViewerApp(
         """File menu: open, remote, export, quit."""
         file_menu = menubar.addMenu("&File")
 
-        open_act = QAction("Open Solar Radio Image...", self)
-        open_act.setShortcut("Ctrl+O")
-        open_act.setStatusTip("Open a Solar Radio Image directory")
-        open_act.triggered.connect(self.select_directory)
+        open_act = QAction("Open Image...", self)
+        # Ctrl+Shift+O opened FITS files when they had their own item
+        open_act.setShortcuts(["Ctrl+O", "Ctrl+Shift+O"])
+        open_act.setStatusTip("Open a FITS file or CASA image")
+        open_act.triggered.connect(self.open_image)
         file_menu.addAction(open_act)
-
-        open_fits_act = QAction("Open FITS File...", self)
-        open_fits_act.setShortcut("Ctrl+Shift+O")
-        open_fits_act.setStatusTip("Open a FITS file")
-        open_fits_act.triggered.connect(self.select_fits_file)
-        file_menu.addAction(open_fits_act)
 
         file_menu.addSeparator()
 
@@ -3948,6 +3744,15 @@ class SolarRadioImageViewerApp(
 
         return new_tab
 
+    def update_window_title(self, *args):
+        """Window title: the current tab's image, then the app name."""
+        tab = self.tab_widget.currentWidget()
+        if tab is not None and getattr(tab, "imagename", None):
+            name = self.tab_widget.tabText(self.tab_widget.currentIndex())
+            self.setWindowTitle(f"{name} — SolarViewer")
+        else:
+            self.setWindowTitle("SolarViewer")
+
     def toggle_theme(self):
         """Toggle between dark and light themes."""
         new_theme = theme_manager.toggle_theme()
@@ -4082,6 +3887,9 @@ class SolarRadioImageViewerApp(
             if hasattr(tab, "figure") and tab.figure:
                 # Update figure background
                 tab.figure.set_facecolor(fig_bg)
+                for text in tab.figure.texts:
+                    if text.get_gid() == EMPTY_HINT_GID:
+                        text.set_color(text_color)
 
                 # Update axes if present
                 for ax in tab.figure.get_axes():
@@ -4119,22 +3927,10 @@ class SolarRadioImageViewerApp(
                 if hasattr(tab, "canvas") and tab.canvas:
                     tab.canvas.draw_idle()
 
-    def select_directory(self):
-        """Select a CASA image directory from the menu"""
+    def open_image(self):
+        """Open a FITS file or CASA image in the current tab (File menu)."""
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
-            # Set the radio button to CASA image
-            current_tab.radio_casa_image.setChecked(True)
-            # Call the select_file_or_directory method
-            current_tab.select_file_or_directory()
-
-    def select_fits_file(self):
-        """Select a FITS file from the menu"""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab:
-            # Set the radio button to FITS file
-            current_tab.radio_fits_file.setChecked(True)
-            # Call the select_file_or_directory method
             current_tab.select_file_or_directory()
 
     def show_batch_dialog(self):
@@ -4482,8 +4278,7 @@ class SolarRadioImageViewerApp(
                 "📁",
                 "File Operations",
                 [
-                    ("Ctrl+O", "Open CASA Image"),
-                    ("Ctrl+Shift+O", "Open FITS File"),
+                    ("Ctrl+O", "Open Image (FITS file or CASA image)"),
                     ("Ctrl+Shift+R", "Connect to Remote Server"),
                     ("Ctrl+E", "Export Figure"),
                     ("Ctrl+F", "Export as FITS"),
@@ -4499,7 +4294,7 @@ class SolarRadioImageViewerApp(
                     ("1", "1°×1° Zoom"),
                     ("+  or  =", "Zoom In"),
                     ("-", "Zoom Out"),
-                    ("Space  or  Enter", "Update Display"),
+                    ("Space  or  Enter", "Redraw Display"),
                     ("Ctrl+D", "Toggle Dark/Light Theme"),
                     ("Ctrl+L", "Log Console"),
                     ("F11", "Toggle Fullscreen"),

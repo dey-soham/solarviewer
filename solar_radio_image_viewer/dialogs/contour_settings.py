@@ -13,7 +13,6 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QCheckBox,
     QFileDialog,
-    QButtonGroup,
     QWidget,
     QFrame,
     QTabWidget,
@@ -35,6 +34,7 @@ from ..processing.contour_layers import (
     new_contour_layer,
 )
 from ..ui.icons import get_resource_path
+from ..ui.open_image import choose_image
 from ..ui.styles import set_hand_cursor
 
 # Offered after the default palette; not all of these suit colour-blind viewers
@@ -358,22 +358,6 @@ class ContourSettingsDialog(QDialog):
         sep_line.setFixedHeight(1)
         external_layout.addWidget(sep_line)
 
-        # File type
-        file_type_row = QHBoxLayout()
-        file_type_row.setSpacing(20)
-
-        file_type_label = QLabel("File Type:")
-        file_type_label.setStyleSheet("font-weight: 600;")
-        file_type_row.addWidget(file_type_label)
-
-        self.radio_casa_image = QRadioButton("CASA Image")
-        self.radio_fits_file = QRadioButton("FITS File")
-        self.radio_casa_image.setChecked(True)
-        file_type_row.addWidget(self.radio_casa_image)
-        file_type_row.addWidget(self.radio_fits_file)
-        file_type_row.addStretch()
-        external_layout.addLayout(file_type_row)
-
         # File path
         path_row = QHBoxLayout()
         path_row.setSpacing(12)
@@ -383,7 +367,7 @@ class ContourSettingsDialog(QDialog):
         path_row.addWidget(path_label)
 
         self.file_path_edit = QLineEdit(self.settings.get("external_image", ""))
-        self.file_path_edit.setPlaceholderText("Select file or directory...")
+        self.file_path_edit.setPlaceholderText("FITS file or CASA image")
         self.file_path_edit.setReadOnly(True)
         path_row.addWidget(self.file_path_edit, 1)
 
@@ -423,20 +407,13 @@ class ContourSettingsDialog(QDialog):
         source_layout.addStretch()
 
         # Connections
-        self.file_type_button_group = QButtonGroup()
-        self.file_type_button_group.addButton(self.radio_casa_image)
-        self.file_type_button_group.addButton(self.radio_fits_file)
-
         self.external_image_radio.toggled.connect(self.update_external_options)
-        self.radio_casa_image.toggled.connect(self.update_placeholder_text)
-        self.radio_fits_file.toggled.connect(self.update_placeholder_text)
         self.same_image_radio.toggled.connect(self._update_stokes_for_current_source)
         self.external_image_radio.toggled.connect(
             self._update_stokes_for_current_source
         )
 
         self.update_external_options(self.external_image_radio.isChecked())
-        self.update_placeholder_text()
         self._update_stokes_for_current_source()
         self._update_threshold_visibility()
 
@@ -879,16 +856,11 @@ class ContourSettingsDialog(QDialog):
         # print(f"update_external_options called with enabled={enabled}")
 
         # Explicitly disable/enable each widget
-        self.radio_casa_image.setEnabled(enabled)
-        self.radio_fits_file.setEnabled(enabled)
         self.file_path_edit.setEnabled(enabled)
         self.browse_button.setEnabled(enabled)
 
         # Also set the parent group
         self.external_group.setEnabled(enabled)
-
-        # print(f"  radio_casa_image.isEnabled() = {self.radio_casa_image.isEnabled()}")
-        # print(f"  radio_fits_file.isEnabled() = {self.radio_fits_file.isEnabled()}")
 
     def _update_browse_icon(self):
         """Update browse button icon based on current palette (light/dark mode)."""
@@ -978,7 +950,6 @@ class ContourSettingsDialog(QDialog):
         # Source
         self.same_image_radio.setChecked(True)
         self.file_path_edit.clear()
-        self.radio_casa_image.setChecked(True)
 
         # Stokes
         self.stokes_combo.setCurrentText("I")
@@ -1000,13 +971,6 @@ class ContourSettingsDialog(QDialog):
 
         # RMS
         self.use_default_rms_box.setChecked(True)
-
-    def update_placeholder_text(self):
-
-        if self.radio_casa_image.isChecked():
-            self.file_path_edit.setPlaceholderText("Select CASA image directory...")
-        else:
-            self.file_path_edit.setPlaceholderText("Select FITS file...")
 
     def browse_file(self):
         # Check if remote mode is active
@@ -1031,14 +995,14 @@ class ContourSettingsDialog(QDialog):
             from ..remote.remote_file_browser import RemoteFileBrowser
             from ..remote.file_cache import RemoteFileCache
 
-            casa_mode = self.radio_casa_image.isChecked()
             cache = getattr(main_window, "remote_cache", None) or RemoteFileCache()
 
+            # Either kind of image: a FITS file or a CASA image folder
             browser = RemoteFileBrowser(
                 main_window.remote_connection,
                 cache=cache,
                 parent=self,
-                casa_mode=casa_mode,
+                casa_mode=None,
             )
 
             def on_file_selected(path):
@@ -1049,24 +1013,16 @@ class ContourSettingsDialog(QDialog):
             browser.exec_()
         else:
             # Use local file dialog
-            if self.radio_casa_image.isChecked():
-                # Select CASA image directory
-                directory = QFileDialog.getExistingDirectory(
-                    self, "Select a CASA Image Directory"
-                )
-                if directory:
-                    self.file_path_edit.setText(directory)
-                    # Update stokes combo based on external image
-                    self._update_stokes_combo_for_external(directory)
-            else:
-                # Select FITS file
-                file_path, _ = QFileDialog.getOpenFileName(
-                    self, "Select a FITS file", "", "FITS files (*.fits);;All files (*)"
-                )
-                if file_path:
-                    self.file_path_edit.setText(file_path)
-                    # Update stokes combo based on external image
-                    self._update_stokes_combo_for_external(file_path)
+            current = self.file_path_edit.text()
+            path = choose_image(
+                self,
+                "Select the Contour Image",
+                os.path.dirname(current.rstrip("/")) if current else "",
+            )
+            if path:
+                self.file_path_edit.setText(path)
+                # Update stokes combo based on external image
+                self._update_stokes_combo_for_external(path)
 
     def _update_stokes_combo_state(self, available_stokes):
         """
@@ -1414,13 +1370,7 @@ class ContourSettingsDialog(QDialog):
                 self.same_image_radio.setChecked(True)
             self.series_dir_edit.setText(layer.get("series_dir", ""))
             self.series_pattern_edit.setText(layer.get("series_pattern", "*.fits"))
-            path = layer.get("external_image", "")
-            if path:
-                if os.path.isdir(path):
-                    self.radio_casa_image.setChecked(True)
-                else:
-                    self.radio_fits_file.setChecked(True)
-            self.file_path_edit.setText(path)
+            self.file_path_edit.setText(layer.get("external_image", ""))
             self._update_stokes_for_current_source()
             self.stokes_combo.setCurrentText(layer.get("stokes", "I"))
             self.threshold_spin.setValue(layer.get("threshold", 5.0))

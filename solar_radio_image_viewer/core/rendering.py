@@ -10,16 +10,16 @@ from astropy.time import Time
 from matplotlib.axes import Axes
 from matplotlib.colors import LogNorm, Normalize
 from matplotlib.patches import Ellipse
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication
 
 from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
 from ..processing.image_meta import casa_info, fits_header
 from ..processing.colormaps import ensure_solar_colormaps
 from ..processing.contour_layers import contour_layer_settings
+from .canvas import READOUT_HINT
 from .display_resolution import draw_at_screen_resolution
 from .presets import display_range
 from ..processing.fits_io import readable_image_path
+from ..ui.busy import busy
 
 
 class RenderingMixin:
@@ -79,7 +79,12 @@ class RenderingMixin:
 
         return state
 
-    def plot_image(
+    def plot_image(self, *args, **kwargs):
+        """Draw the image (see _plot_image), with the wait cursor until it is on screen."""
+        with busy():
+            self._plot_image(*args, **kwargs)
+
+    def _plot_image(
         self,
         vmin_val=None,
         vmax_val=None,
@@ -90,9 +95,6 @@ class RenderingMixin:
         tight_layout=False,
         preserve_view=True,
     ):
-        # Show wait cursor during plotting
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-
         if isinstance(cmap, str) and cmap not in matplotlib.colormaps:
             ensure_solar_colormaps()
 
@@ -112,7 +114,6 @@ class RenderingMixin:
             csys_record = {}
 
         if self.current_image_data is None:
-            QApplication.restoreOverrideCursor()
             return
 
         data = self.current_image_data
@@ -202,16 +203,16 @@ class RenderingMixin:
 
         self._apply_layout_settings(tight_layout)
 
-        # Instead of immediate draw, use draw_idle to coalesce multiple calls
-        self.canvas.draw_idle()
+        # Draw now rather than when idle, so it happens under the wait cursor
+        self.canvas.draw()
+
+        if self.coord_label.text() == "No image loaded":
+            self.coord_label.setText(READOUT_HINT)
 
         # Save state for next update
         self._last_rendered_state = self._get_render_state(tight_layout=tight_layout)
 
         self._last_norm_params = (vmin_val, vmax_val, stretch, gamma)
-
-        # Restore normal cursor
-        QApplication.restoreOverrideCursor()
 
     @staticmethod
     def _make_norm(stretch, vmin, vmax, gamma):
@@ -332,7 +333,6 @@ class RenderingMixin:
                     self._last_norm_params = norm_params
 
                     self.canvas.draw()
-                    QApplication.restoreOverrideCursor()
                     return True
                 except Exception as e:
                     print(f"Fast Path Update Failed: {e}")

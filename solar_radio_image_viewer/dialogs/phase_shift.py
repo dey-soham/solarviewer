@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 import os
 
 from ..processing.workers import process_pool
+from ..ui.open_image import choose_image
 from ..ui.styles import set_hand_cursor
 
 import multiprocessing
@@ -488,24 +489,7 @@ class PhaseShiftDialog(QDialog):
 
     def browse_image(self):
         """Browse for input image file (FITS or CASA image directory)"""
-        # Ask user which type of image to select
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Select Image Type")
-        msg_box.setText("What type of image do you want to select?")
-        fits_btn = msg_box.addButton("FITS", QMessageBox.ActionRole)
-        casa_btn = msg_box.addButton("CASA Image", QMessageBox.ActionRole)
-        msg_box.addButton(QMessageBox.Cancel)
-        msg_box.exec_()
-
-        file_path = None
-        if msg_box.clickedButton() == fits_btn:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self, "Select FITS File", "", "FITS Files (*.fits *.fts);;All Files (*)"
-            )
-        elif msg_box.clickedButton() == casa_btn:
-            file_path = QFileDialog.getExistingDirectory(
-                self, "Select CASA Image Directory"
-            )
+        file_path = choose_image(self, "Select Input Image")
 
         if file_path:
             self.image_path_edit.setText(file_path)
@@ -589,27 +573,7 @@ class PhaseShiftDialog(QDialog):
 
     def browse_reference_image(self):
         """Browse for reference image file for batch processing"""
-        # Ask user which type of image to select
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Select Reference Image Type")
-        msg_box.setText("What type of image do you want to select as reference?")
-        fits_btn = msg_box.addButton("FITS", QMessageBox.ActionRole)
-        casa_btn = msg_box.addButton("CASA Image", QMessageBox.ActionRole)
-        msg_box.addButton(QMessageBox.Cancel)
-        msg_box.exec_()
-
-        file_path = None
-        if msg_box.clickedButton() == fits_btn:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select FITS Reference",
-                "",
-                "FITS Files (*.fits *.fts);;All Files (*)",
-            )
-        elif msg_box.clickedButton() == casa_btn:
-            file_path = QFileDialog.getExistingDirectory(
-                self, "Select CASA Reference Directory"
-            )
+        file_path = choose_image(self, "Select Reference Image")
 
         if file_path:
             self.reference_image_edit.setText(file_path)
@@ -617,10 +581,10 @@ class PhaseShiftDialog(QDialog):
             # Set default input pattern in the same directory
             if not self.input_pattern_edit.text():
                 file_dir = os.path.dirname(file_path)
-                if msg_box.clickedButton() == fits_btn:
-                    self.input_pattern_edit.setText(os.path.join(file_dir, "*.fits"))
-                elif msg_box.clickedButton() == casa_btn:
+                if os.path.isdir(file_path):  # a CASA image
                     self.input_pattern_edit.setText(os.path.join(file_dir, "*.image"))
+                else:
+                    self.input_pattern_edit.setText(os.path.join(file_dir, "*.fits"))
 
             # Update default output pattern if needed
             if not self.output_pattern_edit.text():
