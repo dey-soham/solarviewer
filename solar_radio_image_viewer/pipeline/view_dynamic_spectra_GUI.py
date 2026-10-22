@@ -1838,8 +1838,14 @@ class MainWindow(QMainWindow):
             "convrfi": True, "edges": True, "sumthreshold": False, "noise": True,
             "fill_gaps": 0.2, "channel_limit": 0.5, "time_limit": 1.0,
             "tint": False, "share": False,
+            # Flagged pixels: "blank", or filled from the good pixels around
+            # them ("median" of them, or a "gaussian"-weighted mean), within
+            # reach pixels (farther ones stay blank)
+            "fill": "blank", "reach": 4,
         }
         self._rfi_page_flags = None  # the shown page's flags (after Keep regions)
+        self._fill_cache = None  # (key, the page as read, it with its flags filled)
+        self._fill_job = None
         self._keeps = []  # regions the automatic flags leave alone (as masks)
         self._rfi_cache = {}  # (id of a page as read, factors) -> (page, flags)
         self._rfi_job = None
@@ -3702,6 +3708,11 @@ class MainWindow(QMainWindow):
         read.start()
 
     def _stop_remote_reads(self, wait=False):
+        if self._fill_job is not None:
+            self._fill_job.stopped = True
+            if wait:
+                self._fill_job.wait(5000)
+            self._fill_job = None
         if self._rfi_job is not None:
             self._rfi_job.stopped = True
             if wait:
@@ -4033,8 +4044,10 @@ class MainWindow(QMainWindow):
         """Show ``data`` (a page as read, (time, freq)): with the masks,
         averaged, and normalised as set. Copies only when it must."""
         self._shown_raw = (data, time_axis, freq_axis, fast)
+        raw = data
         data = self._apply_rfi_flags(data, time_axis, fast)
         data = self._apply_masks(data, time_axis)
+        data = self._fill_flags(raw, data, time_axis)
         time_axis, freq_axis = self._binned_axes(time_axis, freq_axis)
         data = self._binned(data)
         if self._is_bandpass_enabled:
@@ -4159,6 +4172,54 @@ class MainWindow(QMainWindow):
         data[flags] = np.nan
         return data
 
+    def _masked(self, shape, time_axis):
+        """Where the masks are on a page of ``shape`` at times ``time_axis``."""
+        return np.isnan(self._apply_masks(np.zeros(shape, np.float32), time_axis))
+
+    def _fill_flags(self, raw, data, time_axis):
+        """``data`` (flags blanked, masks applied) with the automatic flags
+        filled from the good pixels around them, when chosen (not with the
+        tint: it shows the data as is). Computed in the background (blank meanwhile), kept until the
+        page, the flags or the masks change."""
+        o = self._rfi_options
+        flags = self._rfi_page_flags
+        if flags is None or o["tint"] or o["fill"] == "blank" or not flags.any():
+            return data
+        key = (id(raw), self._rfi_settings(), o["fill"], o["reach"], self._mask_version)
+        if self._fill_cache is not None and self._fill_cache[0] == key and self._fill_cache[1] is raw:
+            return self._fill_cache[2]
+        if self._fill_job is not None and self._fill_job.key == key:
+            return data  # being filled
+        if self._fill_job is not None:
+            self._fill_job.stopped = True
+        from .rfi_flagging import fill_flagged
+
+        fill = flags & ~self._masked(data.shape, time_axis)
+        method, reach = o["fill"], o["reach"]
+        job = _RemoteRead(lambda: fill_flagged(data, fill, method, reach), self)
+        job.key = key
+        self._fill_job = job
+        self.statusBar().showMessage("Filling the flagged pixels...")
+
+        def done(filled):
+            if self._fill_job is job:
+                self._fill_job = None
+            self._fill_cache = (key, raw, filled)
+            if self._shown_raw is not None and self._shown_raw[0] is raw:
+                self._redisplay()
+                self.statusBar().showMessage("Flagged pixels filled", 4000)
+
+        def failed(message):
+            if self._fill_job is job:
+                self._fill_job = None
+            self.statusBar().showMessage(f"Filling failed: {message}", 8000)
+
+        job.done.connect(done)
+        job.failed.connect(failed)
+        job.finished.connect(job.deleteLater)
+        job.start()
+        return data
+
     def _show_rfi_extras(self, time_axis, freq_axis):
         """With automatic flags: their tint (if chosen), each channel's
         flagged share beside the spectrum, and the Keep regions' outlines."""
@@ -4237,6 +4298,31 @@ class MainWindow(QMainWindow):
         al.addRow("Whole times above:", times)
         layout.addWidget(after)
 
+        pixels = QGroupBox("Flagged pixels")
+        pl = QFormLayout(pixels)
+        fillCombo = QComboBox()
+        for text, value in (
+            ("Blank", "blank"),
+            ("Median of good neighbours", "median"),
+            ("Gaussian-weighted mean", "gaussian"),
+        ):
+            fillCombo.addItem(text, value)
+        fillCombo.setCurrentIndex(max(0, fillCombo.findData(o["fill"])))
+        fillCombo.setToolTip("Fill from good pixels around, in time and frequency")
+        pl.addRow("Fill:", fillCombo)
+        maxGap = QSpinBox()
+        maxGap.setRange(1, 50)
+        maxGap.setValue(int(o["reach"]))
+        maxGap.setSuffix(" pixels")
+        maxGap.setToolTip("Farther from any good pixel: left blank")
+        maxGap.setEnabled(o["fill"] != "blank")
+        fillCombo.currentIndexChanged.connect(lambda _: maxGap.setEnabled(fillCombo.currentData() != "blank"))
+        pl.addRow("Reach:", maxGap)
+        mask_note = QLabel("Masks you draw always stay blank.")
+        mask_note.setStyleSheet("color: #a0a0b0; font-size: 9pt;")
+        pl.addRow(mask_note)
+        layout.addWidget(pixels)
+
         show = QGroupBox("Show")
         sl = QVBoxLayout(show)
         tint = QCheckBox("Flags as a tint over the data (else blanked)")
@@ -4245,7 +4331,7 @@ class MainWindow(QMainWindow):
         share.setChecked(o["share"])
         sl.addWidget(tint)
         sl.addWidget(share)
-        note = QLabel("Saved files always have the flags blanked.")
+        note = QLabel("Saved files have no tint: flags blank or filled.")
         note.setStyleSheet("color: #a0a0b0; font-size: 9pt;")
         sl.addWidget(note)
         layout.addWidget(show)
@@ -4262,6 +4348,7 @@ class MainWindow(QMainWindow):
             fill_gaps=float(gaps.value()),
             channel_limit=channels.value() / 100.0, time_limit=times.value() / 100.0,
             tint=tint.isChecked(), share=share.isChecked(),
+            fill=fillCombo.currentData(), reach=maxGap.value(),
         )
         if self._rfi_enabled:
             self._redisplay()
@@ -4819,6 +4906,12 @@ class MainWindow(QMainWindow):
                 return f"> {share:.0%}" if share < 1 else "off"
 
             header.add_history(f"  sensitivity {st.sensitivity:.2f}, fill gaps {st.fill_gaps or 'off'}")
+            if self._rfi_options["fill"] != "blank":
+                how = {"median": "median of good neighbours", "gaussian": "Gaussian-weighted mean"}
+                header.add_history(
+                    f"  flagged pixels filled: {how[self._rfi_options['fill']]}, "
+                    f"reach {self._rfi_options['reach']} px"
+                )
             header.add_history(
                 f"  whole channels {limit(st.channel_limit)}, whole times {limit(st.time_limit)}"
                 + (f", {len(self._keeps)} kept regions" if self._keeps else "")
@@ -4921,6 +5014,7 @@ class MainWindow(QMainWindow):
         full_time = self._full_time_axis
         settings = self._rfi_settings() if self._rfi_enabled else None
         noise = self._noise_image() if settings is not None and settings.noise else None
+        fill_mode = self._rfi_options["fill"]
         done = 0
         for s, e in chunks:
             if cancelled():
@@ -4931,6 +5025,7 @@ class MainWindow(QMainWindow):
                 raw = image.read(key, cache=False) if hasattr(image, "read") else image[key]
             data = np.array(raw if time_major else raw.T, dtype=np.float32)
             data[np.isinf(data)] = np.nan
+            flags = None
             if settings is not None:
                 from .rfi_flagging import flag_page
 
@@ -4940,7 +5035,13 @@ class MainWindow(QMainWindow):
                         stddev = self._noise_rows(noise, s, e, cache=False) if noise is not None else None
                     flags = self._apply_keeps(flag_page(data, settings, stddev), full_time[s:e])
                     data[flags] = np.nan
-            data = self._binned(self._apply_masks(data, full_time[s:e]))
+            data = self._apply_masks(data, full_time[s:e])
+            if settings is not None and fill_mode != "blank" and flags is not None and flags.any():
+                from .rfi_flagging import fill_flagged
+
+                fill = flags & ~self._masked(data.shape, full_time[s:e])
+                data = fill_flagged(data, fill, fill_mode, self._rfi_options["reach"])
+            data = self._binned(data)
             if self._is_bandpass_enabled:
                 data = self._apply_bandpass_to_data(data)
             stream.write(np.ascontiguousarray(data, dtype=">f4"))

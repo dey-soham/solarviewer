@@ -283,3 +283,69 @@ def flag_page(data, settings=RfiSettings(), stddev=None):
         flags |= noise_flags(data, stddev, s)
     flags = fill_gaps(flags, settings.fill_gaps)
     return flag_whole(flags, settings.channel_limit, settings.time_limit)
+
+
+# ---------------------------------------------------------------------------
+# Filling flagged pixels (from good pixels around them, in time and frequency)
+# ---------------------------------------------------------------------------
+
+FILL_METHODS = ("median", "gaussian")
+
+
+def fill_flagged(data, fill, method="median", reach=4, min_good=3, batch=250_000):
+    """``data`` ((time, freq); NaN where flagged or masked) with the pixels
+    ``fill`` replaced from the good (finite) pixels around them in both
+    time and frequency:
+
+    "median": the median of the good pixels in a (2r+1) x (2r+1) window,
+    r growing from 1 until it holds at least ``min_good`` of them (robust:
+    leftover RFI next to a flag doesn't pull it);
+    "gaussian": a Gaussian-weighted mean of the good pixels (sigma reach/2),
+    normalised by the weight present (normalised convolution, as AOFlagger
+    interpolates).
+
+    Pixels farther than ``reach`` from any good pixel stay NaN (a wide
+    flagged band isn't invented), as does NaN not in ``fill`` (masks): it is
+    never a source either; filled pixels aren't sources."""
+    from scipy.ndimage import distance_transform_edt, gaussian_filter
+
+    out = np.array(data, dtype=np.float32, copy=True)
+    good = np.isfinite(out)
+    fill = np.asarray(fill, bool) & ~good
+    if not fill.any() or not good.any():
+        return out
+    near = distance_transform_edt(~good) <= reach
+    targets = fill & near
+    if method == "gaussian":
+        sigma = max(1.0, reach / 2.0)
+        weight = gaussian_filter(good.astype(np.float32), sigma, mode="constant")
+        total = gaussian_filter(np.where(good, out, 0.0).astype(np.float32), sigma, mode="constant")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean = total / weight
+        ok = targets & (weight > 1e-4)
+        out[ok] = mean[ok]
+        return out
+
+    # Median of the good pixels in a growing window
+    ti, fi = np.nonzero(targets)
+    padded = np.pad(np.where(good, out, np.nan), reach, mode="constant", constant_values=np.nan)
+    for r in range(1, int(reach) + 1):
+        if not ti.size:
+            break
+        dy, dx = np.mgrid[-r : r + 1, -r : r + 1]
+        keep = (dy != 0) | (dx != 0)
+        dy, dx = dy[keep], dx[keep]
+        left = np.zeros(ti.size, bool)
+        for b0 in range(0, ti.size, batch):
+            t = ti[b0 : b0 + batch, None] + reach + dy
+            f = fi[b0 : b0 + batch, None] + reach + dx
+            values = padded[t, f]
+            enough = np.isfinite(values).sum(axis=1) >= min_good
+            if enough.any():
+                with np.errstate(all="ignore"):
+                    out[ti[b0 : b0 + batch][enough], fi[b0 : b0 + batch][enough]] = np.nanmedian(
+                        values[enough], axis=1
+                    )
+            left[b0 : b0 + batch] = ~enough
+        ti, fi = ti[left], fi[left]
+    return out
