@@ -22,8 +22,9 @@ from ..ui.styles import set_hand_cursor
 class PlotCustomizationDialog(QDialog):
     """Dialog for customizing plot appearance (labels, fonts, colors)."""
 
-    def __init__(self, parent=None, settings=None):
+    def __init__(self, parent=None, settings=None, tight_layout_default=False):
         super().__init__(parent)
+        self._tight_layout_default = tight_layout_default  # (for Reset)
         self.setWindowTitle("Plot Customization")
         self.setMinimumWidth(660)
         self.setMaximumHeight(1280)
@@ -570,7 +571,7 @@ class PlotCustomizationDialog(QDialog):
         self.pad_bottom.setValue(0.05)
         self.pad_wspace.setValue(0.2)
         self.pad_hspace.setValue(0.2)
-        self.use_tight_layout.setChecked(False)
+        self.use_tight_layout.setChecked(self._tight_layout_default)
 
     def get_settings(self):
         """Return the current settings as a dictionary."""

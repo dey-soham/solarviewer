@@ -647,6 +647,8 @@ def process_image(
         plot_settings = options.get("plot_settings")
         if plot_settings:
             _apply_frame_plot_settings(fig, ax, cbar, header, plot_settings, report)
+        else:
+            _tight_layout(fig)  # (the video's own look)
 
         # The line plot under the image
         light_curves = options.get("light_curves")
@@ -768,6 +770,17 @@ def _frame_geometry(fig, ax, header, image_shape, region_origin, shift):
     }
 
 
+def _tight_layout(fig):
+    """Margins just wide enough for the labels (quietly left as they are if
+    matplotlib can't fit them)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            fig.tight_layout()
+        except Exception:
+            pass
+
+
 def _keep_labels_in_frame(fig, ax):
     """Widen the left / bottom margin if the axis and tick labels of ``ax``
     stick out of the frame (long tick labels, e.g. of a large field in
@@ -860,7 +873,7 @@ def _apply_frame_plot_settings(fig, ax, cbar, header, plot_settings, report):
         on_error=report,
     )
     if settings.get("use_tight_layout"):
-        fig.tight_layout()
+        _tight_layout(fig)
     else:
         # The main window's padding leaves the right edge to its colorbar;
         # without one, keep a margin there like the left one, or the plot

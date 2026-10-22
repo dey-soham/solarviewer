@@ -408,7 +408,9 @@ class OverlaysTabMixin:
         from ...dialogs.plot_customization import PlotCustomizationDialog
 
         dialog = PlotCustomizationDialog(
-            self, self.plot_settings or default_style(DEFAULT_PLOT_SETTINGS)
+            self,
+            self.plot_settings or dict(default_style(DEFAULT_PLOT_SETTINGS), use_tight_layout=True),
+            tight_layout_default=True,
         )
         if dialog.exec_() == QDialog.Accepted:
             self._set_plot_settings(dialog.get_settings(), "customized")
@@ -443,7 +445,10 @@ class OverlaysTabMixin:
         self.show_grid_check.setChecked(
             tab.show_grid_checkbox.isChecked() and self.wcs_coords_check.isChecked()
         )
-        self._set_plot_settings(dict(tab.plot_settings), "from the main window")
+        # (with a tight layout, as videos start; Customize turns it off)
+        self._set_plot_settings(
+            dict(tab.plot_settings, use_tight_layout=True), "from the main window"
+        )
         from ..annotations import annotations_from_viewer
 
         self._set_annotations(annotations_from_viewer(tab))
