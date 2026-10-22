@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from PyQt5.QtCore import QEvent, QEventLoop, QObject, Qt
 from PyQt5.QtWidgets import QApplication, QDialog
 
+from .qt_exit import before_qt_exit
+
 _depth = 0
 
 
@@ -83,6 +85,11 @@ def reset():
         QApplication.instance().removeEventFilter(_dialog_cursor)
         _dialog_cursor = None
     _depth = 0
+
+
+# A begin_busy() left open at exit leaves its event filter on the
+# application, which destroying the windows must not run (see qt_exit)
+before_qt_exit(reset)
 
 
 @contextmanager

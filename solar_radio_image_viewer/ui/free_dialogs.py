@@ -12,6 +12,8 @@ prompts) and file pickers stay attached, as is usual for them.
 from PyQt5.QtCore import QEvent, QObject
 from PyQt5.QtWidgets import QApplication, QDialog, QFileDialog, QInputDialog, QMessageBox
 
+from .qt_exit import before_qt_exit
+
 _ROOT = "freesModalDialogs"  # (property of the windows registered)
 _ATTACHED = (QMessageBox, QInputDialog, QFileDialog)
 
@@ -52,3 +54,11 @@ def free_modal_dialogs(window):
     if _releaser is None and app is not None:
         _releaser = _Releaser(app)
         app.installEventFilter(_releaser)
+        # Destroying windows at exit must not run this filter (see qt_exit)
+        before_qt_exit(_stop_releasing)
+
+
+def _stop_releasing():
+    app = QApplication.instance()
+    if _releaser is not None and app is not None:
+        app.removeEventFilter(_releaser)

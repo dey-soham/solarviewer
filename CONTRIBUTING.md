@@ -71,6 +71,11 @@ and what to try in the message, the exception and traceback as details.
 When a fallback changes a result (a guessed position, a skipped step), say
 so in the status bar instead of failing silently.
 
+**Exit.** At exit PyQt destroys the windows Python still owns, and Python
+code that runs during that teardown can crash it (`ui/qt_exit.py` says why).
+An event filter installed on the whole application must come off first:
+pass its removal to `ui/qt_exit.before_qt_exit()`.
+
 **Settings and files.** Recently opened images live in `QSettings`
 (`ui/recent_files.py`); temporary files go in the system temporary folder
 and are removed when their tab closes (`SolarRadioImageTab.cleanup`).
