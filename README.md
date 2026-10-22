@@ -300,8 +300,9 @@ solarviewer/
 ├── solar_radio_image_viewer/
 │   ├── main.py                 # Entry point
 │   ├── viewer.py               # Main window + image tab (combines the mixins below)
-│   ├── core/                   # Viewer building blocks: rendering, canvas (zoom/pan),
-│   │                           #   contours, file navigation, presets, exports, remote mode
+│   ├── core/                   # Viewer building blocks: panels, figure toolbar, loading,
+│   │                           #   rendering, canvas (zoom/pan), contours, file navigation,
+│   │                           #   presets, exports, menus, help, tool windows, remote mode
 │   ├── tools/                  # Interactive tools: ROI stats, ruler, profiles, fitting,
 │   │                           #   annotations, TB mode, HPC view, solar disk, solar events
 │   ├── dialogs/                # One module per dialog
