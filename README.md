@@ -317,7 +317,9 @@ solarviewer/
 │   ├── radio_data_downloader/  # Radio data archives
 │   ├── solar_context/          # Real-time solar data
 │   ├── remote/                 # Remote file access (SSH/SFTP)
-│   ├── pipeline/               # LOFAR/SIMPL pipeline tools (caltables, dynamic spectra, logs)
+│   ├── pipeline/               # LOFAR/SIMPL pipeline tools (caltables, dynamic spectra, logs);
+│   │                           #   the spectrum viewer is split into canvas, files, masks,
+│   │                           #   navigation and saving modules
 │   ├── utils/                  # Networking helpers (rate limiter, sessions, update checker)
 │   ├── helioviewer_browser.py  # Helioviewer API browser (window, playback)
 │   ├── helioviewer_data.py     #   instruments, cadences, image downloads
