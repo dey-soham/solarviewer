@@ -85,6 +85,9 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QDoubleSpinBox,
     QSpinBox,
+    QCheckBox,
+    QDialogButtonBox,
+    QToolButton,
     QInputDialog,
     QGroupBox,
     QDialog,
@@ -305,6 +308,10 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._time_marker = None
         self._extent = None
         self._layouts = None  # (_AxisLayout time, _AxisLayout freq) of the data
+        self._overlay = None  # flagged share of each sample (0..1), tinted
+        self._overlay_items = []
+        self._share = None  # (flagged share per channel, frequencies), beside
+        self._boxes = []  # outlines (Keep regions)
         self._extra_items = []  # images of further stretches (uneven axes)
         self._auto_downsample = True  # data extent the view was last fitted to
         self.hover_info_enabled = False
@@ -376,6 +383,22 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self.colorbar_axis = pg.AxisItem("right")
         self.graphics_widget.addItem(self.colorbar_axis, row=0, col=2)
         self.colorbar_axis.linkToView(self.colorbar_vb)
+
+        # The flagged share of each channel (automatic RFI flags), when on
+        self.flag_plot = self.graphics_widget.addPlot(row=0, col=3)
+        self.flag_plot.setYLink(self.plot_item)
+        self.flag_plot.hideAxis("left")
+        self.flag_plot.setLabel("bottom", "flagged %")
+        self.flag_plot.setXRange(0, 100, padding=0)
+        # (90 px wide: only the ends labelled)
+        self.flag_plot.getAxis("bottom").setTicks([[(0, "0"), (100, "100")], []])
+        self.flag_plot.getAxis("bottom").setStyle(hideOverlappingLabels=False)
+        # (room for "100" at the right edge)
+        left, top, right, bottom = self.graphics_widget.ci.layout.getContentsMargins()
+        self.graphics_widget.ci.layout.setContentsMargins(left, top, max(right, 16), bottom)
+        self.flag_plot.setMouseEnabled(x=False, y=False)
+        self.flag_plot.setMaximumWidth(0)
+        self.flag_plot.hide()
 
         # ROI for masking
         self.roi_rect = None
@@ -551,6 +574,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
             item.setLookupTable(self._transparent_lut)
             item.setLevels([0, 255])
             item.setRect(pg.QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
+        self._draw_overlay(blocks)
 
         (x_low, x_high), (y_low, y_high) = time_layout.extent(), freq_layout.extent()
         width, height = x_high - x_low, y_high - y_low
@@ -588,6 +612,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         )
         self.plot_item.setTitle(title)
         self._apply_canvas_theme_colors()
+        self._align_share_plot()
 
     # Values sampled for the percentile limits (enough for stable limits)
     LIMIT_SAMPLES = 1_000_000
@@ -651,6 +676,81 @@ class PyQtGraphSpectrumCanvas(QWidget):
             else:
                 out[:, empty] = 0
         return out
+
+    def set_overlay(self, overlay):
+        """A tint over the samples: each one's flagged share (0..1, the
+        data's shape), or None."""
+        self._overlay = overlay
+
+    def _draw_overlay(self, blocks):
+        for item in self._overlay_items:
+            self.plot_item.removeItem(item)
+        self._overlay_items = []
+        overlay = self._overlay
+        if overlay is None or self._data is None or overlay.shape != self._data.shape:
+            return
+        # 0: clear .. 255: fully flagged (a cyan tint, more opaque the more flagged)
+        lut = np.zeros((256, 4), np.ubyte)
+        lut[:, :3] = (0, 229, 255)
+        lut[:, 3] = (np.arange(256) * 0.65).astype(np.ubyte)
+        values = np.clip(np.nan_to_num(overlay) * 255, 0, 255).astype(np.uint8)
+        for (tsel, x0, x1, tflip), (fsel, y0, y1, fflip) in blocks:
+            block = self._take(self._take(values, tsel, 0), fsel, 1)
+            if tflip:
+                block = block[::-1, :]
+            if fflip:
+                block = block[:, ::-1]
+            item = pg.ImageItem(block, autoLevels=False)
+            item.setLookupTable(lut)
+            item.setLevels([0, 255])
+            item.setAutoDownsample(self._auto_downsample)
+            item.setRect(pg.QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
+            item.setZValue(5)
+            self.plot_item.addItem(item)
+            self._overlay_items.append(item)
+
+    def set_channel_share(self, share, freqs):
+        """The flagged share of each channel (beside the spectrum, sharing
+        its frequency axis), or None to hide it."""
+        self._share = None if share is None else (np.asarray(share), np.asarray(freqs))
+        plot = self.flag_plot
+        plot.clear()
+        if self._share is None or freqs is None:
+            plot.hide()
+            plot.setMaximumWidth(0)
+            return
+        order = np.argsort(self._share[1])
+        plot.plot(
+            self._share[0][order] * 100, self._share[1][order],
+            pen=pg.mkPen(get_palette(getattr(self.main_window, "current_theme", "dark"))["highlight"], width=1.5),
+        )
+        plot.setMaximumWidth(90)
+        plot.show()
+        self._align_share_plot()
+
+    def _align_share_plot(self):
+        """The strip's plot area level with the spectrum's: an (empty) title
+        and a bottom axis of the same heights, so a frequency is at the same
+        height in both."""
+        plot = self.flag_plot
+        if not plot.isVisible():
+            return
+        plot.setTitle(" ")
+        plot.titleLabel.setMaximumHeight(self.plot_item.titleLabel.height())
+        plot.titleLabel.setMinimumHeight(self.plot_item.titleLabel.height())
+        plot.getAxis("bottom").setHeight(self.plot_item.getAxis("bottom").height())
+
+    def set_boxes(self, boxes):
+        """Dashed outlines of view rectangles (x0, x1, y0, y1)."""
+        for item in self._boxes:
+            self.plot_item.vb.removeItem(item)
+        self._boxes = []
+        for x0, x1, y0, y1 in boxes:
+            item = QtWidgets.QGraphicsRectItem(x0, y0, x1 - x0, y1 - y0)
+            item.setPen(pg.mkPen("#3ddc84", width=1.5, style=Qt.DashLine))
+            item.setZValue(6)
+            self.plot_item.vb.addItem(item)
+            self._boxes.append(item)
 
     def _image_items(self, count):
         """``count`` image items: the main one and further ones (removed
@@ -1483,6 +1583,59 @@ class MinimapCanvas(FigureCanvas):
             self.fig.canvas.blit(self.ax.bbox)
 
 
+class _Section(QFrame):
+    """A titled section of the side panel: click its title to fold it (the
+    state is remembered)."""
+
+    def __init__(self, title, key, palette, parent=None):
+        super().__init__(parent)
+        from PyQt5.QtCore import QSettings
+
+        self._settings = QSettings("SolarViewer", "DynamicSpectrumViewer")
+        self._key = f"panel/{key}"
+        self._title = title
+        self.setObjectName("Section")
+        border = palette.get("border", "#3a3a5a")
+        self.setStyleSheet(f"""
+            QFrame#Section {{
+                background-color: {palette["surface"]};
+                border: 1px solid {border};
+                border-radius: 10px;
+            }}
+            QToolButton#SectionTitle {{
+                border: none;
+                background: transparent;
+                color: {palette["highlight"]};
+                font-weight: 600;
+                padding: 0px;
+                text-align: left;
+            }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 14)
+        layout.setSpacing(12)
+        self.title = QToolButton()
+        self.title.setObjectName("SectionTitle")
+        self.title.setCursor(Qt.PointingHandCursor)
+        self.title.setCheckable(True)
+        self.title.setToolTip("Click to fold or unfold")
+        layout.addWidget(self.title)
+        self.body = QWidget()
+        layout.addWidget(self.body)
+        self.title.toggled.connect(self._fold)
+        opened = self._settings.value(self._key, True, type=bool)
+        self.title.setChecked(opened)
+        self._fold(opened)
+
+    def _fold(self, opened):
+        self.title.setText(("▾  " if opened else "▸  ") + self._title)
+        self.body.setVisible(opened)
+        self._settings.setValue(self._key, opened)
+
+    def unfold(self):
+        self.title.setChecked(True)
+
+
 class _RemoteRead(QThread):
     """Reads ``work()`` from the server in the background."""
 
@@ -1602,7 +1755,13 @@ class MainWindow(QMainWindow):
     def __init__(self, theme="dark"):
         super(MainWindow, self).__init__()
         self.setWindowTitle("Dynamic Spectra Viewer")
-        self.resize(1500, 850)
+        # Tall enough for the side panel unfolded, as the screen allows
+        screen = QApplication.primaryScreen()
+        free = screen.availableGeometry() if screen is not None else None
+        self.resize(
+            min(1500, free.width() - 40) if free else 1500,
+            min(1000, free.height() - 40) if free else 850,
+        )
 
         # Store theme from parameter (allows external theme override)
         self._external_theme = theme
@@ -1672,6 +1831,18 @@ class MainWindow(QMainWindow):
         self._cached_bandpass_profile = None  # Cached median for bandpass normalization
         self._bandpass_scope = "page"  # median over "page" or the whole "file"
         self._bandpass_method = "divide"  # by the median, or "subtract" it
+        self._rfi_enabled = False  # automatic RFI flags applied
+        # What it does besides the sensitivity (the ⚙ dialog): rfi_flagging.RfiSettings
+        # fields, and how flags show ("tint": over the data, else blanked)
+        self._rfi_options = {
+            "convrfi": True, "edges": True, "sumthreshold": False, "noise": True,
+            "fill_gaps": 0.2, "channel_limit": 0.5, "time_limit": 1.0,
+            "tint": False, "share": False,
+        }
+        self._rfi_page_flags = None  # the shown page's flags (after Keep regions)
+        self._keeps = []  # regions the automatic flags leave alone (as masks)
+        self._rfi_cache = {}  # (id of a page as read, factors) -> (page, flags)
+        self._rfi_job = None
         self._bin = (1, 1)  # samples averaged (time, frequency) for display
         self._shown_raw = None  # (data, time axis, freq axis) before averaging
 
@@ -1725,7 +1896,7 @@ class MainWindow(QMainWindow):
         self.openRemoteAct = QAction("Open from Se&rver...", self)
         self.openRemoteAct.setShortcut("Ctrl+Shift+O")
         self.openRemoteAct.setStatusTip(
-            "Open a FITS file on an SSH server, reading only the parts shown"
+            "Open a FITS file on an SSH server (read in pieces)"
         )
         self.openRemoteAct.triggered.connect(self.openRemote)
 
@@ -1782,14 +1953,15 @@ class MainWindow(QMainWindow):
 
         self.swapAct = QAction("S&wap Time and Frequency", self)
         self.swapAct.setStatusTip(
-            "Take the image's other axis as time (square images whose header doesn't say)"
+            "Use the image's other axis as time (square images)"
         )
         self.swapAct.triggered.connect(self.swapTimeAndFrequency)
+        self.swapAct.setEnabled(False)
 
         self.smoothAct = QAction("&Average Samples When Zoomed Out", self, checkable=True)
         self.smoothAct.setChecked(True)
         self.smoothAct.setStatusTip(
-            "Average the samples under each screen pixel (off: show a subset of them)"
+            "Average the samples under each screen pixel"
         )
         self.smoothAct.toggled.connect(self.canvas_auto_downsample)
 
@@ -1823,8 +1995,12 @@ class MainWindow(QMainWindow):
         viewMenu.addAction(self.rangeAct)
         viewMenu.addAction(self.smoothAct)
         viewMenu.addAction(self.swapAct)
-        self.imageMenu = viewMenu.addMenu("&Image")
-        self.imageMenu.setEnabled(False)
+        # The file's other images of the spectrum's shape (e.g. LOFAR's noise)
+        self.imageMenu = viewMenu.addMenu("&Data Shown")
+        self.imageMenu.menuAction().setStatusTip(
+            "Show another image in the file (e.g. its noise, STDDEV)"
+        )
+        self.imageMenu.menuAction().setEnabled(False)
         # viewMenu.addSeparator()
         # viewMenu.addAction(self.toggleThemeAct)
 
@@ -1882,8 +2058,8 @@ class MainWindow(QMainWindow):
 
         controlPanel = QWidget()
         rightLayout = QVBoxLayout(controlPanel)
-        rightLayout.setContentsMargins(10, 0, 5, 0)
-        rightLayout.setSpacing(8)
+        rightLayout.setContentsMargins(10, 2, 8, 8)
+        rightLayout.setSpacing(12)
 
         palette = get_palette(self.current_theme)
         self._palette = palette
@@ -1893,8 +2069,9 @@ class MainWindow(QMainWindow):
         # changes that are saved (Clean). Controls show only when they apply.
 
         # ---------------- 1. Navigate ----------------
-        self.navGroup = QGroupBox("Navigate")
-        navLayout = QVBoxLayout(self.navGroup)
+        self.navGroup = _Section("Navigate", "navigate", palette)
+        navLayout = QVBoxLayout(self.navGroup.body)
+        navLayout.setContentsMargins(0, 0, 0, 0)
         navLayout.setSpacing(10)
 
         # The mode as a switch; navModeCombo (hidden) holds it for the code
@@ -1905,7 +2082,7 @@ class MainWindow(QMainWindow):
         modeSwitch, self._modeButtons = self._segmented(
             [
                 ("All", "Full Spectrum", "The whole file at once"),
-                ("Pages", "Windowed", "The file a page at a time (large files)"),
+                ("Pages", "Windowed", "A page at a time (large files)"),
                 ("Range", "Time Range", "The data between two times (Ctrl+T)"),
             ],
             self.navModeCombo.setCurrentText,
@@ -1916,55 +2093,57 @@ class MainWindow(QMainWindow):
         self.pagesWidget = QWidget()
         pagesLayout = QVBoxLayout(self.pagesWidget)
         pagesLayout.setContentsMargins(0, 0, 0, 0)
-        pagesLayout.setSpacing(8)
+        pagesLayout.setSpacing(10)
         self.navDurationSpin = QDoubleSpinBox()
         self.navDurationSpin.setRange(1.0, 1440.0)
         self.navDurationSpin.setValue(15.0)
         self.navDurationSpin.setSuffix(" min")
         self.navDurationSpin.setToolTip("How much time a page holds")
         self.navDurationSpin.valueChanged.connect(self.onNavDurationChanged)
-        self.navDurationLabel = QLabel("Page length:")
-        durationForm = QFormLayout()
-        durationForm.setContentsMargins(0, 0, 0, 0)
-        durationForm.addRow(self.navDurationLabel, self.navDurationSpin)
-        pagesLayout.addLayout(durationForm)
+        self.navDurationLabel = QLabel("Page length")
+        durationRow = QHBoxLayout()
+        durationRow.setSpacing(10)
+        durationRow.addWidget(self.navDurationLabel)
+        durationRow.addWidget(self.navDurationSpin, 1)
+        pagesLayout.addLayout(durationRow)
         pagesLayout.addLayout(self._pager(palette))
         navLayout.addWidget(self.pagesWidget)
 
         # Range: the data between two times
         self.rangeWidget = QWidget()
-        rangeLayout = QFormLayout(self.rangeWidget)
+        rangeLayout = QGridLayout(self.rangeWidget)
         rangeLayout.setContentsMargins(0, 0, 0, 0)
+        rangeLayout.setHorizontalSpacing(10)
+        rangeLayout.setVerticalSpacing(8)
         self.rangeFromEdit = QLineEdit()
         self.rangeToEdit = QLineEdit()
         for edit in (self.rangeFromEdit, self.rangeToEdit):
             edit.setPlaceholderText("HH:MM:SS")
-            edit.setToolTip("UTC: HH:MM[:SS] on the observation's date, or YYYY-MM-DD HH:MM:SS")
+            edit.setToolTip("UTC, e.g. 07:45:30 or 2024-02-28 07:45:30")
             edit.returnPressed.connect(self.onShowRange)
-        rangeLayout.addRow("From:", self.rangeFromEdit)
-        rangeLayout.addRow("To:", self.rangeToEdit)
+        rangeLayout.addWidget(QLabel("From"), 0, 0)
+        rangeLayout.addWidget(self.rangeFromEdit, 0, 1)
+        rangeLayout.addWidget(QLabel("To"), 1, 0)
+        rangeLayout.addWidget(self.rangeToEdit, 1, 1)
         self.rangeShowBtn = QPushButton("Show Range")
-        self.rangeShowBtn.setToolTip(
-            "Show the data between these times (clicking the overview moves the range)"
-        )
+        self.rangeShowBtn.setToolTip("Show the data between these times")
         self.rangeShowBtn.clicked.connect(self.onShowRange)
-        rangeLayout.addRow(self.rangeShowBtn)
+        rangeLayout.addWidget(self.rangeShowBtn, 2, 0, 1, 2)
         self.rangeWidget.setVisible(False)
         navLayout.addWidget(self.rangeWidget)
 
         self.gotoEdit = QLineEdit()
-        self.gotoEdit.setPlaceholderText("Go to time (UTC), e.g. 07:45:30")
-        self.gotoEdit.setToolTip(
-            "HH:MM[:SS] on the observation's date, or YYYY-MM-DD HH:MM:SS (Ctrl+G)"
-        )
+        self.gotoEdit.setPlaceholderText("Go to time (UTC)…")
+        self.gotoEdit.setToolTip("UTC, e.g. 07:45:30 (Ctrl+G)")
         self.gotoEdit.returnPressed.connect(self.onGoToTime)
         navLayout.addWidget(self.gotoEdit)
         rightLayout.addWidget(self.navGroup)
 
         # ---------------- 2. Display ----------------
-        visGroup = QGroupBox("Display")
-        visLayout = QGridLayout(visGroup)
-        visLayout.setHorizontalSpacing(10)
+        visGroup = _Section("Display", "display", palette)
+        visLayout = QGridLayout(visGroup.body)
+        visLayout.setContentsMargins(0, 0, 0, 0)
+        visLayout.setHorizontalSpacing(12)
         visLayout.setVerticalSpacing(10)
         visLayout.setColumnStretch(1, 1)
 
@@ -1994,15 +2173,15 @@ class MainWindow(QMainWindow):
         self.cmapCombo.addItems(cmaps)
         self.cmapCombo.setCurrentText("inferno")
         self.cmapCombo.currentTextChanged.connect(self.onCmapChanged)
-        addRow("Colormap:", self.cmapCombo)
+        addRow("Colormap", self.cmapCombo)
 
         self.scaleCombo = QComboBox()
         self.scaleCombo.addItems(["Linear", "Log", "Sqrt", "Gamma"])
         self.scaleCombo.setCurrentText("Linear")
         self.scaleCombo.currentTextChanged.connect(self.onScaleModeChanged)
-        addRow("Scale:", self.scaleCombo)
+        addRow("Scale", self.scaleCombo)
 
-        self.gammaLabel = QLabel("Gamma:")
+        self.gammaLabel = QLabel("Gamma")
         self.gammaSlider = QSlider(Qt.Horizontal)
         self.gammaSlider.setObjectName("GammaSlider")
         self.gammaSlider.setRange(1, 300)
@@ -2016,9 +2195,9 @@ class MainWindow(QMainWindow):
             ["0-100%", "0.1-99.9%", "0.5-99.5%", "1-99%", "5-95%", "Manual"]
         )
         self.scaleRangeCombo.setCurrentText("0.5-99.5%")
-        self.scaleRangeCombo.setToolTip("The values the colours span: percentiles, or set by hand")
+        self.scaleRangeCombo.setToolTip("Percentiles the colours span, or set by hand")
         self.scaleRangeCombo.currentTextChanged.connect(self.onScaleRangeChanged)
-        addRow("Limits:", self.scaleRangeCombo)
+        addRow("Limits", self.scaleRangeCombo)
 
         self.vminEntry = QLineEdit()
         self.vminEntry.setMinimumWidth(50)
@@ -2034,39 +2213,57 @@ class MainWindow(QMainWindow):
         manualLayout.addWidget(self.vminEntry)
         manualLayout.addWidget(QLabel("–"))
         manualLayout.addWidget(self.vmaxEntry)
-        self.manualLimitsLabel = QLabel("Min – max:")
+        self.manualLimitsLabel = QLabel("Min – max")
         addRow(self.manualLimitsLabel, self.manualLimitsWidget)
         self._show_row(self.gammaLabel, self.gammaSlider, False)
         self._show_row(self.manualLimitsLabel, self.manualLimitsWidget, False)
+
+        # Averaging: the resolution shown (and saved; cleaning is done before it)
+        self.timeBinSpin = QSpinBox()
+        self.timeBinSpin.setRange(1, 10000)
+        self.timeBinSpin.setPrefix("Time ×")
+        self.timeBinSpin.setToolTip("Average this many time samples (saved files too)")
+        self.freqBinSpin = QSpinBox()
+        self.freqBinSpin.setRange(1, 4096)
+        self.freqBinSpin.setPrefix("Freq ×")
+        self.freqBinSpin.setToolTip("Average this many channels (saved files too)")
+        self._bin_timer = QTimer(self)
+        self._bin_timer.setSingleShot(True)
+        self._bin_timer.timeout.connect(self._apply_binning)
+        for spin in (self.timeBinSpin, self.freqBinSpin):
+            spin.valueChanged.connect(lambda _: self._bin_timer.start(400))
+        averageRow = QHBoxLayout()
+        averageRow.setSpacing(8)
+        averageRow.addWidget(self.timeBinSpin, 1)
+        averageRow.addWidget(self.freqBinSpin, 1)
+        averageWidget = QWidget()
+        averageWidget.setLayout(averageRow)
+        averageRow.setContentsMargins(0, 0, 0, 0)
+        addRow("Average", averageWidget)
         rightLayout.addWidget(visGroup)
 
         # ---------------- 3. Mouse ----------------
         # One tool at a time: what a click or drag on the spectrum does
-        toolsGroup = QGroupBox("Mouse")
-        toolsLayout = QVBoxLayout(toolsGroup)
-        toolsLayout.setSpacing(8)
+        toolsGroup = _Section("Mouse", "mouse", palette)
+        toolsLayout = QVBoxLayout(toolsGroup.body)
+        toolsLayout.setContentsMargins(0, 0, 0, 0)
+        toolsLayout.setSpacing(10)
 
         self.panBtn = QPushButton("✋ Pan")
-        self.panBtn.setToolTip("Pan / Zoom: drag to pan, scroll to zoom")
+        self.panBtn.setToolTip("Pan/Zoom: drag to pan, scroll to zoom")
         self.roiButton = QPushButton("✂️ Mask")
-        self.roiButton.setToolTip("Mask: drag over a region to mask it (for the whole file)")
+        self.roiButton.setToolTip("Mask: drag over a region to mask it")
         self.crossBtn = QPushButton("➕ Profile")
-        self.crossBtn.setToolTip(
-            "Cross-section: click a point for the light curve or spectrum through it"
-        )
+        self.crossBtn.setToolTip("Profile: click for the light curve or spectrum")
         self.driftBtn = QPushButton("📐 Drift")
-        self.driftBtn.setToolTip(
-            "Drift rate: click the start and the end of a burst for its frequency "
-            "drift and the speed it implies (Newkirk density model)"
-        )
+        self.driftBtn.setToolTip("Drift rate: click a burst's start, then its end")
+        self.keepBtn = QPushButton("🛡️ Keep")
+        self.keepBtn.setToolTip("Keep: drag over what auto-flagging should leave alone")
         self.imageAtTimeBtn = QPushButton("🖼️ Image")
-        self.imageAtTimeBtn.setToolTip(
-            "Image at time: click the spectrum and SolarViewer shows its image "
-            "nearest that time and frequency"
-        )
+        self.imageAtTimeBtn.setToolTip("Image: click to see SolarViewer's image at that time")
         # Only when launched from SolarViewer (it listens for the times)
         linked = bool(os.environ.get("SOLARVIEWER_LINK"))
-        tools = [self.panBtn, self.roiButton, self.crossBtn, self.driftBtn]
+        tools = [self.panBtn, self.roiButton, self.keepBtn, self.crossBtn, self.driftBtn]
         if linked:
             tools.append(self.imageAtTimeBtn)
         else:
@@ -2081,10 +2278,11 @@ class MainWindow(QMainWindow):
         self.panBtn.setChecked(True)
         self.panBtn.clicked.connect(self._choose_pan)
         self.roiButton.toggled.connect(self.onRoiToggled)
+        self.keepBtn.toggled.connect(self.onKeepToggled)
         self.crossBtn.toggled.connect(self.onCrossSectionToggled)
         self.driftBtn.toggled.connect(self.onDriftToggled)
         self.imageAtTimeBtn.toggled.connect(self.onImageAtTimeToggled)
-        for button in (self.roiButton, self.crossBtn, self.driftBtn, self.imageAtTimeBtn):
+        for button in (self.roiButton, self.keepBtn, self.crossBtn, self.driftBtn, self.imageAtTimeBtn):
             button.toggled.connect(lambda _: self._update_tool_hint())
 
         self.driftLabel = QLabel()
@@ -2096,80 +2294,94 @@ class MainWindow(QMainWindow):
         rightLayout.addWidget(toolsGroup)
 
         # ---------------- 4. Clean ----------------
-        # Changes to the data, kept for the whole file and saved with it
-        cleanGroup = QGroupBox("Clean")
-        cleanLayout = QVBoxLayout(cleanGroup)
-        cleanLayout.setSpacing(6)
+        # Changes to the data, kept for the whole file and saved with it: a
+        # column of labels, the controls beside them
+        cleanGroup = _Section("Clean", "clean", palette)
+        cleanLayout = QGridLayout(cleanGroup.body)
+        cleanLayout.setContentsMargins(0, 0, 0, 0)
+        cleanLayout.setHorizontalSpacing(12)
+        cleanLayout.setVerticalSpacing(8)
+        cleanLayout.setColumnStretch(1, 1)
+        muted = palette.get("text_secondary", "#a0a0b0")
 
-        self.maskSummary = self._sublabel("Masks")
-        cleanLayout.addWidget(self.maskSummary)
+        def label(text):
+            widget = QLabel(text)
+            widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            return widget
+
+        def pair(first, second, stretch=(1, 1)):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.addWidget(first, stretch[0])
+            row.addWidget(second, stretch[1])
+            return row
+
+        def gap(row):
+            # (a little more room between the topics)
+            cleanLayout.setRowMinimumHeight(row, 4)
+
+        # Masks
         self.extendMaskBtn = QPushButton("↔️ Extend")
-        self.extendMaskBtn.setToolTip(
-            "Mask, at all times, the channels masked on the page shown."
-        )
+        self.extendMaskBtn.setToolTip("Mask these channels at all times")
         self.extendMaskBtn.clicked.connect(self.onExtendMask)
         self.clearMaskBtn = QPushButton("🗑️ Clear")
-        self.clearMaskBtn.setToolTip("Remove all masks (Undo brings them back).")
+        self.clearMaskBtn.setToolTip("Remove all masks (Undo restores)")
         self.clearMaskBtn.clicked.connect(self.onClearMasks)
-        maskButtons = QHBoxLayout()
-        maskButtons.setSpacing(8)
-        maskButtons.addWidget(self.extendMaskBtn, 1)
-        maskButtons.addWidget(self.clearMaskBtn, 1)
-        cleanLayout.addLayout(maskButtons)
-        # TODO: RFI mitigation (automatic flagging of RFI) needs to be
-        # implemented; until then RFI is masked by hand (Mask, Extend).
+        cleanLayout.addWidget(label("Masks"), 0, 0)
+        cleanLayout.addLayout(pair(self.extendMaskBtn, self.clearMaskBtn), 0, 1)
+        self.maskSummary = QLabel()
+        self.maskSummary.setStyleSheet(f"color: {muted}; font-size: 9pt;")
+        cleanLayout.addWidget(self.maskSummary, 1, 1)
+        gap(2)
 
-        background = self._sublabel("Background")
-        background.setToolTip("Each channel's median over time, divided out or subtracted")
-        cleanLayout.addWidget(background)
+        # RFI (automatic flagging: rfi_flagging.py)
+        self.rfiBtn = QPushButton("Auto-flag")
+        self.rfiBtn.setCheckable(True)
+        self.rfiBtn.setToolTip("Flag RFI automatically (spikes, narrow lines, edges)")
+        self.rfiBtn.toggled.connect(self.onRfiToggled)
+        self.rfiSettingsBtn = QPushButton("⚙ Settings")
+        self.rfiSettingsBtn.setToolTip("Detectors, filling and display")
+        self.rfiSettingsBtn.clicked.connect(self.openRfiSettings)
+        self.rfiSlider = QSlider(Qt.Horizontal)
+        self.rfiSlider.setRange(0, 100)
+        self.rfiSlider.setValue(50)
+        self.rfiSlider.setToolTip("Sensitivity: gentle to strong (middle: default)")
+        self._rfi_timer = QTimer(self)
+        self._rfi_timer.setSingleShot(True)
+        self._rfi_timer.timeout.connect(self._rfi_settings_changed)
+        self.rfiSlider.valueChanged.connect(lambda _: self._rfi_timer.start(300))
+        sensitivity = QHBoxLayout()
+        sensitivity.setSpacing(8)
+        for text, widget in (("gentle", None), (None, self.rfiSlider), ("strong", None)):
+            if widget is None:
+                end = QLabel(text)
+                end.setStyleSheet(f"color: {muted}; font-size: 9pt;")
+                sensitivity.addWidget(end)
+            else:
+                sensitivity.addWidget(widget, 1)
+        cleanLayout.addWidget(label("RFI"), 3, 0)
+        cleanLayout.addLayout(pair(self.rfiBtn, self.rfiSettingsBtn), 3, 1)
+        cleanLayout.addLayout(sensitivity, 4, 1)
+        gap(5)
+
+        # Background
         self.normBtn = QPushButton("Normalise")
         self.normBtn.setCheckable(True)
-        self.normBtn.setToolTip(
-            "Divide each channel by its median over time (bandpass), or "
-            "subtract it (background subtraction)."
-        )
+        self.normBtn.setToolTip("Normalise each channel by its median over time")
         self.normBtn.toggled.connect(self.onBandpassNorm)
         self.bandpassScopeCombo = QComboBox()
-        self.bandpassScopeCombo.addItem("Page", "page")
-        self.bandpassScopeCombo.addItem("File", "file")
-        self.bandpassScopeCombo.setToolTip(
-            "The median over the page shown, or over the whole file (the same on every page)"
-        )
+        self.bandpassScopeCombo.addItem("Per page", "page")
+        self.bandpassScopeCombo.addItem("Whole file", "file")
+        self.bandpassScopeCombo.setToolTip("Median of the page shown, or of the whole file")
         self.bandpassScopeCombo.currentIndexChanged.connect(self.onBandpassScopeChanged)
         self.bandpassMethodCombo = QComboBox()
-        self.bandpassMethodCombo.addItem("÷", "divide")
-        self.bandpassMethodCombo.addItem("−", "subtract")
-        self.bandpassMethodCombo.setToolTip(
-            "÷ divide by the median (bandpass normalisation), − subtract it "
-            "(background subtraction)"
-        )
+        self.bandpassMethodCombo.addItem("Divide", "divide")
+        self.bandpassMethodCombo.addItem("Subtract", "subtract")
+        self.bandpassMethodCombo.setToolTip("Divide by the median, or subtract it")
         self.bandpassMethodCombo.currentIndexChanged.connect(self.onBandpassMethodChanged)
-        bandpassLayout = QHBoxLayout()
-        bandpassLayout.setSpacing(8)
-        bandpassLayout.addWidget(self.normBtn, 2)
-        bandpassLayout.addWidget(self.bandpassScopeCombo, 1)
-        bandpassLayout.addWidget(self.bandpassMethodCombo, 1)
-        cleanLayout.addLayout(bandpassLayout)
-
-        cleanLayout.addWidget(self._sublabel("Average"))
-        self.timeBinSpin = QSpinBox()
-        self.timeBinSpin.setRange(1, 10000)
-        self.timeBinSpin.setPrefix("Time ×")
-        self.timeBinSpin.setToolTip("Average this many time samples into one.")
-        self.freqBinSpin = QSpinBox()
-        self.freqBinSpin.setRange(1, 4096)
-        self.freqBinSpin.setPrefix("Freq ×")
-        self.freqBinSpin.setToolTip("Average this many channels into one.")
-        self._bin_timer = QTimer(self)
-        self._bin_timer.setSingleShot(True)
-        self._bin_timer.timeout.connect(self._apply_binning)
-        for spin in (self.timeBinSpin, self.freqBinSpin):
-            spin.valueChanged.connect(lambda _: self._bin_timer.start(400))
-        binLayout = QHBoxLayout()
-        binLayout.setSpacing(8)
-        binLayout.addWidget(self.timeBinSpin, 1)
-        binLayout.addWidget(self.freqBinSpin, 1)
-        cleanLayout.addLayout(binLayout)
+        cleanLayout.addWidget(label("Background"), 6, 0)
+        cleanLayout.addWidget(self.normBtn, 6, 1)
+        cleanLayout.addLayout(pair(self.bandpassScopeCombo, self.bandpassMethodCombo), 7, 1)
         rightLayout.addWidget(cleanGroup)
         self._update_mask_summary()
 
@@ -2195,13 +2407,6 @@ class MainWindow(QMainWindow):
         self.mainSplitter.setStretchFactor(1, 1)
 
         mainLayout.addWidget(self.mainSplitter)
-
-    def _sublabel(self, text):
-        label = QLabel(text)
-        label.setStyleSheet(
-            "color: #a0a0b0; font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;"
-        )
-        return label
 
     @staticmethod
     def _show_row(label, field, visible):
@@ -2318,13 +2523,14 @@ class MainWindow(QMainWindow):
     _TOOL_HINTS = {
         "pan": "Drag to pan, scroll to zoom; right-click the plot to reset the view.",
         "roi": "Drag over a region to mask it. Masks hold for the whole file (Ctrl+Z undoes).",
+        "keep": "Drag over a region the automatic RFI flags should leave alone (Ctrl+Z undoes).",
         "cross": "Click a point: its light curve or its spectrum.",
         "drift": "Click the start of a burst, then its end.",
         "image": "Click the spectrum: SolarViewer shows the image at that time and frequency.",
     }
 
     def _choose_pan(self):
-        for button in (self.roiButton, self.crossBtn, self.driftBtn, self.imageAtTimeBtn):
+        for button in (self.roiButton, self.keepBtn, self.crossBtn, self.driftBtn, self.imageAtTimeBtn):
             button.setChecked(False)
         self.panBtn.setChecked(True)
 
@@ -2333,6 +2539,7 @@ class MainWindow(QMainWindow):
         use the tool chosen."""
         tools = {
             "roi": self.roiButton,
+            "keep": self.keepBtn,
             "cross": self.crossBtn,
             "drift": self.driftBtn,
             "image": self.imageAtTimeBtn,
@@ -2369,7 +2576,7 @@ class MainWindow(QMainWindow):
         if path is None:
             return
         try:
-            if not self._masks and not self._global_masked_freq_indices:
+            if not self._masks and not self._global_masked_freq_indices and not self._keeps:
                 if os.path.exists(path):
                     os.remove(path)
                 return
@@ -2379,6 +2586,7 @@ class MainWindow(QMainWindow):
                     {
                         "masks": [list(map(int, m)) for m in self._masks],
                         "channels": sorted(int(c) for c in self._global_masked_freq_indices),
+                        "keeps": [list(map(int, k)) for k in self._keeps],
                     },
                     f,
                 )
@@ -2403,6 +2611,11 @@ class MainWindow(QMainWindow):
             if len(m) == 4 and 0 <= m[0] < m[1] <= nt and 0 <= m[2] < m[3] <= nf
         ]
         channels = {c for c in saved.get("channels", []) if 0 <= c < nf}
+        keeps = [
+            tuple(k) for k in saved.get("keeps", [])
+            if len(k) == 4 and 0 <= k[0] < k[1] <= nt and 0 <= k[2] < k[3] <= nf
+        ]
+        self._keeps = keeps
         if masks or channels:
             self._masks = masks
             self._global_masked_freq_indices = channels
@@ -2498,13 +2711,12 @@ class MainWindow(QMainWindow):
             parts.append(f"{regions} region{'s' * (regions != 1)}")
         if channels:
             parts.append(f"{channels} channel{'s' * (channels != 1)}")
-        self.maskSummary.setText("Masks · " + (", ".join(parts) if parts else "none yet"))
-        self.maskSummary.setToolTip(
-            "Draw masks with the Mask tool; they hold for the whole file"
-            + (f" ({channels} channels masked at all times)" if channels else "")
-        )
+        if self._keeps:
+            parts.append(f"{len(self._keeps)} kept")
+        self.maskSummary.setText(", ".join(parts) if parts else "None yet: use the Mask tool")
+        self.maskSummary.setToolTip("Masks hold for the whole file")
         self.extendMaskBtn.setEnabled(bool(regions))
-        self.clearMaskBtn.setEnabled(bool(regions or channels))
+        self.clearMaskBtn.setEnabled(bool(regions or channels or self._keeps))
 
     def updateHoverInfo(self, time_str, freq_str, val):
         """Update the hover info in the status bar."""
@@ -2816,12 +3028,24 @@ class MainWindow(QMainWindow):
         self.imageMenu.clear()
         group = QtWidgets.QActionGroup(self.imageMenu)
         for i, name in self._images:
-            act = self.imageMenu.addAction("Spectrum" if i == self._spectrum_index else name.title())
+            act = self.imageMenu.addAction(self._image_label(i, name))
             act.setCheckable(True)
             act.setChecked(i == self._image_index)
             act.triggered.connect(lambda _=False, i=i: self.showImage(i))
             group.addAction(act)
-        self.imageMenu.setEnabled(len(self._images) > 1)
+        # (the submenu's entry is its menuAction: disabling the menu alone
+        # leaves the entry looking and opening as if enabled)
+        self.imageMenu.menuAction().setEnabled(len(self._images) > 1)
+        # Swapping time and frequency only applies to square images
+        self.swapAct.setEnabled(shape[0] == shape[1])
+
+    def _image_label(self, index, name):
+        """How View > Data Shown names the file's image ``index``."""
+        if index == self._spectrum_index:
+            return "Dynamic spectrum"
+        if str(name).upper() in self._NOISE_NAMES:
+            return f"Noise per pixel ({name})"
+        return str(name)
 
     def showImage(self, index):
         """Show the file's image of HDU ``index`` instead (same page)."""
@@ -2835,7 +3059,7 @@ class MainWindow(QMainWindow):
         try:
             if self._remote:
                 self._server_work(
-                    f"Reading the {name.title()} image from the server...",
+                    f"Reading {self._image_label(index, name)} from the server...",
                     lambda *_: self._show_image(),
                 )
             else:
@@ -2845,8 +3069,8 @@ class MainWindow(QMainWindow):
             if type(e).__name__ != "Cancelled":
                 QMessageBox.critical(self, "Error", f"Failed to show {name}:\n{e}")
             return
-        shown = "the spectrum" if index == self._spectrum_index else name.title()
-        self.statusBar().showMessage(f"Showing {shown}", 5000)
+        shown = self._image_label(index, name)
+        self.statusBar().showMessage(f"Showing: {shown}", 5000)
 
     def _show_image(self, choose_mode=False):
         """Read the overview of the image shown (_image) and show it: the
@@ -3138,6 +3362,7 @@ class MainWindow(QMainWindow):
                 self._cached_bandpass_profile = None  # Invalidate bandpass cache
                 self._global_masked_freq_indices.clear()  # Clear stale masks
                 self._masks = []
+                self._keeps = []
                 self._update_mask_summary()
                 self.undo_stack.clear()
                 gc.collect()  # Force memory release
@@ -3477,6 +3702,11 @@ class MainWindow(QMainWindow):
         read.start()
 
     def _stop_remote_reads(self, wait=False):
+        if self._rfi_job is not None:
+            self._rfi_job.stopped = True
+            if wait:
+                self._rfi_job.wait(5000)
+            self._rfi_job = None
         if wait and self._overview_job is not None:
             self._overview_job.stopped = True
             self._overview_job.wait(5000)
@@ -3803,6 +4033,7 @@ class MainWindow(QMainWindow):
         """Show ``data`` (a page as read, (time, freq)): with the masks,
         averaged, and normalised as set. Copies only when it must."""
         self._shown_raw = (data, time_axis, freq_axis, fast)
+        data = self._apply_rfi_flags(data, time_axis, fast)
         data = self._apply_masks(data, time_axis)
         time_axis, freq_axis = self._binned_axes(time_axis, freq_axis)
         data = self._binned(data)
@@ -3812,6 +4043,7 @@ class MainWindow(QMainWindow):
 
         self._time_axis = time_axis
         self._freq_axis = freq_axis
+        self._show_rfi_extras(time_axis, freq_axis)
 
         self.canvas.set_data(
             self._original_data,
@@ -3846,6 +4078,282 @@ class MainWindow(QMainWindow):
         if self._shown_raw is None:
             return None
         return self._binned(self._shown_raw[0])
+
+    def _rfi_settings(self):
+        """The automatic flagging's settings (rfi_flagging.RfiSettings)."""
+        from .rfi_flagging import RfiSettings
+
+        o = self._rfi_options
+        return RfiSettings(
+            sensitivity=self.rfiSlider.value() / 100.0,
+            convrfi=o["convrfi"], edges=o["edges"], sumthreshold=o["sumthreshold"],
+            noise=o["noise"], fill_gaps=o["fill_gaps"],
+            channel_limit=o["channel_limit"], time_limit=o["time_limit"],
+        )
+
+    _NOISE_NAMES = ("STDDEV", "STDEV", "STD", "SIGMA", "NOISE", "RMS")
+
+    def _noise_image(self):
+        """The file's image of each pixel's standard deviation (e.g. LOFAR's
+        STDDEV), when the spectrum is shown: for the noise-ratio detector."""
+        if self._image_index != self._spectrum_index:
+            return None
+        for i, name in self._images:
+            if i != self._spectrum_index and str(name).upper() in self._NOISE_NAMES:
+                return self._image_data(self.hdul[i], i)
+        return None
+
+    def _noise_rows(self, noise, start, stop, cache=True):
+        """Rows start..stop of the noise image, as (time, freq) float32."""
+        key = np.s_[start:stop, :] if self._time_dim == 0 else np.s_[:, start:stop]
+        raw = noise.read(key, cache=cache) if hasattr(noise, "read") else noise[key]
+        rows = np.array(raw if self._time_dim == 0 else raw.T, dtype=np.float32)
+        rows[~np.isfinite(rows)] = np.nan
+        return rows
+
+    def _apply_keeps(self, flags, time_axis):
+        """``flags`` with the Keep regions cleared (a copy if any falls on it)."""
+        if not self._keeps or time_axis is None or not len(time_axis):
+            return flags
+        full = self._full_time_axis
+        flags = flags.copy()
+        for t0, t1, f0, f1 in self._keeps:
+            lo = np.searchsorted(time_axis, full[t0], "left")
+            hi = np.searchsorted(time_axis, full[t1 - 1], "right")
+            if lo < hi:
+                flags[lo:hi, f0:f1] = False
+        return flags
+
+    def _view_box(self, region):
+        """A region of the file (t0, t1, f0, f1) as view coordinates."""
+        t0, t1, f0, f1 = region
+        times, freqs = self._full_time_axis, self._full_freq_axis
+        x0, x1 = float(times[t0]), float(times[t1 - 1])
+        if freqs is None:
+            return x0, x1, f0 - 0.5, f1 - 0.5
+        band = freqs[f0:f1]
+        return x0, x1, float(np.min(band)), float(np.max(band))
+
+    def _apply_rfi_flags(self, data, time_axis, fast=False):
+        """``data`` (a page as read) with its automatic RFI flags set to NaN
+        (a copy; with the tint display, as it is: the flags are drawn over
+        it), when they are on. Computed in the background the first time
+        (the page shows unflagged meanwhile). Not on the quick preview: its
+        samples are block means, where bursts look like RFI."""
+        self._rfi_page_flags = None
+        if not self._rfi_enabled or fast or data.size == 0:
+            return data
+        noise = self._noise_image() if self._rfi_options["noise"] else None
+        settings = self._rfi_settings()
+        key = (id(data), settings, noise is not None)
+        cached = self._rfi_cache.get(key)
+        # (the cache holds the page too, so its id can't be another's)
+        if cached is None or cached[0] is not data:
+            self._flag_in_background(data, time_axis, key, settings, noise)
+            return data
+        flags = self._apply_keeps(cached[1], time_axis)
+        self._rfi_page_flags = flags
+        if self._rfi_options["tint"] or not flags.any():
+            return data
+        data = data.copy()
+        data[flags] = np.nan
+        return data
+
+    def _show_rfi_extras(self, time_axis, freq_axis):
+        """With automatic flags: their tint (if chosen), each channel's
+        flagged share beside the spectrum, and the Keep regions' outlines."""
+        flags = self._rfi_page_flags
+        o = self._rfi_options
+        overlay = share = None
+        if flags is not None:
+            shares = self._binned(flags.astype(np.float32))  # flagged share of each shown sample
+            if o["tint"]:
+                overlay = shares
+            if o["share"]:
+                share = np.nanmean(shares, axis=0)
+        self.canvas.set_overlay(overlay)
+        self.canvas.set_channel_share(share, freq_axis if share is not None else None)
+        boxes = []
+        if self._rfi_enabled and time_axis is not None and len(time_axis):
+            full = self._full_time_axis
+            for region in self._keeps:
+                if full[region[0]] <= time_axis[-1] and full[region[1] - 1] >= time_axis[0]:
+                    boxes.append(self._view_box(region))
+        self.canvas.set_boxes(boxes)
+
+    def openRfiSettings(self):
+        """What automatic RFI flagging does: detectors, filling, display."""
+        o = dict(self._rfi_options)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("RFI Flagging")
+        layout = QVBoxLayout(dialog)
+        detectors = QGroupBox("Detectors")
+        dl = QVBoxLayout(detectors)
+        convrfi = QCheckBox("Spikes and narrow lines (ConvRFI)")
+        convrfi.setChecked(o["convrfi"])
+        edges = QCheckBox("Sharp edges too (ConvRFI)")
+        edges.setChecked(o["edges"])
+        convrfi.toggled.connect(edges.setEnabled)
+        edges.setEnabled(o["convrfi"])
+        sumthr = QCheckBox("Faint lasting narrowband RFI (SumThreshold)")
+        sumthr.setChecked(o["sumthreshold"])
+        sumthr.setToolTip("AOFlagger's method; also flags fine burst structure")
+        noise_name = None
+        for i, name in self._images:
+            if i != self._spectrum_index and str(name).upper() in self._NOISE_NAMES:
+                noise_name = name
+        noise = QCheckBox(
+            f"Noise not proportional to power ({noise_name} image)" if noise_name
+            else "Noise not proportional to power (the file has no noise image)"
+        )
+        noise.setChecked(o["noise"])
+        noise.setEnabled(noise_name is not None)
+        noise.setToolTip("Each pixel's std/mean against nearby channels'")
+        for w in (convrfi, edges, sumthr, noise):
+            dl.addWidget(w)
+        layout.addWidget(detectors)
+
+        after = QGroupBox("Then")
+        al = QFormLayout(after)
+        gaps = QDoubleSpinBox()
+        gaps.setRange(0.0, 0.5)
+        gaps.setSingleStep(0.05)
+        gaps.setValue(o["fill_gaps"])
+        gaps.setSpecialValueText("off")
+        gaps.setToolTip("Flag gaps mostly surrounded by flags (0: off)")
+        al.addRow("Fill gaps (eta):", gaps)
+        channels = QSpinBox()
+        channels.setRange(10, 100)
+        channels.setSuffix(" %")
+        channels.setValue(int(round(o["channel_limit"] * 100)))
+        channels.setSpecialValueText("off")
+        channels.setToolTip("Flag a whole channel above this share (100: off)")
+        al.addRow("Whole channels above:", channels)
+        times = QSpinBox()
+        times.setRange(10, 100)
+        times.setSuffix(" %")
+        times.setValue(int(round(o["time_limit"] * 100)))
+        times.setToolTip("Flag a whole time above this share (100: off)")
+        al.addRow("Whole times above:", times)
+        layout.addWidget(after)
+
+        show = QGroupBox("Show")
+        sl = QVBoxLayout(show)
+        tint = QCheckBox("Flags as a tint over the data (else blanked)")
+        tint.setChecked(o["tint"])
+        share = QCheckBox("Each channel's flagged share, beside the spectrum")
+        share.setChecked(o["share"])
+        sl.addWidget(tint)
+        sl.addWidget(share)
+        note = QLabel("Saved files always have the flags blanked.")
+        note.setStyleSheet("color: #a0a0b0; font-size: 9pt;")
+        sl.addWidget(note)
+        layout.addWidget(show)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self._rfi_options.update(
+            convrfi=convrfi.isChecked(), edges=edges.isChecked(),
+            sumthreshold=sumthr.isChecked(), noise=noise.isChecked(),
+            fill_gaps=float(gaps.value()),
+            channel_limit=channels.value() / 100.0, time_limit=times.value() / 100.0,
+            tint=tint.isChecked(), share=share.isChecked(),
+        )
+        if self._rfi_enabled:
+            self._redisplay()
+
+    def _flag_in_background(self, data, time_axis, key, settings, noise):
+        if self._rfi_job is not None and self._rfi_job.key == key:
+            return  # being flagged
+        if self._rfi_job is not None:
+            self._rfi_job.stopped = True
+        finite = data[np.isfinite(data)]
+        if finite.size and float(finite.min()) < 0:
+            self.statusBar().showMessage(
+                "RFI flagging needs positive power: this data has negative values "
+                "(e.g. background-subtracted), so it is not flagged.", 8000
+            )
+            return
+        from .rfi_flagging import flag_page
+
+        start = int(np.searchsorted(self._full_time_axis, time_axis[0])) if noise is not None else 0
+
+        def work():
+            stddev = None
+            if noise is not None:
+                stddev = self._noise_rows(noise, start, start + data.shape[0])
+            return flag_page(data, settings, stddev)
+
+        job = _RemoteRead(work, self)
+        job.key = key
+        self._rfi_job = job
+        self.statusBar().showMessage("Flagging RFI...")
+
+        def done(flags):
+            if self._rfi_job is job:
+                self._rfi_job = None
+            if len(self._rfi_cache) >= 4:
+                self._rfi_cache.pop(next(iter(self._rfi_cache)))
+            self._rfi_cache[key] = (data, flags)
+            # Show it, if that page is still the one shown
+            if self._rfi_enabled and self._shown_raw is not None and self._shown_raw[0] is data:
+                self._redisplay()
+                shown = self._rfi_page_flags if self._rfi_page_flags is not None else flags
+                self.statusBar().showMessage(f"RFI flagged: {shown.mean():.1%} of this page", 5000)
+
+        def failed(message):
+            if self._rfi_job is job:
+                self._rfi_job = None
+            self.statusBar().showMessage(f"RFI flagging failed: {message}", 8000)
+
+        job.done.connect(done)
+        job.failed.connect(failed)
+        job.finished.connect(job.deleteLater)
+        job.start()
+
+    def onKeepToggled(self, checked):
+        if checked and self._original_data is None:
+            QMessageBox.information(self, "Info", "No data loaded.")
+            self.keepBtn.setChecked(False)
+            return
+        if checked:
+            for other in (self.roiButton, self.crossBtn, self.driftBtn, self.imageAtTimeBtn):
+                if other.isChecked():
+                    other.setChecked(False)
+            if not self._rfi_enabled:
+                self.statusBar().showMessage(
+                    "Keep regions apply to the automatic RFI flags (Auto-flag RFI)", 6000
+                )
+            self.canvas.enable_roi_selector(True, self._keep_roi_values)
+        else:
+            self.canvas.enable_roi_selector(False)
+
+    def _keep_roi_values(self, ixmin, ixmax, iymin, iymax):
+        """A region (samples of the data shown) the automatic flags leave alone."""
+        if self._shown_raw is None or ixmax < ixmin or iymax < iymin:
+            return
+        if self._previewing():
+            self.statusBar().showMessage(
+                "The page is still loading: mark it once it shows in full.", 5000
+            )
+            return
+        region = self._file_ranges(ixmin, ixmax, iymin, iymax)
+        self._do(("keep", region))
+        self.statusBar().showMessage("Kept from the automatic RFI flags", 4000)
+
+    def onRfiToggled(self, checked):
+        self._rfi_enabled = checked
+        self._redisplay()
+        if not checked:
+            self.statusBar().showMessage("RFI flags off", 3000)
+
+    def _rfi_settings_changed(self):
+        if self._rfi_enabled:
+            self._redisplay()
 
     def _apply_masks(self, data, time_axis):
         """``data`` (rows at times ``time_axis``, all the file's channels)
@@ -3982,7 +4490,7 @@ class MainWindow(QMainWindow):
         self._reveal_range_controls()
 
     def _reveal_range_controls(self):
-        # (the panel scrolls: Time Navigation is below the other controls)
+        self.navGroup.unfold()
         QTimer.singleShot(0, lambda: self.controlScroll.ensureWidgetVisible(self.rangeWidget))
         self.rangeFromEdit.setFocus()
         self.rangeFromEdit.selectAll()
@@ -4297,6 +4805,24 @@ class MainWindow(QMainWindow):
                 f"  {len(self._masks)} masked regions, "
                 f"{len(self._global_masked_freq_indices)} channels masked at all times"
             )
+        if self._rfi_enabled:
+            st = self._rfi_settings()
+            used = [
+                name for name, on in (
+                    ("ConvRFI (Zhang et al. 2023)", st.convrfi),
+                    ("SumThreshold (Offringa et al. 2010)", st.sumthreshold),
+                    ("noise ratio", st.noise and self._noise_image() is not None),
+                ) if on
+            ]
+            header.add_history(f"  RFI flagged automatically: {', '.join(used)}")
+            def limit(share):
+                return f"> {share:.0%}" if share < 1 else "off"
+
+            header.add_history(f"  sensitivity {st.sensitivity:.2f}, fill gaps {st.fill_gaps or 'off'}")
+            header.add_history(
+                f"  whole channels {limit(st.channel_limit)}, whole times {limit(st.time_limit)}"
+                + (f", {len(self._keeps)} kept regions" if self._keeps else "")
+            )
         if self._bin != (1, 1):
             header.add_history(f"  averaged {self._bin[0]} time samples x {self._bin[1]} channels")
         if self._is_bandpass_enabled:
@@ -4393,6 +4919,8 @@ class MainWindow(QMainWindow):
         from ..remote.remote_fits import Cancelled, reporting
 
         full_time = self._full_time_axis
+        settings = self._rfi_settings() if self._rfi_enabled else None
+        noise = self._noise_image() if settings is not None and settings.noise else None
         done = 0
         for s, e in chunks:
             if cancelled():
@@ -4403,6 +4931,15 @@ class MainWindow(QMainWindow):
                 raw = image.read(key, cache=False) if hasattr(image, "read") else image[key]
             data = np.array(raw if time_major else raw.T, dtype=np.float32)
             data[np.isinf(data)] = np.nan
+            if settings is not None:
+                from .rfi_flagging import flag_page
+
+                finite = data[np.isfinite(data)]
+                if not finite.size or float(finite.min()) >= 0:
+                    with reporting(None, cancelled):
+                        stddev = self._noise_rows(noise, s, e, cache=False) if noise is not None else None
+                    flags = self._apply_keeps(flag_page(data, settings, stddev), full_time[s:e])
+                    data[flags] = np.nan
             data = self._binned(self._apply_masks(data, full_time[s:e]))
             if self._is_bandpass_enabled:
                 data = self._apply_bandpass_to_data(data)
@@ -4470,10 +5007,10 @@ class MainWindow(QMainWindow):
 
     def revertToOriginal(self):
         """Remove all masks, drawn and extended (Undo brings them back)."""
-        if not self._masks and not self._global_masked_freq_indices:
+        if not self._masks and not self._global_masked_freq_indices and not self._keeps:
             self.statusBar().showMessage("There are no masks.", 5000)
             return
-        self._do(("clear", (list(self._masks), frozenset(self._global_masked_freq_indices))))
+        self._do(("clear", (list(self._masks), frozenset(self._global_masked_freq_indices), list(self._keeps))))
         self.statusBar().showMessage(
             "Reverted to original data (all masks cleared).", 5000
         )
@@ -4484,10 +5021,18 @@ class MainWindow(QMainWindow):
     def _apply_edit(self, edit, undo=False):
         self._mask_version += 1  # (the whole-file median is computed again)
         kind, value = edit
-        if kind == "set":  # (before, after): each (masks, channels)
-            masks, channels = value[0] if undo else value[1]
-            self._masks = list(masks)
-            self._global_masked_freq_indices = set(channels)
+        if kind == "set":  # (before, after): each (masks, channels[, keeps])
+            state = value[0] if undo else value[1]
+            self._masks = list(state[0])
+            self._global_masked_freq_indices = set(state[1])
+            if len(state) > 2:
+                self._keeps = list(state[2])
+            return
+        if kind == "keep":
+            if undo:
+                self._keeps.remove(value)
+            else:
+                self._keeps.append(value)
             return
         if kind == "add":
             if undo:
@@ -4503,9 +5048,12 @@ class MainWindow(QMainWindow):
             if undo:
                 self._masks = list(value[0])
                 self._global_masked_freq_indices = set(value[1])
+                if len(value) > 2:
+                    self._keeps = list(value[2])
             else:
                 self._masks = []
                 self._global_masked_freq_indices = set()
+                self._keeps = []
 
     def _do(self, edit):
         """Make a mask edit (undoable) and show the page with it."""
@@ -4677,6 +5225,8 @@ class MainWindow(QMainWindow):
                     self.driftBtn.setChecked(False)
                 if self.imageAtTimeBtn.isChecked():
                     self.imageAtTimeBtn.setChecked(False)
+                if self.keepBtn.isChecked():
+                    self.keepBtn.setChecked(False)
 
                 self.logger.info("Enabling ROI selector...")
                 self.canvas.enable_roi_selector(True, self._mask_roi_values)
@@ -4725,6 +5275,8 @@ class MainWindow(QMainWindow):
                 self.driftBtn.setChecked(False)
             if self.imageAtTimeBtn.isChecked():
                 self.imageAtTimeBtn.setChecked(False)
+            if self.keepBtn.isChecked():
+                self.keepBtn.setChecked(False)
 
         self.canvas.enable_cross_section(checked)
         if checked:
@@ -4738,7 +5290,7 @@ class MainWindow(QMainWindow):
             self.driftBtn.setChecked(False)
             return
         if checked:
-            for other in (self.roiButton, self.crossBtn, self.imageAtTimeBtn):
+            for other in (self.roiButton, self.keepBtn, self.crossBtn, self.imageAtTimeBtn):
                 if other.isChecked():
                     other.setChecked(False)
             self.statusBar().showMessage(
@@ -4755,7 +5307,7 @@ class MainWindow(QMainWindow):
             self.imageAtTimeBtn.setChecked(False)
             return
         if checked:
-            for other in (self.roiButton, self.crossBtn, self.driftBtn):
+            for other in (self.roiButton, self.keepBtn, self.crossBtn, self.driftBtn):
                 if other.isChecked():
                     other.setChecked(False)
             self.statusBar().showMessage(
