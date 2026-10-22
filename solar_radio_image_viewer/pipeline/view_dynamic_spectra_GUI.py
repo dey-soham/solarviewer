@@ -118,67 +118,113 @@ from pyqtgraph import ColorMap
 
 
 class _AxisLayout:
-    """Where the samples of an axis are drawn: each covers [lo, hi] around
-    its value, and the axis splits into stretches of even spacing
-    (``segments``, (start, stop) indices), drawn as separate images so gaps
-    stay empty and uneven channels sit at their own frequencies."""
+    """Where the samples of an axis are: each covers [lo, hi], up to halfway
+    to its neighbours (at gaps, and at the ends, half its spacing), and is
+    drawn and picked (hover, clicks, masks) there alike.
 
-    MAX_SEGMENTS = 64  # more (e.g. every channel spaced differently): one stretch
+    An axis evenly spaced, or in evenly spaced stretches with gaps between,
+    is drawn as one image per stretch (``segments``). Any other (e.g.
+    e-Callisto's irregular channels) is drawn on a fine even grid of cells,
+    each showing the sample that covers it (``grid``)."""
+
+    MAX_SEGMENTS = 64
+    GAP = 8.0  # a spacing this many times the typical one is a gap
+    EVEN = 0.02  # spacing within a stretch varying less than this is even
 
     def __init__(self, values, n):
         if values is None:
             values = np.arange(n, dtype=np.float64)
         c = np.asarray(values, dtype=np.float64)
         self.centers = c
-        if n == 1:
-            self.segments = [(0, 1)]
-            self.lo, self.hi = c - 0.5, c + 0.5
-            self.step = [1.0]
-        else:
-            d = np.diff(c)
-            # A new stretch where the spacing differs by more than half (or
-            # in direction) from the stretch's first: gaps, bands of other
-            # spacing, and every 1.5x of a gradual (e.g. log) change
-            starts = [0]
-            ref = None
-            for i, di in enumerate(d):
-                if ref is None:
-                    # The stretch's first spacing, unless it is a gap after
-                    # a lone sample
-                    if i + 1 < len(d) and abs(di) > 1.5 * abs(d[i + 1]):
-                        starts.append(i + 1)
-                    else:
-                        ref = di
-                elif di == 0 or np.sign(di) != np.sign(ref) or not 0.67 <= di / ref <= 1.5:
-                    starts.append(i + 1)
-                    ref = None
-            if len(starts) > self.MAX_SEGMENTS:
-                starts = [0]
-            self.segments = [(a, b) for a, b in zip(starts, starts[1:] + [n]) if b > a]
-            typical = float(np.median(np.abs(d))) or 1.0
-            self.lo = np.empty(n)
-            self.hi = np.empty(n)
-            self.step = []
-            for a, b in self.segments:
-                step = abs(c[b - 1] - c[a]) / (b - a - 1) if b - a > 1 else typical
-                step = step or typical
-                self.step.append(step)
-                seg = c[a:b]
-                self.lo[a:b] = seg - step / 2
-                self.hi[a:b] = seg + step / 2
         self.order = np.argsort(c, kind="stable")
-        self.sorted = c[self.order]
+        sc = c[self.order]
+        d = np.diff(sc)
+        positive = d[d > 0]
+        typical = float(np.median(positive)) if positive.size else 1.0
+        gap = d > self.GAP * typical
+        # Edges, in sorted order: halfway to the neighbours; at the ends and
+        # at gaps, half the spacing on the other side
+        left = np.r_[np.nan, d]
+        right = np.r_[d, np.nan]
+        left_ok = np.r_[False, ~gap]
+        right_ok = np.r_[~gap, False]
+        half = 0.5 * np.where(right_ok, right, np.where(left_ok, left, typical))
+        half_left = 0.5 * np.where(left_ok, left, np.where(right_ok, right, typical))
+        lo_s = sc - np.where(left_ok, left / 2, half)
+        hi_s = sc + np.where(right_ok, right / 2, half_left)
+        self.lo_sorted, self.hi_sorted = lo_s, hi_s
+        self.lo = np.empty(n)
+        self.hi = np.empty(n)
+        self.lo[self.order] = lo_s
+        self.hi[self.order] = hi_s
+
+        self.segments = self._even_stretches(c)
+        self.grid = None
+        if self.segments is None:
+            self.segments = [(0, n)]
+            self.grid = self._grid(lo_s, hi_s, n)
+
+    def _even_stretches(self, c):
+        """[(start, stop)] of evenly spaced stretches (in index order), when
+        the axis is made of such (monotonic, separated by gaps); else None."""
+        n = len(c)
+        if n < 3:
+            return [(0, n)]
+        d = np.diff(c)
+        if not (np.all(d > 0) or np.all(d < 0)):
+            return None
+        a = np.abs(d)
+        typical = float(np.median(a))
+        starts = [0]
+        for i in np.flatnonzero(a > self.GAP * typical):
+            starts.append(int(i) + 1)
+        segments = [(s, e) for s, e in zip(starts, starts[1:] + [n]) if e > s]
+        if len(segments) > self.MAX_SEGMENTS:
+            return None
+        for s, e in segments:
+            steps = a[s : e - 1]
+            if steps.size and np.ptp(steps) > self.EVEN * np.median(steps):
+                return None
+        return segments
+
+    @staticmethod
+    def _grid(lo_s, hi_s, n):
+        """(sample of each cell or -1, low, high): cells as fine as the
+        narrowest sample (at most 4 per sample)."""
+        low, high = float(lo_s.min()), float(hi_s.max())
+        widths = (hi_s - lo_s)[hi_s > lo_s]
+        finest = float(widths.min()) if widths.size else (high - low) / max(n, 1)
+        cells = int(min(max(n, np.ceil((high - low) / finest)), 4 * n))
+        centers = low + (np.arange(cells) + 0.5) * (high - low) / cells
+        k = np.searchsorted(lo_s, centers, "right") - 1
+        inside = (k >= 0) & (centers <= hi_s[np.clip(k, 0, None)])
+        return np.where(inside, k, -1), low, high
+
+    def parts(self):
+        """[(selector, low, high, reversed)]: how to draw the axis, a part
+        per image: a slice of the samples (a stretch), or the grid's sample
+        index per cell (-1 empty)."""
+        if self.grid is not None:
+            cells, low, high = self.grid
+            return [(np.where(cells >= 0, self.order[np.clip(cells, 0, None)], -1), low, high, False)]
+        out = []
+        for a, b in self.segments:
+            low, high = float(self.lo[a:b].min()), float(self.hi[a:b].max())
+            out.append((slice(a, b), low, high, b - a > 1 and self.centers[b - 1] < self.centers[a]))
+        return out
 
     def index(self, x, clip=False):
         """The sample at ``x`` (None in a gap or outside, unless ``clip``:
         then the nearest)."""
-        j = int(np.searchsorted(self.sorted, x))
-        near = [k for k in (j - 1, j) if 0 <= k < len(self.sorted)]
-        k = min(near, key=lambda k: abs(self.sorted[k] - x))
-        i = int(self.order[k])
-        if clip or self.lo[i] <= x <= self.hi[i]:
-            return i
-        return None
+        k = int(np.searchsorted(self.lo_sorted, x, "right")) - 1
+        if k >= 0 and x <= self.hi_sorted[k]:
+            return int(self.order[k])
+        if not clip:
+            return None
+        j = int(np.searchsorted(self.lo_sorted, x))
+        near = [i for i in (j - 1, j) if 0 <= i < len(self.order)]
+        i = min(near, key=lambda i: abs(self.centers[self.order[i]] - x))
+        return int(self.order[i])
 
     def extent(self, a=0, b=None):
         """(low, high) edges of samples a..b."""
@@ -491,22 +537,19 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         image = self._to_lut_indices(self._data)
         time_layout, freq_layout = self._layouts
-        blocks = [
-            (ts, fs) for ts in range(len(time_layout.segments)) for fs in range(len(freq_layout.segments))
-        ]
+        blocks = [(t, f) for t in time_layout.parts() for f in freq_layout.parts()]
         items = self._image_items(len(blocks))
-        for item, (ts, fs) in zip(items, blocks):
-            (a, b), (c, d) = time_layout.segments[ts], freq_layout.segments[fs]
-            block = image[a:b, c:d]
+        for item, ((tsel, x0, x1, tflip), (fsel, y0, y1, fflip)) in zip(items, blocks):
+            block = self._take(image, tsel, 0)
+            block = self._take(block, fsel, 1)
             # Shown with time and frequency increasing
-            if b - a > 1 and time_layout.centers[b - 1] < time_layout.centers[a]:
+            if tflip:
                 block = block[::-1, :]
-            if d - c > 1 and freq_layout.centers[d - 1] < freq_layout.centers[c]:
+            if fflip:
                 block = block[:, ::-1]
             item.setImage(block, autoLevels=False)
             item.setLookupTable(self._transparent_lut)
             item.setLevels([0, 255])
-            (x0, x1), (y0, y1) = time_layout.extent(a, b), freq_layout.extent(c, d)
             item.setRect(pg.QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
 
         (x_low, x_high), (y_low, y_high) = time_layout.extent(), freq_layout.extent()
@@ -593,6 +636,21 @@ class PyQtGraphSpectrumCanvas(QWidget):
             indices[nan] = 0
             out[start : start + self.CHUNK] = indices
         return out.reshape(data.shape)
+
+    @staticmethod
+    def _take(image, selector, axis):
+        """``image``'s samples along ``axis``: a slice (a stretch) or the
+        grid's sample per cell (-1: empty, transparent)."""
+        if isinstance(selector, slice):
+            return image[selector, :] if axis == 0 else image[:, selector]
+        out = np.take(image, np.clip(selector, 0, None), axis=axis)
+        empty = selector < 0
+        if empty.any():
+            if axis == 0:
+                out[empty, :] = 0
+            else:
+                out[:, empty] = 0
+        return out
 
     def _image_items(self, count):
         """``count`` image items: the main one and further ones (removed
@@ -3594,14 +3652,18 @@ class MainWindow(QMainWindow):
 
         start_idx, end_idx = self._page_bounds(page_idx)
 
-        # Map to low-res indices
-        low_start = start_idx // self._lowres_skip
-        low_end = end_idx // self._lowres_skip
+        # The overview's rows (blocks of _lowres_skip samples) on the page,
+        # each at its block's middle sample: a time for every row
+        skip = self._lowres_skip
+        total = len(self._full_time_axis)
+        low_start = start_idx // skip
+        low_end = min(-(-end_idx // skip), self._full_lowres_data.shape[0])
 
         # Robust slicing: _full_lowres_data is now guaranteed to be (time, freq)
         try:
             data_slice = self._full_lowres_data[low_start:low_end, :]
-            time_slice = self._full_time_axis[start_idx : end_idx : self._lowres_skip]
+            middle = np.minimum(np.arange(low_start, low_end) * skip + skip // 2, total - 1)
+            time_slice = self._full_time_axis[middle]
             return data_slice.copy(), time_slice, self._full_freq_axis
 
         except Exception as e:
