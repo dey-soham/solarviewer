@@ -11,7 +11,7 @@ from matplotlib import rcParams
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PyQt5.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer
-from PyQt5.QtGui import QColor, QCursor, QImage, QPainter
+from PyQt5.QtGui import QColor, QCursor, QImage, QPainter, QPalette
 from PyQt5.QtWidgets import QWidget
 
 from ..tools import RegionMode
@@ -194,8 +194,10 @@ class CanvasMixin:
         # No style sheet on the canvas: one makes Qt drop Matplotlib's
         # WA_OpaquePaintEvent, and then every cursor readout update repaints
         # the whole canvas, which made the Ruler and Profile preview lines lag.
-        # Gaps while resizing are filled with the palette's Window colour,
-        # which follows the theme.
+        # Gaps while resizing are filled with the palette's Window colour:
+        # Matplotlib sets a white palette, so take the theme's instead (an
+        # empty palette inherits it, and follows theme changes).
+        self.canvas.setPalette(QPalette())
 
         # Matplotlib's toolbar stays hidden: the figure toolbar has the tools,
         # and this one only keeps the view history for its Back/Forward
