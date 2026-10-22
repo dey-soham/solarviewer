@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .geometry import snap_to_axis
+from .preview import blit_preview
 
 logger = logging.getLogger(__name__)
 
@@ -256,21 +257,27 @@ class ProfileMixin:
             # Capture background for blitting
             self.canvas.draw()
             self._profile_blit_bg = self.canvas.copy_from_bbox(ax.bbox)
+            self._profile_blit_box = None
         else:
             self._profile_preview_line.set_data([x1, x2], [y1, y2])
 
         # Use blitting for fast updates instead of full canvas redraw
         if hasattr(self, "_profile_blit_bg") and self._profile_blit_bg is not None:
-            self.canvas.restore_region(self._profile_blit_bg)
-            ax.draw_artist(self._profile_preview_line)
-            self.canvas.blit(ax.bbox)
+            self._profile_blit_box = blit_preview(
+                self.canvas,
+                ax,
+                self._profile_preview_line,
+                self._profile_blit_bg,
+                self._profile_blit_box,
+            )
         else:
             self.canvas.draw_idle()
 
         # Calculate and show distance
         pixel_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
         self.show_status_message(
-            f"Distance: {pixel_dist:.1f} px | Shift for H/V snap | Click to confirm"
+            f"Distance: {pixel_dist:.1f} px | Shift for H/V snap | Click to confirm",
+            flush=False,
         )
 
     def _profile_radial_on_click(self, event):

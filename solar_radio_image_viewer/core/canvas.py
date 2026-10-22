@@ -117,6 +117,15 @@ class _ImageCanvas(FigureCanvas):
         event.ignore()
 
 
+class _HistoryToolbar(NavigationToolbar):
+    """Matplotlib's toolbar, kept hidden for its Back/Forward view history."""
+
+    def mouse_move(self, event):
+        # Its coordinate message is never shown, and formatting it on every
+        # mouse move slowed the tools that follow the mouse
+        pass
+
+
 class _PinchFilter(QObject):
     """Sends trackpad pinch gestures on the canvas to the tab's zoom."""
 
@@ -182,12 +191,15 @@ class CanvasMixin:
         self.figure = Figure(figsize=(5, 5), dpi=100)
         self.canvas = _ImageCanvas(self.figure, self.handle_view_key)
 
-        # Ensure canvas background matches theme to avoid white gaps when scaling
-        self.canvas.setStyleSheet("background-color: transparent;")
+        # No style sheet on the canvas: one makes Qt drop Matplotlib's
+        # WA_OpaquePaintEvent, and then every cursor readout update repaints
+        # the whole canvas, which made the Ruler and Profile preview lines lag.
+        # Gaps while resizing are filled with the palette's Window colour,
+        # which follows the theme.
 
         # Matplotlib's toolbar stays hidden: the figure toolbar has the tools,
         # and this one only keeps the view history for its Back/Forward
-        self.nav_toolbar = NavigationToolbar(self.canvas, self)
+        self.nav_toolbar = _HistoryToolbar(self.canvas, self)
         self.nav_toolbar.hide()
         parent_layout.addWidget(self.canvas, 1)
 

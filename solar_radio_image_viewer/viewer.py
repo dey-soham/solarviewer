@@ -280,13 +280,18 @@ class SolarRadioImageTab(
         """Set pointing hand cursor on all buttons and interactive widgets for better UX"""
         set_hand_cursor(self)
 
-    def show_status_message(self, message, timeout=0):
-        """Helper method to show messages in the status bar"""
+    def show_status_message(self, message, timeout=0, flush=True):
+        """Helper method to show messages in the status bar
+
+        ``flush`` puts the message on screen at once, before work that blocks;
+        callers on every mouse move pass False, as the wait would slow them.
+        """
         main_window = self.window()
         try:
             if main_window:
                 main_window.statusBar().showMessage(message, timeout)
-                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+                if flush:
+                    QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
         except AttributeError:
             pass
 
