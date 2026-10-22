@@ -1203,66 +1203,141 @@ class PyQtGraphSpectrumCanvas(QWidget):
             self.logger.error(f"Cross-section click error: {e}")
 
     def _plot_1d_time(self, data_slice, freq_label):
-        """Plot 1D time slice using PyQtGraph popup."""
-        theme_name = getattr(self.main_window, "current_theme", "dark")
-        palette = get_palette(theme_name)
-        bg_color = palette.get("base", "#1e1e2e")
-        text_color = palette.get("text", "white")
-
-        title = f"Time Slice @ {freq_label}"
-        win = pg.plot(title=title)
-        self._popups.append(win)
-        win.setWindowTitle(title)
-        win.setBackground(bg_color)
-        win.setLabel("left", "Intensity", color=text_color)
-        win.getAxis("left").setPen(text_color)
-        win.getAxis("left").setTextPen(text_color)
-        win.getAxis("bottom").setPen(text_color)
-        win.getAxis("bottom").setTextPen(text_color)
-
-        line_color = palette.get("highlight", "#6366f1")
-
-        if self._time_axis is not None:
-            win.setLabel("bottom", "Time (UTC)", color=text_color)
-            # Use time axis as x-values and format tick labels as HH:MM:SS
-            x_vals = np.array(self._time_axis, dtype=np.float64)
-            win.plot(x_vals, data_slice, pen=pg.mkPen(line_color, width=1.8))
-
-            time_axis_item = TimeAxisItem(orientation="bottom")
-            time_axis_item.setPen(text_color)
-            time_axis_item.setTextPen(text_color)
-            win.setAxisItems({"bottom": time_axis_item})
-            # Re-plot with the custom axis
-            win.plot(x_vals, data_slice, pen=pg.mkPen(line_color, width=1.8))
-        else:
-            win.setLabel("bottom", "Time index", color=text_color)
-            win.plot(data_slice, pen=pg.mkPen(line_color, width=1.8))
+        """The light curve at one frequency, in its own window."""
+        self._show_profile(data_slice, freq_label, along_time=True)
 
     def _plot_1d_freq(self, data_slice, time_label):
-        """Plot 1D frequency slice using PyQtGraph popup."""
+        """The spectrum at one time, in its own window."""
+        self._show_profile(data_slice, time_label, along_time=False)
+
+    def _show_profile(self, values, at_label, along_time):
+        """A window with the profile and Save CSV / Save Plot buttons."""
         theme_name = getattr(self.main_window, "current_theme", "dark")
         palette = get_palette(theme_name)
-        bg_color = palette.get("base", "#1e1e2e")
         text_color = palette.get("text", "white")
-
-        title = f"Freq Slice @ {time_label}"
-        win = pg.plot(title=title)
-        self._popups.append(win)
-        win.setWindowTitle(title)
-        win.setBackground(bg_color)
-        win.setLabel("left", "Intensity", color=text_color)
-        win.getAxis("left").setPen(text_color)
-        win.getAxis("left").setTextPen(text_color)
-        win.getAxis("bottom").setPen(text_color)
-        win.getAxis("bottom").setTextPen(text_color)
-
-        line_color = palette.get("highlight", "#6366f1")
-        if self._freq_axis is not None:
-            win.setLabel("bottom", "Frequency (MHz)", color=text_color)
-            win.plot(self._freq_axis, data_slice, pen=pg.mkPen(line_color, width=1.8))
+        values = np.asarray(values, dtype=np.float64)
+        axis = self._time_axis if along_time else self._freq_axis
+        if axis is not None:
+            x = np.asarray(axis, dtype=np.float64)
         else:
-            win.setLabel("bottom", "Frequency index", color=text_color)
-            win.plot(data_slice, pen=pg.mkPen(line_color, width=1.8))
+            x = np.arange(values.size, dtype=np.float64)
+        if along_time:
+            title = f"Light curve @ {at_label}"
+            x_label = "Time (UTC)" if axis is not None else "Time index"
+        else:
+            title = f"Spectrum @ {at_label}"
+            x_label = "Frequency (MHz)" if axis is not None else "Frequency index"
+
+        win = QWidget()
+        win.setWindowTitle(title)
+        win.resize(800, 500)
+        layout = QVBoxLayout(win)
+        layout.setContentsMargins(6, 6, 6, 6)
+        axis_items = {}
+        if along_time and axis is not None:
+            axis_items["bottom"] = TimeAxisItem(orientation="bottom")
+            axis_items["bottom"].enableAutoSIPrefix(False)
+        plot = pg.PlotWidget(title=title, axisItems=axis_items)
+        plot.setBackground(palette.get("base", "#1e1e2e"))
+        for side in ("left", "bottom"):
+            plot.getAxis(side).setPen(text_color)
+            plot.getAxis(side).setTextPen(text_color)
+        plot.setLabel("left", "Intensity", color=text_color)
+        plot.setLabel("bottom", x_label, color=text_color)
+        plot.plot(x, values, pen=pg.mkPen(palette.get("highlight", "#6366f1"), width=1.8))
+        layout.addWidget(plot, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        csv_btn = QPushButton("💾 Save CSV")
+        csv_btn.clicked.connect(
+            lambda: self._save_profile_csv(win, x, values, at_label, along_time, axis is not None)
+        )
+        plot_btn = QPushButton("🖼️ Save Plot")
+        plot_btn.clicked.connect(
+            lambda: self._save_profile_plot(win, x, values, at_label, title, x_label, along_time, axis is not None)
+        )
+        buttons.addWidget(csv_btn)
+        buttons.addWidget(plot_btn)
+        layout.addLayout(buttons)
+
+        self._popups.append(win)
+        win.show()
+        return win
+
+    def _profile_file_stem(self, at_label, along_time):
+        """e.g. ``obs_lightcurve_45.000MHz`` (a name for the saved profile)."""
+        source = getattr(self.main_window, "current_filename", "") or "spectrum"
+        base = os.path.splitext(os.path.basename(source))[0]
+        kind = "lightcurve" if along_time else "spectrum"
+        label = re.sub(r"[^0-9A-Za-z.]+", "", at_label.replace(":", ""))
+        return f"{base}_{kind}_{label}"
+
+    def _save_profile_csv(self, parent, x, values, at_label, along_time, has_axis):
+        fileName, _ = QFileDialog.getSaveFileName(
+            parent, "Save Profile as CSV",
+            self._profile_file_stem(at_label, along_time) + ".csv", "CSV (*.csv)",
+        )
+        if not fileName:
+            return
+        source = getattr(self.main_window, "current_filename", "")
+        kind = "Light curve" if along_time else "Spectrum"
+        try:
+            with open(fileName, "w") as out:
+                out.write(f"# {kind} at {at_label}\n")
+                if source:
+                    out.write(f"# Source: {os.path.basename(source)}\n")
+                if along_time and has_axis:
+                    out.write("time_utc,time_mjd,intensity\n")
+                    for t, v in zip(x, values):
+                        utc = datetime(1858, 11, 17) + timedelta(seconds=float(t))
+                        out.write(f"{utc.isoformat(timespec='milliseconds')},{t / 86400:.9f},{v:.6g}\n")
+                else:
+                    name = "frequency_mhz" if has_axis else "index"
+                    out.write(f"{name},intensity\n")
+                    for f, v in zip(x, values):
+                        out.write(f"{f:.6f},{v:.6g}\n" if has_axis else f"{int(f)},{v:.6g}\n")
+        except OSError as e:
+            QMessageBox.warning(parent, "Save CSV", f"Could not save:\n{e}")
+            return
+        self.logger.info(f"Profile saved to {fileName}")
+
+    def _save_profile_plot(self, parent, x, values, at_label, title, x_label, along_time, has_axis):
+        fileName, chosen = QFileDialog.getSaveFileName(
+            parent, "Save Profile Plot",
+            self._profile_file_stem(at_label, along_time) + ".png",
+            "PNG (*.png);;PDF (*.pdf);;SVG (*.svg);;JPEG (*.jpg)",
+        )
+        if not fileName:
+            return
+        if not os.path.splitext(fileName)[1]:
+            fileName += "." + chosen.split("*.")[1].rstrip(")")
+        from matplotlib.figure import Figure
+        import matplotlib.dates as mdates
+
+        # (a plain light style, whatever the app theme)
+        with matplotlib.style.context("default"):
+            fig = Figure(figsize=(8, 4.5), dpi=150)
+            ax = fig.add_subplot(111)
+            if along_time and has_axis:
+                # (MJD seconds -> datetimes, so the axis reads in UTC)
+                x = [datetime(1858, 11, 17) + timedelta(seconds=float(t)) for t in x]
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+            ax.plot(x, values, color="#4f46e5", linewidth=1.2)
+            ax.set_xlabel(x_label)
+            ax.set_ylabel("Intensity")
+            source = getattr(self.main_window, "current_filename", "")
+            ax.set_title(f"{title}\n{os.path.basename(source)}" if source else title, fontsize=10)
+            ax.grid(True, alpha=0.3)
+            if along_time and has_axis:
+                fig.autofmt_xdate()
+            fig.tight_layout()
+            try:
+                fig.savefig(fileName)
+            except (OSError, ValueError) as e:
+                QMessageBox.warning(parent, "Save Plot", f"Could not save:\n{e}")
+                return
+        self.logger.info(f"Profile plot saved to {fileName}")
 
     # ------------------ Mouse Hover: Display Amplitude --------------------------
     def _on_mouse_move(self, pos):
