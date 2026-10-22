@@ -250,7 +250,6 @@ def add_solar_radius_circle(tab, multiplier):
         
     diameter_arcsec = radius_arcsec * 2.0
 
-    label_text = f"{multiplier} R☉" if multiplier == int(multiplier) else f"{multiplier} R☉"
 
     shape = {
         "type": "circle",
@@ -263,7 +262,6 @@ def add_solar_radius_circle(tab, multiplier):
         "linewidth": 1.2,
         "alpha": 0.7,
         "fill": False,
-        # "label": label_text,
     }
     tab.shape_annotations.append(shape)
     tab.schedule_plot()

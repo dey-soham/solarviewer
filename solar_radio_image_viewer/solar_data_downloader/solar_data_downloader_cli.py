@@ -40,9 +40,9 @@ except ImportError:
 
 # Check if required packages are installed
 try:
-    import sunpy
-    import drms
-    import astropy
+    import sunpy  # noqa: F401 (availability check)
+    import drms  # noqa: F401 (availability check)
+    import astropy  # noqa: F401 (availability check)
 except ImportError as e:
     print(f"Error: Missing required package: {e.name}")
     print("Please install the required packages with:")

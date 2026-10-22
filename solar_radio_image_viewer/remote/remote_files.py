@@ -57,7 +57,7 @@ class RemoteFiles:
 
     @property
     def host(self):
-        return self.connection._host
+        return self.connection.host
 
     @property
     def label(self):
@@ -73,7 +73,7 @@ class RemoteFiles:
             sftp = self._channels.get_nowait()
         except queue.Empty:
             self.connection.ensure_connected()
-            sftp = self.connection._client.get_transport().open_sftp_client()
+            sftp = self.connection.transport.open_sftp_client()
             with self._lock:
                 self._all_channels.append(sftp)
         broken = False

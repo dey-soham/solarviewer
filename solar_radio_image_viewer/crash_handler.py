@@ -1,6 +1,7 @@
 import sys
 import os
 import platform
+import re
 import traceback
 import subprocess
 from datetime import datetime
@@ -8,6 +9,8 @@ from pathlib import Path
 from .version import __version__
 
 CRASH_REPORTS_DIR = Path.home() / ".solarviewer" / "crash_reports"
+# How much of the log a report keeps (a GitHub issue takes 65,536 characters)
+LOG_TAIL_CHARS = 15000
 
 
 def get_library_versions():
@@ -46,7 +49,7 @@ def get_library_versions():
                 try:
                     from importlib.metadata import version
                     versions[lib] = version(lib)
-                except:
+                except Exception:
                     versions[lib] = "unknown"
         except ImportError:
             versions[lib] = "not installed"
@@ -79,7 +82,7 @@ def get_system_info():
         root_usage = shutil.disk_usage("/")
         info["Disk (Home)"] = f"{home_usage.free // (1024**3)} GB free / {home_usage.total // (1024**3)} GB total"
         info["Disk (Root)"] = f"{root_usage.free // (1024**3)} GB free / {root_usage.total // (1024**3)} GB total"
-    except:
+    except Exception:
         pass
 
     # Memory info
@@ -87,22 +90,38 @@ def get_system_info():
         try:
             mem = subprocess.check_output(["free", "-h"]).decode("utf-8")
             info["Memory Row"] = mem.split("\n")[1] if len(mem.split("\n")) > 1 else "unknown"
-        except:
+        except Exception:
             pass
 
     return info
 
 
+# Environment variables that change how SolarViewer, Qt, CASA or the numeric
+# libraries behave; the rest are left out of crash reports
+_REPORTED_ENV_PREFIXES = (
+    "QT_", "XDG_SESSION_TYPE", "WAYLAND_DISPLAY", "DISPLAY", "LANG", "LC_",
+    "CASA", "OPENSSL_CONF", "MPLBACKEND", "OMP_", "MKL_", "OPENBLAS_",
+    "CONDA_DEFAULT_ENV", "VIRTUAL_ENV", "PYTHONHASHSEED",
+)
+_SECRET_WORDS = ("PASSWORD", "SECRET", "KEY", "TOKEN", "AUTH", "COOKIE", "PASS")
+
+
 def get_environment_info():
-    """Collect filtered environment variables."""
-    blacklist = {"PASSWORD", "SECRET", "KEY", "TOKEN", "AUTH", "COOKIE", "SUDO", "PASS"}
+    """The environment variables that affect the application (values of any
+    that look secret masked)."""
     env_info = {}
-    for k, v in os.environ.items():
-        if any(word in k.upper() for word in blacklist):
-            env_info[k] = "********"
-        else:
-            env_info[k] = v
+    for k, v in sorted(os.environ.items()):
+        if not k.startswith(_REPORTED_ENV_PREFIXES):
+            continue
+        env_info[k] = "********" if any(w in k.upper() for w in _SECRET_WORDS) else v
     return env_info
+
+
+def scrub(text):
+    """``text`` with the home folder (which names the user) written as ~, and
+    user@host addresses (SSH servers, e-mail) as <user>@<host>."""
+    text = text.replace(str(Path.home()), "~")
+    return re.sub(r"\b[\w.-]+@[\w-]+(\.[\w-]+)*\b", "<user>@<host>", text)
 
 
 def generate_crash_report(exctype, value, tb, fatal=True):
@@ -132,7 +151,7 @@ def generate_crash_report(exctype, value, tb, fatal=True):
 
         with open(LOG_FILE, "rb") as f:
             f.seek(0, os.SEEK_END)
-            f.seek(max(0, f.tell() - 60000))
+            f.seek(max(0, f.tell() - 4 * LOG_TAIL_CHARS))  # UTF-8: up to 4 bytes a character
             logs = f.read().decode("utf-8", errors="replace")
     except OSError:
         pass
@@ -178,6 +197,7 @@ def generate_crash_report(exctype, value, tb, fatal=True):
         report_lines.append(f"| {k} | {v} |")
 
     report_lines.append("\n## 4. Environment Variables")
+    report_lines.append("Those that affect Qt, CASA and the numeric libraries.\n")
     report_lines.append("| Variable | Value |")
     report_lines.append("| :--- | :--- |")
     for k, v in get_environment_info().items():
@@ -189,10 +209,12 @@ def generate_crash_report(exctype, value, tb, fatal=True):
 
     report_lines.append("\n## 6. Application Logs")
     report_lines.append("```")
-    report_lines.append(logs[-50000:])  # Last 50k chars of logs
+    # The end of the log: short enough to paste into an issue
+    report_lines.append(logs[-LOG_TAIL_CHARS:])
     report_lines.append("```")
 
-    report_content = "\n".join(report_lines)
+    # Paths, the user name and host names are left out of what users share
+    report_content = scrub("\n".join(report_lines))
 
     try:
         with open(report_path, "w") as f:

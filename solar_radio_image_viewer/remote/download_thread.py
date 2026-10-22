@@ -63,7 +63,7 @@ class DownloadThread(QThread):
         Returns the previous timeout value so it can be restored later.
         """
         try:
-            transport = self.connection._client.get_transport()
+            transport = self.connection.transport
             if transport and transport.sock:
                 old_timeout = transport.sock.gettimeout()
                 transport.sock.settimeout(timeout)

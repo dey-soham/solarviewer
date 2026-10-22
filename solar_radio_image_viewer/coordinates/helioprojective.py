@@ -21,7 +21,6 @@ from casatools import image as IA
 # casatasks (immath, exportfits) are now run via subprocess to avoid memory issues
 
 try:
-    from sunpy.net import Fido, attrs as a
     import sunpy.map
     from sunpy.coordinates import Helioprojective
     from sunpy.coordinates.sun import P
@@ -31,7 +30,7 @@ except ImportError:
     logger.error("sunpy is not installed or some components are missing")
     sunpy_imported = False
 
-from ..processing.fits_io import readable_image_path
+from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.stokes import (
     fits_stokes_labels,
     plane_index,
@@ -71,14 +70,10 @@ def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observator
                 "[WARNING] Observatory parameter could not be understood. Trying from lat and long...."
             )
     if lat is not None and long is not None and height is not None:
-        # print(
-        #    f"[DEBUG] USING observer position from arguments LAT={lat}, LON={long}, HEIGHT={height}"
-        # )
         POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
 
     if lat is None or long is None or height is None:
         try:
-            # print(f"No lat, long input found. Trying to read from header .....")
             x = header["OBSGEO-X"]
             y = header["OBSGEO-Y"]
             z = header["OBSGEO-Z"]
@@ -153,12 +148,9 @@ def convert_to_hpc_planes(
         psf = ia_tool.restoringbeam()
         csys = ia_tool.coordsys()
         ia_tool.close()
-        # csys = "hpc"
     except Exception as e:
         raise RuntimeError(f"Failed to open image {fits_file}: {e}")
 
-    # print("************************")
-    # print(f"[INFO] Starting hpc conversion for image {fits_file}")
     # Read the FITS file
     hdu = fits.open(fits_file, memmap=True)
     header = hdu[0].header
@@ -195,8 +187,6 @@ def convert_to_hpc_planes(
             for spatial_axis in spatial_axes:
                 numpy_axis_map[spatial_axis] = ndim - spatial_axis - 1
 
-            # print(f"[DEBUG] FITS axes mapping to NumPy positions: {numpy_axis_map}")
-            # print(f"[DEBUG] Spatial axes in FITS (0-indexed): {spatial_axes}")
 
             # Update the axes to their NumPy positions
             if stokes_axis is not None:
@@ -208,9 +198,7 @@ def convert_to_hpc_planes(
                 freq_axis = numpy_axis_map[freq_axis]
 
             data_all = hdu[0].data
-            # print(f"[DEBUG] Data from FITS file: {data_all.shape}")
-        except Exception as e:
-            # print(f"[ERROR] {str(e)}")
+        except Exception:
             return None, None, None
 
         labels = fits_stokes_labels(header) if stokes_axis is not None else None
@@ -247,12 +235,10 @@ def convert_to_hpc_planes(
         # Get frequency from the appropriate header keyword based on the original FITS axis
         if freq_axis is not None:
             frequency = header[f"CRVAL{original_freq_axis}"] * u.Hz
-            # print(f"Using frequency from CRVAL{original_freq_axis}: {frequency}")
         else:
             # Try to find frequency from other header keywords if freq_axis is not identified
             if "FREQ" in header:
                 frequency = header["FREQ"] * u.Hz
-                # print(f"Using frequency from FREQ keyword: {frequency}")
             else:
                 raise RuntimeError("Could not determine frequency from header")
         obstime = Time(header["date-obs"])
@@ -268,7 +254,6 @@ def convert_to_hpc_planes(
             or observatory.upper() == "GMRT"
             or observatory.upper() == "UGMRT"
         ):
-            # print(f"Observatory: {observatory}")
             pass
         else:
             observatory = None
@@ -289,7 +274,6 @@ def convert_to_hpc_planes(
         cdelta_1 = (np.abs(header["CDELT1"]) * u.deg).to(u.arcsec)
         cdelta_2 = (np.abs(header["CDELT2"]) * u.deg).to(u.arcsec)
         P_angle = P(obstime) * -1
-        # print(f"Rotating by {P_angle}")
 
         # Ensure frequency unit is properly formatted for the FITS header
         new_header = sunpy.map.make_fitswcs_header(
@@ -372,29 +356,8 @@ def convert_to_hpc_planes(
             try:
                 map_rotated = map.rotate(P_angle)
             except Exception as e:
-                logger.warning(f"Error rotating map: {e}. Trying another method.")
-                try:
-                    P_angle_deg = P_angle.to(u.deg).value
-
-                    def deg_to_dms_str(deg):
-                        # Determine the sign and work with the absolute value
-                        sign = "-" if deg < 0 else ""
-                        abs_deg = abs(deg)
-
-                        # Extract degrees, minutes, and seconds
-                        degrees = int(abs_deg)
-                        minutes_full = (abs_deg - degrees) * 60
-                        minutes = int(minutes_full)
-                        seconds = (minutes_full - minutes) * 60
-
-                        # Format string: you can adjust the precision of seconds as needed
-                        # print(f"[DEBUG] Rotating by {sign}{degrees}d{minutes}m{seconds:.1f}s")
-                        return f"{sign}{degrees}d{minutes}m{seconds:.1f}s"
-
-                    map_rotated = map.rotate(deg_to_dms_str(P_angle_deg))
-                except Exception as e:
-                    logger.error(f"Error rotating map: {e}")
-                    map_rotated = None
+                logger.error(f"Error rotating the map by the P angle: {e}")
+                map_rotated = None
 
             return map_rotated
 
@@ -439,7 +402,6 @@ def convert_to_hpc_planes(
             or observatory.upper() == "GMRT"
             or observatory.upper() == "UGMRT"
         ):
-            # print(f"Observatory: {observatory}")
             pass
         else:
             observatory = None
@@ -461,7 +423,6 @@ def convert_to_hpc_planes(
         cdelta_1 = (np.abs(header["CDELT1"]) * u.deg).to(u.arcsec)
         cdelta_2 = (np.abs(header["CDELT2"]) * u.deg).to(u.arcsec)
         P_angle = P(obstime) * -1
-        # print(f"Rotating by {P_angle}")
         new_header = sunpy.map.make_fitswcs_header(
             data,
             reference_coord_arcsec,
@@ -497,22 +458,13 @@ def convert_to_hpc_planes(
             rotated_bpa = original_bpa + P_angle.to(u.deg).value
             new_header["BPA"] = rotated_bpa
         map = sunpy.map.Map(data, new_header)
+        # (A fallback here once rotated by the map's own metadata instead,
+        # silently; a map that cannot be rotated by the P angle is an error)
         try:
             map_rotated = map.rotate(P_angle)
         except Exception as e:
-            logger.error(f"Error rotating map: {e}. Trying another method.")
-            try:
-                P_angle_deg = P_angle.to(u.deg).value
-
-                def deg_to_dms_str(deg):
-                    # Determine the sign and work with the absolute value
-                    sign = "-" if deg < 0 else ""
-                    abs_deg = abs(deg)
-
-                map_rotated = map.rotate(deg_to_dms_str(P_angle_deg))
-            except Exception as e:
-                logger.error(f"Error rotating map: {e}")
-                map_rotated = None
+            logger.error(f"Error rotating the map by the P angle: {e}")
+            map_rotated = None
 
         return [map_rotated], csys, psf
     else:
@@ -715,17 +667,15 @@ def convert_and_save_hpc(
 
     try:
         not_fits_flag = False
-        original_file = input_fits_file  # Keep reference to original
 
         # Fix: use AND instead of OR to check if NOT a FITS file
-        if not (input_fits_file.endswith(".fits") or input_fits_file.endswith(".fts")):
+        if not is_fits(input_fits_file):
             temp_filename = os.path.join(
                 tempfile.gettempdir(), f"temp_hpc{temp_suffix}_{os.getpid()}.fits"
             )
             input_fits_file = convert_casaimage_to_fits(
                 imagename=input_fits_file, fitsname=temp_filename
             )
-            # print(f"Converted casaimage {original_file} to a temporary fits file ...")
             not_fits_flag = True
 
         # Get BUNIT from original file BEFORE any processing
@@ -735,7 +685,6 @@ def convert_and_save_hpc(
 
             with afits.open(input_fits_file) as orig_hdu:
                 original_bunit = orig_hdu[0].header.get("BUNIT", None)
-                # print(f"[HPC] Found BUNIT in original: {original_bunit}")
         except Exception as e:
             logger.error(f"Could not read BUNIT: {e}")
 
@@ -768,7 +717,6 @@ def convert_and_save_hpc(
             with afits.open(output_fits_file, mode="update") as hdul:
                 hdul[0].header["BUNIT"] = original_bunit
                 hdul.flush()
-            # print(f"[DEBUG] Added BUNIT={original_bunit} to HPC file")
 
         logger.info(f"Helioprojective map saved to {output_fits_file}")
 
@@ -834,9 +782,7 @@ def convert_and_save_hpc_all_stokes(
         not_fits_flag = False
         original_input = input_fits_file
 
-        if not input_fits_file.endswith(".fits") and not input_fits_file.endswith(
-            ".fts"
-        ):
+        if not is_fits(input_fits_file):
             # Create unique temp filename with provided suffix in a writable directory
             temp_filename = os.path.join(
                 tempfile.gettempdir(), f"temp_hpc_all{temp_suffix}_{os.getpid()}.fits"
@@ -854,7 +800,6 @@ def convert_and_save_hpc_all_stokes(
         # Get BUNIT early before temp file is deleted
         original_bunit = header.get("BUNIT", None)
         if original_bunit:
-            # print(f"[DEBUG] Found BUNIT in original: {original_bunit}")
             pass
 
         # Find Stokes axis
@@ -869,7 +814,6 @@ def convert_and_save_hpc_all_stokes(
 
         if stokes_axis_fits is None or num_stokes == 1:
             # Single Stokes - just use regular conversion
-            # print("Single Stokes image, using standard conversion")
             return convert_and_save_hpc(
                 input_fits_file=original_input,
                 output_fits_file=output_fits_file,
@@ -927,7 +871,6 @@ def convert_and_save_hpc_all_stokes(
 
         for i, smap in enumerate(stokes_maps[1:], 1):
             if smap.shape != reference_shape:
-                # print(f"[DEBUG] Stokes {stokes_list[i]} shape {smap.shape} differs from reference {reference_shape}, resampling...")
                 # Resize to match reference shape
                 from scipy.ndimage import zoom
 
@@ -942,7 +885,6 @@ def convert_and_save_hpc_all_stokes(
 
         # Stack all Stokes into a single 3D array
         stokes_data = np.stack(aligned_maps, axis=0)
-        # print(f"Combined Stokes data shape: {stokes_data.shape}")
 
         # Create new header with Stokes axis
         from astropy.io import fits as afits
@@ -969,7 +911,6 @@ def convert_and_save_hpc_all_stokes(
         # Preserve BUNIT from original file
         if original_bunit:
             new_header["BUNIT"] = original_bunit
-            # print(f"[HPC] Added BUNIT={original_bunit} to multi-Stokes HPC file")
 
         # Remove single-Stokes marker if present
         if "STOKES" in new_header:
@@ -981,7 +922,6 @@ def convert_and_save_hpc_all_stokes(
             "Converted to Helioprojective coordinates with SolarViewer"
         )
         hdu_out.writeto(output_fits_file, overwrite=overwrite)
-        # print(f"Helioprojective map with {len(stokes_maps)} Stokes saved to {output_fits_file}")
 
         return True
 
@@ -1026,10 +966,8 @@ def convert_hpc_to_radec(
 
     try:
         from astropy.io import fits as afits
-        from astropy.wcs import WCS
         from scipy.ndimage import rotate
 
-        # print(f"[HPC->RA/Dec] Converting {input_fits_file}")
 
         # Load the HPC FITS file
         with afits.open(input_fits_file) as hdul:
@@ -1054,7 +992,6 @@ def convert_hpc_to_radec(
 
         # Get P-angle - this is the rotation we need to undo
         p_angle = P(obstime).to(u.deg).value
-        # print(f"[HPC->RA/Dec] P-angle: {p_angle:.2f} deg - will rotate by {-p_angle:.2f} deg")
 
         # Get Sun center in RA/Dec at observation time
         sun_coord = SkyCoord(
@@ -1065,7 +1002,6 @@ def convert_hpc_to_radec(
         sun_radec = sun_coord.transform_to("gcrs")
         sun_ra = sun_radec.ra.deg
         sun_dec = sun_radec.dec.deg
-        # print(f"[HPC->RA/Dec] Sun center at {obstime.iso}: RA={sun_ra:.4f}, Dec={sun_dec:.4f}")
 
         # Get HPC coordinate parameters
         crpix1 = hpc_header.get("CRPIX1", hpc_data.shape[-1] / 2)
@@ -1165,7 +1101,6 @@ def convert_hpc_to_radec(
         crpix1 = crpix1 - cmin
         crpix2 = crpix2 - rmin
 
-        # print(f"[HPC->RA/Dec] Cropped to {rotated_data.shape[-1]}x{rotated_data.shape[-2]} (removed NaN borders)")
 
         # Convert cdelt from arcsec to degrees if needed
         cunit1 = hpc_header.get("CUNIT1", "arcsec").lower()
@@ -1215,7 +1150,6 @@ def convert_hpc_to_radec(
         # Handle Stokes and frequency axes based on data dimensions
         if hpc_data.ndim == 3:
             # 3D: could be Stokes or frequency - preserve original axis info
-            orig_ctype3 = hpc_header.get("CTYPE3", "STOKES").upper()
             orig_freq = (
                 hpc_header.get("CRVAL3")
                 or hpc_header.get("RESTFRQ")
@@ -1292,7 +1226,6 @@ def convert_hpc_to_radec(
         hdu = afits.PrimaryHDU(data=rotated_data, header=new_header)
         hdu.writeto(output_fits_file, overwrite=overwrite)
 
-        # print(f"[HPC->RA/Dec] Saved rotated RA/Dec file to: {output_fits_file}")
         return True
 
     except Exception as e:
@@ -1682,39 +1615,13 @@ def test_extract_telescope_position():
     }
 
     # Test with the original metadata
-    # print("\nTest 1: Original metadata")
     lat, lon, height, observatory = extract_telescope_position(metadata)
 
-    # Print the results
-    # print("\nExtracted Telescope Position:")
-    # print(f"Latitude: {lat}")
-    # print(f"Longitude: {lon}")
-    # print(f"Height: {height} meters")
-    # print(f"Observatory: {observatory}")
-
-    # Print the values to use in convert_to_hpc
-    # print("\nUse these values in convert_to_hpc as:")
-    # print(f'lat="{lat}", long="{lon}", height={height}, observatory="{observatory}"')
-
     # Test with metadata that has observatory directly in the dictionary
-    # print("\nTest 2: Metadata with observatory directly in the dictionary")
     metadata2 = metadata.copy()
     metadata2["observatory"] = "MWA"
 
     lat2, lon2, height2, observatory2 = extract_telescope_position(metadata2)
-
-    # Print the results
-    # print("\nExtracted Telescope Position:")
-    # print(f"Latitude: {lat2}")
-    # print(f"Longitude: {lon2}")
-    # print(f"Height: {height2} meters")
-    # print(f"Observatory: {observatory2}")
-
-    # Print the values to use in convert_to_hpc
-    # print("\nUse these values in convert_to_hpc as:")
-    # print(
-    #    f'lat="{lat2}", long="{lon2}", height={height2}, observatory="{observatory2}"'
-    # )
 
     return lat, lon, height, observatory
 

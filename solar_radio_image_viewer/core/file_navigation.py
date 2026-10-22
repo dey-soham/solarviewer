@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
 )
 
+from ..processing.fits_io import is_fits
 from ..ui.open_image import choose_image
 from ..ui.recent_files import forget_image, last_image_folder, remember_image
 from ..ui.styles import set_hand_cursor, theme_manager
@@ -220,7 +221,7 @@ class FileNavigationMixin:
                     continue
 
                 # Include FITS files
-                if item.lower().endswith((".fits", ".fts")):
+                if is_fits(item_path):
                     all_items.append(item_path)
                 # Include CASA images (directories that look like images)
                 elif os.path.isdir(item_path) and item.endswith(".image"):
@@ -381,7 +382,7 @@ except Exception:
 
                     # Try python3 first, then python
                     cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.remote_dir)}"
-                    stdin, stdout, stderr = self.connection._client.exec_command(cmd)
+                    stdin, stdout, stderr = self.connection.exec_command(cmd)
 
                     # Read output
                     out_data = stdout.read().decode("utf-8").strip()
@@ -405,13 +406,13 @@ except Exception:
                                 )
                                 entries.append(info)
                             success = True
-                        except:
+                        except Exception:
                             pass
 
                     # FALLBACK: If fast path failed (no python, etc), use slower SFTP loop
                     if not success:
-                        if self.connection._client:
-                            self._sftp = self.connection._client.open_sftp()
+                        if self.connection.is_connected():
+                            self._sftp = self.connection.open_sftp()
                         else:
                             self.error.emit("Not connected")
                             return
@@ -475,7 +476,7 @@ except Exception:
                     if self._sftp:
                         try:
                             self._sftp.close()
-                        except:
+                        except Exception:
                             pass
 
         try:
@@ -547,7 +548,7 @@ except Exception:
 
             # Check cache first
             cached_path = main_window.remote_cache.get_cached_path(
-                main_window.remote_connection._host,
+                main_window.remote_connection.host,
                 remote_path,
                 entry.mtime,
                 entry.size,
@@ -558,7 +559,7 @@ except Exception:
             else:
                 # Download the file with progress dialog (NON-BLOCKING Main Thread)
                 local_path = main_window.remote_cache.get_cache_path(
-                    main_window.remote_connection._host,
+                    main_window.remote_connection.host,
                     remote_path,
                 )
 
@@ -666,7 +667,7 @@ except Exception:
 
                 # Mark as cached
                 main_window.remote_cache.mark_cached(
-                    main_window.remote_connection._host,
+                    main_window.remote_connection.host,
                     remote_path,
                     Path(local_path),
                     entry.mtime,
@@ -1120,13 +1121,13 @@ except Exception:
                 # Clear search and refresh list to show current selection
                 search_input.clear()
 
-            except RuntimeError as e:
+            except RuntimeError:
                 # Viewer was deleted
                 dialog.close()
             except Exception as e:
                 try:
                     viewer.show_status_message(f"Error loading file: {str(e)}")
-                except:
+                except Exception:
                     pass
 
         def on_double_click(item):
@@ -1156,7 +1157,6 @@ except Exception:
         base = palette["base"]
         surface = palette["surface"]
         border = palette["border"]
-        border_light = palette.get("border_light", border)
         text = palette["text"]
         text_secondary = palette.get(
             "text_secondary", palette.get("disabled", "#888888")
@@ -1166,7 +1166,6 @@ except Exception:
         button = palette["button"]
         button_hover = palette["button_hover"]
         button_pressed = palette.get("button_pressed", button)
-        disabled = palette.get("disabled", "#666666")
         gradient_start = palette.get("button_gradient_start", highlight)
         gradient_end = palette.get("button_gradient_end", highlight_hover)
 

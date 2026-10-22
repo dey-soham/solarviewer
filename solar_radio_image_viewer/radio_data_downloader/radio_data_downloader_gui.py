@@ -28,7 +28,7 @@ try:
         QCheckBox,
         QTextEdit,
     )
-    from PyQt5.QtCore import Qt, QDateTime, pyqtSignal, QThread
+    from PyQt5.QtCore import QDateTime, pyqtSignal, QThread
 except ImportError:
     print("Error: PyQt5 is required. Please install it with:")
     print("  pip install PyQt5")

@@ -185,7 +185,6 @@ def fetch_all_instruments() -> List[Tuple[str, str, str, str]]:
                             ),
                         )
 
-                        description = f"{observatory} - {name}"
                         instruments.append((name, layer, observatory, cadence))
                     else:
                         # This is a detector level, iterate measurements
@@ -215,7 +214,6 @@ def fetch_all_instruments() -> List[Tuple[str, str, str, str]]:
                                 ),
                             )
 
-                            description = f"{observatory} - {name}"
                             instruments.append((name, layer, observatory, cadence))
 
         print(f"Loaded {len(instruments)} instruments from Helioviewer")
@@ -319,7 +317,6 @@ class ImageDownloader(QThread):
     def run(self):
         try:
             # Determine imageScale based on instrument
-            layer_lower = self.layer_path.lower()
 
             # Parse instrument from layer (format: [sourceId,1,100])
             # Need to determine instrument type from name passed in
@@ -2081,23 +2078,21 @@ class HelioviewerBrowser(QMainWindow):
         progress.setValue(len(frames))
 
     def _export_mp4(self, frames, file_path, progress, fps, include_timestamp=False):
-        """Export frames as MP4 video."""
-        try:
-            import cv2
-            import numpy as np
-        except ImportError:
-            raise Exception(
-                "OpenCV is required for MP4 export. Install with: pip install opencv-python"
-            )
+        """Export frames as an H.264 MP4 video (with imageio's ffmpeg writer,
+        as Create Video does)."""
+        import imageio
+        import numpy as np
 
-        # Get frame dimensions from first frame
-        first_pixmap = frames[0]
-        width = first_pixmap.width()
-        height = first_pixmap.height()
-
-        # Create video writer with user-selected FPS
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(file_path, fourcc, fps, (width, height))
+        out = imageio.get_writer(
+            file_path,
+            format="FFMPEG",
+            fps=fps,
+            codec="libx264",
+            quality=None,
+            pixelformat="yuv420p",
+            macro_block_size=1,
+            output_params=["-crf", "18"],
+        )
 
         try:
             for i, pixmap in enumerate(frames):
@@ -2142,13 +2137,12 @@ class HelioviewerBrowser(QMainWindow):
                 # Slice out the padding bytes at the end of each scanline
                 arr = arr[:, : width * 3].reshape((height, width, 3))
 
-                # OpenCV uses BGR, Qt uses RGB
-                arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-                out.write(arr)
+                # H.264 (yuv420p) needs even sizes
+                out.append_data(arr[: height - height % 2, : width - width % 2])
 
             progress.setValue(len(frames))
         finally:
-            out.release()
+            out.close()
 
     def batch_download(self):
         """Batch download all frames."""

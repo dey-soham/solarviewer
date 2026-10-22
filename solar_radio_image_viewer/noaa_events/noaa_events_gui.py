@@ -23,20 +23,17 @@ try:
         QTableWidget,
         QTableWidgetItem,
         QHeaderView,
-        QGroupBox,
-        QSplitter,
         QFrame,
         QScrollArea,
         QSizePolicy,
         QMessageBox,
         QProgressBar,
         QDialog,
-        QTextBrowser,
         QTabWidget,
     )
-    from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal, QUrl, QSize
-    from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QPixmap
-    from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+    from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal, QSize
+    from PyQt5.QtGui import QColor, QPalette, QPixmap
+    from PyQt5.QtNetwork import QNetworkAccessManager
 except ImportError:
     print("PyQt5 is required. Install with: pip install PyQt5")
     sys.exit(1)
@@ -60,7 +57,7 @@ except ImportError:
     from solar_radio_image_viewer.ui.styles import theme_manager, set_hand_cursor
 import json
 from pathlib import Path
-from ..processing.fits_io import readable_image_path
+from ..processing.fits_io import is_fits, readable_image_path
 
 
 def _serialize_obj(obj):
@@ -725,7 +722,6 @@ class GOESPlotWorker(QThread):
         try:
             from sunpy.net import Fido, attrs as a
             from sunpy.timeseries import TimeSeries
-            import matplotlib.pyplot as plt
 
             # Define time range for the full day
             t_start = datetime.combine(self.event_date, datetime.min.time())
@@ -733,7 +729,6 @@ class GOESPlotWorker(QThread):
 
             # Search for GOES XRS data
             # Use a.Resolution.flx1s (1-second data) if possible, or avg1m (1-minute)
-            # print(f"Searching for GOES data for {self.event_date}...")
             res = Fido.search(a.Time(t_start, t_end), a.Instrument("GOES"))
 
             if len(res) == 0:
@@ -761,7 +756,6 @@ class GOESPlotWorker(QThread):
             # Slice the UnifiedResponse to keep only the first row of the first provider results
             best_result = res[0, 0]
 
-            # print(f"Downloading the first available match: {best_result}")
             files = Fido.fetch(best_result)
 
             if not files:
@@ -855,7 +849,7 @@ class DHSpectraWorker(QThread):
                     wind_found = True
                     self.progress.emit("Calibrated WIND/WAVES data found!")
                     
-                except Exception as e:
+                except Exception:
                     self.progress.emit("Calibrated source unavailable, trying fallback...")
                 
                 # Fallback to 24h source if calibrated not found
@@ -2031,7 +2025,6 @@ class NOAAEventsViewer(QMainWindow):
 
     def _create_radio_spectra_tab(self):
         """Radio Spectra tab: one card per instrument."""
-        palette = theme_manager.palette
 
         # Tab 6: Radio Spectra (DH-band)
         spectra_tab = QWidget()
@@ -2321,8 +2314,9 @@ class NOAAEventsViewer(QMainWindow):
         if _noaa_cache.has_any_spectra(selected_date):
             self.fetch_dh_spectra()
 
-    def on_fetch_finished(self, events, active_regions, conditions, cmes, images, ecallisto_bursts=[]):
+    def on_fetch_finished(self, events, active_regions, conditions, cmes, images, ecallisto_bursts=None):
         """Handle fetched data."""
+        ecallisto_bursts = ecallisto_bursts or []
         try:
             # Check for validity
             if not self.isVisible() and not self.parent():
@@ -2442,8 +2436,9 @@ class NOAAEventsViewer(QMainWindow):
         self.optical_section.set_count(0)
         self.radio_section.set_count(0)
 
-    def display_events(self, events, ecallisto_bursts=[]):
+    def display_events(self, events, ecallisto_bursts=None):
         """Display events in categorized tables."""
+        ecallisto_bursts = ecallisto_bursts or []
         self.clear_tables()
 
         if events is None:
@@ -2451,7 +2446,6 @@ class NOAAEventsViewer(QMainWindow):
             return
 
         categories = ne.categorize_events(events)
-        stats = ne.get_event_statistics(events)
 
         # Update summary - MOVED to _update_comprehensive_summary
         xray_count = len(categories["xray"])
@@ -2837,12 +2831,7 @@ class NOAAEventsViewer(QMainWindow):
 
             # Method 1b: If no header attribute, read FITS/FTS file directly
             if header is None and imagename:
-                lower_name = imagename.lower()
-                if (
-                    lower_name.endswith(".fits")
-                    or lower_name.endswith(".fts")
-                    or lower_name.endswith(".fit")
-                ):
+                if is_fits(imagename):
                     try:
                         from astropy.io import fits
 
@@ -2873,12 +2862,7 @@ class NOAAEventsViewer(QMainWindow):
             # Method 2: CASA image - read csys_record directly from file (like viewer.py)
             if extracted_date is None and imagename:
                 # Check if it's a CASA image (directory, not .fits/.fts)
-                lower_name = imagename.lower()
-                is_casa_image = os.path.isdir(imagename) or (
-                    not lower_name.endswith(".fits")
-                    and not lower_name.endswith(".fts")
-                    and not lower_name.endswith(".fit")
-                )
+                is_casa_image = not is_fits(imagename)
 
                 if is_casa_image:
                     try:
@@ -3015,7 +2999,7 @@ class NOAAEventsViewer(QMainWindow):
             try:
                 for t in ts_list:
                     t.plot(axes=ax)
-            except (IndexError, TypeError, ValueError) as plot_err:
+            except (IndexError, TypeError, ValueError):
                 # Fallback: manual plotting with proper GOES styling
                 plt.close(fig)  # Close the failed figure
                 fig, ax = plt.subplots(figsize=(12, 6))

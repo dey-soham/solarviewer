@@ -36,10 +36,10 @@ from ..ui.styles import set_hand_cursor
 # Try to import sunpy
 try:
     import sunpy
-    import sunpy.map
-    from sunpy.coordinates import frames
-    import astropy.units as u
-    from astropy.coordinates import SkyCoord
+    import sunpy.map  # noqa: F401 (availability check)
+    from sunpy.coordinates import frames  # noqa: F401 (availability check)
+    import astropy.units as u  # noqa: F401 (availability check)
+    from astropy.coordinates import SkyCoord  # noqa: F401 (availability check)
 
     SUNPY_AVAILABLE = True
 except ImportError:
@@ -50,7 +50,7 @@ except ImportError:
 
 # Try to import CASA tools (casatasks run via subprocess)
 try:
-    from casatools import image as IA
+    from casatools import image as IA  # noqa: F401 (availability check)
 
     # Note: casatasks (exportfits) is now run via subprocess - see convert_casaimage_to_fits()
 

@@ -84,24 +84,23 @@ class FittingMixin:
 
         imagename = current_tab.imagename
 
-        # Get current Stokes from left panel (may be in tab or main app)
-        # CASA imfit only accepts standard Stokes: I, Q, U, V
-        stokes = "I"
-        if hasattr(self, "stokes_combo") and self.stokes_combo:
-            selected_stokes = self.stokes_combo.currentText()
-            if selected_stokes in ["I", "Q", "U", "V"]:
-                stokes = selected_stokes
-            # For derived parameters (L, Lfrac, etc), fall back to I
-        elif hasattr(current_tab, "stokes_combo") and current_tab.stokes_combo:
-            selected_stokes = current_tab.stokes_combo.currentText()
-            if selected_stokes in ["I", "Q", "U", "V"]:
-                stokes = selected_stokes
+        # CASA imfit fits only the planes I, Q, U and V: a derived product
+        # (L, Lfrac, ...) on screen is fitted as Stokes I, and the user told so
+        combo = getattr(current_tab, "stokes_combo", None)
+        shown = combo.currentText() if combo is not None else "I"
+        stokes = shown if shown in ("I", "Q", "U", "V") else "I"
+        note = ""
+        if shown != stokes:
+            note = (
+                f"The image shows {shown}, which cannot be fitted: "
+                "the fit uses Stokes I.\n\n"
+            )
 
         # Ask user about zero-level offset
         reply = QMessageBox.question(
             self,
             "Fitting Options",
-            "Fit zero-level offset (background)?\n\n"
+            f"{note}Fit zero-level offset (background)?\n\n"
             "Yes: Fit a constant background level\n"
             "No: Assume zero background",
             QMessageBox.Yes | QMessageBox.No,
@@ -277,14 +276,14 @@ class FittingMixin:
                         pix = current_tab.current_wcs.topixel([ra_rad, dec_rad])[
                             "numeric"
                         ]
-                    except:
+                    except Exception:
                         # Use 4 axes but suppress warning by using valid stokes index 1
                         pix = current_tab.current_wcs.topixel([ra_rad, dec_rad, 1, 1])[
                             "numeric"
                         ]
                     ra_pix = pix[0]
                     dec_pix = pix[1]
-                except:
+                except Exception:
                     pass
 
             # Beam parameters
@@ -307,7 +306,7 @@ class FittingMixin:
                         beam_pa = float(current_tab.psf["positionangle"]["value"][0])
                     else:
                         beam_pa = float(current_tab.psf["positionangle"]["value"])
-                except:
+                except Exception:
                     pass
 
             # Helper to format value with error

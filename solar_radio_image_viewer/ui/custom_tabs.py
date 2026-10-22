@@ -43,7 +43,6 @@ class CustomTabBar(QTabBar):
 
         # Make sure the add button is visible and on top
         self.add_tab_button.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-        # self.add_tab_button.setFocusPolicy(Qt.StrongFocus)
         self.add_tab_button.show()
         self.add_tab_button.raise_()
 

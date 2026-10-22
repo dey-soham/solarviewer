@@ -194,7 +194,7 @@ unset PYTHONPATH
         ```
 
 ### **SSL Error**
-We have included an automatic fix for `ssl.SSLError` on Linux/Python 3.11+. If you still encounter issues, try running with:
+We have included an automatic fix for `ssl.SSLError` on Linux/Python 3.11+: SolarViewer starts with `OPENSSL_CONF=/dev/null`, so OpenSSL skips the system's configuration file (certificates are still checked). If you need your own OpenSSL configuration (for example a FIPS or company policy), set `OPENSSL_CONF` yourself and SolarViewer keeps it. If you still encounter issues, try running with:
 ```bash
 OPENSSL_CONF=/dev/null solarviewer
 ```

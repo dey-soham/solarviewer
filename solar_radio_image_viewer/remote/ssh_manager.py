@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import paramiko
-    from paramiko import SSHClient, SFTPClient, RSAKey, Ed25519Key, ECDSAKey
+    from paramiko import SSHClient, SFTPClient
     from paramiko.config import SSHConfig
 
     HAS_PARAMIKO = True
@@ -316,14 +316,14 @@ class SSHConnection:
         if self._sftp:
             try:
                 self._sftp.close()
-            except:
+            except Exception:
                 pass
             self._sftp = None
 
         if self._client:
             try:
                 self._client.close()
-            except:
+            except Exception:
                 pass
             self._client = None
 
@@ -378,7 +378,7 @@ class SSHConnection:
                 self._connected = False
                 return False
             return True
-        except:
+        except Exception:
             self._connected = False
             return False
 
@@ -471,7 +471,7 @@ class SSHConnection:
             if transport and transport.is_active():
                 result["transport_active"] = True
                 result["connected"] = True
-        except:
+        except Exception:
             pass
 
         try:
@@ -479,7 +479,7 @@ class SSHConnection:
                 # Try a simple operation to test SFTP
                 self._sftp.getcwd()
                 result["sftp_active"] = True
-        except:
+        except Exception:
             pass
 
         return result
@@ -500,7 +500,7 @@ class SSHConnection:
             if self._sftp:
                 try:
                     self._sftp.close()
-                except:
+                except Exception:
                     pass
 
             # Open new SFTP channel
@@ -516,6 +516,43 @@ class SSHConnection:
         if self.is_connected():
             return f"{self._username}@{self._host}:{self._port}"
         return "Not connected"
+
+    @property
+    def host(self) -> str:
+        """The server's host name (an ~/.ssh/config alias resolved), or ""."""
+        return self._host
+
+    @property
+    def last_home(self) -> str:
+        """The home directory get_home_directory() last found, or ""."""
+        return self._last_home
+
+    @property
+    def connect_params(self) -> dict:
+        """A copy of the parameters connect() was called with."""
+        return dict(self._connect_params)
+
+    @property
+    def transport(self):
+        """The paramiko Transport, or None when not connected."""
+        return self._client.get_transport() if self._client else None
+
+    def exec_command(self, command: str, timeout: float = None):
+        """Run ``command`` on the server: (stdin, stdout, stderr), as paramiko's
+        SSHClient.exec_command."""
+        if not self._client:
+            raise SSHConnectionError("Not connected to remote server")
+        return self._client.exec_command(command, timeout=timeout)
+
+    def open_sftp(self):
+        """A new SFTP session of its own (e.g. for another thread)."""
+        if not self._client:
+            raise SSHConnectionError("Not connected to remote server")
+        return self._client.open_sftp()
+
+    def mark_lost(self) -> None:
+        """Record that the server stopped answering (seen by a health check)."""
+        self._connected = False
 
     def list_directory(
         self,
@@ -654,7 +691,7 @@ class SSHConnection:
             else:
                 self._sftp.get(remote_path, local_path)
             return local_path
-        except (socket.timeout, EOFError, ConnectionResetError, BrokenPipeError) as e:
+        except (socket.timeout, EOFError, ConnectionResetError, BrokenPipeError):
             # Network-level failures — transport is likely dead
             self._recover_after_transfer_failure(is_network_error=True)
             raise  # Re-raise the original exception for DownloadThread to handle
@@ -721,7 +758,7 @@ class SSHConnection:
 
             return local_dir
 
-        except (socket.timeout, EOFError, ConnectionResetError, BrokenPipeError) as e:
+        except (socket.timeout, EOFError, ConnectionResetError, BrokenPipeError):
             # Network-level failures — transport is likely dead
             self._recover_after_transfer_failure(is_network_error=True)
             raise  # Re-raise for DownloadThread to handle with user-friendly message
@@ -789,11 +826,10 @@ class SSHConnection:
             # Note: this returns the canonical/resolved path, not the symlinked path
             # e.g. if /home/user is a symlink to /misc/home/user, this returns /misc/home/user
             home = self._sftp.normalize(".")
-            # print(f"[SSH] Home directory (sftp.normalize): {home}")
             # Cache for non-blocking access later
             self._last_home = home
             return home
-        except:
+        except Exception:
             return "/"
 
     def get_directory_count(self, path: str) -> int:
@@ -812,5 +848,5 @@ class SSHConnection:
         try:
             # listdir is faster than listdir_attr as it doesn't fetch attributes
             return len(self._sftp.listdir(path))
-        except:
+        except Exception:
             return -1

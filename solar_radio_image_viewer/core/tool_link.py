@@ -165,7 +165,7 @@ class ToolLink(QObject):
         if connection is None or not connection.is_connected():
             return False
         source = cache.remote_source(image)
-        if source is None or source[0] != connection._host:
+        if source is None or source[0] != connection.host:
             return False
         folder = posixpath.dirname(source[1])
         self._status(f"Listing {folder} on the server...", 0)

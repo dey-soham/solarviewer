@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
-    QTextEdit,
+    QPlainTextEdit,
     QPushButton,
     QWidget,
 )
@@ -56,7 +56,8 @@ class LogConsole(QDialog):
     """
 
     _instance = None
-    MAX_BUFFER_CHARS = 15000000  # ~15MB text limit to prevent OOM
+    # The window keeps the last lines only; the log file keeps everything
+    MAX_LINES = 20000
 
     @classmethod
     def get_instance(cls):
@@ -79,11 +80,12 @@ class LogConsole(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
 
         # Log display area
-        self.text_edit = QTextEdit()
+        self.text_edit = QPlainTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setLineWrapMode(
-            QTextEdit.NoWrap
+            QPlainTextEdit.NoWrap
         )  # No wrap for log lines usually better
+        self.text_edit.setMaximumBlockCount(self.MAX_LINES)
 
         # Set Monospace font
         font = QFont("Consolas, 'Courier New', monospace")
@@ -144,7 +146,7 @@ class LogConsole(QDialog):
         try:
             from .ui.styles import theme_manager
 
-            theme_manager.register_callback(self.apply_theme)
+            theme_manager.register_callback(self.apply_theme, owner=self)
         except ImportError:
             pass
 
@@ -230,7 +232,7 @@ class LogConsole(QDialog):
 
             self.text_edit.setStyleSheet(
                 f"""
-                QTextEdit {{
+                QPlainTextEdit {{
                     background-color: {console_bg};
                     color: {console_text};
                     border: 1px solid {border_color};

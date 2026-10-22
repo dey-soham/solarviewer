@@ -142,10 +142,7 @@ def get_stylesheet(palette, is_dark=True):
     input_bg = palette["base"]
     input_text = palette.get("input_text", palette["text"])
     group_border = palette["border"]
-    tab_selected_bg = palette["highlight"]
-    hover_text = "#ffffff" if is_dark else palette["text"]
     surface_elevated = palette.get("surface_elevated", palette["surface"])
-    shadow = palette.get("shadow", "rgba(0,0,0,0.2)")
     text_secondary = palette.get("text_secondary", palette["disabled"])
     border_light = palette.get("border_light", palette["border"])
 

@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 )
 import os
 
+from ..processing.fits_io import is_fits
 from ..ui.batch import BatchDialogMixin
 from ..ui.busy import busy
 from ..ui.errors import show_error
@@ -229,9 +230,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         # Parameter selection
         param_row = QHBoxLayout()
         param_row.setSpacing(20)
-        # param_label = QLabel("Parameter:")
-        # param_label.setStyleSheet("font-weight: 600;")
-        # param_row.addWidget(param_label)
         self.stokes_label = QLabel("Parameter:")
         self.stokes_label.setStyleSheet("font-weight: 600;")
         param_row.addWidget(self.stokes_label)
@@ -287,9 +285,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         sigma_row.addStretch()
         method_layout.addLayout(sigma_row)
 
-        # Initially disable sigma
-        # self.sigma_label.setEnabled(False)
-        # self.sigma_spinbox.setEnabled(False)
+        # Initially hide sigma
         self.sigma_label.setVisible(False)
         self.sigma_spinbox.setVisible(False)
 
@@ -879,7 +875,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
         try:
             # For FITS files, check the header
-            if imagepath.endswith(".fits") or imagepath.endswith(".fts"):
+            if is_fits(imagepath):
                 from astropy.io import fits
 
                 header = fits.getheader(imagepath)
@@ -923,9 +919,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
         # Ensure the dialog size matches the parent when shown
         if self.parent() and self.parent().size().isValid():
-            # Set size to match parent
-            # self.resize(self.parent().size())
-
             # Center relative to parent
             self.move(
                 self.parent().frameGeometry().topLeft()

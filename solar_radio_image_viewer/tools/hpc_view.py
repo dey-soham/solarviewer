@@ -7,7 +7,7 @@ import os
 
 
 from ..processing.dependencies import IA
-from ..processing.fits_io import readable_image_path
+from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.image_meta import casa_info, fits_header
 from ..ui.busy import begin_busy, end_busy
 from ..ui.errors import show_error
@@ -272,9 +272,6 @@ class HpcViewMixin:
                 if os.path.exists(self._radec_temp_file):
                     try:
                         os.remove(self._radec_temp_file)
-                        # print(
-                        #    f"[HPC] Removed temp RA/Dec file: {self._radec_temp_file}"
-                        # )
                     except Exception:
                         pass
                 self._radec_temp_file = None
@@ -346,9 +343,6 @@ class HpcViewMixin:
             if os.path.exists(self._tb_temp_file):
                 try:
                     os.remove(self._tb_temp_file)
-                    # print(
-                    #    f"[TB] Cleaned up temp file on new image load: {self._tb_temp_file}"
-                    # )
                 except Exception:
                     pass
             self._tb_temp_file = None
@@ -371,7 +365,7 @@ class HpcViewMixin:
                 return True
 
             # Also check FITS header if it's a FITS file
-            if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
+            if is_fits(self.imagename):
                 header = fits_header(self.imagename)
                 ctype1 = header.get("CTYPE1", "").upper()
                 ctype2 = header.get("CTYPE2", "").upper()
@@ -407,7 +401,7 @@ class HpcViewMixin:
 
         try:
             # For FITS files, check the header first (more reliable)
-            if imagepath.endswith(".fits") or imagepath.endswith(".fts"):
+            if is_fits(imagepath):
                 from astropy.io import fits
 
                 header = fits.getheader(imagepath)

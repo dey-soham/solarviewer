@@ -291,7 +291,6 @@ def parse_events(raw_text: str) -> List[SolarEvent]:
             event_id = line[:5].strip()
 
             # Check for '+' marker (follow-up event)
-            is_followup = "+" in line[5:7]
 
             # Times: positions 7-11, 14-18, 24-28 (approximate, use regex)
             # Use regex for more reliable parsing

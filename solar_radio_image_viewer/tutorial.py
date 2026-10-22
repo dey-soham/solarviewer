@@ -903,7 +903,7 @@ class TutorialDialog(QDialog):
                 "✂️",
                 "Region Operations",
                 [
-                    "Export Sub-Image (Ctrl+S): Save selected region as new image",
+                    "Export Sub-Image (Ctrl+Shift+S): Save selected region as new image",
                     "Export ROI as Region (Ctrl+R): Save as CASA region file",
                 ],
             )
@@ -915,8 +915,8 @@ class TutorialDialog(QDialog):
                 "💾",
                 "Export Options (File Menu)",
                 [
-                    "Export Figure (Ctrl+E): Save as PNG, PDF, or SVG with colorbar",
-                    "Export as FITS (Ctrl+F): Convert to standard FITS",
+                    "Export Figure (Ctrl+S or Ctrl+E): Save as PNG, PDF, or SVG with colorbar",
+                    "Export as FITS (Ctrl+Shift+F): Convert to standard FITS",
                     "Export as CASA Image: Save in CASA format",
                     "Export TB Map: Convert to brightness temperature FITS",
                     "Export as HPC FITS (Ctrl+H): Helioprojective coordinates",
@@ -931,7 +931,7 @@ class TutorialDialog(QDialog):
                 "Annotations (Annotations Menu)",
                 [
                     "Add Text Annotation (Ctrl+T): Place text labels",
-                    "Add Arrow Annotation (Ctrl+A): Draw arrows to features",
+                    "Add Arrow Annotation (Ctrl+Shift+A): Draw arrows to features",
                 ],
             )
         )

@@ -18,7 +18,7 @@ from ..processing.contour_layers import contour_layer_settings
 from .canvas import READOUT_HINT
 from .display_resolution import draw_at_screen_resolution
 from .presets import display_range
-from ..processing.fits_io import readable_image_path
+from ..processing.fits_io import is_fits, readable_image_path
 from ..ui.busy import busy
 
 logger = logging.getLogger(__name__)
@@ -248,13 +248,13 @@ class RenderingMixin:
             self._cached_summary = None
             self._cached_csys_record = None
 
-            if self.imagename.endswith(".fits") or self.imagename.endswith(".fts"):
+            if is_fits(self.imagename):
                 from astropy.io import fits
 
                 try:
                     self._cached_fits_flag = True
                     self._cached_fits_header = dict(fits_header(self.imagename))
-                except Exception as e:
+                except Exception:
                     try:
                         self._cached_fits_header = dict(fits.getheader(readable_image_path(self.imagename)))
                     except Exception as e2:
@@ -304,7 +304,6 @@ class RenderingMixin:
                     self.image_plot.set_cmap(cmap)
                     self.image_plot.set_norm(norm)
                     norm_params = (fp_vmin, fp_vmax, stretch, gamma)
-                    # last_norm_params = getattr(self, "_last_norm_params", None)
 
                     if hasattr(self, "colorbar") and self.colorbar:
                         self.colorbar.update_normal(self.image_plot)
@@ -480,7 +479,6 @@ class RenderingMixin:
                     cmap=cmap,
                     norm=norm,
                     interpolation=interpolation,
-                    # aspect="auto",
                 )
                 self.image_plot = im
                 if fits_flag:
@@ -566,21 +564,10 @@ class RenderingMixin:
 
     def _set_plot_title(self, ax, fits_flag, header, csys_record):
         """Title with observation time, frequency / instrument."""
-        # ax.set_title(os.path.basename(self.imagename) if self.imagename else "No Image")
         # Display the image time in UTC and freq in MHz as a title
         if self.current_image_data is not None:
             # Get the image time and frequency
             try:
-                # ia = IA()
-                # ia.open(self.imagename)
-                # csys_record = ia.coordsys().torecord()
-                # ia.close()
-                # if self.imagename.endswith(".fits"):
-                # from astropy.io import fits
-
-                # with fits.open(self.imagename) as hdul:
-                #    fits_header = hdul[0].header
-                #    image_time = fits_header.get("DATE-OBS", None)
                 temp_flag = False
                 image_time = None
                 image_freq = None
@@ -870,7 +857,6 @@ class RenderingMixin:
         major_pix = self.beam_properties["major_pix"]
         minor_pix = self.beam_properties["minor_pix"]
         pa_deg = self.beam_properties["pa_deg"]
-        margin = self.beam_properties["margin"]
 
         view_width = xlim[1] - xlim[0]
         view_height = ylim[1] - ylim[0]
@@ -906,7 +892,6 @@ class RenderingMixin:
                 left=ps.get("pad_left", 0.135),
                 right=ps.get("pad_right", 1.0),
                 top=ps.get("pad_top", 0.95),
-                # bottom=ps.get("pad_bottom", 0.05),
                 bottom=ps.get("pad_bottom", 0.08),
                 wspace=ps.get("pad_wspace", 0.2),
                 hspace=ps.get("pad_hspace", 0.2),

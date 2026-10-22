@@ -269,7 +269,7 @@ class RfiSettings:
     # burst can cover most channels at once, so off unless asked)
 
 
-def flag_page(data, settings=RfiSettings(), stddev=None):
+def flag_page(data, settings=RfiSettings(), stddev=None):  # noqa: B008 (frozen: safe to share)
     """RFI flags of ``data`` ((time, freq), positive power) by the detectors
     ``settings`` turns on, then filled and widened to whole channels/times.
     ``stddev``: the page's noise image, if the file has one."""

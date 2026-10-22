@@ -600,16 +600,6 @@ def process_image(
 
         # Add text overlay
         if overlay_text:
-            # ax.text(
-            #    0.98,
-            #    0.98,
-            #    "\n".join(overlay_text),
-            #    transform=ax.transAxes,
-            #    fontsize=4,
-            #    verticalalignment="bottom",
-            #    bbox=dict(boxstyle="round", facecolor="white", alpha=0.5),
-            #    horizontalalignment="right",
-            # )
             ax.set_title("\n".join(overlay_text))
         else:
             ax.set_title("")

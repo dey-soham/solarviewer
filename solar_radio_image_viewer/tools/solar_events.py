@@ -3,7 +3,7 @@ Context lookups for the current image: NOAA events and Helioviewer.
 """
 
 import logging
-from ..processing.fits_io import readable_image_path
+from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.image_meta import casa_obs_time
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,6 @@ class SolarEventsMixin:
     def show_noaa_events_for_current_image(self):
         """Show NOAA Solar Events for the current image date and auto-fetch events."""
         try:
-            import os
             from datetime import date, datetime
 
             from ..noaa_events.noaa_events_gui import NOAAEventsViewer
@@ -44,12 +43,7 @@ class SolarEventsMixin:
             extracted_date = None
 
             # Method 1: FITS header
-            lower_name = imagename.lower()
-            if (
-                lower_name.endswith(".fits")
-                or lower_name.endswith(".fts")
-                or lower_name.endswith(".fit")
-            ):
+            if is_fits(imagename):
                 try:
                     from astropy.io import fits
 
@@ -98,11 +92,7 @@ class SolarEventsMixin:
 
             # Method 2: CASA image
             if extracted_date is None:
-                is_casa_image = os.path.isdir(imagename) or (
-                    not lower_name.endswith(".fits")
-                    and not lower_name.endswith(".fts")
-                    and not lower_name.endswith(".fit")
-                )
+                is_casa_image = not is_fits(imagename)
 
                 if is_casa_image:
                     try:
@@ -282,12 +272,7 @@ class SolarEventsMixin:
             # Fallback: Try the simpler parsing method used by solar activity button
             # This handles some edge cases with fractional seconds that fail in some Python versions
             if not obs_datetime and hasattr(self, "imagename") and self.imagename:
-                lower_name = self.imagename.lower()
-                if (
-                    lower_name.endswith(".fits")
-                    or lower_name.endswith(".fts")
-                    or lower_name.endswith(".fit")
-                ):
+                if is_fits(self.imagename):
                     try:
                         from astropy.io import fits as fits_fallback
 
@@ -342,7 +327,7 @@ class SolarEventsMixin:
             # Try CASA image metadata (using IA tool coordsys like the rest of viewer.py)
             if not obs_datetime and hasattr(self, "imagename") and self.imagename:
                 if not (
-                    self.imagename.endswith(".fits") or self.imagename.endswith(".fts")
+                    is_fits(self.imagename)
                 ):
                     try:
                         # Use IA tool to read CASA coordinate system
@@ -358,9 +343,6 @@ class SolarEventsMixin:
                         t = casa_obs_time(csys_record)
                         if t is not None:
                             obs_datetime = t.datetime
-                                # print(
-                                #    f"Extracted CASA observation time: {obs_datetime}"
-                                # )
                     except Exception as e:
                         logger.warning(f"Could not extract CASA observation time: {e}")
                         import traceback
@@ -385,7 +367,6 @@ class SolarEventsMixin:
                 )
 
             # Launch browser
-            # browser = HelioviewerBrowser(self.parent(), initial_start=initial_start, initial_end=initial_end)
             browser = HelioviewerBrowser(
                 self, initial_start=initial_start, initial_end=initial_end
             )

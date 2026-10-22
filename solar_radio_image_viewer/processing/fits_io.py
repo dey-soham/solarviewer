@@ -135,6 +135,22 @@ def is_casa_image(path):
     return bool(path) and os.path.isfile(os.path.join(path, "table.info"))
 
 
+FITS_EXTENSIONS = (".fits", ".fts", ".fit")
+
+
+def is_fits(path):
+    """Whether ``path`` is named as a FITS file: .fits, .fts or .fit in any
+    case, also compressed (.gz, .fz). A CASA image (a folder) is not, even
+    so named. The one rule for choosing between FITS and CASA readers."""
+    if not path:
+        return False
+    name = os.path.basename(str(path).rstrip("/\\")).lower()
+    for suffix in (".gz", ".fz"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return name.endswith(FITS_EXTENSIONS) and not is_casa_image(path)
+
+
 # CASA image signature -> its FITS export, as for _resolved
 _exported = {}
 

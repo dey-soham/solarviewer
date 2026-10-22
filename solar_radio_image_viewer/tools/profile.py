@@ -50,7 +50,7 @@ class ProfileMixin:
                 if hasattr(self, attr):
                     try:
                         self.canvas.mpl_disconnect(getattr(self, attr))
-                    except:
+                    except Exception:
                         pass
             # Clear profile graphics including center marker
             self._clear_profile()
@@ -62,7 +62,7 @@ class ProfileMixin:
             ):
                 try:
                     self._profile_center_marker.remove()
-                except:
+                except Exception:
                     pass
                 self._profile_center_marker = None
             # Clear preview line if any
@@ -72,7 +72,7 @@ class ProfileMixin:
             ):
                 try:
                     self._profile_preview_line.remove()
-                except:
+                except Exception:
                     pass
                 self._profile_preview_line = None
             self.canvas.draw_idle()
@@ -167,7 +167,7 @@ class ProfileMixin:
         if self._profile_line is not None:
             try:
                 self._profile_line.remove()
-            except:
+            except Exception:
                 pass
             self._profile_line = None
         self._profile_start = None
@@ -178,13 +178,13 @@ class ProfileMixin:
         for line in self._profile_crosshairs:
             try:
                 line.remove()
-            except:
+            except Exception:
                 pass
         self._profile_crosshairs = []
         if self._profile_preview_line is not None:
             try:
                 self._profile_preview_line.remove()
-            except:
+            except Exception:
                 pass
             self._profile_preview_line = None
         self._profile_blit_bg = None
@@ -475,7 +475,7 @@ class ProfileMixin:
                 if self._profile_preview_line is not None:
                     try:
                         self._profile_preview_line.remove()
-                    except:
+                    except Exception:
                         pass
                 (self._profile_preview_line,) = ax.plot(
                     [x1, x2], [y1, y2], "r--", linewidth=1.5, alpha=0.7
@@ -487,7 +487,7 @@ class ProfileMixin:
                 ):
                     try:
                         self._profile_center_marker.remove()
-                    except:
+                    except Exception:
                         pass
                 (self._profile_center_marker,) = ax.plot(
                     [c_x], [c_y], "r*", markersize=12
@@ -533,7 +533,7 @@ class ProfileMixin:
             if self._profile_preview_line is not None:
                 try:
                     self._profile_preview_line.remove()
-                except:
+                except Exception:
                     pass
                 self._profile_preview_line = None
 
@@ -542,7 +542,7 @@ class ProfileMixin:
                 if self._profile_line is not None:
                     try:
                         self._profile_line.remove()
-                    except:
+                    except Exception:
                         pass
                 # Draw final line AND redraw center marker
                 (self._profile_line,) = ax.plot(
@@ -555,7 +555,7 @@ class ProfileMixin:
                 ):
                     try:
                         self._profile_center_marker.remove()
-                    except:
+                    except Exception:
                         pass
                 (self._profile_center_marker,) = ax.plot(
                     [c_x], [c_y], "r*", markersize=14, zorder=10
@@ -572,7 +572,7 @@ class ProfileMixin:
             if self._profile_preview_line is not None:
                 try:
                     self._profile_preview_line.remove()
-                except:
+                except Exception:
                     pass
                 self._profile_preview_line = None
             if (
@@ -581,7 +581,7 @@ class ProfileMixin:
             ):
                 try:
                     self._profile_center_marker.remove()
-                except:
+                except Exception:
                     pass
                 self._profile_center_marker = None
             self._clear_profile()
@@ -716,7 +716,6 @@ class ProfileMixin:
         fwhm_value = None
         fwhm_left = None
         fwhm_right = None
-        show_fwhm = False
 
         try:
             # Find max and baseline
@@ -795,7 +794,6 @@ class ProfileMixin:
             # Calculate FWHM if both crossing points found
             if fwhm_left is not None and fwhm_right is not None:
                 fwhm_value = abs(fwhm_right - fwhm_left)
-                show_fwhm = True
 
                 # Draw FWHM visualization
                 ax.axhline(

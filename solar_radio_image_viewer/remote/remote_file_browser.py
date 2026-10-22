@@ -65,7 +65,7 @@ class ListDirectoryThread(QThread):
         if self._sftp:
             try:
                 self._sftp.close()
-            except:
+            except Exception:
                 pass
 
     def run(self):
@@ -125,14 +125,14 @@ except Exception as exc:
 
                 # Try python3 first
                 cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.path)}"
-                stdin, stdout, stderr = self.connection._client.exec_command(cmd)
+                stdin, stdout, stderr = self.connection.exec_command(cmd)
 
                 # Check for cancellation before reading
                 if self._cancelled:
                     return
 
                 out_data = stdout.read().decode("utf-8").strip()
-                err_data = stderr.read().decode("utf-8").strip()
+                stderr.read()
                 exit_status = stdout.channel.recv_exit_status()
 
                 # print(f"[SSH-List] Fast path result: exit={exit_status}, "
@@ -159,7 +159,6 @@ except Exception as exc:
 
                         # Sort and emit
                         entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
-                        # print(f"[SSH-List] Fast path success: {len(entries)} entries")
                         self.finished.emit(entries)
                         return  # Success!
                     except Exception as e:
@@ -172,8 +171,8 @@ except Exception as exc:
             # FALLBACK: Use SFTP loop (slow for large dirs)
             print(f"[SSH-List] SFTP fallback: listing {self.path}")
             # Create our own SFTP channel for this thread
-            if self.connection._client:
-                self._sftp = self.connection._client.open_sftp()
+            if self.connection.is_connected():
+                self._sftp = self.connection.open_sftp()
             else:
                 raise SSHConnectionError("SSH client not connected")
 
@@ -182,7 +181,6 @@ except Exception as exc:
 
             entries = []
             attrs = self._sftp.listdir_attr(self.path)
-            # print(f"[SSH-List] SFTP listdir_attr returned {len(attrs)} raw entries")
 
             for attr in attrs:
                 if self._cancelled:
@@ -214,7 +212,6 @@ except Exception as exc:
             if not self._cancelled:
                 # Sort: directories first, then alphabetically
                 entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
-                # print(f"[SSH-List] SFTP fallback success: {len(entries)} entries")
                 self.finished.emit(entries)
 
         except Exception as e:
@@ -225,7 +222,7 @@ except Exception as exc:
             if self._sftp:
                 try:
                     self._sftp.close()
-                except:
+                except Exception:
                     pass
                 self._sftp = None
 
@@ -254,15 +251,15 @@ class AutocompleteThread(QThread):
         if self._sftp:
             try:
                 self._sftp.close()
-            except:
+            except Exception:
                 pass
 
     def run(self):
         try:
-            if not self.connection._client:
+            if not self.connection.is_connected():
                 return
 
-            self._sftp = self.connection._client.open_sftp()
+            self._sftp = self.connection.open_sftp()
 
             import stat
 
@@ -304,7 +301,7 @@ class AutocompleteThread(QThread):
             if self._sftp:
                 try:
                     self._sftp.close()
-                except:
+                except Exception:
                     pass
                 self._sftp = None
 
@@ -608,7 +605,6 @@ class RemoteFileBrowser(QDialog):
         from ..ui.styles import theme_manager
 
         palette = theme_manager.palette
-        is_dark = theme_manager.is_dark
 
         # Colors from palette
         window = palette["window"]
@@ -627,7 +623,6 @@ class RemoteFileBrowser(QDialog):
         button_hover = palette["button_hover"]
         button_pressed = palette.get("button_pressed", button)
         disabled = palette.get("disabled", "#666666")
-        shadow = palette.get("shadow", "rgba(0,0,0,0.2)")
 
         # Gradient for primary button
         gradient_start = palette.get("button_gradient_start", highlight)
@@ -963,7 +958,7 @@ class RemoteFileBrowser(QDialog):
 
     def _load_initial_directory(self):
         """Navigate to last used directory or home if not available."""
-        host = self.connection._host
+        host = self.connection.host
 
         # Use last path if available
         if host in RemoteFileBrowser._last_paths:
@@ -971,8 +966,8 @@ class RemoteFileBrowser(QDialog):
         else:
             # Use cached home directory if available, otherwise start at root
             # This avoids a blocking get_home_directory() call
-            if hasattr(self.connection, "_last_home") and self.connection._last_home:
-                self._navigate_to(self.connection._last_home)
+            if self.connection.last_home:
+                self._navigate_to(self.connection.last_home)
             else:
                 # Start at root - non-blocking
                 self._navigate_to("/")
@@ -980,8 +975,8 @@ class RemoteFileBrowser(QDialog):
     def _load_home_directory(self):
         """Navigate to home directory."""
         # Use cached home if available for instant navigation
-        if hasattr(self.connection, "_last_home") and self.connection._last_home:
-            self._navigate_to(self.connection._last_home)
+        if self.connection.last_home:
+            self._navigate_to(self.connection.last_home)
         else:
             # Fetch home directory in background thread
             self._fetch_home_async()
@@ -1001,7 +996,7 @@ class RemoteFileBrowser(QDialog):
                 try:
                     home = self.connection.get_home_directory()
                     self.result.emit(home)
-                except:
+                except Exception:
                     self.result.emit("/")
 
         def on_home_fetched(home_path):
@@ -1021,7 +1016,7 @@ class RemoteFileBrowser(QDialog):
         self._navigating = False
 
         # Remember this path for next time
-        host = self.connection._host
+        host = self.connection.host
         RemoteFileBrowser._last_paths[host] = path
 
         # Update breadcrumb navigation
@@ -1074,7 +1069,7 @@ class RemoteFileBrowser(QDialog):
 
         # Check cache first - use the existing _listing_cache
         cache_key = (
-            self.connection._host,
+            self.connection.host,
             parent_path,
             True,
             False,
@@ -1100,7 +1095,7 @@ class RemoteFileBrowser(QDialog):
             if self._autocomplete_thread.isRunning():
                 try:
                     self._autocomplete_thread.finished.disconnect()
-                except:
+                except Exception:
                     pass
                 self._autocomplete_thread.cancel()
                 # Wait briefly for thread to finish (non-blocking timeout)
@@ -1149,7 +1144,7 @@ class RemoteFileBrowser(QDialog):
             try:
                 self._list_thread.finished.disconnect()
                 self._list_thread.error.disconnect()
-            except:
+            except Exception:
                 pass
             self._list_thread.cancel()
             # Mark that we have a pending operation
@@ -1161,13 +1156,13 @@ class RemoteFileBrowser(QDialog):
                 try:
                     self.connection.refresh_sftp()
                     RemoteFileBrowser._has_pending_operation = False
-                except:
+                except Exception:
                     pass  # Will try again next time
 
         # Check cache first (unless force refresh)
         if not force_refresh:
             cache_key = (
-                self.connection._host,
+                self.connection.host,
                 self.current_path,
                 self.show_hidden_cb.isChecked(),
                 self.fits_only_cb.isChecked(),
@@ -1302,7 +1297,7 @@ class RemoteFileBrowser(QDialog):
                 import time
     
                 cache_key = (
-                    self.connection._host,
+                    self.connection.host,
                     self.current_path,
                     self.show_hidden_cb.isChecked(),
                     self.fits_only_cb.isChecked(),
@@ -1488,7 +1483,7 @@ class RemoteFileBrowser(QDialog):
         """Download a file and emit the signal when ready."""
         # Check cache first
         cached_path = self.cache.get_cached_path(
-            self.connection._host,
+            self.connection.host,
             entry.path,
             entry.mtime,
             entry.size,
@@ -1502,7 +1497,7 @@ class RemoteFileBrowser(QDialog):
 
         # Need to download
         local_path = self.cache.get_cache_path(
-            self.connection._host,
+            self.connection.host,
             entry.path,
         )
 
@@ -1572,7 +1567,7 @@ class RemoteFileBrowser(QDialog):
     
             # Mark as cached
             self.cache.mark_cached(
-                self.connection._host,
+                self.connection.host,
                 entry.path,
                 Path(local_path),
                 entry.mtime,

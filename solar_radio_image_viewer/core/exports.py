@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from ..processing.dependencies import IA
 from ..processing.casa_tasks import run_casa_task
-from ..processing.fits_io import readable_image_path
+from ..processing.fits_io import is_fits, readable_image_path
 from ..ui.busy import begin_busy, busy, end_busy
 from ..ui.errors import show_error
 
@@ -100,7 +100,7 @@ class ExportsMixin:
 
             # For FITS files, copy the original with all data and metadata
             if source_image and (
-                source_image.endswith(".fits") or source_image.endswith(".fts")
+                is_fits(source_image)
             ):
                 try:
                     import shutil
@@ -118,7 +118,7 @@ class ExportsMixin:
                             "Source and destination are the same file.",
                         )
                     return
-                except Exception as e:
+                except Exception:
                     # Fall back to creating from current data if copy fails
                     pass
 
@@ -236,7 +236,7 @@ class ExportsMixin:
                 return
 
             # If source is a FITS file, use importfits via subprocess
-            if source_image.endswith(".fits") or source_image.endswith(".fts"):
+            if is_fits(source_image):
                 # Check coordinate system
                 import tempfile
 
@@ -306,7 +306,7 @@ class ExportsMixin:
                                     "coordinate systems are supported for CASA export.",
                                 )
                                 return
-                except Exception as e:
+                except Exception:
                     pass  # If we can't check, proceed anyway
 
                 # Run importfits in a separate process
@@ -385,7 +385,7 @@ class ExportsMixin:
 
             # Get save path
             default_name = os.path.basename(current_tab.imagename)
-            if default_name.endswith(".fits") or default_name.endswith(".fts"):
+            if is_fits(default_name):
                 default_name = default_name.rsplit(".", 1)[0] + "_TB.fits"
             else:
                 default_name = default_name + "_TB.fits"

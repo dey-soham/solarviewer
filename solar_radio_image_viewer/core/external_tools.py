@@ -6,7 +6,7 @@ import logging
 from PyQt5.QtWidgets import QMessageBox
 
 from ..ui.styles import theme_manager
-from ..processing.fits_io import readable_image_path
+from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.image_meta import casa_obs_time
 
 logger = logging.getLogger(__name__)
@@ -102,10 +102,7 @@ class ExternalToolsMixin:
             ):
                 imagename = current_tab.imagename
                 # Check if it's a CASA image (directory or non-FITS file)
-                if not (
-                    imagename.lower().endswith(".fits")
-                    or imagename.lower().endswith(".fts")
-                ):
+                if not is_fits(imagename):
                     try:
                         from casatools import image as IA
 
@@ -303,7 +300,7 @@ read -p "Press Enter to close..."
 
                 params = {
                     k: v
-                    for k, v in connection._connect_params.items()
+                    for k, v in connection.connect_params.items()
                     if k in ("host", "port", "username", "key_path") and v is not None
                 }
                 env["SOLARVIEWER_SSH"] = json.dumps(params)

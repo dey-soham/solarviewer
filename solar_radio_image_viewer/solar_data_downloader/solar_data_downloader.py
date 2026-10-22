@@ -71,10 +71,6 @@ def robust_fido_fetch(
         parfive.Results: Downloaded file results
     """
     from sunpy.net import Fido
-    import aiohttp
-    
-    # Create timeout configuration for aiohttp (used by parfive internally)
-    timeout_config = aiohttp.ClientTimeout(total=timeout, connect=30)
 
     # Create a custom downloader with better settings for bulk downloads
     # Note: parfive uses aiohttp, timeout is passed via overwrite parameter in Fido.fetch
@@ -694,7 +690,7 @@ def download_aia_with_fido(
         list: Paths to downloaded Level 1.5 FITS files (or Level 1.0 if calibration is skipped/unavailable)
     """
     try:
-        import sunpy.net
+        import sunpy.net  # noqa: F401 (availability check)
         from sunpy.net import Fido, attrs as a
     except ImportError:
         print("Error: SunPy not installed or not properly configured.")
@@ -1040,7 +1036,7 @@ def download_hmi_with_fido(
         list: Paths to downloaded FITS files
     """
     try:
-        import sunpy.net
+        import sunpy.net  # noqa: F401 (availability check)
         from sunpy.net import Fido, attrs as a
     except ImportError:
         print("Error: SunPy not installed or not properly configured.")
@@ -1245,7 +1241,7 @@ def download_iris(
         list: Paths to downloaded FITS files
     """
     try:
-        import sunpy.net
+        import sunpy.net  # noqa: F401 (availability check)
         from sunpy.net import Fido, attrs as a
     except ImportError:
         print("Error: SunPy not installed or not properly configured.")
@@ -1440,7 +1436,7 @@ def download_soho(
         list: Paths to downloaded FITS files
     """
     try:
-        import sunpy.net
+        import sunpy.net  # noqa: F401 (availability check)
         from sunpy.net import Fido, attrs as a
     except ImportError:
         print("Error: SunPy not installed or not properly configured.")
@@ -1526,7 +1522,7 @@ def download_soho(
         ):
             # Check if it's actually a FITS file
             try:
-                with fits.open(file_path) as hdu:
+                with fits.open(file_path):
                     # It's a valid FITS file, rename it
                     new_path = file_path + ".fits"
                     os.rename(file_path, new_path)

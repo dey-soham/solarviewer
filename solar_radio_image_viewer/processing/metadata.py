@@ -5,7 +5,7 @@ Image metadata extraction (FITS headers / CASA image info) and formatting.
 import numpy as np
 
 from .dependencies import ASTROPY_AVAILABLE, CASA_AVAILABLE, IA, u
-from .fits_io import readable_image_path
+from .fits_io import is_fits, readable_image_path
 
 
 def get_image_metadata(imagename):
@@ -71,7 +71,7 @@ def get_image_metadata(imagename):
                 m = int((ra_hours - h) * 60)
                 s = ((ra_hours - h) * 60 - m) * 60
                 return f"{h:02d}:{m:02d}:{s:05.2f}"
-        except:
+        except Exception:
             return f"{ra_deg:.6f}°"
 
     def format_dec_dms(dec_deg):
@@ -92,7 +92,7 @@ def get_image_metadata(imagename):
                 m = int((dec_deg - d) * 60)
                 s = ((dec_deg - d) * 60 - m) * 60
                 return f"{sign}{d:02d}:{m:02d}:{s:05.2f}"
-        except:
+        except Exception:
             return f"{dec_deg:.6f}°"
 
     def format_datetime(date_str):
@@ -115,13 +115,13 @@ def get_image_metadata(imagename):
             else:
                 dt = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S")
             return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        except:
+        except Exception:
             return str(date_str)
 
-    is_fits = imagename.endswith(".fits") or imagename.endswith(".fts")
+    fits_file = is_fits(imagename)
 
     try:
-        if is_fits and ASTROPY_AVAILABLE:
+        if fits_file and ASTROPY_AVAILABLE:
             # Use astropy for FITS files
             from astropy.io import fits
 
@@ -133,7 +133,7 @@ def get_image_metadata(imagename):
                     if key and key not in ("", "COMMENT", "HISTORY"):
                         try:
                             metadata["raw_header"][key] = str(header[key])
-                        except:
+                        except Exception:
                             pass
 
                 # Observation info
@@ -156,7 +156,7 @@ def get_image_metadata(imagename):
                             if val > 1e6:  # Likely Hz
                                 freq_hz = val
                                 break
-                        except:
+                        except Exception:
                             pass
                 if freq_hz:
                     metadata["spectral"]["Frequency"] = format_frequency(freq_hz)
@@ -271,10 +271,6 @@ def get_image_metadata(imagename):
                     metadata["processing"]["WSClean Version"] = header.get("WSCVERSI")
                 if "WSCWEIGH" in header:
                     metadata["processing"]["Weighting"] = header.get("WSCWEIGH")
-                # if 'WSCNITER' in header:
-                #    metadata['processing']['Iterations'] = f"{int(float(header['WSCNITER']))}"
-                # if 'WSCGAIN' in header:
-                #    metadata['processing']['Gain'] = f"{float(header['WSCGAIN']):.3f}"
 
                 # History
                 history_cards = [str(h) for h in header.get("HISTORY", [])]
@@ -400,7 +396,7 @@ def get_image_metadata(imagename):
                             dec_deg = refval[1] * 180 / np.pi
                         metadata["image"]["Reference RA"] = format_ra_hms(ra_deg)
                         metadata["image"]["Reference Dec"] = format_dec_dms(dec_deg)
-                except:
+                except Exception:
                     pass
 
                 # Pixel scale
@@ -416,7 +412,7 @@ def get_image_metadata(imagename):
                         metadata["image"][
                             "Pixel Scale"
                         ] = f"{cdelt1_arcsec:.3f} × {cdelt2_arcsec:.3f} arcsec/pixel"
-                except:
+                except Exception:
                     pass
 
                 # Frequency
@@ -430,7 +426,7 @@ def get_image_metadata(imagename):
                                 freq_hz
                             )
                             break
-                except:
+                except Exception:
                     pass
 
                 # Beam info
@@ -448,14 +444,14 @@ def get_image_metadata(imagename):
                             metadata["beam"][
                                 "Position Angle"
                             ] = f"{beam['positionangle']['value']:.1f}°"
-                except:
+                except Exception:
                     pass
 
                 try:
                     bunit = ia_tool.brightnessunit()
                     if bunit:
                         metadata["image"]["Units"] = bunit
-                except:
+                except Exception:
                     pass
 
                 # Extract all keywords from miscinfo and store important ones
@@ -529,7 +525,7 @@ def get_image_metadata(imagename):
                         if key in miscinfo and miscinfo[key]:
                             metadata["processing"][display_name] = miscinfo[key]
 
-                except Exception as e:
+                except Exception:
                     pass
 
             finally:

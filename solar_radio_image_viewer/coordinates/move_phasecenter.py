@@ -538,7 +538,6 @@ class SolarPhaseCenter:
             me.doframe(me.observatory("LOFAR"))  # Assuming LOFAR observations
 
             # Get the sun position
-            sun_pos = me.direction("SUN")
 
             # Get the distance to sun in AU
             sun_dist = me.separation(me.direction("SUN"), me.direction("SUN_DIST"))
@@ -803,7 +802,7 @@ class SolarPhaseCenter:
             if w.naxis > 2:
                 try:
                     w = w.celestial
-                except:
+                except Exception:
                     pass
 
             try:
@@ -1378,7 +1377,7 @@ class SolarPhaseCenter:
 
             try:
                 return [0, total_count]
-            except:
+            except Exception:
                 return [0, 0]
 
     def process_single_file(self, file_info):

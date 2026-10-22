@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 )
 import os
 
+from ..processing.fits_io import is_fits
 from ..ui.batch import BatchDialogMixin
 from ..ui.styles import set_hand_cursor
 
@@ -147,7 +148,7 @@ def is_already_hpc(imagepath):
 
     try:
         # For FITS files, check the header
-        if imagepath.endswith(".fits") or imagepath.endswith(".fts"):
+        if is_fits(imagepath):
             from astropy.io import fits
 
             header = fits.getheader(imagepath)
@@ -206,7 +207,6 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
 
         # Get colors directly from the palette for consistency
         palette = theme_manager.palette
-        is_dark = theme_manager.is_dark
 
         border_color = palette["border"]
         surface_color = palette["surface"]
@@ -360,7 +360,6 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
             from ..ui.styles import theme_manager
 
         palette = theme_manager.palette
-        highlight_color = palette["highlight"]
         text_secondary = palette.get("text_secondary", palette["disabled"])
         border_color = palette["border"]
 

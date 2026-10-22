@@ -27,7 +27,7 @@ def _discard_casa_log():
 _discard_casa_log()
 
 # Import version directly
-from .version import __version__
+from .version import __version__ as __version__  # re-exported
 
 # Lazy import mapping
 _modules = {

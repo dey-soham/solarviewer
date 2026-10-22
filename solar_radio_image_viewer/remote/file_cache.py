@@ -139,7 +139,7 @@ class RemoteFileCache:
             # Remote file changed, invalidate cache
             try:
                 local_path.unlink()
-            except:
+            except Exception:
                 pass
             del self._metadata[key]
             self._save_metadata()
@@ -209,7 +209,7 @@ class RemoteFileCache:
                     else:
                         total_size += local_path.stat().st_size
                     file_count += 1
-                except:
+                except Exception:
                     pass
 
         return total_size, file_count

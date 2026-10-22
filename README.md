@@ -330,8 +330,9 @@ solarviewer/
 │   └── assets/                 # Icons and resources
 ├── resources/                  # Desktop integration resources
 ├── pyproject.toml              # Packaging metadata + dev tool configuration
-├── requirements.txt
+├── requirements.txt            # -e . (the dependencies are in pyproject.toml)
 ├── README.md
+├── CONTRIBUTING.md             # Code layout and conventions
 ├── LICENSE
 └── RELEASE_NOTES.md
 ```
@@ -340,7 +341,7 @@ solarviewer/
 
 ## 🤝 Contributing
 
-Contributions are welcome! Whether you're fixing bugs, adding features, or improving documentation, we appreciate your help.
+Contributions are welcome! Whether you're fixing bugs, adding features, or improving documentation, we appreciate your help. [CONTRIBUTING.md](CONTRIBUTING.md) explains how the code is organised and the conventions it follows.
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)

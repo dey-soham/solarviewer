@@ -19,7 +19,7 @@ class DisabledItemDelegate(QStyledItemDelegate):
                 disabled_color = QColor(
                     theme_manager.palette.get("disabled", "#cccccc")
                 )
-            except:
+            except Exception:
                 disabled_color = QColor("#cccccc")
 
             # Modify the palette to use disabled color for text

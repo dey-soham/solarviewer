@@ -51,7 +51,6 @@ class RoiStatsMixin:
         rsum = np.nansum(roi)
         rrms = np.sqrt(np.nanmean(roi**2))
 
-        # self.info_label.setText(f"ROI Stats: {roi.size} pixels{ra_dec_info}")
         self.info_label.setText(f"{ra_dec_info}")
 
         stats_values = [rmin, rmax, rmean, rstd, rsum, rrms]
@@ -369,7 +368,7 @@ class RoiStatsMixin:
         try:
             x1, x2 = int(eclick.xdata), int(erelease.xdata)
             y1, y2 = int(eclick.ydata), int(erelease.ydata)
-        except:
+        except Exception:
             return
 
         xlow, xhigh = sorted([x1, x2])
@@ -463,7 +462,7 @@ class RoiStatsMixin:
         try:
             x1, x2 = eclick.xdata, erelease.xdata
             y1, y2 = eclick.ydata, erelease.ydata
-        except:
+        except Exception:
             return
 
         # Calculate ellipse parameters in display coordinates

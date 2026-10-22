@@ -142,17 +142,8 @@ def get_stylesheet(theme_name):
         return get_viewer_stylesheet(get_palette(theme_name), is_dark=(theme_name == "dark"))
 
     palette = get_palette(theme_name)
-    is_dark = theme_name == "dark"
 
     # Minimal fallback logic mirrored from styles.py if import fails
-    try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        suffix = "_light" if not is_dark else ""
-        arrow_up = os.path.join(os.path.dirname(base_dir), "assets", f"spinbox_up{suffix}.png").replace("\\", "/")
-        arrow_down = os.path.join(os.path.dirname(base_dir), "assets", f"spinbox_down{suffix}.png").replace("\\", "/")
-    except:
-        arrow_up = arrow_down = ""
-
     input_bg = palette["base"]
     input_text = palette.get("input_text", palette["text"])
     highlight = palette["highlight"]
@@ -160,7 +151,6 @@ def get_stylesheet(theme_name):
     border = palette["border"]
     border_light = palette.get("border_light", palette["border"])
     surface_elevated = palette.get("surface_elevated", palette["surface"])
-    text_secondary = palette.get("text_secondary", palette["disabled"])
 
     return f"""
     /* ===== GLOBAL STYLES ===== */

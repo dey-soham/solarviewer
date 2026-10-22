@@ -611,19 +611,13 @@ class VisualizationApp(QMainWindow):
             self._restore_grid_axes()
 
         start_ant = self.current_page * self.antennas_per_page
-        end_ant = min(start_ant + self.antennas_per_page, self.num_antennas)
 
-        # Determine if a legend is needed (at least one plot has data)
-        legend_needed_on_page = False
         for idx, ax in enumerate(self.bandpass_axes.flat):
             ax.clear()
             ant_idx = start_ant + idx
             if ant_idx >= self.num_antennas:
                 ax.axis("off")
             else:
-                legend_needed_on_page = (
-                    True  # Mark that at least one plot will have data
-                )
                 if self.plot_mode == "Amplitude":
                     ax.plot(
                         self.bandpass_freqs,

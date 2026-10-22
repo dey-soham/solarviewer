@@ -57,7 +57,7 @@ class TbModeMixin:
             ):
                 try:
                     os.remove(self._tb_temp_file)
-                except:
+                except Exception:
                     pass
             self._tb_original_imagename = None
             self._tb_temp_file = None
@@ -90,7 +90,7 @@ class TbModeMixin:
                     if os.path.exists(self._radec_temp_file):
                         try:
                             os.remove(self._radec_temp_file)
-                        except:
+                        except Exception:
                             pass
                 self._radec_temp_file = None
             self._hpc_original_imagename = None
@@ -263,7 +263,7 @@ class TbModeMixin:
             ):
                 try:
                     os.remove(self._tb_temp_file)
-                except:
+                except Exception:
                     pass
                 self._tb_temp_file = None
 

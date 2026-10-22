@@ -33,7 +33,7 @@ from matplotlib.dates import date2num
 import logging
 
 try:
-    from pipeline.tasks.basic_functions import MS_inquiry
+    from pipeline.tasks.basic_functions import MS_inquiry  # noqa: F401 (availability check)
 
     pipeline_run = True
 except ImportError:

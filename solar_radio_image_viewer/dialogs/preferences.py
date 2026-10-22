@@ -24,15 +24,6 @@ class PreferencesDialog(QDialog):
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(400)
 
-        # Import theme manager for styling
-        try:
-            from ..ui.styles import theme_manager
-        except ImportError:
-            from ..ui.styles import theme_manager
-
-        palette = theme_manager.palette
-        is_dark = theme_manager.is_dark
-
         # Get current settings
         from PyQt5.QtCore import QSettings
 

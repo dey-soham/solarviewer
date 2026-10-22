@@ -8,6 +8,7 @@
 *   **Keys After Clicking**: R, 1, +, - and the arrow keys work after clicking the image; Esc leaves a text field.
 *   **Measuring**: Mouse pan and zoom pause while the Ruler or Profile tool is measuring.
 *   **Keyboard Shortcuts** (F1): The list is read from the menus, so it shows exactly the shortcuts that work, plus the image's keys and mouse gestures.
+*   **Conventional Shortcuts**: Ctrl+S now saves the figure (Ctrl+E still works). Export Sub-Image moved to Ctrl+Shift+S, Export as FITS to Ctrl+Shift+F and Add Arrow to Ctrl+Shift+A.
 
 ### Opening Images
 *   **One Open Item**: File → Open Image (Ctrl+O) opens FITS files and CASA images alike, as do the contour, video and phase-shift dialogs.
@@ -54,7 +55,7 @@
 
 ### Under the Hood
 *   **Restructured Codebase**: The 17,000-line viewer was split into focused packages (`core`, `tools`, `dialogs`, `processing`, `coordinates`, `video`, `ui`, `pipeline`). Old import paths still work but emit a deprecation warning.
-*   **Packaging**: Moved from `setup.py` to `pyproject.toml`. The dependencies are now those the code uses: `requests`, `packaging`, `pandas`, `parfive`, `aiohttp` and `psutil` are declared, and the unused `reproject`, `dask`, `zarr`, `tifffile`, `qtpy` and `pyqt5-sip` are no longer required.
+*   **Packaging**: Moved from `setup.py` to `pyproject.toml`. The dependencies are now those the code uses: `requests`, `packaging`, `pandas`, `parfive`, `aiohttp` and `psutil` are declared, and the unused `reproject`, `dask`, `zarr`, `tifffile`, `qtpy` and `pyqt5-sip` are no longer required. OpenCV is no longer needed either: the Helioviewer browser now writes MP4 (H.264) with imageio, as Create Video does. The `setuptools<81` pin is gone (SolarViewer stopped using `pkg_resources` in 1.2.0).
 *   **Cleanup**: Renamed `from_simpl` to `pipeline` and removed the unused `learmonth-py` scripts.
 
 ## Version 1.2.5

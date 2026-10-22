@@ -56,13 +56,13 @@ class RulerMixin:
         if self._ruler_line is not None:
             try:
                 self._ruler_line.remove()
-            except:
+            except Exception:
                 pass
             self._ruler_line = None
         if self._ruler_text is not None:
             try:
                 self._ruler_text.remove()
-            except:
+            except Exception:
                 pass
             self._ruler_text = None
         if (
@@ -71,7 +71,7 @@ class RulerMixin:
         ):
             try:
                 self._ruler_preview_line.remove()
-            except:
+            except Exception:
                 pass
             self._ruler_preview_line = None
         self._ruler_blit_bg = None
@@ -94,13 +94,13 @@ class RulerMixin:
             if self._ruler_line is not None:
                 try:
                     self._ruler_line.remove()
-                except:
+                except Exception:
                     pass
                 self._ruler_line = None
             if self._ruler_text is not None:
                 try:
                     self._ruler_text.remove()
-                except:
+                except Exception:
                     pass
                 self._ruler_text = None
 
@@ -144,7 +144,7 @@ class RulerMixin:
             ):
                 try:
                     self._ruler_preview_line.remove()
-                except:
+                except Exception:
                     pass
                 self._ruler_preview_line = None
             self._ruler_blit_bg = None

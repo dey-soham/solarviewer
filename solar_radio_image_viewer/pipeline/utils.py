@@ -460,7 +460,7 @@ class CheckpointManager:
             if os.path.exists(temp_file):
                 try:
                     os.remove(temp_file)
-                except:
+                except Exception:
                     pass
             # Don't re-raise this error as it would disrupt the pipeline
 
@@ -1045,7 +1045,7 @@ class CustomJSONEncoder(json.JSONEncoder):
 
             # For any other types, use string representation
             return str(obj)
-        except:
+        except Exception:
             return str(obj)
 
         # Let the base class handle it otherwise

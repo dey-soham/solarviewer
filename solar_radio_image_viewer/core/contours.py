@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import QDialogButtonBox, QMessageBox
 
 from ..processing.dependencies import IA
 from ..processing.image_data import get_pixel_values_from_image
-from ..processing.fits_io import readable_image_path
+from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.contour_mapping import (
     PixelToPixel,
     check_mapping,
@@ -644,9 +644,7 @@ class ContoursMixin:
             # (the coordinate-transformed copy if one was loaded)
             contour_imagename = layer.get("loaded_path") or layer["external_image"]
 
-            if contour_imagename.endswith(".fits") or contour_imagename.endswith(
-                ".fts"
-            ):
+            if is_fits(contour_imagename):
                 fits_flag = True
                 try:
                     header = dict(fits_header(contour_imagename))

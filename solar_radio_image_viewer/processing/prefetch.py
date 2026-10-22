@@ -22,11 +22,8 @@ from .image_meta import (
     remember_casa_info,
     remember_fits_header,
 )
+from .fits_io import is_fits
 from .workers import process_pool_executor
-
-
-def _is_fits(imagename):
-    return imagename.endswith(".fits") or imagename.endswith(".fts")
 
 
 def _read(imagename, stokes, threshold, rms_box, target_size):
@@ -40,7 +37,7 @@ def _read(imagename, stokes, threshold, rms_box, target_size):
     # Both already cached by the read above, so no further opens here
     info = casa_info(imagename)
     header = None
-    if _is_fits(imagename):
+    if is_fits(imagename):
         try:
             header = fits_header(imagename)
         except Exception:

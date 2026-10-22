@@ -391,7 +391,7 @@ class SolarDiskMixin:
             except Exception as e:
                 try:
                     viewer.show_status_message(f"Error applying settings: {e}")
-                except:
+                except Exception:
                     pass
 
         def on_close():

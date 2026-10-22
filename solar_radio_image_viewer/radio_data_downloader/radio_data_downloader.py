@@ -176,7 +176,6 @@ def fetch_ecallisto_observatories(
         if len(parts) >= 2:
             # Handle observatories with hyphens like "ALASKA-COHOE"
             # Find where the date part starts (8-digit number)
-            obs_parts = []
             for i, part in enumerate(parts):
                 if len(part) == 8 and part.isdigit():
                     # This is the date part, observatory is everything before
@@ -462,8 +461,9 @@ def download_learmonth(
 # e-CALLISTO Download Functions
 # ============================================================================
 
-# e-CALLISTO data server base URL
-ECALLISTO_BASE_URL = "http://soleil80.cs.technik.fhnw.ch/solarradio/data/2002-20yy_Callisto"
+# e-CALLISTO data server base URL (the same archive as on
+# soleil80.cs.technik.fhnw.ch, whose certificate does not name it)
+ECALLISTO_BASE_URL = "https://soleil.i4ds.ch/solarradio/data/2002-20yy_Callisto"
 
 
 def download_ecallisto_data(

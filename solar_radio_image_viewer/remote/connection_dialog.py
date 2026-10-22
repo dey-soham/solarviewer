@@ -201,7 +201,6 @@ class ConnectionDialog(QDialog):
 
         palette = theme_manager.palette
         border = palette["border"]
-        border_light = palette.get("border_light", border)
         surface = palette["surface"]
         base = palette["base"]
         highlight = palette["highlight"]

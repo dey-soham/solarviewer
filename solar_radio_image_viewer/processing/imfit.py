@@ -37,7 +37,7 @@ def safe_get(d, keys, default=None):
         if hasattr(result, "item"):
             result = result.item()
         return result
-    except:
+    except Exception:
         return default
 
 

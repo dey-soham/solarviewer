@@ -457,7 +457,7 @@ class RemoteArray:
         )
         connection = self._file.files.connection
         connection.ensure_connected()
-        channel = connection._client.get_transport().open_session()
+        channel = connection.transport.open_session()
         try:
             channel.exec_command(command)
             out = bytearray()

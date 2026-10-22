@@ -20,8 +20,8 @@ LOG_VIEWER_AVAILABLE = False
 
 # Check dependencies for each tool
 try:
-    import numpy as np
-    import pyqtgraph
+    import numpy as np  # noqa: F401 (availability check)
+    import pyqtgraph  # noqa: F401 (availability check)
     from astropy.io import fits
 
     DYNAMIC_SPECTRUM_AVAILABLE = True
@@ -29,7 +29,7 @@ except ImportError as e:
     print(f"[pipeline] Dynamic Spectrum Viewer not available: {e}")
 
 try:
-    import seaborn
+    import seaborn  # noqa: F401 (availability check)
     from casacore.tables import table
 
     CALTABLE_VISUALIZER_AVAILABLE = True
@@ -38,8 +38,8 @@ except ImportError as e:
     print("  Install with: pip install python-casacore seaborn")
 
 try:
-    from casacore.tables import table
-    from astropy.io import fits
+    from casacore.tables import table  # noqa: F401 (availability check)
+    from astropy.io import fits  # noqa: F401 (availability check)
 
     DYNAMIC_SPECTRA_CREATOR_AVAILABLE = True
 except ImportError as e:

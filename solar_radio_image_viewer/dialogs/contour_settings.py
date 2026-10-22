@@ -93,7 +93,6 @@ class ContourSettingsDialog(QDialog):
 
         # Get colors directly from the palette for consistency
         palette = theme_manager.palette
-        is_dark = theme_manager.is_dark
 
         border_color = palette["border"]
         surface_color = palette["surface"]
@@ -235,10 +234,8 @@ class ContourSettingsDialog(QDialog):
             from ..ui.styles import theme_manager
 
         palette = theme_manager.palette
-        is_dark = theme_manager.is_dark
         highlight_color = palette["highlight"]
         border_color = palette["border"]
-        surface_color = palette["surface"]
         text_secondary = palette.get("text_secondary", palette["disabled"])
 
         main_layout = QVBoxLayout(self)
@@ -856,7 +853,6 @@ class ContourSettingsDialog(QDialog):
 
     def update_external_options(self, enabled):
         """Update the enabled state and visual appearance of external options."""
-        # print(f"update_external_options called with enabled={enabled}")
 
         # Explicitly disable/enable each widget
         self.file_path_edit.setEnabled(enabled)

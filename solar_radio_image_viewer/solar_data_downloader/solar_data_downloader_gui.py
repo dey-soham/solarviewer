@@ -30,9 +30,8 @@ try:
         QRadioButton,
         QButtonGroup,
         QCheckBox,
-        QScrollArea,
     )
-    from PyQt5.QtCore import Qt, QDateTime, pyqtSignal, QThread
+    from PyQt5.QtCore import QDateTime, pyqtSignal, QThread
 except ImportError:
     print("Error: PyQt5 is required. Please install it with:")
     print("  pip install PyQt5")
@@ -49,7 +48,7 @@ except ImportError:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         if script_dir not in sys.path:
             sys.path.append(script_dir)
-        import solar_data_downloader as sdd
+        import solar_data_downloader as sdd  # noqa: F401 (availability check)
     except ImportError:
         print("Error: Could not import solar_data_downloader module.")
         print(
@@ -59,9 +58,9 @@ except ImportError:
 
 # Check if required packages are installed
 try:
-    import sunpy
-    import drms
-    import astropy
+    import sunpy  # noqa: F401 (availability check)
+    import drms  # noqa: F401 (availability check)
+    import astropy  # noqa: F401 (availability check)
 except ImportError as e:
     print(f"Error: Missing required package: {e.name}")
     print("Please install the required packages with:")
@@ -113,13 +112,14 @@ class DownloadWorker(QThread):
 
     def run(self):
         """Execute the download operation in a subprocess with real-time progress streaming."""
-        import subprocess
         import json
-        import re
-        import time
-        import select
         import os
+        import queue
+        import re
+        import subprocess
         import sys
+        import threading
+        import time
 
         try:
             # The download runs in a separate process; what it calls travels
@@ -143,13 +143,17 @@ class DownloadWorker(QThread):
                 cwd=launch_cwd,
             )
 
-            # Set non-blocking mode on stderr for progress reading
-            import fcntl
+            # One thread per pipe hands over what arrives (works on every
+            # platform, unlike select() on pipes)
+            chunks = queue.Queue()
 
-            fl = fcntl.fcntl(process.stderr, fcntl.F_GETFL)
-            fcntl.fcntl(process.stderr, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-            fl = fcntl.fcntl(process.stdout, fcntl.F_GETFL)
-            fcntl.fcntl(process.stdout, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            def pump(stream, name):
+                for chunk in iter(lambda: stream.read(4096), b""):
+                    chunks.put((name, chunk))
+                chunks.put((name, None))
+
+            for stream, name in ((process.stdout, "out"), (process.stderr, "err")):
+                threading.Thread(target=pump, args=(stream, name), daemon=True).start()
 
             files = []
             stdout_buffer = ""
@@ -157,143 +161,88 @@ class DownloadWorker(QThread):
             total_files = 0
             last_progress_update = time.time()
 
-            # Read output in real-time
-            while True:
+            def stdout_line(line):
+                nonlocal files, total_files
+                # Print ALL subprocess output to parent terminal
+                if line:
+                    print(line, flush=True)
+
+                if line.startswith("DOWNLOADED_FILES:"):
+                    try:
+                        files = json.loads(line.replace("DOWNLOADED_FILES:", "").strip())
+                    except json.JSONDecodeError:
+                        pass
+                elif line.startswith("Searching for"):
+                    self.progress.emit(line)
+                elif line.startswith("Found"):
+                    self.progress.emit(line)
+                    match = re.search(r"Found (\d+) files", line)
+                    if match:
+                        total_files = int(match.group(1))
+                elif "Successfully" in line or "Processing" in line:
+                    self.progress.emit(line)
+                # Diagnostic messages for better visibility
+                elif "Calibration:" in line:
+                    self.progress.emit(line)
+                elif "NO DATA FOUND" in line:
+                    self.progress.emit("❌ No data found for this query")
+                elif "Retrying" in line or "WARNING:" in line:
+                    self.progress.emit(line)
+                elif "Starting download" in line:
+                    self.progress.emit(line)
+                elif "Troubleshooting" in line or "Check VSO" in line:
+                    self.progress.emit(line)
+
+            def stderr_line(line):
+                """A parfive progress update (lines end in \\r or \\n)."""
+                nonlocal last_progress_update
+                clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+                current_time = time.time()
+                if current_time - last_progress_update <= 0.5:
+                    return
+                match = re.search(r"Files Downloaded:\s*(\d+)%.*?(\d+)/(\d+)", clean_line)
+                if "Files Downloaded:" in clean_line and match:
+                    pct, completed, total = match.groups()
+                    self.progress.emit(f"Downloading: {completed}/{total} files ({pct}%)")
+                    last_progress_update = current_time
+                    return
+                match = re.search(r"(\d+)%", clean_line)
+                if match:
+                    self.progress.emit(f"Downloading... {match.group(1)}%")
+                    last_progress_update = current_time
+
+            open_pipes = 2
+            while open_pipes:
                 if self._cancelled:
                     process.terminate()
                     self.error.emit("Download cancelled by user")
                     return
+                try:
+                    name, chunk = chunks.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if chunk is None:
+                    open_pipes -= 1
+                    continue
+                text = chunk.decode("utf-8", errors="replace")
+                if name == "out":
+                    stdout_buffer += text
+                    while "\n" in stdout_buffer:
+                        line, stdout_buffer = stdout_buffer.split("\n", 1)
+                        stdout_line(line.strip())
+                else:
+                    # Raw output to the terminal, for live progress bars
+                    sys.stderr.write(text)
+                    sys.stderr.flush()
+                    stderr_buffer += text
+                    while "\r" in stderr_buffer or "\n" in stderr_buffer:
+                        sep = "\r" if "\r" in stderr_buffer else "\n"
+                        line, stderr_buffer = stderr_buffer.split(sep, 1)
+                        stderr_line(line)
 
-                # Use select to check for readable data
-                readable, _, _ = select.select(
-                    [process.stdout, process.stderr], [], [], 0.1
-                )
-
-                # Read from stdout (main status messages)
-                if process.stdout in readable:
-                    try:
-                        chunk = process.stdout.read(4096)
-                        if chunk:
-                            stdout_buffer += chunk.decode("utf-8", errors="replace")
-
-                            # Process complete lines
-                            while "\n" in stdout_buffer:
-                                line, stdout_buffer = stdout_buffer.split("\n", 1)
-                                line = line.strip()
-                                
-                                # Print ALL subprocess output to parent terminal
-                                if line:
-                                    print(line, flush=True)
-
-                                if line.startswith("DOWNLOADED_FILES:"):
-                                    try:
-                                        files_json = line.replace(
-                                            "DOWNLOADED_FILES:", ""
-                                        ).strip()
-                                        files = json.loads(files_json)
-                                    except json.JSONDecodeError:
-                                        pass
-                                elif line.startswith("Searching for"):
-                                    self.progress.emit(line)
-                                elif line.startswith("Found"):
-                                    self.progress.emit(line)
-                                    match = re.search(r"Found (\d+) files", line)
-                                    if match:
-                                        total_files = int(match.group(1))
-                                elif "Successfully" in line:
-                                    self.progress.emit(line)
-                                elif "Processing" in line:
-                                    self.progress.emit(line)
-                                # New diagnostic messages for better visibility
-                                elif "Calibration:" in line:
-                                    self.progress.emit(line)
-                                elif "NO DATA FOUND" in line:
-                                    self.progress.emit("❌ No data found for this query")
-                                elif "Retrying" in line:
-                                    self.progress.emit(line)
-                                elif "WARNING:" in line:
-                                    self.progress.emit(line)
-                                elif "Starting download" in line:
-                                    self.progress.emit(line)
-                                elif "Troubleshooting" in line or "Check VSO" in line:
-                                    self.progress.emit(line)
-                    except (BlockingIOError, IOError):
-                        pass
-
-                # Read from stderr (parfive progress bars)
-                if process.stderr in readable:
-                    try:
-                        chunk = process.stderr.read(4096)
-                        if chunk:
-                            # Write raw output to terminal for live progress bars
-                            sys.stderr.write(chunk.decode("utf-8", errors="replace"))
-                            sys.stderr.flush()
-                            
-                            stderr_buffer += chunk.decode("utf-8", errors="replace")
-
-                            # Process carriage return separated updates
-                            while "\r" in stderr_buffer or "\n" in stderr_buffer:
-                                # Split on either \r or \n
-                                sep = "\r" if "\r" in stderr_buffer else "\n"
-                                line, stderr_buffer = stderr_buffer.split(sep, 1)
-
-                                # Clean ANSI escape codes
-                                clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
-
-                                current_time = time.time()
-
-                                # Parse "Files Downloaded:" progress
-                                if "Files Downloaded:" in clean_line:
-                                    match = re.search(
-                                        r"Files Downloaded:\s*(\d+)%.*?(\d+)/(\d+)",
-                                        clean_line,
-                                    )
-                                    if match:
-                                        pct = match.group(1)
-                                        completed = match.group(2)
-                                        total = match.group(3)
-                                        if current_time - last_progress_update > 0.5:
-                                            self.progress.emit(
-                                                f"Downloading: {completed}/{total} files ({pct}%)"
-                                            )
-                                            last_progress_update = current_time
-                                    else:
-                                        match = re.search(r"(\d+)%", clean_line)
-                                        if (
-                                            match
-                                            and current_time - last_progress_update
-                                            > 0.5
-                                        ):
-                                            pct = match.group(1)
-                                            self.progress.emit(f"Downloading... {pct}%")
-                                            last_progress_update = current_time
-                    except (BlockingIOError, IOError):
-                        pass
-
-                # Check if process has finished
-                if process.poll() is not None:
-                    # Read any remaining buffered output
-                    try:
-                        remaining_stdout = process.stdout.read()
-                        if remaining_stdout:
-                            stdout_buffer += remaining_stdout.decode(
-                                "utf-8", errors="replace"
-                            )
-                    except:
-                        pass
-
-                    # Process remaining stdout
-                    for line in stdout_buffer.split("\n"):
-                        line = line.strip()
-                        if line.startswith("DOWNLOADED_FILES:"):
-                            try:
-                                files_json = line.replace(
-                                    "DOWNLOADED_FILES:", ""
-                                ).strip()
-                                files = json.loads(files_json)
-                            except json.JSONDecodeError:
-                                pass
-                    break
+            process.wait()
+            if stdout_buffer.strip():
+                stdout_line(stdout_buffer.strip())
 
             if process.returncode != 0:
                 self.error.emit("Download failed. Check console for details.")
@@ -409,7 +358,7 @@ class SolarDataViewerGUI(QMainWindow):
         
         try:
             set_hand_cursor(self)
-        except:
+        except Exception:
             pass
 
     def closeEvent(self, event):

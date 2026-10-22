@@ -1,34 +1,4 @@
-# Core dependencies
-setuptools<81
-PyQt5>=5.15.0
-matplotlib>=3.5.0
-numpy>=1.20.0
-astropy>=5.0.0
-scipy>=1.7.0
-casatools>=6.4.0
-casatasks>=6.4.0
-sunpy[image,map,net,timeseries,visualization]>=5.0.0
-drms
-imageio>=2.16.0
-aiapy
-pillow
-requests
-packaging
-pandas
-parfive
-aiohttp
-psutil
-
-# LOFAR/SIMPL tools dependencies
-python-casacore
-seaborn
-opencv-python-headless
-
-# Video creation dependencies
-imageio[ffmpeg]
-
-# Remote mode (SSH/SFTP access)
-paramiko>=3.0.0
-
-# Dynamic spectrum viewer dependencies
-pyqtgraph
+# SolarViewer's dependencies are listed once, in pyproject.toml.
+# `pip install -r requirements.txt` installs SolarViewer from this folder
+# (editable) together with them.
+-e .

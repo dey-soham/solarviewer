@@ -49,8 +49,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QEventLoop, QSettings, QSize, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QIcon, QColor, QPalette
 
-# from PyQt5.QtGui import QColor, QPalette, QPainter
-
 from .processing.metadata import get_image_metadata
 from .ui.styles import (
     theme_manager,
@@ -93,7 +91,7 @@ from .core import (
 )
 from .core.canvas import EMPTY_HINT_GID
 from .ui.busy import busy
-from .processing.fits_io import readable_image_path
+from .processing.fits_io import is_fits, readable_image_path
 from .processing.contour_layers import default_contour_options, new_contour_layer
 from .processing.image_meta import casa_info, fits_header
 from .processing.prefetch import image_prefetcher
@@ -119,6 +117,21 @@ _SECONDARY_BUTTON_STYLE = """
         min-height: 24px;
     }
 """
+
+
+def _min_width_for_label(button):
+    """Make the stylesheet's minimum width of ``button`` that of its label.
+
+    The application's stylesheet gives every button the same min-width,
+    which Qt then uses as the button's minimum instead of its label's width:
+    in a narrow panel the label is cut off. (A minimum set in code would be
+    overwritten whenever the stylesheet is applied again.)
+    """
+    button.ensurePolished()
+    label = button.fontMetrics().horizontalAdvance(button.text())
+    button.setStyleSheet(
+        button.styleSheet() + f"\nQPushButton {{ min-width: {label}px; }}"
+    )
 
 
 def _preload_display_modules():
@@ -148,7 +161,6 @@ class CheckUpdateThread(QThread):
 
 def update_matplotlib_theme():
     """Update matplotlib rcParams based on current theme."""
-    palette = theme_manager.palette
     rcParams.update(theme_manager.matplotlib_params)
 
 
@@ -159,6 +171,70 @@ rcParams["font.size"] = 12
 update_matplotlib_theme()
 mplstyle.use("fast")
 
+
+
+def _toggle_colors():
+    """(track, track hovered, border, border hovered, text) colours of the
+    switch-style checkboxes in the current theme."""
+    if theme_manager.is_dark:
+        return "#3a3d4d", "#4a4d5d", "#4a4d5d", "#5a5d6d", "#e0e0e0"
+    return "#d0d0d0", "#c0c0c0", "#b0b0b0", "#a0a0a0", "#333333"
+
+
+def _overlay_toggle_style():
+    """Style of the Overlays switches (Beam, Grid, Solar Disk, Contours).
+    10pt like the preset buttons: at 11pt the two columns no longer fit the
+    panel's default width, and the settings buttons were cut off."""
+    bg, bg_hover, border, border_hover, text = _toggle_colors()
+    return f"""
+        QCheckBox {{
+            spacing: 5px;
+            font-size: 10pt;
+            color: {text};
+        }}
+        QCheckBox:disabled {{
+            color: #4a4a6a;
+        }}
+        QCheckBox::indicator {{
+            width: 28px;
+            height: 14px;
+            border-radius: 7px;
+            background-color: {bg};
+            border: 1px solid {border};
+        }}
+        QCheckBox::indicator:hover {{
+            background-color: {bg_hover};
+            border-color: {border_hover};
+        }}
+        QCheckBox::indicator:checked {{
+            background-color: #6366f1;
+            border-color: #818cf8;
+        }}
+        QCheckBox::indicator:checked:hover {{
+            background-color: #7c7ff5;
+        }}
+        QCheckBox::indicator:disabled {{
+            background-color: {bg};
+            border-color: {border};
+        }}
+    """
+
+
+# The small settings (gear) buttons next to the Overlays switches
+_SETTINGS_BUTTON_STYLE = """
+    QPushButton {
+        background-color: transparent;
+        border-radius: 4px;
+        padding: 2px;
+        border: none;
+    }
+    QPushButton:hover {
+        background-color: rgba(99, 102, 241, 0.2);
+    }
+    QPushButton:pressed {
+        background-color: rgba(99, 102, 241, 0.35);
+    }
+"""
 
 
 class SolarRadioImageTab(
@@ -279,6 +355,7 @@ class SolarRadioImageTab(
 
         # Debounce timers for UI responsiveness
         self._gamma_debounce_timer = None
+        self._later_timers = []  # see call_later
 
         # Contour layers (up to MAX_CONTOUR_LAYERS) and options shared by all
         self.contour_layers = [new_contour_layer()]
@@ -308,10 +385,6 @@ class SolarRadioImageTab(
         self._setup_file_navigation_shortcuts()
         self._set_button_cursors()
 
-        # F11 for fullscreen toggle
-        # fullscreen_shortcut = QShortcut(QKeySequence("F11"), self)
-        # fullscreen_shortcut.activated.connect(self._toggle_fullscreen)
-
     def _set_button_cursors(self):
         """Set pointing hand cursor on all buttons and interactive widgets for better UX"""
         set_hand_cursor(self)
@@ -336,9 +409,9 @@ class SolarRadioImageTab(
         splitter.setHandleWidth(5)
         splitter.setChildrenCollapsible(True)
 
-        # Left Control Panel
+        # Left Control Panel (its minimum width is what its controls need:
+        # a fixed smaller one let the splitter squeeze and clip them)
         control_panel = QWidget()
-        control_panel.setMinimumWidth(250)
         control_panel.setMaximumWidth(700)
         control_layout = QVBoxLayout(control_panel)
         control_layout.setContentsMargins(0, 0, 10, 0)
@@ -360,7 +433,6 @@ class SolarRadioImageTab(
 
         # Right Stats Panel
         stats_panel = QWidget()
-        stats_panel.setMinimumWidth(250)
         stats_panel.setMaximumWidth(700)
         stats_layout = QVBoxLayout(stats_panel)
         stats_layout.setContentsMargins(10, 0, 0, 0)
@@ -370,10 +442,32 @@ class SolarRadioImageTab(
         self.create_coord_display(stats_layout)
         splitter.addWidget(stats_panel)
 
-        # Set initial sizes (left: 300, center: stretch, right: 300)
-        splitter.setSizes([300, 800, 300])
+        # Initial sizes: the side panels 300 px, or what their controls need
+        splitter.setSizes(
+            [
+                max(300, control_panel.minimumSizeHint().width()),
+                800,
+                max(300, stats_panel.minimumSizeHint().width()),
+            ]
+        )
 
         main_layout.addWidget(splitter)
+        self._name_icon_only_controls()
+
+    def _name_icon_only_controls(self):
+        """Name the icon-only buttons and toolbar actions for screen readers,
+        from the start of their tooltips ("Pan: drag ..." -> "Pan")."""
+        from PyQt5.QtWidgets import QAbstractButton
+
+        def short(tip):
+            return tip.split("\n")[0].split(":")[0].split(" - ")[0].strip()
+
+        for button in self.findChildren(QAbstractButton):
+            if not button.text() and not button.accessibleName() and button.toolTip():
+                button.setAccessibleName(short(button.toolTip()))
+        for action in self.findChildren(QAction):
+            if not action.text() and action.toolTip():
+                action.setText(short(action.toolTip()))
 
     def create_file_controls(self, parent_layout):
         group = QGroupBox("Image Selection")
@@ -441,10 +535,17 @@ class SolarRadioImageTab(
         stokes_thresh_layout.addStretch()
         # Threshold (sigma)
         thresh_label = QLabel("Thres (σ):")
-        thresh_label.setToolTip("Threshold in units of sigma (RMS)")
+        threshold_tip = (
+            "Threshold, in units of the RMS (σ) measured in the RMS box.\n"
+            "Lfrac, Vfrac, Q/I, U/I and U/V: pixels whose numerator is below "
+            "threshold × RMS are set to 0.\n"
+            "PANG: pixels whose polarized intensity is below it are left blank.\n"
+            "I, Q, U, V and L are shown as they are."
+        )
+        thresh_label.setToolTip(threshold_tip)
         self.threshold_entry = QLineEdit("10")
         self.threshold_entry.setFixedWidth(50)
-        self.threshold_entry.setToolTip("Threshold in units of sigma (RMS)")
+        self.threshold_entry.setToolTip(threshold_tip)
         self.threshold_entry.editingFinished.connect(self._on_threshold_edited)
 
         stokes_thresh_layout.addWidget(stokes_label)
@@ -554,15 +655,20 @@ class SolarRadioImageTab(
         self.rms_label = QLabel("RMS")
         rms_label_color = "#a5a8b8" if theme_manager.is_dark else "#555555"
         self.rms_label.setStyleSheet(f"color: {rms_label_color}; font-size: 10pt;")
-        self.rms_label.setToolTip("RMS Box Settings")
+        rms_tip = (
+            "RMS box: where the noise (RMS) is measured, by default a band "
+            "along the bottom of the image.\nThe RMS sets the threshold of the "
+            "derived Stokes products, the image statistics (RMS, dynamic range) "
+            "and contour levels in σ.\nClick the gear to change the box."
+        )
+        self.rms_label.setToolTip(rms_tip)
 
         self.rms_settings_btn = QPushButton()
         self.rms_settings_btn.setObjectName("IconOnlyNBGButton")
         self.rms_settings_btn.setIcon(QIcon(themed_icon("settings.png")))
         self.rms_settings_btn.setIconSize(QSize(20, 20))
-        self.rms_settings_btn.setToolTip(
-            "RMS Box Settings - Configure noise estimation region"
-        )
+        self.rms_settings_btn.setToolTip(rms_tip)
+        self.rms_settings_btn.setAccessibleName("RMS box settings")
         self.rms_settings_btn.setFixedSize(28, 28)
         self.rms_settings_btn.clicked.connect(self.show_rms_box_dialog)
         self.rms_settings_btn.setStyleSheet(
@@ -650,72 +756,12 @@ class SolarRadioImageTab(
         grid_layout.setSpacing(6)
         grid_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Theme-aware toggle style for overlay checkboxes
-        if theme_manager.is_dark:
-            toggle_bg = "#3a3d4d"
-            toggle_bg_hover = "#4a4d5d"
-            toggle_border = "#4a4d5d"
-            toggle_border_hover = "#5a5d6d"
-            text_color = "#e0e0e0"
-        else:
-            toggle_bg = "#d0d0d0"
-            toggle_bg_hover = "#c0c0c0"
-            toggle_border = "#b0b0b0"
-            toggle_border_hover = "#a0a0a0"
-            text_color = "#333333"
-
-        overlay_toggle_style = f"""
-            QCheckBox {{
-                spacing: 6px;
-                font-size: 11pt;
-                color: {text_color};
-            }}
-            QCheckBox:disabled {{
-                color: #4a4a6a;
-            }}
-            QCheckBox::indicator {{
-                width: 28px;
-                height: 14px;
-                border-radius: 7px;
-                background-color: {toggle_bg};
-                border: 1px solid {toggle_border};
-            }}
-            QCheckBox::indicator:hover {{
-                background-color: {toggle_bg_hover};
-                border-color: {toggle_border_hover};
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: #6366f1;
-                border-color: #818cf8;
-            }}
-            QCheckBox::indicator:checked:hover {{
-                background-color: #7c7ff5;
-            }}
-            QCheckBox::indicator:disabled {{
-                background-color: {toggle_bg};
-                border-color: {toggle_border};
-                opacity: 0.5;
-            }}
-        """
-
-        # Modern settings button style (works for both themes)
-        settings_btn_style = """
-            QPushButton {
-                background-color: transparent;
-                border-radius: 4px;
-                padding: 2px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: rgba(99, 102, 241, 0.2);
-            }
-            QPushButton:pressed {
-                background-color: rgba(99, 102, 241, 0.35);
-            }
-        """
+        overlay_toggle_style = _overlay_toggle_style()
+        settings_btn_style = _SETTINGS_BUTTON_STYLE
 
         # Row 0: Show Beam + settings | Show Grid + settings
         self.show_beam_checkbox = QCheckBox("")
+        self.show_beam_checkbox.setAccessibleName("Beam")
         self.show_beam_label = QLabel("Beam")
         self.show_beam_checkbox.setChecked(True)
         self.show_beam_checkbox.setStyleSheet(overlay_toggle_style)
@@ -856,11 +902,11 @@ class SolarRadioImageTab(
         preset_layout.setSpacing(6)
 
         # Common compact style for preset buttons
+        # (no min-width: it would let a narrow panel squeeze the labels)
         preset_btn_style = """
             QPushButton {
-                padding: 3px 8px;
+                padding: 3px 6px;
                 font-size: 10pt;
-                min-width: 45px;
                 min-height: 22px;
             }
         """
@@ -890,34 +936,16 @@ class SolarRadioImageTab(
 
         main_layout.addWidget(intensity_group)
 
-        # Display changes apply as they are made; this reads the image again
+        # Display changes apply as they are made; this reads the image again,
+        # which is rarely needed: a small button like the presets
         self.plot_button = QPushButton("Reload Image")
         self.plot_button.setToolTip("Read the image again from disk")
-        self.plot_button.setStyleSheet(
-            """
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                    stop:0 #4f46e5, stop:1 #6366f1);
-                color: white; 
-                padding: 6px 16px; 
-                font-weight: 600;
-                font-size: 11pt;
-                letter-spacing: 0.5px;
-                border-radius: 6px;
-                border: none;
-                min-height: 26px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                    stop:0 #6366f1, stop:1 #818cf8);
-            }
-            QPushButton:pressed {
-                background: #3730a3;
-            }
-            """
-        )
+        self.plot_button.setStyleSheet(preset_btn_style)
         self.plot_button.clicked.connect(self.on_visualization_changed)
-        main_layout.addWidget(self.plot_button)
+        reload_row = QHBoxLayout()
+        reload_row.addStretch()
+        reload_row.addWidget(self.plot_button)
+        main_layout.addLayout(reload_row)
 
         parent_layout.addWidget(group)
 
@@ -1123,15 +1151,7 @@ class SolarRadioImageTab(
         toolbar.addWidget(self.hpc_btn)
         self._update_special_button_styles()
 
-        # Add theme-aware separator before file navigation buttons
-        # self._hpc_nav_separator = QWidget()
-        # self._hpc_nav_separator.setFixedWidth(1)
-        # self._hpc_nav_separator.setFixedHeight(20)
-        # self._update_hpc_nav_separator_style()
-        # toolbar.addWidget(self._hpc_nav_separator)
-
         # File navigation buttons - create first, style later so we can update on theme change
-        # self._first_file_btn = QPushButton("⏮")
         self._first_file_btn = QPushButton("|◄")
         self._first_file_btn.setToolTip("Go to first file")
         self._first_file_btn.clicked.connect(self._on_first_file)
@@ -1150,7 +1170,6 @@ class SolarRadioImageTab(
         self._next_file_btn.setEnabled(False)
         toolbar.addWidget(self._next_file_btn)
 
-        # self._last_file_btn = QPushButton("⏭")
         self._last_file_btn = QPushButton("►|")
         self._last_file_btn.setToolTip("Go to last file")
         self._last_file_btn.clicked.connect(self._on_last_file)
@@ -1245,7 +1264,6 @@ class SolarRadioImageTab(
             btn_bg = palette.get("surface", "#455A64")
             btn_hover = palette.get("highlight", "#546E7A")
             btn_pressed = palette.get("base", "#37474F")
-            btn_disabled_bg = "#4a4a6a"
             btn_disabled_text = "#757575"
             btn_text = palette.get("text", "white")
             label_color = palette.get("text_secondary", "#B0BEC5")
@@ -1253,7 +1271,6 @@ class SolarRadioImageTab(
             btn_bg = palette.get("surface", "#D7D3BF")
             btn_hover = palette.get("highlight", "#B8B5A2")
             btn_pressed = palette.get("base", "#ECEBDE")
-            btn_disabled_bg = "#E0E0E0"
             btn_disabled_text = "#9E9E9E"
             btn_text = palette.get("text", "#1a1a1a")
             label_color = palette.get("text", "#333333")
@@ -1451,13 +1468,24 @@ class SolarRadioImageTab(
         for i in range(6):
             self.image_stats_table.setRowHeight(i, 24)
 
-        headers = ["Max", "Min", "RMS", "Mean (RMS box)", "Pos. DR", "Neg. DR"]
+        # Short labels, so the values keep their room in a narrow panel
+        headers = ["Max", "Min", "RMS", "Box mean", "Pos. DR", "Neg. DR"]
+        tips = {
+            "RMS": "RMS inside the RMS box",
+            "Box mean": "Mean inside the RMS box",
+            "Pos. DR": "Positive dynamic range: Max / RMS",
+            "Neg. DR": "Negative dynamic range: Min / RMS",
+        }
         for row, label in enumerate(headers):
-            self.image_stats_table.setItem(row, 0, QTableWidgetItem(label))
+            item = QTableWidgetItem(label)
+            if label in tips:
+                item.setToolTip(tips[label])
+            self.image_stats_table.setItem(row, 0, item)
             self.image_stats_table.setItem(row, 1, QTableWidgetItem("−"))
             self.image_stats_table.item(row, 1).setTextAlignment(
                 Qt.AlignRight | Qt.AlignVCenter
             )
+        self.image_stats_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         layout.addWidget(self.image_stats_table)
         self.create_noaa_events_button(layout)
@@ -1468,27 +1496,26 @@ class SolarRadioImageTab(
         # Create horizontal layout for both buttons side-by-side
         buttons_layout = QHBoxLayout()
 
-        # Solar Activity button (smaller, no icon)
-        # self.noaa_events_btn = QPushButton("☀️")
-        self.noaa_events_btn = QPushButton("☀️ Activity")
+        # Plain text: Qt measures emoji narrower than they are drawn, and
+        # clipped the labels when the panel is narrow
+        self.noaa_events_btn = QPushButton("Activity")
         self.noaa_events_btn.setToolTip(
             "View Solar Activity (Events, Active Regions, Conditions, CMEs)"
         )
         self.noaa_events_btn.setEnabled(False)  # Disabled by default
-        self.noaa_events_btn.setMinimumWidth(80)
         self.noaa_events_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
         self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
+        _min_width_for_label(self.noaa_events_btn)
         buttons_layout.addWidget(self.noaa_events_btn)
 
-        # self.helioviewer_btn = QPushButton("🌐")
-        self.helioviewer_btn = QPushButton("🌐 Helioviewer")
+        self.helioviewer_btn = QPushButton("Helioviewer")
         self.helioviewer_btn.setToolTip(
             "Browse Helioviewer images around current observation time"
         )
         self.helioviewer_btn.setEnabled(False)  # Disabled by default
-        self.helioviewer_btn.setMinimumWidth(80)
         self.helioviewer_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
         self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
+        _min_width_for_label(self.helioviewer_btn)
         buttons_layout.addWidget(self.helioviewer_btn)
 
         # Add horizontal layout to parent
@@ -1708,7 +1735,6 @@ class SolarRadioImageTab(
                         tight_layout=tight_layout,
                         preserve_view=not dir_load,
                     )
-                    # print(f"Plotting image with vmin={vmin_val}, vmax={vmax_val}")
 
                 self._was_preset_image = is_preset_matched
             elif vmin_val is None or vmax_val is None:
@@ -1867,27 +1893,9 @@ class SolarRadioImageTab(
 
     def on_stretch_changed(self, index):
         self.update_gamma_slider_state()
-
-        try:
-            vmin_val = float(self.vmin_entry.text())
-            vmax_val = float(self.vmax_entry.text())
-        except (ValueError, AttributeError):
-            if self.current_image_data is not None:
-                vmin_val = float(np.nanmin(self.current_image_data))
-                vmax_val = float(np.nanmax(self.current_image_data))
-            else:
-                return
-
         stretch = self.stretch_combo.currentText()
-        cmap = self.cmap_combo.currentText()
-
-        try:
-            gamma = float(self.gamma_entry.text())
-        except (ValueError, AttributeError):
-            gamma = 1.0
-
+        # The plot reads the range, stretch and gamma from the controls
         if self.current_image_data is not None:
-            # self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
             self.schedule_plot()
         main_window = self.parent()
         if main_window:
@@ -2011,13 +2019,6 @@ class SolarRadioImageTab(
 
     def load_data(self, imagename, stokes, threshold, auto_adjust_rms=False):
         self._loaded_threshold = threshold
-        # Clear WCS cache so new images don't accidentally reuse old WCS objects
-        # if the new dictionary falls on the same memory address (id)
-        # self._cached_wcs_obj = None
-        # self._cached_wcs_id = None
-        import time
-
-        start_time = time.time()
         try:
             # Use the current RMS box when loading data
             from .processing.image_data import get_pixel_values_from_image
@@ -2151,7 +2152,7 @@ class SolarRadioImageTab(
                 and imagename == self._tb_temp_file
             )
 
-            if imagename.endswith(".fits") or imagename.endswith(".fts"):
+            if is_fits(imagename):
                 self.current_header = dict(fits_header(imagename))
                 bunit = self.current_header.get("BUNIT", "").lower()
                 self._current_bunit = self.current_header.get("BUNIT", "")
@@ -2308,9 +2309,6 @@ class SolarRadioImageTab(
         if hasattr(self, "helioviewer_btn"):
             self.helioviewer_btn.setEnabled(True)
 
-        # self.plot_image()
-        # self.schedule_plot()
-
     def on_stokes_changed(self, stokes):
         if not self.imagename:
             return
@@ -2361,23 +2359,6 @@ class SolarRadioImageTab(
             dmin = float(np.nanmin(data))
             dmax = float(np.nanmax(data))
             self.set_range(dmin, dmax)
-
-            stretch = (
-                self.stretch_combo.currentText()
-                if hasattr(self, "stretch_combo")
-                else "linear"
-            )
-            cmap = (
-                self.cmap_combo.currentText()
-                if hasattr(self, "cmap_combo")
-                else "viridis"
-            )
-            try:
-                gamma = float(self.gamma_entry.text())
-            except (ValueError, AttributeError):
-                gamma = 1.0
-
-            # self.plot_image(dmin, dmax, stretch, cmap, gamma)
             self.schedule_plot()
 
             if main_window:
@@ -2484,27 +2465,6 @@ class SolarRadioImageTab(
     def on_checkbox_changed(self):
         if not hasattr(self, "current_image_data") or self.current_image_data is None:
             return
-
-        try:
-            vmin_val = float(self.vmin_entry.text())
-            vmax_val = float(self.vmax_entry.text())
-        except (ValueError, AttributeError):
-            vmin_val = None
-            vmax_val = None
-
-        try:
-            gamma = float(self.gamma_entry.text())
-        except (ValueError, AttributeError):
-            gamma = 1.0
-
-        stretch = (
-            self.stretch_combo.currentText()
-            if hasattr(self, "stretch_combo")
-            else "linear"
-        )
-        cmap = (
-            self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
-        )
 
         # Determine which checkbox was changed
         sender = self.sender()
@@ -2698,6 +2658,14 @@ class SolarRadioImageTab(
                 main_window.showFullScreen()
     '''
 
+    def call_later(self, msec, function):
+        """Call ``function`` in ``msec`` ms, unless the tab is closed first."""
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(function)
+        timer.start(msec)
+        self._later_timers.append(timer)
+
     def cleanup(self):
         """Release what the tab holds once it is closed: its timers, its
         temporary files (HPC, RA/Dec, TB and converted contour images) and
@@ -2708,6 +2676,7 @@ class SolarRadioImageTab(
             getattr(self, "_settle_timer", None),
             getattr(self, "_plot_timer", None),
             self._gamma_debounce_timer,
+            *self._later_timers,
         ):
             if timer is not None:
                 timer.stop()
@@ -2731,78 +2700,24 @@ class SolarRadioImageTab(
 
     def _update_overlay_toggle_styles(self):
         """Update overlay checkbox and button styles based on current theme."""
-        # Theme-aware toggle style for overlay checkboxes
-        if theme_manager.is_dark:
-            toggle_bg = "#3a3d4d"
-            toggle_bg_hover = "#4a4d5d"
-            toggle_border = "#4a4d5d"
-            toggle_border_hover = "#5a5d6d"
-            text_color = "#e0e0e0"
-        else:
-            toggle_bg = "#d0d0d0"
-            toggle_bg_hover = "#c0c0c0"
-            toggle_border = "#b0b0b0"
-            toggle_border_hover = "#a0a0a0"
-            text_color = "#333333"
-
-        overlay_toggle_style = f"""
-            QCheckBox {{
-                spacing: 6px;
-                font-size: 10.2pt;
-                color: {text_color};
-            }}
-            QCheckBox::indicator {{
-                width: :8px;
-                height: 14px;
-                border-radius: 7px;
-                background-color: {toggle_bg};
-                border: 1px solid {toggle_border};
-            }}
-            QCheckBox::indicator:hover {{
-                background-color: {toggle_bg_hover};
-                border-color: {toggle_border_hover};
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: #6366f1;
-                border-color: #818cf8;
-            }}
-            QCheckBox::indicator:checked:hover {{
-                background-color: #7c7ff5;
-            }}
-        """
-
-        settings_btn_style = """
-            QPushButton {
-                background-color: transparent;
-                border-radius: 4px;
-                padding: 2px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: rgba(99, 102, 241, 0.2);
-            }
-            QPushButton:pressed {
-                background-color: rgba(99, 102, 241, 0.35);
-            }
-        """
-
-        # Apply to overlay checkboxes
-        for checkbox in [
+        for checkbox in (
             self.show_beam_checkbox,
             self.show_grid_checkbox,
             self.show_solar_disk_checkbox,
             self.show_contours_checkbox,
-        ]:
-            if hasattr(self, checkbox.objectName()) or checkbox:
-                checkbox.setStyleSheet(overlay_toggle_style)
-
-        # Apply to settings buttons
-        for btn in [self.solar_disk_center_button, self.contour_settings_button]:
-            if hasattr(self, btn.objectName()) or btn:
-                btn.setStyleSheet(settings_btn_style)
+        ):
+            checkbox.setStyleSheet(_overlay_toggle_style())
+        for btn in (
+            self.beam_settings_button,
+            self.grid_settings_button,
+            self.solar_disk_center_button,
+            self.contour_settings_button,
+        ):
+            btn.setStyleSheet(_SETTINGS_BUTTON_STYLE)
 
         # Update Fast Load toggle style
         if hasattr(self, "downsample_toggle"):
+            toggle_bg, toggle_bg_hover, toggle_border, _, _ = _toggle_colors()
             fast_toggle_style = f"""
                 QCheckBox#FastLoadToggle {{
                     spacing: 0px;
@@ -2930,7 +2845,6 @@ class SolarRadioImageViewerApp(
 
         self.setCentralWidget(self.tab_widget)
         self.tabs = []
-        self.max_tabs = 10
         self.settings = QSettings("SolarViewer", "SolarViewer")
         self._open_dialogs = []  # Track non-modal dialogs to prevent garbage collection
 
@@ -2986,16 +2900,13 @@ class SolarRadioImageViewerApp(
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
 
-            # Delay to setup the tab before calling on_visualization_changed
-            QTimer.singleShot(
+            # Load once the tab is set up (not if it is closed first)
+            first_tab.call_later(
                 20, lambda: first_tab.on_visualization_changed(dir_load=True)
             )
-
-            # first_tab.on_visualization_changed(dir_load=True)
             first_tab.update_tab_name_from_path(imagename)
             # Scan directory for file navigation (delay to ensure UI is ready)
-            QTimer.singleShot(100, first_tab._scan_directory_files)
-            # first_tab.auto_minmax()
+            first_tab.call_later(100, first_tab._scan_directory_files)
         """else:
             first_tab.imagename = get_resource_path("assets/splash.fits")
             QTimer.singleShot(
@@ -3044,8 +2955,6 @@ class SolarRadioImageViewerApp(
             else:
                 basename = os.path.basename(file_path.rstrip("/"))
                 target_tab = self.add_new_tab(basename)
-                if target_tab is None:  # at the tab limit
-                    break
 
             target_tab.open_image_path(file_path)
 
@@ -3106,14 +3015,11 @@ class SolarRadioImageViewerApp(
             self.tab_widget.add_tab_button.raise_()
 
     def close_tab(self, index):
-        """Close the tab at the given index"""
-        if len(self.tabs) <= 1:
-            QMessageBox.warning(
-                self, "Cannot Close", "At least one tab must remain open."
-            )
-            return
-
+        """Close the tab at the given index (the last one gives way to an
+        empty tab)"""
         if index >= 0 and index < len(self.tabs):
+            if len(self.tabs) == 1:
+                self.add_new_tab("Tab1")
             tab = self.tabs.pop(index)
             self.tab_widget.removeTab(index)
             # A removed page is not deleted by Qt: free it and its image
@@ -3127,14 +3033,6 @@ class SolarRadioImageViewerApp(
 
     def handle_add_tab(self):
         """Handle the add tab button click"""
-        if len(self.tabs) >= self.max_tabs:
-            QMessageBox.warning(
-                self,
-                "Maximum Tabs Reached",
-                f"Cannot create more than {self.max_tabs} tabs.",
-            )
-            return
-
         tab_count = len(self.tabs) + 1
         tab_name = f"Tab{tab_count}"
         self.add_new_tab(tab_name)
@@ -3221,13 +3119,14 @@ class SolarRadioImageViewerApp(
         file_menu.addSeparator()
 
         export_act = QAction("Export Figure", self)
-        export_act.setShortcut("Ctrl+E")
+        # Ctrl+S saves, as in most applications; Ctrl+E as before
+        export_act.setShortcuts(["Ctrl+S", "Ctrl+E"])
         export_act.setStatusTip("Export current figure as image file")
         export_act.triggered.connect(self.export_data)
         file_menu.addAction(export_act)
 
         export_data_act = QAction("Export as FITS", self)
-        export_data_act.setShortcut("Ctrl+F")
+        export_data_act.setShortcut("Ctrl+Shift+F")
         export_data_act.setStatusTip("Export current data as FITS file")
         export_data_act.triggered.connect(self.export_as_fits)
         file_menu.addAction(export_data_act)
@@ -3305,7 +3204,6 @@ class SolarRadioImageViewerApp(
 
         # Preferences action
         preferences_action = QAction("⚙️ Preferences...", self)
-        # preferences_action.setShortcut("Ctrl+,")
         preferences_action.setStatusTip("Open application preferences (UI scale, etc.)")
         preferences_action.triggered.connect(self._open_preferences_dialog)
         view_menu.addAction(preferences_action)
@@ -3319,12 +3217,6 @@ class SolarRadioImageViewerApp(
     def _create_tools_menu(self, menubar):
         """Tools menu (the LOFAR submenu is added by _create_lofar_menu)."""
         tools_menu = menubar.addMenu("&Tools")
-
-        # batch_act = QAction("Batch Processing", self)
-        # batch_act.setShortcut("Ctrl+B")
-        # batch_act.setStatusTip("Process multiple images in batch mode")
-        # batch_act.triggered.connect(self.show_batch_dialog)
-        # tools_menu.addAction(batch_act)
 
         # Add Solar Phase Shift option
 
@@ -3409,7 +3301,7 @@ class SolarRadioImageViewerApp(
         """Region menu."""
         region_menu = menubar.addMenu("&Region")
         subimg_act = QAction("Export Sub-Image (ROI)", self)
-        subimg_act.setShortcut("Ctrl+S")
+        subimg_act.setShortcut("Ctrl+Shift+S")
         subimg_act.setStatusTip("Export the selected region as a new CASA image")
         subimg_act.triggered.connect(self.save_sub_image)
         region_menu.addAction(subimg_act)
@@ -3429,7 +3321,6 @@ class SolarRadioImageViewerApp(
         gauss_act.triggered.connect(self.fit_2d_gaussian)
         fitting_menu.addAction(gauss_act)
         ring_act = QAction("Fit Elliptical Ring", self)
-        # ring_act.setShortcut("Ctrl+L")
         ring_act.setStatusTip("Fit an elliptical ring to the selected region")
         ring_act.triggered.connect(self.fit_2d_ring)
         fitting_menu.addAction(ring_act)
@@ -3444,7 +3335,7 @@ class SolarRadioImageViewerApp(
         annot_menu.addAction(text_act)
 
         arrow_act = QAction("Add Arrow Annotation", self)
-        arrow_act.setShortcut("Ctrl+A")
+        arrow_act.setShortcut("Ctrl+Shift+A")
         arrow_act.setStatusTip("Add arrow annotation to the image")
         arrow_act.triggered.connect(self.show_add_arrow_annotation_dialog)
         annot_menu.addAction(arrow_act)
@@ -3578,12 +3469,6 @@ class SolarRadioImageViewerApp(
         tools_menu.addMenu(lofar_menu)
 
     def add_new_tab(self, name):
-        if len(self.tabs) >= self.max_tabs:
-            QMessageBox.warning(
-                self, "Tab Limit", f"Maximum of {self.max_tabs} tabs allowed."
-            )
-            return None
-
         new_tab = SolarRadioImageTab(self, name)
         self.tabs.append(new_tab)
         self.tab_widget.addTab(new_tab, name)
@@ -3665,8 +3550,6 @@ class SolarRadioImageViewerApp(
         for tab in self.tabs:
             tab.setStyleSheet(stylesheet)
             tab.refresh_icons()
-            # if hasattr(tab, '_available_stokes') and tab._available_stokes:
-            #    tab._update_stokes_combo_state(tab._available_stokes)
 
         # Refresh tab bar theme (colors and icons)
         if hasattr(self, "tab_widget") and hasattr(
@@ -3814,8 +3697,7 @@ class SolarRadioImageViewerApp(
         current_tab = self.tab_widget.currentWidget()
         if current_tab is None or getattr(current_tab, "_is_remote_mode", False):
             current_tab = self.add_new_tab(os.path.basename(path.rstrip("/")))
-        if current_tab is not None:
-            current_tab.open_image_path(path)
+        current_tab.open_image_path(path)
 
     def show_batch_dialog(self):
         from .dialogs import BatchProcessDialog
@@ -3895,7 +3777,6 @@ class SolarRadioImageViewerApp(
 
         dialog = QDialog(self)
         dialog.setWindowTitle("About SolarViewer")
-        # dialog.setFixedSize(510, 580)
         dialog.resize(510, 580)
 
         layout = QVBoxLayout(dialog)
@@ -4151,8 +4032,11 @@ class SolarRadioImageViewerApp(
                 if action.menu() is not None:
                     # e.g. "AIA Presets: 171 Å"
                     rows += rows_of(action.menu(), f"{text}: ")
-                elif not action.shortcut().isEmpty():
-                    rows.append((action.shortcut().toString(QKeySequence.NativeText), text))
+                elif action.shortcuts():
+                    keys = "  or  ".join(
+                        k.toString(QKeySequence.NativeText) for k in action.shortcuts()
+                    )
+                    rows.append((keys, text))
             return rows
 
         sections = []

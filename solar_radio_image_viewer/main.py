@@ -4,7 +4,11 @@ import os
 
 os.environ.setdefault("CASA_LOGLEVEL", "ERROR")
 os.environ["CASARC"] = "/dev/null"  # Prevent CASA config loading
-os.environ["OPENSSL_CONF"] = "/dev/null"  # Fix SSL error on Linux with Python 3.11+
+# Skip the system's OpenSSL configuration file (its provider and policy
+# settings), which made HTTPS fail with ssl.SSLError on some Linux systems with
+# Python 3.11+ (see INSTALLATION.md). Certificates are still checked. An
+# OPENSSL_CONF set by the user or the system is kept.
+os.environ.setdefault("OPENSSL_CONF", "/dev/null")
 
 import sys
 import argparse
@@ -49,7 +53,6 @@ except ImportError:
 def apply_theme(app, theme_mgr):
     """Apply the current theme to the application."""
     palette = theme_mgr.palette
-    is_dark = theme_mgr.is_dark
 
     # Apply Qt palette
     qt_palette = QPalette()
@@ -98,7 +101,6 @@ class LoaderThread(QThread):
             from .viewer import SolarRadioImageViewerApp
 
             self.progress.emit(95)
-            from .viewer import update_matplotlib_theme
 
             self.message.emit("Initializing interface...")
             self.progress.emit(98)
@@ -227,7 +229,7 @@ Examples:
     # Initialize AFTER theme is set so it picks up the correct style
     from .log_console import LogConsole
 
-    log_console = LogConsole.get_instance()
+    LogConsole.get_instance()
 
 
     # === STANDARD VIEWER LAUNCH SEQUENCE ===

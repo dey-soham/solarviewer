@@ -919,7 +919,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
             # Disconnect cross-section click handler during ROI mode
             try:
                 self.plot_item.scene().sigMouseClicked.disconnect(self._on_mouse_click)
-            except:
+            except Exception:
                 pass
             try:
                 self.plot_item.scene().sigMouseClicked.connect(self._roi_click)
@@ -943,7 +943,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 pass
             try:
                 self.plot_item.scene().sigMouseClicked.connect(self._on_mouse_click)
-            except:
+            except Exception:
                 pass
 
             # Restore saved original handler

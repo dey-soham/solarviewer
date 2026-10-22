@@ -5,7 +5,7 @@ Brightness temperature <-> flux density map conversion.
 import os
 
 from .dependencies import CASA_AVAILABLE, IA
-from .fits_io import readable_image_path
+from .fits_io import is_fits, readable_image_path
 
 
 def _first_plane(ia):
@@ -41,11 +41,11 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
     try:
         from astropy.io import fits
 
-        is_fits = imagename.endswith(".fits") or imagename.endswith(".fts")
+        fits_file = is_fits(imagename)
 
         header_info = {}
 
-        if is_fits:
+        if fits_file:
             # FITS file
             with fits.open(readable_image_path(imagename)) as hdul:
                 header = hdul[0].header
@@ -68,7 +68,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                             if val > 1e6:  # Must be Hz
                                 freq_hz = val
                                 break
-                        except:
+                        except Exception:
                             pass
 
                 if freq_hz is None:
@@ -128,14 +128,12 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
             header_info = {"major": major, "minor": minor, "freq_ghz": freq_ghz}
 
         # Calculate brightness temperature
-        # print(f"[TB] Beam: {header_info['major']:.2f}\" x {header_info['minor']:.2f}\", Freq: {header_info['freq_ghz']:.4f} GHz")
         tb_data = 1.222e6 * flux_data / (freq_ghz**2) / (major * minor)
 
-        # print(f"[TB] Temperature range: {np.nanmin(tb_data):.2e} to {np.nanmax(tb_data):.2e} K")
 
         # Save to file if outfile specified
         if outfile is not None:
-            if is_fits:
+            if fits_file:
                 new_header = header_info["original_header"].copy()
                 new_header["BUNIT"] = "K"
                 new_header["HISTORY"] = (
@@ -166,7 +164,6 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
 
                     if stokes_idx is not None:
                         # Full Stokes - convert all planes
-                        # print(f"[TB] Converting full Stokes data (shape: {original_data.shape})")
                         tb_data_save = (
                             1.222e6 * original_data / (freq_ghz**2) / (major * minor)
                         )
@@ -207,7 +204,6 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                     # Check for multi-Stokes
                     if original_data.ndim >= 3:
                         # Full Stokes - convert all planes
-                        # print(f"[TB] Converting full Stokes CASA data (shape: {original_data.shape})")
                         tb_data_save = (
                             1.222e6 * original_data / (freq_ghz**2) / (major * minor)
                         )
@@ -225,7 +221,6 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                 if os.path.exists(temp_export):
                     os.remove(temp_export)
 
-            # print(f"[TB] Saved TB map to: {outfile}")
 
         return tb_data, header_info
 
@@ -261,11 +256,11 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
     try:
         from astropy.io import fits
 
-        is_fits = imagename.endswith(".fits") or imagename.endswith(".fts")
+        fits_file = is_fits(imagename)
 
         header_info = {}
 
-        if is_fits:
+        if fits_file:
             # FITS file
             with fits.open(readable_image_path(imagename)) as hdul:
                 header = hdul[0].header
@@ -288,7 +283,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                             if val > 1e6:  # Must be Hz
                                 freq_hz = val
                                 break
-                        except:
+                        except Exception:
                             pass
 
                 if freq_hz is None:
@@ -348,14 +343,12 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
             header_info = {"major": major, "minor": minor, "freq_ghz": freq_ghz}
 
         # Calculate flux: flux = TB * freq^2 * (major * minor) / 1.222e6
-        # print(f"[Flux] Beam: {header_info['major']:.2f}\" x {header_info['minor']:.2f}\", Freq: {header_info['freq_ghz']:.4f} GHz")
         flux_data = tb_data * (freq_ghz**2) * (major * minor) / 1.222e6
 
-        # print(f"[Flux] Flux range: {np.nanmin(flux_data):.2e} to {np.nanmax(flux_data):.2e} Jy/beam")
 
         # Save to file if outfile specified
         if outfile is not None:
-            if is_fits:
+            if fits_file:
                 new_header = header_info["original_header"].copy()
                 new_header["BUNIT"] = "Jy/beam"
                 new_header["HISTORY"] = (
@@ -384,7 +377,6 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                             break
 
                     if stokes_idx is not None:
-                        # print(f"[Flux] Converting full Stokes data (shape: {original_data.shape})")
                         flux_data_save = (
                             original_data * (freq_ghz**2) * (major * minor) / 1.222e6
                         )
@@ -421,7 +413,6 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                     )
 
                     if original_data.ndim >= 3:
-                        # print(f"[Flux] Converting full Stokes CASA data (shape: {original_data.shape})")
                         flux_data_save = (
                             original_data * (freq_ghz**2) * (major * minor) / 1.222e6
                         )
@@ -440,7 +431,6 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                 if os.path.exists(temp_export):
                     os.remove(temp_export)
 
-            # print(f"[Flux] Saved flux map to: {outfile}")
 
         return flux_data, header_info
 

@@ -105,6 +105,9 @@ def get_pixel_values_from_image(
             dimension_names.index("Stokes") if "Stokes" in dimension_names else None
         )
         labels = casa_stokes_labels(csys) if stokes_idx is not None else None
+        # getchunk returns float64 even for a float32 image: keep it float32
+        # (half the memory)
+        single = ia_tool.pixeltype() == "float"
 
         def read_plane(label):
             """The ``label`` Stokes plane, first channel, as [x, y]."""
@@ -118,12 +121,13 @@ def get_pixel_values_from_image(
             inc = [1] * len(shape)
             inc[x_idx] = inc[y_idx] = downsample
             chunk = ia_tool.getchunk(blc=blc, trc=trc, inc=inc)
-            return chunk[
+            plane = chunk[
                 tuple(
                     slice(None) if axis in (x_idx, y_idx) else 0
                     for axis in range(len(shape))
                 )
             ]
+            return plane.astype(np.float32) if single else plane
 
         planes = {label: read_plane(label) for label in labels_needed}
 

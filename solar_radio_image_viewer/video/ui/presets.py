@@ -112,7 +112,7 @@ class PresetsMixin:
     def _apply_settings_state(self, state):
         server = state.get("images_on")
         connection = self._main_connection()
-        if server and connection is not None and connection._host == server.get("host"):
+        if server and connection is not None and connection.host == server.get("host"):
             self._use_server(connection, folder="")
         elif server:
             self._use_server(None)

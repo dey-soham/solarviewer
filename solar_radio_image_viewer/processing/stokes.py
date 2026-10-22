@@ -145,8 +145,9 @@ def stokes_product(stokes, planes, thres, rms_box, csys=None, sun_radius_arcmin=
         return remove_pixels_away_from_sun(pix, csys, sun_radius_arcmin)
 
     def significant(pix):
-        """``pix`` with values below the threshold set to 0."""
-        pix = np.array(pix, dtype=float)
+        """``pix`` with values below the threshold set to 0 (a copy, in the
+        plane's precision, at least float32)."""
+        pix = np.array(pix, dtype=np.result_type(pix, np.float32))
         pix[np.abs(pix) < thres * rms_in_box(pix, rms_box)] = 0
         return pix
 

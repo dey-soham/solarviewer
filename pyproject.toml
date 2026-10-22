@@ -21,7 +21,6 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "setuptools<81",
     "PyQt5>=5.15.0",
     "matplotlib>=3.5.0",
     "numpy>=1.20.0",
@@ -34,7 +33,6 @@ dependencies = [
     "pillow",
     "python-casacore",
     "seaborn",
-    "opencv-python-headless",
     "imageio>=2.16.0",
     "aiapy>=0.1.0",
     "imageio[ffmpeg]",
@@ -88,8 +86,10 @@ line-length = 88
 extend-exclude = ["build", "dist"]
 
 [tool.ruff.lint]
-# Pyflakes (undefined names, unused imports, ...) plus a few error checks.
-select = ["F", "E9"]
+# Pyflakes (undefined names, unused imports, ...) plus a few error checks:
+# bare except clauses (they also swallow Ctrl+C) and mutable or computed
+# argument defaults (shared between calls).
+select = ["F", "E9", "E722", "B006", "B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

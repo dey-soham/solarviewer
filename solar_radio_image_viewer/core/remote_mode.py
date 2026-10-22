@@ -722,10 +722,8 @@ class RemoteModeMixin:
 
     def _check_connection_health(self):
         """Periodically check connection health and auto-reconnect if needed."""
-        # print("[SSH] Health check running...")  # Debug
 
         if not self.remote_connection:
-            # print("[SSH] Health check: No remote connection")
             return
 
         # Run ping in background thread to avoid blocking UI
@@ -742,16 +740,15 @@ class RemoteModeMixin:
 
                 elapsed = time.time() - self._ping_start_time
                 if elapsed > 10:
-                    # print(f"[SSH] Health check: Ping stuck for {elapsed:.1f}s - connection appears dead")
                     # Connection is dead - the ping is stuck
                     try:
                         self._ping_thread.terminate()
                         self._ping_thread.wait(1000)
-                    except:
+                    except Exception:
                         pass
                     # Trigger reconnect
                     if self.remote_connection:
-                        self.remote_connection._connected = False
+                        self.remote_connection.mark_lost()
                         self.statusBar().showMessage(
                             "⚠️ Remote connection lost - click status to reconnect",
                             10000,
@@ -759,7 +756,6 @@ class RemoteModeMixin:
                         self._update_remote_status_indicator()
                         self._update_remote_menu_state()
                     return
-            # print("[SSH] Health check: Previous ping still running, skipping")
             return
 
         class PingThread(QThread):
@@ -774,11 +770,11 @@ class RemoteModeMixin:
 
                 try:
                     # Quick passive check first
-                    if not self.connection._connected or not self.connection._client:
+                    if not self.connection.is_connected():
                         self.result.emit(False)
                         return
 
-                    transport = self.connection._client.get_transport()
+                    transport = self.connection.transport
                     if transport is None or not transport.is_active():
                         self.result.emit(False)
                         return
@@ -791,7 +787,7 @@ class RemoteModeMixin:
                     try:
                         # Try to open a new SFTP channel - this requires server response
                         # If network is down, this will timeout
-                        sftp = self.connection._client.open_sftp()
+                        sftp = self.connection.open_sftp()
                         sftp.close()  # Close it immediately
                         self.result.emit(True)
                     except socket.timeout:
@@ -822,7 +818,6 @@ class RemoteModeMixin:
                 self._update_remote_status_indicator()
                 self._update_remote_menu_state()
 
-        # print("[SSH] Health check: Pinging connection in background...")
         import time
 
         self._ping_start_time = time.time()

@@ -11,12 +11,10 @@ from PyQt5.QtWidgets import (
     QFrame,
     QApplication,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QProcess, Qt, QThread, pyqtSignal
+import os
 import sys
 
-
-from PyQt5.QtCore import QThread, pyqtSignal
-import subprocess
 from ..utils.update_checker import check_for_updates
 from ..version import __version__
 
@@ -41,6 +39,7 @@ class UpdateDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Check for Updates")
         self.setMinimumWidth(400)
+        self._pip = None  # the QProcess installing the update
 
         # Theme styling
         from ..ui.styles import theme_manager
@@ -276,111 +275,86 @@ class UpdateDialog(QDialog):
                     f"color: {self.palette['success']}; font-weight: 500;"
                 )
 
+    # The pip of the Python running SolarViewer installs into its environment
+    # (a virtualenv's python needs no activation); no shell is involved
+    PIP_COMMAND = [sys.executable, "-m", "pip", "install", "--upgrade", "solarviewer"]
+
     def start_update(self):
-        """Install update via pip."""
+        """Install the update with pip, in the background."""
         reply = QMessageBox.question(
             self,
             "Confirm Update",
             "The application will update via pip and needs to restart.\n\nContinue with update?",
             QMessageBox.Yes | QMessageBox.No,
         )
+        if reply != QMessageBox.Yes:
+            return
 
-        if reply == QMessageBox.Yes:
-            self.status_label.setText("📦 Installing update... Please wait.")
-            self.status_label.setStyleSheet(
-                f"color: {self.palette['text']}; font-weight: 500;"
+        self.status_label.setText("📦 Installing update... Please wait.")
+        self.status_label.setStyleSheet(
+            f"color: {self.palette['text']}; font-weight: 500;"
+        )
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("Updating...")
+
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        cwd = os.getcwd()
+        process.setWorkingDirectory(
+            cwd if os.access(cwd, os.W_OK) else os.path.expanduser("~")
+        )
+        process.readyReadStandardOutput.connect(self._show_pip_output)
+        process.finished.connect(self._on_update_finished)
+        process.errorOccurred.connect(self._on_update_error)
+        self._pip = process
+        # Quitting must not cut pip off half-way through an install
+        QApplication.instance().aboutToQuit.connect(self._wait_for_pip)
+        logger.info(f"Executing: {' '.join(self.PIP_COMMAND)}")
+        process.start(self.PIP_COMMAND[0], self.PIP_COMMAND[1:])
+
+    def _show_pip_output(self):
+        """pip's output, to the log window and the log file."""
+        if self._pip is not None:
+            text = bytes(self._pip.readAllStandardOutput()).decode(errors="replace")
+            print(text, end="")
+
+    def _wait_for_pip(self):
+        if self._pip is not None:
+            self._pip.waitForFinished(-1)
+
+    def _on_update_finished(self, exit_code, exit_status):
+        self._show_pip_output()
+        self._pip = None
+        if exit_status == QProcess.NormalExit and exit_code == 0:
+            QMessageBox.information(
+                self,
+                "Update Successful",
+                "Update installed successfully.\n\nPlease restart the application to apply changes.",
             )
-            self.update_btn.setEnabled(False)
-            self.update_btn.setText("Updating...")
-            self.repaint()  # Force redraw
+            self.accept()
+        else:
+            self._update_failed(
+                f"pip stopped with exit code {exit_code}. Its output is in the "
+                "log (View > Show Log Console)."
+            )
 
-            try:
-                import os
+    def _on_update_error(self, error):
+        if error == QProcess.FailedToStart and self._pip is not None:
+            self._pip = None
+            self._update_failed(f"Could not start pip ({sys.executable} -m pip).")
 
-                venv_path = sys.prefix
-                activate_script = os.path.join(venv_path, "bin", "activate")
+    def _update_failed(self, reason):
+        self.status_label.setText("❌ Update failed.")
+        self.status_label.setStyleSheet(
+            f"color: {self.palette['error']}; font-weight: bold;"
+        )
+        QMessageBox.critical(self, "Update Failed", f"Could not install update:\n{reason}")
+        self.update_btn.setEnabled(True)
+        self.update_btn.setText("Update Now")
 
-                if os.path.exists(activate_script):
-                    # Run via shell to support sourcing.
-                    cmd = f'. "{activate_script}" && pip install --upgrade solarviewer'
-                    logger.info(f"Executing: {cmd}")
-
-                    # Use Popen to capture and print output in real-time
-                    launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
-                    process = subprocess.Popen(
-                        cmd,
-                        shell=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        bufsize=1,
-                        cwd=launch_cwd,
-                    )
-
-                    # Stream output to main stdout (which Log Console captures)
-                    for line in process.stdout:
-                        print(line, end="")
-                        QApplication.processEvents()  # Keep UI responsive
-
-                    process.wait()
-                    if process.returncode != 0:
-                        raise subprocess.CalledProcessError(process.returncode, cmd)
-
-                else:
-                    # Fallback if no standard activate script found
-                    cmd = [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "--upgrade",
-                        "solarviewer",
-                    ]
-                    logger.info(f"Executing: {' '.join(cmd)}")
-
-                    launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
-                    process = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        bufsize=1,
-                        cwd=launch_cwd,
-                    )
-
-                    for line in process.stdout:
-                        print(line, end="")
-                        QApplication.processEvents()
-
-                    process.wait()
-                    if process.returncode != 0:
-                        raise subprocess.CalledProcessError(process.returncode, cmd)
-
-                QMessageBox.information(
-                    self,
-                    "Update Successful",
-                    "Update installed successfully.\n\nPlease restart the application to apply changes.",
-                )
-                self.accept()
-
-            except subprocess.CalledProcessError as e:
-                self.status_label.setText("❌ Update failed.")
-                self.status_label.setStyleSheet(
-                    f"color: {self.palette['error']}; font-weight: bold;"
-                )
-                QMessageBox.critical(
-                    self, "Update Failed", f"Could not install update:\n{e}"
-                )
-                self.update_btn.setEnabled(True)
-                self.update_btn.setText("Update Now")
-            except Exception as e:
-                self.status_label.setText("❌ Error occurred.")
-                self.status_label.setStyleSheet(
-                    f"color: {self.palette['error']}; font-weight: bold;"
-                )
-                QMessageBox.critical(
-                    self, "Error", f"An unexpected error occurred:\n{e}"
-                )
-                self.update_btn.setEnabled(True)
-                self.update_btn.setText("Update Now")
-
+    def reject(self):
+        # Closing mid-install would stop pip half-way
+        if self._pip is not None:
+            self.status_label.setText("📦 Installing update... please wait until it finishes.")
+            return
+        super().reject()

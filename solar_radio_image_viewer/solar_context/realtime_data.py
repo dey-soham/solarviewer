@@ -274,7 +274,7 @@ def parse_daily_geomagnetic_indices(text: str) -> Dict[date, KpIndexData]:
                 ap_value=ap_value,
                 kp_values=kp_values,
             )
-        except (ValueError, IndexError) as e:
+        except (ValueError, IndexError):
             continue
 
     return results
@@ -316,7 +316,7 @@ def parse_daily_solar_indices(text: str) -> Dict[date, F107FluxData]:
                 sunspot_area=sunspot_area,
                 xray_background=xray_background,
             )
-        except (ValueError, IndexError) as e:
+        except (ValueError, IndexError):
             continue
 
     return results
