@@ -319,7 +319,9 @@ solarviewer/
 │   ├── remote/                 # Remote file access (SSH/SFTP)
 │   ├── pipeline/               # LOFAR/SIMPL pipeline tools (caltables, dynamic spectra, logs)
 │   ├── utils/                  # Networking helpers (rate limiter, sessions, update checker)
-│   ├── helioviewer_browser.py  # Helioviewer API browser
+│   ├── helioviewer_browser.py  # Helioviewer API browser (window, playback)
+│   ├── helioviewer_data.py     #   instruments, cadences, image downloads
+│   ├── helioviewer_export.py   #   saving frames, GIF/MP4, batch download
 │   ├── shape_annotations.py    # Shape annotations and solar-radii overlays
 │   ├── install_utils.py        # Desktop integration (install/uninstall)
 │   ├── tutorial.py             # Tutorial
