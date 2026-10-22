@@ -14,35 +14,9 @@ import os
 import threading
 from concurrent.futures.process import BrokenProcessPool
 
-from .image_meta import (
-    casa_info,
-    coordsys_from_record,
-    file_signature,
-    fits_header,
-    remember_casa_info,
-    remember_fits_header,
-)
-from .fits_io import is_fits
+from .image_data import read_image
+from .image_meta import file_signature
 from .workers import process_pool_executor
-
-
-def _read(imagename, stokes, threshold, rms_box, target_size):
-    """Worker side: what the viewer's load reads for ``imagename``."""
-    from .image_data import get_pixel_values_from_image
-
-    signature = file_signature(imagename)
-    pix, csys, psf = get_pixel_values_from_image(
-        imagename, stokes, threshold, rms_box=rms_box, target_size=target_size
-    )
-    # Both already cached by the read above, so no further opens here
-    info = casa_info(imagename)
-    header = None
-    if is_fits(imagename):
-        try:
-            header = fits_header(imagename)
-        except Exception:
-            pass
-    return signature, pix, csys.torecord(), psf, info, header
 
 
 class ImagePrefetcher:
@@ -68,7 +42,7 @@ class ImagePrefetcher:
             self._executor = process_pool_executor(1)
         try:
             return self._executor.submit(
-                _read, imagename, stokes, threshold, tuple(rms_box), target_size
+                read_image, imagename, stokes, threshold, tuple(rms_box), target_size
             )
         except (BrokenProcessPool, RuntimeError):
             self._executor = None
@@ -91,9 +65,11 @@ class ImagePrefetcher:
                     if future is not None:
                         self._jobs[key] = future
 
-    def settle(self, imagename):
+    def settle(self, imagename, wait=None):
         """Cancel queued reads of ``imagename`` and wait out a running one,
-        so the caller does not read the file while the worker is."""
+        so the caller does not read the file while the worker is.
+        ``wait(future)``, if given, does the waiting (the window's background
+        wait, which may raise ui.background.Cancelled)."""
         path = os.path.abspath(imagename)
         with self._lock:
             futures = [(k, f) for k, f in self._jobs.items() if k[0] == path]
@@ -102,40 +78,35 @@ class ImagePrefetcher:
                     del self._jobs[key]
         for _key, future in futures:
             if not future.cancelled():
+                if wait is not None:
+                    wait(future)
                 # Readers of the header and coordsys run before take()
                 self._result(future, imagename)
 
     def take(self, imagename, stokes, threshold, rms_box, target_size):
-        """``(pix, csys, psf)`` read in the background for exactly these inputs,
-        or None if there is none (or the file changed since)."""
+        """The :class:`ImageRead` read in the background for exactly these
+        inputs, or None if there is none (or the file changed since)."""
         key = self._key(imagename, stokes, threshold, rms_box, target_size)
         with self._lock:
             future = self._jobs.pop(key, None)
         if future is None or (not future.done() and future.cancel()):
             return None
-        result = self._result(future, imagename)
-        if result is None:
-            return None
-        pix, csys_record, psf = result
-        return pix, coordsys_from_record(csys_record), psf
+        return self._result(future, imagename)
 
     def _result(self, future, imagename):
-        """Wait for ``future``; ``(pix, csys_record, psf)`` if it read the file
-        as it is now (also caching the file's metadata), else None."""
+        """Wait for ``future``; its :class:`ImageRead` if it read the file as
+        it is now (also caching the file's metadata), else None."""
         try:
-            signature, pix, csys_record, psf, info, header = future.result()
+            read = future.result()
         except BrokenProcessPool:
             self._executor = None
             return None
         except Exception:
             return None
-        if signature is None or signature != file_signature(imagename):
+        if read.signature is None or read.signature != file_signature(imagename):
             return None
-
-        remember_casa_info(signature, info)
-        if header is not None:
-            remember_fits_header(signature, header)
-        return pix, csys_record, psf
+        read.remember()
+        return read
 
     def shutdown(self):
         with self._lock:

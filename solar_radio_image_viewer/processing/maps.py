@@ -7,6 +7,9 @@ import os
 from .dependencies import CASA_AVAILABLE, IA
 from .fits_io import is_fits, readable_image_path
 
+# Added to the output file's name for the intermediate FITS export of a CASA image
+TEMP_EXPORT_SUFFIX = ".temp_export.fits"
+
 
 def _first_plane(ia):
     """The first plane (first Stokes, first channel) of the image open in
@@ -187,7 +190,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                 new_hdu.writeto(outfile, overwrite=True)
             else:
                 # For CASA, need to export first
-                temp_export = outfile + ".temp_export.fits"
+                temp_export = outfile + TEMP_EXPORT_SUFFIX
                 ia = IA()
                 ia.open(readable_image_path(imagename))
                 ia.tofits(temp_export, overwrite=True, stokeslast=False)
@@ -398,7 +401,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                 new_hdu.writeto(outfile, overwrite=True)
             else:
                 # For CASA, need to export first
-                temp_export = outfile + ".temp_export.fits"
+                temp_export = outfile + TEMP_EXPORT_SUFFIX
                 ia = IA()
                 ia.open(readable_image_path(imagename))
                 ia.tofits(temp_export, overwrite=True, stokeslast=False)
@@ -439,3 +442,19 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
 
         traceback.print_exc()
         return None, str(e)
+
+
+def write_tb_map(imagename, outfile):
+    """Write ``imagename``'s brightness temperature map to ``outfile`` (see
+    generate_tb_map). Returns None, or the error message. For a worker
+    process: the map is not sent back."""
+    tb_data, result = generate_tb_map(imagename, outfile=outfile)
+    return result if tb_data is None else None
+
+
+def write_flux_map(imagename, outfile):
+    """Write ``imagename``'s flux density map to ``outfile`` (see
+    generate_flux_map). Returns None, or the error message. For a worker
+    process: the map is not sent back."""
+    flux_data, result = generate_flux_map(imagename, outfile=outfile)
+    return result if flux_data is None else None

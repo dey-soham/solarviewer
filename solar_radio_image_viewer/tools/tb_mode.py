@@ -4,6 +4,8 @@ Brightness temperature (TB) mode tool for SolarViewer.
 
 from PyQt5.QtWidgets import QMessageBox
 
+from ..processing.maps import TEMP_EXPORT_SUFFIX, write_flux_map, write_tb_map
+from ..ui.background import Cancelled, run_in_background
 from ..ui.busy import begin_busy, end_busy
 from ..ui.errors import show_error
 
@@ -112,8 +114,6 @@ class TbModeMixin:
                 self.show_status_message("Converting to flux (Jy/beam)...")
                 QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
-                from ..processing.maps import generate_flux_map
-
                 # Store original imagename
                 self._tb_original_imagename = self.imagename
                 self._tb_original_unit = "K"
@@ -124,15 +124,18 @@ class TbModeMixin:
                     temp_dir, f"solarviewer_flux_temp_{self._temp_file_id}.fits"
                 )
 
-                # Generate flux map - don't pass tb_data to avoid transpose issues
-                flux_data, result = generate_flux_map(
-                    self._tb_original_imagename, outfile=self._tb_temp_file
+                error = run_in_background(
+                    self,
+                    "Converting to flux density…",
+                    write_flux_map,
+                    self._tb_original_imagename,
+                    self._tb_temp_file,
                 )
 
-                if flux_data is None:
+                if error is not None:
                     end_busy()
                     QMessageBox.warning(
-                        self, "Error", f"Flux conversion failed: {result}"
+                        self, "Error", f"Flux conversion failed: {error}"
                     )
                     self._tb_original_imagename = None
                     return
@@ -145,7 +148,7 @@ class TbModeMixin:
                 self._current_bunit = "Jy/beam"
 
                 # Reload and plot
-                self.on_visualization_changed(dir_load=True)
+                shown = self.on_visualization_changed(dir_load=True)
 
                 # Update button
                 self.tb_btn.setText("TB")
@@ -153,14 +156,15 @@ class TbModeMixin:
                 self.tb_btn.setChecked(True)
 
                 end_busy()
-                self.show_status_message("Showing flux (Jy/beam) - click TB to revert")
+                if shown:
+                    self.show_status_message(
+                        "Showing flux (Jy/beam) - click TB to revert"
+                    )
 
             else:
                 # Jy/beam -> K (TB conversion)
                 self.show_status_message("Converting to brightness temperature...")
                 QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
-
-                from ..processing.maps import generate_tb_map
 
                 # Store original imagename
                 self._tb_original_imagename = self.imagename
@@ -172,15 +176,18 @@ class TbModeMixin:
                     temp_dir, f"solarviewer_tb_temp_{self._temp_file_id}.fits"
                 )
 
-                # Generate TB map using utils function - don't pass flux_data to avoid transpose issues
-                tb_data, result = generate_tb_map(
-                    self._tb_original_imagename, outfile=self._tb_temp_file
+                error = run_in_background(
+                    self,
+                    "Converting to brightness temperature…",
+                    write_tb_map,
+                    self._tb_original_imagename,
+                    self._tb_temp_file,
                 )
 
-                if tb_data is None:
+                if error is not None:
                     end_busy()
                     QMessageBox.warning(
-                        self, "Error", f"TB conversion failed: {result}"
+                        self, "Error", f"TB conversion failed: {error}"
                     )
                     self._tb_original_imagename = None
                     return
@@ -191,7 +198,7 @@ class TbModeMixin:
                 self._current_bunit = "K"
 
                 # Reload and plot (use dir_load to avoid changing presets)
-                self.on_visualization_changed(dir_load=True)
+                shown = self.on_visualization_changed(dir_load=True)
 
                 # Update button
                 self.tb_btn.setText("FLUX")
@@ -199,10 +206,20 @@ class TbModeMixin:
                 self.tb_btn.setChecked(True)
 
                 end_busy()
-                self.show_status_message(
-                    "Showing brightness temperature (K) - click FLUX to revert"
-                )
+                if shown:
+                    self.show_status_message(
+                        "Showing brightness temperature (K) - click FLUX to revert"
+                    )
 
+        except Cancelled:
+            end_busy()
+            # What the stopped conversion had written
+            for path in (self._tb_temp_file, self._tb_temp_file + TEMP_EXPORT_SUFFIX):
+                if os.path.exists(path):
+                    os.remove(path)
+            self._tb_original_imagename = None
+            self._tb_temp_file = None
+            self.show_status_message("Conversion cancelled")
         except Exception as e:
             import traceback
 
@@ -253,7 +270,7 @@ class TbModeMixin:
             self._tb_mode = False
 
             # Reload original image
-            self.on_visualization_changed(dir_load=True)
+            shown = self.on_visualization_changed(dir_load=True)
 
             # Clean up temp file
             if (
@@ -271,11 +288,13 @@ class TbModeMixin:
             if original_unit == "K":
                 self.tb_btn.setText("FLUX")
                 self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
-                self.show_status_message("Showing brightness temperature (K)")
+                if shown:
+                    self.show_status_message("Showing brightness temperature (K)")
             else:
                 self.tb_btn.setText("TB")
                 self.tb_btn.setToolTip("Convert to Brightness Temperature (K)")
-                self.show_status_message("Showing flux (Jy/beam)")
+                if shown:
+                    self.show_status_message("Showing flux (Jy/beam)")
 
             self.tb_btn.setChecked(False)
         finally:

@@ -5,16 +5,63 @@ Planes are indexed [x, y] (CASA's axis order; the viewer draws them
 transposed), and an RMS box is (x1, x2, y1, y2) in the same pixels.
 """
 
+import logging
+from typing import NamedTuple, Optional
+
 import numpy as np
 
 from .dependencies import CASA_AVAILABLE, IA
-from .fits_io import readable_image_path
-from .image_meta import CasaInfo, file_signature, remember_casa_info, sky_axes
-from .stokes import casa_stokes_labels, plane_index, planes_needed, stokes_product
+from .fits_io import is_fits, readable_image_path
+from .image_meta import (
+    CasaInfo,
+    casa_info,
+    file_signature,
+    fits_header,
+    remember_casa_info,
+    remember_fits_header,
+    sky_axes,
+)
+from .stokes import (
+    StokesUnavailable,
+    casa_stokes_labels,
+    fits_stokes_axis,
+    fits_stokes_labels,
+    get_available_stokes,
+    missing_planes,
+    plane_index,
+    planes_needed,
+    stokes_product,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class ImageUnreadable(Exception):
     """Neither CASA nor the FITS reader can read an image file."""
+
+
+class ImageRead(NamedTuple):
+    """Everything a load reads from an image file (see :func:`read_image`),
+    in a form a worker process can send back."""
+
+    signature: Optional[tuple]  # file_signature() of the file read
+    stokes: str  # the Stokes product read
+    available: list  # the Stokes planes the image has (get_available_stokes)
+    pix: np.ndarray  # the product's pixels, [x, y]
+    csys_record: Optional[dict]  # coordsys.torecord(); None from the FITS reader
+    psf: Optional[dict]  # restoring beam; None from the FITS reader
+    info: Optional[CasaInfo]  # what ia.open reports; None from the FITS reader
+    header: Optional[object]  # primary header of a FITS file
+
+    def remember(self):
+        """Cache the metadata read with the pixels in this process, so the
+        viewer's header and coordinate readers need not open the file again."""
+        if self.signature is None:
+            return
+        if self.info is not None:
+            remember_casa_info(self.signature, self.info)
+        if self.header is not None:
+            remember_fits_header(self.signature, self.header)
 
 
 def downsample_factor(sky_shape, target_size):
@@ -154,3 +201,96 @@ def get_pixel_values_from_image(
 
     pix = stokes_product(stokes, planes, thres, rms_box, csys)
     return pix, csys, psf
+
+
+def read_fits_stokes(imagename, stokes, thres, rms_box=(0, 200, 0, 130)):
+    """
+    The ``stokes`` product of a FITS file read with astropy, for files CASA
+    cannot read. Returns an [x, y] plane like get_pixel_values_from_image,
+    computed the same way.
+    """
+    from astropy.io import fits
+
+    with fits.open(readable_image_path(imagename), memmap=True) as hdul:
+        header = hdul[0].header
+        data = hdul[0].data
+        labels = fits_stokes_labels(header)
+        stokes_axis = fits_stokes_axis(header)
+
+        def plane(name):
+            """The ``name`` plane, first channel of every other axis, as [x, y]."""
+            # NumPy axes are the FITS axes reversed: the last two are y, x
+            index = [0] * (data.ndim - 2) + [slice(None), slice(None)]
+            if stokes_axis is not None:
+                index[data.ndim - stokes_axis] = plane_index(labels, name)
+            else:
+                plane_index(None, name)  # only Stokes I without a Stokes axis
+            return np.array(data[tuple(index)], dtype=float).T
+
+        planes = {name: plane(name) for name in planes_needed(stokes)}
+    return stokes_product(stokes, planes, thres, rms_box)
+
+
+def read_image(
+    imagename, stokes, threshold, rms_box, target_size, fallback_stokes=None
+):
+    """
+    Read what the viewer shows of ``imagename``, as an :class:`ImageRead`:
+    the ``stokes`` product's pixels (downsampled to about ``target_size``
+    pixels if that is not 0), its coordinates, beam and header.
+
+    Every file access of a load happens here, so that it can run in a worker
+    process (see ``ui/background`` and ``processing/prefetch``). If the image
+    lacks a plane ``stokes`` needs and ``fallback_stokes`` is given, that
+    product is read instead. FITS files CASA cannot read are read with
+    astropy, without coordinates or beam.
+
+    Raises StokesUnavailable, or ImageUnreadable if neither reader can read it.
+    """
+    signature = file_signature(imagename)
+    available = get_available_stokes(imagename)
+    if fallback_stokes is not None and missing_planes(stokes, available):
+        stokes = fallback_stokes
+    try:
+        pix, csys, psf = get_pixel_values_from_image(
+            imagename, stokes, threshold, rms_box=rms_box, target_size=target_size
+        )
+        csys_record = csys.torecord()
+        info = casa_info(imagename)  # cached by the read above
+    except StokesUnavailable:
+        # The image lacks a plane this product needs: say so, rather than
+        # showing another plane under this one's name
+        raise
+    except Exception as e:
+        from astropy.io import fits
+
+        # FITS files CASA cannot read
+        csys_record = psf = info = None
+        try:
+            pix = read_fits_stokes(imagename, stokes, threshold, rms_box)
+        except StokesUnavailable:
+            raise
+        except Exception as fits_err:
+            logger.error(f"Error loading FITS data: {fits_err}")
+            # Last resort: the raw pixels of a 2D image, as [x, y]
+            try:
+                raw = np.squeeze(fits.getdata(readable_image_path(imagename)))
+            except Exception as e2:
+                raise ImageUnreadable(
+                    f"Neither CASA nor the FITS reader can read it. CASA: {e}. "
+                    f"FITS: {e2}"
+                ) from e2
+            if raw.ndim != 2:
+                raise ImageUnreadable(
+                    f"CASA cannot read it ({e}), and the FITS reader found no "
+                    f"2D image in it ({fits_err})"
+                ) from fits_err
+            pix = raw.T
+
+    header = None
+    if is_fits(imagename):
+        try:
+            header = fits_header(imagename)
+        except Exception:
+            pass
+    return ImageRead(signature, stokes, available, pix, csys_record, psf, info, header)

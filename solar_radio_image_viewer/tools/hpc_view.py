@@ -9,10 +9,15 @@ import os
 from ..processing.dependencies import IA
 from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.image_meta import casa_info, fits_header
+from ..processing.workers import call_function
+from ..ui.background import Cancelled, run_in_background
 from ..ui.busy import begin_busy, end_busy
 from ..ui.errors import show_error
 
 logger = logging.getLogger(__name__)
+
+# Imported by the worker that converts, not by the window (it takes seconds)
+HPC_MODULE = "solar_radio_image_viewer.coordinates.helioprojective"
 
 
 class HpcViewMixin:
@@ -66,9 +71,6 @@ class HpcViewMixin:
             self.show_status_message("Converting to helioprojective coordinates...")
             QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
-            # Import conversion function
-            from ..coordinates.helioprojective import convert_and_save_hpc_all_stokes
-
             # Store original imagename before switching
             self._original_imagename = self.imagename
 
@@ -85,12 +87,24 @@ class HpcViewMixin:
             )
 
             # Convert all Stokes and save to temp file
-            success = convert_and_save_hpc_all_stokes(
-                input_fits_file=self.imagename,
-                output_fits_file=temp_hpc_file,
-                thres=threshold,
-                overwrite=True,
-            )
+            try:
+                success = run_in_background(
+                    self,
+                    "Converting to helioprojective coordinates…",
+                    call_function,
+                    HPC_MODULE,
+                    "convert_and_save_hpc_all_stokes",
+                    input_fits_file=self.imagename,
+                    output_fits_file=temp_hpc_file,
+                    thres=threshold,
+                    overwrite=True,
+                )
+            except Cancelled:
+                end_busy()
+                self._original_imagename = None
+                _remove(temp_hpc_file)  # what the stopped conversion had written
+                self.show_status_message("Conversion cancelled")
+                return
 
             if not success or not os.path.exists(temp_hpc_file):
                 end_busy()
@@ -113,7 +127,7 @@ class HpcViewMixin:
             self.imagename = temp_hpc_file
             # Clear figure to prevent restoring old view limits
             self.figure.clear()
-            self.on_visualization_changed(dir_load=True)
+            shown = self.on_visualization_changed(dir_load=True)
             self.update_tab_name_from_path(temp_hpc_file)
 
             # Refresh contours if enabled
@@ -130,9 +144,10 @@ class HpcViewMixin:
                 self.hpc_btn.setToolTip("Revert to RA/DEC view")
 
             end_busy()
-            self.show_status_message(
-                "Helioprojective view - click RA/DEC button to revert"
-            )
+            if shown:
+                self.show_status_message(
+                    "Helioprojective view - click RA/DEC button to revert"
+                )
 
         except Exception as e:
             import traceback
@@ -181,9 +196,7 @@ class HpcViewMixin:
                             pass
                     self._hpc_temp_file = None
             else:
-                # No original - convert current HPC file to RA/Dec using the new function
-                from ..coordinates.helioprojective import convert_hpc_to_radec
-
+                # No original - convert current HPC file to RA/Dec
                 # Create temp output file
                 temp_dir = tempfile.gettempdir()
                 self._radec_temp_file = os.path.join(
@@ -193,9 +206,24 @@ class HpcViewMixin:
                 # Store current as "original" for potential revert
                 self._hpc_original_imagename = self.imagename
 
-                success = convert_hpc_to_radec(
-                    self.imagename, self._radec_temp_file, overwrite=True
-                )
+                try:
+                    success = run_in_background(
+                        self,
+                        "Converting to RA/Dec coordinates…",
+                        call_function,
+                        HPC_MODULE,
+                        "convert_hpc_to_radec",
+                        self.imagename,
+                        self._radec_temp_file,
+                        overwrite=True,
+                    )
+                except Cancelled:
+                    end_busy()
+                    self._hpc_original_imagename = None
+                    _remove(self._radec_temp_file)
+                    self._radec_temp_file = None
+                    self.show_status_message("Conversion cancelled")
+                    return
 
                 if not success:
                     end_busy()
@@ -212,7 +240,7 @@ class HpcViewMixin:
             # Reload image
             # Clear figure to prevent restoring old view limits
             self.figure.clear()
-            self.on_visualization_changed(dir_load=True)
+            shown = self.on_visualization_changed(dir_load=True)
             self.update_tab_name_from_path(self.imagename)
 
             # Refresh contours if enabled
@@ -229,7 +257,8 @@ class HpcViewMixin:
                 self.hpc_btn.setToolTip("Convert to Helioprojective view")
 
             end_busy()
-            self.show_status_message("RA/DEC view - Click HPC button to revert")
+            if shown:
+                self.show_status_message("RA/DEC view - Click HPC button to revert")
 
         except Exception as e:
             import traceback
@@ -282,7 +311,7 @@ class HpcViewMixin:
             # Reload HPC image
             # Clear figure to prevent restoring old view limits
             self.figure.clear()
-            self.on_visualization_changed(dir_load=True)
+            shown = self.on_visualization_changed(dir_load=True)
             self.update_tab_name_from_path(self.imagename)
 
             # Update button
@@ -291,7 +320,8 @@ class HpcViewMixin:
                 self.hpc_btn.setToolTip("Convert to RA/DEC view")
 
             end_busy()
-            self.show_status_message("Showing HPC view")
+            if shown:
+                self.show_status_message("Showing HPC view")
 
         except Exception as e:
             import traceback
@@ -448,3 +478,12 @@ class HpcViewMixin:
             logger.error(f"CASA check failed: {e}")
 
         return "unknown"
+
+
+def _remove(path):
+    """Delete ``path`` if it is there (a stopped conversion's output)."""
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError as e:
+        logger.warning(f"Could not remove {path}: {e}")

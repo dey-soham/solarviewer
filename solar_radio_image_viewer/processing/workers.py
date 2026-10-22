@@ -37,3 +37,20 @@ def process_pool_executor(max_workers, preload=()):
     return ProcessPoolExecutor(
         max_workers=max_workers, mp_context=process_context(preload)
     )
+
+
+def import_modules(names):
+    """Import the modules ``names``: run in a new worker, so that the jobs
+    sent to it later start without waiting for their imports."""
+    import importlib
+
+    for name in names:
+        importlib.import_module(name)
+
+
+def call_function(module, name, *args, **kwargs):
+    """``module.name(*args, **kwargs)``. Sends a worker a job from a module
+    the window has not imported (it imports it), sparing the window the wait."""
+    import importlib
+
+    return getattr(importlib.import_module(module), name)(*args, **kwargs)

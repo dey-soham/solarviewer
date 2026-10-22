@@ -2,20 +2,26 @@
 Reading an image into the tab: the pixels of the chosen Stokes product,
 its coordinates and header, Fast mode, and which Stokes products the image
 offers.
+
+The file is read in a worker process (ui/background) while the window keeps
+drawing; the tab's state changes only once the read is complete.
 """
 
 import logging
+import os
+
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication,
     QMessageBox,
 )
 from PyQt5.QtCore import Qt, QEventLoop
+from ..ui.background import Cancelled, run_in_background, wait_for
 from ..ui.busy import busy
-from ..processing.fits_io import is_fits, readable_image_path
-from ..processing.image_meta import casa_info, fits_header
+from ..processing.fits_io import is_fits
+from ..processing.image_meta import casa_info, coordsys_from_record, fits_header
 from ..processing.prefetch import image_prefetcher
-from ..processing.image_data import ImageUnreadable
+from ..processing.image_data import read_image
 from ..processing.stokes import StokesUnavailable, missing_planes
 from ..ui.errors import show_error
 
@@ -36,41 +42,6 @@ class LoadingMixin:
     ``show_beam_label``, ``show_image_stats``, ``show_status_message``,
     ``stokes_combo``, ``tb_btn``, ``threshold_entry``
     """
-
-    def _load_fits_stokes(self, imagename, stokes, thres, rms_box=(0, 200, 0, 130)):
-        """
-        Load a Stokes parameter (or a derived one) from a FITS file with
-        astropy, for files CASA cannot read. Returns an [x, y] plane like the
-        CASA reader, computed the same way.
-        """
-        from astropy.io import fits
-
-        from ..processing.stokes import (
-            fits_stokes_axis,
-            fits_stokes_labels,
-            plane_index,
-            planes_needed,
-            stokes_product,
-        )
-
-        with fits.open(readable_image_path(imagename), memmap=True) as hdul:
-            header = hdul[0].header
-            data = hdul[0].data
-            labels = fits_stokes_labels(header)
-            stokes_axis = fits_stokes_axis(header)
-
-            def plane(name):
-                """The ``name`` plane, first channel of every other axis, as [x, y]."""
-                # NumPy axes are the FITS axes reversed: the last two are y, x
-                index = [0] * (data.ndim - 2) + [slice(None), slice(None)]
-                if stokes_axis is not None:
-                    index[data.ndim - stokes_axis] = plane_index(labels, name)
-                else:
-                    plane_index(None, name)  # only Stokes I without a Stokes axis
-                return np.array(data[tuple(index)], dtype=float).T
-
-            planes = {name: plane(name) for name in planes_needed(stokes)}
-        return stokes_product(stokes, planes, thres, rms_box)
 
     def _full_resolution(self, imagename, target_size):
         """(the [x, y] sky shape of the file, the downsample factor of the
@@ -102,100 +73,89 @@ class LoadingMixin:
             return 800  # Smart downsampling to ~800px max dimension
         return 0
 
-    def load_data(self, imagename, stokes, threshold, auto_adjust_rms=False):
-        self._loaded_threshold = threshold
-        try:
-            # Use the current RMS box when loading data
-            from ..processing.image_data import get_pixel_values_from_image
-
-            target_size = self._load_target_size()
-
-            image_prefetcher.settle(imagename)
-            prefetched = image_prefetcher.take(
-                imagename, stokes, threshold, tuple(self.current_rms_box), target_size
+    def _read_image(
+        self, imagename, stokes, threshold, rms_box, target_size, fallback_stokes
+    ):
+        """The :class:`ImageRead` of these inputs: read ahead by the
+        prefetcher, or now in the worker process."""
+        label = f"Loading {os.path.basename(imagename.rstrip('/'))}…"
+        # Let a background read of this file finish before reading it again
+        image_prefetcher.settle(
+            imagename, wait=lambda future: wait_for(self, label, future)
+        )
+        read = image_prefetcher.take(imagename, stokes, threshold, rms_box, target_size)
+        if read is None:
+            read = run_in_background(
+                self,
+                label,
+                read_image,
+                imagename,
+                stokes,
+                threshold,
+                rms_box,
+                target_size,
+                fallback_stokes,
             )
-            if prefetched is not None:
-                pix, csys, psf = prefetched
-            else:
-                pix, csys, psf = get_pixel_values_from_image(
-                    imagename,
-                    stokes,
-                    threshold,
-                    rms_box=tuple(self.current_rms_box),
-                    target_size=target_size,
-                )
+            read.remember()
+        return read
 
-            self.current_image_data = pix
-            self.current_wcs = csys
-            self.psf = psf
+    def load_data(
+        self, imagename, stokes, threshold, auto_adjust_rms=False, fallback_stokes=None
+    ):
+        """Read the ``stokes`` product of ``imagename`` and make it the tab's
+        image; returns the product shown.
+
+        With ``fallback_stokes`` (for a newly opened image), an image lacking
+        a plane ``stokes`` needs shows that product instead, after a warning,
+        and the Stokes choices are limited to those the image offers.
+
+        Raises Cancelled if the user cancels the read, StokesUnavailable or
+        ImageUnreadable if it fails; the tab is unchanged then.
+        """
+        target_size = self._load_target_size()
+        read = self._read_image(
+            imagename,
+            stokes,
+            threshold,
+            tuple(self.current_rms_box),
+            target_size,
+            fallback_stokes,
+        )
+        if fallback_stokes is not None:
+            self._offer_available_stokes(read.available, stokes, read.stokes)
+
+        self._loaded_threshold = threshold
+        pix = read.pix
+        self.current_image_data = pix
+        if read.csys_record is not None:
+            self.current_wcs = coordsys_from_record(read.csys_record)
+            self.psf = read.psf
             self._full_image_shape, self._downsample = self._full_resolution(
                 imagename, target_size
             )
-
-            if pix is not None:
-                nx, ny = pix.shape  # the image is indexed [x, y]
-                # Only auto adjust RMS box dimensions when loading a new image:
-                # a band along the bottom, inset from the sides
-                if auto_adjust_rms:
-                    x1 = int(0.05 * nx)
-                    x2 = int(0.95 * nx)
-                    y1 = int(0.02 * ny)
-                    y2 = int(0.20 * ny)
-                    self.current_rms_box = [x1, x2, y1, y2]
-                    for layer in self.contour_layers:
-                        if layer["source"] == "same":
-                            layer["rms_box"] = tuple(self.current_rms_box)
-
-                # Update image stats when data is loaded
-                try:
-                    self.show_image_stats(rms_box=self.current_rms_box)
-                except Exception as e:
-                    print(f"Error showing image stats: {e}")
-                    self.show_status_message(f"Error showing image stats: {e}")
-
-        except StokesUnavailable:
-            # The image lacks a plane this product needs: say so, rather than
-            # showing another plane under this one's name
-            raise
-        except Exception as e:
-            from astropy.io import fits
-
-            # FITS files CASA cannot read
-            try:
-                pix = self._load_fits_stokes(
-                    imagename, stokes, threshold, rms_box=tuple(self.current_rms_box)
-                )
-            except StokesUnavailable:
-                raise
-            except Exception as fits_err:
-                logger.error(f"Error loading FITS data: {fits_err}")
-                # Last resort: the raw pixels of a 2D image, as [x, y]
-                try:
-                    raw = np.squeeze(fits.getdata(readable_image_path(imagename)))
-                except Exception as e2:
-                    raise ImageUnreadable(
-                        f"Neither CASA nor the FITS reader can read it. CASA: {e}. "
-                        f"FITS: {e2}"
-                    ) from e2
-                if raw.ndim != 2:
-                    raise ImageUnreadable(
-                        f"CASA cannot read it ({e}), and the FITS reader found no "
-                        f"2D image in it ({fits_err})"
-                    ) from fits_err
-                pix = raw.T
-            self.current_image_data = pix
-            csys = None
-            psf = None
-            # Nothing of the previous image's may remain: its beam and its
-            # coordinate system (zoom to 1°, the solar disk, HPC detection)
-            self.psf = None
+        else:
+            # Read with astropy: nothing of the previous image's may remain,
+            # its beam and its coordinate system (zoom to 1°, the solar disk,
+            # HPC detection); and this reader does not downsample
             self.current_wcs = None
-            # The FITS reader does not downsample
+            self.psf = None
             self._full_image_shape = pix.shape
             self._downsample = 1
 
         if pix is not None:
             nx, ny = pix.shape  # the image is indexed [x, y]
+            # Only auto adjust RMS box dimensions when loading a new image:
+            # a band along the bottom, inset from the sides
+            if auto_adjust_rms:
+                x1 = int(0.05 * nx)
+                x2 = int(0.95 * nx)
+                y1 = int(0.02 * ny)
+                y2 = int(0.20 * ny)
+                self.current_rms_box = [x1, x2, y1, y2]
+                for layer in self.contour_layers:
+                    if layer["source"] == "same":
+                        layer["rms_box"] = tuple(self.current_rms_box)
+
             # For HPC/SOLAR-X or HPLN images, disk center is at world (0,0)
             _is_hpc = self._is_already_hpc()
             if _is_hpc and self.current_wcs:
@@ -228,8 +188,6 @@ class LoadingMixin:
 
         # Store the FITS header for TB calculation
         try:
-            from astropy.io import fits
-
             # Don't reset TB mode if we're loading the TB temp file
             is_tb_temp = (
                 hasattr(self, "_tb_temp_file")
@@ -393,6 +351,7 @@ class LoadingMixin:
             self.noaa_events_btn.setEnabled(True)
         if hasattr(self, "helioviewer_btn"):
             self.helioviewer_btn.setEnabled(True)
+        return read.stokes
 
     def on_stokes_changed(self, stokes):
         if not self.imagename:
@@ -419,7 +378,9 @@ class LoadingMixin:
         except Exception as e:
             import traceback
 
-            if isinstance(e, StokesUnavailable):
+            if isinstance(e, Cancelled):
+                self.show_status_message(f"Loading Stokes {stokes} cancelled")
+            elif isinstance(e, StokesUnavailable):
                 # e.g. "The image has no Stokes Q plane (its planes are I, V)."
                 QMessageBox.warning(
                     self, "Stokes Not Available", f"Cannot show Stokes {stokes}.\n\n{e}"
@@ -508,41 +469,21 @@ class LoadingMixin:
         # Store available stokes for later reference
         self._available_stokes = available_stokes
 
-    def _validate_and_switch_stokes(self, imagename, selected_stokes):
-        """
-        Check if selected Stokes is available; if not, warn user and switch to I.
-
-        Args:
-            imagename: Path to the image
-            selected_stokes: Currently selected Stokes parameter
-
-        Returns:
-            str: The validated Stokes parameter to use
-        """
-        from ..processing.stokes import get_available_stokes
-
-        available_stokes = get_available_stokes(imagename)
-
-        # Update combo box state
-        self._update_stokes_combo_state(available_stokes)
-
-        missing_stokes = missing_planes(selected_stokes, available_stokes)
-        if missing_stokes:
-            # Show warning dialog
-            QMessageBox.warning(
-                self,
-                "Stokes Parameter Unavailable",
-                f"The selected Stokes parameter '{selected_stokes}' requires "
-                f"polarization data ({', '.join(missing_stokes)}) that is not available "
-                f"in this image.\n\n"
-                f"Available Stokes: {', '.join(available_stokes)}\n\n"
-                f"Switching to Stokes I.",
-            )
-
-            # Switch to Stokes I
-            self.stokes_combo.blockSignals(True)
-            self.stokes_combo.setCurrentText("I")
-            self.stokes_combo.blockSignals(False)
-            return "I"
-
-        return selected_stokes
+    def _offer_available_stokes(self, available, requested, shown):
+        """Enable the Stokes choices the image offers (``available``); if
+        ``requested`` could not be shown, say so and select ``shown``."""
+        self._update_stokes_combo_state(available)
+        if shown == requested:
+            return
+        QMessageBox.warning(
+            self,
+            "Stokes Parameter Unavailable",
+            f"The selected Stokes parameter '{requested}' requires "
+            f"polarization data ({', '.join(missing_planes(requested, available))}) "
+            f"that is not available in this image.\n\n"
+            f"Available Stokes: {', '.join(available)}\n\n"
+            f"Switching to Stokes {shown}.",
+        )
+        self.stokes_combo.blockSignals(True)
+        self.stokes_combo.setCurrentText(shown)
+        self.stokes_combo.blockSignals(False)

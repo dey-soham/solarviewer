@@ -55,10 +55,14 @@ through `processing/casa_tasks.run_casa_task`, with their arguments passed
 as JSON. Never build Python source or shell commands from file names.
 
 **Long work.** Wrap work that blocks the window in `ui/busy.busy()` (or
-`begin_busy()`/`end_busy()`), so the wait cursor shows. Batch work over many
-files runs in worker processes with `ui/batch.BatchRunner`
-(`BatchDialogMixin` for dialogs), so the window stays responsive and Abort
-works at once.
+`begin_busy()`/`end_busy()`), so the wait cursor shows. Reading an image and
+converting one (TB, HPC) run in a worker process through
+`ui/background.run_in_background()`: the window keeps drawing, and work that
+takes more than a second shows a dialog whose Cancel stops it. Its jobs
+are module-level functions without Qt (from `processing/` or `coordinates/`).
+Batch work over many files runs in worker processes with
+`ui/batch.BatchRunner` (`BatchDialogMixin` for dialogs), so the window stays
+responsive and Abort works at once.
 
 **Messages.** Log with `logging.getLogger(__name__)` rather than `print`;
 records reach the log window and `~/.solarviewer/logs/solarviewer.log`.

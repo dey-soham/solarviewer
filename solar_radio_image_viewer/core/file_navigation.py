@@ -71,7 +71,8 @@ class FileNavigationMixin:
 
     def open_image_path(self, path):
         """Show the local image ``path`` (a FITS file or CASA image) in this
-        tab. Returns whether it loaded; if so it goes first in Open Recent."""
+        tab. Returns whether it loaded (None if the user cancelled); if so it
+        goes first in Open Recent."""
         import time
 
         start_time = time.time()
@@ -92,7 +93,7 @@ class FileNavigationMixin:
             self.show_status_message(
                 f"Loaded {path} in {time.time() - start_time:.2f} seconds"
             )
-        else:
+        elif loaded is False:  # unreadable (None: the user cancelled)
             forget_image(path)
         # Scan directory for file navigation
         self._scan_directory_files()
@@ -524,7 +525,9 @@ except Exception:
             self._update_nav_buttons()
 
     def _load_remote_file(self, remote_path):
-        """Download and load a remote file for navigation."""
+        """Download and load a remote file for navigation. Returns what
+        on_visualization_changed does (True once shown), False if it could
+        not be downloaded."""
         from pathlib import Path
 
         main_window = self.window()
@@ -680,10 +683,10 @@ except Exception:
             self.dir_entry.setText(local_path)
             self.invalidate_contours()
             self.figure.clear()
-            self.on_visualization_changed(dir_load=True)
+            shown = self.on_visualization_changed(dir_load=True)
             self.update_tab_name_from_path(local_path)
 
-            return True
+            return shown
 
         except InterruptedError:
             # User cancelled the download
@@ -694,59 +697,34 @@ except Exception:
             self.show_status_message(f"Failed to load remote file: {e}")
             return False
 
-    def _load_file_index(self, new_index):
-        """Load file ``new_index`` of the file list (as next/previous do)."""
+    def _load_file_index(self, new_index, done="Loaded"):
+        """Load file ``new_index`` of the file list (as next/previous do);
+        once it is shown, the status bar says ``done`` and its name."""
         new_path = self._file_list[new_index]
         self._file_list_index = new_index
 
         if self._is_remote_mode:
-            if self._load_remote_file(new_path):
-                self._update_nav_buttons()
-                self.show_status_message(f"Loaded {os.path.basename(new_path)}")
-            return
-
-        self._reset_hpc_state()
-        self.imagename = new_path
-        self.dir_entry.setText(new_path)
-        self.invalidate_contours()
-        # Clear figure to prevent restoring old view limits
-        self.figure.clear()
-        self.on_visualization_changed(dir_load=True)
-        self.update_tab_name_from_path(new_path)
+            shown = self._load_remote_file(new_path)
+        else:
+            self._reset_hpc_state()
+            self.imagename = new_path
+            self.dir_entry.setText(new_path)
+            self.invalidate_contours()
+            # Clear figure to prevent restoring old view limits
+            self.figure.clear()
+            shown = self.on_visualization_changed(dir_load=True)
+            self.update_tab_name_from_path(new_path)
 
         self._update_nav_buttons()
-        self.show_status_message(f"Loaded {os.path.basename(new_path)}")
+        if shown:
+            self.show_status_message(f"{done} {os.path.basename(new_path)}")
+        return shown
 
     def _on_prev_file(self):
         """Load the previous file in the file list"""
         if self._file_list_index <= 0:
             return
-
-        new_index = self._file_list_index - 1
-        new_path = self._file_list[new_index]
-        self._file_list_index = new_index
-
-        # Check if in remote mode
-        if self._is_remote_mode:
-            if self._load_remote_file(new_path):
-                self._update_nav_buttons()
-                self.show_status_message(f"Loaded {os.path.basename(new_path)}")
-            return
-
-        # Reset HPC state
-        self._reset_hpc_state()
-
-        # Load the file
-        self.imagename = new_path
-        self.dir_entry.setText(new_path)
-        self.invalidate_contours()
-        # Clear figure to prevent restoring old view limits
-        self.figure.clear()
-        self.on_visualization_changed(dir_load=True)
-        self.update_tab_name_from_path(new_path)
-
-        self._update_nav_buttons()
-        self.show_status_message(f"Loaded {os.path.basename(new_path)}")
+        self._load_file_index(self._file_list_index - 1)
 
     def _on_next_file(self):
         """Load the next file in the file list"""
@@ -755,98 +733,19 @@ except Exception:
             or self._file_list_index >= len(self._file_list) - 1
         ):
             return
-
-        new_index = self._file_list_index + 1
-        new_path = self._file_list[new_index]
-        self._file_list_index = new_index
-
-        # Check if in remote mode
-        if self._is_remote_mode:
-            if self._load_remote_file(new_path):
-                self._update_nav_buttons()
-                self.show_status_message(f"Loaded {os.path.basename(new_path)}")
-            return
-
-        # Reset HPC state
-        self._reset_hpc_state()
-
-        # Load the file
-        self.imagename = new_path
-        self.dir_entry.setText(new_path)
-        self.invalidate_contours()
-        # Clear figure to prevent restoring old view limits
-        self.figure.clear()
-        self.on_visualization_changed(dir_load=True)
-        self.update_tab_name_from_path(new_path)
-
-        self._update_nav_buttons()
-        self.show_status_message(f"Loaded {os.path.basename(new_path)}")
+        self._load_file_index(self._file_list_index + 1)
 
     def _on_first_file(self):
         """Load the first file in the file list"""
         if not self._file_list or self._file_list_index <= 0:
             return
-
-        new_index = 0
-        new_path = self._file_list[new_index]
-        self._file_list_index = new_index
-
-        # Check if in remote mode
-        if self._is_remote_mode:
-            if self._load_remote_file(new_path):
-                self._update_nav_buttons()
-                self.show_status_message(
-                    f"Loaded first file: {os.path.basename(new_path)}"
-                )
-            return
-
-        # Reset HPC state
-        self._reset_hpc_state()
-
-        # Load the file
-        self.imagename = new_path
-        self.dir_entry.setText(new_path)
-        self.invalidate_contours()
-        # Clear figure to prevent restoring old view limits
-        self.figure.clear()
-        self.on_visualization_changed(dir_load=True)
-        self.update_tab_name_from_path(new_path)
-
-        self._update_nav_buttons()
-        self.show_status_message(f"Loaded first file: {os.path.basename(new_path)}")
+        self._load_file_index(0, "Loaded first file:")
 
     def _on_last_file(self):
         """Load the last file in the file list"""
         if not self._file_list or self._file_list_index >= len(self._file_list) - 1:
             return
-
-        new_index = len(self._file_list) - 1
-        new_path = self._file_list[new_index]
-        self._file_list_index = new_index
-
-        # Check if in remote mode
-        if self._is_remote_mode:
-            if self._load_remote_file(new_path):
-                self._update_nav_buttons()
-                self.show_status_message(
-                    f"Loaded last file: {os.path.basename(new_path)}"
-                )
-            return
-
-        # Reset HPC state
-        self._reset_hpc_state()
-
-        # Load the file
-        self.imagename = new_path
-        self.dir_entry.setText(new_path)
-        self.invalidate_contours()
-        # Clear figure to prevent restoring old view limits
-        self.figure.clear()
-        self.on_visualization_changed(dir_load=True)
-        self.update_tab_name_from_path(new_path)
-
-        self._update_nav_buttons()
-        self.show_status_message(f"Loaded last file: {os.path.basename(new_path)}")
+        self._load_file_index(len(self._file_list) - 1, "Loaded last file:")
 
     def _show_filter_dialog(self):
         """Show a dialog to set the file filter pattern"""
@@ -1076,50 +975,23 @@ except Exception:
 
                 new_path = viewer._file_list[original_idx]
 
-                # Check if in remote mode
-                if viewer._is_remote_mode:
-                    # Remote mode - download and load
-                    viewer._file_list_index = original_idx
-                    if viewer._load_remote_file(new_path):
-                        viewer._update_nav_buttons()
-                        viewer.show_status_message(
-                            f"Loaded {os.path.basename(new_path)}"
-                        )
-                        # Try to update dialog, but handle case where user closed it
-                        try:
-                            search_input.clear()
-                            file_list_widget.setCurrentRow(original_idx)
-                        except RuntimeError:
-                            # Dialog was closed during download, that's okay
-                            pass
-                    return
-
-                # Local mode - check if file still exists
-                if not os.path.exists(new_path):
+                # A local file may have gone since the list was made
+                if not viewer._is_remote_mode and not os.path.exists(new_path):
                     viewer.show_status_message(
                         f"File no longer exists: {os.path.basename(new_path)}"
                     )
                     return
 
-                viewer._file_list_index = original_idx
-
-                # Reset HPC state
-                viewer._reset_hpc_state()
-
-                # Load the file
-                viewer.imagename = new_path
-                viewer.dir_entry.setText(new_path)
-                viewer.invalidate_contours()
-                # Clear figure to prevent restoring old view limits
-                viewer.figure.clear()
-                viewer.on_visualization_changed(dir_load=True)
-                viewer.update_tab_name_from_path(new_path)
-
-                viewer._update_nav_buttons()
-                viewer.show_status_message(f"Loaded {os.path.basename(new_path)}")
-
-                # Clear search and refresh list to show current selection
-                search_input.clear()
+                remote = viewer._is_remote_mode
+                if viewer._load_file_index(original_idx):
+                    # Clear search and refresh list to show current selection
+                    try:
+                        search_input.clear()
+                        if remote:
+                            file_list_widget.setCurrentRow(original_idx)
+                    except RuntimeError:
+                        # Dialog was closed during the download, that's okay
+                        pass
 
             except RuntimeError:
                 # Viewer was deleted

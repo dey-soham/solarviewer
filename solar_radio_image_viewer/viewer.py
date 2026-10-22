@@ -71,6 +71,8 @@ from .core.loading import LoadingMixin
 from .core.menus import MenusMixin
 from .core.panels import PanelsMixin
 from .core.window_dialogs import WindowDialogsMixin
+from .ui import background
+from .ui.background import Cancelled
 from .ui.busy import busy
 from .processing.contour_layers import default_contour_options, new_contour_layer
 from .processing.prefetch import image_prefetcher
@@ -419,6 +421,9 @@ class SolarRadioImageTab(
             colormap_name: Optional colormap to use
             dir_load: Whether this is a directory load (applies presets)
             reload_data: If False, skip load_data and just redraw (faster for viz-only changes)
+
+        Returns True once shown, False if loading or drawing failed (after
+        saying why), None if the user cancelled loading.
         """
         if not hasattr(self, "imagename") or not self.imagename:
             QMessageBox.warning(self, "No Image", "Please open an image first.")
@@ -506,17 +511,17 @@ class SolarRadioImageTab(
             # Only reload data if needed (new image, stokes change, etc.)
             # Skip for visualization-only changes (colormap, stretch, gamma, vmin/vmax)
             if reload_data:
-                # Let a background read of this file finish before reading it here
-                image_prefetcher.settle(self.imagename)
-                # Validate Stokes selection when loading a new image
-                if dir_load:
-                    stokes = self._validate_and_switch_stokes(self.imagename, stokes)
-                elif getattr(self, "_range_stokes", stokes) != stokes:
+                if not dir_load and getattr(self, "_range_stokes", stokes) != stokes:
                     # The Min/Max boxes hold the range of the previously shown
                     # Stokes product, which means nothing for this one
                     vmin_val = vmax_val = None
-                self.load_data(
-                    self.imagename, stokes, threshold, auto_adjust_rms=dir_load
+                # A new image lacking the selected product shows Stokes I
+                stokes = self.load_data(
+                    self.imagename,
+                    stokes,
+                    threshold,
+                    auto_adjust_rms=dir_load,
+                    fallback_stokes="I" if dir_load else None,
                 )
                 self._range_stokes = stokes
             if dir_load:
@@ -596,6 +601,10 @@ class SolarRadioImageTab(
                 self.figure.clear()
                 self.show_empty_hint()
                 self.canvas.draw_idle()
+            if isinstance(e, Cancelled):
+                if main_window:
+                    self.show_status_message(f"Loading {name} cancelled")
+                return None
             if main_window:
                 self.show_status_message(f"Could not show {name}")
             if isinstance(e, ImageUnreadable):
@@ -1145,6 +1154,8 @@ class SolarRadioImageViewerApp(
 
         # Import what the first image will need while the user picks one
         threading.Thread(target=_preload_display_modules, daemon=True).start()
+        # Start the process that reads images
+        QTimer.singleShot(0, background.warm_up)
 
         # Register for theme changes
         theme_manager.register_callback(self._on_theme_changed)
@@ -1543,6 +1554,7 @@ class SolarRadioImageViewerApp(
 
     def closeEvent(self, event):
         image_prefetcher.shutdown()
+        background.shutdown()
         # Tabs get no close event of their own when the window closes
         for tab in self.tabs:
             tab.cleanup()
