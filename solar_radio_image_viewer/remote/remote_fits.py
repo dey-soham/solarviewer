@@ -101,7 +101,7 @@ class RemoteFits:
         if is_dir:
             raise NotSliceable("it is a folder")
         key = hashlib.sha1(f"{files.host}\0{path}\0{mtime}\0{self.size}".encode()).hexdigest()
-        self._dir = os.path.join(str(files.cache.cache_dir), "pieces", key)
+        self._dir = os.path.join(str(files.cache.cache_dir), getattr(files.cache, "PIECES_DIR", "pieces"), key)
         os.makedirs(self._dir, exist_ok=True)
         self._open_channels()
 

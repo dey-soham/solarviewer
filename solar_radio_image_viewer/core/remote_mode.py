@@ -333,6 +333,45 @@ class RemoteModeMixin:
             )
         )
 
+        # 1b. Slices of dynamic spectra read from servers, and their masks
+        def folder_size(folder, pattern="*"):
+            size = count = 0
+            if folder.exists():
+                for f in folder.rglob(pattern):
+                    if f.is_file():
+                        size += f.stat().st_size
+                        count += 1
+            return size, count
+
+        pieces_dir = Path.home() / ".cache" / "solarviewer" / "remote" / "pieces"
+        masks_dir = Path.home() / ".cache" / "solarviewer" / "dynspec_masks"
+        try:
+            pieces_size, pieces_count = folder_size(pieces_dir)
+        except Exception:
+            pieces_size = pieces_count = 0
+        cache_info.append(
+            (
+                "pieces",
+                "📈 Dynamic Spectrum Slices",
+                pieces_size,
+                pieces_count,
+                "Parts of dynamic spectra read from servers (read again when needed)",
+            )
+        )
+        try:
+            masks_size, masks_count = folder_size(masks_dir, "*.json")
+        except Exception:
+            masks_size = masks_count = 0
+        cache_info.append(
+            (
+                "masks",
+                "✂️ Dynamic Spectrum Masks",
+                masks_size,
+                masks_count,
+                "Masks drawn on dynamic spectra (clearing forgets them)",
+            )
+        )
+
         # 2. NOAA Events Cache
         noaa_size = 0
         noaa_count = 0
@@ -507,6 +546,19 @@ class RemoteModeMixin:
 
             if reply != QMessageBox.Yes:
                 return
+            if "masks" in selected_keys:
+                reply = QMessageBox.warning(
+                    self,
+                    "Clear Masks",
+                    "Clearing the dynamic spectrum masks forgets the masks drawn on "
+                    "every spectrum (File > Save Masks keeps a copy). Clear them?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply != QMessageBox.Yes:
+                    selected_keys.remove("masks")
+                    if not selected_keys:
+                        return
 
             cleared = []
 
@@ -526,6 +578,22 @@ class RemoteModeMixin:
                     cleared.append("Remote Files")
                 except Exception as e:
                     print(f"[Cache] Error clearing remote: {e}")
+
+            if "pieces" in selected_keys:
+                try:
+                    if pieces_dir.exists():
+                        shutil.rmtree(pieces_dir)
+                    cleared.append("Dynamic Spectrum Slices")
+                except Exception as e:
+                    print(f"[Cache] Error clearing slices: {e}")
+
+            if "masks" in selected_keys:
+                try:
+                    if masks_dir.exists():
+                        shutil.rmtree(masks_dir)
+                    cleared.append("Dynamic Spectrum Masks")
+                except Exception as e:
+                    print(f"[Cache] Error clearing masks: {e}")
 
             if "noaa" in selected_keys:
                 try:

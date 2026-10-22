@@ -54,6 +54,7 @@ class RemoteFileCache:
 
     DEFAULT_CACHE_DIR = Path.home() / ".cache" / "solarviewer" / "remote"
     METADATA_FILE = "cache_metadata.json"
+    PIECES_DIR = "pieces"  # slices of files read in pieces (remote_fits)
 
     def __init__(self, cache_dir: Optional[Path] = None):
         self.cache_dir = cache_dir or self.DEFAULT_CACHE_DIR
@@ -259,6 +260,8 @@ class RemoteFileCache:
                     # Double check item is inside cache_dir
                     if item.parent.resolve() != resolved_path:
                         continue
+                    if item.name == self.PIECES_DIR:
+                        continue  # (cleared on its own: Dynamic Spectrum Slices)
 
                     if item.is_dir():
                         shutil.rmtree(item)
