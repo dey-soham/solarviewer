@@ -1,6 +1,6 @@
 import drms, os, glob, warnings
-import sunpy
-from parfive import Downloader
+import aiohttp
+from parfive import Downloader, SessionConfig
 from sunpy.map import Map
 
 # from sunpy.instr.aia import aiaprep  # This import is no longer available in sunpy 6.0.5
@@ -28,18 +28,25 @@ from astropy.io import fits
 from datetime import datetime, timedelta
 import astropy.units as u  # Import astropy units for use throughout the code
 
-# Configure SunPy download timeout (300 seconds = 5 minutes)
-# This helps with large batch downloads that may take longer
-try:
-    sunpy.config.set("downloads", "timeout", 300)
-except Exception:
-    pass  # Ignore if config doesn't support this setting
-
 # Default download settings for Fido
 DEFAULT_MAX_CONN = 4  # Maximum simultaneous connections
 DEFAULT_MAX_SPLITS = 5  # Maximum splits per file
 DEFAULT_MAX_RETRIES = 5  # Number of retry attempts for failed downloads (increased from 3)
-DEFAULT_TIMEOUT = 120  # Timeout in seconds per file download
+DEFAULT_TIMEOUT = 120  # Seconds without data before a file's download is abandoned (and retried)
+
+
+def _downloader(max_conn, max_splits, timeout, progress):
+    """A parfive Downloader that abandons a file when no data has arrived for
+    ``timeout`` seconds (a stalled connection), so the retry loop can try it
+    again. There is no limit on the whole download: a slow file that keeps
+    receiving data is never cut off."""
+    timeouts = aiohttp.ClientTimeout(total=None, sock_connect=timeout, sock_read=timeout)
+    return Downloader(
+        max_conn=max_conn,
+        max_splits=max_splits,
+        progress=progress,
+        config=SessionConfig(timeouts=timeouts),
+    )
 
 
 def robust_fido_fetch(
@@ -64,7 +71,9 @@ def robust_fido_fetch(
         max_conn (int): Maximum simultaneous connections (default: 4)
         max_splits (int): Maximum splits per file for parallel download (default: 5)
         max_retries (int): Number of retry attempts for failed downloads (default: 5)
-        timeout (int): Timeout in seconds for each file download (default: 120)
+        timeout (int): Seconds without any data arriving after which a file's
+            download is abandoned and retried; slow downloads that keep
+            receiving data are not cut off (default: 120)
         progress (bool): Show download progress bar (default: True)
 
     Returns:
@@ -72,11 +81,9 @@ def robust_fido_fetch(
     """
     from sunpy.net import Fido
 
-    # Create a custom downloader with better settings for bulk downloads
-    # Note: parfive uses aiohttp, timeout is passed via overwrite parameter in Fido.fetch
-    downloader = Downloader(max_conn=max_conn, max_splits=max_splits, progress=progress)
+    downloader = _downloader(max_conn, max_splits, timeout, progress)
 
-    print(f"Starting download with settings: max_conn={max_conn}, retries={max_retries}, timeout={timeout}s")
+    print(f"Starting download with settings: max_conn={max_conn}, retries={max_retries}, timeout={timeout}s without data")
 
     # Initial fetch attempt
     downloaded = Fido.fetch(result, path=output_dir + "/{file}", downloader=downloader)
@@ -95,11 +102,7 @@ def robust_fido_fetch(
         time_module.sleep(2)
 
         # Create a fresh downloader for retry with reduced connections
-        retry_downloader = Downloader(
-            max_conn=max(1, max_conn // 2),  # Reduce connections on retry
-            max_splits=max_splits, 
-            progress=progress
-        )
+        retry_downloader = _downloader(max(1, max_conn // 2), max_splits, timeout, progress)
         downloaded = Fido.fetch(downloaded, downloader=retry_downloader)
 
     # Report final status
