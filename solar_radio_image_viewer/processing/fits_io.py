@@ -8,10 +8,13 @@ returns a cached, uncompressed single-HDU copy for such files and the original
 path for everything else, so readers can call it unconditionally.
 """
 
+import logging
 import hashlib
 import os
 import re
 import tempfile
+
+logger = logging.getLogger(__name__)
 
 FITS_SUFFIXES = (".fits", ".fts", ".fit", ".fits.fz", ".fz", ".fits.gz", ".fts.gz")
 
@@ -114,7 +117,7 @@ def _resolve(path, stat):
             os.replace(tmp, cached)
             return cached
     except Exception as e:
-        print(f"[WARNING] Could not prepare {path} for reading: {e}")
+        logger.warning(f"Could not prepare {path} for reading: {e}")
         return None
 
 
@@ -180,7 +183,7 @@ def casa_observation_date(path):
     finally:
         tool.close()
     mjd = (obsdate.get("m0") or {}).get("value")
-    if mjd is None:
+    if not mjd or mjd <= 0:  # no date: CASA gives MJD 0
         return None
     from astropy.time import Time
 

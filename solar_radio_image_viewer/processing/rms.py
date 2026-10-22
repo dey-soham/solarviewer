@@ -1,54 +1,73 @@
 """
 Noise (RMS) estimation and masking pixels far from the Sun.
+
+Planes are indexed [x, y]; an RMS box is (x1, x2, y1, y2) in those pixels.
 """
 
 import numpy as np
 
 from .dependencies import IA
 from .fits_io import readable_image_path
+from .image_meta import casa_obs_time, sky_axes
+from .stokes import casa_stokes_labels, plane_index, rms_in_box
 
 
 def estimate_rms_near_Sun(imagename, stokes="I", box=(0, 200, 0, 130)):
-    stokes_map = {"I": 0, "Q": 1, "U": 2, "V": 3}
+    """RMS of the ``stokes`` plane (first channel) of an image inside ``box``.
+
+    Reads only that plane, found by its Stokes label.
+    """
     ia_tool = IA()
     ia_tool.open(readable_image_path(imagename))
-    summary = ia_tool.summary()
-    dimension_names = summary["axisnames"]
+    try:
+        dimension_names = [str(name) for name in ia_tool.summary()["axisnames"]]
+        shape = [int(n) for n in ia_tool.shape()]
+        x_idx, y_idx = sky_axes(dimension_names)
 
-    ra_idx = np.where(dimension_names == "Right Ascension")[0][0]
-    dec_idx = np.where(dimension_names == "Declination")[0][0]
+        blc = [0] * len(shape)
+        trc = [n - 1 if axis in (x_idx, y_idx) else 0 for axis, n in enumerate(shape)]
+        if "Stokes" in dimension_names:
+            stokes_idx = dimension_names.index("Stokes")
+            labels = casa_stokes_labels(ia_tool.coordsys())
+            blc[stokes_idx] = trc[stokes_idx] = plane_index(labels, stokes)
+        else:
+            plane_index(None, stokes)  # only Stokes I without a Stokes axis
+        chunk = ia_tool.getchunk(blc=blc, trc=trc)
+    finally:
+        ia_tool.close()
 
-    stokes_idx = None
-    freq_idx = None
-    if "Stokes" in dimension_names:
-        stokes_idx = np.where(np.array(dimension_names) == "Stokes")[0][0]
-    if "Frequency" in dimension_names:
-        freq_idx = np.where(np.array(dimension_names) == "Frequency")[0][0]
+    plane = chunk[
+        tuple(slice(None) if axis in (x_idx, y_idx) else 0 for axis in range(len(shape)))
+    ]
+    return rms_in_box(plane, box)
 
-    data = ia_tool.getchunk()
-    ia_tool.close()
 
-    if stokes_idx is not None:
-        idx = stokes_map.get(stokes, 0)
-        slice_list = [slice(None)] * len(data.shape)
-        slice_list[stokes_idx] = idx
+def sun_pixel(csys, shape):
+    """Pixel (x, y) of the Sun's centre in an image with coordinate system
+    ``csys`` and [x, y] ``shape``, or None if it is not inside the image (or
+    cannot be worked out)."""
+    try:
+        names = [str(name) for name in csys.names()]
+        units = list(csys.units())
+        world = list(csys.referencevalue()["numeric"])
+        if "SOLAR-X" in names:
+            world[0] = world[1] = 0.0  # helioprojective: the Sun is the origin
+        else:
+            import astropy.units as u
+            from astropy.coordinates import get_sun
 
-        if freq_idx is not None:
-            slice_list[freq_idx] = 0
-
-        stokes_data = data[tuple(slice_list)]
-    else:
-        stokes_data = data
-
-    x1, x2, y1, y2 = box
-    region_slice = [slice(None)] * len(stokes_data.shape)
-    region_slice[ra_idx] = slice(x1, x2)
-    region_slice[dec_idx] = slice(y1, y2)
-    region = stokes_data[tuple(region_slice)]
-    if region.size == 0:
-        return 0.0
-    rms = np.sqrt(np.mean(region**2))
-    return rms
+            obs_time = casa_obs_time(csys.epoch())
+            if obs_time is None:
+                return None
+            sun = get_sun(obs_time)
+            world[0] = sun.ra.to_value(u.Unit(units[0]))
+            world[1] = sun.dec.to_value(u.Unit(units[1]))
+        x, y = csys.topixel(world)["numeric"][:2]
+    except Exception:
+        return None
+    if 0 <= x < shape[0] and 0 <= y < shape[1]:
+        return float(x), float(y)
+    return None
 
 
 def remove_pixels_away_from_sun(pix, csys, radius_arcmin=55):
@@ -69,9 +88,10 @@ def remove_pixels_away_from_sun(pix, csys, radius_arcmin=55):
     delta_deg = abs(w.wcs.cdelt[0])
     pixel_radius = radius_deg / delta_deg
 
-    cx = pix.shape[0] / 2
-    cy = pix.shape[1] / 2
-    y, x = np.ogrid[: pix.shape[1], : pix.shape[0]]
+    # Around the Sun; around the image centre when the Sun is not in the image
+    centre = sun_pixel(csys, pix.shape)
+    cx, cy = centre if centre is not None else (pix.shape[0] / 2, pix.shape[1] / 2)
+    x, y = np.ogrid[: pix.shape[0], : pix.shape[1]]
     mask = (x - cx) ** 2 + (y - cy) ** 2 > pixel_radius**2
     pix[mask] = 0
     return pix

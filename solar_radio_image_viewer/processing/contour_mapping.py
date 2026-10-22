@@ -8,9 +8,12 @@ frames, so this module must not import Qt.
 """
 
 import contextlib
+import logging
 
 import numpy as np
 from matplotlib.transforms import Transform
+
+logger = logging.getLogger(__name__)
 
 
 def contour_artists(cs):
@@ -62,19 +65,21 @@ def pixel_mapping(src_wcs, dst_wcs):
     observer, so off-limb (coronal) emission maps as well.
     """
     from astropy.wcs.utils import pixel_to_pixel, wcs_to_celestial_frame
+    from sunpy.coordinates import Helioprojective
+
+    def frame_of(wcs):
+        try:
+            return wcs_to_celestial_frame(wcs)
+        except ValueError:
+            return None  # not a sky frame astropy knows
 
     observer = None
-    try:
-        from sunpy.coordinates import Helioprojective
-
-        frame = wcs_to_celestial_frame(src_wcs)
-        if isinstance(frame, Helioprojective):
-            observer = frame.observer
-            dst_frame = wcs_to_celestial_frame(dst_wcs)
-            if isinstance(dst_frame, Helioprojective) and dst_frame.observer is not None:
-                return _sun_fixed_mapping(src_wcs, dst_wcs, frame, dst_frame)
-    except Exception:
-        pass
+    frame = frame_of(src_wcs)
+    if isinstance(frame, Helioprojective):
+        observer = frame.observer
+        dst_frame = frame_of(dst_wcs)
+        if isinstance(dst_frame, Helioprojective) and dst_frame.observer is not None:
+            return _sun_fixed_mapping(src_wcs, dst_wcs, frame, dst_frame)
 
     def mapping(xy):
         xy = np.asarray(xy, dtype=float).reshape(-1, 2)
@@ -179,9 +184,13 @@ def mapping_between(src_wcs, dst_wcs, src_shape):
     try:
         check_mapping(mapping, src_shape)
         return mapping
-    except Exception:
+    except Exception as e:
         mapping = pixel_mapping(_bare(src_wcs), _bare(dst_wcs))
         check_mapping(mapping, src_shape)
+        logger.warning(
+            f"Contours mapped without observation times and observers ({e}): "
+            "they may be offset"
+        )
         return mapping
 
 

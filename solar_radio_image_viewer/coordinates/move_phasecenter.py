@@ -1,13 +1,8 @@
 import os
-import tempfile
 import numpy as np
-import sys
 import glob
 from casatools import msmetadata, table, measures, quanta, image
 
-# casatasks are now run via subprocess to avoid memory issues
-import subprocess
-import json
 from astropy.io import fits
 from astropy.wcs import WCS
 import scipy.ndimage as ndi
@@ -17,6 +12,32 @@ import shutil
 import hashlib
 from ..processing.workers import process_pool
 from ..processing.fits_io import readable_image_path
+from ..processing.casa_tasks import run_casa_task
+
+
+def _remove(*paths):
+    """Delete each path that exists: a file, or a folder such as a CASA image.
+    Failures are ignored, as ``rm -rf`` ignored them."""
+    for path in paths:
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.lexists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def _remove_temporary_models(folder):
+    """Delete the temporary model images and FITS files left in ``folder``."""
+    for pattern in ("I_model_*", "wcs_model_*.fits", "I.model", "wcs_model.fits"):
+        _remove(*glob.glob(os.path.join(glob.escape(folder), pattern)))
+
+
+def _replace_with_copy(source, destination):
+    """Replace ``destination`` with a copy of the CASA image ``source``."""
+    _remove(destination)
+    shutil.copytree(source, destination, symlinks=True)
 
 
 # Subprocess wrappers for casatasks to avoid segfaults
@@ -38,40 +59,7 @@ def run_casatask_subprocess(task_name, **kwargs):
         if key in kwargs and kwargs[key] and isinstance(kwargs[key], str):
             kwargs[key] = os.path.abspath(kwargs[key])
 
-    # Convert kwargs to a JSON-safe format
-    kwargs_str = json.dumps(kwargs)
-
-    script = f"""
-import sys
-import json
-from casatasks import {task_name}
-
-kwargs = json.loads('{kwargs_str}')
-try:
-    result = {task_name}(**kwargs)
-    # Output result as JSON if it's serializable
-    try:
-        print(json.dumps({{"success": True, "result": result}}))
-    except (TypeError, ValueError):
-        print(json.dumps({{"success": True, "result": "completed"}}))
-except Exception as e:
-    print(json.dumps({{"success": False, "error": str(e)}}), file=sys.stderr)
-    sys.exit(1)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"{task_name} failed: {result.stderr}")
-
-    try:
-        output = json.loads(result.stdout.strip())
-        return output.get("result")
-    except json.JSONDecodeError:
-        return None
+    return run_casa_task(task_name, **kwargs)
 
 
 def imhead_subprocess(imagename, mode="list", hdkey=None, hdvalue=None):
@@ -945,9 +933,9 @@ class SolarPhaseCenter:
 
             # Clean up previous files
             if os.path.isfile(temp_fits):
-                os.system(f"rm -rf {temp_fits}")
+                _remove(temp_fits)
             if os.path.isdir(temp_image):
-                os.system(f"rm -rf {temp_image}")
+                _remove(temp_image)
 
             # Handle trailing slashes
             if imagename.endswith("/"):
@@ -996,7 +984,7 @@ class SolarPhaseCenter:
                     apparent_pix_y = naxis2 // 2
 
                 # Clean up temp files
-                os.system(f"rm -rf {temp_image} {temp_fits}")
+                _remove(temp_image, temp_fits)
 
             # Apply the shift: set CRPIX to apparent position, CRVAL to true position
             # Note: apparent_pix_x/y are 0-based (from center_of_mass or WCS with origin=0)
@@ -1297,9 +1285,7 @@ class SolarPhaseCenter:
             input_dir = os.path.dirname(input_pattern)
             if input_dir and os.path.exists(input_dir):
                 print(f"Cleaning up any leftover temporary files in {input_dir}")
-                os.system(
-                    f"rm -rf {input_dir}/I_model_* {input_dir}/wcs_model_*.fits {input_dir}/I.model {input_dir}/wcs_model.fits"
-                )
+                _remove_temporary_models(input_dir)
 
             # Get list of files matching the pattern
             files = glob.glob(input_pattern)
@@ -1339,9 +1325,7 @@ class SolarPhaseCenter:
 
                 # Clean up any temporary files
                 if input_dir and os.path.exists(input_dir):
-                    os.system(
-                        f"rm -rf {input_dir}/I_model_* {input_dir}/wcs_model_*.fits {input_dir}/I.model {input_dir}/wcs_model.fits"
-                    )
+                    _remove_temporary_models(input_dir)
 
                 return [success_count, total_count]
 
@@ -1380,9 +1364,7 @@ class SolarPhaseCenter:
                 # Final cleanup to ensure all temporary files are removed
                 if input_dir and os.path.exists(input_dir):
                     print(f"Final cleanup of temporary files in {input_dir}")
-                    os.system(
-                        f"rm -rf {input_dir}/I_model_* {input_dir}/wcs_model_*.fits {input_dir}/I.model {input_dir}/wcs_model.fits"
-                    )
+                    _remove_temporary_models(input_dir)
 
                 return [success_count, total_count]
 
@@ -1392,9 +1374,7 @@ class SolarPhaseCenter:
             # Cleanup even if an error occurred
             if "input_dir" in locals() and input_dir and os.path.exists(input_dir):
                 print(f"Cleaning up temporary files after error in {input_dir}")
-                os.system(
-                    f"rm -rf {input_dir}/I_model_* {input_dir}/wcs_model_*.fits {input_dir}/I.model {input_dir}/wcs_model.fits"
-                )
+                _remove_temporary_models(input_dir)
 
             try:
                 return [0, total_count]
@@ -1690,8 +1670,7 @@ def main():
         if args.output:
             # Make a copy of the image
             if os.path.isdir(args.imagename):
-                os.system(f"rm -rf {args.output}")
-                os.system(f"cp -r {args.imagename} {args.output}")
+                _replace_with_copy(args.imagename, args.output)
                 target = args.output
             else:
                 import shutil
@@ -1732,8 +1711,7 @@ def main():
     elif args.imagename and args.output and not needs_shift:
         # User requested output file but no shift needed
         if os.path.isdir(args.imagename):
-            os.system(f"rm -rf {args.output}")
-            os.system(f"cp -r {args.imagename} {args.output}")
+            _replace_with_copy(args.imagename, args.output)
         else:
             import shutil
 

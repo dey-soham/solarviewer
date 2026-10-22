@@ -6,12 +6,15 @@ Shared by the main viewer and video frames, so this module must not import
 Qt.
 """
 
+import logging
 import os
 import uuid
 
 import numpy as np
 
 from .image_meta import casa_info, fits_header
+
+logger = logging.getLogger(__name__)
 
 MAX_CONTOUR_LAYERS = 10
 
@@ -187,7 +190,7 @@ def box_rms(contour_data, rms_box):
         region = contour_data[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
         return np.sqrt(np.nanmean(region**2))
     except Exception as e:
-        print(f"[WARNING] Could not calculate RMS from box, using std: {e}")
+        logger.warning(f"Could not calculate RMS from box, using std: {e}")
         return np.nanstd(contour_data)
 
 

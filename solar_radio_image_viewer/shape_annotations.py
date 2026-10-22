@@ -5,6 +5,7 @@ Provides customizable shape annotations (circle, ellipse, square, rectangle)
 and solar radii preset circles.
 """
 
+import logging
 import numpy as np
 from PyQt5.QtWidgets import (
     QDialog,
@@ -26,6 +27,8 @@ from PyQt5.QtCore import Qt
 from matplotlib.patches import Circle, Ellipse, Rectangle
 
 from .ui.styles import set_hand_cursor
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +76,7 @@ def draw_shape_annotations(tab, ax):
         try:
             _draw_one_shape(tab, ax, shape)
         except Exception as e:
-            print(f"[WARN] Failed to draw shape annotation: {e}")
+            logger.warning(f"Failed to draw shape annotation: {e}")
 
 
 def draw_text_annotations(tab, ax):
@@ -98,7 +101,7 @@ def draw_text_annotations(tab, ax):
             )
             t._text_annotation = True
         except Exception as e:
-            print(f"[WARN] Failed to draw text annotation: {e}")
+            logger.warning(f"Failed to draw text annotation: {e}")
 
 
 def draw_arrow_annotations(tab, ax):
@@ -123,7 +126,7 @@ def draw_arrow_annotations(tab, ax):
             )
             ann._arrow_annotation = True
         except Exception as e:
-            print(f"[WARN] Failed to draw arrow annotation: {e}")
+            logger.warning(f"Failed to draw arrow annotation: {e}")
 
 
 def _draw_one_shape(tab, ax, s):
@@ -223,39 +226,12 @@ def _draw_one_shape(tab, ax, s):
 # ---------------------------------------------------------------------------
 
 def _resolve_solar_center(tab):
-    """Return (center_x, center_y) in pixel coords, same logic as solar disk."""
-    if tab.solar_disk_center is not None:
-        return tab.solar_disk_center
-
-    if tab.current_image_data is None:
-        return None
-
-    height, width = tab.current_image_data.shape
-
-    _is_hpc = tab._is_already_hpc()
-    if _is_hpc and tab.current_wcs:
-        try:
-            ref_world = list(tab.current_wcs.referencevalue()["numeric"])
-            ref_world[0] = 0.0
-            ref_world[1] = 0.0
-            pix_origin = tab.current_wcs.topixel(ref_world)["numeric"]
-            cx, cy = float(pix_origin[0]), float(pix_origin[1])
-            cx = max(0.0, min(float(width - 1), cx))
-            cy = max(0.0, min(float(height - 1), cy))
-            return (cx, cy)
-        except Exception:
-            pass
-    if _is_hpc and hasattr(tab, "_cached_wcs_obj") and tab._cached_wcs_obj is not None:
-        try:
-            px, py = tab._cached_wcs_obj.wcs_world2pix(0.0, 0.0, 0)
-            cx, cy = float(px), float(py)
-            cx = max(0.0, min(float(width - 1), cx))
-            cy = max(0.0, min(float(height - 1), cy))
-            return (cx, cy)
-        except Exception:
-            pass
-
-    return (width // 2, height // 2)
+    """Return (center_x, center_y) in pixel coords: the solar disk's centre."""
+    if tab.solar_disk_center is None:
+        if tab.current_image_data is None:
+            return None
+        tab._compute_solar_disk_center(tab.current_image_data.shape)
+    return tab.solar_disk_center
 
 
 def add_solar_radius_circle(tab, multiplier):
@@ -263,6 +239,7 @@ def add_solar_radius_circle(tab, multiplier):
     center = _resolve_solar_center(tab)
     if center is None:
         return
+    tab._say_if_disk_is_a_guess("Circle")
 
     # If top global auto-compute is ON, calculate precise radius. Else, use 960 arcsec baseline.
     if getattr(tab, "solar_disk_auto_compute", True):
@@ -360,9 +337,9 @@ class ShapeAnnotationDialog(QDialog):
         cx_default = "0"
         cy_default = "0"
         if self.tab.current_image_data is not None:
-            h, w = self.tab.current_image_data.shape
-            cx_default = str(w // 2)
-            cy_default = str(h // 2)
+            nx, ny = self.tab.current_image_data.shape  # indexed [x, y]
+            cx_default = str(nx // 2)
+            cy_default = str(ny // 2)
         self.cx_edit = QLineEdit(cx_default)
         pos_layout.addWidget(self.cx_edit, 0, 1)
         pos_layout.addWidget(QLabel("Center Y:"), 0, 2)

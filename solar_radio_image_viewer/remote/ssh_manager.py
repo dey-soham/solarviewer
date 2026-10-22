@@ -7,12 +7,16 @@ Provides SSH/SFTP connectivity using paramiko, with support for:
 - Connection pooling and automatic reconnection
 """
 
+import logging
+import getpass
 import os
 import socket
 import stat
 from pathlib import Path
 from typing import Optional, List, Tuple, Callable
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 try:
     import paramiko
@@ -36,6 +40,52 @@ class SSHConnectionError(Exception):
     """Exception raised for SSH connection errors."""
 
     pass
+
+
+# Servers the user has trusted in SolarViewer, besides ~/.ssh/known_hosts
+KNOWN_HOSTS_FILE = Path.home() / ".config" / "solarviewer" / "known_hosts"
+
+
+class UnknownHostKey(SSHConnectionError):
+    """The server's host key is not known yet; the user must confirm it
+    (``trust_host_key``) before connecting."""
+
+    def __init__(self, hostname, key):
+        import base64
+        import hashlib
+
+        self.hostname = hostname
+        self.key = key
+        self.fingerprint = "SHA256:" + base64.b64encode(
+            hashlib.sha256(key.asbytes()).digest()
+        ).decode().rstrip("=")
+        super().__init__(
+            f"The server {hostname} is not known yet "
+            f"({key.get_name()} key {self.fingerprint})."
+        )
+
+
+if HAS_PARAMIKO:
+
+    class _AskAboutUnknownHosts(paramiko.MissingHostKeyPolicy):
+        """Stop the connection, before any password is sent, so the user can
+        check the key of a server neither ~/.ssh/known_hosts nor SolarViewer
+        knows."""
+
+        def missing_host_key(self, client, hostname, key):
+            raise UnknownHostKey(hostname, key)
+
+
+def trust_host_key(hostname, key):
+    """Remember ``key`` as ``hostname``'s host key, in SolarViewer's
+    known-hosts file (readable by the user only)."""
+    KNOWN_HOSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    keys = paramiko.HostKeys()
+    if KNOWN_HOSTS_FILE.exists():
+        keys.load(str(KNOWN_HOSTS_FILE))
+    keys.add(hostname, key.get_name(), key)
+    keys.save(str(KNOWN_HOSTS_FILE))
+    os.chmod(KNOWN_HOSTS_FILE, 0o600)
 
 
 @dataclass
@@ -179,7 +229,7 @@ class SSHConnection:
 
         # Default username to current user
         if actual_user is None:
-            actual_user = os.getlogin()
+            actual_user = getpass.getuser()
 
         # Expand key path
         if actual_key:
@@ -187,7 +237,12 @@ class SSHConnection:
 
         try:
             self._client = SSHClient()
-            self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # Known servers: the user's ~/.ssh/known_hosts and those trusted
+            # in SolarViewer. Others are confirmed first; a changed key fails.
+            self._client.load_system_host_keys()
+            if KNOWN_HOSTS_FILE.exists():
+                self._client.load_host_keys(str(KNOWN_HOSTS_FILE))
+            self._client.set_missing_host_key_policy(_AskAboutUnknownHosts())
 
             # Build connection kwargs
             connect_kwargs = {
@@ -235,6 +290,17 @@ class SSHConnection:
                 "timeout": timeout,
             }
 
+        except UnknownHostKey:
+            self._cleanup()
+            raise
+        except paramiko.BadHostKeyException as e:
+            self._cleanup()
+            raise SSHConnectionError(
+                f"The host key of {e.hostname} has changed since it was trusted. "
+                "Someone may be impersonating the server. If the server really "
+                "was reinstalled, remove its old key from ~/.ssh/known_hosts "
+                f"and {KNOWN_HOSTS_FILE}."
+            )
         except paramiko.AuthenticationException as e:
             self._cleanup()
             raise SSHConnectionError(f"Authentication failed: {e}")
@@ -294,10 +360,10 @@ class SSHConnection:
             self.connect(**self._connect_params)
             return True
         except SSHConnectionError as e:
-            print(f"[SSH] Reconnection failed: {e}")
+            logger.warning(f"[SSH] Reconnection failed: {e}")
             return False
         except Exception as e:
-            print(f"[SSH] Reconnection error: {e}")
+            logger.warning(f"[SSH] Reconnection error: {e}")
             return False
 
     def is_connected(self) -> bool:
@@ -353,7 +419,7 @@ class SSHConnection:
 
             return True
         except Exception as e:
-            print(f"[SSH] Ping failed: {e}")
+            logger.warning(f"[SSH] Ping failed: {e}")
             self._connected = False
             return False
 
@@ -369,12 +435,12 @@ class SSHConnection:
 
         # Try to reconnect
         if self._connect_params:
-            print("[SSH] Connection lost, attempting auto-reconnect...")
+            logger.warning("[SSH] Connection lost, attempting auto-reconnect...")
             if self.reconnect():
-                print("[SSH] Auto-reconnect successful")
+                logger.info("[SSH] Auto-reconnect successful")
                 return True
             else:
-                print("[SSH] Auto-reconnect failed")
+                logger.warning("[SSH] Auto-reconnect failed")
 
         return False
 
@@ -441,7 +507,7 @@ class SSHConnection:
             self._sftp = self._client.open_sftp()
             return True
         except Exception as e:
-            print(f"[SSH] Failed to refresh SFTP: {e}")
+            logger.warning(f"[SSH] Failed to refresh SFTP: {e}")
             return False
 
     @property
@@ -537,15 +603,15 @@ class SSHConnection:
 
         if is_network_error:
             # Transport is probably dead — try full reconnect
-            print("[SSH] Network error during transfer, attempting full reconnect...")
+            logger.warning("[SSH] Network error during transfer, attempting full reconnect...")
             try:
                 if self.reconnect():
-                    print("[SSH] Reconnect successful after transfer failure")
+                    logger.warning("[SSH] Reconnect successful after transfer failure")
                     return
                 else:
-                    print("[SSH] Reconnect failed after transfer failure")
+                    logger.warning("[SSH] Reconnect failed after transfer failure")
             except Exception as e:
-                print(f"[SSH] Reconnect error: {e}")
+                logger.warning(f"[SSH] Reconnect error: {e}")
         else:
             # Transport may still be alive — just refresh SFTP channel
             if self._client:

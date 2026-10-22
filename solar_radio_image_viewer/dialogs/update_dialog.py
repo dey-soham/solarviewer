@@ -1,3 +1,4 @@
+import logging
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -18,6 +19,8 @@ from PyQt5.QtCore import QThread, pyqtSignal
 import subprocess
 from ..utils.update_checker import check_for_updates
 from ..version import __version__
+
+logger = logging.getLogger(__name__)
 
 class UpdateCheckThread(QThread):
     """Thread to check for updates in background."""
@@ -300,7 +303,7 @@ class UpdateDialog(QDialog):
                 if os.path.exists(activate_script):
                     # Run via shell to support sourcing.
                     cmd = f'. "{activate_script}" && pip install --upgrade solarviewer'
-                    print(f"[INFO] Executing: {cmd}")
+                    logger.info(f"Executing: {cmd}")
 
                     # Use Popen to capture and print output in real-time
                     launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
@@ -333,7 +336,7 @@ class UpdateDialog(QDialog):
                         "--upgrade",
                         "solarviewer",
                     ]
-                    print(f"[INFO] Executing: {' '.join(cmd)}")
+                    logger.info(f"Executing: {' '.join(cmd)}")
 
                     launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
                     process = subprocess.Popen(

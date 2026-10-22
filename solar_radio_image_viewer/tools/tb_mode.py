@@ -2,8 +2,10 @@
 Brightness temperature (TB) mode tool for SolarViewer.
 """
 
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QMessageBox
+
+from ..ui.busy import begin_busy, end_busy
+from ..ui.errors import show_error
 
 
 class TbModeMixin:
@@ -23,6 +25,7 @@ class TbModeMixin:
         import os
         import tempfile
 
+        from PyQt5.QtCore import QEventLoop
         from PyQt5.QtWidgets import QApplication
 
         if self.current_image_data is None:
@@ -102,12 +105,12 @@ class TbModeMixin:
             return
 
         try:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            begin_busy()
 
             if is_kelvin:
                 # K -> Jy/beam (Flux conversion)
                 self.show_status_message("Converting to flux (Jy/beam)...")
-                QApplication.processEvents()
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
                 from ..processing.maps import generate_flux_map
 
@@ -127,7 +130,7 @@ class TbModeMixin:
                 )
 
                 if flux_data is None:
-                    QApplication.restoreOverrideCursor()
+                    end_busy()
                     QMessageBox.warning(
                         self, "Error", f"Flux conversion failed: {result}"
                     )
@@ -149,13 +152,13 @@ class TbModeMixin:
                 self.tb_btn.setToolTip("Revert to Brightness Temperature (K) view")
                 self.tb_btn.setChecked(True)
 
-                QApplication.restoreOverrideCursor()
+                end_busy()
                 self.show_status_message("Showing flux (Jy/beam) - click TB to revert")
 
             else:
                 # Jy/beam -> K (TB conversion)
                 self.show_status_message("Converting to brightness temperature...")
-                QApplication.processEvents()
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
                 from ..processing.maps import generate_tb_map
 
@@ -175,7 +178,7 @@ class TbModeMixin:
                 )
 
                 if tb_data is None:
-                    QApplication.restoreOverrideCursor()
+                    end_busy()
                     QMessageBox.warning(
                         self, "Error", f"TB conversion failed: {result}"
                     )
@@ -195,7 +198,7 @@ class TbModeMixin:
                 self.tb_btn.setToolTip("Revert to Flux (Jy/beam) view")
                 self.tb_btn.setChecked(True)
 
-                QApplication.restoreOverrideCursor()
+                end_busy()
                 self.show_status_message(
                     "Showing brightness temperature (K) - click FLUX to revert"
                 )
@@ -204,15 +207,20 @@ class TbModeMixin:
             import traceback
 
             traceback.print_exc()
-            QApplication.restoreOverrideCursor()
+            end_busy()
             self._tb_original_imagename = None
-            QMessageBox.critical(self, "Error", f"Conversion failed: {e}")
+            show_error(
+                self,
+                "Conversion Failed",
+                f"Could not convert between flux density and brightness "
+                f"temperature: {e}\n\nThe conversion needs the beam (BMAJ, BMIN) "
+                "and the frequency from the image's header.",
+                traceback.format_exc(),
+            )
 
     def _revert_from_tb_mode(self):
         """Revert from converted mode to original image"""
         import os
-
-        from PyQt5.QtWidgets import QApplication, QMessageBox
 
         # Store original unit before clearing
         original_unit = self._tb_original_unit or "Jy/beam"
@@ -234,40 +242,41 @@ class TbModeMixin:
             self.tb_btn.setChecked(False)
             return
 
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        self.show_status_message(f"Reverting to original ({original_unit})...")
+        begin_busy()
+        try:
+            self.show_status_message(f"Reverting to original ({original_unit})...")
 
-        # Restore original imagename
-        self.imagename = self._tb_original_imagename
-        self._tb_original_imagename = None
-        self._tb_original_unit = None
-        self._tb_mode = False
+            # Restore original imagename
+            self.imagename = self._tb_original_imagename
+            self._tb_original_imagename = None
+            self._tb_original_unit = None
+            self._tb_mode = False
 
-        # Reload original image
-        self.on_visualization_changed(dir_load=True)
+            # Reload original image
+            self.on_visualization_changed(dir_load=True)
 
-        # Clean up temp file
-        if (
-            hasattr(self, "_tb_temp_file")
-            and self._tb_temp_file
-            and os.path.exists(self._tb_temp_file)
-        ):
-            try:
-                os.remove(self._tb_temp_file)
-            except:
-                pass
-            self._tb_temp_file = None
+            # Clean up temp file
+            if (
+                hasattr(self, "_tb_temp_file")
+                and self._tb_temp_file
+                and os.path.exists(self._tb_temp_file)
+            ):
+                try:
+                    os.remove(self._tb_temp_file)
+                except:
+                    pass
+                self._tb_temp_file = None
 
-        # Update button based on original unit
-        if original_unit == "K":
-            self.tb_btn.setText("FLUX")
-            self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
-            self.show_status_message("Showing brightness temperature (K)")
-        else:
-            self.tb_btn.setText("TB")
-            self.tb_btn.setToolTip("Convert to Brightness Temperature (K)")
-            self.show_status_message("Showing flux (Jy/beam)")
+            # Update button based on original unit
+            if original_unit == "K":
+                self.tb_btn.setText("FLUX")
+                self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
+                self.show_status_message("Showing brightness temperature (K)")
+            else:
+                self.tb_btn.setText("TB")
+                self.tb_btn.setToolTip("Convert to Brightness Temperature (K)")
+                self.show_status_message("Showing flux (Jy/beam)")
 
-        self.tb_btn.setChecked(False)
-
-        QApplication.restoreOverrideCursor()
+            self.tb_btn.setChecked(False)
+        finally:
+            end_busy()

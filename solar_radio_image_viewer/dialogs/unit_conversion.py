@@ -19,16 +19,15 @@ from PyQt5.QtWidgets import (
     QFrame,
     QTabWidget,
     QProgressBar,
-    QApplication,
 )
 import multiprocessing
 import os
 
-from ..processing.workers import process_pool
+from ..ui.batch import BatchDialogMixin
 from ..ui.styles import set_hand_cursor
 
 
-class UnitConversionDialog(QDialog):
+class UnitConversionDialog(BatchDialogMixin, QDialog):
     """Dialog for batch unit conversion between Flux Density and Brightness Temperature."""
 
     def __init__(self, parent=None):
@@ -36,8 +35,6 @@ class UnitConversionDialog(QDialog):
         self.setWindowTitle("Batch Unit Conversion")
         self.setMinimumSize(600, 550)
         self.resize(750, 650)
-        
-        self.aborted = False
 
         # Import theme manager for theme-aware styling
         try:
@@ -380,7 +377,7 @@ class UnitConversionDialog(QDialog):
         self.cancel_button.setText("Close")
         
         self.ok_button.clicked.connect(self.run_conversion)
-        self.cancel_button.clicked.connect(self.reject_or_abort)
+        self.cancel_button.clicked.connect(self.cancel_or_abort)
         main_layout.addWidget(button_box)
 
     def _update_default_output_dir(self):
@@ -519,15 +516,6 @@ class UnitConversionDialog(QDialog):
         # Scroll to bottom
         scrollbar = self.status_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
-        QApplication.processEvents()
-
-    def reject_or_abort(self):
-        if hasattr(self, '_is_running') and self._is_running:
-            self.aborted = True
-            self.log("Aborting... waiting for current batch to finish")
-            self.cancel_button.setEnabled(False)
-        else:
-            self.reject()
 
     def run_conversion(self):
         files = self.scan_files()
@@ -547,101 +535,60 @@ class UnitConversionDialog(QDialog):
             QMessageBox.warning(self, "Error", "Please specify output pattern.")
             return
 
-        self._is_running = True
-        self.aborted = False
-        self.ok_button.setEnabled(False)
-        self.cancel_button.setText("Abort")
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, len(files))
-        self.progress_bar.setValue(0)
         self.status_text.clear()
-
-        # Switch to status tab to show output
-        self.tab_widget.setCurrentIndex(2)
-
         self.log(f"Starting conversion of {len(files)} files...")
         self.log(f"Target: {'Brightness Temperature (K)' if is_target_tb else 'Flux Density (Jy/beam)'}")
 
-        try:
-            tasks = []
-            for f in files:
-                basename = os.path.basename(f)
-                
-                # Determine absolute output directory
-                abs_out_dir = out_dir
-                if not os.path.isabs(out_dir):
-                    abs_out_dir = os.path.join(os.path.dirname(f), out_dir)
-                    
-                outfile_name = out_pattern.replace("*", basename) if "*" in out_pattern else f"{out_pattern}_{basename}"
-                outfile = os.path.join(abs_out_dir, outfile_name)
-                
-                if not os.path.exists(abs_out_dir):
-                    try:
-                        os.makedirs(abs_out_dir, exist_ok=True)
-                    except Exception as e:
-                        self.log(f"Warning: Could not create dir {abs_out_dir}: {e}")
-                
-                tasks.append((f, outfile, is_target_tb))
-
-            if use_mp:
-                self.log(f"Using multiprocessing ({cores} cores)")
-                
-                completed = 0
-                success_count = 0
-                
-                with process_pool(cores) as pool:
-                    from functools import partial
-                    map_func = pool.imap(_unit_conversion_worker, tasks)
-                    
-                    for i, result in enumerate(map_func):
-                        if self.aborted:
-                            pool.terminate()
-                            break
-                        
-                        success, in_f, msg = result
-                        if success:
-                            success_count += 1
-                        
-                        completed += 1
-                        self.progress_bar.setValue(completed)
-                        self.log(msg)
-                        QApplication.processEvents()
-
-            else:
-                completed = 0
-                success_count = 0
-                for task in tasks:
-                    if self.aborted:
-                        break
-                        
-                    success, in_f, msg = _unit_conversion_worker(task)
-                    if success:
-                        success_count += 1
-                        
-                    completed += 1
-                    self.progress_bar.setValue(completed)
-                    self.log(msg)
-                    QApplication.processEvents()
-                    
-            if self.aborted:
-                self.log("Batch processing aborted by user.")
-            else:
-                self.log(f"Batch processing complete. Successfully processed: {success_count}/{len(files)}")
-                QMessageBox.information(
-                    self,
-                    "Batch Complete",
-                    f"Conversion finished.\nSuccessfully processed: {success_count}/{len(files)} files.",
-                )
-
-        except Exception as e:
-            self.log(f"Error in batch processing: {str(e)}")
-            QMessageBox.critical(self, "Error", f"Error in batch processing: {str(e)}")
+        tasks = []
+        for f in files:
+            basename = os.path.basename(f)
             
-        finally:
-            self._is_running = False
-            self.ok_button.setEnabled(True)
-            self.cancel_button.setText("Close")
-            self.cancel_button.setEnabled(True)
+            # Determine absolute output directory
+            abs_out_dir = out_dir
+            if not os.path.isabs(out_dir):
+                abs_out_dir = os.path.join(os.path.dirname(f), out_dir)
+
+            # The output is FITS: "conv_*.fits" makes a.fits into conv_a.fits
+            name = os.path.splitext(basename)[0]
+            outfile_name = out_pattern.replace("*", name) if "*" in out_pattern else f"{out_pattern}_{name}"
+            if not os.path.splitext(outfile_name)[1]:
+                outfile_name += ".fits"
+            outfile = os.path.join(abs_out_dir, outfile_name)
+            
+            if not os.path.exists(abs_out_dir):
+                try:
+                    os.makedirs(abs_out_dir, exist_ok=True)
+                except Exception as e:
+                    self.log(f"Warning: Could not create dir {abs_out_dir}: {e}")
+            
+            tasks.append((f, outfile, is_target_tb))
+
+        if use_mp:
+            self.log(f"Using multiprocessing ({cores} cores)")
+        self._success_count = 0
+        self.start_batch(
+            _unit_conversion_worker,
+            tasks,
+            processes=cores if use_mp else 1,
+            disable=[self.tab_widget],
+        )
+
+    def batch_result(self, task, value):
+        success, in_f, msg = value
+        if success:
+            self._success_count += 1
+        self.log(msg)
+
+    def batch_finished(self, aborted):
+        if aborted:
+            return
+        total = self.progress_bar.maximum()
+        self.log(f"Batch processing complete. Successfully processed: {self._success_count}/{total}")
+        QMessageBox.information(
+            self,
+            "Batch Complete",
+            f"Conversion finished.\nSuccessfully processed: {self._success_count}/{total} files.",
+        )
 
 def _unit_conversion_worker(args):
     """Worker function for unit conversion batch processing."""

@@ -2,6 +2,8 @@
 Profile cut tool for SolarViewer.
 """
 
+import logging
+
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -19,6 +21,7 @@ from PyQt5.QtWidgets import (
 
 from .geometry import snap_to_axis
 
+logger = logging.getLogger(__name__)
 
 class ProfileMixin:
     """Flux profile cuts (line and radial) and the profile plot dialog.
@@ -830,12 +833,20 @@ class ProfileMixin:
                 print(f"  {'Right Position':<20} {fwhm_right:>15.3f} {dist_unit}")
                 print(f"  {'FWHM':<20} {fwhm_value:>15.3f} {dist_unit}")
                 print("=" * 50 + "\n")
-        except ValueError:
-            # Profile not suitable for FWHM - silently skip
-            pass
+        except ValueError as e:
+            # Not a single clear peak: say why there is no FWHM
+            ax.text(
+                0.99,
+                0.98,
+                f"No FWHM: {str(e)[0].lower()}{str(e)[1:]}",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=8,
+                alpha=0.7,
+            )
         except Exception:
-            # Other errors - silently skip
-            pass
+            logger.exception("FWHM measurement failed")
 
         # Add secondary x-axis at top with WCS coordinates
         if wcs_available and world_coords is not None:

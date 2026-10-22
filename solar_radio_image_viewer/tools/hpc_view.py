@@ -2,12 +2,17 @@
 Switching a tab between RA/Dec and helioprojective (HPC) views.
 """
 
+import logging
 import os
 
 
 from ..processing.dependencies import IA
 from ..processing.fits_io import readable_image_path
 from ..processing.image_meta import casa_info, fits_header
+from ..ui.busy import begin_busy, end_busy
+from ..ui.errors import show_error
+
+logger = logging.getLogger(__name__)
 
 
 class HpcViewMixin:
@@ -48,7 +53,7 @@ class HpcViewMixin:
             import os
             import tempfile
 
-            from PyQt5.QtCore import Qt
+            from PyQt5.QtCore import QEventLoop
             from PyQt5.QtWidgets import QApplication, QMessageBox
 
             # Check if image is already in helioprojective coordinates (Solar-X/Y)
@@ -57,9 +62,9 @@ class HpcViewMixin:
                 self._revert_to_radec_view()
                 return
 
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            begin_busy()
             self.show_status_message("Converting to helioprojective coordinates...")
-            QApplication.processEvents()
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
             # Import conversion function
             from ..coordinates.helioprojective import convert_and_save_hpc_all_stokes
@@ -88,7 +93,7 @@ class HpcViewMixin:
             )
 
             if not success or not os.path.exists(temp_hpc_file):
-                QApplication.restoreOverrideCursor()
+                end_busy()
                 self._original_imagename = None  # Reset since conversion failed
                 QMessageBox.warning(
                     self,
@@ -124,7 +129,7 @@ class HpcViewMixin:
                 self.hpc_btn.setText("RA/DEC")
                 self.hpc_btn.setToolTip("Revert to RA/DEC view")
 
-            QApplication.restoreOverrideCursor()
+            end_busy()
             self.show_status_message(
                 "Helioprojective view - click RA/DEC button to revert"
             )
@@ -133,12 +138,17 @@ class HpcViewMixin:
             import traceback
 
             traceback.print_exc()
-            QApplication.restoreOverrideCursor()
+            end_busy()
             self._original_imagename = None  # Reset on error
-            QMessageBox.critical(
+            import traceback
+
+            show_error(
                 self,
-                "Error",
-                f"Error converting to helioprojective coordinates:\n\n{str(e)}",
+                "Conversion Failed",
+                f"Could not convert the image to helioprojective coordinates: {e}"
+                "\n\nThe conversion needs the observation time and the observatory "
+                "(DATE-OBS and TELESCOP or OBSGEO in the header).",
+                traceback.format_exc(),
             )
 
     def _revert_to_radec_view(self):
@@ -147,10 +157,9 @@ class HpcViewMixin:
         import tempfile
 
         try:
-            from PyQt5.QtCore import Qt
-            from PyQt5.QtWidgets import QApplication, QMessageBox
+            from PyQt5.QtWidgets import QMessageBox
 
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            begin_busy()
             self.show_status_message("Converting to RA/DEC view...")
 
             # Check if we have an original file to revert to
@@ -189,7 +198,7 @@ class HpcViewMixin:
                 )
 
                 if not success:
-                    QApplication.restoreOverrideCursor()
+                    end_busy()
                     QMessageBox.warning(
                         self, "Error", "Failed to convert HPC to RA/Dec"
                     )
@@ -219,14 +228,14 @@ class HpcViewMixin:
                 self.hpc_btn.setText("HPC")
                 self.hpc_btn.setToolTip("Convert to Helioprojective view")
 
-            QApplication.restoreOverrideCursor()
+            end_busy()
             self.show_status_message("RA/DEC view - Click HPC button to revert")
 
         except Exception as e:
             import traceback
 
             traceback.print_exc()
-            QApplication.restoreOverrideCursor()
+            end_busy()
             self.show_status_message(f"Error reverting: {str(e)}")
 
     def _revert_to_hpc_from_radec(self):
@@ -250,10 +259,8 @@ class HpcViewMixin:
             return
 
         try:
-            from PyQt5.QtCore import Qt
-            from PyQt5.QtWidgets import QApplication
 
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            begin_busy()
             self.show_status_message("Reverting to HPC view...")
 
             # Restore HPC file
@@ -286,14 +293,14 @@ class HpcViewMixin:
                 self.hpc_btn.setText("RA/DEC")
                 self.hpc_btn.setToolTip("Convert to RA/DEC view")
 
-            QApplication.restoreOverrideCursor()
+            end_busy()
             self.show_status_message("Showing HPC view")
 
         except Exception as e:
             import traceback
 
             traceback.print_exc()
-            QApplication.restoreOverrideCursor()
+            end_busy()
             self.show_status_message(f"Error reverting: {str(e)}")
 
     def _reset_hpc_state(self):
@@ -419,7 +426,7 @@ class HpcViewMixin:
                 if "RA" in ctype1 or "DEC" in ctype2:
                     return "radec"
         except Exception as e:
-            print(f"[ERROR] FITS header check failed: {e}")
+            logger.error(f"FITS header check failed: {e}")
 
         try:
             # For CASA images, use coordinate system info
@@ -444,6 +451,6 @@ class HpcViewMixin:
             if "RIGHT ASCENSION" in dimension_names or "DECLINATION" in dimension_names:
                 return "radec"
         except Exception as e:
-            print(f"[ERROR] CASA check failed: {e}")
+            logger.error(f"CASA check failed: {e}")
 
         return "unknown"

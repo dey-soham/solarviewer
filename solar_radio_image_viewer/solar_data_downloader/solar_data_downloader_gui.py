@@ -75,6 +75,26 @@ except ImportError as e:
 FIDO_ONLY_INSTRUMENTS = ["IRIS", "SOHO", "GOES SUVI", "STEREO", "GONG"]
 
 
+# Runs one downloader function in a separate process: argv[1] is the folder
+# holding the package, argv[2] the JSON request from _download_request
+_DOWNLOAD_SCRIPT = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from solar_radio_image_viewer.solar_data_downloader import solar_data_downloader as sdd
+
+request = json.loads(sys.argv[2])
+try:
+    files = getattr(sdd, request["function"])(**request["kwargs"])
+    sys.stdout.flush()
+    print("DOWNLOADED_FILES:" + json.dumps(files or []))
+    sys.stdout.flush()
+except Exception:
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+"""
+
+
 class DownloadWorker(QThread):
     """Worker thread for handling downloads using subprocess with real-time progress updates."""
 
@@ -102,15 +122,21 @@ class DownloadWorker(QThread):
         import sys
 
         try:
-            # Create a temporary Python script to run the download
-            script = self._generate_download_script()
+            # The download runs in a separate process; what it calls travels
+            # as an argument, never as Python source
+            function, kwargs = self._download_request()
+            request = json.dumps({"function": function, "kwargs": kwargs})
+            package_parent = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
 
             # Run the download in a subprocess with real-time output
             self.progress.emit("Starting download...")
 
             launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             process = subprocess.Popen(
-                [sys.executable, "-u", "-c", script],  # -u for unbuffered output
+                # -u for unbuffered output
+                [sys.executable, "-u", "-c", _DOWNLOAD_SCRIPT, package_parent, request],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 bufsize=0,  # Unbuffered
@@ -279,160 +305,75 @@ class DownloadWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-    def _generate_download_script(self):
-        """Generate a Python script to run the download."""
-
+    def _download_request(self):
+        """The downloader function to call and its keyword arguments."""
         params = self.params
         instrument = params.get("instrument")
-
-        script_lines = [
-            "import sys",
-            "import json",
-            f"sys.path.insert(0, '{os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}' )",
-            "from solar_radio_image_viewer.solar_data_downloader import solar_data_downloader as sdd",
-            "",
-            "try:",
-        ]
+        times = dict(
+            start_time=params["start_time"],
+            end_time=params["end_time"],
+            output_dir=params["output_dir"],
+        )
 
         if instrument == "AIA":
             skip_cal = params.get("skip_calibration", False)
-            apply_psf = params.get("apply_psf", False)
-            apply_deg = params.get("apply_degradation", True)
-            apply_exp = params.get("apply_exposure_norm", True)
-
             if params.get("use_fido", True):
-                script_lines.append(
-                    f"""    files = sdd.download_aia_with_fido(
-        wavelength="{params['wavelength']}",
-        start_time="{params['start_time']}",
-        end_time="{params['end_time']}",
-        output_dir="{params['output_dir']}",
-        skip_calibration={skip_cal},
-        apply_psf={apply_psf},
-        apply_degradation={apply_deg},
-        apply_exposure_norm={apply_exp},
-    )"""
+                return "download_aia_with_fido", dict(
+                    times,
+                    wavelength=str(params["wavelength"]),
+                    skip_calibration=skip_cal,
+                    apply_psf=params.get("apply_psf", False),
+                    apply_degradation=params.get("apply_degradation", True),
+                    apply_exposure_norm=params.get("apply_exposure_norm", True),
                 )
-            else:
-                email = params.get("email") or "None"
-                script_lines.append(
-                    f"""    files = sdd.download_aia(
-        wavelength="{params['wavelength']}",
-        cadence="{params['cadence']}",
-        start_time="{params['start_time']}",
-        end_time="{params['end_time']}",
-        output_dir="{params['output_dir']}",
-        email={email!r},
-        skip_calibration={skip_cal},
-    )"""
-                )
-
-        elif instrument == "HMI":
+            return "download_aia", dict(
+                times,
+                wavelength=str(params["wavelength"]),
+                cadence=str(params["cadence"]),
+                email=params.get("email") or None,
+                skip_calibration=skip_cal,
+            )
+        if instrument == "HMI":
             skip_cal = params.get("skip_calibration", False)
             if params.get("use_fido", True):
-                script_lines.append(
-                    f"""    files = sdd.download_hmi_with_fido(
-        series="{params['series']}",
-        start_time="{params['start_time']}",
-        end_time="{params['end_time']}",
-        output_dir="{params['output_dir']}",
-        skip_calibration={skip_cal},
-    )"""
+                return "download_hmi_with_fido", dict(
+                    times, series=str(params["series"]), skip_calibration=skip_cal
                 )
-            else:
-                email = params.get("email") or "None"
-                script_lines.append(
-                    f"""    files = sdd.download_hmi(
-        series="{params['series']}",
-        start_time="{params['start_time']}",
-        end_time="{params['end_time']}",
-        output_dir="{params['output_dir']}",
-        email={email!r},
-        skip_calibration={skip_cal},
-    )"""
-                )
-
-        elif instrument == "IRIS":
-            wavelength = params.get("wavelength")
-            script_lines.append(
-                f"""    files = sdd.download_iris(
-        start_time="{params['start_time']}",
-        end_time="{params['end_time']}",
-        output_dir="{params['output_dir']}",
-        obs_type="{params['obs_type']}",
-        wavelength={wavelength!r},
-    )"""
+            return "download_hmi", dict(
+                times,
+                series=str(params["series"]),
+                email=params.get("email") or None,
+                skip_calibration=skip_cal,
             )
-
-        elif instrument == "SOHO":
-            wavelength = params.get("wavelength")
-            detector = params.get("detector")
-            script_lines.append(
-                f"""    files = sdd.download_soho(
-        instrument="{params['soho_instrument']}",
-        start_time="{params['start_time']}",
-        end_time="{params['end_time']}",
-        output_dir="{params['output_dir']}",
-        wavelength={wavelength!r},
-        detector={detector!r},
-    )"""
+        if instrument == "IRIS":
+            return "download_iris", dict(
+                times,
+                obs_type=str(params["obs_type"]),
+                wavelength=params.get("wavelength"),
             )
-
-        elif instrument == "GOES SUVI":
-            wavelength = params.get("wavelength")
-            level = params.get("level", "2")
-            script_lines.append(
-                f"""    files = sdd.download_goes_suvi(
-        start_time="{params['start_time']}",
-        end_time="{params['end_time']}",
-        output_dir="{params['output_dir']}",
-        wavelength={wavelength!r},
-        level="{level}",
-    )"""
+        if instrument == "SOHO":
+            return "download_soho", dict(
+                times,
+                instrument=str(params["soho_instrument"]),
+                wavelength=params.get("wavelength"),
+                detector=params.get("detector"),
             )
-
-        elif instrument == "STEREO":
-            spacecraft = params.get("spacecraft", "A")
-            stereo_inst = params.get("stereo_instrument", "EUVI")
-            wavelength = params.get("wavelength")
-            script_lines.append(
-                f"""    files = sdd.download_stereo(
-        start_time="{params['start_time']}",
-        end_time="{params['end_time']}",
-        output_dir="{params['output_dir']}",
-        spacecraft="{spacecraft}",
-        instrument="{stereo_inst}",
-        wavelength={wavelength!r},
-    )"""
+        if instrument == "GOES SUVI":
+            return "download_goes_suvi", dict(
+                times,
+                wavelength=params.get("wavelength"),
+                level=str(params.get("level", "2")),
             )
-
-        elif instrument == "GONG":
-            script_lines.append(
-                f"""    files = sdd.download_gong(
-        start_time="{params['start_time']}",
-        end_time="{params['end_time']}",
-        output_dir="{params['output_dir']}",
-    )"""
+        if instrument == "STEREO":
+            return "download_stereo", dict(
+                times,
+                spacecraft=str(params.get("spacecraft", "A")),
+                instrument=str(params.get("stereo_instrument", "EUVI")),
+                wavelength=params.get("wavelength"),
             )
-
-        # Add output section - flush to ensure real-time output
-        script_lines.extend(
-            [
-                "    sys.stdout.flush()",
-                "    if files:",
-                "        print('DOWNLOADED_FILES:' + json.dumps(files))",
-                "        sys.stdout.flush()",
-                "    else:",
-                "        print('DOWNLOADED_FILES:[]')",
-                "        sys.stdout.flush()",
-                "except Exception as e:",
-                "    import traceback",
-                "    traceback.print_exc()",
-                "    sys.exit(1)",
-            ]
-        )
-
-        return "\n".join(script_lines)
+        if instrument == "GONG":
+            return "download_gong", times
+        raise ValueError(f"Unknown instrument: {instrument}")
 
 
 class SolarDataViewerGUI(QMainWindow):

@@ -1,3 +1,4 @@
+import logging
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -36,6 +37,8 @@ from ..processing.contour_layers import (
 from ..ui.icons import get_resource_path
 from ..ui.open_image import choose_image
 from ..ui.styles import set_hand_cursor
+
+logger = logging.getLogger(__name__)
 
 # Offered after the default palette; not all of these suit colour-blind viewers
 EXTRA_COLORS = [
@@ -1047,27 +1050,12 @@ class ContourSettingsDialog(QDialog):
             disabled_color = QColor("#cccccc")
             enabled_color = QColor("#000000")
 
-        # Derived parameters and their requirements
-        requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
-        requires_u = {"U", "U/I", "V/I", "L", "Lfrac", "PANG"}
-        requires_v = {"V", "V/I"}
+        from ..processing.stokes import missing_planes
 
-        has_q = "Q" in available_stokes
-        has_u = "U" in available_stokes
-        has_v = "V" in available_stokes
-
-        # Iterate through combo items and enable/disable based on requirements
+        # Enable the items whose planes the image has
         model = self.stokes_combo.model()
         for i in range(self.stokes_combo.count()):
-            item_text = self.stokes_combo.itemText(i)
-
-            enabled = True
-            if item_text in requires_q and not has_q:
-                enabled = False
-            if item_text in requires_u and not has_u:
-                enabled = False
-            if item_text in requires_v and not has_v:
-                enabled = False
+            enabled = not missing_planes(self.stokes_combo.itemText(i), available_stokes)
 
             item = model.item(i)
             if item:
@@ -1090,7 +1078,7 @@ class ContourSettingsDialog(QDialog):
             available_stokes = get_available_stokes(imagepath)
             self._update_stokes_combo_state(available_stokes)
         except Exception as e:
-            print(f"[WARNING] Could not detect Stokes from {imagepath}: {e}")
+            logger.warning(f"Could not detect Stokes from {imagepath}: {e}")
 
     def _layer_name(self, layer):
         return contour_layer_name(layer, "Image" if self.for_video else "Current image")
@@ -1119,7 +1107,7 @@ class ContourSettingsDialog(QDialog):
                     available_stokes = get_available_stokes(parent.imagename)
                     self._update_stokes_combo_state(available_stokes)
                 except Exception as e:
-                    print(f"[WARNING] Could not detect Stokes: {e}")
+                    logger.warning(f"Could not detect Stokes: {e}")
         else:
             # Use external image path
             external_path = self.file_path_edit.text()

@@ -2,6 +2,7 @@
 Opening files and stepping through a directory (local or remote).
 """
 
+import logging
 import os
 
 from PyQt5.QtCore import Qt, QTimer
@@ -10,7 +11,10 @@ from PyQt5.QtWidgets import (
 )
 
 from ..ui.open_image import choose_image
+from ..ui.recent_files import forget_image, last_image_folder, remember_image
 from ..ui.styles import set_hand_cursor, theme_manager
+
+logger = logging.getLogger(__name__)
 
 
 class FileNavigationMixin:
@@ -48,8 +52,6 @@ class FileNavigationMixin:
         last_shortcut.activated.connect(self._on_last_file)
 
     def select_file_or_directory(self):
-        import time
-
         # Check if we're in remote mode - if so, use remote file browser
         main_window = self.window()
         if hasattr(main_window, "remote_connection") and main_window.remote_connection:
@@ -58,28 +60,42 @@ class FileNavigationMixin:
                 self._select_remote_file(main_window)
                 return
 
-        start_dir = ""
-        if self.imagename:
+        # The current image's folder, else that of the last image opened
+        start_dir = last_image_folder()
+        if self.imagename and not self._is_remote_mode:
             start_dir = os.path.dirname(self.imagename.rstrip("/"))
         path = choose_image(self, directory=start_dir)
-        if not path:
-            return
+        if path:
+            self.open_image_path(path)
+
+    def open_image_path(self, path):
+        """Show the local image ``path`` (a FITS file or CASA image) in this
+        tab. Returns whether it loaded; if so it goes first in Open Recent."""
+        import time
 
         start_time = time.time()
         self._reset_hpc_state()  # Clear HPC state for new image
+        self._is_remote_mode = False
+        self._remote_file_list = []
+        self._remote_base_dir = None
         self.imagename = path
         self.dir_entry.setText(path)
         # Clear contour data so it gets reloaded for new image
         self.invalidate_contours()
         # Clear figure to prevent restoring old view limits
         self.figure.clear()
-        self.on_visualization_changed(dir_load=True)
+        loaded = self.on_visualization_changed(dir_load=True)
         self.update_tab_name_from_path(path)  # Update tab name
-        self.show_status_message(
-            f"Loaded {path} in {time.time() - start_time:.2f} seconds"
-        )
+        if loaded:
+            remember_image(path)
+            self.show_status_message(
+                f"Loaded {path} in {time.time() - start_time:.2f} seconds"
+            )
+        else:
+            forget_image(path)
         # Scan directory for file navigation
         self._scan_directory_files()
+        return loaded
 
     def _select_remote_file(self, main_window):
         """
@@ -210,7 +226,7 @@ class FileNavigationMixin:
                 elif os.path.isdir(item_path) and item.endswith(".image"):
                     all_items.append(item_path)
         except Exception as e:
-            print(f"[ERROR] Error scanning directory: {e}")
+            logger.error(f"Error scanning directory: {e}")
             self.show_status_message(f"Error scanning directory: {e}")
             self._file_list = []
             self._file_list_index = -1
@@ -486,7 +502,7 @@ except Exception:
                     pass  # Widget deleted
 
             def on_error(msg):
-                print(f"[WARNING] Failed to populate remote file list: {msg}")
+                logger.warning(f"Failed to populate remote file list: {msg}")
                 self._remote_file_list = []
                 self._file_list = []
                 self._file_list_index = -1
@@ -500,7 +516,7 @@ except Exception:
             self._populate_thread.start()
 
         except Exception as e:
-            print(f"[WARNING] Failed to start remote file list population: {e}")
+            logger.warning(f"Failed to start remote file list population: {e}")
             self._remote_file_list = []
             self._file_list = []
             self._file_list_index = -1
@@ -673,7 +689,7 @@ except Exception:
             self.show_status_message("Download cancelled")
             return False
         except Exception as e:
-            print(f"[ERROR] Failed to load remote file: {e}")
+            logger.error(f"Failed to load remote file: {e}")
             self.show_status_message(f"Failed to load remote file: {e}")
             return False
 

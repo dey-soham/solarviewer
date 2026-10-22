@@ -22,14 +22,17 @@ from PyQt5.QtWidgets import (
 )
 import os
 
-from ..processing.workers import process_pool
+from ..ui.batch import BatchDialogMixin
+from ..ui.busy import busy
+from ..ui.errors import show_error
 from ..ui.open_image import choose_image
 from ..ui.styles import set_hand_cursor
 
 import multiprocessing
 import glob
+import time
 
-class PhaseShiftDialog(QDialog):
+class PhaseShiftDialog(BatchDialogMixin, QDialog):
     """Dialog for configuring and executing solar phase center shifting."""
 
     def __init__(self, parent=None, imagename=None, batch_mode=False):
@@ -443,13 +446,12 @@ class PhaseShiftDialog(QDialog):
         # Dialog Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.apply_phase_shift)
-        button_box.rejected.connect(self.reject)
+        button_box.rejected.connect(self.cancel_or_abort)  # Abort while shifting
 
         self.ok_button = button_box.button(QDialogButtonBox.Ok)
         self.ok_button.setText("Apply Shift")
 
         self.cancel_button = button_box.button(QDialogButtonBox.Cancel)
-        # We'll use the cancel button for aborting operations too
 
         main_layout.addWidget(button_box)
 
@@ -633,8 +635,6 @@ class PhaseShiftDialog(QDialog):
         """Apply the phase shift to the image(s)"""
         import os
         from ..coordinates.move_phasecenter import SolarPhaseCenter
-        from PyQt5.QtWidgets import QApplication, QMessageBox
-        import time
 
         # Check if we're in batch mode or single file mode
         batch_mode = self.batch_mode_radio.isChecked()
@@ -694,16 +694,22 @@ class PhaseShiftDialog(QDialog):
                 self.status_text.appendPlainText(
                     f"Calculating phase shift from: {reference_image}..."
                 )
-                phase_result = spc.cal_solar_phaseshift(
-                    imagename=reference_image,
-                    fit_gaussian=use_gaussian,
-                    sigma=self.sigma_spinbox.value(),
-                )
+                with busy():
+                    phase_result = spc.cal_solar_phaseshift(
+                        imagename=reference_image,
+                        fit_gaussian=use_gaussian,
+                        sigma=self.sigma_spinbox.value(),
+                    )
             except Exception as e:
-                QMessageBox.critical(
+                import traceback
+
+                show_error(
                     self,
                     "Calculation Error",
-                    f"Failed to calculate phase shift:\n{str(e)}",
+                    f"Could not work out the phase shift from "
+                    f"{os.path.basename(reference_image)}: {e}\n\nThe reference "
+                    "image must show the Sun and have an observation date.",
+                    traceback.format_exc(),
                 )
                 return
 
@@ -799,120 +805,22 @@ class PhaseShiftDialog(QDialog):
                 f"Prepared {total_tasks} processing tasks."
             )
 
-            # 4. Progress UI Setup (Embedded)
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setRange(0, total_tasks)
-            self.progress_bar.setValue(0)
-            self.ok_button.setEnabled(False)  # Disable Apply
-            self.input_group.setEnabled(False)  # Disable inputs
-            self.tab_widget.setEnabled(False)  # Disable tabs
-            self.cancel_button.disconnect()  # Disconnect default reject
-            self.cancel_button.clicked.connect(self._cancel_processing)
-
-            self._processing_cancelled = False
-            QApplication.processEvents()
-
-            results = []
-            start_time = time.time()
-
-            # 5. Execution Loop
-            try:
-                if use_multiprocessing and len(matching_files) > 1:
-                    max_cores = self.cores_spinbox.value()
-                    self.status_text.appendPlainText(
-                        f"Using Multiprocessing ({max_cores} cores)"
-                    )
-
-                    self.pool = process_pool(max_cores)
-                    async_results = [
-                        self.pool.apply_async(process_single_file_phase_shift, (t,))
-                        for t in tasks
-                    ]
-                    self.pool.close()
-
-                    while any(not r.ready() for r in async_results):
-                        QApplication.processEvents()
-                        if self._processing_cancelled:
-                            self.pool.terminate()
-                            self.pool.join()
-                            self.status_text.appendPlainText("Processing canceled.")
-                            break
-
-                        completed = sum(1 for r in async_results if r.ready())
-                        self.progress_bar.setValue(completed)
-                        time.sleep(0.05)
-
-                    if not self._processing_cancelled:
-                        self.progress_bar.setValue(total_tasks)
-                        results = [r.get() for r in async_results]
-
-                    self.pool = None
-
-                else:
-                    # Synchronous
-                    for i, task in enumerate(tasks):
-                        QApplication.processEvents()
-                        if self._processing_cancelled:
-                            self.status_text.appendPlainText("Processing canceled.")
-                            results = []  # Incomplete
-                            break
-
-                        # Call wrapper directly
-                        res = process_single_file_phase_shift(task)
-                        results.append(res)
-
-                        self.progress_bar.setValue(i + 1)
-
-            except Exception as e:
-                import traceback
-
-                traceback.print_exc()
-                QMessageBox.critical(self, "Processing Failed", f"Error: {e}")
-                # Don't return yet, ensuring cleanup happens
-
-            finally:
-                # Cleanup UI state
-                self.progress_bar.setVisible(False)
-                self.ok_button.setEnabled(True)
-                self.input_group.setEnabled(True)
-                self.tab_widget.setEnabled(True)
-
-                # Reconnect cancel to reject (close dialog)
-                try:
-                    self.cancel_button.clicked.disconnect()
-                except:
-                    pass
-                self.cancel_button.clicked.connect(self.reject)
-
-            # 6. Results Summary
-            if self._processing_cancelled:
-                return  # Canceled
-
-            elapsed = time.time() - start_time
-            success_count = sum(1 for r in results if r[0])
-            errors = [f"{os.path.basename(r[1])}: {r[2]}" for r in results if not r[0]]
-
-            self.status_text.appendPlainText("-" * 20)
-            self.status_text.appendPlainText(f"Completed in {elapsed:.1f}s")
-            self.status_text.appendPlainText(f"Success: {success_count}/{total_tasks}")
-
-            if errors:
-                self.status_text.appendPlainText("Errors occurred:")
-                for err in errors[:10]:
-                    self.status_text.appendPlainText(f" - {err}")
-                if len(errors) > 10:
-                    self.status_text.appendPlainText(f" ...and {len(errors)-10} more.")
-                QMessageBox.warning(
-                    self,
-                    "Partial Success",
-                    f"Done with {len(errors)} errors. Check log.",
+            # 4. Run them in worker processes (the window stays responsive)
+            processes = 1
+            if use_multiprocessing and len(matching_files) > 1:
+                processes = self.cores_spinbox.value()
+                self.status_text.appendPlainText(
+                    f"Using Multiprocessing ({processes} cores)"
                 )
-            elif success_count > 0:
-                QMessageBox.information(
-                    self, "Done", f"Successfully processed {success_count} files."
-                )
-            else:
-                self.status_text.appendPlainText("No files processed.")
+            self._results = []
+            self._stokes_list = stokes_list
+            self._batch_start = time.time()
+            self.start_batch(
+                process_single_file_phase_shift,
+                tasks,
+                processes=processes,
+                disable=[self.input_group, self.tab_widget],
+            )
 
         except Exception as e:
             self.status_text.appendPlainText(f"Detailed Error: {str(e)}")
@@ -920,11 +828,47 @@ class PhaseShiftDialog(QDialog):
 
             traceback.print_exc()
 
-    def _cancel_processing(self):
-        """Signal processing cancellation"""
-        self._processing_cancelled = True
-        self.status_text.appendPlainText("Stopping... please wait.")
-        self.cancel_button.setEnabled(False)  # Prevent double click
+    def batch_result(self, task, value):
+        self._results.append(value)
+        success, path, message = value
+        name = os.path.basename(path)
+        if len(self._stokes_list) > 1:
+            name = f"{name}, Stokes {task[3]}"
+        if success:
+            note = f" ({message})" if message else ""
+            self.status_text.appendPlainText(f"  - {name}: shifted{note}")
+        else:
+            self.status_text.appendPlainText(f"  - {name}: {message}")
+
+    def batch_error(self, task, message):
+        self._results.append((False, task[0], message))
+        self.status_text.appendPlainText(f"  - {os.path.basename(task[0])}: {message}")
+
+    def batch_finished(self, aborted):
+        if aborted:
+            return
+        results = self._results
+        total_tasks = self.progress_bar.maximum()
+        elapsed = time.time() - self._batch_start
+        success_count = sum(1 for r in results if r[0])
+        error_count = len(results) - success_count
+
+        self.status_text.appendPlainText("-" * 20)
+        self.status_text.appendPlainText(f"Completed in {elapsed:.1f}s")
+        self.status_text.appendPlainText(f"Success: {success_count}/{total_tasks}")
+
+        if error_count:
+            QMessageBox.warning(
+                self,
+                "Partial Success",
+                f"Done with {error_count} errors. Check log.",
+            )
+        elif success_count > 0:
+            QMessageBox.information(
+                self, "Done", f"Successfully processed {success_count} files."
+            )
+        else:
+            self.status_text.appendPlainText("No files processed.")
 
     def _is_helioprojective(self, imagepath):
         """Check if image is in helioprojective coordinates (Solar-X/Y)"""

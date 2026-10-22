@@ -2,10 +2,13 @@
 Ruler (distance measurement) tool for SolarViewer.
 """
 
+import logging
 import numpy as np
 from PyQt5.QtCore import Qt
 
 from .geometry import snap_to_axis
+
+logger = logging.getLogger(__name__)
 
 
 class RulerMixin:
@@ -337,7 +340,7 @@ class RulerMixin:
                 else:
                     return f'{angular_dist:.2f}" ({pixel_dist:.1f} px)'
             except Exception as e:
-                print(f"[ERROR] WCS error: {e}")
+                logger.error(f"WCS error: {e}")
                 self.show_status_message(f"[Ruler] WCS error: {e}")
                 return f"{pixel_dist:.1f} px (WCS error)"
         else:

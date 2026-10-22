@@ -4,6 +4,28 @@ import os as _os
 
 _os.environ.setdefault("CASA_LOGLEVEL", "ERROR")
 
+
+def _discard_casa_log():
+    """Keep CASA from writing a casa-<time>.log into the current folder.
+
+    casatools opens its log file when first imported, at the path in
+    casaconfig's configuration. SolarViewer does not keep CASA's log (see
+    processing.dependencies), so the path is set to the null device first.
+    Scripts run in a subprocess import this package for the same reason.
+    """
+    import sys
+
+    if "casatools" in sys.modules:
+        return
+    try:
+        import casaconfig.config as casa_config
+    except Exception:
+        return  # CASA not installed, or its configuration failed to load
+    casa_config.logfile = _os.devnull
+
+
+_discard_casa_log()
+
 # Import version directly
 from .version import __version__
 

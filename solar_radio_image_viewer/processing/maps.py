@@ -8,6 +8,14 @@ from .dependencies import CASA_AVAILABLE, IA
 from .fits_io import readable_image_path
 
 
+def _first_plane(ia):
+    """The first plane (first Stokes, first channel) of the image open in
+    ``ia``, as [x, y]; the rest of the cube is not read."""
+    shape = [int(n) for n in ia.shape()]
+    trc = [n - 1 if axis < 2 else 0 for axis, n in enumerate(shape)]
+    return ia.getchunk(blc=[0] * len(shape), trc=trc).reshape(shape[:2])
+
+
 def generate_tb_map(imagename, outfile=None, flux_data=None):
     """
     Generate brightness temperature map from flux-calibrated image.
@@ -83,12 +91,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
             ia.open(readable_image_path(imagename))
 
             if flux_data is None:
-                flux_data = ia.getchunk()
-                # Squeeze to 2D for display (keep original for full Stokes save)
-                if flux_data.ndim == 4:
-                    flux_data = flux_data[:, :, 0, 0]  # Take first Stokes and freq
-                elif flux_data.ndim == 3:
-                    flux_data = flux_data[:, :, 0]  # Take first plane
+                flux_data = _first_plane(ia)
 
             # Get beam info
             beam = ia.restoringbeam()
@@ -308,13 +311,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
             ia.open(readable_image_path(imagename))
 
             if tb_data is None:
-                tb_data = ia.getchunk()
-                while tb_data.ndim > 2:
-                    tb_data = (
-                        tb_data[:, :, 0]
-                        if tb_data.shape[2] == 1
-                        else tb_data[:, :, 0, 0]
-                    )
+                tb_data = _first_plane(ia)
 
             # Get beam info
             beam = ia.restoringbeam()

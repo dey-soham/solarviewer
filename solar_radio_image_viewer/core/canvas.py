@@ -2,6 +2,7 @@
 Matplotlib canvas setup plus zoom, pan and mouse interaction.
 """
 
+import logging
 import time
 
 import numpy as np
@@ -15,6 +16,8 @@ from PyQt5.QtWidgets import QWidget
 
 from ..tools import RegionMode
 
+logger = logging.getLogger(__name__)
+
 # Zoom per wheel notch, and per zoom button, key press or double-click
 WHEEL_ZOOM = 1.2
 STEP_ZOOM = 2.0
@@ -26,6 +29,8 @@ MAX_ZOOM_OUT = 2.0
 MIN_VIEW_PIXELS = 5
 # The image keeps covering at least this fraction of the view when panned
 MIN_IMAGE_IN_VIEW = 0.2
+# A right-drag box smaller than this (screen pixels) does not zoom
+MIN_ZOOM_BOX = 5
 # Arrow keys pan by this fraction of the view
 KEY_PAN_FRACTION = 0.1
 # gid of the text that says how to open an image while there is none
@@ -216,6 +221,10 @@ class CanvasMixin:
         self._settle_timer.timeout.connect(self._settle_view)
         self.canvas.mpl_connect("draw_event", self._on_canvas_drawn)
 
+        self.show_empty_hint()
+
+    def show_empty_hint(self):
+        """Say on the figure how to open an image (while none is shown)."""
         self.figure.text(
             0.5,
             0.5,
@@ -297,7 +306,7 @@ class CanvasMixin:
             )
             self.show_status_message("Zoomed to 1°×1°")
         except Exception as e:
-            print(f"[ERROR] Error in zoom_60arcmin: {e}")
+            logger.error(f"Error in zoom_60arcmin: {e}")
             self.show_status_message(f"Error in zoom_60arcmin: {e}")
 
     def reset_view(self, show_status_message=True, animate=False):
@@ -394,6 +403,44 @@ class CanvasMixin:
             self._begin_navigation(ax)
             self._set_view(ax, new_xlim, new_ylim)
             self._record_view_soon()
+
+    def _init_box_zoom(self, ax):
+        """Right-drag draws a box on ``ax`` and zooms to it, in every mode but
+        the measurement tools."""
+        from matplotlib.widgets import RectangleSelector
+
+        old = getattr(self, "_zoom_box", None)
+        if old is not None:
+            old.disconnect_events()
+        self._zoom_box = RectangleSelector(
+            ax,
+            self._zoom_to_box,
+            button=[3],
+            useblit=True,
+            minspanx=MIN_ZOOM_BOX,
+            minspany=MIN_ZOOM_BOX,
+            spancoords="pixels",
+            props={"facecolor": "white", "edgecolor": "white", "alpha": 0.25},
+        )
+
+    def _zoom_to_box(self, press, release):
+        """Zoom so the dragged box fills the view (grown to the view's shape)."""
+        ax = self._nav_axes()
+        if ax is None or ax is not self._zoom_box.ax or self._in_measurement_mode():
+            return
+        if None in (press.xdata, press.ydata, release.xdata, release.ydata):
+            return
+        xlim, ylim = self._view_target(ax)
+        w, h = abs(xlim[1] - xlim[0]), abs(ylim[1] - ylim[0])
+        box_w = abs(release.xdata - press.xdata)
+        box_h = abs(release.ydata - press.ydata)
+        factor = self._limit_zoom_factor(xlim, ylim, max(box_w / w, box_h / h))
+        cx = (press.xdata + release.xdata) / 2
+        cy = (press.ydata + release.ydata) / 2
+        # The same orientation as before (an axis may run backwards)
+        half_x = (xlim[1] - xlim[0]) * factor / 2
+        half_y = (ylim[1] - ylim[0]) * factor / 2
+        self._animate_view(ax, (cx - half_x, cx + half_x), (cy - half_y, cy + half_y))
 
     def _limit_zoom_factor(self, xlim, ylim, factor):
         """``factor`` reduced so the view stays between the zoom limits."""
@@ -673,7 +720,7 @@ class CanvasMixin:
 
         except Exception as e:
             # Fallback to simple pixel info if Artist API fails
-            print(f"[DEBUG] Coordinate Readout Fallback: {e}")
+            logger.debug(f"Coordinate Readout Fallback: {e}")
             self.coord_label.setText(f"<b>Pixel:</b> X={x}, Y={y}")
 
     def _on_mouse_press(self, event):

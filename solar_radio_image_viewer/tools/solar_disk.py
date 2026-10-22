@@ -2,6 +2,7 @@
 Solar disk overlay: auto-detection, manual settings and drawing.
 """
 
+import logging
 import matplotlib.pyplot as plt
 import numpy as np
 from PyQt5.QtCore import Qt
@@ -21,7 +22,10 @@ from PyQt5.QtWidgets import (
 )
 
 from ..dialogs.solar_disk_style import SolarDiskStyleWidget
+from ..processing.image_meta import casa_obs_time
 from ..ui.styles import set_hand_cursor
+
+logger = logging.getLogger(__name__)
 
 
 class SolarDiskMixin:
@@ -36,8 +40,13 @@ class SolarDiskMixin:
     """
 
     def _compute_solar_disk_center(self, shape):
-        """Auto-compute solar disk center and diameter from WCS/FITS header."""
-        height, width = shape
+        """Auto-compute solar disk center and diameter from WCS/FITS header.
+
+        If the Sun's position cannot be worked out, the disk goes to the image
+        centre and ``_solar_disk_guess`` says why (None when it was found).
+        """
+        nx, ny = shape[:2]  # the image is indexed [x, y]
+        self._solar_disk_guess = None
         _is_hpc = self._is_already_hpc()
         if _is_hpc and self.current_wcs:
             try:
@@ -48,8 +57,8 @@ class SolarDiskMixin:
                 cx, cy = float(pix_origin[0]), float(pix_origin[1])
                 self.solar_disk_center = (cx, cy)
                 self._auto_set_solar_diameter()
-            except Exception:
-                self.solar_disk_center = (width // 2, height // 2)
+            except Exception as e:
+                self._centre_disk_on_image(nx, ny, f"could not place Solar-X/Y (0, 0): {e}")
         elif (
             _is_hpc
             and hasattr(self, "_cached_wcs_obj")
@@ -60,10 +69,11 @@ class SolarDiskMixin:
                 cx, cy = float(px), float(py)
                 self.solar_disk_center = (cx, cy)
                 self._auto_set_solar_diameter()
-            except Exception:
-                self.solar_disk_center = (width // 2, height // 2)
+            except Exception as e:
+                self._centre_disk_on_image(nx, ny, f"could not place Solar-X/Y (0, 0): {e}")
         else:
             _auto_computed = False
+            _reason = "the image has no sky coordinates"
             _hdr = getattr(self, "_cached_fits_header", None) or {}
             if (
                 (_hdr or self.current_wcs)
@@ -82,19 +92,12 @@ class SolarDiskMixin:
                             break
 
                     if not date_str and self.current_wcs:
-                        csys_record = {}
-                        if hasattr(self.current_wcs, "torecord"):
-                            csys_record = self.current_wcs.torecord()
-                        elif isinstance(self.current_wcs, dict):
-                            csys_record = self.current_wcs
+                        t = casa_obs_time(self.current_wcs)
+                        date_str = t.iso if t is not None else None
 
-                        if "obsdate" in csys_record:
-                            obsdate = csys_record["obsdate"]
-                            if "m0" in obsdate:
-                                t = Time(obsdate["m0"]["value"], format="mjd")
-                                date_str = t.iso
-
-                    if date_str:
+                    if not date_str:
+                        _reason = "the image has no observation date"
+                    else:
                         obs_time = Time(str(date_str))
                         sun_coord = get_sun(obs_time)
                         ra_deg = sun_coord.ra.deg
@@ -108,9 +111,24 @@ class SolarDiskMixin:
                         )
                         _auto_computed = True
                 except Exception as e:
-                    print(f"[WARN] Auto-compute solar position failed: {e}")
+                    _reason = f"finding the Sun failed: {e}"
             if not _auto_computed:
-                self.solar_disk_center = (width // 2, height // 2)
+                self._centre_disk_on_image(nx, ny, _reason)
+
+    def _centre_disk_on_image(self, nx, ny, reason):
+        """Put the disk at the image centre, as the Sun's position is unknown."""
+        self.solar_disk_center = (nx // 2, ny // 2)
+        self._solar_disk_guess = reason
+
+    def _say_if_disk_is_a_guess(self, what="Solar disk"):
+        """When ``what`` is drawn at the image centre for want of the Sun's
+        position, say so in the status bar."""
+        reason = getattr(self, "_solar_disk_guess", None)
+        if reason and getattr(self, "solar_disk_auto_compute", True):
+            self.show_status_message(
+                f"{what} drawn at the image centre ({reason}); "
+                "set the Sun's centre in the Solar Disk settings"
+            )
 
     def _auto_set_solar_diameter(self):
         """Auto-set solar_disk_diameter_arcmin from DATE-OBS if available."""
@@ -123,19 +141,8 @@ class SolarDiskMixin:
                     break
 
             if not date_str and self.current_wcs:
-                csys_record = {}
-                if hasattr(self.current_wcs, "torecord"):
-                    csys_record = self.current_wcs.torecord()
-                elif isinstance(self.current_wcs, dict):
-                    csys_record = self.current_wcs
-
-                if "obsdate" in csys_record:
-                    obsdate = csys_record["obsdate"]
-                    if "m0" in obsdate:
-                        from astropy.time import Time
-
-                        t = Time(obsdate["m0"]["value"], format="mjd")
-                        date_str = t.iso
+                t = casa_obs_time(self.current_wcs)
+                date_str = t.iso if t is not None else None
 
             if date_str:
                 from astropy.time import Time
@@ -165,7 +172,7 @@ class SolarDiskMixin:
             except RuntimeError:
                 self._solar_disk_dialog = None
 
-        height, width = self.current_image_data.shape
+        nx, ny = self.current_image_data.shape  # the image is indexed [x, y]
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Solar Disk Settings")
@@ -226,17 +233,8 @@ class SolarDiskMixin:
                         break
 
                 if not date_str and viewer_ref.current_wcs:
-                    csys_record = {}
-                    if hasattr(viewer_ref.current_wcs, "torecord"):
-                        csys_record = viewer_ref.current_wcs.torecord()
-                    elif isinstance(viewer_ref.current_wcs, dict):
-                        csys_record = viewer_ref.current_wcs
-
-                    if "obsdate" in csys_record:
-                        obsdate = csys_record["obsdate"]
-                        if "m0" in obsdate:
-                            t = Time(obsdate["m0"]["value"], format="mjd")
-                            date_str = t.iso
+                    t = casa_obs_time(viewer_ref.current_wcs)
+                    date_str = t.iso if t is not None else None
 
                 if not date_str:
                     auto_info.setText("No observation date found.")
@@ -269,9 +267,14 @@ class SolarDiskMixin:
                             cx, cy = float(px), float(py)
                         except Exception:
                             pass
-                    if cx is not None:
-                        x_spinbox.setValue(int(round(cx)))
-                        y_spinbox.setValue(int(round(cy)))
+                    if cx is None:
+                        auto_info.setText(
+                            "Could not place Solar-X/Y (0, 0) in this image; "
+                            "set the centre by hand."
+                        )
+                        return False
+                    x_spinbox.setValue(int(round(cx)))
+                    y_spinbox.setValue(int(round(cy)))
                     auto_info.setText(
                         f"HPC image: center set to (0,0)\n"
                         f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
@@ -317,21 +320,21 @@ class SolarDiskMixin:
 
         x_label = QLabel("X coordinate:")
         x_spinbox = QSpinBox()
-        x_spinbox.setRange(-width * 5, width * 5)
+        x_spinbox.setRange(-nx * 5, nx * 5)
         if self.solar_disk_center is not None:
             x_spinbox.setValue(int(round(self.solar_disk_center[0])))
         else:
-            x_spinbox.setValue(width // 2)
+            x_spinbox.setValue(nx // 2)
         center_layout.addWidget(x_label)
         center_layout.addWidget(x_spinbox)
 
         y_label = QLabel("Y coordinate:")
         y_spinbox = QSpinBox()
-        y_spinbox.setRange(-height * 5, height * 5)
+        y_spinbox.setRange(-ny * 5, ny * 5)
         if self.solar_disk_center is not None:
             y_spinbox.setValue(int(round(self.solar_disk_center[1])))
         else:
-            y_spinbox.setValue(height // 2)
+            y_spinbox.setValue(ny // 2)
         center_layout.addWidget(y_label)
         center_layout.addWidget(y_spinbox)
 
@@ -479,6 +482,7 @@ class SolarDiskMixin:
                 )
                 circle._solar_disk = True
                 ax.add_patch(circle)
+                self._say_if_disk_is_a_guess()
 
                 if self.solar_disk_style.get("show_center", True):
                     cross_size = radius_pix / 20
@@ -499,7 +503,7 @@ class SolarDiskMixin:
                     )
                     line2._solar_disk = True
             except Exception as e:
-                print(f"[ERROR] Error drawing solar disk: {e}")
+                logger.error(f"Error drawing solar disk: {e}")
                 self.show_status_message(f"Error drawing solar disk: {e}")
 
     def _draw_solar_disk(self, ax, data):
@@ -560,6 +564,7 @@ class SolarDiskMixin:
                 )
                 circle._solar_disk = True
                 ax.add_patch(circle)
+                self._say_if_disk_is_a_guess()
 
                 # Only draw the center marker if show_center is True
                 if self.solar_disk_style.get("show_center", True):
@@ -581,5 +586,5 @@ class SolarDiskMixin:
                     )
                     line2._solar_disk = True
             except Exception as e:
-                print(f"[ERROR] Error drawing solar disk: {e}")
+                logger.error(f"Error drawing solar disk: {e}")
                 self.show_status_message(f"Error drawing solar disk: {e}")

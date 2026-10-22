@@ -2,10 +2,14 @@
 Launching downloaders, Helioviewer browser and pipeline tools.
 """
 
+import logging
 from PyQt5.QtWidgets import QMessageBox
 
 from ..ui.styles import theme_manager
 from ..processing.fits_io import readable_image_path
+from ..processing.image_meta import casa_obs_time
+
+logger = logging.getLogger(__name__)
 
 
 class ExternalToolsMixin:
@@ -103,7 +107,6 @@ class ExternalToolsMixin:
                     or imagename.lower().endswith(".fts")
                 ):
                     try:
-                        from astropy.time import Time
                         from casatools import image as IA
 
                         ia_tool = IA()
@@ -111,13 +114,9 @@ class ExternalToolsMixin:
                         csys_record = ia_tool.coordsys().torecord()
                         ia_tool.close()
 
-                        if "obsdate" in csys_record:
-                            obsdate = csys_record["obsdate"]
-                            m0 = obsdate.get("m0", {})
-                            mjd_value = m0.get("value", None)
-                            if mjd_value is not None:
-                                t = Time(mjd_value, format="mjd")
-                                obs_datetime = t.datetime
+                        t = casa_obs_time(csys_record)
+                        if t is not None:
+                            obs_datetime = t.datetime
                     except Exception:
                         pass  # CASA not available or failed
 
@@ -217,11 +216,11 @@ read -p "Press Enter to close..."
                     except subprocess.TimeoutExpired:
                         # Process is still running after 1 second, which is good
                         self.statusBar().showMessage(f"Launched CLI in {terminal}")
-                        print(f"[INFO] Successfully launched CLI in {terminal}")
+                        logger.info(f"Successfully launched CLI in {terminal}")
                         return
 
                 except Exception as term_error:
-                    print(f"[ERROR] Error launching {terminal}: {str(term_error)}")
+                    logger.error(f"Error launching {terminal}: {str(term_error)}")
                     self.statusBar().showMessage(
                         f"Error launching {terminal}: {str(term_error)}"
                     )
@@ -238,7 +237,7 @@ read -p "Press Enter to close..."
                 "Please try running the CLI directly from a terminal:\n"
                 f"cd {cli_dir} && source {activate_script} && python3 {cli_script}"
             )
-            print(f"[ERROR] {error_msg}")  # Print to console for debugging
+            logger.error(f"{error_msg}")
             QMessageBox.critical(self, "Error", error_msg)
 
     def open_helioviewer_browser(self):
@@ -317,7 +316,7 @@ read -p "Press Enter to close..."
                 try:
                     self._tool_link = ToolLink(self)
                 except OSError as e:
-                    print(f"[WARNING] Tools can't message this window: {e}")
+                    logger.warning(f"Tools can't message this window: {e}")
                     self._tool_link = None
             if self._tool_link is not None:
                 env[ENV] = self._tool_link.name
@@ -341,7 +340,7 @@ read -p "Press Enter to close..."
             self.statusBar().showMessage(f"{display_name} launched", 3000)
         except Exception as e:
             error_message = f"Error launching {display_name}: {str(e)}"
-            print(f"[ERROR] {error_message}")
+            logger.error(f"{error_message}")
             import traceback
 
             traceback.print_exc()

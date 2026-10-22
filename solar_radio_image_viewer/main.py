@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import logging
 import os
 
 os.environ.setdefault("CASA_LOGLEVEL", "ERROR")
@@ -21,6 +22,8 @@ from .crash_handler import (
     install_crash_handler,
     set_main_window,
 )
+
+logger = logging.getLogger(__name__)
 
 # Enable crash reporting immediately
 install_crash_handler()
@@ -215,6 +218,11 @@ Examples:
     theme_manager._current_theme = saved_theme
 
     # === Initialize Log Console ===
+    # Everything printed or logged also goes to the log file
+    from . import app_logging
+
+    app_logging.setup()
+
     # Redirect stdout/stderr to the console window
     # Initialize AFTER theme is set so it picks up the correct style
     from .log_console import LogConsole
@@ -345,7 +353,7 @@ Examples:
             error_details = "".join(
                 traceback.format_exception(None, e, e.__traceback__)
             )
-            print(f"[ERROR] Startup failed: {e}")
+            logger.error(f"Startup failed: {e}")
             on_failure(error_details)
 
     loader.progress.connect(on_progress)

@@ -22,12 +22,21 @@ def twoD_gaussian(coords, amplitude, xo, yo, sigma_x, sigma_y, theta, offset):
     return g.ravel()
 
 
-def twoD_elliptical_ring(coords, amplitude, xo, yo, inner_r, outer_r, offset):
+def twoD_elliptical_ring(
+    coords, amplitude, xo, yo, inner_r, outer_r, offset, edge_width=1.0
+):
+    """A flat ring between ``inner_r`` and ``outer_r`` around (xo, yo).
+
+    Its edges rise over about ``edge_width`` pixels instead of jumping, so a
+    least-squares fit can move the centre and radii (a sharp-edged ring has
+    no gradient, and the fit never leaves its first guess).
+    """
     x, y = coords
-    dist2 = (x - xo) ** 2 + (y - yo) ** 2
-    inner2 = inner_r**2
-    outer2 = outer_r**2
-    vals = np.full_like(dist2, offset, dtype=float)
-    ring_mask = (dist2 >= inner2) & (dist2 <= outer2)
-    vals[ring_mask] = offset + amplitude
-    return vals.ravel()
+    r = np.hypot(x - float(xo), y - float(yo))
+
+    def step(t):
+        # Logistic step written with tanh, which does not overflow
+        return 0.5 * (1.0 + np.tanh(t / (2.0 * edge_width)))
+
+    ring = step(r - abs(inner_r)) * step(abs(outer_r) - r)
+    return (offset + amplitude * ring).ravel()

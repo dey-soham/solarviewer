@@ -846,23 +846,45 @@ class ThemeManager:
         self.set_theme(new_theme)
         return new_theme
 
-    def register_callback(self, callback):
-        """Register a callback to be called when theme changes."""
-        if callback not in self._callbacks:
-            self._callbacks.append(callback)
+    def register_callback(self, callback, owner=None):
+        """Call ``callback(theme)`` when the theme changes, for as long as
+        ``owner`` (a QObject; for a bound method, its object) exists."""
+        if owner is None:
+            owner = getattr(callback, "__self__", None)
+        if all(registered != callback for registered, _ in self._callbacks):
+            self._callbacks.append((callback, owner))
 
     def unregister_callback(self, callback):
         """Unregister a theme change callback."""
-        if callback in self._callbacks:
-            self._callbacks.remove(callback)
+        self._callbacks = [(c, o) for c, o in self._callbacks if c != callback]
+
+    def unregister_owner(self, owner):
+        """Unregister every callback registered for ``owner``."""
+        self._callbacks = [(c, o) for c, o in self._callbacks if o is not owner]
 
     def _notify_callbacks(self):
         """Notify all registered callbacks of theme change."""
-        for callback in self._callbacks:
+        # Callbacks of widgets deleted since (closed tabs, dialogs) go
+        self._callbacks = [(c, o) for c, o in self._callbacks if not _qt_deleted(o)]
+        for callback, _owner in list(self._callbacks):
             try:
                 callback(self._current_theme)
             except Exception as e:
                 print(f"Error in theme callback: {e}")
+
+
+def _qt_deleted(obj):
+    """Whether ``obj`` is a Qt object whose C++ side has been deleted."""
+    if obj is None:
+        return False
+    try:
+        from PyQt5 import sip
+    except ImportError:
+        import sip
+    try:
+        return isinstance(obj, sip.simplewrapper) and sip.isdeleted(obj)
+    except TypeError:
+        return False
 
 
 # Global theme manager instance

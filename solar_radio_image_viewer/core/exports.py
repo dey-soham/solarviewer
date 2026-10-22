@@ -3,12 +3,28 @@ Main-window export actions (FITS, CASA image, sub-image, regions, HPC).
 """
 
 import os
-import tempfile
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEventLoop
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from ..processing.dependencies import IA
+from ..processing.casa_tasks import run_casa_task
+from ..processing.fits_io import readable_image_path
+from ..ui.busy import begin_busy, busy, end_busy
+from ..ui.errors import show_error
+
+
+def _export_failed(parent, what, error):
+    """Say that saving ``what`` failed (called while handling ``error``)."""
+    import traceback
+
+    show_error(
+        parent,
+        "Export Failed",
+        f"Could not save {what}: {error}\n\nCheck that the folder exists, that "
+        "you can write to it, and that the disk is not full.",
+        traceback.format_exc(),
+    )
 
 
 class ExportsMixin:
@@ -33,7 +49,8 @@ class ExportsMixin:
             "PNG Files (*.png);;PDF Files (*.pdf);;All Files (*)",
         )
         if path:
-            current_tab.figure.savefig(path, dpi=300, bbox_inches="tight")
+            with busy():
+                current_tab.figure.savefig(path, dpi=300, bbox_inches="tight")
             QMessageBox.information(self, "Exported", f"Figure saved to {path}")
 
     def export_as_fits(self):
@@ -63,45 +80,22 @@ class ExportsMixin:
             # If source is a CASA image directory, use casatask exportfits
             if source_image and os.path.isdir(source_image):
                 try:
-                    import subprocess
-                    import sys
-
-                    # Run exportfits in subprocess with stokes='all'
-                    source_image_abs = os.path.abspath(source_image)
-                    path_abs = os.path.abspath(path)
-
-                    script = f"""
-import sys
-from casatasks import exportfits
-try:
-    exportfits(imagename="{source_image_abs}", fitsimage="{path_abs}", overwrite=True, stokeslast=True)
-    print("SUCCESS")
-except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
-    sys.exit(1)
-"""
-                    result = subprocess.run(
-                        [sys.executable, "-c", script],
-                        capture_output=True,
-                        text=True,
-                        cwd=(
-                            os.getcwd()
-                            if os.access(os.getcwd(), os.W_OK)
-                            else tempfile.gettempdir()
-                        ),
-                    )
-
-                    if result.returncode != 0:
-                        raise RuntimeError(f"exportfits failed: {result.stderr}")
+                    # Every Stokes plane, in a separate process
+                    with busy():
+                        run_casa_task(
+                            "exportfits",
+                            imagename=os.path.abspath(source_image),
+                            fitsimage=os.path.abspath(path),
+                            overwrite=True,
+                            stokeslast=True,
+                        )
 
                     QMessageBox.information(
                         self, "Exported", f"CASA image exported to {path}"
                     )
                     return
                 except Exception as e:
-                    QMessageBox.critical(
-                        self, "Export Error", f"Failed to export CASA image: {str(e)}"
-                    )
+                    _export_failed(self, "the CASA image", e)
                     return
 
             # For FITS files, copy the original with all data and metadata
@@ -181,7 +175,7 @@ except Exception as e:
                 "Astropy is required for FITS export. Please install it.",
             )
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
+            _export_failed(self, "the FITS file", e)
 
     def export_as_casa_image(self):
         """Export/convert current image to CASA image format."""
@@ -191,10 +185,6 @@ except Exception as e:
             return
 
         try:
-            import os
-            import subprocess
-            import sys
-
             # Get source image path
             if hasattr(current_tab, "imagename") and current_tab.imagename:
                 source_image = current_tab.imagename
@@ -276,11 +266,10 @@ except Exception as e:
                                 f"solarviewer_radec_export_{os.getpid()}.fits",
                             )
 
-                            QApplication.setOverrideCursor(Qt.WaitCursor)
-                            success = convert_hpc_to_radec(
-                                source_image, temp_radec_file, overwrite=True
-                            )
-                            QApplication.restoreOverrideCursor()
+                            with busy():
+                                success = convert_hpc_to_radec(
+                                    source_image, temp_radec_file, overwrite=True
+                                )
 
                             if not success:
                                 QMessageBox.warning(
@@ -320,40 +309,22 @@ except Exception as e:
                 except Exception as e:
                     pass  # If we can't check, proceed anyway
 
-                # Run importfits
-                fits_to_import_abs = os.path.abspath(fits_to_import)
-                output_image_abs = os.path.abspath(output_image)
-
-                script = f"""
-import sys
-from casatasks import importfits
-try:
-    importfits(fitsimage="{fits_to_import_abs}", imagename="{output_image_abs}", overwrite=True)
-    print("SUCCESS")
-except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
-    sys.exit(1)
-"""
-                result = subprocess.run(
-                    [sys.executable, "-c", script],
-                    capture_output=True,
-                    text=True,
-                    cwd=(
-                        os.getcwd()
-                        if os.access(os.getcwd(), os.W_OK)
-                        else tempfile.gettempdir()
-                    ),
-                )
-
-                # Clean up temp file if we created one
-                if is_hpc_converted and os.path.exists(fits_to_import):
-                    try:
-                        os.remove(fits_to_import)
-                    except:
-                        pass
-
-                if result.returncode != 0:
-                    raise RuntimeError(f"importfits failed: {result.stderr}")
+                # Run importfits in a separate process
+                try:
+                    with busy():
+                        run_casa_task(
+                            "importfits",
+                            fitsimage=os.path.abspath(fits_to_import),
+                            imagename=os.path.abspath(output_image),
+                            overwrite=True,
+                        )
+                finally:
+                    # Clean up temp file if we created one
+                    if is_hpc_converted and os.path.exists(fits_to_import):
+                        try:
+                            os.remove(fits_to_import)
+                        except OSError:
+                            pass
 
                 if is_hpc_converted:
                     QMessageBox.information(
@@ -375,7 +346,7 @@ except Exception as e:
             )
 
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export: {str(e)}")
+            _export_failed(self, "the CASA image", e)
 
     def save_tb_map_as_fits(self):
         """Save brightness temperature map as FITS file"""
@@ -429,7 +400,7 @@ except Exception as e:
             if not path:
                 return
 
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            begin_busy()
 
             # Generate and save TB map
             tb_data, result = generate_tb_map(
@@ -438,7 +409,7 @@ except Exception as e:
                 flux_data=current_tab.current_image_data,
             )
 
-            QApplication.restoreOverrideCursor()
+            end_busy()
 
             if tb_data is None:
                 QMessageBox.warning(self, "Error", f"TB conversion failed: {result}")
@@ -446,8 +417,8 @@ except Exception as e:
                 QMessageBox.information(self, "Saved", f"TB map saved to:\n{path}")
 
         except Exception as e:
-            QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "Error", f"Failed to save TB map: {str(e)}")
+            end_busy()
+            _export_failed(self, "the brightness temperature map", e)
 
     def save_sub_image(self):
         current_tab = self.tab_widget.currentWidget()
@@ -466,10 +437,11 @@ except Exception as e:
         if output_dir:
             try:
                 ia_tool = IA()
-                ia_tool.open(current_tab.imagename)
+                ia_tool.open(readable_image_path(current_tab.imagename))
 
                 if isinstance(current_tab.current_roi, tuple):
-                    xlow, xhigh, ylow, yhigh = current_tab.current_roi
+                    # In the file's own pixels (Fast mode shows fewer)
+                    xlow, xhigh, ylow, yhigh = current_tab.roi_at_full_resolution()
                     region_dict = (
                         "box[["
                         + str(xlow)
@@ -482,7 +454,8 @@ except Exception as e:
                         + "pix]]"
                     )
 
-                    ia_tool.subimage(outfile=output_dir, region=region_dict)
+                    with busy():
+                        ia_tool.subimage(outfile=output_dir, region=region_dict)
                 else:
                     QMessageBox.information(
                         self,
@@ -496,9 +469,7 @@ except Exception as e:
                     self, "Success", f"Subimage saved to {output_dir}"
                 )
             except Exception as e:
-                QMessageBox.critical(
-                    self, "Error", f"Failed to create subimage: {str(e)}"
-                )
+                _export_failed(self, "the sub-image", e)
 
     def export_casa_region(self):
         current_tab = self.tab_widget.currentWidget()
@@ -516,7 +487,8 @@ except Exception as e:
                     f.write("#CRTFv0\n")
 
                 if isinstance(current_tab.current_roi, tuple):
-                    xlow, xhigh, ylow, yhigh = current_tab.current_roi
+                    # In the file's own pixels (Fast mode shows fewer)
+                    xlow, xhigh, ylow, yhigh = current_tab.roi_at_full_resolution()
                     with open(path, "a") as f:
                         f.write(
                             f"box[[{xlow}pix, {ylow}pix], [{xhigh}pix, {yhigh}pix]]\n"
@@ -528,9 +500,7 @@ except Exception as e:
 
                 QMessageBox.information(self, "Success", f"Region saved to {path}")
             except Exception as e:
-                QMessageBox.critical(
-                    self, "Error", f"Failed to export region: {str(e)}"
-                )
+                _export_failed(self, "the region", e)
 
     def export_as_hpc_fits(self):
         """Export the current image as a helioprojective FITS file"""
@@ -574,18 +544,19 @@ except Exception as e:
                 self.statusBar().showMessage(
                     "Converting to helioprojective coordinates..."
                 )
-                QApplication.processEvents()
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
                 # Call convert_and_save_hpc
                 from ..coordinates.helioprojective import convert_and_save_hpc
 
-                success = convert_and_save_hpc(
-                    current_tab.imagename,
-                    path,
-                    Stokes=stokes,
-                    thres=threshold,
-                    overwrite=True,
-                )
+                with busy():
+                    success = convert_and_save_hpc(
+                        current_tab.imagename,
+                        path,
+                        Stokes=stokes,
+                        thres=threshold,
+                        overwrite=True,
+                    )
 
                 if success:
                     QMessageBox.information(
@@ -605,9 +576,5 @@ except Exception as e:
                     self.statusBar().showMessage("Export failed")
 
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Export Error",
-                f"Error exporting as helioprojective FITS:\n{str(e)}",
-            )
+            _export_failed(self, "the helioprojective FITS file", e)
             self.statusBar().showMessage("Export error")

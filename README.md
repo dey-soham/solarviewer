@@ -256,10 +256,21 @@ Options:
 <summary><b>SolarViewer Controls</b></summary>
 
 #### File Controls
-- **Open Directory** — Load a folder of solar radio images
-- **Open FITS File** — Load a single FITS file
+- **Open Image** (Ctrl+O) — Open a FITS file, or a CASA image by opening its folder
+- **Open Recent** — Reopen one of the last ten images; the Open dialog starts in the last image's folder
+- **Drag and drop** — Drop FITS files or CASA images onto the window
+- **[ and ]** — Previous / next image in the same folder ({ and } for the first / last)
 - **Export Figure** — Save current view as image
 - **Export as FITS** — Export data as FITS file
+
+#### Navigating the Image
+- **Scroll or pinch** — Zoom about the pointer
+- **Middle-drag** — Pan (left-drag too, with the Pan tool)
+- **Right-drag** — Zoom to the box drawn
+- **Double-click** — Zoom in with the Pan tool (Shift+double-click zooms out)
+- **R / 1 / + / -** — Reset the view, 1°×1° view, zoom in, zoom out
+- **Arrow keys** — Pan
+- **Help → Keyboard Shortcuts** (F1) — Every shortcut, read from the menus
 
 #### Display Controls
 - **Colormap** — Choose visualization colormap
@@ -297,7 +308,7 @@ solarviewer/
 │   ├── ui/                     # Shared UI: themes/styles, icons, tab bar, segmented control,
 │   │                           #   colormap selector
 │   ├── processing/             # Qt-free image processing: pixel I/O, metadata, Stokes,
-│   │                           #   RMS, TB/flux maps, norms, CASA imfit/immath runners
+│   │                           #   RMS, TB/flux maps, norms, CASA task runner
 │   ├── coordinates/            # Helioprojective conversion, HPC viewer, phase-center shift
 │   ├── video/                  # Video creation (creator, dialog, utils)
 │   ├── noaa_events/            # Solar events browser
@@ -312,6 +323,7 @@ solarviewer/
 │   ├── install_utils.py        # Desktop integration (install/uninstall)
 │   ├── tutorial.py             # Tutorial
 │   ├── crash_handler.py        # Crash reports
+│   ├── app_logging.py          # Log file (~/.solarviewer/logs/solarviewer.log)
 │   ├── splash.py               # Splash screen
 │   ├── log_console.py          # Internal log viewer
 │   ├── version.py              # Version information

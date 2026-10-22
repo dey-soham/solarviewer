@@ -1,7 +1,10 @@
+import logging
 import os
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
 
 # Only set QT_QPA_PLATFORM to offscreen when running this script directly
 # This prevents issues when importing this module from other scripts
@@ -25,12 +28,16 @@ try:
 
     sunpy_imported = True
 except ImportError:
-    print("[ERROR] sunpy is not installed or some components are missing")
+    logger.error("sunpy is not installed or some components are missing")
     sunpy_imported = False
 
-from ..processing.immath import run_immath_subprocess
-from ..processing.rms import estimate_rms_near_Sun, remove_pixels_away_from_sun
 from ..processing.fits_io import readable_image_path
+from ..processing.stokes import (
+    fits_stokes_labels,
+    plane_index,
+    planes_needed,
+    stokes_product,
+)
 
 
 rcParams["axes.linewidth"] = 1.4
@@ -90,7 +97,7 @@ def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observator
                 ia_tool.close()
                 POS = EarthLocation.from_geodetic(lon=long, lat=lat, height=height)
         except Exception as e:
-            print(f"[ERROR] {str(e)}")
+            logger.error(f"{str(e)}")
     return POS
 
 
@@ -137,10 +144,9 @@ def convert_to_hpc_planes(
     """
     fits_file = readable_image_path(fits_file)
     if not sunpy_imported:
-        print("[ERROR] Cannot convert to helioprojective coordinates without sunpy")
+        logger.error("Cannot convert to helioprojective coordinates without sunpy")
         return None, None, None
 
-    single_stokes_flag = False
     try:
         ia_tool = IA()
         ia_tool.open(fits_file)
@@ -157,14 +163,11 @@ def convert_to_hpc_planes(
     hdu = fits.open(fits_file, memmap=True)
     header = hdu[0].header
     if header["SIMPLE"] == False:
-        print("[ERROR] FITS file is not a valid image")
+        logger.error("FITS file is not a valid image")
         return None, None, None
     ndim = header["NAXIS"]
-    if ndim < 2:
-        single_stokes_flag = True
 
     if ndim > 2:
-        stokes_map = {"I": 0, "Q": 1, "U": 2, "V": 3}
         try:
             # Create a mapping of axis types to their positions
             axis_types = {f"CTYPE{i+1}": header[f"CTYPE{i+1}"] for i in range(ndim)}
@@ -197,9 +200,6 @@ def convert_to_hpc_planes(
 
             # Update the axes to their NumPy positions
             if stokes_axis is not None:
-                original_stokes_axis = (
-                    stokes_axis + 1
-                )  # Save the original FITS axis number (1-indexed)
                 stokes_axis = numpy_axis_map[stokes_axis]
             if freq_axis is not None:
                 original_freq_axis = (
@@ -207,191 +207,31 @@ def convert_to_hpc_planes(
                 )  # Save the original FITS axis number (1-indexed)
                 freq_axis = numpy_axis_map[freq_axis]
 
-            if stokes_axis is not None and header[f"NAXIS{original_stokes_axis}"] == 1:
-                single_stokes_flag = True
-
             data_all = hdu[0].data
             # print(f"[DEBUG] Data from FITS file: {data_all.shape}")
         except Exception as e:
             # print(f"[ERROR] {str(e)}")
             return None, None, None
 
-        def select(Stokes):
-            if Stokes in ["I", "Q", "U", "V"]:
-                idx = stokes_map.get(Stokes)
-                if idx is None:
-                    raise ValueError(f"Unknown Stokes parameter: {Stokes}")
-                slice_list = [slice(None)] * ndim
-                if stokes_axis is not None:
-                    if single_stokes_flag:
-                        if Stokes != "I":
-                            raise RuntimeError(
-                                "The image is single stokes, but the Stokes parameter is not 'I'."
-                            )
-                    slice_list[stokes_axis] = idx
-                    # print(
-                    # f"[DEBUG] Stokes axis in FITS: {original_stokes_axis} (NumPy position: {stokes_axis})"
-                    # )
-                    if freq_axis is not None:
-                        # print(
-                        # f"[DEBUG] Frequency axis in FITS: {original_freq_axis} (NumPy position: {freq_axis})"
-                        # )
-                        pass
-                if freq_axis is not None:
-                    slice_list[freq_axis] = 0
-                data = data_all[tuple(slice_list)]
-            elif Stokes == "L":
-                if stokes_axis is None:
-                    raise RuntimeError("The image does not have a Stokes axis.")
-                elif single_stokes_flag:
-                    raise RuntimeError(
-                        "The image is single stokes, but the Stokes parameter is not 'I'."
-                    )
-                slice_list_Q = [slice(None)] * ndim
-                slice_list_U = [slice(None)] * ndim
-                slice_list_Q[stokes_axis] = 1
-                slice_list_U[stokes_axis] = 2
-                slice_list_Q[freq_axis] = 0
-                slice_list_U[freq_axis] = 0
-                pix_Q = data_all[tuple(slice_list_Q)]
-                pix_U = data_all[tuple(slice_list_U)]
-                data = np.sqrt(pix_Q**2 + pix_U**2)
-            elif Stokes == "Lfrac":
-                if stokes_axis is None:
-                    raise RuntimeError("The image does not have a Stokes axis.")
-                elif single_stokes_flag:
-                    raise RuntimeError(
-                        "The image is single stokes, but the Stokes parameter is not 'I'."
-                    )
-                try:
-                    run_immath_subprocess(
-                        imagename=fits_file, outfile="temp_p_map.im", mode="lpoli"
-                    )
-                    p_rms = estimate_rms_near_Sun("temp_p_map.im", "I", rms_box)
-                except Exception as e:
-                    raise RuntimeError(f"Error generating polarization map: {e}")
-                finally:
-                    os.system("rm -rf temp_p_map.im")
-                slice_list_Q = [slice(None)] * ndim
-                slice_list_U = [slice(None)] * ndim
-                slice_list_I = [slice(None)] * ndim
-                slice_list_Q[stokes_axis] = 1
-                slice_list_U[stokes_axis] = 2
-                slice_list_I[stokes_axis] = 0
-                slice_list_Q[freq_axis] = 0
-                slice_list_U[freq_axis] = 0
-                slice_list_I[freq_axis] = 0
-                pix_Q = data_all[tuple(slice_list_Q)]
-                pix_U = data_all[tuple(slice_list_U)]
-                pix_I = data_all[tuple(slice_list_I)]
-                L = np.sqrt(pix_Q**2 + pix_U**2)
-                mask = L < (thres * p_rms)
-                L[mask] = 0
-                Lfrac = L / pix_I
-                data = remove_pixels_away_from_sun(Lfrac, csys, 60)
-            elif Stokes == "Vfrac":
-                if stokes_axis is None:
-                    raise RuntimeError("The image does not have a Stokes axis.")
-                elif single_stokes_flag:
-                    raise RuntimeError(
-                        "The image is single stokes, but the Stokes parameter is not 'I'."
-                    )
-                slice_list_V = [slice(None)] * ndim
-                slice_list_I = [slice(None)] * ndim
-                slice_list_V[stokes_axis] = 3
-                slice_list_I[stokes_axis] = 0
-                slice_list_V[freq_axis] = 0
-                slice_list_I[freq_axis] = 0
-                pix_V = data_all[tuple(slice_list_V)]
-                pix_I = data_all[tuple(slice_list_I)]
-                v_rms = estimate_rms_near_Sun(fits_file, "V", rms_box)
-                mask = np.abs(pix_V) < (thres * v_rms)
-                pix_V[mask] = 0
-                Vfrac = pix_V / pix_I
-                data = remove_pixels_away_from_sun(Vfrac, csys, 60)
-            elif Stokes == "Q/I":
-                if stokes_axis is None:
-                    raise RuntimeError("The image does not have a Stokes axis.")
-                elif single_stokes_flag:
-                    raise RuntimeError(
-                        "The image is single stokes, but the Stokes parameter is not 'I'."
-                    )
-                q_rms = estimate_rms_near_Sun(fits_file, "Q", rms_box)
-                slice_list_Q = [slice(None)] * ndim
-                slice_list_I = [slice(None)] * ndim
-                slice_list_Q[stokes_axis] = 1
-                slice_list_I[stokes_axis] = 0
-                slice_list_Q[freq_axis] = 0
-                slice_list_I[freq_axis] = 0
-                pix_Q = data_all[tuple(slice_list_Q)]
-                mask = np.abs(pix_Q) < (thres * q_rms)
-                pix_Q[mask] = 0
-                pix_I = data_all[tuple(slice_list_I)]
-                Q_I = pix_Q / pix_I
-                data = remove_pixels_away_from_sun(Q_I, csys, 60)
-            elif Stokes == "U/I":
-                if stokes_axis is None:
-                    raise RuntimeError("The image does not have a Stokes axis.")
-                elif single_stokes_flag:
-                    raise RuntimeError(
-                        "The image is single stokes, but the Stokes parameter is not 'I'."
-                    )
-                u_rms = estimate_rms_near_Sun(fits_file, "U", rms_box)
-                slice_list_U = [slice(None)] * ndim
-                slice_list_I = [slice(None)] * ndim
-                slice_list_U[stokes_axis] = 2
-                slice_list_I[stokes_axis] = 0
-                slice_list_U[freq_axis] = 0
-                slice_list_I[freq_axis] = 0
-                pix_U = data_all[tuple(slice_list_U)]
-                mask = np.abs(pix_U) < (thres * u_rms)
-                pix_U[mask] = 0
-                pix_I = data_all[tuple(slice_list_I)]
-                U_I = pix_U / pix_I
-                data = remove_pixels_away_from_sun(U_I, csys, 60)
-            elif Stokes == "U/V":
-                if stokes_axis is None:
-                    raise RuntimeError("The image does not have a Stokes axis.")
-                elif single_stokes_flag:
-                    raise RuntimeError(
-                        "The image is single stokes, but the Stokes parameter is not 'I'."
-                    )
-                u_rms = estimate_rms_near_Sun(fits_file, "U", rms_box)
-                slice_list_U = [slice(None)] * ndim
-                slice_list_V = [slice(None)] * ndim
-                slice_list_U[stokes_axis] = 2
-                slice_list_V[stokes_axis] = 3
-                slice_list_U[freq_axis] = 0
-                slice_list_V[freq_axis] = 0
-                pix_U = data_all[tuple(slice_list_U)]
-                pix_V = data_all[tuple(slice_list_V)]
-                mask = np.abs(pix_U) < (thres * u_rms)
-                pix_U[mask] = 0
-                U_V = pix_U / pix_V
-                data = remove_pixels_away_from_sun(U_V, csys, 60)
-            elif Stokes == "PANG":
-                if stokes_axis is None:
-                    raise RuntimeError("The image does not have a Stokes axis.")
-                elif single_stokes_flag:
-                    raise RuntimeError(
-                        "The image is single stokes, but the Stokes parameter is not 'I'."
-                    )
-                slice_list_Q = [slice(None)] * ndim
-                slice_list_U = [slice(None)] * ndim
-                slice_list_Q[stokes_axis] = 1
-                slice_list_U[stokes_axis] = 2
-                slice_list_Q[freq_axis] = 0
-                slice_list_U[freq_axis] = 0
-                pix_Q = data_all[tuple(slice_list_Q)]
-                pix_U = data_all[tuple(slice_list_U)]
-                PANG = 0.5 * np.arctan2(pix_U, pix_Q) * 180 / np.pi
-                data = PANG
+        labels = fits_stokes_labels(header) if stokes_axis is not None else None
+
+        def plane(name):
+            """The ``name`` Stokes plane, first channel, as [x, y]."""
+            index = [slice(None)] * ndim
+            if stokes_axis is not None:
+                index[stokes_axis] = plane_index(labels, name)
             else:
-                slice_list_I = [slice(None)] * ndim
-                slice_list_I[stokes_axis] = 0
-                slice_list_I[freq_axis] = 0
-                data = data_all[tuple(slice_list_I)]
-            return data
+                plane_index(None, name)  # only Stokes I without a Stokes axis
+            if freq_axis is not None:
+                index[freq_axis] = 0
+            return np.array(data_all[tuple(index)]).T
+
+        def select(Stokes):
+            """The ``Stokes`` product as [y, x], the order of the FITS data."""
+            planes = {name: plane(name) for name in planes_needed(Stokes)}
+            return stokes_product(
+                Stokes, planes, thres, rms_box, csys, sun_radius_arcmin=60
+            ).T
 
         planes = []
         for Stokes in stokes_list:
@@ -532,7 +372,7 @@ def convert_to_hpc_planes(
             try:
                 map_rotated = map.rotate(P_angle)
             except Exception as e:
-                print(f"[WARNING] Error rotating map: {e}. Trying another method.")
+                logger.warning(f"Error rotating map: {e}. Trying another method.")
                 try:
                     P_angle_deg = P_angle.to(u.deg).value
 
@@ -553,7 +393,7 @@ def convert_to_hpc_planes(
 
                     map_rotated = map.rotate(deg_to_dms_str(P_angle_deg))
                 except Exception as e:
-                    print(f"[ERROR] Error rotating map: {e}")
+                    logger.error(f"Error rotating map: {e}")
                     map_rotated = None
 
             return map_rotated
@@ -577,15 +417,15 @@ def convert_to_hpc_planes(
             elif "FREQ" in header:
                 freq = header["FREQ"] * u.Hz
             else:
-                print("[WARNING] No frequency keyword found in header")
+                logger.warning("No frequency keyword found in header")
                 freq = None
         except Exception as e:
-            print(f"[ERROR] Error getting frequency: {e}")
+            logger.error(f"Error getting frequency: {e}")
             freq = None
         try:
             obstime = Time(hdu[0].header["DATE-OBS"])
         except Exception as e:
-            print(f"[ERROR] Error getting observation time: {e}")
+            logger.error(f"Error getting observation time: {e}")
             obstime = None
         ia_tool = IA()
         ia_tool.open(fits_file)
@@ -642,7 +482,7 @@ def convert_to_hpc_planes(
             new_header["FREQ"] = freq.to(u.Hz).value
             new_header["FREQUNIT"] = "Hz"
         except Exception as e:
-            print(f"[ERROR] Error adding frequency information: {e}")
+            logger.error(f"Error adding frequency information: {e}")
         new_header["WCSNAME"] = "Helioprojective"
         new_header["CTYPE1"] = "HPLN-TAN"
         new_header["CTYPE2"] = "HPLT-TAN"
@@ -660,7 +500,7 @@ def convert_to_hpc_planes(
         try:
             map_rotated = map.rotate(P_angle)
         except Exception as e:
-            print(f"[ERROR] Error rotating map: {e}. Trying another method.")
+            logger.error(f"Error rotating map: {e}. Trying another method.")
             try:
                 P_angle_deg = P_angle.to(u.deg).value
 
@@ -671,7 +511,7 @@ def convert_to_hpc_planes(
 
                 map_rotated = map.rotate(deg_to_dms_str(P_angle_deg))
             except Exception as e:
-                print(f"[ERROR] Error rotating map: {e}")
+                logger.error(f"Error rotating map: {e}")
                 map_rotated = None
 
         return [map_rotated], csys, psf
@@ -689,34 +529,19 @@ def convert_casaimage_to_fits(
     if imagename is None:
         raise ValueError("imagename is required")
 
-    import subprocess
-    import sys
-    import tempfile
+    from ..processing.casa_tasks import run_casa_task
 
     imagename = os.path.abspath(imagename)
     fitsname = os.path.abspath(fitsname)
 
     # Run exportfits in a separate process to avoid segfault
-    script = f"""
-import sys
-from casatasks import exportfits
-try:
-    exportfits(imagename="{imagename}", fitsimage="{fitsname}", overwrite={overwrite}, dropdeg={dropdeg})
-    print("SUCCESS")
-except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
-    sys.exit(1)
-"""
-
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
+    run_casa_task(
+        "exportfits",
+        imagename=imagename,
+        fitsimage=fitsname,
+        overwrite=overwrite,
+        dropdeg=dropdeg,
     )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"exportfits failed: {result.stderr}")
 
     return fitsname
 
@@ -802,7 +627,7 @@ def plot_helioprojective_map(
 
         return map
     else:
-        print("[ERROR] Failed to convert to helioprojective coordinates")
+        logger.error("Failed to convert to helioprojective coordinates")
         return None
 
 
@@ -823,20 +648,20 @@ def save_helioprojective_map(map_obj, output_file):
         True if the file was saved successfully, False otherwise.
     """
     if not sunpy_imported:
-        print("[ERROR] Cannot save helioprojective map without sunpy")
+        logger.error("Cannot save helioprojective map without sunpy")
         return False
 
     if map_obj is None:
-        print("[ERROR] No map to save")
+        logger.error("No map to save")
         return False
 
     try:
         # Save the map as a FITS file
         map_obj.save(output_file, overwrite=True)
-        print(f"[INFO] Helioprojective map saved to {output_file}")
+        logger.info(f"Helioprojective map saved to {output_file}")
         return True
     except Exception as e:
-        print(f"[ERROR] Error saving helioprojective map: {str(e)}")
+        logger.error(f"Error saving helioprojective map: {str(e)}")
         return False
 
 
@@ -885,7 +710,7 @@ def convert_and_save_hpc(
     """
     input_fits_file = readable_image_path(input_fits_file)
     if not sunpy_imported:
-        print("[ERROR] Cannot convert to helioprojective coordinates without sunpy")
+        logger.error("Cannot convert to helioprojective coordinates without sunpy")
         return False
 
     try:
@@ -912,7 +737,7 @@ def convert_and_save_hpc(
                 original_bunit = orig_hdu[0].header.get("BUNIT", None)
                 # print(f"[HPC] Found BUNIT in original: {original_bunit}")
         except Exception as e:
-            print(f"[ERROR] Could not read BUNIT: {e}")
+            logger.error(f"Could not read BUNIT: {e}")
 
         # Convert to helioprojective coordinates
         map_obj, cdelta_1, cdelta_2 = convert_to_hpc(
@@ -930,7 +755,7 @@ def convert_and_save_hpc(
                 os.remove(input_fits_file)
 
         if map_obj is None:
-            print("[ERROR] Failed to convert to helioprojective coordinates")
+            logger.error("Failed to convert to helioprojective coordinates")
             return False
 
         # Save the map as a FITS file
@@ -945,7 +770,7 @@ def convert_and_save_hpc(
                 hdul.flush()
             # print(f"[DEBUG] Added BUNIT={original_bunit} to HPC file")
 
-        print(f"[INFO] Helioprojective map saved to {output_fits_file}")
+        logger.info(f"Helioprojective map saved to {output_fits_file}")
 
         # Return the map object for further use if needed
         return True
@@ -1002,7 +827,7 @@ def convert_and_save_hpc_all_stokes(
     """
     input_fits_file = readable_image_path(input_fits_file)
     if not sunpy_imported:
-        print("[ERROR] Cannot convert to helioprojective coordinates without sunpy")
+        logger.error("Cannot convert to helioprojective coordinates without sunpy")
         return False
 
     try:
@@ -1081,7 +906,7 @@ def convert_and_save_hpc_all_stokes(
                 if reference_header is None:
                     reference_header = dict(map_obj.meta)
             else:
-                print(f"[ERROR] Failed to convert Stokes {stokes}, using zeros")
+                logger.error(f"Failed to convert Stokes {stokes}, using zeros")
                 if stokes_maps:
                     stokes_maps.append(np.zeros_like(stokes_maps[0]))
                 else:
@@ -1093,7 +918,7 @@ def convert_and_save_hpc_all_stokes(
                 os.remove(input_fits_file)
 
         if not stokes_maps:
-            print("[ERROR] No Stokes maps were successfully converted")
+            logger.error("No Stokes maps were successfully converted")
             return False
 
         # Ensure all Stokes maps have the same shape (reference is first map - Stokes I)
@@ -1196,7 +1021,7 @@ def convert_hpc_to_radec(
     """
     input_fits_file = readable_image_path(input_fits_file)
     if not sunpy_imported:
-        print("[ERROR] Cannot convert from helioprojective coordinates without sunpy")
+        logger.error("Cannot convert from helioprojective coordinates without sunpy")
         return False
 
     try:
@@ -1223,7 +1048,7 @@ def convert_hpc_to_radec(
         # Get observation time
         obstime_str = hpc_header.get("DATE-OBS", None)
         if obstime_str is None:
-            print("[ERROR] DATE-OBS not found in header")
+            logger.error("DATE-OBS not found in header")
             return False
         obstime = Time(obstime_str)
 
@@ -1282,7 +1107,7 @@ def convert_hpc_to_radec(
                         cval=np.nan,
                     )
         else:
-            print(f"[ERROR] Unexpected data dimensions: {hpc_data.ndim}")
+            logger.error(f"Unexpected data dimensions: {hpc_data.ndim}")
             return False
 
         # Crop to non-NaN bounding box to remove NaN borders
@@ -1304,7 +1129,7 @@ def convert_hpc_to_radec(
         rows = np.any(valid_mask, axis=1)
         cols = np.any(valid_mask, axis=0)
         if not np.any(rows) or not np.any(cols):
-            print("[ERROR] No valid data after rotation")
+            logger.error("No valid data after rotation")
             return False
 
         rmin, rmax = np.where(rows)[0][[0, -1]]
@@ -1471,7 +1296,7 @@ def convert_hpc_to_radec(
         return True
 
     except Exception as e:
-        print(f"[ERROR] Error converting HPC to RA/Dec: {str(e)}")
+        logger.error(f"Error converting HPC to RA/Dec: {str(e)}")
         import traceback
 
         traceback.print_exc()
@@ -1531,7 +1356,7 @@ def itrf_to_geodetic(x, y, z, scale_factor=1.0):
             height = location.height.value  # in meters
 
         except Exception as e:
-            print(f"[ERROR] Error {str(e)}. Falling back to manual calculation.")
+            logger.error(f"Error {str(e)}. Falling back to manual calculation.")
             # Fall back to manual calculation if astropy is not available
             # WGS84 ellipsoid parameters
             a = 6378137.0  # semi-major axis in meters
@@ -1583,7 +1408,7 @@ def itrf_to_geodetic(x, y, z, scale_factor=1.0):
         return lat_str, lon_str, height
 
     except Exception as e:
-        print(f"[ERROR] Error converting ITRF to geodetic: {str(e)}")
+        logger.error(f"Error converting ITRF to geodetic: {str(e)}")
         import traceback
 
         traceback.print_exc()
@@ -1636,7 +1461,7 @@ def geodetic_to_itrf(lat, lon, height):
             z = location.z.value
 
         except Exception as e:
-            print(f"[ERROR] Error {str(e)}. Falling back to manual calculation.")
+            logger.error(f"Error {str(e)}. Falling back to manual calculation.")
             # Convert to radians
             lat_rad = np.radians(lat)
             lon_rad = np.radians(lon)
@@ -1657,7 +1482,7 @@ def geodetic_to_itrf(lat, lon, height):
         return x, y, z
 
     except Exception as e:
-        print(f"[ERROR] Error converting geodetic to ITRF: {str(e)}")
+        logger.error(f"Error converting geodetic to ITRF: {str(e)}")
         import traceback
 
         traceback.print_exc()
@@ -1705,7 +1530,7 @@ def dms_to_decimal(dms_str):
         return decimal
 
     except Exception as e:
-        print(f"[ERROR] Error converting DMS to decimal: {str(e)}")
+        logger.error(f"Error converting DMS to decimal: {str(e)}")
         raise
 
 
@@ -1770,7 +1595,7 @@ def extract_telescope_position(metadata_dict):
             observatory = metadata_dict["observatory"]
 
         if telescope_position is None:
-            print("[ERROR] Telescope position not found in metadata")
+            logger.error("Telescope position not found in metadata")
             return None, None, None, observatory
 
         # Extract the ITRF coordinates
@@ -1779,7 +1604,7 @@ def extract_telescope_position(metadata_dict):
         coords = telescope_position.split(",")
 
         if len(coords) != 3:
-            print(f"[ERROR] Invalid telescope position format: {telescope_position}")
+            logger.error(f"Invalid telescope position format: {telescope_position}")
             return None, None, None, observatory
 
         # Parse the coordinates
@@ -1787,7 +1612,7 @@ def extract_telescope_position(metadata_dict):
         y = float(coords[1].replace("m", "").strip())
         z = float(coords[2].replace("m", "").strip())
         if abs(x) < 1e6 and abs(y) < 1e6 and abs(z) < 1e6:
-            print(f"[WARNING] Invalid telescope position format: {telescope_position}")
+            logger.warning(f"Invalid telescope position format: {telescope_position}")
             print("Checking if it is a known telescope ....")
             if observatory.upper() == "LOFAR":
                 print("Observatory matched with LOFAR")
@@ -1819,7 +1644,7 @@ def extract_telescope_position(metadata_dict):
         return lat, lon, height, observatory
 
     except Exception as e:
-        print(f"[ERROR] Error extracting telescope position: {str(e)}")
+        logger.error(f"Error extracting telescope position: {str(e)}")
         import traceback
 
         traceback.print_exc()

@@ -2,6 +2,7 @@
 Main-window remote (SSH) mode: connection, browser, status, cache.
 """
 
+import logging
 import os
 
 from PyQt5.QtCore import Qt
@@ -10,6 +11,8 @@ from PyQt5.QtWidgets import (
 )
 
 from ..ui.styles import set_hand_cursor
+
+logger = logging.getLogger(__name__)
 
 
 class RemoteModeMixin:
@@ -159,7 +162,7 @@ class RemoteModeMixin:
                 self.remote_connection.disconnect()
                 self.statusBar().showMessage(f"Disconnected from {host_info}", 3000)
             except Exception as e:
-                print(f"[WARNING] Error disconnecting: {e}")
+                logger.warning(f"Error disconnecting: {e}")
             finally:
                 self.remote_connection = None
 
@@ -714,7 +717,7 @@ class RemoteModeMixin:
 
         except Exception as e:
             # Fallback if something goes wrong
-            print(f"[WARNING] Failed to update cache size: {e}")
+            logger.warning(f"Failed to update cache size: {e}")
             self.clear_cache_act.setText("🗑️ Manage Cache...")
 
     def _check_connection_health(self):
@@ -792,26 +795,26 @@ class RemoteModeMixin:
                         sftp.close()  # Close it immediately
                         self.result.emit(True)
                     except socket.timeout:
-                        print("[SSH] Ping timeout - connection appears dead")
+                        logger.warning("[SSH] Ping timeout - connection appears dead")
                         self.result.emit(False)
                     except Exception as e:
-                        print(f"[SSH] Ping failed: {e}")
+                        logger.warning(f"[SSH] Ping failed: {e}")
                         self.result.emit(False)
                     finally:
                         sock.settimeout(old_timeout)
 
                 except Exception as e:
-                    print(f"[SSH] Ping error: {e}")
+                    logger.warning(f"[SSH] Ping error: {e}")
                     self.result.emit(False)
 
         def on_ping_result(is_alive):
             if not is_alive:
-                print("[SSH] Health check: Connection lost, attempting reconnect...")
+                logger.warning("[SSH] Health check: Connection lost, attempting reconnect...")
                 if self.remote_connection and self.remote_connection.ensure_connected():
-                    print("[SSH] Health check: Reconnected successfully")
+                    logger.info("[SSH] Health check: Reconnected successfully")
                     self.statusBar().showMessage("🔄 Remote connection restored", 5000)
                 else:
-                    print("[SSH] Health check: Reconnect failed")
+                    logger.warning("[SSH] Health check: Reconnect failed")
                     self.statusBar().showMessage(
                         "⚠️ Remote connection lost - click status to reconnect", 10000
                     )

@@ -124,15 +124,17 @@ def generate_crash_report(exctype, value, tb, fatal=True):
     # Get traceback
     traceback_details = "".join(traceback.format_exception(exctype, value, tb))
 
-    # Get application logs (if LogConsole is initialized)
-    logs = "Log console not initialized or logs unavailable."
+    # The application's recent output, from its log file (the log window's
+    # text must not be read here: the error may come from another thread)
+    logs = "Logs unavailable."
     try:
-        from .log_console import LogConsole
+        from .app_logging import LOG_FILE
 
-        console = LogConsole.get_instance()
-        if console:
-            logs = console.text_edit.toPlainText()
-    except:
+        with open(LOG_FILE, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 60000))
+            logs = f.read().decode("utf-8", errors="replace")
+    except OSError:
         pass
 
     # Build report
@@ -255,6 +257,9 @@ def _restore_cursor():
 
         while QApplication.overrideCursor() is not None:
             QApplication.restoreOverrideCursor()
+        from .ui.busy import reset as reset_busy
+
+        reset_busy()
     except Exception:
         pass
 

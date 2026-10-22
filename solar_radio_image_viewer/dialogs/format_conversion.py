@@ -19,17 +19,16 @@ from PyQt5.QtWidgets import (
     QFrame,
     QTabWidget,
     QProgressBar,
-    QApplication,
 )
 from PyQt5.QtCore import QTimer
 import multiprocessing
 import os
 
-from ..processing.workers import process_pool
+from ..ui.batch import BatchDialogMixin
 from ..ui.styles import set_hand_cursor
 
 
-class FormatConversionDialog(QDialog):
+class FormatConversionDialog(BatchDialogMixin, QDialog):
     """Dialog for batch format conversion between CASA Images and FITS files."""
 
     def __init__(self, parent=None, current_file=None):
@@ -39,8 +38,6 @@ class FormatConversionDialog(QDialog):
         self.resize(750, 650)
         self.parent = parent
         self.current_file = current_file
-        
-        self.aborted = False
 
         try:
             from ..ui.styles import theme_manager
@@ -281,7 +278,7 @@ class FormatConversionDialog(QDialog):
         self.cancel_button = button_box.button(QDialogButtonBox.Cancel)
         
         self.ok_button.clicked.connect(self.run_conversion)
-        self.cancel_button.clicked.connect(self.reject_or_abort)
+        self.cancel_button.clicked.connect(self.cancel_or_abort)
         main_layout.addWidget(button_box)
         
         # Trigger initial autofill
@@ -406,15 +403,6 @@ class FormatConversionDialog(QDialog):
         self.status_text.appendPlainText(message)
         scrollbar = self.status_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
-        QApplication.processEvents()
-
-    def reject_or_abort(self):
-        if hasattr(self, '_is_running') and self._is_running:
-            self.aborted = True
-            self.log("Aborting... waiting for current batch to finish")
-            self.cancel_button.setEnabled(False)
-        else:
-            self.reject()
 
     def run_conversion(self):
         files = self.scan_files()
@@ -434,105 +422,69 @@ class FormatConversionDialog(QDialog):
             QMessageBox.warning(self, "Error", "Please specify output pattern.")
             return
 
-        self._is_running = True
-        self.aborted = False
-        self.ok_button.setEnabled(False)
-        self.cancel_button.setText("Abort")
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, len(files))
-        self.progress_bar.setValue(0)
         self.status_text.clear()
-
         self.log(f"Starting formatting of {len(files)} files...")
         self.log(f"Target format: {'FITS' if is_target_fits else 'CASA Image'}")
 
-        try:
-            tasks = []
-            for f in files:
-                basename = os.path.basename(f)
-                
-                # Strip extension carefully for matching dynamic pattern replacement
-                name, ext = os.path.splitext(basename)
-                if os.path.isdir(f) and not ext:  # Some CASA images have no ext or `.image`
-                    name = basename
-                
-                # Determine absolute output directory
-                abs_out_dir = out_dir
-                if not os.path.isabs(out_dir):
-                    abs_out_dir = os.path.join(os.path.dirname(f), out_dir)
-                    
-                outfile_name = out_pattern.replace("*", name) if "*" in out_pattern else f"{out_pattern}_{name}"
-                outfile = os.path.join(abs_out_dir, outfile_name)
-                
-                if not os.path.exists(abs_out_dir):
-                    try:
-                        os.makedirs(abs_out_dir, exist_ok=True)
-                    except Exception as e:
-                        self.log(f"Warning: Could not create dir {abs_out_dir}: {e}")
-                
-                tasks.append((f, outfile, is_target_fits))
-
-            if use_mp:
-                self.log(f"Using multiprocessing ({cores} cores)")
-                completed = 0
-                success_count = 0
-                
-                with process_pool(cores) as pool:
-                    map_func = pool.imap(_format_conversion_worker, tasks)
-                    for i, result in enumerate(map_func):
-                        if self.aborted:
-                            pool.terminate()
-                            break
-                        
-                        success, in_f, msg = result
-                        if success:
-                            success_count += 1
-                        completed += 1
-                        self.progress_bar.setValue(completed)
-                        self.log(msg)
-                        QApplication.processEvents()
-            else:
-                completed = 0
-                success_count = 0
-                for task in tasks:
-                    if self.aborted:
-                        break
-                    success, in_f, msg = _format_conversion_worker(task)
-                    if success:
-                        success_count += 1
-                    completed += 1
-                    self.progress_bar.setValue(completed)
-                    self.log(msg)
-                    QApplication.processEvents()
-                    
-            if self.aborted:
-                self.log("Batch processing aborted by user.")
-            else:
-                self.log(f"Batch processing complete. Successfully processed: {success_count}/{len(files)}")
-                QMessageBox.information(
-                    self,
-                    "Batch Complete",
-                    f"Conversion finished.\\nSuccessfully processed: {success_count}/{len(files)} files.",
-                )
-
-        except Exception as e:
-            self.log(f"Error in batch processing: {str(e)}")
-            QMessageBox.critical(self, "Error", f"Error in batch processing: {str(e)}")
+        tasks = []
+        for f in files:
+            basename = os.path.basename(f)
             
-        finally:
-            self._is_running = False
-            self.ok_button.setEnabled(True)
-            self.cancel_button.setText("Close")
-            self.cancel_button.setEnabled(True)
+            # Strip extension carefully for matching dynamic pattern replacement
+            name, ext = os.path.splitext(basename)
+            if os.path.isdir(f) and not ext:  # Some CASA images have no ext or `.image`
+                name = basename
+            
+            # Determine absolute output directory
+            abs_out_dir = out_dir
+            if not os.path.isabs(out_dir):
+                abs_out_dir = os.path.join(os.path.dirname(f), out_dir)
+                
+            outfile_name = out_pattern.replace("*", name) if "*" in out_pattern else f"{out_pattern}_{name}"
+            outfile = os.path.join(abs_out_dir, outfile_name)
+            
+            if not os.path.exists(abs_out_dir):
+                try:
+                    os.makedirs(abs_out_dir, exist_ok=True)
+                except Exception as e:
+                    self.log(f"Warning: Could not create dir {abs_out_dir}: {e}")
+            
+            tasks.append((f, outfile, is_target_fits))
+
+        if use_mp:
+            self.log(f"Using multiprocessing ({cores} cores)")
+        self._success_count = 0
+        self.start_batch(
+            _format_conversion_worker,
+            tasks,
+            processes=cores if use_mp else 1,
+            disable=[self.tab_widget],
+        )
+
+    def batch_result(self, task, value):
+        success, in_f, msg = value
+        if success:
+            self._success_count += 1
+        self.log(msg)
+
+    def batch_finished(self, aborted):
+        if aborted:
+            return
+        total = self.progress_bar.maximum()
+        self.log(f"Batch processing complete. Successfully processed: {self._success_count}/{total}")
+        QMessageBox.information(
+            self,
+            "Batch Complete",
+            f"Conversion finished.\nSuccessfully processed: {self._success_count}/{total} files.",
+        )
 
 def _format_conversion_worker(args):
     """Worker function for format conversion batch processing via isolated casatasks subprocesses."""
     infile, outfile, is_target_fits = args
     import os
     import shutil
-    import subprocess
-    import sys
-    import tempfile
+
+    from ..processing.casa_tasks import CasaTaskError, run_casa_task
 
     try:
         infile_abs = os.path.abspath(infile)
@@ -554,47 +506,22 @@ def _format_conversion_worker(args):
             shutil.copytree(infile_abs, outfile_abs)
             return True, infile, f"Skip (already CASA) -> Copied {os.path.basename(infile)}"
 
-        # Prepare isolated script string
+        # In a separate process
         if is_target_fits:
             # We are exporting CASA -> FITS
             if os.path.exists(outfile_abs):
                 os.remove(outfile_abs)
-            script = f'''
-import sys
-import shutil
-from casatasks import exportfits
-try:
-    exportfits(imagename="{infile_abs}", fitsimage="{outfile_abs}", overwrite=True)
-except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
-    sys.exit(1)
-'''
+            task = dict(task="exportfits", imagename=infile_abs, fitsimage=outfile_abs)
         else:
             # We are importing FITS -> CASA
             if os.path.exists(outfile_abs):
                 shutil.rmtree(outfile_abs)
-            script = f'''
-import sys
-import shutil
-from casatasks import importfits
-try:
-    importfits(fitsimage="{infile_abs}", imagename="{outfile_abs}", overwrite=True)
-except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
-    sys.exit(1)
-'''
-        
-        # Run process safely
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
-        )
-        
-        if result.returncode != 0:
-            return False, infile, f"Error converting {os.path.basename(infile)}: {result.stderr.strip()}"
-            
+            task = dict(task="importfits", fitsimage=infile_abs, imagename=outfile_abs)
+        try:
+            run_casa_task(overwrite=True, **task)
+        except CasaTaskError as e:
+            return False, infile, f"Error converting {os.path.basename(infile)}: {e}"
+
         return True, infile, f"Converted {os.path.basename(infile)} -> {'FITS' if is_target_fits else 'CASA'}"
         
     except Exception as e:

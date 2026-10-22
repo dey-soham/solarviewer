@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 
@@ -45,7 +46,7 @@ from PyQt5.QtWidgets import (
     QActionGroup,
     QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QSettings, QSize, QTimer, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QEventLoop, QSettings, QSize, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QIcon, QColor, QPalette
 
 # from PyQt5.QtGui import QColor, QPalette, QPainter
@@ -96,6 +97,9 @@ from .processing.fits_io import readable_image_path
 from .processing.contour_layers import default_contour_options, new_contour_layer
 from .processing.image_meta import casa_info, fits_header
 from .processing.prefetch import image_prefetcher
+from .processing.image_data import ImageUnreadable
+from .processing.stokes import StokesUnavailable, missing_planes
+from .ui.errors import show_error
 from .processing.plot_style import (
     DEFAULT_BEAM_STYLE,
     DEFAULT_GRID_STYLE,
@@ -103,6 +107,8 @@ from .processing.plot_style import (
     DEFAULT_SOLAR_DISK_STYLE,
     default_style,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Compact buttons for actions on the statistics panels
@@ -286,11 +292,11 @@ class SolarRadioImageTab(
         self.image_plot = None
 
         # View navigation: zoom/pan glides, drag panning, toolbar history
-        self._zoom_timer = QTimer()
+        self._zoom_timer = QTimer(self)
         self._zoom_timer.timeout.connect(self._perform_zoom_step)
         self._view_anim = None
         self._is_panning = False
-        self._nav_record_timer = QTimer()
+        self._nav_record_timer = QTimer(self)
         self._nav_record_timer.setSingleShot(True)
         self._nav_record_timer.setInterval(400)
         self._nav_record_timer.timeout.connect(self._record_view)
@@ -316,7 +322,7 @@ class SolarRadioImageTab(
         try:
             if main_window:
                 main_window.statusBar().showMessage(message, timeout)
-                QApplication.processEvents()
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
         except AttributeError:
             pass
 
@@ -1193,7 +1199,7 @@ class SolarRadioImageTab(
         # Register theme callback if not already done
         if not hasattr(self, "_separator_theme_callback_registered"):
             theme_manager.register_callback(
-                lambda t: self._update_profile_zoom_separator_style()
+                lambda t: self._update_profile_zoom_separator_style(), owner=self
             )
             self._separator_theme_callback_registered = True
 
@@ -1221,7 +1227,7 @@ class SolarRadioImageTab(
         # Register theme callback if not already done
         if not hasattr(self, "_hpc_nav_separator_theme_callback_registered"):
             theme_manager.register_callback(
-                lambda t: self._update_hpc_nav_separator_style()
+                lambda t: self._update_hpc_nav_separator_style(), owner=self
             )
             self._hpc_nav_separator_theme_callback_registered = True
 
@@ -1295,7 +1301,9 @@ class SolarRadioImageTab(
 
         # Register theme callback if not already done
         if not hasattr(self, "_nav_theme_callback_registered"):
-            theme_manager.register_callback(lambda t: self._update_nav_button_styles())
+            theme_manager.register_callback(
+                lambda t: self._update_nav_button_styles(), owner=self
+            )
             self._nav_theme_callback_registered = True
 
     def _update_special_button_styles(self):
@@ -1376,7 +1384,7 @@ class SolarRadioImageTab(
         # Register theme callback if not already done
         if not hasattr(self, "_special_btn_theme_callback_registered"):
             theme_manager.register_callback(
-                lambda t: self._update_special_button_styles()
+                lambda t: self._update_special_button_styles(), owner=self
             )
             self._special_btn_theme_callback_registered = True
 
@@ -1561,10 +1569,10 @@ class SolarRadioImageTab(
         """
         if not hasattr(self, "imagename") or not self.imagename:
             QMessageBox.warning(self, "No Image", "Please open an image first.")
-            return
+            return False
 
         with busy():
-            self._update_visualization(colormap_name, dir_load, reload_data)
+            return self._update_visualization(colormap_name, dir_load, reload_data)
 
     def _update_visualization(self, colormap_name, dir_load, reload_data):
         """on_visualization_changed's work, run with the wait cursor."""
@@ -1725,10 +1733,33 @@ class SolarRadioImageTab(
             if dir_load:
                 # After the caller has rescanned the directory
                 QTimer.singleShot(0, self._prefetch_neighbour_files)
+            return True
         except Exception as e:
+            import traceback
+
+            name = os.path.basename(str(self.imagename).rstrip("/"))
+            if dir_load:
+                # Show no image rather than the last one under this one's name
+                self.current_image_data = None
+                self.figure.clear()
+                self.show_empty_hint()
+                self.canvas.draw_idle()
             if main_window:
-                self.show_status_message(f"Error: {str(e)}")
-            QMessageBox.critical(self, "Error", f"Failed to load/plot data: {str(e)}")
+                self.show_status_message(f"Could not show {name}")
+            if isinstance(e, ImageUnreadable):
+                message = (
+                    f"{name} could not be read.\n\nCheck that it is a FITS file "
+                    "or a CASA image, and that it is complete (not still being "
+                    "copied or downloaded)."
+                )
+            else:
+                message = (
+                    f"Something went wrong loading or drawing {name}:\n\n{e}\n\n"
+                    "The details below, and the log (View > Show Log Console), "
+                    "say more."
+                )
+            show_error(self, "Could Not Show Image", message, traceback.format_exc())
+            return False
 
     def set_range(self, vmin_val, vmax_val):
         if self.current_image_data is None:
@@ -1786,7 +1817,7 @@ class SolarRadioImageTab(
             if self._gamma_debounce_timer is None:
                 from PyQt5.QtCore import QTimer
 
-                self._gamma_debounce_timer = QTimer()
+                self._gamma_debounce_timer = QTimer(self)
                 self._gamma_debounce_timer.setSingleShot(True)
                 self._gamma_debounce_timer.timeout.connect(self._apply_gamma_change)
 
@@ -1913,197 +1944,64 @@ class SolarRadioImageTab(
         if hasattr(self, "gamma_slider") and hasattr(self, "stretch_combo"):
             self.update_gamma_slider_state()
 
-    def _load_fits_stokes(self, imagename, stokes, rms_box=(0, 200, 0, 130)):
+    def _load_fits_stokes(self, imagename, stokes, thres, rms_box=(0, 200, 0, 130)):
         """
-        Load a specific Stokes parameter (or derived parameter) from a FITS file.
-        Handles FITS files with Stokes axis (like HPC converted files).
+        Load a Stokes parameter (or a derived one) from a FITS file with
+        astropy, for files CASA cannot read. Returns an [x, y] plane like the
+        CASA reader, computed the same way.
         """
         from astropy.io import fits
 
-        hdul = fits.open(readable_image_path(imagename), memmap=True)
-        data = hdul[0].data
-        header = hdul[0].header
-        hdul.close()
+        from .processing.stokes import (
+            fits_stokes_axis,
+            fits_stokes_labels,
+            plane_index,
+            planes_needed,
+            stokes_product,
+        )
 
-        # Find Stokes axis
-        ndim = header.get("NAXIS", 0)
-        stokes_axis = None
-        num_stokes = 1
+        with fits.open(readable_image_path(imagename), memmap=True) as hdul:
+            header = hdul[0].header
+            data = hdul[0].data
+            labels = fits_stokes_labels(header)
+            stokes_axis = fits_stokes_axis(header)
 
-        for i in range(1, ndim + 1):
-            ctype = header.get(f"CTYPE{i}", "").upper()
-            if ctype == "STOKES":
-                stokes_axis = i
-                num_stokes = header.get(f"NAXIS{i}", 1)
-                break
-
-        # Map Stokes names to indices
-        stokes_map = {"I": 0, "Q": 1, "U": 2, "V": 3}
-
-        # Handle different data shapes
-        if data.ndim == 2:
-            # 2D data - just return it for I, error for others
-            if stokes in ["I", "Q", "U", "V"]:
-                if stokes == "I":
-                    return data
+            def plane(name):
+                """The ``name`` plane, first channel of every other axis, as [x, y]."""
+                # NumPy axes are the FITS axes reversed: the last two are y, x
+                index = [0] * (data.ndim - 2) + [slice(None), slice(None)]
+                if stokes_axis is not None:
+                    index[data.ndim - stokes_axis] = plane_index(labels, name)
                 else:
-                    raise RuntimeError(f"No Stokes {stokes} available in 2D image")
-            else:
-                raise RuntimeError(f"Cannot calculate {stokes} from 2D image")
+                    plane_index(None, name)  # only Stokes I without a Stokes axis
+                return np.array(data[tuple(index)], dtype=float).T
 
-        # 3D data with Stokes axis
-        if data.ndim == 3 and num_stokes > 1:
-            # Stokes is first axis (axis 0 in numpy, axis 3 in FITS)
-            def get_stokes_slice(s):
-                idx = stokes_map.get(s)
-                if idx is None or idx >= num_stokes:
-                    raise RuntimeError(
-                        f"Stokes {s} not available (only {num_stokes} Stokes)"
-                    )
-                return data[idx]
+            planes = {name: plane(name) for name in planes_needed(stokes)}
+        return stokes_product(stokes, planes, thres, rms_box)
 
-            if stokes in ["I", "Q", "U", "V"]:
-                return get_stokes_slice(stokes).T  # Transpose to match CASA orientation
+    def _full_resolution(self, imagename, target_size):
+        """(the [x, y] sky shape of the file, the downsample factor of the
+        plane shown), from the image's cached metadata."""
+        from .processing.image_data import downsample_factor
+        from .processing.image_meta import sky_axes
 
-            # Calculate derived parameters
-            if stokes == "L":
-                Q = get_stokes_slice("Q")
-                U = get_stokes_slice("U")
-                return np.sqrt(Q**2 + U**2).T  # Transpose to match CASA orientation
+        summary = casa_info(imagename).summary
+        x_idx, y_idx = sky_axes(summary["axisnames"])
+        shape = [int(n) for n in summary["shape"]]
+        full = (shape[x_idx], shape[y_idx])
+        return full, downsample_factor(full, target_size)
 
-            elif stokes == "Lfrac":
-                I = get_stokes_slice("I")
-                Q = get_stokes_slice("Q")
-                U = get_stokes_slice("U")
-                L = np.sqrt(Q**2 + U**2)
-                # Calculate RMS for thresholding
-                try:
-                    rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
-                    rms = np.sqrt(np.nanmean(rms_region**2))
-                except Exception:
-                    print(
-                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
-                    )
-                    rms = np.nanstd(I)
-                # Mask low signal
-                mask = np.abs(I) < 3 * rms
-                result = L / np.abs(I)
-                result[mask] = np.nan
-                return result.T  # Transpose to match CASA orientation
-
-            elif stokes == "Vfrac":
-                I = get_stokes_slice("I")
-                V = get_stokes_slice("V")
-                try:
-                    rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
-                    rms = np.sqrt(np.nanmean(rms_region**2))
-                except Exception:
-                    print(
-                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
-                    )
-                    rms = np.nanstd(I)
-                mask = np.abs(I) < 3 * rms
-                result = V / np.abs(I)
-                result[mask] = np.nan
-                return result.T  # Transpose to match CASA orientation
-
-            elif stokes == "Q/I":
-                I = get_stokes_slice("I")
-                Q = get_stokes_slice("Q")
-                try:
-                    rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
-                    rms = np.sqrt(np.nanmean(rms_region**2))
-                except Exception:
-                    print(
-                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
-                    )
-                    rms = np.nanstd(I)
-                mask = np.abs(I) < 3 * rms
-                result = Q / np.abs(I)
-                result[mask] = np.nan
-                return result.T  # Transpose to match CASA orientation
-
-            elif stokes == "U/I":
-                I = get_stokes_slice("I")
-                U = get_stokes_slice("U")
-                try:
-                    rms_region = I[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
-                    rms = np.sqrt(np.nanmean(rms_region**2))
-                except Exception:
-                    print(
-                        "[WARNING] Failed to estimate RMS, using standard deviation instead"
-                    )
-                    rms = np.nanstd(I)
-                mask = np.abs(I) < 3 * rms
-                result = U / np.abs(I)
-                result[mask] = np.nan
-                return result.T  # Transpose to match CASA orientation
-
-            elif stokes == "PANG":
-                Q = get_stokes_slice("Q")
-                U = get_stokes_slice("U")
-                # Polarization angle in degrees
-                return (
-                    0.5 * np.degrees(np.arctan2(U, Q))
-                ).T  # Transpose to match CASA orientation
-
-            else:
-                raise RuntimeError(f"Unknown Stokes parameter: {stokes}")
-
-        # 4D data (Stokes, Freq, DEC, RA) - take first frequency
-        if data.ndim == 4:
-            data_3d = data[:, 0, :, :]  # Take first frequency
-
-            # Recursively handle as 3D
-            # Re-create temporary FITS in memory - or just handle directly
-            def get_stokes_4d(s):
-                idx = stokes_map.get(s)
-                if idx is None or idx >= data.shape[0]:
-                    raise RuntimeError(f"Stokes {s} not available")
-                return data[idx, 0, :, :]
-
-            if stokes in ["I", "Q", "U", "V"]:
-                return get_stokes_4d(stokes)
-
-            if stokes == "L":
-                Q = get_stokes_4d("Q")
-                U = get_stokes_4d("U")
-                return np.sqrt(Q**2 + U**2)
-
-            elif stokes == "Lfrac":
-                I = get_stokes_4d("I")
-                Q = get_stokes_4d("Q")
-                U = get_stokes_4d("U")
-                L = np.sqrt(Q**2 + U**2)
-                mask = np.abs(I) < 3 * np.nanstd(I)
-                result = L / np.abs(I)
-                result[mask] = np.nan
-                return result
-
-            elif stokes == "Vfrac":
-                I = get_stokes_4d("I")
-                V = get_stokes_4d("V")
-                mask = np.abs(I) < 3 * np.nanstd(I)
-                result = V / np.abs(I)
-                result[mask] = np.nan
-                return result
-
-            elif stokes == "PANG":
-                Q = get_stokes_4d("Q")
-                U = get_stokes_4d("U")
-                return 0.5 * np.degrees(np.arctan2(U, Q))
-
-            else:
-                raise RuntimeError(f"Unknown Stokes parameter for 4D data: {stokes}")
-
-        # Fallback - just return the data as-is for Stokes I
-        if stokes == "I":
-            if data.ndim > 2:
-                # Squeeze out extra dimensions
-                return np.squeeze(data)
-            return data
-
-        raise RuntimeError(f"Cannot handle {stokes} for this FITS structure")
+    def roi_at_full_resolution(self, roi=None):
+        """The ROI (xlow, xhigh, ylow, yhigh) in the file's own pixels. In
+        Fast mode the plane shown is every Nth pixel, so the ROI drawn on it
+        must be scaled up before CASA reads the file."""
+        xlow, xhigh, ylow, yhigh = roi if roi is not None else self.current_roi
+        factor = getattr(self, "_downsample", 1) or 1
+        xlow, xhigh, ylow, yhigh = (v * factor for v in (xlow, xhigh, ylow, yhigh))
+        full = getattr(self, "_full_image_shape", None)
+        if full is not None:
+            xhigh, yhigh = min(xhigh, full[0]), min(yhigh, full[1])
+        return int(xlow), int(xhigh), int(ylow), int(yhigh)
 
     def _load_target_size(self):
         """Max dimension to downsample loads to in fast load mode, 0 for none."""
@@ -2144,15 +2042,19 @@ class SolarRadioImageTab(
             self.current_image_data = pix
             self.current_wcs = csys
             self.psf = psf
+            self._full_image_shape, self._downsample = self._full_resolution(
+                imagename, target_size
+            )
 
             if pix is not None:
-                height, width = pix.shape
-                # Only auto adjust RMS box dimensions when loading a new image
+                nx, ny = pix.shape  # the image is indexed [x, y]
+                # Only auto adjust RMS box dimensions when loading a new image:
+                # a band along the bottom, inset from the sides
                 if auto_adjust_rms:
-                    x1 = int(0.05 * width)
-                    x2 = int(0.95 * width)
-                    y1 = int(0.02 * height)
-                    y2 = int(0.20 * height)
+                    x1 = int(0.05 * nx)
+                    x2 = int(0.95 * nx)
+                    y1 = int(0.02 * ny)
+                    y2 = int(0.20 * ny)
                     self.current_rms_box = [x1, x2, y1, y2]
                     for layer in self.contour_layers:
                         if layer["source"] == "same":
@@ -2165,32 +2067,49 @@ class SolarRadioImageTab(
                     print(f"Error showing image stats: {e}")
                     self.show_status_message(f"Error showing image stats: {e}")
 
+        except StokesUnavailable:
+            # The image lacks a plane this product needs: say so, rather than
+            # showing another plane under this one's name
+            raise
         except Exception as e:
             from astropy.io import fits
 
-            # Handle FITS files with Stokes axis (e.g., HPC converted files)
+            # FITS files CASA cannot read
             try:
                 pix = self._load_fits_stokes(
-                    imagename, stokes, rms_box=tuple(self.current_rms_box)
+                    imagename, stokes, threshold, rms_box=tuple(self.current_rms_box)
                 )
-                self.current_image_data = pix
+            except StokesUnavailable:
+                raise
             except Exception as fits_err:
-                print(f"[ERROR] Error loading FITS data: {fits_err}")
-                self.show_status_message(f"Error loading FITS data: {fits_err}")
+                logger.error(f"Error loading FITS data: {fits_err}")
+                # Last resort: the raw pixels of a 2D image, as [x, y]
                 try:
-                    # Last resort: just get raw data
-                    pix = fits.getdata(readable_image_path(imagename))
-                    self.current_image_data = pix
+                    raw = np.squeeze(fits.getdata(readable_image_path(imagename)))
                 except Exception as e2:
-                    print(f"[ERROR] Error getting data: {e2}")
-                    self.show_status_message(f"Error getting data: {e2}")
-                    pix = None
+                    raise ImageUnreadable(
+                        f"Neither CASA nor the FITS reader can read it. CASA: {e}. "
+                        f"FITS: {e2}"
+                    ) from e2
+                if raw.ndim != 2:
+                    raise ImageUnreadable(
+                        f"CASA cannot read it ({e}), and the FITS reader found no "
+                        f"2D image in it ({fits_err})"
+                    ) from fits_err
+                pix = raw.T
+            self.current_image_data = pix
             csys = None
             psf = None
-            self.psf = None  # Clear PSF so beam from previous image doesn't persist
+            # Nothing of the previous image's may remain: its beam and its
+            # coordinate system (zoom to 1°, the solar disk, HPC detection)
+            self.psf = None
+            self.current_wcs = None
+            # The FITS reader does not downsample
+            self._full_image_shape = pix.shape
+            self._downsample = 1
 
         if pix is not None:
-            height, width = pix.shape
+            nx, ny = pix.shape  # the image is indexed [x, y]
             # For HPC/SOLAR-X or HPLN images, disk center is at world (0,0)
             _is_hpc = self._is_already_hpc()
             if _is_hpc and self.current_wcs:
@@ -2204,21 +2123,21 @@ class SolarRadioImageTab(
                     cx, cy = float(pix_origin[0]), float(pix_origin[1])
                     self.solar_disk_center = (cx, cy)
                 except Exception:
-                    self.solar_disk_center = (width // 2, height // 2)
+                    self.solar_disk_center = (nx // 2, ny // 2)
             else:
-                self.solar_disk_center = (width // 2, height // 2)
+                self.solar_disk_center = (nx // 2, ny // 2)
 
             # Make sure RMS box is within image bounds
-            if self.current_rms_box[1] > height:
-                self.current_rms_box[1] = height
-            if self.current_rms_box[3] > width:
-                self.current_rms_box[3] = width
+            if self.current_rms_box[1] > nx:
+                self.current_rms_box[1] = nx
+            if self.current_rms_box[3] > ny:
+                self.current_rms_box[3] = ny
 
             # Update image stats when data is loaded
             try:
                 self.show_image_stats(rms_box=self.current_rms_box)
             except Exception as e:
-                print(f"[ERROR] Error showing image stats: {e}")
+                logger.error(f"Error showing image stats: {e}")
                 self.show_status_message(f"Error showing image stats: {e}")
 
         # Store the FITS header for TB calculation
@@ -2302,12 +2221,11 @@ class SolarRadioImageTab(
                         )
 
                     # Get frequency
-                    if "refval" in dir(csys):
-                        refval = csys.referencevalue()["numeric"]
-                        for i, unit in enumerate(csys.units()):
-                            if unit == "Hz":
-                                self.current_header["CRVAL3"] = refval[i]
-                                break
+                    refval = csys.referencevalue()["numeric"]
+                    for i, unit in enumerate(csys.units()):
+                        if unit == "Hz":
+                            self.current_header["CRVAL3"] = refval[i]
+                            break
 
                     # Get units
                     bunit = info.brightness_unit
@@ -2359,7 +2277,7 @@ class SolarRadioImageTab(
                             self.hpc_btn.setToolTip("Convert to Helioprojective view")
 
                 except Exception as casa_err:
-                    print(f"[TB] CASA header extraction error: {casa_err}")
+                    logger.warning(f"[TB] CASA header extraction error: {casa_err}")
                     self.show_status_message(
                         f"[TB] CASA header extraction error: {casa_err}"
                     )
@@ -2369,7 +2287,7 @@ class SolarRadioImageTab(
                         self.tb_btn.setEnabled(False)
 
         except Exception as e:
-            print(f"[ERROR] Error loading header: {e}")
+            logger.error(f"Error loading header: {e}")
             self.show_status_message(f"[TB] Error loading header: {e}")
             self.current_header = None
             self._current_bunit = ""
@@ -2402,7 +2320,7 @@ class SolarRadioImageTab(
             self.show_status_message(
                 f"Loading data for Stokes {stokes}... Please wait..."
             )
-            QApplication.processEvents()
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
         try:
             threshold = float(self.threshold_entry.text())
@@ -2415,25 +2333,27 @@ class SolarRadioImageTab(
             with busy():
                 self.load_data(self.imagename, stokes, threshold)
             self._range_stokes = stokes
-        except RuntimeError as e:
-            # Show warning dialog for missing Stokes data
-            QMessageBox.warning(
-                self,
-                "Stokes Parameter Error",
-                f"Cannot load Stokes {stokes} from this image:\n\n{str(e)}\n\nThe image may be single-Stokes (I only) or missing the required polarization data.",
-            )
-            # Revert to Stokes I if possible
-            if self.stokes_combo.currentText() != "I":
-                self.stokes_combo.blockSignals(True)
-                self.stokes_combo.setCurrentText("I")
-                self.stokes_combo.blockSignals(False)
-            return
         except Exception as e:
-            QMessageBox.warning(
-                self,
-                "Data Loading Error",
-                f"Error loading data for Stokes {stokes}:\n\n{str(e)}\n\nThe image may be single-Stokes (I only) or missing the required polarization data.",
-            )
+            import traceback
+
+            if isinstance(e, StokesUnavailable):
+                # e.g. "The image has no Stokes Q plane (its planes are I, V)."
+                QMessageBox.warning(
+                    self, "Stokes Not Available", f"Cannot show Stokes {stokes}.\n\n{e}"
+                )
+            else:
+                show_error(
+                    self,
+                    "Could Not Load Stokes",
+                    f"Stokes {stokes} could not be loaded:\n\n{e}",
+                    traceback.format_exc(),
+                )
+            # Back to the product still on screen
+            shown = getattr(self, "_range_stokes", "I")
+            if self.stokes_combo.currentText() != shown:
+                self.stokes_combo.blockSignals(True)
+                self.stokes_combo.setCurrentText(shown)
+                self.stokes_combo.blockSignals(False)
             return
 
         data = self.current_image_data
@@ -2493,18 +2413,6 @@ class SolarRadioImageTab(
             disabled_color = QColor("#cccccc")
             enabled_color = QColor("#000000")
 
-        # Derived parameters and their requirements
-        # Parameters requiring Q: Q, Q/I
-        # Parameters requiring U: U, U/I, U/V, L, Lfrac, PANG
-        # Parameters requiring V: V, Vfrac, U/V
-        requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
-        requires_u = {"U", "U/I", "U/V", "L", "Lfrac", "PANG"}
-        requires_v = {"V", "Vfrac", "U/V"}
-
-        has_q = "Q" in available_stokes
-        has_u = "U" in available_stokes
-        has_v = "V" in available_stokes
-
         # Changing the current item's flags/colour makes QComboBox emit
         # currentTextChanged, which would reload and replot the image twice.
         # Nothing is selected here, so keep the combo quiet while updating.
@@ -2513,16 +2421,8 @@ class SolarRadioImageTab(
             # Iterate through combo items and enable/disable based on requirements
             model = self.stokes_combo.model()
             for i in range(self.stokes_combo.count()):
-                item_text = self.stokes_combo.itemText(i)
-
-                # Check if this item can be enabled
-                enabled = True
-                if item_text in requires_q and not has_q:
-                    enabled = False
-                if item_text in requires_u and not has_u:
-                    enabled = False
-                if item_text in requires_v and not has_v:
-                    enabled = False
+                # Enabled when the image has the planes it is computed from
+                enabled = not missing_planes(self.stokes_combo.itemText(i), available_stokes)
 
                 # Set item enabled/disabled using model flags AND foreground color
                 item = model.item(i)
@@ -2560,35 +2460,14 @@ class SolarRadioImageTab(
         # Update combo box state
         self._update_stokes_combo_state(available_stokes)
 
-        # Check if selected Stokes is valid
-        requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
-        requires_u = {"U", "U/I", "U/V", "L", "Lfrac", "PANG"}
-        requires_v = {"V", "Vfrac", "U/V"}
-
-        has_q = "Q" in available_stokes
-        has_u = "U" in available_stokes
-        has_v = "V" in available_stokes
-
-        needs_switch = False
-        missing_stokes = []
-
-        if selected_stokes in requires_q and not has_q:
-            needs_switch = True
-            missing_stokes.append("Q")
-        if selected_stokes in requires_u and not has_u:
-            needs_switch = True
-            missing_stokes.append("U")
-        if selected_stokes in requires_v and not has_v:
-            needs_switch = True
-            missing_stokes.append("V")
-
-        if needs_switch:
+        missing_stokes = missing_planes(selected_stokes, available_stokes)
+        if missing_stokes:
             # Show warning dialog
             QMessageBox.warning(
                 self,
                 "Stokes Parameter Unavailable",
                 f"The selected Stokes parameter '{selected_stokes}' requires "
-                f"polarization data ({', '.join(set(missing_stokes))}) that is not available "
+                f"polarization data ({', '.join(missing_stokes)}) that is not available "
                 f"in this image.\n\n"
                 f"Available Stokes: {', '.join(available_stokes)}\n\n"
                 f"Switching to Stokes I.",
@@ -2819,33 +2698,35 @@ class SolarRadioImageTab(
                 main_window.showFullScreen()
     '''
 
-    def closeEvent(self, event):
-        # Clean up HPC temp file if exists
-        import os
+    def cleanup(self):
+        """Release what the tab holds once it is closed: its timers, its
+        temporary files (HPC, RA/Dec, TB and converted contour images) and
+        its image."""
+        for timer in (
+            self._zoom_timer,
+            self._nav_record_timer,
+            getattr(self, "_settle_timer", None),
+            getattr(self, "_plot_timer", None),
+            self._gamma_debounce_timer,
+        ):
+            if timer is not None:
+                timer.stop()
+        for path in (self._hpc_temp_file, self._radec_temp_file, self._tb_temp_file):
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        self._hpc_temp_file = self._radec_temp_file = self._tb_temp_file = None
+        self.remove_contour_conversions()
+        self.figure.clear()
+        self.image_plot = None
+        self.current_image_data = None
+        self._cached_transposed = None
+        theme_manager.unregister_owner(self)
 
-        if hasattr(self, "_hpc_temp_file") and self._hpc_temp_file:
-            if os.path.exists(self._hpc_temp_file):
-                try:
-                    os.remove(self._hpc_temp_file)
-                except Exception:
-                    pass
-        # Clean up RA/Dec temp file if exists (from HPC->RA/Dec conversion)
-        if hasattr(self, "_radec_temp_file") and self._radec_temp_file:
-            if os.path.exists(self._radec_temp_file):
-                try:
-                    os.remove(self._radec_temp_file)
-                except Exception:
-                    pass
-        # Clean up TB temp file if exists
-        if hasattr(self, "_tb_temp_file") and self._tb_temp_file:
-            if os.path.exists(self._tb_temp_file):
-                try:
-                    os.remove(self._tb_temp_file)
-                except Exception:
-                    pass
-        # Clean up coordinate-transformed contour images
-        if hasattr(self, "_contour_conversions"):
-            self.remove_contour_conversions()
+    def closeEvent(self, event):
+        self.cleanup()
         super().closeEvent(event)
 
     def _update_overlay_toggle_styles(self):
@@ -3163,24 +3044,10 @@ class SolarRadioImageViewerApp(
             else:
                 basename = os.path.basename(file_path.rstrip("/"))
                 target_tab = self.add_new_tab(basename)
+                if target_tab is None:  # at the tab limit
+                    break
 
-            # Now load the image into the tab
-            # Reset remote mode for target tab when receiving local dropped file
-            target_tab._is_remote_mode = False
-            target_tab._remote_file_list = []
-            target_tab._remote_base_dir = None
-
-            target_tab.imagename = file_path
-            target_tab.dir_entry.setText(file_path)
-
-            # Update view
-            target_tab.on_visualization_changed(dir_load=True)
-            target_tab.update_tab_name_from_path(file_path)
-
-            # Scan directory
-            from PyQt5.QtCore import QTimer
-
-            QTimer.singleShot(100, target_tab._scan_directory_files)
+            target_tab.open_image_path(file_path)
 
     def _update_update_btn_style(self):
         """Update the update notification button style based on theme."""
@@ -3247,25 +3114,11 @@ class SolarRadioImageViewerApp(
             return
 
         if index >= 0 and index < len(self.tabs):
-            # Clean up temp files before removing tab
-            tab = self.tabs[index]
-            import os
-
-            if hasattr(tab, "_hpc_temp_file") and tab._hpc_temp_file:
-                if os.path.exists(tab._hpc_temp_file):
-                    try:
-                        os.remove(tab._hpc_temp_file)
-                    except:
-                        pass
-            if hasattr(tab, "_tb_temp_file") and tab._tb_temp_file:
-                if os.path.exists(tab._tb_temp_file):
-                    try:
-                        os.remove(tab._tb_temp_file)
-                    except:
-                        pass
-
+            tab = self.tabs.pop(index)
             self.tab_widget.removeTab(index)
-            del self.tabs[index]
+            # A removed page is not deleted by Qt: free it and its image
+            tab.cleanup()
+            tab.deleteLater()
 
     def close_current_tab(self):
         """Close the currently active tab"""
@@ -3301,7 +3154,7 @@ class SolarRadioImageViewerApp(
         except ImportError:
             self.show_status_message("Error: Log Console module not found")
         except Exception as e:
-            print(f"[ERROR] Failed to open log console: {e}")
+            logger.error(f"Failed to open log console: {e}")
             self.show_status_message(f"Error opening log console: {e}")
 
     def create_menus(self):
@@ -3328,6 +3181,9 @@ class SolarRadioImageViewerApp(
         open_act.setStatusTip("Open a FITS file or CASA image")
         open_act.triggered.connect(self.open_image)
         file_menu.addAction(open_act)
+
+        self.recent_menu = file_menu.addMenu("Open Recent")
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
 
         file_menu.addSeparator()
 
@@ -3918,7 +3774,7 @@ class SolarRadioImageViewerApp(
                             if hasattr(ax.coords, "frame"):
                                 ax.coords.frame.set_color(text_color)
                         except Exception as e:
-                            print(f"[ERROR] Error updating WCSAxes colors: {e}")
+                            logger.error(f"Error updating WCSAxes colors: {e}")
                             self.show_status_message(
                                 f"Error updating WCSAxes colors: {e}"
                             )
@@ -3932,6 +3788,34 @@ class SolarRadioImageViewerApp(
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
             current_tab.select_file_or_directory()
+
+    def _fill_recent_menu(self):
+        """File > Open Recent: the images opened lately, newest first."""
+        from .ui.recent_files import clear_recent_images, recent_images
+
+        menu = self.recent_menu
+        menu.clear()
+        paths = recent_images()
+        for path in paths:
+            name = os.path.basename(path.rstrip("/")) or path
+            action = menu.addAction(name)
+            action.setToolTip(path)
+            action.setStatusTip(path)
+            action.triggered.connect(lambda _=False, p=path: self.open_recent_image(p))
+        if not paths:
+            menu.addAction("No recent images").setEnabled(False)
+            return
+        menu.addSeparator()
+        menu.addAction("Clear List").triggered.connect(clear_recent_images)
+
+    def open_recent_image(self, path):
+        """Open ``path`` in the current tab (in a new one if that shows an
+        image from a server)."""
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab is None or getattr(current_tab, "_is_remote_mode", False):
+            current_tab = self.add_new_tab(os.path.basename(path.rstrip("/")))
+        if current_tab is not None:
+            current_tab.open_image_path(path)
 
     def show_batch_dialog(self):
         from .dialogs import BatchProcessDialog
@@ -3972,7 +3856,14 @@ class SolarRadioImageViewerApp(
             self._open_dialogs.append(dialog)
             dialog.show()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to get metadata: {str(e)}")
+            import traceback
+
+            show_error(
+                self,
+                "Metadata Unavailable",
+                f"Could not read the image's metadata: {e}",
+                traceback.format_exc(),
+            )
 
     def show_update_dialog(self):
         """Show the update check dialog (non-modal)."""
@@ -4224,11 +4115,62 @@ class SolarRadioImageViewerApp(
         self._open_dialogs.append(dialog)
         dialog.show()
 
-    def show_keyboard_shortcuts(parent=None):
-        """Show keyboard shortcuts dialog with modern, professional UI design."""
+    # Keys and mouse gestures of the image, which no menu shows. Handled by
+    # handle_view_key (R, 1, +, -, arrows), keyPressEvent below (Space,
+    # Enter, Esc), the file navigation shortcuts ([ ] { }) and the tab bar
+    # (Ctrl+Tab); keep this list in step with them.
+    IMAGE_KEYS = [
+        ("R", "Reset the view"),
+        ("1", "Zoom to 1° × 1°"),
+        ("+  or  =", "Zoom in"),
+        ("-", "Zoom out"),
+        ("Arrow keys", "Pan"),
+        ("Space  or  Enter", "Redraw the image"),
+        ("Esc", "Leave a text field (the keys above then work again)"),
+        ("[  or  ]", "Previous / next file in the folder"),
+        ("{  or  }", "First / last file in the folder"),
+        ("Ctrl+Tab  or  Ctrl+Shift+Tab", "Next / previous tab"),
+    ]
+    MOUSE_GESTURES = [
+        ("Scroll  or  Pinch", "Zoom about the pointer"),
+        ("Middle-drag", "Pan (left-drag too, with the Pan tool)"),
+        ("Right-drag", "Zoom to the box drawn"),
+        ("Double-click", "Zoom in (with the Pan tool); Shift: zoom out"),
+    ]
+
+    def _shortcut_sections(self):
+        """(title, [(keys, what it does)]) for the Keyboard Shortcuts dialog:
+        each menu's actions that have a shortcut, then the image's keys and
+        mouse gestures."""
+        from PyQt5.QtGui import QKeySequence
+
+        def rows_of(menu, prefix=""):
+            rows = []
+            for action in menu.actions():
+                text = prefix + action.text().replace("&", "")
+                if action.menu() is not None:
+                    # e.g. "AIA Presets: 171 Å"
+                    rows += rows_of(action.menu(), f"{text}: ")
+                elif not action.shortcut().isEmpty():
+                    rows.append((action.shortcut().toString(QKeySequence.NativeText), text))
+            return rows
+
+        sections = []
+        for top in self.menuBar().actions():
+            if top.menu() is not None:
+                rows = rows_of(top.menu())
+                if rows:
+                    sections.append((top.text().replace("&", ""), rows))
+        sections.append(("Image", self.IMAGE_KEYS))
+        sections.append(("Mouse", self.MOUSE_GESTURES))
+        return sections
+
+    def show_keyboard_shortcuts(self):
+        """Show the keyboard shortcuts: those of the menus, read from the
+        menus themselves, and the keys and mouse gestures of the image."""
         from PyQt5.QtWidgets import QGridLayout, QScrollArea, QFrame, QLineEdit
 
-        dialog = QDialog(parent)
+        dialog = QDialog(self)
         dialog.setWindowTitle("Keyboard Shortcuts")
         dialog.setMinimumSize(850, 600)
 
@@ -4272,86 +4214,7 @@ class SolarRadioImageViewerApp(
         scroll_layout.setSpacing(20)
         scroll_layout.setContentsMargins(0, 0, 10, 0)
 
-        # Shortcut categories
-        categories = [
-            (
-                "📁",
-                "File Operations",
-                [
-                    ("Ctrl+O", "Open Image (FITS file or CASA image)"),
-                    ("Ctrl+Shift+R", "Connect to Remote Server"),
-                    ("Ctrl+E", "Export Figure"),
-                    ("Ctrl+F", "Export as FITS"),
-                    ("Ctrl+Shift+N", "Fast Viewer"),
-                    ("Ctrl+Q", "Exit"),
-                ],
-            ),
-            (
-                "🧭",
-                "Navigation & View",
-                [
-                    ("R", "Reset View"),
-                    ("1", "1°×1° Zoom"),
-                    ("+  or  =", "Zoom In"),
-                    ("-", "Zoom Out"),
-                    ("Space  or  Enter", "Redraw Display"),
-                    ("Ctrl+D", "Toggle Dark/Light Theme"),
-                    ("Ctrl+L", "Log Console"),
-                    ("F11", "Toggle Fullscreen"),
-                ],
-            ),
-            (
-                "🎨",
-                "Display Presets",
-                [
-                    ("F5", "Auto Min/Max"),
-                    ("F6", "Auto Percentile (1-99%)"),
-                    ("F7", "Median ± 3×RMS"),
-                    ("F8", "AIA Presets"),
-                    ("F9", "HMI Presets"),
-                ],
-            ),
-            (
-                "🔧",
-                "Tools & Analysis",
-                [
-                    ("Ctrl+P", "Phase Center Shift"),
-                    ("Ctrl+M", "Image Metadata"),
-                    ("Ctrl+G", "Fit 2D Gaussian"),
-                    # ("Ctrl+L", "Fit Ring Model"),
-                ],
-            ),
-            (
-                "✂️",
-                "Region & Annotation",
-                [
-                    ("Ctrl+S", "Export Sub-Image"),
-                    ("Ctrl+R", "Export Region"),
-                    ("Ctrl+T", "Add Text Annotation"),
-                    ("Ctrl+A", "Add Arrow"),
-                ],
-            ),
-            (
-                "📂",
-                "File Navigation",
-                [
-                    ("[", "Previous File in Directory"),
-                    ("]", "Next File in Directory"),
-                    ("{", "First File"),
-                    ("}", "Last File"),
-                ],
-            ),
-            (
-                "📑",
-                "Tab Management",
-                [
-                    ("Ctrl+N", "New Tab"),
-                    ("Ctrl+W", "Close Current Tab"),
-                    ("Ctrl+Tab", "Switch to Next Tab"),
-                    ("Ctrl+Shift+Tab", "Switch to Previous Tab"),
-                ],
-            ),
-        ]
+        categories = [("", title, rows) for title, rows in self._shortcut_sections()]
 
         # Get theme for styling
         from .ui.styles import theme_manager
@@ -4483,14 +4346,16 @@ class SolarRadioImageViewerApp(
             layout.setSpacing(10)
 
             # Category header
-            header = QLabel(f"{icon}  {name}")
+            header = QLabel(f"{icon}  {name}" if icon else name)
             header.setStyleSheet(header_style)
             layout.addWidget(header)
 
             # Shortcuts grid
             grid = QGridLayout()
             grid.setSpacing(8)
-            grid.setColumnMinimumWidth(0, 200)
+            # Wide enough for the widest keys, so all sections line up
+            grid.setColumnMinimumWidth(0, 290)
+            grid.setColumnStretch(1, 1)  # descriptions next to their keys
 
             shortcut_rows = []
             for row, (key, action) in enumerate(shortcuts):
@@ -4595,19 +4460,9 @@ class SolarRadioImageViewerApp(
 
     def closeEvent(self, event):
         image_prefetcher.shutdown()
-        try:
-            casa_logs = [
-                f
-                for f in os.listdir(".")
-                if f.startswith("casa-") and f.endswith(".log")
-            ]
-            for log in casa_logs:
-                try:
-                    os.remove(log)
-                except:
-                    pass
-        except:
-            pass
+        # Tabs get no close event of their own when the window closes
+        for tab in self.tabs:
+            tab.cleanup()
         super().closeEvent(event)
 
         # Ensure the entire application (including Log Console) quits
@@ -4675,7 +4530,7 @@ class SolarRadioImageViewerApp(
             from PyQt5.QtWidgets import QMessageBox
 
             error_message = f"Error opening video creation dialog: {str(e)}"
-            print(f"[ERROR] {error_message}")  # Log to console
+            logger.error(f"{error_message}")
             QMessageBox.critical(self, "Error", error_message)
 
     def show_noaa_events_viewer(self):
@@ -4720,7 +4575,7 @@ class SolarRadioImageViewerApp(
             from PyQt5.QtWidgets import QMessageBox
 
             error_message = f"Error opening NOAA Events Viewer: {str(e)}"
-            print(f"[ERROR] {error_message}")
+            logger.error(f"{error_message}")
             QMessageBox.critical(self, "Error", error_message)
 
     def show_unit_conversion_dialog(self):
@@ -4741,7 +4596,7 @@ class SolarRadioImageViewerApp(
             dialog.show()
         except Exception as e:
             error_message = f"Error opening unit conversion dialog: {str(e)}"
-            print(f"[ERROR] {error_message}")  # Log to console
+            logger.error(f"{error_message}")
             QMessageBox.critical(self, "Error", error_message)
 
     def show_format_conversion_dialog(self):
@@ -4762,7 +4617,7 @@ class SolarRadioImageViewerApp(
             dialog.show()
         except Exception as e:
             error_message = f"Error opening format conversion dialog: {str(e)}"
-            print(f"[ERROR] {error_message}")  # Log to console
+            logger.error(f"{error_message}")
             QMessageBox.critical(self, "Error", error_message)
 
     def show_coordinate_transformation_dialog(self):
@@ -4789,7 +4644,7 @@ class SolarRadioImageViewerApp(
         except Exception as e:
             # Show error message with details
             error_message = f"Error opening coordinate transformation dialog: {str(e)}"
-            print(f"[ERROR] {error_message}")  # Log to console
+            logger.error(f"{error_message}")
             QMessageBox.critical(self, "Error", error_message)
 
 

@@ -5,6 +5,9 @@ Loading and drawing run on the GUI thread, so nothing on screen changes until
 they finish: the wait cursor has to reach the screen before the work starts.
 :func:`busy` sets it and lets Qt show it first. A dialog that opens while busy
 (an error message, say) gets the normal cursor back until it closes.
+
+Where a ``with`` block does not fit, begin_busy() and end_busy() do the same
+in two calls, which must pair up like setOverrideCursor/restoreOverrideCursor.
 """
 
 from contextlib import contextmanager
@@ -46,24 +49,47 @@ class _DialogCursor(QObject):
 _dialog_cursor = None
 
 
-@contextmanager
-def busy():
-    """Show the wait cursor while the ``with`` block runs. Nests."""
+def begin_busy():
+    """Show the wait cursor until the matching end_busy(). Nests."""
     global _depth, _dialog_cursor
-    app = QApplication.instance()
     QApplication.setOverrideCursor(Qt.WaitCursor)
     _depth += 1
     if _depth == 1:
         _dialog_cursor = _DialogCursor()
-        app.installEventFilter(_dialog_cursor)
+        QApplication.instance().installEventFilter(_dialog_cursor)
         # Let the cursor change reach the screen before the work blocks
         QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+
+def end_busy():
+    """End a begin_busy(). Does nothing without one, e.g. on an error path
+    that can be reached before the begin_busy()."""
+    global _depth, _dialog_cursor
+    if _depth == 0:
+        return
+    _depth -= 1
+    if _depth == 0:
+        QApplication.instance().removeEventFilter(_dialog_cursor)
+        _dialog_cursor.release()
+        _dialog_cursor = None
+    QApplication.restoreOverrideCursor()
+
+
+def reset():
+    """Forget every begin_busy() left open, after an unexpected error cut
+    the work short (the crash handler removes the cursors themselves)."""
+    global _depth, _dialog_cursor
+    if _dialog_cursor is not None:
+        QApplication.instance().removeEventFilter(_dialog_cursor)
+        _dialog_cursor = None
+    _depth = 0
+
+
+@contextmanager
+def busy():
+    """Show the wait cursor while the ``with`` block runs. Nests."""
+    begin_busy()
     try:
         yield
     finally:
-        _depth -= 1
-        if _depth == 0:
-            app.removeEventFilter(_dialog_cursor)
-            _dialog_cursor.release()
-            _dialog_cursor = None
-        QApplication.restoreOverrideCursor()
+        end_busy()

@@ -20,6 +20,42 @@ _lock = threading.Lock()
 _fits_headers = OrderedDict()
 _casa_infos = OrderedDict()
 
+# The sky axes as CASA names them (it also names helioprojective FITS axes,
+# HPLN/HPLT, Right Ascension and Declination)
+_SKY_AXIS_NAMES = (("Right Ascension", "Declination"), ("SOLAR-X", "SOLAR-Y"))
+
+
+def sky_axes(axis_names):
+    """Indices (x, y) of the two sky axes among a CASA image's axis names."""
+    names = [str(name) for name in axis_names]
+    for x_name, y_name in _SKY_AXIS_NAMES:
+        if x_name in names and y_name in names:
+            return names.index(x_name), names.index(y_name)
+    raise ValueError(
+        f"The image has no sky axes SolarViewer can show (its axes are "
+        f"{', '.join(names)}); it needs Right Ascension and Declination, "
+        f"or SOLAR-X and SOLAR-Y."
+    )
+
+
+def casa_obs_time(csys):
+    """Observation time of a CASA image as an astropy Time, from its
+    coordinate system (a coordsys tool, its record, or its epoch), or None if
+    the image has no date: CASA then gives MJD 0, a day in 1858."""
+    record = csys.torecord() if hasattr(csys, "torecord") else csys
+    if not isinstance(record, dict):
+        return None
+    m0 = (record.get("obsdate") or record).get("m0") or {}
+    try:
+        mjd = float(m0["value"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if m0.get("unit", "d") != "d" or mjd <= 0:
+        return None
+    from astropy.time import Time
+
+    return Time(mjd, format="mjd")
+
 
 def file_signature(path):
     """Identity of ``path``'s current contents, or None if it cannot be read.

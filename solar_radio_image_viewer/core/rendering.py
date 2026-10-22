@@ -2,17 +2,17 @@
 Rendering the image tab: plot_image and its drawing steps.
 """
 
+import logging
 import os
 
 import matplotlib
 import numpy as np
-from astropy.time import Time
 from matplotlib.axes import Axes
 from matplotlib.colors import LogNorm, Normalize
 from matplotlib.patches import Ellipse
 
 from ..processing.norms import AsinhNorm, HistEqNorm, PowerNorm, SqrtNorm, ZScaleNorm
-from ..processing.image_meta import casa_info, fits_header
+from ..processing.image_meta import casa_info, casa_obs_time, fits_header
 from ..processing.colormaps import ensure_solar_colormaps
 from ..processing.contour_layers import contour_layer_settings
 from .canvas import READOUT_HINT
@@ -20,6 +20,8 @@ from .display_resolution import draw_at_screen_resolution
 from .presets import display_range
 from ..processing.fits_io import readable_image_path
 from ..ui.busy import busy
+
+logger = logging.getLogger(__name__)
 
 
 class RenderingMixin:
@@ -200,6 +202,7 @@ class RenderingMixin:
             self.draw_contours(ax)
 
         self.init_region_editor(ax)
+        self._init_box_zoom(ax)
 
         self._apply_layout_settings(tight_layout)
 
@@ -255,7 +258,7 @@ class RenderingMixin:
                     try:
                         self._cached_fits_header = dict(fits.getheader(readable_image_path(self.imagename)))
                     except Exception as e2:
-                        print(f"[ERROR] Error getting header: {e2}")
+                        logger.error(f"Error getting header: {e2}")
                         self.show_status_message(f"Error getting header: {e2}")
                         self._cached_fits_flag = False
 
@@ -265,7 +268,7 @@ class RenderingMixin:
                 self._cached_summary = info.summary
                 self._cached_csys_record = info.csys_record
             except Exception as e:
-                print(f"[ERROR] Error getting image metadata: {e}")
+                logger.error(f"Error getting image metadata: {e}")
                 self.show_status_message(f"Error getting image metadata: {e}")
 
             self._cached_imagename = self.imagename
@@ -355,7 +358,7 @@ class RenderingMixin:
                     )
                     self._cached_wcs_id = id(self.current_wcs)
                 except Exception as e:
-                    print(f"[ERROR] Error creating WCS: {e}")
+                    logger.error(f"Error creating WCS: {e}")
                     self.show_status_message(f"Error creating WCS: {e}")
                     self._cached_wcs_obj = None
             wcs_obj = self._cached_wcs_obj
@@ -417,7 +420,7 @@ class RenderingMixin:
                         header["CTYPE2"],
                     ]
                 except Exception as e:
-                    print(f"[ERROR] Error getting projection: {e}")
+                    logger.error(f"Error getting projection: {e}")
                     self.show_status_message(
                         f"Error getting projection: {e}"
                     )
@@ -439,14 +442,14 @@ class RenderingMixin:
 
             else:
                 projection = csys.projection()["type"]
-                print(f"[ERROR] Unsupported projection: {projection}")
+                logger.error(f"Unsupported projection: {projection}")
                 self.show_status_message(
                     f"Unsupported projection: {projection}"
                 )
                 wcs_obj = None
 
         except Exception as e:
-            print(f"[ERROR] Error getting projection: {e}")
+            logger.error(f"Error getting projection: {e}")
             self.show_status_message(f"Error getting projection: {e}")
             wcs_obj = None
         return wcs_obj
@@ -532,7 +535,7 @@ class RenderingMixin:
                     ax.coords[1].set_major_formatter("dd:mm:ss")
                 ax.tick_params(axis="both", which="major", labelsize=10)
             except Exception as e:
-                print(f"[ERROR] Error setting up WCS axes: {e}")
+                logger.error(f"Error setting up WCS axes: {e}")
                 self.show_status_message(f"Error setting up WCS axes: {e}")
                 ax = self.figure.add_subplot(111)
                 im = ax.imshow(
@@ -604,7 +607,7 @@ class RenderingMixin:
                             )
                         temp_flag = True
                     except Exception as e:
-                        print(f"[ERROR] Error getting image time: {e}")
+                        logger.error(f"Error getting image time: {e}")
                         self.show_status_message(f"Error getting image time: {e}")
                         image_time = None
 
@@ -617,7 +620,7 @@ class RenderingMixin:
                             else:
                                 image_freq = f"{image_freq:.2f} {freq_unit}"
                     except Exception as e:
-                        print(f"[ERROR] Error getting image frequency: {e}")
+                        logger.error(f"Error getting image frequency: {e}")
                         self.show_status_message(f"Error getting image frequency: {e}")
                         image_freq = None
 
@@ -632,18 +635,12 @@ class RenderingMixin:
                         image_freq = f"{frequency_ref:.2f} {frequency_unit}"
 
                 if not temp_flag:
-                    if "obsdate" in csys_record:
-                        obsdate = csys_record["obsdate"]
-                        m0 = obsdate.get("m0", {})
-                        time_value = m0.get("value", None)
-                        time_unit = m0.get("unit", None)
-                        refer = obsdate.get("refer", None)
-                        if refer == "UTC" or time_unit == "d":
-                            t = Time(time_value, format="mjd")
-                            t.precision = 1
-                            image_time = t.iso
-                        else:
-                            image_time = None
+                    t = casa_obs_time(csys_record)
+                    if t is not None:
+                        t.precision = 1
+                        image_time = t.iso
+                    else:
+                        image_time = None
 
                 if fits_flag:
                     if (
@@ -733,7 +730,7 @@ class RenderingMixin:
                     )
                 ax.set_title(title)
             except Exception as e:
-                print(f"[ERROR] Error getting title: {e}")
+                logger.error(f"Error getting title: {e}")
                 self.show_status_message(f"Error getting title: {e}")
                 title = (
                     os.path.basename(self.imagename) if self.imagename else "No Image"
@@ -769,7 +766,7 @@ class RenderingMixin:
         from ..ui.styles import theme_manager
 
         def on_error(message):
-            print(f"[ERROR] {message}")
+            logger.error(f"{message}")
             self.show_status_message(message)
 
         apply_plot_settings(
@@ -847,7 +844,7 @@ class RenderingMixin:
                     "margin": 0.05,
                 }
             except Exception as e:
-                print(f"[ERROR] Error drawing beam: {e}")
+                logger.error(f"Error drawing beam: {e}")
                 self.show_status_message(f"Error drawing beam: {e}")
 
     def _update_beam_position(self, ax):

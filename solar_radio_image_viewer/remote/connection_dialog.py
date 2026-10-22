@@ -26,9 +26,16 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QFrame,
 )
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import QEventLoop, pyqtSignal
 
-from .ssh_manager import SSHConnection, SSHConnectionError, ConnectionProfile
+from ..ui.busy import busy
+from .ssh_manager import (
+    ConnectionProfile,
+    SSHConnection,
+    SSHConnectionError,
+    UnknownHostKey,
+    trust_host_key,
+)
 
 
 class ConnectionDialog(QDialog):
@@ -420,11 +427,10 @@ class ConnectionDialog(QDialog):
         # Force UI update
         from PyQt5.QtWidgets import QApplication
 
-        QApplication.processEvents()
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
         try:
-            conn = SSHConnection()
-            conn.connect(**params, timeout=10.0)
+            conn = self._open_connection(params, timeout=10.0)
 
             home_dir = conn.get_home_directory()
             self.status_label.setText(
@@ -454,11 +460,10 @@ class ConnectionDialog(QDialog):
 
         from PyQt5.QtWidgets import QApplication
 
-        QApplication.processEvents()
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
         try:
-            self._ssh_connection = SSHConnection()
-            self._ssh_connection.connect(**params, timeout=30.0)
+            self._ssh_connection = self._open_connection(params, timeout=30.0)
 
             self.connectionEstablished.emit(self._ssh_connection)
             self.accept()
@@ -473,6 +478,35 @@ class ConnectionDialog(QDialog):
             self._ssh_connection = None
             self.test_btn.setEnabled(True)
             self.connect_btn.setEnabled(True)
+
+    def _open_connection(self, params, timeout):
+        """An SSHConnection made with ``params``. The key of a server not
+        known yet is shown to the user to confirm before anything is sent."""
+        conn = SSHConnection()
+        try:
+            with busy():
+                conn.connect(**params, timeout=timeout)
+        except UnknownHostKey as e:
+            key_type = e.key.get_name()  # ssh-ed25519, ecdsa-sha2-nistp256, ssh-rsa
+            kind = next((k for k in ("ed25519", "ecdsa") if k in key_type), "rsa")
+            answer = QMessageBox.question(
+                self,
+                "Unknown Server",
+                f"SolarViewer does not know the server {e.hostname} yet.\n\n"
+                f"Its {key_type} key fingerprint is:\n{e.fingerprint}\n\n"
+                "Continue only if this matches the server's fingerprint (on the "
+                f"server: ssh-keygen -lf /etc/ssh/ssh_host_{kind}_key.pub).\n\n"
+                "Trust this server and connect?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                raise SSHConnectionError("the server's key was not trusted")
+            trust_host_key(e.hostname, e.key)
+            conn = SSHConnection()
+            with busy():
+                conn.connect(**params, timeout=timeout)
+        return conn
 
     def get_connection(self) -> Optional[SSHConnection]:
         """Get the established connection (after dialog accepted)."""

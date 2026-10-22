@@ -1,6 +1,9 @@
+import logging
 import json
 import os
 from PyQt5.QtCore import QDateTime, Qt
+
+logger = logging.getLogger(__name__)
 
 
 class SessionManager:
@@ -29,7 +32,7 @@ class SessionManager:
                     state = tab.get_state()
                     session_data["tabs"].append(state)
                 except Exception as e:
-                    print(f"[ERROR] Failed to get state for tab: {e}")
+                    logger.error(f"Failed to get state for tab: {e}")
 
         try:
             with open(file_path, "w") as f:

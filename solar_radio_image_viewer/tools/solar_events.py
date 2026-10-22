@@ -2,7 +2,11 @@
 Context lookups for the current image: NOAA events and Helioviewer.
 """
 
+import logging
 from ..processing.fits_io import readable_image_path
+from ..processing.image_meta import casa_obs_time
+
+logger = logging.getLogger(__name__)
 
 
 class SolarEventsMixin:
@@ -89,7 +93,7 @@ class SolarEventsMixin:
                                 image_time[:10], "%Y-%m-%d"
                             ).date()
                 except Exception as fits_err:
-                    print(f"[ERROR] FITS header read failed: {fits_err}")
+                    logger.error(f"FITS header read failed: {fits_err}")
                     self.show_status_message(f"FITS header read failed: {fits_err}")
 
             # Method 2: CASA image
@@ -121,7 +125,7 @@ class SolarEventsMixin:
                                 t = Time(time_value, format="mjd")
                                 extracted_date = t.to_datetime().date()
                     except Exception as casa_err:
-                        print(f"[ERROR] CASA date extraction failed: {casa_err}")
+                        logger.error(f"CASA date extraction failed: {casa_err}")
                         self.show_status_message(
                             f"CASA date extraction failed: {casa_err}"
                         )
@@ -182,7 +186,7 @@ class SolarEventsMixin:
             from PyQt5.QtWidgets import QMessageBox
 
             error_message = f"Error showing NOAA Events: {str(e)}"
-            print(f"[ERROR] {error_message}")
+            logger.error(f"{error_message}")
             self.show_status_message(error_message)
             import traceback
 
@@ -208,7 +212,6 @@ class SolarEventsMixin:
 
             from datetime import datetime, timedelta
 
-            from astropy.time import Time
             from PyQt5.QtCore import QDateTime
 
             from ..helioviewer_browser import HelioviewerBrowser
@@ -270,7 +273,7 @@ class SolarEventsMixin:
                             if obs_datetime:
                                 break
                         except (ValueError, TypeError) as e:
-                            print(f"[WARNING] Failed to parse {key}={date_str}: {e}")
+                            logger.warning(f"Failed to parse {key}={date_str}: {e}")
                             self.show_status_message(
                                 f"Failed to parse {key}={date_str}: {e}"
                             )
@@ -343,7 +346,6 @@ class SolarEventsMixin:
                 ):
                     try:
                         # Use IA tool to read CASA coordinate system
-                        from astropy.time import Time
                         from casatools import image as IA
 
                         ia_tool = IA()
@@ -353,21 +355,14 @@ class SolarEventsMixin:
                         ia_tool.close()
 
                         # Extract obsdate from coordinate system
-                        if "obsdate" in csys_record:
-                            obsdate = csys_record["obsdate"]
-                            m0 = obsdate.get("m0", {})
-                            mjd_value = m0.get("value", None)
-                            if mjd_value is not None:
-                                # CASA stores time as MJD
-                                from astropy.time import Time
-
-                                t = Time(mjd_value, format="mjd")
-                                obs_datetime = t.datetime
+                        t = casa_obs_time(csys_record)
+                        if t is not None:
+                            obs_datetime = t.datetime
                                 # print(
                                 #    f"Extracted CASA observation time: {obs_datetime}"
                                 # )
                     except Exception as e:
-                        print(f"[WARNING] Could not extract CASA observation time: {e}")
+                        logger.warning(f"Could not extract CASA observation time: {e}")
                         import traceback
 
                         traceback.print_exc()

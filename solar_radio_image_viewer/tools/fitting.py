@@ -2,13 +2,41 @@
 2D Gaussian / ring fitting tool for SolarViewer.
 """
 
+import logging
 import numpy as np
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEventLoop
 from PyQt5.QtWidgets import QApplication, QMessageBox
+from ..ui.errors import show_error
 
 from ..processing.fits_io import readable_image_path
+from ..ui.busy import begin_busy, end_busy
 
 from ..processing.models import twoD_elliptical_ring
+
+logger = logging.getLogger(__name__)
+
+
+def imfit_box(roi, shape=None):
+    """CASA ``box`` string ("blcx,blcy,trcx,trcy") for an ROI (xlow, xhigh,
+    ylow, yhigh) of an image indexed [x, y] with ``shape`` (nx, ny).
+
+    The highs are exclusive; the box keeps one pixel clear of the ROI's edge.
+    Raises ValueError if nothing is left inside.
+    """
+    xlow, xhigh, ylow, yhigh = roi
+    # Shrink by 1 pixel safety margin (exclusive -> inclusive -> shrink)
+    xlow, ylow = xlow + 1, ylow + 1
+    xhigh, yhigh = xhigh - 2, yhigh - 2
+    # Clamp to image dimensions to prevent out-of-bounds errors
+    if shape is not None:
+        nx, ny = shape
+        xlow, xhigh = (max(0, min(v, nx - 1)) for v in (xlow, xhigh))
+        ylow, yhigh = (max(0, min(v, ny - 1)) for v in (ylow, yhigh))
+    if xhigh <= xlow:
+        raise ValueError("xhigh <= xlow")
+    if yhigh <= ylow:
+        raise ValueError("yhigh <= ylow")
+    return f"{xlow},{ylow},{xhigh},{yhigh}"
 
 
 class FittingMixin:
@@ -91,35 +119,15 @@ class FittingMixin:
             # Box format: 'x1,y1,x2,y2' (pixel coordinates)
             box = ""
             if current_tab.current_roi and isinstance(current_tab.current_roi, tuple):
-                xlow, xhigh, ylow, yhigh = current_tab.current_roi
-
-                # Shrink by 1 pixel safety margin
-                safe_xlow = xlow + 1
-                safe_ylow = ylow + 1
-                safe_xhigh = xhigh - 1 - 1  # Exclusive -> Inclusive (-1) -> Shrink (-1)
-                safe_yhigh = yhigh - 1 - 1  # Exclusive -> Inclusive (-1) -> Shrink (-1)
-
-                # Clamp to image dimensions to prevent out-of-bounds errors
-                if current_tab.current_image_data is not None:
-                    ny, nx = current_tab.current_image_data.shape
-                    safe_xlow = max(0, min(safe_xlow, nx - 1))
-                    safe_xhigh = max(0, min(safe_xhigh, nx - 1))
-                    safe_ylow = max(0, min(safe_ylow, ny - 1))
-                    safe_yhigh = max(0, min(safe_yhigh, ny - 1))
-
-                # Ensure valid bounds (don't cross over or be invalid)
-                if safe_xhigh <= safe_xlow:
-                    QMessageBox.warning(
-                        self, "Invalid ROI", "Invalid ROI: xhigh <= xlow"
+                try:
+                    # CASA fits the file itself: Fast mode shows fewer pixels
+                    box = imfit_box(
+                        current_tab.roi_at_full_resolution(),
+                        getattr(current_tab, "_full_image_shape", None),
                     )
+                except ValueError as e:
+                    QMessageBox.warning(self, "Invalid ROI", f"Invalid ROI: {e}")
                     return
-                if safe_yhigh <= safe_ylow:
-                    QMessageBox.warning(
-                        self, "Invalid ROI", "Invalid ROI: yhigh <= ylow"
-                    )
-                    return
-
-                box = f"{safe_ylow},{safe_xlow},{safe_yhigh},{safe_xhigh}"  # box uses col,row order (x,y)
 
             # Create temp file for results
             with tempfile.NamedTemporaryFile(
@@ -128,9 +136,9 @@ class FittingMixin:
                 result_file = f.name
 
             # Show wait cursor during fitting
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            begin_busy()
             self.statusBar().showMessage("Fitting Gaussian ... Please wait")
-            QApplication.processEvents()
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
             # Run imfit in a subprocess to avoid casatasks/PyQt5 conflicts
             env = os.environ.copy()
@@ -163,7 +171,7 @@ class FittingMixin:
 
             # Check if subprocess had errors
             if process.returncode != 0:
-                QApplication.restoreOverrideCursor()
+                end_busy()
                 error_msg = process.stderr or process.stdout or "Unknown error"
                 QMessageBox.warning(
                     self, "Fit Error", f"imfit subprocess failed:\n{error_msg}"
@@ -174,7 +182,7 @@ class FittingMixin:
 
             # Read results from temp file
             if not os.path.exists(result_file):
-                QApplication.restoreOverrideCursor()
+                end_busy()
                 QMessageBox.warning(self, "Fit Error", "No results from fitting")
                 return
 
@@ -184,10 +192,10 @@ class FittingMixin:
             os.remove(result_file)
 
             if not output.get("success", False):
-                QApplication.restoreOverrideCursor()
+                end_busy()
                 error = output.get("error", "Unknown error")
                 tb = output.get("traceback", "")
-                print(f"[ERROR] Fitting failed: {error}\n{tb}")
+                logger.error(f"Fitting failed: {error}\n{tb}")
                 QMessageBox.warning(self, "Fit Error", f"Fitting failed: {error}")
                 return
 
@@ -195,7 +203,7 @@ class FittingMixin:
             # With a zero-level offset, imfit can return only the offset when it
             # fails to fit a component; don't report that as an all-zero source.
             if "major_arcsec" not in results:
-                QApplication.restoreOverrideCursor()
+                end_busy()
                 QMessageBox.warning(
                     self,
                     "Fit Failed",
@@ -419,7 +427,7 @@ class FittingMixin:
 
             print("=" * 70 + "\n")
 
-            QApplication.restoreOverrideCursor()
+            end_busy()
 
             # GUI message (compact version)
             msg = (
@@ -436,16 +444,22 @@ class FittingMixin:
             self.statusBar().showMessage("Gaussian fit completed", 3000)
 
         except subprocess.TimeoutExpired:
-            QApplication.restoreOverrideCursor()
+            end_busy()
             QMessageBox.warning(
                 self, "Timeout", "Gaussian fit took too long to complete"
             )
         except Exception as e:
-            QApplication.restoreOverrideCursor()
+            end_busy()
             import traceback
 
             traceback.print_exc()
-            QMessageBox.warning(self, "Fit Error", f"Gaussian fit failed: {str(e)}")
+            show_error(
+                self,
+                "Gaussian Fit Failed",
+                f"The Gaussian fit failed: {e}\n\nTry a box drawn around a single, "
+                "isolated source, a little larger than it.",
+                traceback.format_exc(),
+            )
 
     def fit_2d_ring(self):
         from scipy.optimize import curve_fit
@@ -456,7 +470,6 @@ class FittingMixin:
             return
 
         data = current_tab.current_image_data
-        roi_offset = (0, 0)  # Offset for ROI coordinates
 
         # Check for visible ROI
         has_visible_roi = False
@@ -482,27 +495,31 @@ class FittingMixin:
 
         xlow, xhigh, ylow, yhigh = current_tab.current_roi
         data = data[xlow:xhigh, ylow:yhigh]
-        roi_offset = (ylow, xlow)  # Store offset for coordinate conversion
         if data.size == 0:
             QMessageBox.warning(self, "Invalid ROI", "ROI contains no data")
             return
 
-        ny, nx = data.shape
-        x = np.arange(nx)
-        y = np.arange(ny)
-        xmesh, ymesh = np.meshgrid(x, y)
+        nx, ny = data.shape  # the ROI is indexed [x, y], like the image
+        xmesh, ymesh = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
         coords = np.vstack((xmesh.ravel(), ymesh.ravel()))
         data_flat = data.ravel()
 
-        guess = [np.nanmax(data), nx / 2, ny / 2, nx / 6, nx / 3, np.nanmedian(data)]
+        # Start from the brightness-weighted centre of the ROI
+        weights = np.clip(np.nan_to_num(data - np.nanmedian(data)), 0, None)
+        if weights.sum() > 0:
+            x_guess = float((weights * xmesh).sum() / weights.sum())
+            y_guess = float((weights * ymesh).sum() / weights.sum())
+        else:
+            x_guess, y_guess = nx / 2, ny / 2
+        guess = [np.nanmax(data), x_guess, y_guess, nx / 6, nx / 3, np.nanmedian(data)]
 
         try:
             popt, pcov = curve_fit(twoD_elliptical_ring, coords, data_flat, p0=guess)
             perr = np.sqrt(np.diag(pcov))
 
             # Get absolute pixel coordinates (accounting for ROI offset)
-            x0_px = popt[1] + roi_offset[0]
-            y0_px = popt[2] + roi_offset[1]
+            x0_px = popt[1] + xlow
+            y0_px = popt[2] + ylow
             inner_r_px = abs(popt[3])
             outer_r_px = abs(popt[4])
 
@@ -613,4 +630,12 @@ class FittingMixin:
             QMessageBox.information(self, "Fit Result", msg)
 
         except Exception as e:
-            QMessageBox.warning(self, "Fit Error", f"Ring fit failed: {str(e)}")
+            import traceback
+
+            show_error(
+                self,
+                "Ring Fit Failed",
+                f"The ring fit failed: {e}\n\nTry a box that holds the whole ring, "
+                "with some background around it.",
+                traceback.format_exc(),
+            )

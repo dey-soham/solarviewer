@@ -8,6 +8,7 @@ Contours from another image are traced on that image's own pixel grid and
 the lines are mapped onto the base image through both images' WCS.
 """
 
+import logging
 import os
 
 import numpy as np
@@ -33,6 +34,8 @@ from ..processing.contour_layers import (
     merge_contour_layers,
 )
 from ..processing.image_meta import casa_info, fits_header
+
+logger = logging.getLogger(__name__)
 
 
 class ContoursMixin:
@@ -193,7 +196,7 @@ class ContoursMixin:
                 width = header.get("NAXIS1", 0)
                 height = header.get("NAXIS2", 0)
         except Exception as e:
-            print(f"[ERROR] Could not get image dimensions for {imagepath}: {e}")
+            logger.error(f"Could not get image dimensions for {imagepath}: {e}")
 
         return height, width
 
@@ -282,7 +285,7 @@ class ContoursMixin:
                         f"Failed to load contour data: {contour_layer_name(layer)}"
                     )
         except Exception as e:
-            print(f"[ERROR] Error loading contour data: {e}")
+            logger.error(f"Error loading contour data: {e}")
             self.show_status_message(
                 f"Error loading contour data ({contour_layer_name(layer)}): {e}"
             )
@@ -300,40 +303,19 @@ class ContoursMixin:
             source_image = layer.get("external_image")
 
         if source_image:
-            from ..processing.stokes import get_available_stokes
+            from ..processing.stokes import get_available_stokes, missing_planes
 
             available_stokes = get_available_stokes(source_image)
 
-            # Check if contour Stokes is valid
-            requires_q = {"Q", "Q/I", "L", "Lfrac", "PANG"}
-            requires_u = {"U", "U/I", "V/I", "L", "Lfrac", "PANG"}
-            requires_v = {"V", "Vfrac", "V/I"}
-
-            has_q = "Q" in available_stokes
-            has_u = "U" in available_stokes
-            has_v = "V" in available_stokes
-
-            needs_switch = False
-            missing_stokes = []
-
-            if contour_stokes in requires_q and not has_q:
-                needs_switch = True
-                missing_stokes.append("Q")
-            if contour_stokes in requires_u and not has_u:
-                needs_switch = True
-                missing_stokes.append("U")
-            if contour_stokes in requires_v and not has_v:
-                needs_switch = True
-                missing_stokes.append("V")
-
-            if needs_switch:
+            missing_stokes = missing_planes(contour_stokes, available_stokes)
+            if missing_stokes:
                 # Show warning dialog and switch to Stokes I
                 QMessageBox.warning(
                     self,
                     "Contour Stokes Unavailable",
                     f"The contour Stokes parameter '{contour_stokes}' of "
                     f"'{contour_layer_name(layer)}' requires "
-                    f"polarization data ({', '.join(set(missing_stokes))}) that is not available "
+                    f"polarization data ({', '.join(missing_stokes)}) that is not available "
                     f"in the source image.\n\n"
                     f"Available Stokes: {', '.join(available_stokes)}\n\n"
                     f"Switching contour to Stokes I.",
@@ -406,7 +388,7 @@ class ContoursMixin:
                 f"Contour transformed ({contour_csys_type}→{base_csys_type})"
             )
             return transformed_path
-        print(f"[ERROR] Transformation failed, using original: {external_image}")
+        logger.error(f"Transformation failed, using original: {external_image}")
         self.show_status_message(
             "Coordinate transformation failed, using original contour"
         )
@@ -425,166 +407,10 @@ class ContoursMixin:
     def _load_contour_stokes(self, image_path, stokes, threshold, rms_box, target_size):
         """Contour data for a Stokes product (I/Q/U/V, X/I, L, Lfrac, PANG):
         returns (data, the image's coordsys)."""
-        if stokes in ["I", "Q", "U", "V"]:
-            pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                stokes,
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            contour_data = pix
-
-        elif stokes in ["Q/I", "U/I", "V/I"]:
-            from ..processing.rms import estimate_rms_near_Sun
-
-            numerator_stokes = stokes.split("/")[0]
-            numerator_pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                numerator_stokes,
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            denominator_pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                "I",
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            # Estimate RMS of the numerator Stokes for noise thresholding
-            try:
-                num_rms = estimate_rms_near_Sun(image_path, numerator_stokes, rms_box)
-            except Exception:
-                print(
-                    "[WARNING] Failed to estimate RMS, using standard deviation instead"
-                )
-                num_rms = np.nanstd(numerator_pix)
-
-            # Create mask: pixels below threshold * RMS are masked out
-            noise_mask = np.abs(numerator_pix) < (threshold * num_rms)
-            numerator_pix_masked = numerator_pix.copy()
-            numerator_pix_masked[noise_mask] = 0
-
-            # Division mask: avoid divide by zero
-            div_mask = denominator_pix != 0
-            ratio = np.zeros_like(numerator_pix)
-            ratio[div_mask] = numerator_pix_masked[div_mask] / denominator_pix[div_mask]
-            contour_data = ratio
-        elif stokes == "L":
-            q_pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                "Q",
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            u_pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                "U",
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            l_pix = np.sqrt(q_pix**2 + u_pix**2)
-            contour_data = l_pix
-        elif stokes == "Lfrac":
-            from ..processing.rms import estimate_rms_near_Sun
-
-            q_pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                "Q",
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            u_pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                "U",
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            i_pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                "I",
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            l_pix = np.sqrt(q_pix**2 + u_pix**2)
-
-            # Estimate RMS for polarized intensity
-            try:
-                q_rms = estimate_rms_near_Sun(image_path, "Q", rms_box)
-                u_rms = estimate_rms_near_Sun(image_path, "U", rms_box)
-                l_rms = np.sqrt(q_rms**2 + u_rms**2)
-            except Exception:
-                print(
-                    "[WARNING] Failed to estimate RMS, using standard deviation instead"
-                )
-                l_rms = np.nanstd(l_pix)
-
-            # Mask pixels below threshold
-            noise_mask = l_pix < (threshold * l_rms)
-            l_pix_masked = l_pix.copy()
-            l_pix_masked[noise_mask] = 0
-
-            # Division with zero protection
-            div_mask = i_pix != 0
-            lfrac = np.zeros_like(l_pix)
-            lfrac[div_mask] = l_pix_masked[div_mask] / i_pix[div_mask]
-            contour_data = lfrac
-        elif stokes == "PANG":
-            from ..processing.rms import estimate_rms_near_Sun
-
-            q_pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                "Q",
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            u_pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                "U",
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-
-            # Calculate polarized intensity for thresholding
-            l_pix = np.sqrt(q_pix**2 + u_pix**2)
-
-            # Estimate RMS for polarized intensity
-            try:
-                q_rms = estimate_rms_near_Sun(image_path, "Q", rms_box)
-                u_rms = estimate_rms_near_Sun(image_path, "U", rms_box)
-                l_rms = np.sqrt(q_rms**2 + u_rms**2)
-            except Exception:
-                print(
-                    "[WARNING] Failed to estimate RMS, using standard deviation instead"
-                )
-                l_rms = np.nanstd(l_pix)
-
-            # Polarization angle
-            pang = 0.5 * np.arctan2(u_pix, q_pix) * 180 / np.pi
-
-            # Mask pixels below threshold with NaN
-            noise_mask = l_pix < (threshold * l_rms)
-            pang[noise_mask] = np.nan
-            contour_data = pang
-        else:
-            pix, contour_csys, _ = get_pixel_values_from_image(
-                image_path,
-                "I",
-                threshold,
-                rms_box,
-                target_size=target_size,
-            )
-            contour_data = pix
-        return contour_data, contour_csys
+        pix, contour_csys, _ = get_pixel_values_from_image(
+            image_path, stokes, threshold, rms_box, target_size=target_size
+        )
+        return pix, contour_csys
 
     def draw_contours(self, ax):
         """Draw every enabled contour layer, and their legend."""
@@ -615,11 +441,11 @@ class ContoursMixin:
             self.load_contour_data(layer)
 
         if layer.get("contour_data") is None:
-            print(f"[ERROR] draw_contours: no contour data for {name}")
+            logger.error(f"draw_contours: no contour data for {name}")
             return []
 
         if layer.get("contour_wcs") is None:
-            print(f"[ERROR] draw_contours: no coordinate system for {name}")
+            logger.error(f"draw_contours: no coordinate system for {name}")
             return []
 
         # OPTIMIZATION: Fast path for same-image contours
@@ -666,7 +492,7 @@ class ContoursMixin:
             return drawn
 
         except Exception as e:
-            print(f"[ERROR] Error drawing contours ({name}): {e}")
+            logger.error(f"Error drawing contours ({name}): {e}")
             import traceback
 
             traceback.print_exc()
@@ -791,7 +617,7 @@ class ContoursMixin:
             return cs
 
         except Exception as e:
-            print(f"[ERROR] Error drawing {label} contours: {e}, levels: {levels}")
+            logger.error(f"Error drawing {label} contours: {e}, levels: {levels}")
             self.show_status_message(
                 f"Error drawing {label} contours: {e}, levels: {levels}"
             )
@@ -825,7 +651,7 @@ class ContoursMixin:
                 try:
                     header = dict(fits_header(contour_imagename))
                 except Exception as e:
-                    print(f"[ERROR] Error getting contour FITS header: {e}")
+                    logger.error(f"Error getting contour FITS header: {e}")
                     header = {}
 
             try:
@@ -833,7 +659,7 @@ class ContoursMixin:
                 csys = info.coordsys()
                 summary = info.summary
             except Exception as e:
-                print(f"[ERROR] Error getting metadata: {e}")
+                logger.error(f"Error getting metadata: {e}")
                 self.show_status_message(f"Error getting metadata: {e}")
                 return None
         return fits_flag, header, csys, summary
@@ -857,7 +683,7 @@ class ContoursMixin:
             )
         except Exception as e:
             contour_wcs = None
-            print(f"[ERROR] Could not read the contour image's coordinates: {e}")
+            logger.error(f"Could not read the contour image's coordinates: {e}")
         if contour_wcs is None:
             self.show_status_message(
                 f"Contours not drawn ({contour_layer_name(layer)}): "
@@ -880,7 +706,6 @@ class ContoursMixin:
         except Exception as e:
             # Without observation time and observer for both images: treat the
             # two coordinate frames as the same
-            print(f"[INFO] Mapping contours without observer information: {e}")
             mapping = pixel_mapping(
                 transformable_wcs(contour_wcs, None),
                 transformable_wcs(image_wcs_obj, None),
@@ -888,12 +713,19 @@ class ContoursMixin:
             try:
                 check_mapping(mapping, contour_data.shape)
             except Exception as e2:
-                print(f"[ERROR] Cannot map contour coordinates onto the image: {e2}")
+                logger.error(f"Cannot map contour coordinates onto the image: {e2}")
                 self.show_status_message(
                     f"Contours not drawn ({contour_layer_name(layer)}): cannot map "
                     f"their coordinates onto the image ({e2})"
                 )
                 return False
+            # Drawn, but not where they would be with both observers known
+            logger.warning(f"Contours mapped without observer information: {e}")
+            self.show_status_message(
+                f"Contours of {contour_layer_name(layer)} placed without the "
+                "observation times and observer positions, which could not be "
+                "used: they may be offset"
+            )
         return PixelToPixel(mapping)
 
     def _downsample_contour_for_display(self, contour_data):

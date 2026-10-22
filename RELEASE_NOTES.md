@@ -2,13 +2,47 @@
 
 ## Version 1.3.0
 
+### Navigating the Image
+*   **Smoother Pan and Zoom**: Dragging moves the image directly and zooms glide. While the view moves, a picture of it is shown, so it stays smooth on slow machines; newly exposed edges show a low-resolution overview.
+*   **Box Zoom**: Right-drag a box to zoom to it.
+*   **Keys After Clicking**: R, 1, +, - and the arrow keys work after clicking the image; Esc leaves a text field.
+*   **Measuring**: Mouse pan and zoom pause while the Ruler or Profile tool is measuring.
+*   **Keyboard Shortcuts** (F1): The list is read from the menus, so it shows exactly the shortcuts that work, plus the image's keys and mouse gestures.
+
+### Opening Images
+*   **One Open Item**: File → Open Image (Ctrl+O) opens FITS files and CASA images alike, as do the contour, video and phase-shift dialogs.
+*   **Open Recent**: File → Open Recent lists the last ten images; the Open dialog starts in the last image's folder.
+*   **Unreadable Files**: A file that cannot be read now says so, instead of leaving the previous image on screen under the new name.
+*   **Busy Cursor**: The wait cursor shows while an image loads or draws.
+
 ### Image Loading & Display
 *   **Compressed FITS Support**: Files that store the image in a compressed extension (e.g. GOES SUVI L2, SDO/AIA and HMI from JSOC) now load with proper solar coordinates, titles and units instead of raw pixels.
-*   **Colour Range Fixes**: Constant or fully masked maps (e.g. Lfrac/Vfrac/PANG below threshold) no longer keep the previous product's colour range, and **Update Display** after a Stokes change now resets the range.
+*   **Colour Range Fixes**: Constant or fully masked maps (e.g. Lfrac/Vfrac/PANG below threshold) no longer keep the previous product's colour range, and **Reload Image** after a Stokes change now resets the range.
 *   **LASCO Presets**: LASCO presets now use the LASCO colormaps; the menu offers separate C2 and C3 presets.
+*   **Faster Loading**: Only the planes a Stokes product needs are read, not the whole cube.
+
+### Stokes Products
+*   **Planes by Label**: Stokes planes are found by their labels. On an image with only I and V, V is shown (it used to appear as Q), and a missing plane is named in a clear message.
+*   **Derived Products**: Lfrac, Vfrac, Q/I, U/I, U/V and PANG work on non-square images and on images without a frequency axis, and keep pixels near the Sun rather than near the image centre.
+*   **Contours**: Vfrac and U/V contours used to show Stokes I, and V/I contours were refused on images with only I and V.
+
+### Analysis
+*   **Gaussian Fit**: The fit box was sent with x and y swapped; the fit and the sub-image and region exports also use full-resolution pixels in Fast mode.
+*   **Ring Fit**: The ring fit now finds rings away from the box centre.
+*   **Solar Disk**: Images without an observation date no longer place the disk at the Sun's position in 1858; when the Sun's position is unknown the status bar says the disk is at the image centre.
+*   **Profiles**: The profile plot says why it shows no FWHM.
+
+### Batch Dialogs and Servers
+*   **Responsive Batches**: Format, unit and coordinate conversion and the phase shift run in worker processes: the window stays responsive, and Abort stops at once.
+*   **Output Names**: Unit conversion no longer names its output `conv_a.fits.fits`, and full-Stokes coordinate conversion no longer writes all four planes to one file when the name has no extension.
+*   **SSH Host Keys**: The server's key is checked against `~/.ssh/known_hosts` and the servers trusted in SolarViewer. A new server's fingerprint is shown for you to confirm before any password is sent, and a changed key is refused.
 
 ### Stability
 *   **No More Crash-on-Error**: Unexpected errors no longer close the application. A crash report is still saved and a warning is shown, and the viewer keeps running.
+*   **CASA Logs**: CASA no longer writes `casa-*.log` files into the working folder, and closing SolarViewer no longer deletes CASA logs of your own.
+*   **File Names**: Exports and conversions work with spaces and quotes in file names (no shell commands are built from them).
+*   **Closed Tabs**: Closing a tab frees its image and removes its temporary files.
+*   **Log File**: Everything the log window shows is also kept in `~/.solarviewer/logs/solarviewer.log`, and crash reports include its last lines.
 *   **Scroll-Zoom Crash**: Fixed a crash when switching files or redrawing during a scroll-zoom/pan animation.
 *   **Remote Downloads**: Stalled SSH/SFTP downloads are now detected instead of hanging.
 *   **Dialogs**: Fixed the Unit Conversion and Format Conversion dialogs crashing on open.
@@ -20,7 +54,7 @@
 
 ### Under the Hood
 *   **Restructured Codebase**: The 17,000-line viewer was split into focused packages (`core`, `tools`, `dialogs`, `processing`, `coordinates`, `video`, `ui`, `pipeline`). Old import paths still work but emit a deprecation warning.
-*   **Packaging**: Moved from `setup.py` to `pyproject.toml`, and added the missing `reproject` dependency.
+*   **Packaging**: Moved from `setup.py` to `pyproject.toml`. The dependencies are now those the code uses: `requests`, `packaging`, `pandas`, `parfive`, `aiohttp` and `psutil` are declared, and the unused `reproject`, `dask`, `zarr`, `tifffile`, `qtpy` and `pyqt5-sip` are no longer required.
 *   **Cleanup**: Renamed `from_simpl` to `pipeline` and removed the unused `learmonth-py` scripts.
 
 ## Version 1.2.5

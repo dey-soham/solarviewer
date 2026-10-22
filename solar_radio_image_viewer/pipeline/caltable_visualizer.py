@@ -25,54 +25,59 @@ from matplotlib.figure import Figure
 # NOTE: casacore is loaded via subprocess to completely isolate it from Qt
 from pathlib import Path
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+import io
 import subprocess
-import pickle
 import os
 from ..ui.styles import set_hand_cursor
+
+
+_READ_CALTABLE_SCRIPT = """
+import io, sys
+import numpy as np
+from casacore.tables import table
+
+path, with_spectral_window = sys.argv[1], sys.argv[2] == "1"
+arrays = {}
+tb = table(path, readonly=True)
+arrays["solutions"] = tb.getcol("CPARAM")
+arrays["flag"] = tb.getcol("FLAG")
+tb.close()
+if with_spectral_window:
+    tb = table(path + "/SPECTRAL_WINDOW", readonly=True)
+    arrays["chan_freq"] = tb.getcol("CHAN_FREQ")
+    tb.close()
+buffer = io.BytesIO()
+np.savez(buffer, **arrays)
+sys.stdout.buffer.write(buffer.getvalue())
+"""
 
 
 def read_caltable_safe(table_path, read_spectral_window=False):
     """
     Read a caltable using a completely separate subprocess to avoid casacore/Qt conflicts.
-    Uses subprocess.run + pickle for complete isolation - no shared Python state.
+
+    The path goes to the subprocess as an argument and the arrays come back
+    as NumPy .npz bytes, so no file name can break the script and nothing
+    is unpickled.
     """
     table_path = str(Path(table_path).absolute())
 
-    # Create a script that reads the caltable and outputs pickled data
-    script = f"""
-import pickle
-import sys
-from casacore.tables import table
-
-result = {{}}
-
-# Read main table
-tb = table("{table_path}", readonly=True)
-result['solutions'] = tb.getcol("CPARAM")
-result['flag'] = tb.getcol("FLAG")
-tb.close()
-
-# Read spectral window if requested
-if {read_spectral_window}:
-    tb = table("{table_path}/SPECTRAL_WINDOW", readonly=True)
-    result['chan_freq'] = tb.getcol("CHAN_FREQ")
-    tb.close()
-
-# Write result to stdout as pickle
-sys.stdout.buffer.write(pickle.dumps(result))
-"""
-
     # Run in completely separate process
     result = subprocess.run(
-        [sys.executable, "-c", script],
+        [
+            sys.executable,
+            "-c",
+            _READ_CALTABLE_SCRIPT,
+            table_path,
+            "1" if read_spectral_window else "0",
+        ],
         capture_output=True,
         check=True,
         cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~"),
     )
 
-    # Unpickle the result
-    data = pickle.loads(result.stdout)
-    return data
+    with np.load(io.BytesIO(result.stdout)) as arrays:
+        return {key: arrays[key] for key in arrays.files}
 
 
 class WorkerThread(QThread):

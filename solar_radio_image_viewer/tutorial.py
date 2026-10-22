@@ -400,8 +400,8 @@ class TutorialDialog(QDialog):
             self._create_step(
                 1,
                 "Open an Image",
-                "Use File → Open Solar Radio Image (Ctrl+O) for CASA images or "
-                "File → Open FITS File (Ctrl+Shift+O) for FITS files. "
+                "Use File → Open Image (Ctrl+O) for a FITS file or a CASA image, "
+                "or File → Open Recent for one you opened before. "
                 "You can also drag and drop files onto the window.",
             )
         )
@@ -420,7 +420,8 @@ class TutorialDialog(QDialog):
             self._create_step(
                 3,
                 "Navigate",
-                "Scroll to zoom, click and drag to pan. Press R to reset view. "
+                "Scroll or pinch to zoom, middle-drag to pan, right-drag to zoom "
+                "to a box. Press R to reset view. "
                 "Use [ and ] keys to navigate between files in the directory.",
             )
         )
@@ -445,7 +446,10 @@ class TutorialDialog(QDialog):
         layout.setSpacing(15)
 
         intro = QLabel(
-            "SolarViewer supports multiple image formats and loading methods."
+            "File → Open Image (Ctrl+O) opens both kinds of image: a FITS file is "
+            "picked as in any file dialog, a CASA image by opening its folder "
+            "(double-click it, or select it and press Open). File → Open Recent "
+            "lists the images opened lately."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet(
@@ -457,7 +461,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_info_box(
                 "📦",
-                "CASA Images (Ctrl+O)",
+                "CASA Images",
                 [
                     "Native format for radio interferometry data",
                     "Supports .im and .image directories",
@@ -471,7 +475,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_info_box(
                 "📄",
-                "FITS Files (Ctrl+Shift+O)",
+                "FITS Files",
                 [
                     "Standard astronomical FITS format",
                     "Compressed .fits.gz files supported",
@@ -682,10 +686,11 @@ class TutorialDialog(QDialog):
                 "🖱️",
                 "Mouse Controls",
                 [
-                    "Scroll wheel - Zoom in/out",
-                    "Click + Drag - Pan the view",
-                    "Right-click - Context menu with quick actions",
-                    "Hover - Display coordinates in status bar",
+                    "Scroll wheel or pinch - Zoom about the pointer",
+                    "Middle-drag - Pan the view (left-drag too, with the Pan tool)",
+                    "Right-drag - Zoom to the box drawn",
+                    "Double-click - Zoom in with the Pan tool (Shift: zoom out)",
+                    "Hover - Coordinates and pixel value at the cursor",
                 ],
             )
         )
@@ -700,7 +705,9 @@ class TutorialDialog(QDialog):
                     "1 - Zoom to 1°×1° field of view",
                     "+/= - Zoom in",
                     "− - Zoom out",
+                    "Arrow keys - Pan",
                     "Space/Enter - Refresh display",
+                    "Esc - Leave a text field, so these keys work again",
                     "F11 - Toggle fullscreen",
                 ],
             )
@@ -1019,7 +1026,6 @@ class TutorialDialog(QDialog):
                 [
                     "Image Metadata (Ctrl+M): View complete image metadata",
                     "Solar Phase Center Shift (Ctrl+P): Align phase center with Sun",
-                    "Fast Viewer (Napari) (Ctrl+Shift+N): Ultra-fast 3D visualization",
                     "Create Video: Create animations from FITS sequences",
                 ],
             )

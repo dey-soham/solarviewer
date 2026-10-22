@@ -87,30 +87,19 @@ def convert_casaimage_to_fits(
                 tempfile.gettempdir(), f"temp_{os.getpid()}_{os.path.basename(imagename)}.fits"
             )
 
-        import subprocess
-        import sys
+        from ..processing.casa_tasks import CasaTaskError, run_casa_task
 
         # Run exportfits in a separate process to avoid segfault
-        script = f"""
-import sys
-from casatasks import exportfits
-try:
-    exportfits(imagename="{imagename}", fitsimage="{fitsname}", dropdeg={dropdeg}, overwrite={overwrite})
-    print("SUCCESS")
-except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
-    sys.exit(1)
-"""
-
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else tempfile.gettempdir(),
-        )
-
-        if result.returncode != 0:
-            print(f"Error in exportfits: {result.stderr}")
+        try:
+            run_casa_task(
+                "exportfits",
+                imagename=imagename,
+                fitsimage=fitsname,
+                dropdeg=dropdeg,
+                overwrite=overwrite,
+            )
+        except CasaTaskError as e:
+            print(f"Error in exportfits: {e}")
             return None
 
         if os.path.exists(fitsname):
