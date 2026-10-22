@@ -362,7 +362,6 @@ class RoiStatsMixin:
             self.roi_selector = RectangleSelector(
                 ax, self.on_rectangle, useblit=True, button=[1], interactive=True
             )
-        self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
 
     def on_rectangle(self, eclick, erelease):
         if self.current_image_data is None:

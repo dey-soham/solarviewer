@@ -109,6 +109,15 @@ from .processing.plot_style import (
 )
 
 
+# Arrow key -> (x, y) pan steps; Right shows more of the image to the right
+_ARROW_PAN_STEPS = {
+    Qt.Key_Left: (-1, 0),
+    Qt.Key_Right: (1, 0),
+    Qt.Key_Up: (0, 1),
+    Qt.Key_Down: (0, -1),
+}
+
+
 def _preload_display_modules():
     """Import modules that drawing the first image otherwise waits ~1 s for:
     astropy.wcs (plot axes) and sunpy's coordinates (solar disk size)."""
@@ -279,19 +288,15 @@ class SolarRadioImageTab(
         self._last_rendered_state = {}
         self.image_plot = None
 
-        # Animation state for smooth scroll zoom
+        # View navigation: zoom/pan glides, drag panning, toolbar history
         self._zoom_timer = QTimer()
         self._zoom_timer.timeout.connect(self._perform_zoom_step)
-        self._zoom_target_xlim = None
-        self._zoom_target_ylim = None
-        self._zoom_lowres_transposed = None
-
-        # Extension for smooth panning
-        self._pan_timer = QTimer()
-        self._pan_timer.timeout.connect(self._perform_pan_step)
-        self._pan_target_xlim = None
-        self._pan_target_ylim = None
+        self._view_anim = None
         self._is_panning = False
+        self._nav_record_timer = QTimer()
+        self._nav_record_timer.setSingleShot(True)
+        self._nav_record_timer.setInterval(400)
+        self._nav_record_timer.timeout.connect(self._record_view)
 
         # Default mode
         self.region_mode = RegionMode.PAN
@@ -1013,7 +1018,7 @@ class SolarRadioImageTab(
         # self.reset_view_button.setFixedSize(32, 32)
         self.reset_view_button.setFixedHeight(28)
         self.reset_view_button.clicked.connect(
-            lambda: self.reset_view(show_status_message=True)
+            lambda: self.reset_view(show_status_message=True, animate=True)
         )
         self.reset_view_button.setToolTip("Reset View")
         self.zoom_60arcmin_button = QPushButton("1°×1°")
@@ -1121,7 +1126,7 @@ class SolarRadioImageTab(
         )
         self.reset_view_action.setToolTip("Reset View")
         self.reset_view_action.triggered.connect(
-            lambda: self.reset_view(show_status_message=True)
+            lambda: self.reset_view(show_status_message=True, animate=True)
         )
         self.zoom_60arcmin_action = QAction(
             QIcon(get_resource_path("assets/zoom_60arcmin.png")),
@@ -4780,7 +4785,11 @@ class SolarRadioImageViewerApp(
         elif event.key() == Qt.Key_R:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
-                current_tab.reset_view()
+                current_tab.reset_view(animate=True)
+        elif event.key() in _ARROW_PAN_STEPS:
+            current_tab = self.tab_widget.currentWidget()
+            if current_tab:
+                current_tab.pan_view(*_ARROW_PAN_STEPS[event.key()])
         elif event.key() == Qt.Key_1:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:

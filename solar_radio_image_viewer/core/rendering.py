@@ -270,18 +270,9 @@ class RenderingMixin:
             self._cached_imagename = self.imagename
 
     def _update_transposed_cache(self, data):
-        """Cache data.T and a low-res copy for zoom animations."""
+        """Cache data.T."""
         if not hasattr(self, "_cached_data_id") or self._cached_data_id != id(data):
             self._cached_transposed = data.transpose()
-
-            # Create a 4x+ downsampled version for smooth zooming animations (Low-Res Glide)
-            h, w = self._cached_transposed.shape
-            skip = max(1, min(h, w) // 350)  # Target ~350px for smooth zooming
-            if skip > 1:
-                self._zoom_lowres_transposed = self._cached_transposed[::skip, ::skip]
-            else:
-                self._zoom_lowres_transposed = self._cached_transposed
-
             self._cached_data_id = id(data)
 
     def _try_fast_redraw(
