@@ -27,6 +27,13 @@ MIN_VIEW_PIXELS = 5
 MIN_IMAGE_IN_VIEW = 0.2
 # Arrow keys pan by this fraction of the view
 KEY_PAN_FRACTION = 0.1
+# Arrow key -> (x, y) pan steps; Right shows more of the image to the right
+_ARROW_PAN_STEPS = {
+    Qt.Key_Left: (-1, 0),
+    Qt.Key_Right: (1, 0),
+    Qt.Key_Up: (0, 1),
+    Qt.Key_Down: (0, -1),
+}
 # Redraw properly once the view has been still this long, in milliseconds
 SETTLE_MS = 200
 # Size of the coarse picture under the preview's newly exposed edges
@@ -77,6 +84,26 @@ class _ViewPreview(QWidget):
             )
         if self._pixmap is not None:
             painter.drawPixmap(self._target, self._pixmap, QRectF(self._pixmap.rect()))
+
+
+class _ImageCanvas(FigureCanvas):
+    """The figure canvas, taking keyboard focus when clicked or scrolled on.
+
+    It acts on the view keys itself and passes every other key on to the
+    window too (Matplotlib's canvas would swallow them), so the window's own
+    keys keep working while the image has focus.
+    """
+
+    def __init__(self, figure, view_key_handler):
+        super().__init__(figure)
+        self._view_key_handler = view_key_handler
+        self.setFocusPolicy(Qt.WheelFocus)
+
+    def keyPressEvent(self, event):
+        if self._view_key_handler(event):
+            return
+        super().keyPressEvent(event)
+        event.ignore()
 
 
 class _PinchFilter(QObject):
@@ -135,7 +162,7 @@ class CanvasMixin:
 
     def setup_canvas(self, parent_layout):
         self.figure = Figure(figsize=(5, 5), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
+        self.canvas = _ImageCanvas(self.figure, self.handle_view_key)
 
         # Ensure canvas background matches theme to avoid white gaps when scaling
         self.canvas.setStyleSheet("background-color: transparent;")
@@ -271,6 +298,25 @@ class CanvasMixin:
 
         if show_status_message:
             self.show_status_message("View reset")
+
+    def handle_view_key(self, event):
+        """Act on a view key (R, 1, +/-, arrows). True if it was one."""
+        if event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
+            return False
+        key = event.key()
+        if key == Qt.Key_R:
+            self.reset_view(animate=True)
+        elif key == Qt.Key_1:
+            self.zoom_60arcmin()
+        elif key in (Qt.Key_Plus, Qt.Key_Equal):
+            self.zoom_in()
+        elif key == Qt.Key_Minus:
+            self.zoom_out()
+        elif key in _ARROW_PAN_STEPS:
+            self.pan_view(*_ARROW_PAN_STEPS[key])
+        else:
+            return False
+        return True
 
     def pan_view(self, x_steps, y_steps):
         """Glide the view by KEY_PAN_FRACTION of its size per step (arrow keys)."""
@@ -617,6 +663,10 @@ class CanvasMixin:
         if ax is None or event.inaxes is not ax:
             return
 
+        # The Ruler and Profile tools redraw badly if the view moves mid-measurement
+        if self._in_measurement_mode():
+            return
+
         pan_mode = self._in_pan_mode()
         if event.button == 1 and pan_mode and event.dblclick:
             shift = "shift" in getattr(event, "modifiers", ())
@@ -682,6 +732,13 @@ class CanvasMixin:
         if not steps:
             return
 
+        # The Ruler and Profile tools redraw badly if the view moves mid-measurement
+        if self._in_measurement_mode():
+            self.show_status_message(
+                "Scroll to zoom suspended in measurement mode", timeout=2000
+            )
+            return
+
         # Trackpads send many small steps; gliding each would lag behind the fingers
         animate = abs(steps) >= 1 and not self._is_panning
         self._zoom_about(
@@ -691,7 +748,7 @@ class CanvasMixin:
     def _on_pinch(self, event):
         """Trackpad pinch: zoom about the fingers."""
         ax = self._nav_axes()
-        if ax is None:
+        if ax is None or self._in_measurement_mode():
             return
         x, y = self.canvas.mouseEventCoords(event)
         if not ax.bbox.contains(x, y):

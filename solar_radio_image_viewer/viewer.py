@@ -109,15 +109,6 @@ from .processing.plot_style import (
 )
 
 
-# Arrow key -> (x, y) pan steps; Right shows more of the image to the right
-_ARROW_PAN_STEPS = {
-    Qt.Key_Left: (-1, 0),
-    Qt.Key_Right: (1, 0),
-    Qt.Key_Up: (0, 1),
-    Qt.Key_Down: (0, -1),
-}
-
-
 def _preload_display_modules():
     """Import modules that drawing the first image otherwise waits ~1 s for:
     astropy.wcs (plot axes) and sunpy's coordinates (solar disk size)."""
@@ -4782,26 +4773,16 @@ class SolarRadioImageViewerApp(
             if current_tab:
                 current_tab.schedule_plot()
                 self.statusBar().showMessage("Plot updated")
-        elif event.key() == Qt.Key_R:
+        elif event.key() == Qt.Key_Escape:
+            # Leave a text field so the view keys work again
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
-                current_tab.reset_view(animate=True)
-        elif event.key() in _ARROW_PAN_STEPS:
-            current_tab = self.tab_widget.currentWidget()
-            if current_tab:
-                current_tab.pan_view(*_ARROW_PAN_STEPS[event.key()])
-        elif event.key() == Qt.Key_1:
-            current_tab = self.tab_widget.currentWidget()
-            if current_tab:
-                current_tab.zoom_60arcmin()
-        elif event.key() == Qt.Key_Plus or event.key() == Qt.Key_Equal:
-            current_tab = self.tab_widget.currentWidget()
-            if current_tab:
-                current_tab.zoom_in()
-        elif event.key() == Qt.Key_Minus:
-            current_tab = self.tab_widget.currentWidget()
-            if current_tab:
-                current_tab.zoom_out()
+                current_tab.canvas.setFocus()
+        elif (
+            self.tab_widget.currentWidget() is not None
+            and self.tab_widget.currentWidget().handle_view_key(event)
+        ):
+            pass
         elif event.key() == Qt.Key_F5:
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
