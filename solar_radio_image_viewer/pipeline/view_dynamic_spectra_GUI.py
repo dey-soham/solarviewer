@@ -1388,8 +1388,13 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
     # Compatibility methods for MainWindow
     def clear_plot(self):
-        """Clear the plot."""
+        """Show nothing (no file open)."""
         self.image_item.clear()
+        self._data = None
+        self._filename = None
+        self.set_boxes([])
+        self.set_selected_box(None)
+        self.plot_item.setTitle("Dynamic Spectrum")
 
     def draw_idle(self):
         """Compatibility method - PyQtGraph updates automatically."""
@@ -2046,8 +2051,10 @@ class MainWindow(QMainWindow):
         self.undoAct.triggered.connect(self.undo)
 
         self.redoAct = QAction("&Redo", self)
-        self.redoAct.setShortcut("Ctrl+Y")
+        self.redoAct.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
         self.redoAct.triggered.connect(self.redo)
+        self.undoAct.setEnabled(False)
+        self.redoAct.setEnabled(False)
 
         # Delete the selected mask or Keep region (selected by a click with
         # the Mask or Keep tool); typing in a box keeps its own Delete
@@ -2496,7 +2503,7 @@ class MainWindow(QMainWindow):
         self.extendMaskBtn.clicked.connect(self.onExtendDefault)
         self._update_extend_button()
         self.clearMaskBtn = QPushButton("🗑️ Clear")
-        self.clearMaskBtn.setToolTip("Remove all masks (Undo restores)")
+        self.clearMaskBtn.setToolTip("Remove all masks and Keep regions (Undo restores)")
         self.clearMaskBtn.clicked.connect(self.onClearMasks)
         cleanLayout.addWidget(label("Masks"), 0, 0)
         cleanLayout.addLayout(pair(self.extendMaskBtn, self.clearMaskBtn), 0, 1)
@@ -3522,6 +3529,16 @@ class MainWindow(QMainWindow):
             return
 
         with self.wait_cursor():
+            new_hdul = None
+            if remote is None:
+                # (opened first: a file that can't be read leaves the one
+                # shown, its masks and its undo history as they are)
+                try:
+                    new_hdul = fits.open(fileName, memmap=True)
+                except Exception as e:
+                    self.logger.error(f"Failed to open FITS file: {e}")
+                    QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{e}")
+                    return
             self.current_filename = fileName
 
             try:
@@ -3539,12 +3556,13 @@ class MainWindow(QMainWindow):
                 self._global_masked_freq_indices.clear()  # Clear stale masks
                 self._masks = []
                 self._keeps = []
-                self._update_mask_summary()
                 self.undo_stack.clear()
+                self.redo_stack.clear()
+                self._update_mask_summary()
                 gc.collect()  # Force memory release
 
                 self.logger.info(f"Opening FITS file: {fileName}")
-                self.hdul = remote.hdul if remote else fits.open(fileName, memmap=True)
+                self.hdul = remote.hdul if remote else new_hdul
                 # The spectrum: the first 2-D image, primary or extension
                 self._spectrum_index = self._find_spectrum()
                 if self._spectrum_index is None:
@@ -3651,6 +3669,7 @@ class MainWindow(QMainWindow):
 
                 self.undo_stack.clear()
                 self.redo_stack.clear()
+                self._update_undo_actions()
                 gc.collect()  # Force memory release
                 self.statusBar().showMessage(
                     f"Loaded {os.path.basename(fileName)}", 5000
@@ -3662,6 +3681,8 @@ class MainWindow(QMainWindow):
                     self.statusBar().showMessage("Opening cancelled", 5000)
                     return
                 self.logger.exception(f"Failed to open or plot FITS file: {e}")
+                # (part read: nothing of it, or of the file before, is kept)
+                self._close_file()
                 QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{e}")
 
     # -------------------------- Files on a server -------------------------------
@@ -3898,7 +3919,7 @@ class MainWindow(QMainWindow):
         self._remote_reads.clear()
 
     def _close_file(self):
-        """Forget the open file (e.g. when opening it was cancelled)."""
+        """Forget the open file (e.g. when opening it failed or was cancelled)."""
         self._stop_remote_reads()
         if self.hdul:
             self.hdul.close()
@@ -3906,6 +3927,17 @@ class MainWindow(QMainWindow):
         self._remote = None
         self._data_cache.clear()
         self.current_filename = ""
+        self._shown_raw = None
+        self.canvas.clear_plot()
+        self.minimap.set_full_data(None)
+        self._select_region(None)
+        self._masks = []
+        self._keeps = []
+        self._global_masked_freq_indices = set()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self._update_mask_summary()
+        self._update_undo_actions()
 
     def closeEvent(self, event):
         for popup in self.canvas._popups:
@@ -5330,13 +5362,14 @@ class MainWindow(QMainWindow):
         fig.show()
 
     def revertToOriginal(self):
-        """Remove all masks, drawn and extended (Undo brings them back)."""
+        """Remove all masks, drawn and extended, and the Keep regions (Undo
+        brings them back)."""
         if not self._masks and not self._global_masked_freq_indices and not self._keeps:
             self.statusBar().showMessage("There are no masks.", 5000)
             return
         self._do(("clear", (list(self._masks), frozenset(self._global_masked_freq_indices), list(self._keeps))))
         self.statusBar().showMessage(
-            "Reverted to original data (all masks cleared).", 5000
+            "Cleared all masks and Keep regions (Ctrl+Z restores).", 5000
         )
 
     # ----------------------- Undo/Redo Functionality ----------------------------
@@ -5386,7 +5419,13 @@ class MainWindow(QMainWindow):
         self._autosave_masks()
         self.undo_stack.append(edit)
         self.redo_stack.clear()
+        self._update_undo_actions()
         self._redisplay()
+
+    def _update_undo_actions(self):
+        """Undo and Redo, greyed out when there is nothing to undo or redo."""
+        self.undoAct.setEnabled(bool(self.undo_stack))
+        self.redoAct.setEnabled(bool(self.redo_stack))
 
     def undo(self):
         if not self.undo_stack:
@@ -5398,6 +5437,7 @@ class MainWindow(QMainWindow):
         self._update_mask_summary()
         self._autosave_masks()
         self.redo_stack.append(edit)
+        self._update_undo_actions()
         self._redisplay()
 
     def redo(self):
@@ -5410,6 +5450,7 @@ class MainWindow(QMainWindow):
         self._update_mask_summary()
         self._autosave_masks()
         self.undo_stack.append(edit)
+        self._update_undo_actions()
         self._redisplay()
 
     def onBandpassNorm(self, checked):
@@ -5796,11 +5837,12 @@ class MainWindow(QMainWindow):
         )
 
     def onClearMasks(self):
-        """Clear all masks: drawn and extended (Undo brings them back)."""
+        """Clear all masks, drawn and extended, and the Keep regions (Undo
+        brings them back)."""
         reply = QMessageBox.question(
             self,
             "Clear Masks",
-            "Clear ALL masks (including extended frequency masks)?",
+            "Clear all masks, extended channels and Keep regions?\n(Undo brings them back.)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
