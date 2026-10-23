@@ -22,7 +22,7 @@ from ..ui.styles import set_hand_cursor
 class PlotCustomizationDialog(QDialog):
     """Dialog for customizing plot appearance (labels, fonts, colors)."""
 
-    def __init__(self, parent=None, settings=None, tight_layout_default=True):
+    def __init__(self, parent=None, settings=None, tight_layout_default=False):
         super().__init__(parent)
         self._tight_layout_default = tight_layout_default  # (for Reset)
         self.setWindowTitle("Plot Customization")

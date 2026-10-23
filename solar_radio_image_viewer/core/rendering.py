@@ -886,12 +886,12 @@ class RenderingMixin:
         ax.add_patch(ellipse)
 
     def _apply_layout_settings(self, tight_layout):
-        """Matplotlib's tight layout (the default, and set again whenever
-        the canvas is resized); or, if it is turned off in Plot
-        Customization, the custom padding set there, or margins sized for
-        the fonts and the canvas when that padding is the default."""
+        """Matplotlib's tight layout, if turned on in Plot Customization
+        (set again whenever the canvas is resized); otherwise the custom
+        padding set there, or margins sized for the fonts and the canvas
+        when that padding is the default."""
         ps = self.plot_settings
-        if ps.get("use_tight_layout", True):
+        if ps.get("use_tight_layout", False):
             self.figure.tight_layout()
             return
         pads = {k: ps.get(k, DEFAULT_PLOT_SETTINGS[k]) for k in _PAD_KEYS}

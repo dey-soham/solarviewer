@@ -56,7 +56,7 @@ DEFAULT_PLOT_SETTINGS = {
     "pad_bottom": 0.08,
     "pad_wspace": 0.2,
     "pad_hspace": 0.2,
-    "use_tight_layout": True,
+    "use_tight_layout": False,
 }
 
 
