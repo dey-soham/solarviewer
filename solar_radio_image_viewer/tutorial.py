@@ -106,6 +106,7 @@ class TutorialDialog(QDialog):
             ("📈", "Contour Overlays"),
             ("✂️", "Regions & Export"),
             ("🌐", "Remote Access"),
+            ("📡", "Dynamic Spectra"),
             ("🎬", "Advanced Tools"),
         ]
 
@@ -196,6 +197,7 @@ class TutorialDialog(QDialog):
         self.content_stack.addWidget(self._create_contours())
         self.content_stack.addWidget(self._create_regions_export())
         self.content_stack.addWidget(self._create_remote_access())
+        self.content_stack.addWidget(self._create_dynamic_spectra())
         self.content_stack.addWidget(self._create_advanced_tools())
 
         layout.addWidget(self.content_stack)
@@ -1003,6 +1005,83 @@ class TutorialDialog(QDialog):
 
         layout.addStretch()
         return self._create_scroll_page("🌐 Remote Access", content)
+
+    def _create_dynamic_spectra(self):
+        """Dynamic Spectra section."""
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 15, 15)
+        layout.setSpacing(15)
+
+        intro = QLabel(
+            "SolarViewer also views and cleans dynamic spectra (frequency "
+            "against time). They open in the Dynamic Spectrum Viewer, a "
+            "companion window that follows SolarViewer's theme and closes "
+            "with it."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(
+            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
+        )
+        layout.addWidget(intro)
+
+        layout.addWidget(
+            self._create_step(
+                1,
+                "Open a Spectrum Like Any File",
+                "File → Open Image or Open Dynamic Spectrum, Open Recent, a drop "
+                "on the window, or the command line: SolarViewer reads the "
+                "FITS headers and sends a dynamic spectrum to its viewer. "
+                "Opening another spectrum reuses the same window.",
+                tip="Next/Previous file in a folder step over spectra, so "
+                "browsing images is not interrupted",
+            )
+        )
+
+        layout.addWidget(
+            self._create_step(
+                2,
+                "Explore",
+                "Pan and zoom the spectrum with the minimap for your place in "
+                "it. Profile gives the light curve or spectrum through a point; "
+                "Drift measures a burst's drift rate from its start and end.",
+            )
+        )
+
+        layout.addWidget(
+            self._create_step(
+                3,
+                "Clean",
+                "Mask radio interference by region (ROI) or across the whole "
+                "file, protect features with Keep, normalise by the bandpass, "
+                "and undo any step. Save the cleaned spectrum or a figure of it.",
+            )
+        )
+
+        layout.addWidget(
+            self._create_step(
+                4,
+                "See the Image at a Time",
+                "With the Image tool, click a time in the spectrum: SolarViewer "
+                "shows its image nearest that time from the current tab's "
+                "folder (or the frequency folder beside it). An image opened "
+                "from the viewer's own Open dialog comes back to a SolarViewer tab.",
+            )
+        )
+
+        layout.addWidget(
+            self._create_info_box(
+                "🛠️",
+                "Making Spectra",
+                [
+                    "Tools → LOFAR → Create Dynamic Spectra: from Measurement Sets",
+                    "viewds on the command line runs the viewer on its own",
+                ],
+            )
+        )
+
+        layout.addStretch()
+        return self._create_scroll_page("📡 Dynamic Spectra", content)
 
     def _create_advanced_tools(self):
         """Advanced Tools section."""

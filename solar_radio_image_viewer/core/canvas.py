@@ -34,7 +34,10 @@ MIN_ZOOM_BOX = 5
 KEY_PAN_FRACTION = 0.1
 # gid of the text that says how to open an image while there is none
 EMPTY_HINT_GID = "empty-hint"
-EMPTY_HINT = "Drop a FITS file or CASA image here\nor open one from the File menu"
+EMPTY_HINT = (
+    "Drop a FITS image, CASA image or dynamic spectrum here\n"
+    "or open one from the File menu"
+)
 # Cursor Position text while the mouse is off the image
 READOUT_HINT = "Hover over the image"
 # Arrow key -> (x, y) pan steps; Right shows more of the image to the right

@@ -1,12 +1,16 @@
 """
-One dialog to open either kind of image: a FITS file, or a CASA image (a folder).
+One dialog to open either kind of image: a FITS file, or a CASA image (a
+folder). A dynamic spectrum is a FITS file too; the window sends it to the
+Dynamic Spectrum Viewer.
 """
 
 from PyQt5.QtWidgets import QDialog, QFileDialog, QListView, QTreeView
 
 from ..processing.fits_io import is_casa_image
 
-IMAGE_FILTER = "Images (*.fits *.fts *.fit *.FITS *.FTS *.FIT);;All files (*)"
+FITS_PATTERNS = "*.fits *.fts *.fit *.FITS *.FTS *.FIT"
+IMAGE_FILTER = f"Images and dynamic spectra ({FITS_PATTERNS});;All files (*)"
+SPECTRUM_FILTER = f"Dynamic spectra ({FITS_PATTERNS});;All files (*)"
 
 
 class _ImageDialog(QFileDialog):
@@ -46,7 +50,7 @@ class _ImageDialog(QFileDialog):
         super().accept()
 
 
-def choose_image(parent, caption="Open Image", directory=""):
+def choose_image(parent, caption="Open Image or Dynamic Spectrum", directory=""):
     """A FITS file or CASA image chosen by the user, or "" if cancelled.
 
     A FITS file is chosen as in any file dialog; a CASA image by opening its

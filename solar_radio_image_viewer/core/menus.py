@@ -62,9 +62,19 @@ class MenusMixin:
         open_act = QAction("Open Image...", self)
         # Ctrl+Shift+O opened FITS files when they had their own item
         open_act.setShortcuts(["Ctrl+O", "Ctrl+Shift+O"])
-        open_act.setStatusTip("Open a FITS file or CASA image")
+        open_act.setStatusTip(
+            "Open a FITS file or CASA image (a dynamic spectrum opens in its viewer)"
+        )
         open_act.triggered.connect(self.open_image)
         file_menu.addAction(open_act)
+
+        # The same opening, under a name that says spectra are welcome
+        open_spectrum_act = QAction("Open Dynamic Spectrum...", self)
+        open_spectrum_act.setStatusTip(
+            "Open a dynamic spectrum FITS file in the Dynamic Spectrum Viewer"
+        )
+        open_spectrum_act.triggered.connect(self.open_dynamic_spectrum)
+        file_menu.addAction(open_spectrum_act)
 
         self.recent_menu = file_menu.addMenu("Open Recent")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
@@ -459,6 +469,20 @@ class MenusMixin:
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
             current_tab.select_file_or_directory()
+
+    def open_dynamic_spectrum(self):
+        """File > Open Dynamic Spectrum: choose a FITS file, opened where it
+        belongs (a spectrum in the Dynamic Spectrum Viewer)."""
+        from PyQt5.QtWidgets import QFileDialog
+
+        from ..ui.open_image import SPECTRUM_FILTER
+        from ..ui.recent_files import last_image_folder
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Dynamic Spectrum", last_image_folder(), SPECTRUM_FILTER
+        )
+        if path:
+            self.open_path(path)
 
     def _fill_recent_menu(self):
         """File > Open Recent: the images opened lately, newest first."""
