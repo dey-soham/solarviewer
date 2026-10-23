@@ -27,6 +27,7 @@ class ConversionControl(QWidget):
         super().__init__(parent)
         self._actions = actions
         self._text = ""
+        self._index = 0  # the state on (the clicked button is checked first)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self._group = QButtonGroup(self)
@@ -42,18 +43,17 @@ class ConversionControl(QWidget):
         self._buttons[0].setChecked(True)
         layout.addWidget(segmented(self._buttons))
 
-    def _current(self):
-        return next((i for i, b in enumerate(self._buttons) if b.isChecked()), 0)
-
     def _show(self, index):
+        self._index = index
         self._group.setExclusive(False)
         for i, button in enumerate(self._buttons):
             button.setChecked(i == index)
         self._group.setExclusive(True)
 
     def _chosen(self, index):
-        """A segment clicked: the one on stays until the host converts."""
-        current = self._current()
+        """A segment clicked (and so checked by the group): the one on
+        stays until the host converts."""
+        current = self._index
         self._show(current)
         if index != current:
             self.clicked.emit(False)
@@ -73,7 +73,7 @@ class ConversionControl(QWidget):
         self._show(1 if checked else 0)
 
     def isChecked(self):
-        return self._current() == 1
+        return self._index == 1
 
     def setToolTip(self, tip):
         for button in self._buttons:
