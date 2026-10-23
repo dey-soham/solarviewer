@@ -166,7 +166,7 @@ class FigureToolbarMixin:
         self._last_file_btn.setToolTip("Go to last file")
         self._last_file_btn.clicked.connect(self._on_last_file)
         self._filter_btn = QPushButton()
-        self._filter_btn.setIcon(QIcon(themed_icon("settings.png")))
+        self._filter_btn.setIcon(QIcon(themed_icon("filter.svg")))
         self._filter_btn.setIconSize(QSize(14, 14))
         self._filter_btn.setToolTip("Set file filter pattern")
         self._filter_btn.clicked.connect(self._show_filter_dialog)

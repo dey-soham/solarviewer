@@ -1037,7 +1037,7 @@ class SolarRadioImageTab(
         if hasattr(self, "info_action"):
             self.info_action.setIcon(QIcon(themed_icon("icons8-info-90.png")))
         if hasattr(self, "_filter_btn"):
-            self._filter_btn.setIcon(QIcon(themed_icon("settings.png")))
+            self._filter_btn.setIcon(QIcon(themed_icon("filter.svg")))
         # Update search button in colormap selector
         if hasattr(self, "colormap_selector") and hasattr(
             self.colormap_selector, "search_button"
