@@ -38,3 +38,10 @@ def fit_to_screen(window, width, height, fraction=0.9):
     if minimum.width() > max_w or minimum.height() > max_h:
         window.setMinimumSize(min(minimum.width(), max_w), min(minimum.height(), max_h))
     window.resize(min(width, max_w), min(height, max_h))
+
+
+def fit_width_to_text(widget, sample):
+    """Give ``widget`` (a line edit or label) the width of ``sample`` in its
+    font, plus room for the frame: a field sized for "0.000" rather than
+    a pixel count that is wrong at another font size."""
+    widget.setFixedWidth(widget.fontMetrics().horizontalAdvance(sample) + 20)

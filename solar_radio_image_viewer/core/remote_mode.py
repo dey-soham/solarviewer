@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
 )
 
-from ..ui.styles import set_hand_cursor
+from ..ui.styles import set_hand_cursor, set_tone
 
 logger = logging.getLogger(__name__)
 
@@ -185,10 +185,10 @@ class RemoteModeMixin:
             self.connect_remote_act.setEnabled(not connected)
             if connected:
                 self.connect_remote_act.setText(
-                    f"🌐 Connected: {self.remote_connection.connection_info}"
+                    f"Connected: {self.remote_connection.connection_info}"
                 )
             else:
-                self.connect_remote_act.setText("🌐 Connect to Remote Server...")
+                self.connect_remote_act.setText("Connect to Remote Server...")
 
         if hasattr(self, "browse_remote_act"):
             self.browse_remote_act.setVisible(connected)
@@ -202,54 +202,15 @@ class RemoteModeMixin:
             connected = self.remote_connection and self.remote_connection.is_connected()
             if connected:
                 self.remote_status_btn.setText(
-                    f"🌐 {self.remote_connection.connection_info}"
+                    self.remote_connection.connection_info
                 )
                 self.remote_status_btn.setToolTip(
                     "Click to disconnect from remote server"
                 )
             else:
-                self.remote_status_btn.setText("🔌 Not Connected")
+                self.remote_status_btn.setText("Not connected")
                 self.remote_status_btn.setToolTip("Click to connect to a remote server")
-            self._apply_remote_status_style(connected)
-
-    def _apply_remote_status_style(self, connected: bool):
-        """Apply styling to the remote status button based on connection state."""
-        if connected:
-            self.remote_status_btn.setStyleSheet("""
-                QPushButton {
-                    color: #4CAF50;
-                    font-weight: bold;
-                    padding: 4px 10px;
-                    margin-right: 5px;
-                    background-color: rgba(76, 175, 80, 0.15);
-                    border: 1px solid #4CAF50;
-                    border-radius: 4px;
-                    min-height: 16px;
-                }
-                QPushButton:hover {
-                    background-color: rgba(244, 67, 54, 0.15);
-                    border-color: #F44336;
-                    color: #F44336;
-                }
-            """)
-        else:
-            self.remote_status_btn.setStyleSheet("""
-                QPushButton {
-                    color: #9E9E9E;
-                    font-weight: bold;
-                    padding: 4px 10px;
-                    margin-right: 5px;
-                    background-color: transparent;
-                    border: 1px solid #757575;
-                    border-radius: 4px;
-                    min-height: 16px;
-                }
-                QPushButton:hover {
-                    background-color: rgba(33, 150, 243, 0.15);
-                    border-color: #2196F3;
-                    color: #2196F3;
-                }
-            """)
+            set_tone(self.remote_status_btn, "success" if connected else None)
 
     def _on_remote_status_clicked(self):
         """Handle click on the remote status button."""
@@ -308,13 +269,13 @@ class RemoteModeMixin:
         layout = QVBoxLayout(dialog)
 
         # Header
-        header = QLabel("<h3>🗑️ Cache Manager</h3>")
-        header.setStyleSheet("color: #2196F3;")
+        header = QLabel("Cache Manager")
+        header.setObjectName("DialogTitle")
         layout.addWidget(header)
 
         desc = QLabel("Select which caches to clear. This action cannot be undone.")
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #666; margin-bottom: 10px;")
+        desc.setObjectName("Hint")
         layout.addWidget(desc)
 
         # Calculate cache sizes
@@ -334,7 +295,7 @@ class RemoteModeMixin:
         cache_info.append(
             (
                 "remote",
-                "📁 Remote Files Cache",
+                "Remote Files Cache",
                 remote_size,
                 remote_count,
                 "Downloaded files from remote SSH servers",
@@ -360,7 +321,7 @@ class RemoteModeMixin:
         cache_info.append(
             (
                 "pieces",
-                "📈 Dynamic Spectrum Slices",
+                "Dynamic Spectrum Slices",
                 pieces_size,
                 pieces_count,
                 "Parts of dynamic spectra read from servers (read again when needed)",
@@ -373,7 +334,7 @@ class RemoteModeMixin:
         cache_info.append(
             (
                 "masks",
-                "✂️ Dynamic Spectrum Masks",
+                "Dynamic Spectrum Masks",
                 masks_size,
                 masks_count,
                 "Masks drawn on dynamic spectra (clearing forgets them)",
@@ -395,7 +356,7 @@ class RemoteModeMixin:
         cache_info.append(
             (
                 "noaa",
-                "🌞 Solar Activity Cache",
+                "Solar Activity Cache",
                 noaa_size,
                 noaa_count,
                 "Solar events, active regions, conditions, and spectrographs",
@@ -418,7 +379,7 @@ class RemoteModeMixin:
             cache_info.append(
                 (
                     "json",
-                    "📄 API Metadata Cache",
+                    "API Metadata Cache",
                     json_size,
                     json_count,
                     "Cached JSON responses from Helioviewer and other APIs",
@@ -442,7 +403,7 @@ class RemoteModeMixin:
             cache_info.append(
                 (
                     "sunpy",
-                    "🛰️ Sunpy Data Cache",
+                    "Sunpy Data Cache",
                     sunpy_size,
                     sunpy_count,
                     "Downloaded AIA pointing tables, .nc files, etc.",
@@ -465,7 +426,7 @@ class RemoteModeMixin:
             cache_info.append(
                 (
                     "old",
-                    "📦 Legacy Cache",
+                    "Legacy Cache",
                     old_cache_size,
                     old_cache_count,
                     "Old cache location (~/.solarviewer_cache)",
@@ -479,9 +440,6 @@ class RemoteModeMixin:
         for key, name, size, count, description in cache_info:
             if size > 0:  # Only show categories that have data
                 group = QGroupBox()
-                group.setStyleSheet(
-                    "QGroupBox { border: 1px solid #444; border-radius: 4px; padding: 10px; margin-top: 8px; }"
-                )
                 group_layout = QVBoxLayout(group)
 
                 # Checkbox with name and size
@@ -492,9 +450,8 @@ class RemoteModeMixin:
 
                 # Description
                 desc_label = QLabel(description)
-                desc_label.setStyleSheet(
-                    "color: #888; font-size: 11px; margin-left: 20px;"
-                )
+                desc_label.setObjectName("Hint")
+                desc_label.setIndent(desc_label.fontMetrics().horizontalAdvance("    "))
                 group_layout.addWidget(desc_label)
 
                 layout.addWidget(group)
@@ -502,13 +459,12 @@ class RemoteModeMixin:
 
         if not checkboxes:
             no_cache = QLabel("All caches are currently empty.")
-            no_cache.setStyleSheet("color: #888; font-style: italic; margin: 20px;")
+            no_cache.setObjectName("Hint")
             no_cache.setAlignment(Qt.AlignCenter)
             layout.addWidget(no_cache)
         else:
             # Total size
             total_label = QLabel(f"<b>Total: {self._format_size(total_size)}</b>")
-            total_label.setStyleSheet("margin-top: 10px; font-size: 14px;")
             layout.addWidget(total_label)
 
         # Buttons
@@ -528,10 +484,8 @@ class RemoteModeMixin:
         cancel_btn.clicked.connect(dialog.reject)
         btn_layout.addWidget(cancel_btn)
 
-        clear_btn = QPushButton("🗑️ Clear Selected")
-        clear_btn.setStyleSheet(
-            "background-color: #F44336; color: white; font-weight: bold; padding: 6px 16px;"
-        )
+        clear_btn = QPushButton("Clear Selected")
+        set_tone(clear_btn, "error")
 
         def do_clear():
             # Get list of selected cache keys
@@ -539,7 +493,7 @@ class RemoteModeMixin:
 
             if not selected_keys:
                 self.statusBar().showMessage(
-                    "⚠️ No cache categories selected to clear", 5000
+                    "No cache categories selected to clear", 5000
                 )
                 return
 
@@ -643,7 +597,7 @@ class RemoteModeMixin:
                     print(f"[Cache] Error clearing legacy: {e}")
 
             if cleared:
-                self.statusBar().showMessage(f"🗑️ Cleared: {', '.join(cleared)}", 5000)
+                self.statusBar().showMessage(f"Cleared: {', '.join(cleared)}", 5000)
                 QMessageBox.information(
                     self,
                     "Cache Cleared",
@@ -718,12 +672,12 @@ class RemoteModeMixin:
                 pass
 
             size_str = self._format_size(total_size)
-            self.clear_cache_act.setText(f"🗑️ Manage Cache ({size_str})")
+            self.clear_cache_act.setText(f"Manage Cache ({size_str})")
 
         except Exception as e:
             # Fallback if something goes wrong
             logger.warning(f"Failed to update cache size: {e}")
-            self.clear_cache_act.setText("🗑️ Manage Cache...")
+            self.clear_cache_act.setText("Manage Cache...")
 
     def _check_connection_health(self):
         """Periodically check connection health and auto-reconnect if needed."""
@@ -755,7 +709,7 @@ class RemoteModeMixin:
                     if self.remote_connection:
                         self.remote_connection.mark_lost()
                         self.statusBar().showMessage(
-                            "⚠️ Remote connection lost - click status to reconnect",
+                            "Remote connection lost - click status to reconnect",
                             10000,
                         )
                         self._update_remote_status_indicator()
@@ -813,11 +767,11 @@ class RemoteModeMixin:
                 logger.warning("[SSH] Health check: Connection lost, attempting reconnect...")
                 if self.remote_connection and self.remote_connection.ensure_connected():
                     logger.info("[SSH] Health check: Reconnected successfully")
-                    self.statusBar().showMessage("🔄 Remote connection restored", 5000)
+                    self.statusBar().showMessage("Remote connection restored", 5000)
                 else:
                     logger.warning("[SSH] Health check: Reconnect failed")
                     self.statusBar().showMessage(
-                        "⚠️ Remote connection lost - click status to reconnect", 10000
+                        "Remote connection lost - click status to reconnect", 10000
                     )
 
                 self._update_remote_status_indicator()

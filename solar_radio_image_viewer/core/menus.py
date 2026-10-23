@@ -82,13 +82,13 @@ class MenusMixin:
         file_menu.addSeparator()
 
         # Remote mode actions
-        self.connect_remote_act = QAction("🌐 Connect to Remote Server...", self)
+        self.connect_remote_act = QAction("Connect to Remote Server...", self)
         self.connect_remote_act.setShortcut("Ctrl+Shift+R")
         self.connect_remote_act.setStatusTip("Connect to a remote server via SSH")
         self.connect_remote_act.triggered.connect(self.show_remote_connection_dialog)
         file_menu.addAction(self.connect_remote_act)
 
-        self.browse_remote_act = QAction("📁 Open Remote FITS File...", self)
+        self.browse_remote_act = QAction("Open Remote FITS File...", self)
         self.browse_remote_act.setStatusTip(
             "Open a FITS file from the connected remote server"
         )
@@ -96,13 +96,13 @@ class MenusMixin:
         self.browse_remote_act.setVisible(False)  # Hidden until connected
         file_menu.addAction(self.browse_remote_act)
 
-        self.disconnect_remote_act = QAction("❌ Disconnect from Remote", self)
+        self.disconnect_remote_act = QAction("Disconnect from Remote", self)
         self.disconnect_remote_act.setStatusTip("Disconnect from the remote server")
         self.disconnect_remote_act.triggered.connect(self.disconnect_remote)
         self.disconnect_remote_act.setVisible(False)  # Hidden until connected
         file_menu.addAction(self.disconnect_remote_act)
 
-        self.clear_cache_act = QAction("🗑️ Manage Cache...", self)
+        self.clear_cache_act = QAction("Manage Cache...", self)
         self.clear_cache_act.setStatusTip(
             "View and manage cached data (remote files, NOAA events, etc.)"
         )
@@ -160,7 +160,7 @@ class MenusMixin:
         view_menu = menubar.addMenu("&View")
 
         # Theme toggle action
-        self.theme_action = QAction("🌙 Switch to Light Mode", self)
+        self.theme_action = QAction("Switch to Light Mode", self)
         self.theme_action.setShortcut("Ctrl+D")
         self.theme_action.setStatusTip("Toggle between dark and light themes")
         self.theme_action.triggered.connect(self.toggle_theme)
@@ -199,7 +199,7 @@ class MenusMixin:
         view_menu.addSeparator()
 
         # Preferences action
-        preferences_action = QAction("⚙️ Preferences...", self)
+        preferences_action = QAction("Preferences...", self)
         preferences_action.setStatusTip("Open application preferences (UI scale, etc.)")
         preferences_action.triggered.connect(self._open_preferences_dialog)
         view_menu.addAction(preferences_action)

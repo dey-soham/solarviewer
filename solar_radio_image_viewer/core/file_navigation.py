@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 from ..processing.fits_io import SPECTRUM, fits_kind, is_fits
 from ..ui.open_image import choose_image
 from ..ui.recent_files import forget_image, last_image_folder, remember_image
-from ..ui.styles import set_hand_cursor, theme_manager
+from ..ui.styles import set_hand_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -848,7 +848,6 @@ except Exception:
         """Show a non-modal dialog listing all files in the current file list"""
         from PyQt5.QtWidgets import (
             QDialog,
-            QFrame,
             QHBoxLayout,
             QLabel,
             QListWidget,
@@ -892,7 +891,7 @@ except Exception:
         header_layout = QHBoxLayout()
         header_layout.setSpacing(12)
 
-        title_label = QLabel("📋 File List")
+        title_label = QLabel("File List")
         title_label.setObjectName("DialogTitle")
         header_layout.addWidget(title_label)
 
@@ -901,34 +900,19 @@ except Exception:
         info_badge = QLabel(
             f"Filter: {self._file_filter_pattern}  │  {len(self._file_list)} files"
         )
-        info_badge.setObjectName("InfoBadge")
+        info_badge.setObjectName("Badge")
         header_layout.addWidget(info_badge)
 
         layout.addLayout(header_layout)
 
         # Search box
-        search_frame = QFrame()
-        search_frame.setObjectName("SearchFrame")
-        search_layout = QHBoxLayout(search_frame)
-        search_layout.setContentsMargins(10, 0, 10, 0)
-        search_layout.setSpacing(8)
-        search_layout.setAlignment(Qt.AlignVCenter)
-
-        search_label = QLabel("🔍")
-        search_label.setObjectName("SearchIcon")
         search_input = QLineEdit()
-        search_input.setObjectName("SearchInput")
         search_input.setPlaceholderText("Search files...")
         search_input.setClearButtonEnabled(True)
-        search_input.setFixedHeight(28)
-
-        search_layout.addWidget(search_label, 0, Qt.AlignVCenter)
-        search_layout.addWidget(search_input, 1, Qt.AlignVCenter)
-        layout.addWidget(search_frame)
+        layout.addWidget(search_input)
 
         # File list
         file_list_widget = QListWidget()
-        file_list_widget.setObjectName("FileListWidget")
 
         # Store original file list for filtering
         original_items = []
@@ -1057,129 +1041,6 @@ except Exception:
         btn_layout.addWidget(close_btn)
 
         layout.addLayout(btn_layout)
-
-        # Apply modern styling
-        palette = theme_manager.palette
-        window = palette["window"]
-        base = palette["base"]
-        surface = palette["surface"]
-        border = palette["border"]
-        text = palette["text"]
-        text_secondary = palette.get(
-            "text_secondary", palette.get("disabled", "#888888")
-        )
-        highlight = palette["highlight"]
-        highlight_hover = palette.get("highlight_hover", highlight)
-        button = palette["button"]
-        button_hover = palette["button_hover"]
-        button_pressed = palette.get("button_pressed", button)
-        gradient_start = palette.get("button_gradient_start", highlight)
-        gradient_end = palette.get("button_gradient_end", highlight_hover)
-
-        dialog.setStyleSheet(f"""
-            QDialog {{
-                background-color: {window};
-            }}
-            
-            QLabel#DialogTitle {{
-                font-size: 14pt;
-                font-weight: 700;
-                color: {text};
-            }}
-            
-            QLabel#InfoBadge {{
-                font-size: 10pt;
-                color: {text_secondary};
-                padding: 4px 10px;
-                background-color: {surface};
-                border: 1px solid {border};
-                border-radius: 6px;
-            }}
-            
-            QFrame#SearchFrame {{
-                background-color: {surface};
-                border: 1px solid {border};
-                border-radius: 8px;
-                min-height: 34px;
-                max-height: 34px;
-            }}
-            
-            QLabel#SearchIcon {{
-                font-size: 12pt;
-                padding: 0px;
-                margin: 0px;
-            }}
-            
-            QLineEdit#SearchInput {{
-                padding: 4px 8px;
-                font-size: 10pt;
-                border: none;
-                background-color: transparent;
-                color: {text};
-            }}
-            
-            QListWidget#FileListWidget {{
-                border: 1px solid {border};
-                border-radius: 10px;
-                background-color: {base};
-                color: {text};
-                font-size: 10.5pt;
-                outline: none;
-                padding: 4px;
-            }}
-            
-            QListWidget#FileListWidget::item {{
-                padding: 6px 8px;
-                border-radius: 4px;
-                margin: 1px 2px;
-            }}
-            
-            QListWidget#FileListWidget::item:selected {{
-                background-color: {highlight};
-                color: #ffffff;
-            }}
-            
-            QListWidget#FileListWidget::item:hover:!selected {{
-                background-color: {button_hover};
-            }}
-            
-            QPushButton {{
-                padding: 6px 16px;
-                font-size: 10pt;
-                font-weight: 500;
-                border: 1px solid {border};
-                border-radius: 6px;
-                background-color: {button};
-                color: {text};
-                min-width: 70px;
-                min-height: 24px;
-            }}
-            
-            QPushButton:hover {{
-                background-color: {button_hover};
-                border-color: {highlight};
-            }}
-            
-            QPushButton:pressed {{
-                background-color: {button_pressed};
-            }}
-            
-            QPushButton#PrimaryButton {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {gradient_start}, stop:1 {gradient_end});
-                color: #ffffff;
-                border: none;
-                font-weight: 600;
-            }}
-            
-            QPushButton#PrimaryButton:hover {{
-                background-color: {highlight_hover};
-            }}
-            
-            QLabel {{
-                color: {text};
-            }}
-        """)
 
         # Set up dialog for non-modal behavior
         dialog.setAttribute(Qt.WA_DeleteOnClose)

@@ -76,7 +76,7 @@ FONT_TITLE = 18  # a window's or dialog's one title
 SPACE_XS, SPACE_S, SPACE_M, SPACE_L = 4, 8, 12, 16
 RADIUS = 6  # of every rounded corner
 FONT_FAMILY = "'Inter', 'Noto Emoji', 'Segoe UI', -apple-system, Arial, sans-serif"
-MONO_FAMILY = "'JetBrains Mono', 'Consolas', 'DejaVu Sans Mono', 'Menlo', monospace"
+MONO_FAMILY = "monospace"  # the generic family: Qt picks the system's fixed font
 
 TOKENS = {
     "font_small": FONT_SMALL,
@@ -97,7 +97,20 @@ TOKENS = {
 #   DialogTitle     a QLabel titling a dialog
 #   SecondaryText   a QLabel hint in muted text (alias: Hint)
 #   StatusLabel     a QLabel framed as a status line
+#   StatusButton    a flat outlined button in the status bar
+#   Badge           a QLabel pill with a short fact ("12 files")
+#   Key             a QLabel drawn as a keyboard key
 #   Mono            a QLabel in the monospace font (coordinates, values)
+#   Tip             a QLabel of advice, marked with an accent bar
+#   StepNumber      a QLabel with a step's number in an accent circle
+#   Banner          a QFrame header filled with the accent (About dialog)
+#   Card            a QFrame panel on the surface colour with a border
+#   Rule            a QFrame drawn as a 1px horizontal line
+#   Sidebar         a QFrame navigation column
+#   NavList         a QListWidget of sections in a Sidebar
+#   Console         a QPlainTextEdit of log text, monospace
+# A label or StatusButton can also take a tone with ``set_tone``:
+# "success", "warning" or "error" colour it accordingly, None clears it.
 ROLES = (
     "PrimaryButton",
     "IconOnlyButton",
@@ -109,7 +122,18 @@ ROLES = (
     "SecondaryText",
     "Hint",
     "StatusLabel",
+    "StatusButton",
+    "Badge",
+    "Key",
     "Mono",
+    "Tip",
+    "StepNumber",
+    "Banner",
+    "Card",
+    "Rule",
+    "Sidebar",
+    "NavList",
+    "Console",
 )
 
 # ===== Palettes =====
@@ -265,6 +289,89 @@ def get_stylesheet(palette, is_dark=True):
     QLabel#Mono {{
         font-family: {MONO_FAMILY};
     }}
+    QLabel#Badge {{
+        color: {p['text_secondary']};
+        font-size: {FONT_SMALL}pt;
+        padding: 2px {SPACE_S}px;
+        background-color: {p['surface']};
+        border: 1px solid {p['border']};
+        border-radius: {RADIUS}px;
+    }}
+    QLabel#Key {{
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_SMALL}pt;
+        font-weight: 600;
+        padding: 2px {SPACE_S}px;
+        background-color: {p['button']};
+        border: 1px solid {p['border_light']};
+        border-bottom: 2px solid {p['border_light']};
+        border-radius: 4px;
+    }}
+    QLabel#Tip {{
+        color: {p['text']};
+        font-size: {FONT_SMALL}pt;
+        padding: {SPACE_XS + 2}px {SPACE_M}px;
+        background-color: {p['surface']};
+        border-left: 3px solid {p['highlight']};
+        border-radius: 0px;
+    }}
+    QLabel#StepNumber {{
+        background-color: {p['highlight']};
+        color: {p['highlight_text']};
+        font-weight: 600;
+        border-radius: 14px;
+        min-width: 28px;
+        max-width: 28px;
+        min-height: 28px;
+        max-height: 28px;
+    }}
+    QFrame#Banner {{
+        background-color: {p['highlight']};
+        border: none;
+        border-radius: 0px;
+    }}
+    QFrame#Banner QLabel {{
+        color: {p['highlight_text']};
+        background-color: transparent;
+    }}
+    QFrame#Card {{
+        background-color: {p['surface']};
+        border: 1px solid {p['border']};
+        border-radius: {RADIUS}px;
+    }}
+    QFrame#Rule {{
+        background-color: {p['border']};
+        border: none;
+        max-height: 1px;
+        min-height: 1px;
+    }}
+    QFrame#Sidebar {{
+        background-color: {p['surface']};
+        border: none;
+        border-right: 1px solid {p['border']};
+    }}
+    QListWidget#NavList {{
+        background-color: transparent;
+        border: none;
+    }}
+    QListWidget#NavList::item {{
+        padding: {SPACE_S}px {SPACE_M}px;
+        border-radius: {RADIUS}px;
+        margin: 1px 0;
+    }}
+    QPlainTextEdit#Console {{
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_SMALL}pt;
+    }}
+    QLabel[tone="success"] {{
+        color: {p['success']};
+    }}
+    QLabel[tone="warning"] {{
+        color: {p['warning']};
+    }}
+    QLabel[tone="error"] {{
+        color: {p['error']};
+    }}
 
     /* ===== Group boxes ===== */
     QGroupBox {{
@@ -367,6 +474,36 @@ def get_stylesheet(palette, is_dark=True):
     QPushButton#NavButton:disabled {{
         background-color: transparent;
         color: {p['disabled']};
+    }}
+    QPushButton#StatusButton {{
+        background-color: transparent;
+        color: {p['text_secondary']};
+        border: 1px solid {p['border_light']};
+        padding: 2px {SPACE_S}px;
+        min-height: 0px;
+        font-weight: 600;
+    }}
+    QPushButton#StatusButton:hover {{
+        background-color: {p['button_hover']};
+        border-color: {p['highlight']};
+        color: {p['text']};
+    }}
+    QPushButton#StatusButton[tone="success"] {{
+        color: {p['success']};
+        border-color: {p['success']};
+    }}
+    QPushButton#StatusButton[tone="warning"] {{
+        color: {p['warning']};
+        border-color: {p['warning']};
+    }}
+    QPushButton#StatusButton[tone="error"] {{
+        color: {p['error']};
+        border-color: {p['error']};
+    }}
+    QPushButton[tone="error"] {{
+        background-color: {p['error']};
+        color: {p['highlight_text']};
+        border-color: {p['error']};
     }}
     QDialogButtonBox QPushButton {{
         min-width: 80px;
@@ -873,6 +1010,14 @@ def get_icon_path(icon_name):
         return icon_name
     name, ext = icon_name.rsplit(".", 1)
     return f"{name}_light.{ext}"
+
+
+def set_tone(widget, tone):
+    """Colour ``widget`` (a label or StatusButton) by ``tone``: "success",
+    "warning", "error", or None for the plain colour."""
+    widget.setProperty("tone", tone)
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
 
 
 def set_hand_cursor(widget):

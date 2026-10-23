@@ -15,10 +15,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QSize
 from PyQt5.QtGui import QIcon
-from ..ui.styles import (
-    theme_manager,
-)
-from ..ui.icons import get_resource_path
+from ..ui.icons import get_resource_path, themed_icon
 from ..tools import (
     RegionMode,
 )
@@ -27,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class FigureToolbarMixin:
-    """Builds the toolbar under the image and styles its buttons for the theme.
+    """Builds the toolbar under the image.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
 
@@ -46,13 +43,6 @@ class FigureToolbarMixin:
         """Set up the figure toolbar with zoom and other controls"""
         toolbar = QToolBar()
         toolbar.setIconSize(QSize(18, 18))
-        toolbar.setFixedHeight(28)
-        toolbar.setStyleSheet(
-            """
-            QToolBar { padding: 0px; margin: 0px; spacing: 1px; }
-            QToolButton { padding: 2px 3px; margin: 0px; max-height: 24px; }
-        """
-        )
         action_group = QActionGroup(self)
 
         # Pan action (default)
@@ -182,13 +172,7 @@ class FigureToolbarMixin:
             ]
         )
 
-        # Add theme-aware vertical separator before zoom buttons
-
-        self._profile_zoom_separator = QWidget()
-        self._profile_zoom_separator.setFixedWidth(1)
-        self._profile_zoom_separator.setFixedHeight(24)
-        self._update_profile_zoom_separator_style()
-        toolbar.addWidget(self._profile_zoom_separator)
+        toolbar.addSeparator()
 
         # Add zoom and view tools
         toolbar.addActions(
@@ -206,33 +190,24 @@ class FigureToolbarMixin:
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(spacer)
 
-        # Add brightness temperature toggle button
+        # Brightness temperature and helioprojective toggles: checkable
+        # buttons, filled in the accent colour while on
         self.tb_btn = QPushButton("TB")
         self.tb_btn.setToolTip(
             "Convert to Brightness Temperature (K) - requires Jy/beam units"
         )
         self.tb_btn.setCheckable(True)
-        self.tb_btn.setEnabled(
-            False
-        )  # Disabled by default, enabled when units are Jy/beam
-        # Style will be applied by _update_special_button_styles()
+        self.tb_btn.setEnabled(False)  # enabled when the units are Jy/beam
         self.tb_btn.clicked.connect(self._toggle_tb_mode)
         toolbar.addWidget(self.tb_btn)
 
-        # Add small spacer between TB and HPC buttons
-        tb_hpc_spacer = QWidget()
-        tb_hpc_spacer.setFixedWidth(2)
-        toolbar.addWidget(tb_hpc_spacer)
-
-        # Add helioprojective viewer button
         self.hpc_btn = QPushButton("HPC")
         self.hpc_btn.setToolTip("Convert to Helioprojective view")
-        # Style will be applied by _update_special_button_styles()
         self.hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
         toolbar.addWidget(self.hpc_btn)
-        self._update_special_button_styles()
+        toolbar.addSeparator()
 
-        # File navigation buttons - create first, style later so we can update on theme change
+        # File navigation
         self._first_file_btn = QPushButton("|◄")
         self._first_file_btn.setToolTip("Go to first file")
         self._first_file_btn.clicked.connect(self._on_first_file)
@@ -257,203 +232,29 @@ class FigureToolbarMixin:
         self._last_file_btn.setEnabled(False)
         toolbar.addWidget(self._last_file_btn)
 
-        self._filter_btn = QPushButton("⚙")
+        self._filter_btn = QPushButton()
+        self._filter_btn.setIcon(QIcon(themed_icon("settings.png")))
+        self._filter_btn.setIconSize(QSize(16, 16))
         self._filter_btn.setToolTip("Set file filter pattern")
         self._filter_btn.clicked.connect(self._show_filter_dialog)
         toolbar.addWidget(self._filter_btn)
 
-        self._playlist_btn = QPushButton("☰")  # Use hamburger menu icon (smaller)
+        self._playlist_btn = QPushButton("☰")
         self._playlist_btn.setToolTip("Show all files in directory")
         self._playlist_btn.clicked.connect(self._show_playlist_dialog)
         toolbar.addWidget(self._playlist_btn)
 
         self._file_pos_label = QLabel("")
+        self._file_pos_label.setObjectName("Hint")
         toolbar.addWidget(self._file_pos_label)
-
-        # Apply initial styles (will also register theme callback)
-        self._update_nav_button_styles()
+        for button in (
+            self._first_file_btn,
+            self._prev_file_btn,
+            self._next_file_btn,
+            self._last_file_btn,
+            self._filter_btn,
+            self._playlist_btn,
+        ):
+            button.setObjectName("NavButton")
 
         parent_layout.addWidget(toolbar)
-
-    def _update_profile_zoom_separator_style(self):
-        """Update the profile/zoom separator style based on current theme"""
-        from ..ui.styles import theme_manager
-
-        if not hasattr(self, "_profile_zoom_separator"):
-            return
-
-        # Get theme-appropriate separator color
-        if theme_manager.is_dark:
-            sep_color = "#546E7A"  # Blue-grey for dark theme
-        else:
-            sep_color = "#9E9E9E"  # Medium grey for light theme
-
-        self._profile_zoom_separator.setStyleSheet(
-            f"""
-            QWidget {{
-                background-color: {sep_color};
-            }}
-        """
-        )
-
-        # Register theme callback if not already done
-        if not hasattr(self, "_separator_theme_callback_registered"):
-            theme_manager.register_callback(
-                lambda t: self._update_profile_zoom_separator_style(), owner=self
-            )
-            self._separator_theme_callback_registered = True
-
-    def _update_nav_button_styles(self):
-        """Update navigation button styles based on current theme"""
-        from ..ui.styles import theme_manager
-
-        if not hasattr(self, "_prev_file_btn"):
-            return
-
-        palette = theme_manager.palette
-
-        # Get theme-appropriate colors
-        if theme_manager.is_dark:
-            btn_bg = palette.get("surface", "#455A64")
-            btn_hover = palette.get("highlight", "#546E7A")
-            btn_pressed = palette.get("base", "#37474F")
-            btn_disabled_text = "#757575"
-            btn_text = palette.get("text", "white")
-            label_color = palette.get("text_secondary", "#B0BEC5")
-        else:
-            btn_bg = palette.get("surface", "#D7D3BF")
-            btn_hover = palette.get("highlight", "#B8B5A2")
-            btn_pressed = palette.get("base", "#ECEBDE")
-            btn_disabled_text = "#9E9E9E"
-            btn_text = palette.get("text", "#1a1a1a")
-            label_color = palette.get("text", "#333333")
-
-        nav_btn_style = f"""
-            QPushButton {{
-                background-color: {btn_bg};
-                color: {btn_text};
-                border: none;
-                padding: 2px 8px;
-                border-radius: 6px;
-                min-width: 16px;
-                min-height: 14px;
-                font-weight: bold;
-                font-size: 14px;
-            }}
-            QPushButton:hover {{
-                background-color: {btn_hover};
-            }}
-            QPushButton:pressed {{
-                background-color: {btn_pressed};
-            }}
-            QPushButton:disabled {{
-                background-color: transparent;
-                color: {btn_disabled_text};
-            }}
-        """
-
-        # Style for larger icons (first, last, filter, playlist)
-        nav_btn_style_large = nav_btn_style.replace(
-            "font-size: 16px", "font-size: 14px"
-        )
-        nav_btn_style_xl = nav_btn_style.replace("font-size: 16px", "font-size: 16px")
-
-        # Apply to navigation buttons - prev/next use base size, others use larger
-        self._first_file_btn.setStyleSheet(nav_btn_style_large)
-        self._prev_file_btn.setStyleSheet(nav_btn_style)
-        self._next_file_btn.setStyleSheet(nav_btn_style)
-        self._last_file_btn.setStyleSheet(nav_btn_style_large)
-        self._filter_btn.setStyleSheet(nav_btn_style_xl)
-        self._playlist_btn.setStyleSheet(nav_btn_style_xl)
-        self._file_pos_label.setStyleSheet(
-            f"color: {label_color}; padding: 0 5px; font-size: 14px;"
-        )
-
-        # Register theme callback if not already done
-        if not hasattr(self, "_nav_theme_callback_registered"):
-            theme_manager.register_callback(
-                lambda t: self._update_nav_button_styles(), owner=self
-            )
-            self._nav_theme_callback_registered = True
-
-    def _update_special_button_styles(self):
-        """Update styles for the TB and HPC buttons based on current theme.
-
-        These buttons have gradient backgrounds and need theme-aware disabled states.
-        """
-        # Determine disabled colors based on theme
-        if theme_manager.is_dark:
-            disabled_bg = "#4a4a6a"
-            disabled_text = "#6b7280"
-        else:
-            disabled_bg = "#C5C5C5"
-            disabled_text = "#8E8E8E"
-
-        # TB Button (orange gradient)
-        if hasattr(self, "tb_btn"):
-            self.tb_btn.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                        stop:0 #f59e0b, stop:1 #fbbf24);
-                    color: #1f2937;
-                    border: none;
-                    padding: 4px 12px;
-                    border-radius: 6px;
-                    min-width: 28px;
-                    min-height: 20px;
-                    font-size: 11pt;
-                    font-weight: 600;
-                }}
-                QPushButton:hover {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                        stop:0 #fbbf24, stop:1 #fcd34d);
-                }}
-                QPushButton:pressed, QPushButton:checked {{
-                    background: #d97706;
-                    color: white;
-                }}
-                QPushButton:disabled {{
-                    background: {disabled_bg};
-                    color: {disabled_text};
-                }}
-            """
-            )
-
-        # HPC Button (blue gradient)
-        if hasattr(self, "hpc_btn"):
-            self.hpc_btn.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                        stop:0 #3b82f6, stop:1 #60a5fa);
-                    color: white;
-                    border: none;
-                    padding: 4px 12px;
-                    border-radius: 6px;
-                    min-width: 36px;
-                    min-height: 20px;
-                    font-size: 11pt;
-                    font-weight: 600;
-                }}
-                QPushButton:hover {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                        stop:0 #60a5fa, stop:1 #93c5fd);
-                }}
-                QPushButton:pressed {{
-                    background: #1d4ed8;
-                }}
-                QPushButton:disabled {{
-                    background: {disabled_bg};
-                    color: {disabled_text};
-                }}
-            """
-            )
-
-        # NOAA Events Button (purple gradient)
-        # Register theme callback if not already done
-        if not hasattr(self, "_special_btn_theme_callback_registered"):
-            theme_manager.register_callback(
-                lambda t: self._update_special_button_styles(), owner=self
-            )
-            self._special_btn_theme_callback_registered = True

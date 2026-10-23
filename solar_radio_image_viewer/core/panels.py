@@ -24,105 +24,35 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QHeaderView,
     QFormLayout,
+    QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QIcon
-from ..ui.styles import (
-    theme_manager,
-)
+from ..ui.geometry import fit_width_to_text
 from ..ui.searchable_combobox import ColormapSelector
 from ..ui.icons import get_resource_path, themed_icon
+from ..ui.styles import set_tone
 from ..ui.item_delegates import DisabledItemDelegate
 
 logger = logging.getLogger(__name__)
 
-# Compact buttons for actions on the statistics panels
-_SECONDARY_BUTTON_STYLE = """
-    QPushButton {
-        padding: 4px 10px;
-        font-size: 11pt;
-        min-height: 24px;
-    }
-"""
-
-def _min_width_for_label(button):
-    """Make the stylesheet's minimum width of ``button`` that of its label.
-
-    The application's stylesheet gives every button the same min-width,
-    which Qt then uses as the button's minimum instead of its label's width:
-    in a narrow panel the label is cut off. (A minimum set in code would be
-    overwritten whenever the stylesheet is applied again.)
-    """
-    button.ensurePolished()
-    label = button.fontMetrics().horizontalAdvance(button.text())
-    button.setStyleSheet(
-        button.styleSheet() + f"\nQPushButton {{ min-width: {label}px; }}"
+def _fit_rows(table):
+    """Make ``table`` exactly as tall as its rows: no blank rows below them
+    in a tall window, no scrolling in a short one."""
+    row_height = table.fontMetrics().height() + 8
+    for row in range(table.rowCount()):
+        table.setRowHeight(row, row_height)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    header = table.horizontalHeader()
+    header.setFixedHeight(table.fontMetrics().height() + 12)
+    table.setFixedHeight(
+        header.height() + row_height * table.rowCount() + 2 * table.frameWidth()
     )
-
-def _toggle_colors():
-    """(track, track hovered, border, border hovered, text) colours of the
-    switch-style checkboxes in the current theme."""
-    if theme_manager.is_dark:
-        return "#3a3d4d", "#4a4d5d", "#4a4d5d", "#5a5d6d", "#e0e0e0"
-    return "#d0d0d0", "#c0c0c0", "#b0b0b0", "#a0a0a0", "#333333"
-
-def _overlay_toggle_style():
-    """Style of the Overlays switches (Beam, Grid, Solar Disk, Contours).
-    10pt like the preset buttons: at 11pt the two columns no longer fit the
-    panel's default width, and the settings buttons were cut off."""
-    bg, bg_hover, border, border_hover, text = _toggle_colors()
-    return f"""
-        QCheckBox {{
-            spacing: 5px;
-            font-size: 10pt;
-            color: {text};
-        }}
-        QCheckBox:disabled {{
-            color: #4a4a6a;
-        }}
-        QCheckBox::indicator {{
-            width: 28px;
-            height: 14px;
-            border-radius: 7px;
-            background-color: {bg};
-            border: 1px solid {border};
-        }}
-        QCheckBox::indicator:hover {{
-            background-color: {bg_hover};
-            border-color: {border_hover};
-        }}
-        QCheckBox::indicator:checked {{
-            background-color: #6366f1;
-            border-color: #818cf8;
-        }}
-        QCheckBox::indicator:checked:hover {{
-            background-color: #7c7ff5;
-        }}
-        QCheckBox::indicator:disabled {{
-            background-color: {bg};
-            border-color: {border};
-        }}
-    """
-
-# The small settings (gear) buttons next to the Overlays switches
-_SETTINGS_BUTTON_STYLE = """
-    QPushButton {
-        background-color: transparent;
-        border-radius: 4px;
-        padding: 2px;
-        border: none;
-    }
-    QPushButton:hover {
-        background-color: rgba(99, 102, 241, 0.2);
-    }
-    QPushButton:pressed {
-        background-color: rgba(99, 102, 241, 0.35);
-    }
-"""
+    table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
 
 class PanelsMixin:
-    """Builds the tab's side panels and keeps their styles in step with the theme.
+    """Builds the tab's side panels.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
 
@@ -152,31 +82,9 @@ class PanelsMixin:
         self.browse_btn = QPushButton()
         self.browse_btn.setObjectName("IconOnlyNBGButton")
         self.browse_btn.setIcon(QIcon(get_resource_path("assets/browse.png")))
-        self.browse_btn.setIconSize(QSize(32, 32))
+        self.browse_btn.setIconSize(QSize(22, 22))
         self.browse_btn.setToolTip("Open a FITS file or CASA image (Ctrl+O)")
-        self.browse_btn.setFixedSize(32, 32)
         self.browse_btn.clicked.connect(self.select_file_or_directory)
-        self.browse_btn.setStyleSheet(
-            """
-        QPushButton {
-            background-color: transparent;
-            min-width: 0px;
-            min-height: 0px;
-            padding-left: 22px;
-            padding-right: 22px;
-            padding-top: 22px;
-            padding-bottom: 18px;
-            margin-top: -4px;
-            border-radius: 8px;
-        }
-        QPushButton:hover {
-            background-color: rgba(99, 102, 241, 0.2);
-        }
-        QPushButton:pressed {
-            background-color: rgba(99, 102, 241, 0.35);
-        }
-        """
-        )
         file_layout.addWidget(self.dir_entry, 1)
         file_layout.addWidget(self.browse_btn)
         layout.addLayout(file_layout)
@@ -204,7 +112,7 @@ class PanelsMixin:
 
         stokes_thresh_layout.addStretch()
         # Threshold (sigma)
-        thresh_label = QLabel("Thres (σ):")
+        thresh_label = QLabel("Threshold (σ):")
         threshold_tip = (
             "Threshold, in units of the RMS (σ) measured in the RMS box.\n"
             "Lfrac, Vfrac, Q/I, U/I and U/V: pixels whose numerator is below "
@@ -214,7 +122,7 @@ class PanelsMixin:
         )
         thresh_label.setToolTip(threshold_tip)
         self.threshold_entry = QLineEdit("10")
-        self.threshold_entry.setFixedWidth(50)
+        fit_width_to_text(self.threshold_entry, "0000")
         self.threshold_entry.setToolTip(threshold_tip)
         self.threshold_entry.editingFinished.connect(self._on_threshold_edited)
 
@@ -230,76 +138,20 @@ class PanelsMixin:
         options_row.setContentsMargins(0, 2, 0, 2)
 
         # Fast Load toggle (left side)
-        self.downsample_toggle = QCheckBox()
-        self.downsample_toggle.setObjectName("FastLoadToggle")
+        self.downsample_toggle = QCheckBox("Fast")
+        self.downsample_toggle.setObjectName("Switch")
         self.downsample_toggle.setToolTip(
             "Enable fast preview mode for quick image browsing.\n"
             "Images are loaded at reduced resolution for faster display."
         )
 
-        # Theme-aware Fast Load toggle style
-        if theme_manager.is_dark:
-            toggle_bg = "#3a3d4d"
-            toggle_bg_hover = "#4a4d5d"
-            toggle_border = "#4a4d5d"
-            label_color = "#a5a8b8"
-        else:
-            toggle_bg = "#d0d0d0"
-            toggle_bg_hover = "#c0c0c0"
-            toggle_border = "#b0b0b0"
-            label_color = "#555555"
-
-        self.downsample_toggle.setStyleSheet(
-            f"""
-            QCheckBox#FastLoadToggle {{
-                spacing: 0px;
-            }}
-            QCheckBox#FastLoadToggle::indicator {{
-                width: 28px;
-                height: 14px;
-                border-radius: 7px;
-                background-color: {toggle_bg};
-                border: 1px solid {toggle_border};
-            }}
-            QCheckBox#FastLoadToggle::indicator:hover {{
-                background-color: {toggle_bg_hover};
-            }}
-            QCheckBox#FastLoadToggle::indicator:checked {{
-                background-color: #6366f1;
-                border-color: #818cf8;
-            }}
-            QCheckBox#FastLoadToggle::indicator:checked:hover {{
-                background-color: #7c7ff5;
-            }}
-        """
-        )
-
-        fast_icon = QLabel("⚡")
-        self.fast_label = QLabel("Fast")
-        self.fast_label.setStyleSheet(f"color: {label_color}; font-size: 10pt;")
-
-        # Status badge
+        # Says "preview" while the image shown is the reduced one
         self.downsample_status = QLabel("")
-        self.downsample_status.setStyleSheet("background-color: transparent;")
+        self.downsample_status.setObjectName("Hint")
+        set_tone(self.downsample_status, "success")
 
         def update_fast_load_status(checked):
-            if checked:
-                self.downsample_status.setText("Preview")
-                self.downsample_status.setStyleSheet(
-                    """
-                    QLabel {
-                        background-color: rgba(16, 185, 129, 0.15);
-                        color: #10b981;
-                        font-weight: 600;
-                        font-size: 9pt;
-                        padding: 1px 6px;
-                        border-radius: 3px;
-                    }
-                """
-                )
-            else:
-                self.downsample_status.setText("")
-                self.downsample_status.setStyleSheet("background-color: transparent;")
+            self.downsample_status.setText("preview" if checked else "")
 
             # Invalidate contour data when downsample mode changes
             # This ensures contour data will be reloaded at the correct resolution
@@ -314,17 +166,14 @@ class PanelsMixin:
 
         # Add Fast Load widgets to the left
         options_row.addWidget(self.downsample_toggle)
-        options_row.addWidget(fast_icon)
-        options_row.addWidget(self.fast_label)
         options_row.addWidget(self.downsample_status)
 
         # Stretch in the middle
         options_row.addStretch()
 
         # RMS Box settings on the right (label + icon)
-        self.rms_label = QLabel("RMS")
-        rms_label_color = "#a5a8b8" if theme_manager.is_dark else "#555555"
-        self.rms_label.setStyleSheet(f"color: {rms_label_color}; font-size: 10pt;")
+        self.rms_label = QLabel("RMS box")
+        self.rms_label.setObjectName("Hint")
         rms_tip = (
             "RMS box: where the noise (RMS) is measured, by default a band "
             "along the bottom of the image.\nThe RMS sets the threshold of the "
@@ -336,26 +185,10 @@ class PanelsMixin:
         self.rms_settings_btn = QPushButton()
         self.rms_settings_btn.setObjectName("IconOnlyNBGButton")
         self.rms_settings_btn.setIcon(QIcon(themed_icon("settings.png")))
-        self.rms_settings_btn.setIconSize(QSize(20, 20))
+        self.rms_settings_btn.setIconSize(QSize(16, 16))
         self.rms_settings_btn.setToolTip(rms_tip)
         self.rms_settings_btn.setAccessibleName("RMS box settings")
-        self.rms_settings_btn.setFixedSize(28, 28)
         self.rms_settings_btn.clicked.connect(self.show_rms_box_dialog)
-        self.rms_settings_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: transparent;
-                border-radius: 6px;
-                padding: 4px;
-            }
-            QPushButton:hover {
-                background-color: rgba(99, 102, 241, 0.2);
-            }
-            QPushButton:pressed {
-                background-color: rgba(99, 102, 241, 0.35);
-            }
-        """
-        )
 
         options_row.addWidget(self.rms_label)
         options_row.addWidget(self.rms_settings_btn)
@@ -426,66 +259,55 @@ class PanelsMixin:
         grid_layout.setSpacing(6)
         grid_layout.setContentsMargins(0, 0, 0, 0)
 
-        overlay_toggle_style = _overlay_toggle_style()
-        settings_btn_style = _SETTINGS_BUTTON_STYLE
-
         # Row 0: Show Beam + settings | Show Grid + settings
         self.show_beam_checkbox = QCheckBox("")
         self.show_beam_checkbox.setAccessibleName("Beam")
         self.show_beam_label = QLabel("Beam")
         self.show_beam_checkbox.setChecked(True)
-        self.show_beam_checkbox.setStyleSheet(overlay_toggle_style)
+        self.show_beam_checkbox.setObjectName("Switch")
         self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
 
         self.beam_settings_button = QPushButton()
         self.beam_settings_button.setObjectName("IconOnlyNBGButton")
         self.beam_settings_button.setIcon(QIcon(themed_icon("settings.png")))
-        self.beam_settings_button.setIconSize(QSize(18, 18))
+        self.beam_settings_button.setIconSize(QSize(16, 16))
         self.beam_settings_button.setToolTip("Beam Settings")
-        self.beam_settings_button.setFixedSize(24, 24)
-        self.beam_settings_button.setStyleSheet(settings_btn_style)
         self.beam_settings_button.clicked.connect(self.show_beam_settings)
 
         self.show_grid_checkbox = QCheckBox("Grid")
         self.show_grid_checkbox.setChecked(False)
-        self.show_grid_checkbox.setStyleSheet(overlay_toggle_style)
+        self.show_grid_checkbox.setObjectName("Switch")
         self.show_grid_checkbox.stateChanged.connect(self.on_checkbox_changed)
 
         self.grid_settings_button = QPushButton()
         self.grid_settings_button.setObjectName("IconOnlyNBGButton")
         self.grid_settings_button.setIcon(QIcon(themed_icon("settings.png")))
-        self.grid_settings_button.setIconSize(QSize(18, 18))
+        self.grid_settings_button.setIconSize(QSize(16, 16))
         self.grid_settings_button.setToolTip("Grid Settings")
-        self.grid_settings_button.setFixedSize(24, 24)
-        self.grid_settings_button.setStyleSheet(settings_btn_style)
         self.grid_settings_button.clicked.connect(self.show_grid_settings)
 
         # Row 1: Solar Disk + settings | Contours + settings
         self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
-        self.show_solar_disk_checkbox.setStyleSheet(overlay_toggle_style)
+        self.show_solar_disk_checkbox.setObjectName("Switch")
         self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
 
         self.solar_disk_center_button = QPushButton()
         self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
         self.solar_disk_center_button.setIcon(QIcon(themed_icon("settings.png")))
-        self.solar_disk_center_button.setIconSize(QSize(18, 18))
+        self.solar_disk_center_button.setIconSize(QSize(16, 16))
         self.solar_disk_center_button.setToolTip("Customize Solar Disk")
-        self.solar_disk_center_button.setFixedSize(24, 24)
-        self.solar_disk_center_button.setStyleSheet(settings_btn_style)
         self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
 
         self.show_contours_checkbox = QCheckBox("Contours")
         self.show_contours_checkbox.setChecked(False)
-        self.show_contours_checkbox.setStyleSheet(overlay_toggle_style)
+        self.show_contours_checkbox.setObjectName("Switch")
         self.show_contours_checkbox.stateChanged.connect(self.on_checkbox_changed)
 
         self.contour_settings_button = QPushButton()
         self.contour_settings_button.setObjectName("IconOnlyNBGButton")
         self.contour_settings_button.setIcon(QIcon(themed_icon("settings.png")))
-        self.contour_settings_button.setIconSize(QSize(18, 18))
+        self.contour_settings_button.setIconSize(QSize(16, 16))
         self.contour_settings_button.setToolTip("Contour Settings")
-        self.contour_settings_button.setFixedSize(24, 24)
-        self.contour_settings_button.setStyleSheet(settings_btn_style)
         self.contour_settings_button.clicked.connect(self.show_contour_settings)
 
         # Create left/right widget containers for tight grouping
@@ -560,7 +382,7 @@ class PanelsMixin:
         self.gamma_slider.valueChanged.connect(self.update_gamma_value)
         self.gamma_slider.sliderReleased.connect(self._apply_gamma_change)
         self.gamma_entry = QLineEdit("1.0")
-        self.gamma_entry.setFixedWidth(60)
+        fit_width_to_text(self.gamma_entry, "0.00")
         self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
         gamma_layout.addWidget(QLabel("Gamma:"))
         gamma_layout.addWidget(self.gamma_slider)
@@ -571,30 +393,17 @@ class PanelsMixin:
         preset_layout = QHBoxLayout()
         preset_layout.setSpacing(6)
 
-        # Common compact style for preset buttons
-        # (no min-width: it would let a narrow panel squeeze the labels)
-        preset_btn_style = """
-            QPushButton {
-                padding: 3px 6px;
-                font-size: 10pt;
-                min-height: 22px;
-            }
-        """
-
         self.auto_minmax_button = QPushButton("Auto")
-        self.auto_minmax_button.setStyleSheet(preset_btn_style)
         self.auto_minmax_button.clicked.connect(
             lambda: self.apply_auto_range("minmax")
         )
 
         self.auto_percentile_button = QPushButton("1-99%")
-        self.auto_percentile_button.setStyleSheet(preset_btn_style)
         self.auto_percentile_button.clicked.connect(
             lambda: self.apply_auto_range("p1_99")
         )
 
         self.auto_median_button = QPushButton("Med±3σ")
-        self.auto_median_button.setStyleSheet(preset_btn_style)
         self.auto_median_button.clicked.connect(
             lambda: self.apply_auto_range("median_rms")
         )
@@ -607,10 +416,9 @@ class PanelsMixin:
         main_layout.addWidget(intensity_group)
 
         # Display changes apply as they are made; this reads the image again,
-        # which is rarely needed: a small button like the presets
+        # which is rarely needed
         self.plot_button = QPushButton("Reload Image")
         self.plot_button.setToolTip("Read the image again from disk")
-        self.plot_button.setStyleSheet(preset_btn_style)
         self.plot_button.clicked.connect(self.on_visualization_changed)
         reload_row = QHBoxLayout()
         reload_row.addStretch()
@@ -626,7 +434,7 @@ class PanelsMixin:
         self.info_label = QLabel(
             "No selection. Draw a rectangle or ellipse on the image."
         )
-        self.info_label.setStyleSheet("font-style: italic; font-size: 10.5pt;")
+        self.info_label.setObjectName("Hint")
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
         self.stats_table = QTableWidget(6, 2)
@@ -640,8 +448,6 @@ class PanelsMixin:
         self.stats_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         # Allow user to resize columns manually
         self.stats_table.horizontalHeader().setSectionsMovable(False)
-        for i in range(6):
-            self.stats_table.setRowHeight(i, 24)
         headers = ["Min", "Max", "Mean", "Std Dev", "Sum", "RMS"]
         for row, label in enumerate(headers):
             self.stats_table.setItem(row, 0, QTableWidgetItem(label))
@@ -649,12 +455,12 @@ class PanelsMixin:
             self.stats_table.item(row, 1).setTextAlignment(
                 Qt.AlignRight | Qt.AlignVCenter
             )
+        _fit_rows(self.stats_table)
         layout.addWidget(self.stats_table)
 
         # Histogram button - compact styling
-        self.histogram_btn = QPushButton("📊 Histogram")
+        self.histogram_btn = QPushButton("Histogram")
         self.histogram_btn.setToolTip("Show pixel value histogram for current ROI")
-        self.histogram_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
         self.histogram_btn.clicked.connect(self._show_roi_histogram)
         layout.addWidget(self.histogram_btn)
 
@@ -665,7 +471,7 @@ class PanelsMixin:
         layout = QVBoxLayout(group)
 
         self.image_info_label = QLabel("Full image statistics")
-        self.image_info_label.setStyleSheet("font-style: italic; font-size: 10.5pt;")
+        self.image_info_label.setObjectName("Hint")
         self.image_info_label.setWordWrap(True)
         layout.addWidget(self.image_info_label)
 
@@ -679,9 +485,6 @@ class PanelsMixin:
         self.image_stats_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.Stretch
         )
-        for i in range(6):
-            self.image_stats_table.setRowHeight(i, 24)
-
         # Short labels, so the values keep their room in a narrow panel
         headers = ["Max", "Min", "RMS", "Box mean", "Pos. DR", "Neg. DR"]
         tips = {
@@ -700,7 +503,7 @@ class PanelsMixin:
                 Qt.AlignRight | Qt.AlignVCenter
             )
         self.image_stats_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
+        _fit_rows(self.image_stats_table)
         layout.addWidget(self.image_stats_table)
         self.create_noaa_events_button(layout)
         parent_layout.addWidget(group)
@@ -710,16 +513,12 @@ class PanelsMixin:
         # Create horizontal layout for both buttons side-by-side
         buttons_layout = QHBoxLayout()
 
-        # Plain text: Qt measures emoji narrower than they are drawn, and
-        # clipped the labels when the panel is narrow
         self.noaa_events_btn = QPushButton("Activity")
         self.noaa_events_btn.setToolTip(
             "View Solar Activity (Events, Active Regions, Conditions, CMEs)"
         )
         self.noaa_events_btn.setEnabled(False)  # Disabled by default
-        self.noaa_events_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
         self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
-        _min_width_for_label(self.noaa_events_btn)
         buttons_layout.addWidget(self.noaa_events_btn)
 
         self.helioviewer_btn = QPushButton("Helioviewer")
@@ -727,9 +526,7 @@ class PanelsMixin:
             "Browse Helioviewer images around current observation time"
         )
         self.helioviewer_btn.setEnabled(False)  # Disabled by default
-        self.helioviewer_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
         self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
-        _min_width_for_label(self.helioviewer_btn)
         buttons_layout.addWidget(self.helioviewer_btn)
 
         # Add horizontal layout to parent
@@ -741,58 +538,7 @@ class PanelsMixin:
         layout.setContentsMargins(8, 8, 8, 8)
         self.coord_label = QLabel("No image loaded")
         self.coord_label.setAlignment(Qt.AlignCenter)
-        self.coord_label.setStyleSheet("font-family: monospace; font-size: 10.5pt;")
-        self.coord_label.setMinimumHeight(55)
+        self.coord_label.setObjectName("Mono")
+        self.coord_label.setMinimumHeight(self.coord_label.fontMetrics().lineSpacing() * 3)
         layout.addWidget(self.coord_label)
         parent_layout.addWidget(group)
-
-    def _update_overlay_toggle_styles(self):
-        """Update overlay checkbox and button styles based on current theme."""
-        for checkbox in (
-            self.show_beam_checkbox,
-            self.show_grid_checkbox,
-            self.show_solar_disk_checkbox,
-            self.show_contours_checkbox,
-        ):
-            checkbox.setStyleSheet(_overlay_toggle_style())
-        for btn in (
-            self.beam_settings_button,
-            self.grid_settings_button,
-            self.solar_disk_center_button,
-            self.contour_settings_button,
-        ):
-            btn.setStyleSheet(_SETTINGS_BUTTON_STYLE)
-
-        # Update Fast Load toggle style
-        if hasattr(self, "downsample_toggle"):
-            toggle_bg, toggle_bg_hover, toggle_border, _, _ = _toggle_colors()
-            fast_toggle_style = f"""
-                QCheckBox#FastLoadToggle {{
-                    spacing: 0px;
-                }}
-                QCheckBox#FastLoadToggle::indicator {{
-                    width: 28px;
-                    height: 14px;
-                    border-radius: 7px;
-                    background-color: {toggle_bg};
-                    border: 1px solid {toggle_border};
-                }}
-                QCheckBox#FastLoadToggle::indicator:hover {{
-                    background-color: {toggle_bg_hover};
-                }}
-                QCheckBox#FastLoadToggle::indicator:checked {{
-                    background-color: #6366f1;
-                    border-color: #818cf8;
-                }}
-                QCheckBox#FastLoadToggle::indicator:checked:hover {{
-                    background-color: #7c7ff5;
-                }}
-            """
-            self.downsample_toggle.setStyleSheet(fast_toggle_style)
-
-        # Update Fast and RMS labels
-        label_color = "#a5a8b8" if theme_manager.is_dark else "#555555"
-        if hasattr(self, "fast_label"):
-            self.fast_label.setStyleSheet(f"color: {label_color}; font-size: 10pt;")
-        if hasattr(self, "rms_label"):
-            self.rms_label.setStyleSheet(f"color: {label_color}; font-size: 10pt;")

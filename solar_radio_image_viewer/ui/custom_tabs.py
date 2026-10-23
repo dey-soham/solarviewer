@@ -18,22 +18,6 @@ class CustomTabBar(QTabBar):
         self.add_tab_button.setToolTip("Add new tab")
         self.add_tab_button.setFixedSize(32, 32)
         self.add_tab_button.setIconSize(QSize(32, 32))
-        self.add_tab_button.setStyleSheet("""
-            QToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 4px;
-                margin: 2px 0px 2px 0px;
-                padding: 0px;
-            }
-            */QToolButton:hover {
-                background-color: #2D2D2D;
-            }*/
-            QToolButton:pressed {
-                background-color: #3D3D3D;
-            }
-            """)
-
         # Connect hover events for the add button
         self.add_tab_button.enterEvent = self._handle_add_button_hover_enter
         self.add_tab_button.leaveEvent = self._handle_add_button_hover_leave
@@ -135,67 +119,38 @@ class CustomTabBar(QTabBar):
     def refresh_theme(self):
         """Update tab bar styling and icons for current theme."""
         palette = theme_manager.palette
-        is_dark = theme_manager.is_dark
 
-        # Theme-aware colors
-        if is_dark:
-            tab_selected_bg = "#383838"
-            tab_unselected_bg = "#252525"
-            tab_hover_bg = "#404040"
-            tab_border = "#484848"
-            tab_border_unsel = "#353535"
-            button_pressed = "#3D3D3D"
-            tab_text_color = "#ffffff"
-        else:
-            tab_selected_bg = palette.get("surface", "#f5f5f5")
-            tab_unselected_bg = palette.get("window", "#e8e8e8")
-            tab_hover_bg = palette.get("button_hover", "#d0d0d0")
-            tab_border = palette.get("border", "#b0b0b0")
-            tab_border_unsel = palette.get("border", "#c0c0c0")
-            button_pressed = palette.get("button_pressed", "#c0c0c0")
-            tab_text_color = palette.get("text", "#1a1a1a")
-
-        # Update add button icon - themed_icon handles light/dark switching
         self.add_tab_button.setIcon(QIcon(themed_icon("add_tab_default.png")))
 
-        # Update add button styling
-        self.add_tab_button.setStyleSheet(f"""
-            QToolButton {{
-                background-color: transparent;
-                border: none;
-                border-radius: 4px;
-            }}
-            QToolButton:pressed {{
-                background-color: {button_pressed};
-            }}
-        """)
-
-        # Update tab bar styling with theme colors
+        # The image tabs are a strip across the window, flat, in the
+        # palette's surface colours (the close and add icons are pictures
+        # of the theme, so this is set again on a theme change)
         close_default = themed_icon("close_tab_default.png")
         close_hover = themed_icon("close_tab_hover.png")
 
         self.setStyleSheet(f"""
             QTabBar::tab {{
                 padding: 4px 12px 4px 8px;
-                margin: 0px 0px 0px 0px;
-                border-top-left-radius: 0px;
-                border-top-right-radius: 0px;
+                margin: 0px;
+                border-radius: 0px;
                 text-align: left;
-                border-top: none;
-                color: {tab_text_color};
+                color: {palette['text']};
+                font-weight: 500;
             }}
             QTabBar::tab:selected {{
-                background: {tab_selected_bg};
-                border: 1px solid {tab_border};
-                border-top: none;
+                background: {palette['surface']};
+                border: 1px solid {palette['border']};
+                border-top: 2px solid {palette['highlight']};
+                border-bottom: none;
+                font-weight: 600;
             }}
             QTabBar::tab:!selected {{
-                background: {tab_unselected_bg};
-                border: 1px solid {tab_border_unsel};
-                border-top: none;
+                background: {palette['window']};
+                border: 1px solid {palette['border']};
+                border-top: 2px solid transparent;
             }}
-            QTabBar::tab:hover {{
-                background: {tab_hover_bg};
+            QTabBar::tab:hover:!selected {{
+                background: {palette['button_hover']};
             }}
             QTabBar::close-button {{
                 image: url("{close_default}");

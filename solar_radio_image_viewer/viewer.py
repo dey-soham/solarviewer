@@ -24,14 +24,16 @@ from PyQt5.QtWidgets import (
     # QPlainTextEdit,
     # QListWidget,
     QSplitter,
+    QScrollArea,
+    QFrame,
 )
 from PyQt5.QtCore import Qt, QEventLoop, QSettings, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QIcon
 
 from .ui.styles import (
     theme_manager,
-    get_stylesheet,
     set_hand_cursor,
+    set_tone,
 )
 from .ui.app import apply_theme
 from .ui.geometry import fit_to_screen
@@ -128,6 +130,20 @@ update_matplotlib_theme()
 mplstyle.use("fast")
 
 
+def _side_panel(panel):
+    """``panel`` in a scroll area: as wide as its controls need, scrolling
+    vertically when the window is too short for all of them."""
+    area = QScrollArea()
+    area.setWidget(panel)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    width = panel.minimumSizeHint().width()
+    area.setMinimumWidth(width + area.verticalScrollBar().sizeHint().width())
+    area.setMaximumWidth(700)
+    return area
+
+
 class SolarRadioImageTab(
     PanelsMixin,
     FigureToolbarMixin,
@@ -151,8 +167,6 @@ class SolarRadioImageTab(
     def __init__(self, parent=None, tab_name=""):
         super().__init__(parent)
         self.setObjectName(tab_name)
-        # Use current theme's stylesheet instead of hardcoded dark theme
-        self.setStyleSheet(theme_manager.stylesheet)
 
         # Register theme change callback for icon updates
         theme_manager.register_callback(self._on_theme_change)
@@ -305,16 +319,16 @@ class SolarRadioImageTab(
         splitter.setChildrenCollapsible(True)
 
         # Left Control Panel (its minimum width is what its controls need:
-        # a fixed smaller one let the splitter squeeze and clip them)
+        # a fixed smaller one let the splitter squeeze and clip them). On a
+        # short screen the panels scroll rather than clip.
         control_panel = QWidget()
-        control_panel.setMaximumWidth(700)
         control_layout = QVBoxLayout(control_panel)
         control_layout.setContentsMargins(0, 0, 10, 0)
         control_layout.setSpacing(15)
         self.create_file_controls(control_layout)
         self.create_display_controls(control_layout)
         control_layout.addStretch()
-        splitter.addWidget(control_panel)
+        splitter.addWidget(_side_panel(control_panel))
 
         # Center Figure Panel
         figure_panel = QWidget()
@@ -328,14 +342,13 @@ class SolarRadioImageTab(
 
         # Right Stats Panel
         stats_panel = QWidget()
-        stats_panel.setMaximumWidth(700)
         stats_layout = QVBoxLayout(stats_panel)
         stats_layout.setContentsMargins(10, 0, 0, 0)
         stats_layout.setSpacing(15)
         self.create_stats_table(stats_layout)
         self.create_image_stats_table(stats_layout)
         self.create_coord_display(stats_layout)
-        splitter.addWidget(stats_panel)
+        splitter.addWidget(_side_panel(stats_panel))
 
         # Initial sizes: the side panels 300 px, or what their controls need
         splitter.setSizes(
@@ -745,14 +758,6 @@ class SolarRadioImageTab(
         self.gamma_slider.setEnabled(is_power)
         self.gamma_entry.setEnabled(is_power)
 
-        if is_power:
-            self.gamma_slider.setStyleSheet("")
-            self.gamma_entry.setStyleSheet("")
-        else:
-            # Use global :disabled styles from styles.py
-            self.gamma_slider.setStyleSheet("")
-            self.gamma_entry.setStyleSheet("")
-
     def _on_theme_change(self, theme):
         """Handle theme change - update icons"""
         from .ui.styles import get_icon_path
@@ -1042,9 +1047,6 @@ class SolarRadioImageTab(
         if hasattr(self, "grid_settings_button"):
             self.grid_settings_button.setIcon(QIcon(themed_icon("settings.png")))
 
-        # Update overlay toggle styles for theme
-        self._update_overlay_toggle_styles()
-
         # Update navigation buttons (if they exist in left panel)
         if hasattr(self, "zoom_in_button"):
             self.zoom_in_button.setIcon(QIcon(themed_icon("zoom_in.png")))
@@ -1124,19 +1126,18 @@ class SolarRadioImageViewerApp(
         self.remote_cache = None  # RemoteFileCache for downloaded files
 
         # Remote connection status indicator in status bar (clickable)
-        self.remote_status_btn = QPushButton("🔌 Not Connected")
-        self.remote_status_btn.setFlat(True)
+        self.remote_status_btn = QPushButton("Not connected")
+        self.remote_status_btn.setObjectName("StatusButton")
         self.remote_status_btn.setCursor(Qt.PointingHandCursor)
         self.remote_status_btn.setToolTip("Click to connect to a remote server")
         self.remote_status_btn.clicked.connect(self._on_remote_status_clicked)
-        self._apply_remote_status_style(connected=False)
         self.statusBar().addPermanentWidget(self.remote_status_btn)
 
         # Update Notification Button (Hidden by default)
-        self.update_btn = QPushButton("🚀 Update Available")
-        self.update_btn.setFlat(True)
+        self.update_btn = QPushButton("Update available")
+        self.update_btn.setObjectName("StatusButton")
+        set_tone(self.update_btn, "success")
         self.update_btn.setCursor(Qt.PointingHandCursor)
-        self._update_update_btn_style()  # Set initial style
         self.update_btn.setVisible(False)
         self.update_btn.clicked.connect(self._on_update_clicked)
         self.statusBar().addPermanentWidget(self.update_btn)
@@ -1237,43 +1238,9 @@ class SolarRadioImageViewerApp(
 
             target_tab.open_image_path(file_path)
 
-    def _update_update_btn_style(self):
-        """Update the update notification button style based on theme."""
-        if not hasattr(self, "update_btn"):
-            return
-
-        is_dark = theme_manager.is_dark
-
-        if is_dark:
-            # Current style that looks good in dark mode
-            color = "#10b981"  # Emerald 500
-            bg_hover = "rgba(16, 185, 129, 0.1)"
-            border_color = "#10b981"
-        else:
-            # Darker green for light theme (Emerald 600)
-            color = "#059669"
-            bg_hover = "rgba(5, 150, 105, 0.1)"
-            border_color = "#059669"
-
-        self.update_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                color: {color};
-                font-weight: bold;
-                padding: 0 4px;
-                border: 1px solid {border_color};
-                border-radius: 4px;
-                background-color: transparent;
-            }}
-            QPushButton:hover {{
-                background-color: {bg_hover};
-            }}
-        """
-        )
-
     def _on_update_available(self, latest_ver):
         """Show the update button when an update is found."""
-        self.update_btn.setText(f"🚀 Update Available: {latest_ver}")
+        self.update_btn.setText(f"Update available: {latest_ver}")
         self.update_btn.setToolTip(
             f"A new version ({latest_ver}) is available! Click to learn more."
         )
@@ -1399,10 +1366,8 @@ class SolarRadioImageViewerApp(
         # Update theme action text
         self._update_theme_action_text()
 
-        # Update stylesheet and icons for all tabs
-        stylesheet = get_stylesheet(theme_manager.palette, theme_manager.is_dark)
+        # Icons are pictures of the theme
         for tab in self.tabs:
-            tab.setStyleSheet(stylesheet)
             tab.refresh_icons()
 
         # Refresh tab bar theme (colors and icons)
@@ -1421,15 +1386,13 @@ class SolarRadioImageViewerApp(
         """Recursively set PointingHandCursor for all buttons and interactive widgets."""
         set_hand_cursor(widget)
 
-        # Update notification button style
-        self._update_update_btn_style()
 
     def _update_theme_action_text(self):
         """Update theme toggle action text based on current theme."""
         if theme_manager.is_dark:
-            self.theme_action.setText("☀️ Switch to Light Mode")
+            self.theme_action.setText("Switch to Light Mode")
         else:
-            self.theme_action.setText("🌙 Switch to Dark Mode")
+            self.theme_action.setText("Switch to Dark Mode")
 
     def _update_application_palette(self):
         """Restyle the application (palette and stylesheet) for the theme."""
