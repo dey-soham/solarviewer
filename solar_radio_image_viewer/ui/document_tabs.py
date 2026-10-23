@@ -12,6 +12,7 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
+    QMenuBar,
     QStackedWidget,
     QTabBar,
     QToolButton,
@@ -88,6 +89,7 @@ class DocumentTabs(QStackedWidget):
     def addTab(self, page, text):
         index = self.addWidget(page)
         self._bar.addTab(text)
+        self._relayout()
         return index
 
     def removeTab(self, index):
@@ -95,6 +97,18 @@ class DocumentTabs(QStackedWidget):
         if page is not None:
             self.removeWidget(page)
         self._bar.removeTab(index)
+        self._relayout()
+
+    def _relayout(self):
+        """Give the strip the width its tabs now need. A menu bar places
+        its corner widget only when it is resized, so a strip that grew
+        (a tab opened, a name changed) was cut off until the window was
+        resized; sizing the bar to its hint makes it place the strip."""
+        parent = self.strip.parentWidget()
+        if isinstance(parent, QMenuBar):
+            parent.adjustSize()
+        elif parent is not None:
+            parent.updateGeometry()
 
     def setCurrentIndex(self, index):
         self._bar.setCurrentIndex(index)
@@ -107,6 +121,7 @@ class DocumentTabs(QStackedWidget):
 
     def setTabText(self, index, text):
         self._bar.setTabText(index, text)
+        self._relayout()
 
     def setTabToolTip(self, index, text):
         self._bar.setTabToolTip(index, text)
