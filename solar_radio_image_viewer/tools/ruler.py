@@ -7,7 +7,7 @@ import numpy as np
 from PyQt5.QtCore import Qt
 
 from .geometry import snap_to_axis
-from .preview import blit_preview
+from .preview import dashed_pen, measure_preview
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,10 @@ class RulerMixin:
     Host attributes/methods used:
 
     ``canvas``, ``current_wcs``, ``roi_selector``, ``show_status_message``
+
+    A measurement is drawn as a right-angled triangle: the measured line is
+    the hypotenuse, and the legs show its horizontal and vertical parts, each
+    labelled with its length.
     """
 
     def _toggle_ruler_mode(self, checked):
@@ -53,32 +57,25 @@ class RulerMixin:
             self._clear_ruler()
 
     def _clear_ruler(self):
-        """Clear ruler line and text from plot"""
-        if self._ruler_line is not None:
-            try:
-                self._ruler_line.remove()
-            except Exception:
-                pass
-            self._ruler_line = None
-        if self._ruler_text is not None:
-            try:
-                self._ruler_text.remove()
-            except Exception:
-                pass
-            self._ruler_text = None
-        if (
-            hasattr(self, "_ruler_preview_line")
-            and self._ruler_preview_line is not None
-        ):
-            try:
-                self._ruler_preview_line.remove()
-            except Exception:
-                pass
-            self._ruler_preview_line = None
-        self._ruler_blit_bg = None
-        self._ruler_blit_box = None
+        """Clear ruler triangle and labels from plot"""
+        self._remove_ruler_artists()
+        measure_preview(self).end()
         self._ruler_start = None
         self.canvas.draw_idle()
+
+    def _remove_ruler_artists(self):
+        """Take the triangle, its labels and the start marker off the axes."""
+        artists = [self._ruler_line, self._ruler_text]
+        artists += getattr(self, "_ruler_legs", None) or []
+        for artist in artists:
+            if artist is not None:
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+        self._ruler_line = None
+        self._ruler_text = None
+        self._ruler_legs = []
 
     def _ruler_on_click(self, event):
         """Handle mouse click for ruler - two clicks to measure"""
@@ -92,21 +89,7 @@ class RulerMixin:
 
         if self._ruler_start is None:
             # First click - clear previous measurement first, then set start point
-            # Clear graphics but don't reset _ruler_start yet
-            if self._ruler_line is not None:
-                try:
-                    self._ruler_line.remove()
-                except Exception:
-                    pass
-                self._ruler_line = None
-            if self._ruler_text is not None:
-                try:
-                    self._ruler_text.remove()
-                except Exception:
-                    pass
-                self._ruler_text = None
-
-            # Now set start point
+            self._remove_ruler_artists()
             self._ruler_start = (event.xdata, event.ydata)
 
             # Draw start point marker
@@ -117,8 +100,6 @@ class RulerMixin:
             self.canvas.draw_idle()
 
             # Connect motion for live preview
-            self._ruler_preview_line = None
-            self._ruler_blit_bg = None
             self._ruler_motion_cid = self.canvas.mpl_connect(
                 "motion_notify_event", self._ruler_on_motion
             )
@@ -139,23 +120,12 @@ class RulerMixin:
                 self.canvas.mpl_disconnect(self._ruler_motion_cid)
                 self._ruler_motion_cid = None
 
-            # Clean up preview line
-            if (
-                hasattr(self, "_ruler_preview_line")
-                and self._ruler_preview_line is not None
-            ):
-                try:
-                    self._ruler_preview_line.remove()
-                except Exception:
-                    pass
-                self._ruler_preview_line = None
-            self._ruler_blit_bg = None
+            measure_preview(self).end()
 
             ax = event.inaxes
 
-            # Draw line between points
-            if self._ruler_line is not None:
-                self._ruler_line.remove()
+            # The measured line, as the hypotenuse of the triangle
+            self._remove_ruler_artists()
             (self._ruler_line,) = ax.plot(
                 [x1, x2], [y1, y2], "r-", linewidth=2, marker="o", markersize=8
             )
@@ -163,17 +133,22 @@ class RulerMixin:
             # Calculate distance
             distance_info = self._calculate_angular_distance(x1, y1, x2, y2)
 
-            # Draw distance text at midpoint
-            mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
-            self._ruler_text = ax.text(
-                mid_x,
-                mid_y,
+            # Distance label by the midpoint, on the side away from the legs
+            offset, ha, va = _distance_label_placement(x1, y1, x2, y2)
+            self._ruler_text = ax.annotate(
                 distance_info,
+                ((x1 + x2) / 2, (y1 + y2) / 2),
+                xytext=offset,
+                textcoords="offset points",
+                ha=ha,
+                va=va,
                 fontsize=9,
                 color="red",
                 fontweight="bold",
                 bbox=dict(boxstyle="round", facecolor="white", alpha=0.6),
+                annotation_clip=True,
             )
+            self._ruler_legs = self._draw_ruler_legs(ax, x1, y1, x2, y2)
 
             self.canvas.draw_idle()
 
@@ -201,38 +176,78 @@ class RulerMixin:
         if shift_held:
             x2, y2 = snap_to_axis(x1, y1, x2, y2)
 
-        ax = event.inaxes
-
-        # Update or create preview line
-        if self._ruler_preview_line is None:
-            (self._ruler_preview_line,) = ax.plot(
-                [x1, x2], [y1, y2], "r--", linewidth=1.5, alpha=0.7
-            )
-            # Capture background for blitting
-            self.canvas.draw()
-            self._ruler_blit_bg = self.canvas.copy_from_bbox(ax.bbox)
-            self._ruler_blit_box = None
-        else:
-            self._ruler_preview_line.set_data([x1, x2], [y1, y2])
-
-        # Use blitting for fast updates
-        if self._ruler_blit_bg is not None:
-            self._ruler_blit_box = blit_preview(
-                self.canvas,
-                ax,
-                self._ruler_preview_line,
-                self._ruler_blit_bg,
-                self._ruler_blit_box,
-            )
-        else:
-            self.canvas.draw_idle()
+        measure_preview(self).show_lines(
+            event.inaxes, _triangle_lines(x1, y1, x2, y2)
+        )
 
         # Show distance in status bar
         pixel_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
         self.show_status_message(
-            f"Distance: {pixel_dist:.1f} px | Shift for H/V snap | Click to confirm",
+            f"Distance: {pixel_dist:.1f} px (\u0394x {abs(x2 - x1):.1f}, "
+            f"\u0394y {abs(y2 - y1):.1f}) | Shift for H/V snap | Click to confirm",
             flush=False,
         )
+
+    def _draw_ruler_legs(self, ax, x1, y1, x2, y2):
+        """Draw the triangle's legs, labelled with their lengths; the artists.
+
+        The right angle is at the end point's x and the start point's y. The
+        labels sit on the outer sides of the legs, away from the hypotenuse.
+        No legs are drawn for a horizontal or vertical line.
+        """
+        if x1 == x2 or y1 == y2:
+            return []
+        try:
+            scale = self._ruler_arcsec_per_pixel()
+        except Exception as e:
+            logger.error(f"WCS error: {e}")
+            scale = None
+        if scale is None:
+            dx_label, dy_label = f"{abs(x2 - x1):.1f} px", f"{abs(y2 - y1):.1f} px"
+        else:
+            dx_label = _format_arcsec(abs(x2 - x1) * scale[0])
+            dy_label = _format_arcsec(abs(y2 - y1) * scale[1])
+        (legs,) = ax.plot(
+            [x1, x2, x2], [y1, y1, y2], "r--", linewidth=1, alpha=0.7
+        )
+        label_style = dict(
+            textcoords="offset points",
+            fontsize=8,
+            color="red",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.6),
+            annotation_clip=True,
+        )
+        below = y2 > y1  # the hypotenuse is above the horizontal leg
+        dx_text = ax.annotate(
+            dx_label,
+            ((x1 + x2) / 2, y1),
+            xytext=(0, -6 if below else 6),
+            ha="center",
+            va="top" if below else "bottom",
+            **label_style,
+        )
+        right = x2 > x1  # the hypotenuse is left of the vertical leg
+        dy_text = ax.annotate(
+            dy_label,
+            (x2, (y1 + y2) / 2),
+            xytext=(6 if right else -6, 0),
+            ha="left" if right else "right",
+            va="center",
+            **label_style,
+        )
+        return [legs, dx_text, dy_text]
+
+    def _ruler_arcsec_per_pixel(self):
+        """(x, y) pixel scales in arcsec from the WCS; None without a WCS."""
+        if not self.current_wcs:
+            return None
+        increment = self.current_wcs.increment()["numeric"][0:2]
+        # Check if image uses SOLAR-X/Y (increment is already in arcsec)
+        _hdr = getattr(self, "_cached_fits_header", None) or {}
+        if "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper():
+            return abs(increment[0]), abs(increment[1])
+        to_arcsec = 180 / np.pi * 3600
+        return abs(increment[0]) * to_arcsec, abs(increment[1]) * to_arcsec
 
     def _calculate_angular_distance(self, x1, y1, x2, y2):
         """Calculate angular distance between two pixel coordinates using WCS"""
@@ -243,17 +258,8 @@ class RulerMixin:
 
         if self.current_wcs:
             try:
-                # Get pixel scale from WCS
-                increment = self.current_wcs.increment()["numeric"][0:2]
-                # Check if image uses SOLAR-X/Y (increment is already in arcsec)
-                _hdr = getattr(self, "_cached_fits_header", None) or {}
-                _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-                if _is_solar:
-                    scale_x = abs(increment[0])  # already arcsec/pixel
-                    scale_y = abs(increment[1])
-                else:
-                    scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
-                    scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
+                # Pixel scale from the WCS, in arcsec/pixel
+                scale_x, scale_y = self._ruler_arcsec_per_pixel()
 
                 # Calculate angular distance
                 dx_arcsec = dx_px * scale_x
@@ -370,3 +376,32 @@ class RulerMixin:
             print("=" * 60 + "\n")
 
             return f"{pixel_dist:.1f} px"
+
+
+def _triangle_lines(x1, y1, x2, y2):
+    """The preview's lines: the measured line and the triangle's legs."""
+    lines = [((x1, y1), (x2, y2), dashed_pen("red", 1.5, 0.7))]
+    if x1 != x2 and y1 != y2:
+        legs = dashed_pen("red", 1.0, 0.5)
+        lines += [((x1, y1), (x2, y1), legs), ((x2, y1), (x2, y2), legs)]
+    return lines
+
+
+def _format_arcsec(arcsec):
+    return f"{arcsec / 60:.2f}'" if arcsec >= 60 else f'{arcsec:.2f}"'
+
+
+def _distance_label_placement(x1, y1, x2, y2):
+    """Offset (points) and alignment putting the distance label beside the
+    midpoint on the far side from the right-angle corner, so it keeps clear
+    of the legs and their labels; above a horizontal line, right of a vertical one."""
+    away_x = (x1 + x2) / 2 - x2  # from the corner (x2, y1) to the midpoint
+    away_y = (y1 + y2) / 2 - y1
+    if away_x == 0 and away_y == 0:
+        return (6, 0), "left", "center"  # vertical line
+    if away_x == 0:
+        return (6, 0), "left", "center"  # vertical line
+    if away_y == 0:
+        return (0, 6), "center", "bottom"  # horizontal line
+    dx, dy = (6 if away_x > 0 else -6), (6 if away_y > 0 else -6)
+    return (dx, dy), ("left" if dx > 0 else "right"), ("bottom" if dy > 0 else "top")

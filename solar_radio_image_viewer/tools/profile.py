@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .geometry import snap_to_axis
-from .preview import blit_preview
+from .preview import dashed_pen, measure_preview
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ class ProfileMixin:
             # Clear profile graphics including center marker
             self._clear_profile()
             self._clear_crosshairs()
+            measure_preview(self).end()
             # Also clear center marker
             if (
                 hasattr(self, "_profile_center_marker")
@@ -188,7 +189,7 @@ class ProfileMixin:
             except Exception:
                 pass
             self._profile_preview_line = None
-        self._profile_blit_bg = None
+        measure_preview(self).end()
 
     def _profile_line_on_click(self, event):
         """Handle click for line profile mode"""
@@ -222,10 +223,7 @@ class ProfileMixin:
             if shift_held:
                 x2, y2 = snap_to_axis(x1, y1, x2, y2)
 
-            # Clear preview line
-            if self._profile_preview_line is not None:
-                self._profile_preview_line.remove()
-                self._profile_preview_line = None
+            measure_preview(self).end()
 
             # Show coordinate editor dialog
             self._show_profile_coordinate_dialog(x1, y1, x2, y2)
@@ -247,31 +245,9 @@ class ProfileMixin:
         if shift_held:
             x2, y2 = snap_to_axis(x1, y1, x2, y2)
 
-        ax = event.inaxes
-
-        # Update or create preview line
-        if self._profile_preview_line is None:
-            (self._profile_preview_line,) = ax.plot(
-                [x1, x2], [y1, y2], "g--", linewidth=1.5, alpha=0.7
-            )
-            # Capture background for blitting
-            self.canvas.draw()
-            self._profile_blit_bg = self.canvas.copy_from_bbox(ax.bbox)
-            self._profile_blit_box = None
-        else:
-            self._profile_preview_line.set_data([x1, x2], [y1, y2])
-
-        # Use blitting for fast updates instead of full canvas redraw
-        if hasattr(self, "_profile_blit_bg") and self._profile_blit_bg is not None:
-            self._profile_blit_box = blit_preview(
-                self.canvas,
-                ax,
-                self._profile_preview_line,
-                self._profile_blit_bg,
-                self._profile_blit_box,
-            )
-        else:
-            self.canvas.draw_idle()
+        measure_preview(self).show_lines(
+            event.inaxes, [((x1, y1), (x2, y2), dashed_pen("green", 1.5, 0.7))]
+        )
 
         # Calculate and show distance
         pixel_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
