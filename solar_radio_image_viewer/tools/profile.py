@@ -213,7 +213,7 @@ class ProfileMixin:
                 [event.ydata],
                 "o",
                 color=line,
-                markersize=8,
+                markersize=6,
                 path_effects=halo(shadow, 0),
             )
             self.canvas.draw_idle()
@@ -254,8 +254,8 @@ class ProfileMixin:
         line, shadow = contrast_colors(self)
         measure_preview(self).show_lines(
             event.inaxes,
-            [((x1, y1), (x2, y2), dashed_pen(line, 1.5, 1.0))],
-            halo_pen(shadow, 1.5),
+            [((x1, y1), (x2, y2), dashed_pen(line, 1.2, 1.0))],
+            halo_pen(shadow, 1.2),
         )
 
         # Calculate and show distance
@@ -360,10 +360,10 @@ class ProfileMixin:
                     [fy1, fy2],
                     "-",
                     color=line,
-                    linewidth=2,
+                    linewidth=1.5,
                     marker="o",
-                    markersize=8,
-                    path_effects=halo(shadow, 2),
+                    markersize=6,
+                    path_effects=halo(shadow, 1.5),
                 )
                 self.canvas.draw_idle()
 
@@ -565,10 +565,10 @@ class ProfileMixin:
                     [y1, y2],
                     "-",
                     color=line,
-                    linewidth=2,
+                    linewidth=1.5,
                     marker="o",
-                    markersize=8,
-                    path_effects=halo(shadow, 2),
+                    markersize=6,
+                    path_effects=halo(shadow, 1.5),
                 )
                 # Redraw center marker on top
                 if (

@@ -20,30 +20,48 @@ from PyQt5.QtWidgets import QWidget
 
 
 def contrast_colors(tab):
-    """(line, halo) colours that stand out on the tab's colormap.
+    """(line, halo) colours that stand out on the image as shown.
 
     Lines are drawn in one over a halo of the other, so they differ from the
     image in brightness, not only in hue, and stay visible on any colormap
-    and with any colour vision: a white line with a black halo on dark
-    colormaps, a black line with a white halo on light ones.
+    and with any colour vision. The line is white with a black halo when the
+    image is mostly dark, black with a white halo when it is mostly light;
+    the image's own colours decide, as most of it is usually background.
     """
     image = getattr(tab, "image_plot", None)
     if image is None:
         return "white", "black"
-    rgb = image.get_cmap()(np.linspace(0, 1, 64))[:, :3]
+    norm = image.norm
+    key = (id(image), image.get_cmap().name, type(norm), norm.vmin, norm.vmax)
+    cached = getattr(tab, "_contrast_cache", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+
+    data = image.get_array()
+    if data is None or data.ndim != 2:
+        rgb = image.get_cmap()(np.linspace(0, 1, 64))[:, :3]
+    else:
+        step = max(1, int(np.ceil(max(data.shape) / 128)))
+        rgb = image.to_rgba(data[::step, ::step])[..., :3].reshape(-1, 3)
     luminance = rgb @ [0.2126, 0.7152, 0.0722]
-    return ("black", "white") if luminance.mean() > 0.5 else ("white", "black")
+    colors = ("black", "white") if luminance.mean() > 0.5 else ("white", "black")
+    tab._contrast_cache = (key, colors)
+    return colors
 
 
 def halo(color, linewidth):
     """Matplotlib path effects drawing a ``color`` halo under a line of
     ``linewidth`` points (and under its markers)."""
-    return [withStroke(linewidth=linewidth + 2.5, foreground=color, alpha=0.85)]
+    return [withStroke(linewidth=linewidth + 1.4, foreground=color, alpha=0.8)]
 
 
 def halo_pen(color, linewidth):
     """A pen for the halo under a preview line of ``linewidth`` pixels."""
-    return QPen(QColor(color), linewidth + 2.5, Qt.SolidLine, Qt.FlatCap)
+    pen = QPen(QColor(color), linewidth + 1.4, Qt.SolidLine, Qt.FlatCap)
+    c = pen.color()
+    c.setAlphaF(0.8)
+    pen.setColor(c)
+    return pen
 
 
 def dashed_pen(color, width=1.5, alpha=0.7):

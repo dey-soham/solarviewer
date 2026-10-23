@@ -101,7 +101,7 @@ class RulerMixin:
                 [event.ydata],
                 "o",
                 color=line,
-                markersize=8,
+                markersize=6,
                 path_effects=halo(shadow, 0),
             )
             self.canvas.draw_idle()
@@ -139,10 +139,10 @@ class RulerMixin:
                 [y1, y2],
                 "-",
                 color=line,
-                linewidth=2,
+                linewidth=1.5,
                 marker="o",
-                markersize=8,
-                path_effects=halo(shadow, 2),
+                markersize=6,
+                path_effects=halo(shadow, 1.5),
             )
 
             # Calculate distance
@@ -157,10 +157,9 @@ class RulerMixin:
                 textcoords="offset points",
                 ha=ha,
                 va=va,
-                fontsize=9,
+                fontsize=8,
                 color=line,
-                fontweight="bold",
-                bbox=dict(boxstyle="round", facecolor=shadow, alpha=0.7),
+                bbox=dict(boxstyle="round,pad=0.25", facecolor=shadow, alpha=0.6, edgecolor="none"),
                 annotation_clip=True,
             )
             self._ruler_legs = self._draw_ruler_legs(ax, x1, y1, x2, y2, line, shadow)
@@ -193,7 +192,7 @@ class RulerMixin:
 
         line, shadow = contrast_colors(self)
         measure_preview(self).show_lines(
-            event.inaxes, _triangle_lines(x1, y1, x2, y2, line), halo_pen(shadow, 1.5)
+            event.inaxes, _triangle_lines(x1, y1, x2, y2, line), halo_pen(shadow, 1.2)
         )
 
         # Show distance in status bar
@@ -228,14 +227,14 @@ class RulerMixin:
             [y1, y1, y2],
             "--",
             color=line,
-            linewidth=1,
-            path_effects=halo(shadow, 1),
+            linewidth=0.8,
+            path_effects=halo(shadow, 0.8),
         )
         label_style = dict(
             textcoords="offset points",
-            fontsize=8,
+            fontsize=7,
             color=line,
-            bbox=dict(boxstyle="round", facecolor=shadow, alpha=0.7),
+            bbox=dict(boxstyle="round,pad=0.25", facecolor=shadow, alpha=0.6, edgecolor="none"),
             annotation_clip=True,
         )
         below = y2 > y1  # the hypotenuse is above the horizontal leg
@@ -401,9 +400,9 @@ class RulerMixin:
 
 def _triangle_lines(x1, y1, x2, y2, color):
     """The preview's lines: the measured line and the triangle's legs."""
-    lines = [((x1, y1), (x2, y2), dashed_pen(color, 1.5, 1.0))]
+    lines = [((x1, y1), (x2, y2), dashed_pen(color, 1.2, 1.0))]
     if x1 != x2 and y1 != y2:
-        legs = dashed_pen(color, 1.0, 0.8)
+        legs = dashed_pen(color, 0.8, 0.9)
         lines += [((x1, y1), (x2, y1), legs), ((x2, y1), (x2, y2), legs)]
     return lines
 
