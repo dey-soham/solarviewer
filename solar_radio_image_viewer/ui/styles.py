@@ -116,6 +116,7 @@ TOKENS = {
 #   Surface         a QFrame on the surface colour, no border (toggle rows)
 #   Rule            a QFrame drawn as a 1px horizontal line, fading at the ends
 #   VRule           a QFrame drawn as a 1px vertical line
+#   TabRow          the row holding the image tabs on macOS (a line below)
 #   TopBar          the main window's control bar (a line below)
 #   CanvasBar       the toolbar under the image (a line above)
 #   Inspector       the main window's right column (a line on its left)
@@ -157,6 +158,7 @@ ROLES = (
     "Surface",
     "Rule",
     "VRule",
+    "TabRow",
     "TopBar",
     "CanvasBar",
     "Inspector",
@@ -439,6 +441,11 @@ def get_stylesheet(palette, is_dark=True):
         border: none;
         max-width: 1px;
         min-width: 1px;
+    }}
+    QFrame#TabRow {{
+        background-color: {p['surface']};
+        border: none;
+        border-bottom: 1px solid {p['divider']};
     }}
     QFrame#TopBar {{
         background-color: {p['window']};

@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 import threading
 
 import numpy as np
@@ -31,6 +32,7 @@ from PyQt5.QtCore import Qt, QEventLoop, QSettings, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QIcon
 
 from .ui.styles import (
+    SPACE_S,
     theme_manager,
     set_hand_cursor,
     set_tone,
@@ -1076,7 +1078,6 @@ class SolarRadioImageViewerApp(
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.update_window_title)
         self.tab_widget.add_tab_button.clicked.connect(self.handle_add_tab)
-        self.setCentralWidget(self.tab_widget)
         self.setMinimumSize(1100, 720)
         self.tabs = []
         self.settings = QSettings("SolarViewer", "SolarViewer")
@@ -1121,7 +1122,7 @@ class SolarRadioImageViewerApp(
 
         self.statusBar().showMessage("Ready")
         self.create_menus()
-        self.menuBar().setCornerWidget(self.tab_widget.strip, Qt.TopRightCorner)
+        self._place_tab_strip()
 
         # Set hand cursor for all interactive elements programmatically
         self._set_hand_cursor_recursive(self)
@@ -1154,6 +1155,33 @@ class SolarRadioImageViewerApp(
                     dir_load=True, colormap_name="inferno"
                 ),
             )"""
+
+    def _place_tab_strip(self):
+        """The tab strip at the right end of the menu bar; on macOS, where
+        the menus are in the system's bar at the top of the screen and the
+        window's own bar is empty, in a row of its own above the pages."""
+        from PyQt5.QtWidgets import QFrame
+
+        native_menu_bar = sys.platform == "darwin" and not QApplication.testAttribute(
+            Qt.AA_DontUseNativeMenuBar
+        )
+        if not native_menu_bar:
+            self.menuBar().setCornerWidget(self.tab_widget.strip, Qt.TopRightCorner)
+            self.setCentralWidget(self.tab_widget)
+            return
+        row = QFrame()
+        row.setObjectName("TabRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(SPACE_S, 2, 0, 2)
+        row_layout.addStretch()
+        row_layout.addWidget(self.tab_widget.strip)
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(row)
+        layout.addWidget(self.tab_widget, 1)
+        self.setCentralWidget(central)
 
     def dragEnterEvent(self, event):
         """Handle drag enter events for file dropping."""
