@@ -257,8 +257,8 @@ class TutorialDialog(QDialog):
             self._create_step(
                 2,
                 "Adjust Display",
-                "Use the Display Settings panel on the left to configure colormap, "
-                "stretch function, and min/max values. Use F5 (Auto), F6 (1-99%), "
+                "Use the display bar above the image to choose the colormap, "
+                "the stretch and the min/max values. Use F5 (Auto), F6 (1-99%), "
                 "or F7 (Med±3σ) for quick presets.",
             )
         )
@@ -343,13 +343,14 @@ class TutorialDialog(QDialog):
         # Image Selection Panel
         layout.addWidget(
             self._create_info_box(
-                "Image Selection Panel",
+                "The Image section of the sidebar",
                 [
-                    "Directory Entry: Type or paste paths directly",
-                    "File Selector: Choose from files in directory",
-                    "Fast Load: Enable for quick preview of large images",
-                    "Stokes: Select I, Q, U, or V parameter",
-                    "Threshold: Masking threshold for Q, U, V display",
+                    "The path of the image shown, and a button to open another",
+                    "Stokes: select I, Q, U, or V parameter",
+                    "Threshold: masking threshold for Q, U, V display, in σ of the RMS box",
+                    "Fast: a quick preview of large images at reduced resolution",
+                    "Reload: read the image again from disk",
+                    "View > Sidebar (Ctrl+B) hides the sidebar for the largest image",
                 ],
             )
         )
@@ -365,7 +366,8 @@ class TutorialDialog(QDialog):
         layout.setSpacing(15)
 
         intro = QLabel(
-            "Configure how your images are displayed using the Display Settings panel."
+            "Configure how your images are displayed with the display bar above the "
+            "image and the Overlays section of the sidebar."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -468,7 +470,7 @@ class TutorialDialog(QDialog):
             self._create_step(
                 1,
                 "Select Stokes Parameter",
-                "Use the Stokes dropdown in the Image Selection panel. "
+                "Use the Stokes dropdown in the sidebar's Image section. "
                 "Unavailable parameters are automatically grayed out based on your data.",
             )
         )
@@ -640,8 +642,8 @@ class TutorialDialog(QDialog):
             self._create_step(
                 1,
                 "Open Contour Settings",
-                "Right-click on the image and select 'Contour Settings', or use the "
-                "Contours button in the right panel.",
+                "Right-click on the image and select 'Contour Settings', or click the "
+                "gear next to Contours in the sidebar's Overlays section.",
             )
         )
 

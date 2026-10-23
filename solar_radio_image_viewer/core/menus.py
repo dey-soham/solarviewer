@@ -172,6 +172,15 @@ class MenusMixin:
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
         view_menu.addAction(self.fullscreen_action)
 
+        self.sidebar_action = QAction("Sidebar", self, checkable=True)
+        self.sidebar_action.setShortcut("Ctrl+B")
+        self.sidebar_action.setStatusTip("Show or hide the sidebar beside the image")
+        self.sidebar_action.setChecked(
+            self.settings.value("sidebar_visible", True, type=bool)
+        )
+        self.sidebar_action.toggled.connect(self.set_sidebar_visible)
+        view_menu.addAction(self.sidebar_action)
+
         # Log Console action
         self.log_console_action = QAction("Show Log Console", self)
         self.log_console_action.setShortcut("Ctrl+L")
