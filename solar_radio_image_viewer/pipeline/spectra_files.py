@@ -19,9 +19,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QLabel,
-    QPushButton,
     QDialog,
-    QFrame,
     QLineEdit,
     QTableWidget,
     QTableWidgetItem,
@@ -39,6 +37,7 @@ from .spectra_common import _RemoteRead, _local_block_stats, _size_text
 logger = logging.getLogger(__name__)
 
 
+from ..ui.widgets import button_bar
 from ..ui.geometry import fit_to_screen
 
 
@@ -974,23 +973,12 @@ class SpectraFilesMixin:
             lambda: filter_active_tab(search_input.text())
         )
 
-        # Bottom Bar
-        bottom_bar = QFrame()
-        b_layout = QHBoxLayout(bottom_bar)
-        b_layout.setContentsMargins(35, 0, 35, 0)
-        b_layout.setSpacing(20)
-
-        copy_btn = QPushButton("Copy to Clipboard")
-        copy_btn.clicked.connect(self._copy_metadata_to_clipboard)
-        b_layout.addWidget(copy_btn)
-
-        b_layout.addStretch()
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dlg.close)
-        b_layout.addWidget(close_btn)
-
-        main_layout.addWidget(bottom_bar)
+        box, _ = button_bar(
+            primary=("Close", dlg.close),
+            extras=[("Copy to Clipboard", self._copy_metadata_to_clipboard)],
+        )
+        box.setContentsMargins(35, 10, 35, 20)
+        main_layout.addWidget(box)
         dlg.show()
 
     def _copy_metadata_to_clipboard(self):

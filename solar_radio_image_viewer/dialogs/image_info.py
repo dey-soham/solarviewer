@@ -4,7 +4,6 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
     QLabel,
-    QPushButton,
     QPlainTextEdit,
     QWidget,
     QTabWidget,
@@ -14,6 +13,7 @@ from PyQt5.QtWidgets import (
 )
 import os
 
+from ..ui.widgets import button_bar
 from ..ui.styles import set_hand_cursor
 
 
@@ -66,22 +66,12 @@ class ImageInfoDialog(QDialog):
             self._create_text_view(layout, "No metadata available")
 
         # Button row
-        button_layout = QHBoxLayout()
 
-        # Copy button
-        copy_btn = QPushButton("Copy to Clipboard")
-        copy_btn.clicked.connect(self._copy_to_clipboard)
-        button_layout.addWidget(copy_btn)
-
-        button_layout.addStretch()
-
-        # Close button
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        close_btn.setDefault(True)
-        button_layout.addWidget(close_btn)
-
-        layout.addLayout(button_layout)
+        box, _ = button_bar(
+            primary=("Close", self.accept),
+            extras=[("Copy to Clipboard", self._copy_to_clipboard)],
+        )
+        layout.addWidget(box)
 
     def _create_structured_view(self, parent_layout):
         """Create tabbed view for structured metadata."""

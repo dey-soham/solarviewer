@@ -9,7 +9,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
-    QDialogButtonBox,
     QComboBox,
     QCheckBox,
     QFileDialog,
@@ -27,6 +26,7 @@ import os
 from ..processing.fits_io import is_fits
 from ..ui.batch import BatchDialogMixin
 from ..ui.icons import themed_icon
+from ..ui.widgets import button_bar
 from ..ui.styles import set_hand_cursor
 
 import multiprocessing
@@ -325,6 +325,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
 
         # Wrap in scroll area
         files_scroll = QScrollArea()
+        files_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         files_scroll.setWidgetResizable(True)
         files_scroll.setFrameShape(QFrame.NoFrame)
         files_scroll.setWidget(files_tab)
@@ -439,6 +440,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
 
         # Wrap in scroll area
         options_scroll = QScrollArea()
+        options_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         options_scroll.setWidgetResizable(True)
         options_scroll.setFrameShape(QFrame.NoFrame)
         options_scroll.setWidget(options_tab)
@@ -507,12 +509,13 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
 
         # Wrap in scroll area
         output_scroll = QScrollArea()
+        output_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         output_scroll.setWidgetResizable(True)
         output_scroll.setFrameShape(QFrame.NoFrame)
         output_scroll.setWidget(output_tab)
         self.tab_widget.addTab(output_scroll, "Output")
 
-        main_layout.addWidget(self.tab_widget, 1)
+        main_layout.addWidget(self.tab_widget)
 
         # ========== STATUS PANEL (ALWAYS VISIBLE) ==========
         status_group = QGroupBox("Status")
@@ -524,8 +527,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         self.status_text.setPlaceholderText(
             "Conversion status and results will appear here..."
         )
-        self.status_text.setMinimumHeight(25)
-        self.status_text.setMaximumHeight(150)
+        self.status_text.setMinimumHeight(self.status_text.fontMetrics().lineSpacing() * 4 + 12)
         status_layout.addWidget(self.status_text, 1)
 
         # Progress Bar (initially hidden)
@@ -534,26 +536,15 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         self.progress_bar.setTextVisible(True)
         status_layout.addWidget(self.progress_bar)
 
-        main_layout.addWidget(status_group)
+        main_layout.addWidget(status_group, 1)
 
-        # ========== DIALOG BUTTONS ==========
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(12)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.ok_button = button_box.button(QDialogButtonBox.Ok)
-        self.ok_button.setText("Convert")
-        self.ok_button.setMinimumWidth(100)
-
-        self.cancel_button = button_box.button(QDialogButtonBox.Cancel)
-
-        button_box.accepted.connect(self.convert_files)
-        button_box.rejected.connect(self.cancel_or_abort)  # Abort while converting
-
-        button_layout.addStretch()
-        button_layout.addWidget(button_box)
-
-        main_layout.addLayout(button_layout)
+        box, buttons = button_bar(
+            primary=("Convert", self.convert_files),
+            secondary=("Cancel", self.cancel_or_abort),  # aborts while converting
+        )
+        self.ok_button = buttons["Convert"]
+        self.cancel_button = buttons["Cancel"]
+        main_layout.addWidget(box)
 
     def _update_default_output_dir(self):
         """Update default output directory based on transformation direction"""

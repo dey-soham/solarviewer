@@ -5,10 +5,10 @@ from PyQt5.QtWidgets import (
     QLabel,
     QDoubleSpinBox,
     QGridLayout,
-    QDialogButtonBox,
     QComboBox,
 )
 
+from ..ui.widgets import button_bar
 from ..ui.styles import set_hand_cursor
 
 
@@ -83,14 +83,8 @@ class BeamSettingsDialog(QDialog):
         style_layout.addWidget(alpha_label, 1, 0)
         style_layout.addWidget(self.alpha_spinbox, 1, 1)
         layout.addWidget(style_group)
-
-        # Create button box with Apply and Close
-        button_box = QDialogButtonBox()
-        apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
-        close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
-        apply_btn.clicked.connect(self.on_apply)
-        close_btn.clicked.connect(self.close)
-        layout.addWidget(button_box)
+        box, _ = button_bar(primary=("Apply", self.on_apply), secondary=("Close", self.close))
+        layout.addWidget(box)
 
     def on_apply(self):
         """Apply settings without closing dialog."""

@@ -7,7 +7,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
-    QDialogButtonBox,
     QComboBox,
     QCheckBox,
     QFileDialog,
@@ -27,6 +26,7 @@ import os
 
 from ..ui.batch import BatchDialogMixin
 from ..ui.icons import themed_icon
+from ..ui.widgets import button_bar
 from ..ui.styles import set_hand_cursor, set_tone
 
 
@@ -131,6 +131,8 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         files_layout.addStretch()
 
         files_scroll = QScrollArea()
+
+        files_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         files_scroll.setWidgetResizable(True)
         files_scroll.setFrameShape(QFrame.NoFrame)
         files_scroll.setWidget(files_tab)
@@ -186,6 +188,8 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         options_layout.addStretch()
 
         options_scroll = QScrollArea()
+
+        options_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         options_scroll.setWidgetResizable(True)
         options_scroll.setFrameShape(QFrame.NoFrame)
         options_scroll.setWidget(options_tab)
@@ -241,6 +245,8 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         output_layout.addStretch()
 
         output_scroll = QScrollArea()
+
+        output_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         output_scroll.setWidgetResizable(True)
         output_scroll.setFrameShape(QFrame.NoFrame)
         output_scroll.setWidget(output_tab)
@@ -256,8 +262,7 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
         self.status_text.setPlaceholderText("Ready. Select input directory and target format.")
-        self.status_text.setMinimumHeight(80)
-        self.status_text.setMaximumHeight(200)
+        self.status_text.setMinimumHeight(self.status_text.fontMetrics().lineSpacing() * 4 + 12)
         status_layout.addWidget(self.status_text)
 
         self.progress_bar = QProgressBar()
@@ -265,17 +270,15 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         self.progress_bar.setTextVisible(True)
         status_layout.addWidget(self.progress_bar)
         
-        main_layout.addWidget(status_group)
+        main_layout.addWidget(status_group, 1)
 
-        # ========== BUTTONS ==========
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.ok_button = button_box.button(QDialogButtonBox.Ok)
-        self.ok_button.setText("Run Conversion")
-        self.cancel_button = button_box.button(QDialogButtonBox.Cancel)
-        
-        self.ok_button.clicked.connect(self.run_conversion)
-        self.cancel_button.clicked.connect(self.cancel_or_abort)
-        main_layout.addWidget(button_box)
+        box, buttons = button_bar(
+            primary=("Run Conversion", self.run_conversion),
+            secondary=("Cancel", self.cancel_or_abort),  # aborts while converting
+        )
+        self.ok_button = buttons["Run Conversion"]
+        self.cancel_button = buttons["Cancel"]
+        main_layout.addWidget(box)
         
         # Trigger initial autofill
         if self.current_file:

@@ -6,13 +6,13 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QDoubleSpinBox,
-    QDialogButtonBox,
     QMessageBox,
     QApplication,
 )
 from PyQt5.QtCore import Qt
 
 from ..ui.geometry import fit_width_to_text
+from ..ui.widgets import button_bar
 from ..ui.styles import set_hand_cursor
 
 
@@ -116,10 +116,8 @@ class PreferencesDialog(QDialog):
         layout.addStretch()
 
         # Button box
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self._save_and_close)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        box, _ = button_bar(primary=("OK", self._save_and_close), secondary=("Cancel", self.reject))
+        layout.addWidget(box)
 
     def _on_slider_changed(self, value):
         """Update spinbox when slider value changes."""

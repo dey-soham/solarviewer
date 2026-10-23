@@ -10,7 +10,6 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QGridLayout,
-    QDialogButtonBox,
     QComboBox,
     QCheckBox,
     QFileDialog,
@@ -36,6 +35,7 @@ from ..processing.contour_layers import (
 )
 from ..ui.icons import get_resource_path
 from ..ui.open_image import choose_image
+from ..ui.widgets import button_bar
 from ..ui.styles import set_hand_cursor
 
 logger = logging.getLogger(__name__)
@@ -650,34 +650,15 @@ class ContourSettingsDialog(QDialog):
         self.show_full_extent_checkbox.setVisible(not self.for_video)
         self.downsample_checkbox.setVisible(not self.for_video)
 
-        # ========== BUTTON BOX ==========
-        button_row = QHBoxLayout()
-        button_row.setSpacing(12)
-
-        reset_btn = QPushButton("Reset Layer")
-        reset_btn.setToolTip("Reset the selected layer's settings to the defaults")
-        reset_btn.setObjectName("NavButton")
-        reset_btn.clicked.connect(self._reset_to_defaults)
-        button_row.addWidget(reset_btn)
-
-        button_row.addStretch()
-
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-
-        ok_button = button_box.button(QDialogButtonBox.Ok)
-        if ok_button:
-            ok_button.setText("Apply")
-            ok_button.setObjectName("PrimaryButton")
-
-        cancel_button = button_box.button(QDialogButtonBox.Cancel)
-        if cancel_button:
-            cancel_button.setText("Close")
-            cancel_button.setMinimumWidth(80)
-
-        button_row.addWidget(button_box)
-        main_layout.addLayout(button_row)
+        box, buttons = button_bar(
+            primary=("Apply", self.accept),
+            secondary=("Close", self.reject),
+            extras=[("Reset Layer", self._reset_to_defaults)],
+        )
+        buttons["Reset Layer"].setToolTip(
+            "Reset the selected layer's settings to the defaults"
+        )
+        main_layout.addWidget(box)
 
     def toggle_rms_inputs(self):
         """Update the enabled state and visual appearance of RMS inputs."""

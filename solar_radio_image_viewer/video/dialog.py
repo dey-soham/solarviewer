@@ -83,6 +83,7 @@ __all__ = [
 ]
 
 
+from ..ui.widgets import button_bar
 from ..ui.geometry import fit_to_screen
 
 
@@ -326,35 +327,26 @@ class VideoCreationDialog(
         self.tab_widget.addTab(overlay_scroll, "Overlays")
         self.tab_widget.addTab(output_scroll, "Output")
 
-        # Add the tab widget to the main layout (after the preview)
+        # All seven tabs fit the pane: shrunk and elided rather than scrolled
+        self.tab_widget.setUsesScrollButtons(False)
+        self.tab_widget.setElideMode(Qt.ElideRight)
         main_layout.addWidget(self.tab_widget)
 
-        # Buttons at the bottom
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(12)
-        button_layout.addStretch()
-
-        save_btn = QPushButton("Save Settings...")
-        save_btn.setToolTip("Save all settings (and the frames) as a preset file")
-        save_btn.clicked.connect(self.save_settings)
-        button_layout.insertWidget(0, save_btn)
-        load_btn = QPushButton("Load Settings...")
-        load_btn.clicked.connect(self.load_settings)
-        button_layout.insertWidget(1, load_btn)
-
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setMinimumWidth(100)
-        self.cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(self.cancel_btn)
-
-        self.create_btn = QPushButton("Create Video")
-        self.create_btn.setMinimumWidth(120)
-        self.create_btn.setObjectName("PrimaryButton")
-        self.create_btn.clicked.connect(self.create_video)
+        box, buttons = button_bar(
+            primary=("Create Video", self.create_video),
+            secondary=("Cancel", self.reject),
+            extras=[
+                ("Save Settings...", self.save_settings),
+                ("Load Settings...", self.load_settings),
+            ],
+        )
+        buttons["Save Settings..."].setToolTip(
+            "Save all settings (and the frames) as a preset file"
+        )
+        self.cancel_btn = buttons["Cancel"]
+        self.create_btn = buttons["Create Video"]
         self.create_btn.setEnabled(False)
-        button_layout.addWidget(self.create_btn)
-
-        main_layout.addLayout(button_layout)
+        main_layout.addWidget(box)
 
         self._watch_settings()
 

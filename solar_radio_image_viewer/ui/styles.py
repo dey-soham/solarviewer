@@ -559,6 +559,21 @@ def get_stylesheet(palette, is_dark=True):
     QDialogButtonBox QPushButton {{
         min-width: 80px;
     }}
+    QDialogButtonBox QPushButton:default {{
+        background-color: {p['highlight']};
+        color: {on_accent};
+        border-color: {p['highlight']};
+        font-weight: 600;
+    }}
+    QDialogButtonBox QPushButton:default:hover {{
+        background-color: {p['highlight_hover']};
+        border-color: {p['highlight_hover']};
+    }}
+    QDialogButtonBox QPushButton:default:disabled {{
+        background-color: {p['button']};
+        color: {p['disabled']};
+        border-color: {p['border']};
+    }}
     QToolButton {{
         background-color: transparent;
         color: {p['text']};
@@ -770,7 +785,7 @@ def get_stylesheet(palette, is_dark=True):
     QTabBar::tab {{
         background: {p['button']};
         color: {p['text']};
-        padding: {SPACE_S - 2}px {SPACE_L - 2}px;
+        padding: {SPACE_S - 2}px {SPACE_M}px;
         border-top-left-radius: {RADIUS}px;
         border-top-right-radius: {RADIUS}px;
         margin-right: 2px;

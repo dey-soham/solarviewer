@@ -32,6 +32,7 @@ from ..ui.geometry import fit_width_to_text
 from ..ui.searchable_combobox import ColormapSelector
 from ..ui.icons import get_resource_path, themed_icon
 from ..ui.styles import set_tone
+from ..ui.widgets import section
 from ..ui.item_delegates import DisabledItemDelegate
 
 logger = logging.getLogger(__name__)
@@ -249,10 +250,7 @@ class PanelsMixin:
         main_layout.addLayout(form_layout)
 
         # Overlays subgroup
-        overlays_group = QGroupBox("Overlays")
-        overlays_layout = QVBoxLayout(overlays_group)
-        overlays_layout.setSpacing(8)
-        overlays_layout.setContentsMargins(8, 8, 8, 8)
+        overlays_group, overlays_layout = section("Overlays")
 
         # Modern grid layout with fixed column widths for perfect alignment
         grid_layout = QGridLayout()
@@ -358,9 +356,7 @@ class PanelsMixin:
         main_layout.addWidget(overlays_group)
 
         # Intensity Range subgroup
-        intensity_group = QGroupBox("Intensity Range")
-        intensity_layout = QVBoxLayout(intensity_group)
-        intensity_layout.setSpacing(6)  # Compact spacing
+        intensity_group, intensity_layout = section("Intensity Range")
 
         # Min/Max range
         range_layout = QHBoxLayout()

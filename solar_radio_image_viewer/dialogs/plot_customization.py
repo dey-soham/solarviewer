@@ -9,13 +9,13 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QGridLayout,
-    QDialogButtonBox,
     QComboBox,
     QCheckBox,
     QWidget,
 )
 from PyQt5.QtCore import Qt
 
+from ..ui.widgets import button_bar
 from ..ui.styles import set_hand_cursor
 
 
@@ -357,19 +357,12 @@ class PlotCustomizationDialog(QDialog):
 
         outer_layout.addWidget(tab_widget)
 
-        # Bottom buttons row
-        buttons_layout = QHBoxLayout()
-        reset_btn = QPushButton("Reset to Defaults")
-        reset_btn.clicked.connect(self.reset_to_defaults)
-        buttons_layout.addWidget(reset_btn)
-        buttons_layout.addStretch()
-
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        buttons_layout.addWidget(button_box)
-
-        outer_layout.addLayout(buttons_layout)
+        box, _ = button_bar(
+            primary=("Apply", self.accept),
+            secondary=("Close", self.reject),
+            extras=[("Reset to Defaults", self.reset_to_defaults)],
+        )
+        outer_layout.addWidget(box)
 
     def _update_color_preview(self, label, color):
         """Update the color preview label."""

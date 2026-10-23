@@ -7,7 +7,6 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
@@ -17,6 +16,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..ui.widgets import button_bar
 from ..ui.styles import set_hand_cursor
 
 _COLORS = ["yellow", "white", "red", "green", "blue", "cyan", "magenta", "black"]
@@ -106,13 +106,8 @@ class SolarDiskStyleDialog(QDialog):
         layout = QVBoxLayout(self)
         self.style_widget = SolarDiskStyleWidget(solar_disk_style or {}, self)
         layout.addWidget(self.style_widget)
-
-        button_box = QDialogButtonBox()
-        apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
-        close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
-        apply_btn.clicked.connect(self.on_apply)
-        close_btn.clicked.connect(self.close)
-        layout.addWidget(button_box)
+        box, _ = button_bar(primary=("Apply", self.on_apply), secondary=("Close", self.close))
+        layout.addWidget(box)
         set_hand_cursor(self)
 
     def on_apply(self):

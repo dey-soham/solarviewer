@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, List
 import json
 
+from ..ui.widgets import button_bar
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -171,28 +172,19 @@ class ConnectionDialog(QDialog):
         layout.addWidget(self.status_label)
 
         # Buttons
-        button_layout = QHBoxLayout()
-
-        self.test_btn = QPushButton("Test Connection")
-        self.test_btn.clicked.connect(self._test_connection)
-        button_layout.addWidget(self.test_btn)
-
-        self.save_profile_btn = QPushButton("Save Profile")
-        self.save_profile_btn.clicked.connect(self._save_profile)
-        button_layout.addWidget(self.save_profile_btn)
-
-        button_layout.addStretch()
-
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(self.cancel_btn)
-
-        self.connect_btn = QPushButton("Connect")
-        self.connect_btn.setDefault(True)
-        self.connect_btn.clicked.connect(self._connect)
-        button_layout.addWidget(self.connect_btn)
-
-        layout.addLayout(button_layout)
+        box, buttons = button_bar(
+            primary=("Connect", self._connect),
+            secondary=("Cancel", self.reject),
+            extras=[
+                ("Test Connection", self._test_connection),
+                ("Save Profile", self._save_profile),
+            ],
+        )
+        self.test_btn = buttons["Test Connection"]
+        self.save_profile_btn = buttons["Save Profile"]
+        self.cancel_btn = buttons["Cancel"]
+        self.connect_btn = buttons["Connect"]
+        layout.addWidget(box)
 
     def _on_auth_type_changed(self, key_auth_selected: bool):
         """Toggle between key and password authentication UI."""

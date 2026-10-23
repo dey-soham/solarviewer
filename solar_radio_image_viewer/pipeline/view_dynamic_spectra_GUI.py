@@ -54,7 +54,6 @@ Notes:
 """
 
 import sys
-import json
 import re
 import numpy as np
 from datetime import datetime, timedelta

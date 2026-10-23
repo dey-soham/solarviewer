@@ -1,11 +1,11 @@
 import logging
+from ..ui.widgets import button_bar
 from ..ui.styles import set_tone
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QGridLayout,
     QMessageBox,
     QFrame,
@@ -110,23 +110,13 @@ class UpdateDialog(QDialog):
 
         layout.addStretch()
 
-        # Buttons
-        button_row = QHBoxLayout()
-        button_row.addStretch()
-
-        self.close_btn = QPushButton("Close")
-        self.close_btn.setCursor(Qt.PointingHandCursor)
-        self.close_btn.clicked.connect(self.accept)
-        button_row.addWidget(self.close_btn)
-
-        self.update_btn = QPushButton("Update Now")
-        self.update_btn.setCursor(Qt.PointingHandCursor)
+        box, buttons = button_bar(
+            primary=("Update Now", self.start_update), secondary=("Close", self.accept)
+        )
+        self.close_btn = buttons["Close"]
+        self.update_btn = buttons["Update Now"]
         self.update_btn.setVisible(False)
-        self.update_btn.setObjectName("PrimaryButton")
-        self.update_btn.clicked.connect(self.start_update)
-        button_row.addWidget(self.update_btn)
-
-        layout.addLayout(button_row)
+        layout.addWidget(box)
 
         # Start check
         self.check_thread = UpdateCheckThread()

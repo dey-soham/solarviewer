@@ -10,7 +10,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSpinBox,
     QDoubleSpinBox,
-    QDialogButtonBox,
     QComboBox,
     QCheckBox,
     QFileDialog,
@@ -29,6 +28,7 @@ from ..ui.busy import busy
 from ..ui.errors import show_error
 from ..ui.open_image import choose_image
 from ..ui.icons import themed_icon
+from ..ui.widgets import button_bar
 from ..ui.styles import set_hand_cursor, set_tone
 
 import multiprocessing
@@ -195,6 +195,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
         # Wrap Files Tab in Scroll Area
         files_scroll = QScrollArea()
+        files_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         files_scroll.setWidgetResizable(True)
         files_scroll.setFrameShape(QFrame.NoFrame)
         files_scroll.setWidget(files_tab)
@@ -333,6 +334,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
         # Wrap Options Tab in Scroll Area
         options_scroll = QScrollArea()
+        options_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         options_scroll.setWidgetResizable(True)
         options_scroll.setFrameShape(QFrame.NoFrame)
         options_scroll.setWidget(options_tab)
@@ -402,12 +404,13 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
         # Wrap Output Tab in Scroll Area
         output_scroll = QScrollArea()
+        output_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         output_scroll.setWidgetResizable(True)
         output_scroll.setFrameShape(QFrame.NoFrame)
         output_scroll.setWidget(output_tab)
         self.tab_widget.addTab(output_scroll, "Output")
 
-        main_layout.addWidget(self.tab_widget, 1)
+        main_layout.addWidget(self.tab_widget)
 
         # ========== STATUS PANEL ==========
         status_group = QGroupBox("Status / Results")
@@ -417,13 +420,10 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
         self.status_text.setPlaceholderText("Status and results will appear here")
-        self.status_text.setMinimumHeight(25)
-        self.status_text.setMaximumHeight(150)
+        self.status_text.setMinimumHeight(self.status_text.fontMetrics().lineSpacing() * 4 + 12)
         status_layout.addWidget(self.status_text, 1)
 
-        main_layout.addWidget(status_group)
-
-        main_layout.addWidget(status_group)
+        main_layout.addWidget(status_group, 1)
 
         # Progress Bar (initially hidden)
         self.progress_bar = QProgressBar()
@@ -431,17 +431,13 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         self.progress_bar.setVisible(False)
         main_layout.addWidget(self.progress_bar)
 
-        # Dialog Buttons
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(self.apply_phase_shift)
-        button_box.rejected.connect(self.cancel_or_abort)  # Abort while shifting
-
-        self.ok_button = button_box.button(QDialogButtonBox.Ok)
-        self.ok_button.setText("Apply Shift")
-
-        self.cancel_button = button_box.button(QDialogButtonBox.Cancel)
-
-        main_layout.addWidget(button_box)
+        box, buttons = button_bar(
+            primary=("Apply Shift", self.apply_phase_shift),
+            secondary=("Cancel", self.cancel_or_abort),  # aborts while shifting
+        )
+        self.ok_button = buttons["Apply Shift"]
+        self.cancel_button = buttons["Cancel"]
+        main_layout.addWidget(box)
 
         # Initialize UI state
         self.update_mode_ui()

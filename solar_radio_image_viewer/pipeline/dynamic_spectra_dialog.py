@@ -7,6 +7,7 @@ Uses the make_dynamic_spectra.py processing functions.
 
 import os
 import sys
+from ..ui.widgets import button_bar
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -25,12 +26,10 @@ from PyQt5.QtWidgets import (
     QMessageBox,
 )
 from PyQt5.QtCore import QThread, pyqtSignal
-from PyQt5.QtGui import QFont
 
 from ..ui.styles import set_hand_cursor
 
 
-from ..ui.geometry import fit_to_screen
 
 
 class ProcessingThread(QThread):
@@ -127,8 +126,7 @@ class DynamicSpectraDialog(QDialog):
 
     def _setup_ui(self):
         self.setWindowTitle("Create Dynamic Spectra")
-        self.setMinimumSize(600, 500)
-        fit_to_screen(self, 600, 500)
+        self.setMinimumWidth(600)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -136,6 +134,8 @@ class DynamicSpectraDialog(QDialog):
         # Input/Output Group
         io_group = QGroupBox("Input / Output")
         io_layout = QGridLayout(io_group)
+        io_layout.setHorizontalSpacing(12)
+        io_layout.setVerticalSpacing(8)
 
         # Input directory
         io_layout.addWidget(QLabel("MS Directory:"), 0, 0)
@@ -161,6 +161,10 @@ class DynamicSpectraDialog(QDialog):
         # Parameters Group
         params_group = QGroupBox("Processing Parameters")
         params_layout = QGridLayout(params_group)
+        params_layout.setHorizontalSpacing(12)
+        params_layout.setVerticalSpacing(8)
+        params_layout.setColumnStretch(1, 1)
+        params_layout.setColumnStretch(3, 1)
 
         # Time binwidth
         params_layout.addWidget(QLabel("Time Bin Width (s):"), 0, 0)
@@ -231,25 +235,18 @@ class DynamicSpectraDialog(QDialog):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumHeight(120)
-        self.log_text.setFont(QFont("Consolas", 9))
+        self.log_text.setObjectName("Console")
         progress_layout.addWidget(self.log_text)
 
         layout.addWidget(progress_group)
 
-        # Buttons
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-
-        self.run_btn = QPushButton("Create Dynamic Spectra")
-        self.run_btn.setMinimumWidth(180)
-        self.run_btn.clicked.connect(self._run_processing)
-        button_layout.addWidget(self.run_btn)
-
-        self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.close)
-        button_layout.addWidget(self.close_btn)
-
-        layout.addLayout(button_layout)
+        box, buttons = button_bar(
+            primary=("Create Dynamic Spectra", self._run_processing),
+            secondary=("Close", self.close),
+        )
+        self.run_btn = buttons["Create Dynamic Spectra"]
+        self.close_btn = buttons["Close"]
+        layout.addWidget(box)
 
     def _browse_input(self):
         dir_path = QFileDialog.getExistingDirectory(
