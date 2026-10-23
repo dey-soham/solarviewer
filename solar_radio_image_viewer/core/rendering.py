@@ -887,6 +887,101 @@ class RenderingMixin:
         )
         ax.add_patch(ellipse)
 
+    # ---- A quick picture of a display range while it is dragged: the
+    # image at a few hundred pixels a side (the norm is applied to every
+    # pixel on each draw, and that is what takes the time), drawn over a
+    # saved picture of everything else and blitted whole (never a part of
+    # the canvas: at a fractional display scale that lands askew). The
+    # overlays above the image are drawn again so they stay on top; the
+    # colorbar waits for the full draw when the drag ends.
+    PREVIEW_PIXELS = 400
+
+    def begin_range_preview(self):
+        """Start previewing: the image artist shows a reduced copy of its
+        array in the same place, and the rest of the figure is saved.
+        Returns False if there is no image."""
+        im = self.image_plot
+        if im is None or self.current_image_data is None or not self.figure.axes:
+            return False
+        full = im.get_array()
+        extent = im.get_extent()
+        step = max(1, int(np.ceil(max(full.shape[:2]) / self.PREVIEW_PIXELS)))
+        if step > 1:
+            self._swap_preview_array(im, full[::step, ::step], extent)
+        ax = im.axes
+        # The overlays drawn again above the image: not the axes' own
+        # background patch, nor the WCS frame artist, which paints that
+        # patch again (its grid, if on, stays under the preview)
+        skip = {im, ax.patch}
+        frame = getattr(getattr(ax, "coords", None), "frame", None)
+        if frame is not None:
+            skip.add(getattr(frame, "patch", None))
+        above = [
+            a
+            for a in ax.get_children()
+            if a not in skip
+            and a.get_zorder() > im.get_zorder()
+            and type(a).__name__ != "_WCSAxesArtist"
+        ]
+        try:
+            im.set_visible(False)
+            self.canvas.draw()
+            background = self.canvas.copy_from_bbox(self.figure.bbox)
+        except Exception as e:
+            logger.debug(f"Range preview without blitting: {e}")
+            background = None
+        finally:
+            im.set_visible(True)
+        self._range_preview = (full, extent, background, above)
+        return True
+
+    def preview_range(self, vmin, vmax):
+        """Draw the preview with this range (the stretch and gamma as set)."""
+        preview = getattr(self, "_range_preview", None)
+        if preview is None:
+            return
+        _full, _extent, background, above = preview
+        vmin, vmax = display_range(vmin, vmax)
+        norm = self._make_norm(self.stretch_combo.currentText(), vmin, vmax, self._current_gamma())
+        im = self.image_plot
+        im.set_norm(norm)
+        if background is None:
+            self.canvas.draw()
+            return
+        try:
+            self.canvas.restore_region(background)
+            ax = im.axes
+            ax.draw_artist(im)
+            for artist in above:
+                ax.draw_artist(artist)
+            self.canvas.blit(self.figure.bbox)
+        except Exception as e:
+            logger.debug(f"Range preview blit failed, drawing whole: {e}")
+            self.canvas.draw()
+
+    def end_range_preview(self):
+        """The full image again (the caller draws it with the final range)."""
+        preview = getattr(self, "_range_preview", None)
+        if preview is None:
+            return
+        self._range_preview = None
+        full, extent, _background, _above = preview
+        self._swap_preview_array(self.image_plot, full, extent)
+
+    @staticmethod
+    def _swap_preview_array(im, array, extent):
+        """Give ``im`` ``array`` over the same ``extent``: the view is not
+        reset to the whole image (which setting an extent does when the
+        axes autoscale)."""
+        ax = im.axes
+        was = ax.get_autoscale_on()
+        ax.set_autoscale_on(False)
+        try:
+            im.set_data(array)
+            im.set_extent(extent)
+        finally:
+            ax.set_autoscale_on(was)
+
     def _sync_levels(self, data, vmin_val, vmax_val):
         """The inspector's histogram shows this image and range."""
         levels = getattr(self, "levels", None)

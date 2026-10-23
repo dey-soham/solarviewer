@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QButtonGroup,
 )
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon
 from ..ui.cursor_readout import CursorReadout
 from ..ui.empty_canvas import EmptyCanvas
@@ -386,7 +386,17 @@ class PanelsMixin:
 
         # The histogram, the range draggable on it
         self.levels = LevelsHistogram()
+        self.levels.dragStarted.connect(self._on_levels_grabbed)
         self.levels.rangeEdited.connect(self._on_levels_dragged)
+        self.levels.rangeChanged.connect(self._on_levels_set)
+        # The image follows a drag as a quick preview (rendering's
+        # begin_range_preview), drawn at most every so often, not on
+        # every mouse event
+        self._levels_timer = QTimer(self)
+        self._levels_timer.setSingleShot(True)
+        self._levels_timer.setInterval(40)
+        self._levels_timer.timeout.connect(self._draw_levels_preview)
+        self._levels_range = None
         layout.addWidget(self.levels)
 
         # Min and Max, their names above them
@@ -445,10 +455,32 @@ class PanelsMixin:
         self.show_range_preset(None)
         self.update_display()
 
+    def _on_levels_grabbed(self):
+        self._levels_preview = self.begin_range_preview()
+
     def _on_levels_dragged(self, vmin, vmax):
-        """The range dragged on the histogram is shown as it goes."""
+        """The range dragged on the histogram: the fields follow at once,
+        the image's preview shortly after."""
         self.show_range(vmin, vmax)
         self.show_range_preset(None)
+        self._levels_range = (vmin, vmax)
+        if not self._levels_timer.isActive():
+            self._levels_timer.start()
+
+    def _draw_levels_preview(self):
+        if self._levels_range is None:
+            return
+        if getattr(self, "_levels_preview", False):
+            self.preview_range(*self._levels_range)
+        else:
+            self.update_display()
+
+    def _on_levels_set(self, vmin, vmax):
+        """The marker let go: the full image takes the range now."""
+        self._levels_timer.stop()
+        self._levels_range = None
+        self.end_range_preview()
+        self.show_range(vmin, vmax)
         self.update_display()
 
     def show_range_preset(self, mode):

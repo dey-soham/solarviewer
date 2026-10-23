@@ -30,7 +30,9 @@ class LevelsHistogram(QWidget):
     marker is dragged.
     """
 
-    rangeEdited = pyqtSignal(float, float)
+    dragStarted = pyqtSignal()  # a marker taken hold of
+    rangeEdited = pyqtSignal(float, float)  # while a marker is dragged
+    rangeChanged = pyqtSignal(float, float)  # when it is let go
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -39,6 +41,8 @@ class LevelsHistogram(QWidget):
         self._vmin = 0.0
         self._vmax = 1.0
         self._drag = None  # "min" or "max" while a marker is dragged
+        self._bars = None  # the drawn bars, recoloured as the range moves
+        self._markers = ()  # the two range lines, moved as it does
 
         self.figure = Figure(figsize=(3, 0.7), dpi=96)
         self.canvas = FigureCanvasQTAgg(self.figure)
@@ -91,7 +95,7 @@ class LevelsHistogram(QWidget):
             return
         if np.isfinite(vmin) and np.isfinite(vmax) and (vmin, vmax) != (self._vmin, self._vmax):
             self._vmin, self._vmax = vmin, vmax
-            self._draw()
+            self._place_markers()
 
     # ------------------------------------------------------------ the picture
     def _draw(self):
@@ -99,6 +103,8 @@ class LevelsHistogram(QWidget):
         ax = self.ax
         ax.clear()
         ax.set_axis_off()
+        self._bars = None
+        self._markers = ()
         self.figure.set_facecolor(palette["window"])
         ax.set_facecolor(palette["window"])
         if self._counts is None:
@@ -124,12 +130,34 @@ class LevelsHistogram(QWidget):
         ax.set_ylim(0, top * 1.1)
 
         width = (edges[1] - edges[0]) * 0.8
-        inside = (centres >= self._vmin) & (centres <= self._vmax)
-        colours = np.where(inside, palette["highlight_soft"], palette["border_light"])
-        ax.bar(centres, heights, width=width, color=colours, linewidth=0)
+        self._bars = ax.bar(centres, heights, width=width, linewidth=0)
+        self._centres = centres
         ax.axhline(0, color=palette["border_light"], linewidth=1)
-        for value in (self._vmin, self._vmax):
+        self._markers = tuple(
             ax.axvline(value, color=palette["highlight"], linewidth=1.4, zorder=3)
+            for value in (self._vmin, self._vmax)
+        )
+        self._place_markers()
+
+    def _place_markers(self):
+        """Move the range markers and recolour the bars (those inside the
+        range in the accent), without drawing the rest again: a drag
+        moves them on every mouse event."""
+        if self._counts is None or not self._markers:
+            if self._counts is None:
+                return
+            self._draw()
+            return
+        palette = theme_manager.palette
+        x0, x1 = self.ax.get_xlim()
+        if self._vmin < x0 or self._vmax > x1:
+            self._draw()  # the view must widen to keep the markers in it
+            return
+        for marker, value in zip(self._markers, (self._vmin, self._vmax)):
+            marker.set_xdata([value, value])
+        inside = (self._centres >= self._vmin) & (self._centres <= self._vmax)
+        for bar, within in zip(self._bars, inside):
+            bar.set_color(palette["highlight_soft"] if within else palette["border_light"])
         self.canvas.draw_idle()
 
     # ------------------------------------------------------------- dragging
@@ -147,6 +175,7 @@ class LevelsHistogram(QWidget):
             self._drag = self._nearest_marker(event)
             if self._drag:
                 self.canvas.setCursor(Qt.SizeHorCursor)
+                self.dragStarted.emit()
 
     def _on_move(self, event):
         if self._drag is None:
@@ -160,10 +189,10 @@ class LevelsHistogram(QWidget):
             self._vmin = min(float(event.xdata), self._vmax)
         else:
             self._vmax = max(float(event.xdata), self._vmin)
-        self._draw()
+        self._place_markers()
         self.rangeEdited.emit(self._vmin, self._vmax)
 
     def _on_release(self, event):
         if self._drag:
             self._drag = None
-            self.rangeEdited.emit(self._vmin, self._vmax)
+            self.rangeChanged.emit(self._vmin, self._vmax)
