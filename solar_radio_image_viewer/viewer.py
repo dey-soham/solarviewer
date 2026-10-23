@@ -451,11 +451,7 @@ class SolarRadioImageTab(
 
     def _update_visualization(self, colormap_name, dir_load, reload_data):
         """on_visualization_changed's work, run with the wait cursor."""
-        tight_layout = False
-        """if dir_load:
-            tight_layout = True
-        else:
-            tight_layout = False"""
+        tight_layout = False  # (the layout itself is decided in _apply_layout_settings)
 
         main_window = self.parent()
         # if main_window and hasattr(main_window, "statusBar"):

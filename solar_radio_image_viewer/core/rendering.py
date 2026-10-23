@@ -886,11 +886,12 @@ class RenderingMixin:
         ax.add_patch(ellipse)
 
     def _apply_layout_settings(self, tight_layout):
-        """tight_layout, the custom subplot padding from plot_settings, or,
-        with the default padding, margins sized for the fonts and the canvas
-        so the title, tick labels and colorbar labels are never cut off."""
+        """Matplotlib's tight layout (the default, and set again whenever
+        the canvas is resized); or, if it is turned off in Plot
+        Customization, the custom padding set there, or margins sized for
+        the fonts and the canvas when that padding is the default."""
         ps = self.plot_settings
-        if ps.get("use_tight_layout", True) and tight_layout:
+        if ps.get("use_tight_layout", True):
             self.figure.tight_layout()
             return
         pads = {k: ps.get(k, DEFAULT_PLOT_SETTINGS[k]) for k in _PAD_KEYS}
