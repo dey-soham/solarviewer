@@ -310,7 +310,7 @@ solarviewer/
 │   │                           #   colormap selector
 │   ├── processing/             # Qt-free image processing: pixel I/O, metadata, Stokes,
 │   │                           #   RMS, TB/flux maps, norms, CASA task runner
-│   ├── coordinates/            # Helioprojective conversion, HPC viewer, phase-center shift
+│   ├── coordinates/            # Helioprojective conversion, phase-center shift
 │   ├── video/                  # Video creation (creator, dialog, utils)
 │   ├── noaa_events/            # Solar events browser (window, tabs, workers, cache)
 │   ├── solar_data_downloader/  # SDO/AIA, IRIS, etc.

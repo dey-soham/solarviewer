@@ -49,7 +49,6 @@ _MOVED_MODULES = {
     "video_dialog": "video.dialog",
     "video_utils": "video.utils",
     "helioprojective": "coordinates.helioprojective",
-    "helioprojective_viewer": "coordinates.helioprojective_viewer",
     "move_phasecenter": "coordinates.move_phasecenter",
     "from_simpl": "pipeline",
     "styles": "ui.styles",
