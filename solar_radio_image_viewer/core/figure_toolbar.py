@@ -1,6 +1,6 @@
 """
 The bar under the image: the tools at the left (one on at a time), the
-zoom group and the file navigation at the right.
+file navigation in the middle, the zoom group at the right.
 """
 
 import logging
@@ -108,41 +108,9 @@ class FigureToolbarMixin:
         for action in tools:
             action_group.addAction(action)
         layout.addWidget(segmented([self._tool_button(action) for action in tools]))
-
-        hint = QLabel("Drag pans · scroll zooms · R resets · 1 is 1°")
-        hint.setObjectName("Meta")
-        layout.addWidget(hint)
         layout.addStretch()
 
-        # Zoom: in, how far in, out, reset, one degree
-        self.zoom_in_action = self._tool_action(
-            get_resource_path("assets/zoom_in.png"), "Zoom In (+)", self.zoom_in
-        )
-        self.zoom_out_action = self._tool_action(
-            get_resource_path("assets/zoom_out.png"), "Zoom Out (-)", self.zoom_out
-        )
-        self.reset_view_action = self._tool_action(
-            get_resource_path("assets/reset.png"),
-            "Reset View (R)",
-            lambda: self.reset_view(show_status_message=True, animate=True),
-        )
-        self.zoom_60arcmin_action = self._tool_action(
-            get_resource_path("assets/zoom_60arcmin.png"), "1°×1° Zoom (1)", self.zoom_60arcmin
-        )
-        self.zoom_label = QLabel("—")
-        self.zoom_label.setToolTip("How much of the image's width is in view")
-        self.zoom_label.setMinimumWidth(self.zoom_label.fontMetrics().horizontalAdvance("0000%"))
-        self.zoom_label.setAlignment(Qt.AlignCenter)
-        zoom_buttons = [
-            self._tool_button(self.zoom_in_action),
-            self.zoom_label,
-            self._tool_button(self.zoom_out_action),
-            self._tool_button(self.reset_view_action),
-            self._tool_button(self.zoom_60arcmin_action),
-        ]
-        layout.addWidget(segmented(zoom_buttons))
-
-        # File navigation
+        # File navigation, in the middle
         nav = QHBoxLayout()
         nav.setSpacing(0)
         self._first_file_btn = QPushButton("|◄")
@@ -193,5 +161,35 @@ class FigureToolbarMixin:
                 widget.setObjectName("NavButton")
             nav.addWidget(widget)
         layout.addLayout(nav)
+        layout.addStretch()
+
+        # Zoom at the right: in, how far in, out, reset, one degree
+        self.zoom_in_action = self._tool_action(
+            get_resource_path("assets/zoom_in.png"), "Zoom In (+)", self.zoom_in
+        )
+        self.zoom_out_action = self._tool_action(
+            get_resource_path("assets/zoom_out.png"), "Zoom Out (-)", self.zoom_out
+        )
+        self.reset_view_action = self._tool_action(
+            get_resource_path("assets/reset.png"),
+            "Reset View (R)",
+            lambda: self.reset_view(show_status_message=True, animate=True),
+        )
+        self.zoom_60arcmin_action = self._tool_action(
+            get_resource_path("assets/zoom_60arcmin.png"), "1°×1° Zoom (1)", self.zoom_60arcmin
+        )
+        self.zoom_label = QLabel("—")
+        self.zoom_label.setToolTip("How much of the image's width is in view")
+        self.zoom_label.setMinimumWidth(self.zoom_label.fontMetrics().horizontalAdvance("0000%"))
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        zoom_buttons = [
+            self._tool_button(self.zoom_in_action),
+            self.zoom_label,
+            self._tool_button(self.zoom_out_action),
+            self._tool_button(self.reset_view_action),
+            self._tool_button(self.zoom_60arcmin_action),
+        ]
+        layout.addWidget(segmented(zoom_buttons))
+
 
         parent_layout.addWidget(bar)
