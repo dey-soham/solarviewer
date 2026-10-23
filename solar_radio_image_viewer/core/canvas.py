@@ -17,9 +17,11 @@ from ..tools import RegionMode
 
 logger = logging.getLogger(__name__)
 
-# Zoom per wheel notch, and per zoom button, key press or double-click
+# Zoom per wheel notch, per zoom button or + / - key press (two presses
+# for a doubling), and per double-click
 WHEEL_ZOOM = 1.2
-STEP_ZOOM = 2.0
+STEP_ZOOM = 1.4
+DOUBLE_CLICK_ZOOM = 2.0
 # How long an animated zoom or key pan takes, in seconds
 GLIDE_SECONDS = 0.15
 # Zoom out no further than the image filling 1/MAX_ZOOM_OUT of the view
@@ -732,7 +734,7 @@ class CanvasMixin:
         pan_mode = self._in_pan_mode()
         if event.button == 1 and pan_mode and event.dblclick:
             shift = "shift" in getattr(event, "modifiers", ())
-            factor = STEP_ZOOM if shift else 1 / STEP_ZOOM
+            factor = DOUBLE_CLICK_ZOOM if shift else 1 / DOUBLE_CLICK_ZOOM
             self._zoom_about(ax, factor, (event.xdata, event.ydata), animate=True)
             return
 
