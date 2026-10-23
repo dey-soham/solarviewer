@@ -151,10 +151,13 @@ class FigureToolbarMixin:
         self._prev_file_btn = QPushButton("◀")
         self._prev_file_btn.setToolTip("Previous file in directory ([)")
         self._prev_file_btn.clicked.connect(self._on_prev_file)
-        self._file_pos_label = QLabel("— / —")
+        self._file_pos_label = QLabel("—/—")
         self._file_pos_label.setObjectName("Meta")
+        self._file_pos_label.setAlignment(Qt.AlignCenter)
+        # Room for a count like 12/345, the text centred in it so a short
+        # one leaves no gap before the next button
         self._file_pos_label.setMinimumWidth(
-            self._file_pos_label.fontMetrics().horizontalAdvance("000 / 000")
+            self._file_pos_label.fontMetrics().horizontalAdvance("00/000") + 8
         )
         self._next_file_btn = QPushButton("▶")
         self._next_file_btn.setToolTip("Next file in directory (])")
