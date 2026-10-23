@@ -8,7 +8,6 @@ import time
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib import rcParams
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PyQt5.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer
 from PyQt5.QtGui import QColor, QCursor, QImage, QPainter, QPalette
@@ -117,15 +116,6 @@ class _ImageCanvas(FigureCanvas):
         event.ignore()
 
 
-class _HistoryToolbar(NavigationToolbar):
-    """Matplotlib's toolbar, kept hidden for its Back/Forward view history."""
-
-    def mouse_move(self, event):
-        # Its coordinate message is never shown, and formatting it on every
-        # mouse move slowed the tools that follow the mouse
-        pass
-
-
 class _PinchFilter(QObject):
     """Sends trackpad pinch gestures on the canvas to the tab's zoom."""
 
@@ -182,7 +172,7 @@ class CanvasMixin:
     Host attributes/methods used:
 
     ``coord_label``, ``image_plot``, ``init_region_editor``, ``_is_panning``,
-    ``_nav_record_timer``, ``_profile_mode``, ``ruler_action``, ``_ruler_mode``,
+    ``_profile_mode``, ``ruler_action``, ``_ruler_mode``,
     ``show_beam_checkbox``, ``show_status_message``, ``_toggle_ruler_mode``,
     ``_update_beam_position``, ``_view_anim``, ``window``, ``_zoom_timer``
     """
@@ -198,11 +188,6 @@ class CanvasMixin:
         # Matplotlib sets a white palette, so take the theme's instead (an
         # empty palette inherits it, and follows theme changes).
         self.canvas.setPalette(QPalette())
-
-        # Matplotlib's toolbar stays hidden: the figure toolbar has the tools,
-        # and this one only keeps the view history for its Back/Forward
-        self.nav_toolbar = _HistoryToolbar(self.canvas, self)
-        self.nav_toolbar.hide()
         parent_layout.addWidget(self.canvas, 1)
 
         self.current_image_data = None
@@ -336,10 +321,8 @@ class CanvasMixin:
             self._animate_view(ax, xlim, ylim)
         else:
             self._stop_view_anim()
-            self._begin_navigation(ax)
             self._set_view(ax, xlim, ylim)
             self._settle_view()
-            self._record_view_soon()
 
         if show_status_message:
             self.show_status_message("View reset")
@@ -414,9 +397,7 @@ class CanvasMixin:
             self._animate_view(ax, new_xlim, new_ylim)
         else:
             self._stop_view_anim()
-            self._begin_navigation(ax)
             self._set_view(ax, new_xlim, new_ylim)
-            self._record_view_soon()
 
     def _init_box_zoom(self, ax):
         """Right-drag draws a box on ``ax`` and zooms to it, in every mode but
@@ -606,8 +587,6 @@ class CanvasMixin:
     def _animate_view(self, ax, xlim, ylim):
         """Glide to ``xlim``/``ylim`` over GLIDE_SECONDS, easing out."""
         xlim, ylim = self._keep_image_in_view(xlim, ylim)
-        if self._view_anim is None:
-            self._begin_navigation(ax)
         self._view_anim = {
             "ax": ax,
             "from": (ax.get_xlim(), ax.get_ylim()),
@@ -636,32 +615,11 @@ class CanvasMixin:
 
         if t >= 1:
             self._stop_view_anim()
-            self._record_view_soon()
 
     def _stop_view_anim(self):
         """Stop a glide where it is."""
         self._zoom_timer.stop()
         self._view_anim = None
-
-    def _begin_navigation(self, ax):
-        """Make sure the toolbar's Back can return to the view before this move."""
-        toolbar = getattr(self, "nav_toolbar", None)
-        if toolbar is None:
-            return
-        self._nav_record_timer.stop()
-        views = toolbar._nav_stack()
-        if views is None or ax not in views:
-            toolbar.update()  # drop views of earlier images' axes
-            toolbar.push_current()
-
-    def _record_view_soon(self):
-        """Add the view to the toolbar's Back/Forward history once it settles."""
-        self._nav_record_timer.start()
-
-    def _record_view(self):
-        toolbar = getattr(self, "nav_toolbar", None)
-        if toolbar is not None and self._nav_axes() is not None:
-            toolbar.push_current()
 
     # ------------------------------------------------------------------
     # Mouse
@@ -690,10 +648,6 @@ class CanvasMixin:
         if not event.inaxes:
             self.coord_label.setText(READOUT_HINT)
             self.canvas.setCursor(Qt.ArrowCursor)
-            return
-
-        # Priority to Matplotlib toolbar tools
-        if hasattr(self, "nav_toolbar") and self.nav_toolbar.mode != "":
             return
 
         self.canvas.setCursor(Qt.OpenHandCursor if self._in_pan_mode() else Qt.CrossCursor)
@@ -739,10 +693,6 @@ class CanvasMixin:
 
     def _on_mouse_press(self, event):
         """Start a drag pan (middle button, or left in Pan mode); double-click zooms."""
-        # Priority to Matplotlib toolbar tools
-        if hasattr(self, "nav_toolbar") and self.nav_toolbar.mode != "":
-            return
-
         ax = self._nav_axes()
         if ax is None or event.inaxes is not ax:
             return
@@ -760,7 +710,6 @@ class CanvasMixin:
 
         if event.button == 2 or (event.button == 1 and pan_mode):
             self._stop_view_anim()
-            self._begin_navigation(ax)
             self._is_panning = True
             self._pan_button = event.button
             self._pan_last_px = (event.x, event.y)
@@ -791,7 +740,6 @@ class CanvasMixin:
 
         self._is_panning = False
         self._settle_view()
-        self._record_view_soon()
 
         if event.inaxes:
             self.canvas.setCursor(

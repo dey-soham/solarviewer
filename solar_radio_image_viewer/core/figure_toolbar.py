@@ -37,7 +37,7 @@ class FigureToolbarMixin:
     ``_on_next_file``, ``_on_prev_file``, ``_show_filter_dialog``,
     ``_show_playlist_dialog``, ``_toggle_profile_mode``,
     ``_toggle_ruler_mode``, ``_toggle_tb_mode``,
-    ``launch_helioprojective_viewer``, ``nav_toolbar``, ``reset_view``,
+    ``launch_helioprojective_viewer``, ``reset_view``,
     ``set_region_mode``, ``show_plot_customization_dialog``,
     ``zoom_60arcmin``, ``zoom_in``, ``zoom_out``
     """
@@ -129,16 +129,6 @@ class FigureToolbarMixin:
         self.zoom_60arcmin_action.setToolTip("1°×1° Zoom (1)")
         self.zoom_60arcmin_action.triggered.connect(self.zoom_60arcmin)
 
-        # Step back and forward through the views zoomed and panned to
-        self.view_back_action = QAction(self.nav_toolbar._icon("back.png"), "", self)
-        self.view_back_action.setToolTip("Previous View")
-        self.view_back_action.triggered.connect(lambda: self.nav_toolbar.back())
-        self.view_forward_action = QAction(
-            self.nav_toolbar._icon("forward.png"), "", self
-        )
-        self.view_forward_action.setToolTip("Next View")
-        self.view_forward_action.triggered.connect(lambda: self.nav_toolbar.forward())
-
         # Add customize plot action
         self.customize_plot_action = QAction(
             QIcon(get_resource_path("assets/settings.png")),
@@ -207,8 +197,6 @@ class FigureToolbarMixin:
                 self.zoom_out_action,
                 self.reset_view_action,
                 self.zoom_60arcmin_action,
-                self.view_back_action,
-                self.view_forward_action,
                 self.customize_plot_action,
             ]
         )

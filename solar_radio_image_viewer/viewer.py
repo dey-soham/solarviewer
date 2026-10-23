@@ -259,15 +259,11 @@ class SolarRadioImageTab(
         self._last_rendered_state = {}
         self.image_plot = None
 
-        # View navigation: zoom/pan glides, drag panning, toolbar history
+        # View navigation: zoom/pan glides, drag panning
         self._zoom_timer = QTimer(self)
         self._zoom_timer.timeout.connect(self._perform_zoom_step)
         self._view_anim = None
         self._is_panning = False
-        self._nav_record_timer = QTimer(self)
-        self._nav_record_timer.setSingleShot(True)
-        self._nav_record_timer.setInterval(400)
-        self._nav_record_timer.timeout.connect(self._record_view)
 
         # Default mode
         self.region_mode = RegionMode.PAN
@@ -1002,7 +998,6 @@ class SolarRadioImageTab(
         its image."""
         for timer in (
             self._zoom_timer,
-            self._nav_record_timer,
             getattr(self, "_settle_timer", None),
             getattr(self, "_plot_timer", None),
             self._gamma_debounce_timer,
@@ -1083,11 +1078,6 @@ class SolarRadioImageTab(
             self.colormap_selector.search_button.setIcon(
                 QIcon(themed_icon("search.png"))
             )
-
-        # Back/Forward use Matplotlib's icons, coloured for the palette
-        if hasattr(self, "view_back_action"):
-            self.view_back_action.setIcon(self.nav_toolbar._icon("back.png"))
-            self.view_forward_action.setIcon(self.nav_toolbar._icon("forward.png"))
 
 
 class SolarRadioImageViewerApp(
@@ -1394,8 +1384,6 @@ class SolarRadioImageViewerApp(
         update_matplotlib_theme()
 
         # Update Qt application palette BEFORE refreshing icons
-        # This is critical for matplotlib's NavigationToolbar which reads icon
-        # colors from the palette's foreground role
         self._update_application_palette()
 
         # Update theme action text
@@ -1434,11 +1422,7 @@ class SolarRadioImageViewerApp(
             self.theme_action.setText("🌙 Switch to Dark Mode")
 
     def _update_application_palette(self):
-        """Update the Qt application palette to match the current theme.
-
-        This is critical for matplotlib's NavigationToolbar which reads icon
-        colors from the palette's foreground role (WindowText color).
-        """
+        """Update the Qt application palette to match the current theme."""
         palette = theme_manager.palette
         qt_palette = QPalette()
         qt_palette.setColor(QPalette.Window, QColor(palette["window"]))
