@@ -12,14 +12,19 @@ so it is right at any display scale.
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QPalette
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QCursor, QPalette
 from PyQt5.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from .styles import theme_manager
 
 SAMPLE = 400_000  # values at most in the histogram: enough for its shape
 BINS = 48
+# A marker held against the strip's edge pushes the range on: this share
+# of the span every PUSH_MS, within this share of the width of the edge
+PUSH_STEP = 0.04
+PUSH_MS = 50
+PUSH_EDGE = 0.02
 
 
 class LevelsHistogram(QWidget):
@@ -62,6 +67,9 @@ class LevelsHistogram(QWidget):
         layout.addWidget(self.canvas)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        self._push_timer = QTimer(self)
+        self._push_timer.setInterval(PUSH_MS)
+        self._push_timer.timeout.connect(self._push)
         self.canvas.mpl_connect("button_press_event", self._on_press)
         self.canvas.mpl_connect("motion_notify_event", self._on_move)
         self.canvas.mpl_connect("button_release_event", self._on_release)
@@ -111,7 +119,11 @@ class LevelsHistogram(QWidget):
             return
         if np.isfinite(vmin) and np.isfinite(vmax) and (vmin, vmax) != (self._vmin, self._vmax):
             self._vmin, self._vmax = vmin, vmax
-            if self._edges is not None and (vmin < self._edges[0] or vmax > self._edges[-1]):
+            edges = self._edges
+            # (a tolerance: the range comes back from the Min/Max fields
+            # rounded, a hair off the edge it was set from)
+            slack = (edges[-1] - edges[0]) * 1e-5 if edges is not None else 0
+            if edges is not None and (vmin < edges[0] - slack or vmax > edges[-1] + slack):
                 # The bins widen to take the range in (and narrow back to
                 # the bulk when it comes back)
                 low, high = self._bulk
@@ -214,8 +226,43 @@ class LevelsHistogram(QWidget):
             self._vmax = max(float(event.xdata), self._vmin)
         self._place_markers()
         self.rangeEdited.emit(self._vmin, self._vmax)
+        # Held against the strip's edge, the marker pushes on past it
+        if self._at_edge(event.x):
+            if not self._push_timer.isActive():
+                self._push_timer.start()
+        else:
+            self._push_timer.stop()
+
+    def _at_edge(self, x):
+        """Whether the pointer at ``x`` (canvas pixels) is at the edge the
+        dragged marker can push: the right for max, the left for min."""
+        width = self.canvas.width() * self.canvas.devicePixelRatioF()
+        if self._drag == "max":
+            return x >= width * (1 - PUSH_EDGE)
+        return x <= width * PUSH_EDGE
+
+    def _push(self):
+        """One push of the range past the strip (the strip widens)."""
+        if self._drag is None:
+            self._push_timer.stop()
+            return
+        pos = self.canvas.mapFromGlobal(QCursor.pos())
+        inside = self.canvas.rect().contains(pos)
+        x = pos.x() * self.canvas.devicePixelRatioF()
+        if inside and not self._at_edge(x):
+            self._push_timer.stop()
+            return
+        x0, x1 = self.ax.get_xlim()
+        step = (x1 - x0) * PUSH_STEP
+        if self._drag == "max":
+            self._vmax += step
+        else:
+            self._vmin -= step
+        self._draw()
+        self.rangeEdited.emit(self._vmin, self._vmax)
 
     def _on_release(self, event):
+        self._push_timer.stop()
         if self._drag:
             self._drag = None
             self.rangeChanged.emit(self._vmin, self._vmax)
