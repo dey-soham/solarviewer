@@ -7,7 +7,7 @@ import numpy as np
 from PyQt5.QtCore import Qt
 
 from .geometry import snap_to_axis
-from .preview import dashed_pen, measure_preview
+from .preview import contrast_colors, dashed_pen, halo, halo_pen, measure_preview
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,8 @@ class RulerMixin:
 
     A measurement is drawn as a right-angled triangle: the measured line is
     the hypotenuse, and the legs show its horizontal and vertical parts, each
-    labelled with its length.
+    labelled with its length. It is drawn in the colours that contrast with
+    the colormap (see :func:`contrast_colors`).
     """
 
     def _toggle_ruler_mode(self, checked):
@@ -94,8 +95,14 @@ class RulerMixin:
 
             # Draw start point marker
             ax = event.inaxes
+            line, shadow = contrast_colors(self)
             (self._ruler_line,) = ax.plot(
-                [event.xdata], [event.ydata], "ro", markersize=8
+                [event.xdata],
+                [event.ydata],
+                "o",
+                color=line,
+                markersize=8,
+                path_effects=halo(shadow, 0),
             )
             self.canvas.draw_idle()
 
@@ -126,8 +133,16 @@ class RulerMixin:
 
             # The measured line, as the hypotenuse of the triangle
             self._remove_ruler_artists()
+            line, shadow = contrast_colors(self)
             (self._ruler_line,) = ax.plot(
-                [x1, x2], [y1, y2], "r-", linewidth=2, marker="o", markersize=8
+                [x1, x2],
+                [y1, y2],
+                "-",
+                color=line,
+                linewidth=2,
+                marker="o",
+                markersize=8,
+                path_effects=halo(shadow, 2),
             )
 
             # Calculate distance
@@ -143,12 +158,12 @@ class RulerMixin:
                 ha=ha,
                 va=va,
                 fontsize=9,
-                color="red",
+                color=line,
                 fontweight="bold",
-                bbox=dict(boxstyle="round", facecolor="white", alpha=0.6),
+                bbox=dict(boxstyle="round", facecolor=shadow, alpha=0.7),
                 annotation_clip=True,
             )
-            self._ruler_legs = self._draw_ruler_legs(ax, x1, y1, x2, y2)
+            self._ruler_legs = self._draw_ruler_legs(ax, x1, y1, x2, y2, line, shadow)
 
             self.canvas.draw_idle()
 
@@ -176,8 +191,9 @@ class RulerMixin:
         if shift_held:
             x2, y2 = snap_to_axis(x1, y1, x2, y2)
 
+        line, shadow = contrast_colors(self)
         measure_preview(self).show_lines(
-            event.inaxes, _triangle_lines(x1, y1, x2, y2)
+            event.inaxes, _triangle_lines(x1, y1, x2, y2, line), halo_pen(shadow, 1.5)
         )
 
         # Show distance in status bar
@@ -188,7 +204,7 @@ class RulerMixin:
             flush=False,
         )
 
-    def _draw_ruler_legs(self, ax, x1, y1, x2, y2):
+    def _draw_ruler_legs(self, ax, x1, y1, x2, y2, line, shadow):
         """Draw the triangle's legs, labelled with their lengths; the artists.
 
         The right angle is at the end point's x and the start point's y. The
@@ -208,13 +224,18 @@ class RulerMixin:
             dx_label = _format_arcsec(abs(x2 - x1) * scale[0])
             dy_label = _format_arcsec(abs(y2 - y1) * scale[1])
         (legs,) = ax.plot(
-            [x1, x2, x2], [y1, y1, y2], "r--", linewidth=1, alpha=0.7
+            [x1, x2, x2],
+            [y1, y1, y2],
+            "--",
+            color=line,
+            linewidth=1,
+            path_effects=halo(shadow, 1),
         )
         label_style = dict(
             textcoords="offset points",
             fontsize=8,
-            color="red",
-            bbox=dict(boxstyle="round", facecolor="white", alpha=0.6),
+            color=line,
+            bbox=dict(boxstyle="round", facecolor=shadow, alpha=0.7),
             annotation_clip=True,
         )
         below = y2 > y1  # the hypotenuse is above the horizontal leg
@@ -378,11 +399,11 @@ class RulerMixin:
             return f"{pixel_dist:.1f} px"
 
 
-def _triangle_lines(x1, y1, x2, y2):
+def _triangle_lines(x1, y1, x2, y2, color):
     """The preview's lines: the measured line and the triangle's legs."""
-    lines = [((x1, y1), (x2, y2), dashed_pen("red", 1.5, 0.7))]
+    lines = [((x1, y1), (x2, y2), dashed_pen(color, 1.5, 1.0))]
     if x1 != x2 and y1 != y2:
-        legs = dashed_pen("red", 1.0, 0.5)
+        legs = dashed_pen(color, 1.0, 0.8)
         lines += [((x1, y1), (x2, y1), legs), ((x2, y1), (x2, y2), legs)]
     return lines
 

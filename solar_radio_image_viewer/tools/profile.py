@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .geometry import snap_to_axis
-from .preview import dashed_pen, measure_preview
+from .preview import contrast_colors, dashed_pen, halo, halo_pen, measure_preview
 
 logger = logging.getLogger(__name__)
 
@@ -207,8 +207,14 @@ class ProfileMixin:
             self._profile_start = (event.xdata, event.ydata)
 
             ax = event.inaxes
+            line, shadow = contrast_colors(self)
             (self._profile_line,) = ax.plot(
-                [event.xdata], [event.ydata], "go", markersize=8
+                [event.xdata],
+                [event.ydata],
+                "o",
+                color=line,
+                markersize=8,
+                path_effects=halo(shadow, 0),
             )
             self.canvas.draw_idle()
 
@@ -245,8 +251,11 @@ class ProfileMixin:
         if shift_held:
             x2, y2 = snap_to_axis(x1, y1, x2, y2)
 
+        line, shadow = contrast_colors(self)
         measure_preview(self).show_lines(
-            event.inaxes, [((x1, y1), (x2, y2), dashed_pen("green", 1.5, 0.7))]
+            event.inaxes,
+            [((x1, y1), (x2, y2), dashed_pen(line, 1.5, 1.0))],
+            halo_pen(shadow, 1.5),
         )
 
         # Calculate and show distance
@@ -266,7 +275,10 @@ class ProfileMixin:
         # Draw center marker
         self._clear_profile()
         ax = event.inaxes
-        (self._profile_line,) = ax.plot([cx], [cy], "r*", markersize=12)
+        line, shadow = contrast_colors(self)
+        (self._profile_line,) = ax.plot(
+            [cx], [cy], "*", color=line, markersize=12, path_effects=halo(shadow, 0)
+        )
         self.canvas.draw_idle()
 
         # Show radial input dialog
@@ -342,8 +354,16 @@ class ProfileMixin:
             if ax:
                 if self._profile_line is not None:
                     self._profile_line.remove()
+                line, shadow = contrast_colors(self)
                 (self._profile_line,) = ax.plot(
-                    [fx1, fx2], [fy1, fy2], "g-", linewidth=2, marker="o", markersize=8
+                    [fx1, fx2],
+                    [fy1, fy2],
+                    "-",
+                    color=line,
+                    linewidth=2,
+                    marker="o",
+                    markersize=8,
+                    path_effects=halo(shadow, 2),
                 )
                 self.canvas.draw_idle()
 
@@ -460,8 +480,14 @@ class ProfileMixin:
                         self._profile_preview_line.remove()
                     except Exception:
                         pass
+                line, shadow = contrast_colors(self)
                 (self._profile_preview_line,) = ax.plot(
-                    [x1, x2], [y1, y2], "r--", linewidth=1.5, alpha=0.7
+                    [x1, x2],
+                    [y1, y2],
+                    "--",
+                    color=line,
+                    linewidth=1.5,
+                    path_effects=halo(shadow, 1.5),
                 )
                 # Mark center
                 if (
@@ -473,7 +499,12 @@ class ProfileMixin:
                     except Exception:
                         pass
                 (self._profile_center_marker,) = ax.plot(
-                    [c_x], [c_y], "r*", markersize=12
+                    [c_x],
+                    [c_y],
+                    "*",
+                    color=line,
+                    markersize=12,
+                    path_effects=halo(shadow, 0),
                 )
                 self.canvas.draw_idle()
             finally:
@@ -528,8 +559,16 @@ class ProfileMixin:
                     except Exception:
                         pass
                 # Draw final line AND redraw center marker
+                line, shadow = contrast_colors(self)
                 (self._profile_line,) = ax.plot(
-                    [x1, x2], [y1, y2], "r-", linewidth=2, marker="o", markersize=8
+                    [x1, x2],
+                    [y1, y2],
+                    "-",
+                    color=line,
+                    linewidth=2,
+                    marker="o",
+                    markersize=8,
+                    path_effects=halo(shadow, 2),
                 )
                 # Redraw center marker on top
                 if (
@@ -541,7 +580,13 @@ class ProfileMixin:
                     except Exception:
                         pass
                 (self._profile_center_marker,) = ax.plot(
-                    [c_x], [c_y], "r*", markersize=14, zorder=10
+                    [c_x],
+                    [c_y],
+                    "*",
+                    color=line,
+                    markersize=14,
+                    zorder=10,
+                    path_effects=halo(shadow, 0),
                 )
                 self.canvas.draw_idle()
 

@@ -12,9 +12,38 @@ under a millisecond. The figure is given in data coordinates and mapped
 through the axes on every move, so it stays right if the view changes.
 """
 
+import numpy as np
+from matplotlib.patheffects import withStroke
 from PyQt5.QtCore import QPoint, QPointF, QRect, QRectF, Qt
 from PyQt5.QtGui import QColor, QPainter, QPen, QPixmap, QRegion
 from PyQt5.QtWidgets import QWidget
+
+
+def contrast_colors(tab):
+    """(line, halo) colours that stand out on the tab's colormap.
+
+    Lines are drawn in one over a halo of the other, so they differ from the
+    image in brightness, not only in hue, and stay visible on any colormap
+    and with any colour vision: a white line with a black halo on dark
+    colormaps, a black line with a white halo on light ones.
+    """
+    image = getattr(tab, "image_plot", None)
+    if image is None:
+        return "white", "black"
+    rgb = image.get_cmap()(np.linspace(0, 1, 64))[:, :3]
+    luminance = rgb @ [0.2126, 0.7152, 0.0722]
+    return ("black", "white") if luminance.mean() > 0.5 else ("white", "black")
+
+
+def halo(color, linewidth):
+    """Matplotlib path effects drawing a ``color`` halo under a line of
+    ``linewidth`` points (and under its markers)."""
+    return [withStroke(linewidth=linewidth + 2.5, foreground=color, alpha=0.85)]
+
+
+def halo_pen(color, linewidth):
+    """A pen for the halo under a preview line of ``linewidth`` pixels."""
+    return QPen(QColor(color), linewidth + 2.5, Qt.SolidLine, Qt.FlatCap)
 
 
 def dashed_pen(color, width=1.5, alpha=0.7):
@@ -42,6 +71,7 @@ class MeasurePreview(QWidget):
         self.hide()
         self._picture = None
         self._lines = []  # (QPointF, QPointF, QPen)
+        self._halo = None
         self._clip = QRectF()
         self._area = QRect()  # the lines' area, in this widget's pixels
         # The picture goes stale when the figure is drawn again
@@ -71,9 +101,10 @@ class MeasurePreview(QWidget):
         dpr = canvas.device_pixel_ratio
         return QPointF(px / dpr, (canvas.figure.bbox.height - py) / dpr)
 
-    def show_lines(self, ax, lines):
+    def show_lines(self, ax, lines, halo=None):
         """Show ``lines``, each ``((x0, y0), (x1, y1), pen)`` in data
-        coordinates of ``ax``, clipped to the axes."""
+        coordinates of ``ax``, clipped to the axes, over a ``halo`` pen."""
+        self._halo = halo
         canvas = self._canvas
         self._ax = ax
         fresh = self._picture is None or self.size() != canvas.size()
@@ -90,7 +121,7 @@ class MeasurePreview(QWidget):
             for start, end, pen in lines
         ]
         area = QRectF()
-        pad = 0.0
+        pad = halo.widthF() if halo is not None else 0.0
         for start, end, pen in self._lines:
             area = area.united(QRectF(start, end).normalized())
             pad = max(pad, pen.widthF())
@@ -119,6 +150,10 @@ class MeasurePreview(QWidget):
             painter.fillRect(event.rect(), self.palette().window())
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setClipRect(self._clip)
+        if self._halo is not None:
+            painter.setPen(self._halo)
+            for start, end, pen in self._lines:
+                painter.drawLine(start, end)
         for start, end, pen in self._lines:
             painter.setPen(pen)
             painter.drawLine(start, end)
