@@ -29,22 +29,7 @@ class _Section(QFrame):
         self._key = f"panel/{key}"
         self._title = title
         self.setObjectName("Section")
-        border = palette.get("border", "#3a3a5a")
-        self.setStyleSheet(f"""
-            QFrame#Section {{
-                background-color: {palette["surface"]};
-                border: 1px solid {border};
-                border-radius: 10px;
-            }}
-            QToolButton#SectionTitle {{
-                border: none;
-                background: transparent;
-                color: {palette["highlight"]};
-                font-weight: 600;
-                padding: 0px;
-                text-align: left;
-            }}
-        """)
+        self.setStyleSheet(self.style(palette))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 14)
         layout.setSpacing(12)
@@ -60,6 +45,26 @@ class _Section(QFrame):
         opened = self._settings.value(self._key, True, type=bool)
         self.title.setChecked(opened)
         self._fold(opened)
+
+    @staticmethod
+    def style(palette):
+        """The style sheet for a section in the theme of ``palette``."""
+        border = palette.get("border", "#3a3a5a")
+        return f"""
+            QFrame#Section {{
+                background-color: {palette["surface"]};
+                border: 1px solid {border};
+                border-radius: 10px;
+            }}
+            QToolButton#SectionTitle {{
+                border: none;
+                background: transparent;
+                color: {palette["highlight"]};
+                font-weight: 600;
+                padding: 0px;
+                text-align: left;
+            }}
+        """
 
     def _fold(self, opened):
         self.title.setText(("▾  " if opened else "▸  ") + self._title)

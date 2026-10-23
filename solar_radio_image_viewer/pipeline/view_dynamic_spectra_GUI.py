@@ -138,6 +138,10 @@ class MainWindow(
         self.link = ViewerLink("dynamic_spectrum_viewer", self)
         self.link.message.connect(self._on_link_message)
 
+        # Widgets styled in the theme's colours, restyled when it changes:
+        # (widget, style sheet as a function of the palette)
+        self._themed_widgets = []
+
         # Data placeholders
         self.hdul = None  # Store FITS handle to keep memmap alive
         # A file on an SSH server: its RemoteFits (read in pieces), the
@@ -465,6 +469,7 @@ class MainWindow(
 
         # ---------------- 1. Navigate ----------------
         self.navGroup = _Section("Navigate", "navigate", palette)
+        self._themed(self.navGroup, _Section.style)
         navLayout = QVBoxLayout(self.navGroup.body)
         navLayout.setContentsMargins(0, 0, 0, 0)
         navLayout.setSpacing(10)
@@ -536,6 +541,7 @@ class MainWindow(
 
         # ---------------- 2. Display ----------------
         visGroup = _Section("Display", "display", palette)
+        self._themed(visGroup, _Section.style)
         visLayout = QGridLayout(visGroup.body)
         visLayout.setContentsMargins(0, 0, 0, 0)
         visLayout.setHorizontalSpacing(12)
@@ -640,6 +646,7 @@ class MainWindow(
         # ---------------- 3. Mouse ----------------
         # One tool at a time: what a click or drag on the spectrum does
         toolsGroup = _Section("Mouse", "mouse", palette)
+        self._themed(toolsGroup, _Section.style)
         toolsLayout = QVBoxLayout(toolsGroup.body)
         toolsLayout.setContentsMargins(0, 0, 0, 0)
         toolsLayout.setSpacing(10)
@@ -692,12 +699,13 @@ class MainWindow(
         # Changes to the data, kept for the whole file and saved with it: a
         # column of labels, the controls beside them
         cleanGroup = _Section("Clean", "clean", palette)
+        self._themed(cleanGroup, _Section.style)
         cleanLayout = QGridLayout(cleanGroup.body)
         cleanLayout.setContentsMargins(0, 0, 0, 0)
         cleanLayout.setHorizontalSpacing(12)
         cleanLayout.setVerticalSpacing(8)
         cleanLayout.setColumnStretch(1, 1)
-        muted = palette.get("text_secondary", "#a0a0b0")
+        muted = lambda p: f"color: {p.get('text_secondary', '#a0a0b0')}; font-size: 9pt;"
 
         def label(text):
             widget = QLabel(text)
@@ -732,13 +740,12 @@ class MainWindow(
         self.extendMaskBtn.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.extendMaskBtn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.extendMaskBtn.setToolTip("Mask channels at all times (arrow: choose)")
-        palette = self._palette
         # (styled like the push buttons beside it)
-        self.extendMaskBtn.setStyleSheet(f"""
+        self._themed(self.extendMaskBtn, lambda p: f"""
             QToolButton {{
-                background-color: {palette["button"]};
-                color: {palette["text"]};
-                border: 1px solid {palette["border"]};
+                background-color: {p["button"]};
+                color: {p["text"]};
+                border: 1px solid {p["border"]};
                 border-radius: 6px;
                 padding: 4px 22px 4px 8px;
                 min-height: 26px;
@@ -747,17 +754,17 @@ class MainWindow(
                 font-weight: 500;
             }}
             QToolButton:hover {{
-                background-color: {palette["button_hover"]};
-                border-color: {palette["highlight"]};
+                background-color: {p["button_hover"]};
+                border-color: {p["highlight"]};
             }}
             QToolButton:pressed {{
-                background-color: {palette["highlight"]};
+                background-color: {p["highlight"]};
                 color: white;
             }}
-            QToolButton:disabled {{ color: {palette["disabled"]}; }}
+            QToolButton:disabled {{ color: {p["disabled"]}; }}
             QToolButton::menu-button {{
                 border: none;
-                border-left: 1px solid {palette["border"]};
+                border-left: 1px solid {p["border"]};
                 width: 18px;
             }}
         """)
@@ -769,7 +776,7 @@ class MainWindow(
         cleanLayout.addWidget(label("Masks"), 0, 0)
         cleanLayout.addLayout(pair(self.extendMaskBtn, self.clearMaskBtn), 0, 1)
         self.maskSummary = QLabel()
-        self.maskSummary.setStyleSheet(f"color: {muted}; font-size: 9pt;")
+        self._themed(self.maskSummary, muted)
         cleanLayout.addWidget(self.maskSummary, 1, 1)
         gap(2)
 
@@ -794,7 +801,7 @@ class MainWindow(
         for text, widget in (("gentle", None), (None, self.rfiSlider), ("strong", None)):
             if widget is None:
                 end = QLabel(text)
-                end.setStyleSheet(f"color: {muted}; font-size: 9pt;")
+                self._themed(end, muted)
                 sensitivity.addWidget(end)
             else:
                 sensitivity.addWidget(widget, 1)
@@ -856,12 +863,11 @@ class MainWindow(
     def _segmented(self, items, choose):
         """A row of buttons, one of which is on: [(text, value, tip)];
         ``choose(value)`` when one is clicked. (widget, {value: button})"""
-        palette = self._palette
         widget = QFrame()
         widget.setObjectName("Segmented")
-        widget.setStyleSheet(f"""
+        self._themed(widget, lambda p: f"""
             QFrame#Segmented {{
-                border: 1px solid {palette.get("border", "#3a3a5a")};
+                border: 1px solid {p.get("border", "#3a3a5a")};
                 border-radius: 8px;
                 background: transparent;
             }}
@@ -875,7 +881,7 @@ class MainWindow(
                 background: rgba(99, 102, 241, 0.15);
             }}
             QFrame#Segmented QPushButton:checked {{
-                background: {palette["highlight"]};
+                background: {p["highlight"]};
                 color: #ffffff;
             }}
         """)
@@ -897,9 +903,7 @@ class MainWindow(
 
     def _pager(self, palette):
         """« ‹ page/pages › » (Pages mode)."""
-        disabled_color = palette["disabled"]
-        highlight = palette["highlight"]
-        nav_btn_style = f"""
+        nav_btn_style = lambda p: f"""
             QPushButton {{
                 background-color: transparent;
                 border: 1px solid rgba(120, 120, 150, 0.3);
@@ -913,14 +917,14 @@ class MainWindow(
             }}
             QPushButton:hover {{
                 background-color: rgba(99, 102, 241, 0.15);
-                border-color: {highlight};
+                border-color: {p["highlight"]};
             }}
             QPushButton:pressed {{
                 background-color: rgba(99, 102, 241, 0.25);
             }}
             QPushButton:disabled {{
                 border-color: transparent;
-                color: {disabled_color};
+                color: {p["disabled"]};
             }}
         """
         self.firstBtn = QPushButton("«")
@@ -936,18 +940,18 @@ class MainWindow(
         self.lastBtn.setToolTip("Last Page")
         self.lastBtn.clicked.connect(self.onLastPage)
         for button in (self.firstBtn, self.prevBtn, self.nextBtn, self.lastBtn):
-            button.setStyleSheet(nav_btn_style)
+            self._themed(button, nav_btn_style)
         self.pageLabel = QLabel("1/1")
         self.pageLabel.setAlignment(Qt.AlignCenter)
-        self.pageLabel.setStyleSheet(f"""
+        self._themed(self.pageLabel, lambda p: f"""
             QLabel {{
                 font-size: 10pt;
                 font-weight: 500;
                 min-width: 50px;
-                color: {palette["text"]};
+                color: {p["text"]};
             }}
             QLabel:disabled {{
-                color: {disabled_color};
+                color: {p["disabled"]};
             }}
         """)
         layout = QHBoxLayout()
@@ -1016,11 +1020,21 @@ class MainWindow(
         )
         self.statusBar().addPermanentWidget(self.cursorInfoLabel)
 
+    def _themed(self, widget, style):
+        """Style ``widget`` by ``style(palette)``, now and on each theme change."""
+        self._themed_widgets.append((widget, style))
+        widget.setStyleSheet(style(self._palette))
+
     def _applyStyle(self):
         """Apply the global application theme."""
         app = QApplication.instance()
         if app:
             apply_theme(app, self.current_theme)
+
+        # The side panel's own colours
+        self._palette = get_palette(self.current_theme)
+        for widget, style in self._themed_widgets:
+            widget.setStyleSheet(style(self._palette))
 
         # Redraw canvas if it exists to pick up matplotlib theme changes
         if hasattr(self, "canvas"):
