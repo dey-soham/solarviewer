@@ -23,11 +23,16 @@ class ConversionControl(QWidget):
 
     clicked = pyqtSignal(bool)
 
-    def __init__(self, segments, actions, tip, parent=None):
+    def __init__(self, segments, actions, tip, reason, parent=None):
+        """``tip`` says what the control converts; ``reason`` is the
+        tooltip while the conversion is unavailable."""
         super().__init__(parent)
         self._actions = actions
         self._text = ""
-        self._index = 0  # the state on (the clicked button is checked first)
+        self._index = None  # the state on (None: no image); the clicked
+        # button is checked by the group before the control sees the click
+        self._tip = tip
+        self._reason = reason
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self._group = QButtonGroup(self)
@@ -40,8 +45,7 @@ class ConversionControl(QWidget):
             button.clicked.connect(lambda _=False, i=index: self._chosen(i))
             self._group.addButton(button)
             self._buttons.append(button)
-        self._buttons[0].setChecked(True)
-        layout.addWidget(segmented(self._buttons))
+        layout.addWidget(segmented(self._buttons, role="HeaderSegmented"))
 
     def _show(self, index):
         self._index = index
@@ -50,12 +54,28 @@ class ConversionControl(QWidget):
             button.setChecked(i == index)
         self._group.setExclusive(True)
 
+    def clear(self):
+        """No image: nothing on."""
+        self._show(None)
+
+    def current_label(self):
+        """The state on ("Solar XY"), or "" with no image."""
+        return self._buttons[self._index].text() if self._index is not None else ""
+
+    def setEnabled(self, enabled):
+        """Unavailable: dimmed (the stylesheet's disabled colours; an
+        opacity effect of its own would undo the header's), and the
+        tooltip says why."""
+        super().setEnabled(enabled)
+        for button in self._buttons:
+            button.setToolTip(self._tip if enabled else self._reason)
+
     def _chosen(self, index):
         """A segment clicked (and so checked by the group): the one on
         stays until the host converts."""
         current = self._index
         self._show(current)
-        if index != current:
+        if current is not None and index != current:
             self.clicked.emit(False)
 
     # ----------------------------------------- the QPushButton calls used
@@ -78,5 +98,7 @@ class ConversionControl(QWidget):
         return getattr(self, "_checked", False)
 
     def setToolTip(self, tip):
-        for button in self._buttons:
-            button.setToolTip(tip)
+        """The hosts' action tips ("Convert to ...") are not shown: the
+        control's own tip says what it converts, the segments say which
+        way."""
+        self._action_tip = tip

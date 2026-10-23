@@ -21,13 +21,16 @@ class CursorReadout(QFrame):
         grid = QGridLayout(self)
         grid.setContentsMargins(14, 10, 14, 10)
         grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(6)
+        grid.setVerticalSpacing(4)
         header, self.state_label = kicker_row("Cursor", "no image")
         grid.addWidget(header, 0, 0, 1, 2)
         self._values = {}
+        self._labels = {}
         for row, name in enumerate(("Pixel", "World", "Value"), start=1):
             label = QLabel(name)
             label.setObjectName("Hint")
+            label.setMinimumWidth(label.fontMetrics().horizontalAdvance("Solar XY"))
+            self._labels[name] = label
             value = QLabel(BLANK)
             value.setObjectName("Mono")
             value.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -36,6 +39,11 @@ class CursorReadout(QFrame):
             grid.addWidget(value, row, 1)
             self._values[name] = value
         grid.setColumnStretch(1, 1)
+
+    def set_frame_name(self, name):
+        """The second line is named after the image's frame ("RA/Dec",
+        "Solar XY"), or "World" with no image."""
+        self._labels["World"].setText(name or "World")
 
     def set_state(self, state):
         """No readout: say why ("no image", "off the image")."""

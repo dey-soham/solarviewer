@@ -747,17 +747,9 @@ class SolarRadioImageTab(
                 QIcon(get_resource_path(f"assets/{get_icon_path('profile.png')}"))
             )
 
-        # Update beam settings button icon
-        if hasattr(self, "beam_settings_button"):
-            self.beam_settings_button.setIcon(
-                QIcon(get_resource_path(f"assets/{get_icon_path('settings.png')}"))
-            )
-
-        # Update grid settings button icon
-        if hasattr(self, "grid_settings_button"):
-            self.grid_settings_button.setIcon(
-                QIcon(get_resource_path(f"assets/{get_icon_path('settings.png')}"))
-            )
+        # The overlay rows' gears, in the theme's tones
+        for row in getattr(self, "_overlay_rows", ()):
+            row.refresh()
 
         # Update gamma slider disabled styling for new theme
         if hasattr(self, "gamma_slider") and hasattr(self, "stretch_combo"):
@@ -1002,14 +994,10 @@ class SolarRadioImageTab(
         """Refresh all icons to match the current theme."""
         if hasattr(self, "browse_action"):
             self.browse_action.setIcon(QIcon(themed_icon("browse.png")))
-        if hasattr(self, "solar_disk_center_button"):
-            self.solar_disk_center_button.setIcon(QIcon(themed_icon("settings.png")))
-        if hasattr(self, "contour_settings_button"):
-            self.contour_settings_button.setIcon(QIcon(themed_icon("settings.png")))
-        if hasattr(self, "beam_settings_button"):
-            self.beam_settings_button.setIcon(QIcon(themed_icon("settings.png")))
-        if hasattr(self, "grid_settings_button"):
-            self.grid_settings_button.setIcon(QIcon(themed_icon("settings.png")))
+        for row in getattr(self, "_overlay_rows", ()):
+            row.refresh()  # the gears, in the theme's tones
+        if hasattr(self, "_set_summary_link"):
+            self._set_summary_link()
 
         # Update navigation buttons (if they exist in left panel)
         if hasattr(self, "zoom_in_button"):

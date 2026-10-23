@@ -245,6 +245,8 @@ class CanvasMixin:
         readout = getattr(self, "cursor_readout", None)
         if readout is not None:
             readout.set_state("no image")
+        if hasattr(self, "show_image_context"):
+            self.show_image_context(None)
         if hasattr(self, "zoom_label"):
             self.zoom_label.setText("—")
         self.figure.text(

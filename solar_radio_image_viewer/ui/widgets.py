@@ -99,13 +99,14 @@ def kicker_row(text, aside=None, parent=None):
     return row, label
 
 
-def segmented(buttons, parent=None, stretch=False):
+def segmented(buttons, parent=None, stretch=False, role="Segmented"):
     """``buttons`` (QPushButtons or QToolButtons, checkable ones for a
-    choice) in one outlined group, the Segmented role: the one checked has
-    an accent outline. ``stretch`` gives each the same share of the width
-    (the presets row). Returns the group widget."""
+    choice) in one group, the Segmented role (outlined) or the
+    HeaderSegmented one (a filled track): the one checked has an accent
+    outline and the brightest text. ``stretch`` gives each the same share
+    of the width (the presets row). Returns the group widget."""
     group = QFrame(parent)
-    group.setObjectName("Segmented")
+    group.setObjectName(role)
     layout = QHBoxLayout(group)
     layout.setContentsMargins(2, 2, 2, 2)
     layout.setSpacing(1)
@@ -131,7 +132,13 @@ def link_button(text, slot=None, parent=None):
 def toggle_row(switch, settings_button=None, label=None, parent=None):
     """A switch (a QCheckBox in the Switch role) with its name and, at the
     right, its settings button, on the surface colour. ``label`` is a
-    separate QLabel when the switch has no text of its own."""
+    separate QLabel when the switch has no text of its own. The row,
+    label and gear follow the switch: on means a brighter label, a
+    hairline round the row and a brighter gear (never hue alone)."""
+    from PyQt5.QtGui import QIcon
+
+    from .icons import themed_icon
+
     row = QFrame(parent)
     row.setObjectName("Surface")
     layout = QHBoxLayout(row)
@@ -139,10 +146,24 @@ def toggle_row(switch, settings_button=None, label=None, parent=None):
     layout.setSpacing(6)
     layout.addWidget(switch)
     if label is not None:
+        label.setObjectName("SwitchLabel")
         layout.addWidget(label)
     layout.addStretch()
     if settings_button is not None:
         layout.addWidget(settings_button)
+
+    def follow(on):
+        for widget in (row, label):
+            if widget is not None:
+                widget.setProperty("on", "true" if on else "false")
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+        if settings_button is not None:
+            settings_button.setIcon(QIcon(themed_icon("gear_on.svg" if on else "gear_off.svg")))
+
+    switch.toggled.connect(follow)
+    row.refresh = lambda: follow(switch.isChecked())  # (after a theme change)
+    follow(switch.isChecked())
     return row
 
 

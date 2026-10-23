@@ -54,7 +54,7 @@ class LevelsHistogram(QWidget):
         self.figure = Figure(figsize=(3, 0.7), dpi=96)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.canvas.setFixedHeight(int(self.fontMetrics().height() * 4.5))
+        self.canvas.setFixedHeight(56)
         self.canvas.setToolTip("Drag the markers to set the range shown")
         # At a fractional display scale the widget can be a pixel wider
         # than the figure's bitmap; the gap shows the widget's palette,
@@ -143,7 +143,7 @@ class LevelsHistogram(QWidget):
         self.figure.set_facecolor(palette["window"])
         ax.set_facecolor(palette["window"])
         if self._counts is None:
-            ax.axhline(0.02, color=palette["border_light"], linewidth=1)
+            ax.axhline(0.02, color=palette["outline"], linewidth=1)
             ax.text(
                 0.5, 0.55, "No image", ha="center", va="center",
                 color=palette["text_secondary"], fontsize=8, transform=ax.transAxes,
@@ -162,14 +162,15 @@ class LevelsHistogram(QWidget):
         span = right - left or 1.0
         left, right = left - 0.02 * span, right + 0.02 * span
         ax.set_xlim(left, right)
-        ax.set_ylim(0, top * 1.1)
+        ax.set_ylim(0, top * 1.02)
 
-        width = (edges[1] - edges[0]) * 0.8
+        # Bars a pixel apart: the gap is a fixed share of a bin's width
+        width = (edges[1] - edges[0]) * 0.86
         self._bars = ax.bar(centres, heights, width=width, linewidth=0)
         self._centres = centres
-        ax.axhline(0, color=palette["border_light"], linewidth=1)
+        ax.axhline(0, color=palette["outline"], linewidth=1)
         self._markers = tuple(
-            ax.axvline(value, color=palette["highlight"], linewidth=1.4, zorder=3)
+            ax.axvline(value, color=palette["highlight_knob"], linewidth=2, zorder=3)
             for value in (self._vmin, self._vmax)
         )
         self._place_markers()
@@ -192,7 +193,7 @@ class LevelsHistogram(QWidget):
             marker.set_xdata([value, value])
         inside = (self._centres >= self._vmin) & (self._centres <= self._vmax)
         for bar, within in zip(self._bars, inside):
-            bar.set_color(palette["highlight_soft"] if within else palette["border_light"])
+            bar.set_color(palette["highlight_deep"] if within else palette["surface_elevated"])
         self.canvas.draw_idle()
 
     # ------------------------------------------------------------- dragging

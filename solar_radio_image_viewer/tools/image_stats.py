@@ -72,6 +72,8 @@ class ImageStatsMixin:
         self.image_info_label.setText(
             f"Image: {h}x{w} px - RMS box: {rms_box_percent:.1f}%"
         )
+        if hasattr(self, "show_image_summary"):
+            self.show_image_summary((h, w, rms_box_percent, dmax, drms, positive_DR))
 
         return dmax, dmin, drms, dmean_rms_box, positive_DR, negative_DR
 

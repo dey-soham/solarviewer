@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon
+from PyQt5.QtWidgets import QGraphicsOpacityEffect
 from ..ui.conversion_control import ConversionControl
 from ..ui.cursor_readout import CursorReadout
 from ..ui.empty_canvas import EmptyCanvas
@@ -39,7 +40,7 @@ from ..ui.searchable_combobox import ColormapSelector
 from ..ui.icons import get_resource_path, launcher_icon, themed_icon
 from ..ui.stokes_picker import StokesPicker
 from ..ui.styles import set_tone
-from ..ui.widgets import kicker, kicker_row, link_button, segmented, toggle_row, vrule
+from ..ui.widgets import kicker, kicker_row, link_button, rule, segmented, toggle_row, vrule
 
 logger = logging.getLogger(__name__)
 
@@ -98,13 +99,23 @@ def _scroll(widget):
     return area
 
 
+def _clock(time):
+    """``time`` ("2023-03-10T13:24:07.3") as a clock reading ("13:24")."""
+    text = str(time)
+    if "T" in text:
+        text = text.split("T", 1)[1]
+    elif " " in text:
+        text = text.split(" ", 1)[1]
+    return text[:5] if len(text) >= 5 and text[2] == ":" else str(time)
+
+
 def _block(title, aside=None):
     """A block of the inspector: a kicker over a layout to fill. Returns
     (widget, layout, aside label or None)."""
     widget = QWidget()
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(8)
+    layout.setSpacing(10)
     if aside is None:
         layout.addWidget(kicker(title))
         label = None
@@ -117,8 +128,8 @@ def _block(title, aside=None):
 def _settings_button(tip, slot):
     button = QPushButton()
     button.setObjectName("IconOnlyNBGButton")
-    button.setIcon(QIcon(themed_icon("settings.png")))
-    button.setIconSize(QSize(14, 14))
+    button.setIcon(QIcon(themed_icon("gear_off.svg")))
+    button.setIconSize(QSize(15, 15))
     button.setToolTip(tip)
     button.clicked.connect(slot)
     return button
@@ -281,16 +292,18 @@ class PanelsMixin:
 
         self.cursor_readout = CursorReadout()
         layout.addWidget(self.cursor_readout)
+        self.show_image_context(None)
         return inspector
 
     def _inspector_header(self):
         """One row at the top of the inspector: what the image is in (its
         unit, its coordinate frame; the other segment converts it), and
-        the two windows about its observation time."""
+        the two windows about its observation time. Faded while there is
+        no image."""
         header = QFrame()
         header.setObjectName("InspectorHeader")
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(14, 6, 10, 6)
+        layout.setContentsMargins(14, 0, 10, 0)
         layout.setSpacing(8)
 
         # The loaders set the action these offer ("TB" / "FLUX", "HPC" /
@@ -298,7 +311,10 @@ class PanelsMixin:
         self.tb_btn = ConversionControl(
             ("Jy/beam", "K"),
             {"TB": 0, "FLUX": 1},
-            "The image's unit: flux density, or brightness temperature (needs the beam)",
+            "Convert the image between flux density (Jy/beam) and brightness "
+            "temperature (K). Needs beam information.",
+            "Brightness temperature needs the image in Jy/beam or K, with "
+            "beam information.",
         )
         self.tb_btn.setEnabled(False)  # enabled when the units are Jy/beam or K
         self.tb_btn.clicked.connect(self._toggle_tb_mode)
@@ -307,7 +323,9 @@ class PanelsMixin:
         self.hpc_btn = ConversionControl(
             ("RA/Dec", "Solar XY"),
             {"HPC": 0, "RA/DEC": 1},
-            "The image's coordinate frame: equatorial, or helioprojective (solar X and Y)",
+            "Reproject the image between equatorial (RA/Dec) and helioprojective "
+            "(Solar X/Y) coordinates.",
+            "Reprojection needs an image with world coordinates.",
         )
         self.hpc_btn.setEnabled(False)  # enabled with an image (loading)
         self.hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
@@ -315,43 +333,125 @@ class PanelsMixin:
         layout.addStretch()
 
         # The observation's context, in windows of their own
+        launchers = QHBoxLayout()
+        launchers.setSpacing(4)
         self.noaa_events_btn = QPushButton()
-        self.noaa_events_btn.setObjectName("IconOnlyNBGButton")
+        self.noaa_events_btn.setObjectName("LauncherButton")
         self.noaa_events_btn.setIcon(launcher_icon("activity.svg"))
-        self.noaa_events_btn.setIconSize(QSize(16, 16))
+        self.noaa_events_btn.setIconSize(QSize(15, 15))
         self.noaa_events_btn.setAccessibleName("Solar activity")
         self.noaa_events_btn.setEnabled(False)  # until an image is loaded
         self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
         self.helioviewer_btn = QPushButton()
-        self.helioviewer_btn.setObjectName("IconOnlyNBGButton")
+        self.helioviewer_btn.setObjectName("LauncherButton")
         self.helioviewer_btn.setIcon(launcher_icon("sun.svg"))
-        self.helioviewer_btn.setIconSize(QSize(16, 16))
+        self.helioviewer_btn.setIconSize(QSize(15, 15))
         self.helioviewer_btn.setAccessibleName("Helioviewer")
         self.helioviewer_btn.setEnabled(False)
         self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
-        self.show_observation_time(None)
-        layout.addWidget(self.noaa_events_btn)
-        layout.addWidget(self.helioviewer_btn)
+        launchers.addWidget(self.noaa_events_btn)
+        launchers.addWidget(self.helioviewer_btn)
+        layout.addLayout(launchers)
+
+        self._header_opacity = QGraphicsOpacityEffect(header)
+        header.setGraphicsEffect(self._header_opacity)
         return header
 
-    def show_observation_time(self, time):
-        """The launchers say which observation time they open."""
-        when = f" at {time}" if time else ""
+    def show_image_context(self, time):
+        """What the inspector says about the image shown: the header lit
+        (faded with none), the launchers' tooltips naming the observation
+        time, the range's unit, the readout's frame name, Reload offered."""
+        if not hasattr(self, "cursor_readout"):
+            return  # (the inspector is still being built)
+        loaded = self.current_image_data is not None
+        self._header_opacity.setOpacity(1.0 if loaded else 0.45)
+        if not loaded:
+            self.tb_btn.clear()
+            self.hpc_btn.clear()
+        when = f" around {_clock(time)} UT" if time else ""
         self.noaa_events_btn.setToolTip(
-            f"Solar activity{when}: events, active regions, conditions, CMEs"
+            f"Solar activity{when} — NOAA events, active regions, CMEs"
         )
-        self.helioviewer_btn.setToolTip(f"Helioviewer images{when}")
+        self.helioviewer_btn.setToolTip(f"SDO/SOHO images{when}")
+        self.range_unit_label.setText(
+            (getattr(self, "_current_bunit", "") or "") if loaded else ""
+        )
+        self.cursor_readout.set_frame_name(self.hpc_btn.current_label() if loaded else "")
+        self.plot_button.setEnabled(loaded)
+        if not loaded:
+            self.show_image_summary(None)
+
+    def show_observation_time(self, time):
+        self.show_image_context(time)
 
     def _display_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(14, 16, 14, 16)
-        layout.setSpacing(18)
+        layout.setSpacing(20)
         layout.addWidget(self._overlays_block())
         layout.addWidget(self._intensity_block())
         layout.addWidget(self._loading_block())
+        layout.addWidget(self._image_block())
         layout.addStretch()
         return page
+
+    def _image_block(self):
+        """A summary of the image after Loading: its size and RMS box,
+        three of its statistics, and the way to the rest."""
+        block = QWidget()
+        layout = QVBoxLayout(block)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(rule())
+        layout.addSpacing(6)
+        row, self.image_summary_meta = kicker_row("Image", "")
+        layout.addWidget(row)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(2)
+        self.image_summary_values = {}
+        for column, name in enumerate(("Max", "RMS", "Pos. DR")):
+            label = QLabel(name)
+            label.setObjectName("Meta")
+            value = QLabel("—")
+            value.setObjectName("Mono")
+            grid.addWidget(label, 0, column)
+            grid.addWidget(value, 1, column)
+            self.image_summary_values[name] = value
+        layout.addLayout(grid)
+        self.image_summary_more = QLabel()
+        self.image_summary_more.setObjectName("Meta")
+        self.image_summary_more.setTextFormat(Qt.RichText)
+        self.image_summary_more.linkActivated.connect(
+            lambda _link: self.inspector_tabs.setCurrentIndex(1)
+        )
+        self._set_summary_link()
+        layout.addWidget(self.image_summary_more)
+        return block
+
+    def _set_summary_link(self):
+        from ..ui.styles import theme_manager
+
+        self.image_summary_more.setText(
+            "Full statistics in the "
+            f'<a href="statistics" style="color:{theme_manager.palette["link"]};'
+            'text-decoration:none">Statistics</a> tab'
+        )
+
+    def show_image_summary(self, summary):
+        """``summary``: (height, width, rms box %, max, rms, positive DR),
+        or None with no image."""
+        if summary is None:
+            self.image_summary_meta.setText("")
+            for value in self.image_summary_values.values():
+                value.setText("—")
+            return
+        h, w, box_percent, dmax, drms, pos_dr = summary
+        self.image_summary_meta.setText(f"{w}×{h} px · RMS box {box_percent:.1f}%")
+        for name, value in (("Max", dmax), ("RMS", drms), ("Pos. DR", pos_dr)):
+            self.image_summary_values[name].setText(f"{value:.4g}")
 
     def _overlays_block(self):
         block, layout, _ = _block("Overlays")
@@ -388,24 +488,21 @@ class PanelsMixin:
             "Contour Settings", self.show_contour_settings
         )
 
-        grid.addWidget(
+        self._overlay_rows = [
             toggle_row(self.show_beam_checkbox, self.beam_settings_button, self.show_beam_label),
-            0, 0,
-        )
-        grid.addWidget(toggle_row(self.show_grid_checkbox, self.grid_settings_button), 0, 1)
-        grid.addWidget(
-            toggle_row(self.show_solar_disk_checkbox, self.solar_disk_center_button), 1, 0
-        )
-        grid.addWidget(
-            toggle_row(self.show_contours_checkbox, self.contour_settings_button), 1, 1
-        )
+            toggle_row(self.show_grid_checkbox, self.grid_settings_button),
+            toggle_row(self.show_solar_disk_checkbox, self.solar_disk_center_button),
+            toggle_row(self.show_contours_checkbox, self.contour_settings_button),
+        ]
+        for index, row in enumerate(self._overlay_rows):
+            grid.addWidget(row, index // 2, index % 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
         return block
 
     def _intensity_block(self):
-        block, layout, self.range_preset_label = _block("Intensity range", "")
+        block, layout, self.range_unit_label = _block("Intensity range", "")
 
         # The histogram, the range draggable on it
         self.levels = LevelsHistogram()
@@ -510,18 +607,27 @@ class PanelsMixin:
         """Mark the preset ``mode`` (an apply_auto_range mode, or None) as
         the one the range came from."""
         self._preset_group.setExclusive(False)
-        for (text, preset_mode, _tip), button in zip(RANGE_PRESETS, self._preset_group.buttons()):
+        for (_text, preset_mode, _tip), button in zip(RANGE_PRESETS, self._preset_group.buttons()):
             button.setChecked(preset_mode == mode)
-            if preset_mode == mode:
-                self.range_preset_label.setText(text)
         self._preset_group.setExclusive(True)
-        if mode is None:
-            self.range_preset_label.setText("")
 
     def _loading_block(self):
         block, layout, _ = _block("Loading")
-        row = QHBoxLayout()
-        row.setSpacing(8)
+        layout.setSpacing(8)
+
+        def link_row(left, link):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.addWidget(left)
+            row.addStretch()
+            row.addWidget(link)
+            layout.addLayout(row)
+
+        # Fast load, and where the noise is measured
+        fast = QWidget()
+        fast_layout = QHBoxLayout(fast)
+        fast_layout.setContentsMargins(0, 0, 0, 0)
+        fast_layout.setSpacing(8)
         self.downsample_toggle = QCheckBox("Fast load")
         self.downsample_toggle.setObjectName("Switch")
         self.downsample_toggle.setToolTip(
@@ -542,37 +648,32 @@ class PanelsMixin:
                 self.reset_view()
 
         self.downsample_toggle.stateChanged.connect(update_fast_load_status)
-        row.addWidget(self.downsample_toggle)
-        row.addWidget(self.downsample_status)
-        row.addStretch()
-        # Display changes apply as they are made; this reads the image
-        # again, which is rarely needed
-        self.plot_button = link_button("Reload image", self.on_visualization_changed)
-        self.plot_button.setToolTip("Read the image again from disk")
-        row.addWidget(self.plot_button)
-
-        rms_tip = (
+        fast_layout.addWidget(self.downsample_toggle)
+        fast_layout.addWidget(self.downsample_status)
+        self.rms_settings_btn = link_button("RMS box…", self.show_rms_box_dialog)
+        self.rms_settings_btn.setToolTip(
             "RMS box: where the noise (RMS) is measured, by default a band "
             "along the bottom of the image.\nThe RMS sets the threshold of the "
             "derived Stokes products, the image statistics (RMS, dynamic range) "
             "and contour levels in σ."
         )
-        self.rms_settings_btn = link_button("RMS box…", self.show_rms_box_dialog)
-        self.rms_settings_btn.setToolTip(rms_tip)
         self.rms_settings_btn.setAccessibleName("RMS box settings")
-        row.addWidget(self.rms_settings_btn)
-        layout.addLayout(row)
+        link_row(fast, self.rms_settings_btn)
 
-        style_row = QHBoxLayout()
-        style_row.setSpacing(8)
+        # The plot's look
         style_hint = QLabel("Title, labels, fonts, colours, margins")
         style_hint.setObjectName("Hint")
-        style_row.addWidget(style_hint)
-        style_row.addStretch()
         self.plot_style_btn = link_button("Plot style…", self.show_plot_customization_dialog)
         self.plot_style_btn.setToolTip("Customize Plot Appearance")
-        style_row.addWidget(self.plot_style_btn)
-        layout.addLayout(style_row)
+        link_row(style_hint, self.plot_style_btn)
+
+        # Display changes apply as they are made; this reads the image
+        # again, which is rarely needed
+        reload_hint = QLabel("Re-read the file from disk")
+        reload_hint.setObjectName("Hint")
+        self.plot_button = link_button("Reload image", self.on_visualization_changed)
+        self.plot_button.setToolTip("Read the image again from disk")
+        link_row(reload_hint, self.plot_button)
         return block
 
     def _statistics_page(self):

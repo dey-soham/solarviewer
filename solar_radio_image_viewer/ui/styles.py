@@ -98,6 +98,7 @@ TOKENS = {
 #   IconOnlyNBGButton  a square icon button with no background
 #   NavButton       a flat text/glyph button in a toolbar row
 #   Switch          a QCheckBox drawn as an on/off switch
+#   SwitchLabel     a QLabel naming a switch with no text of its own
 #   Kicker          a QLabel heading a block: small capitals in the accent
 #   SectionTitle    a QLabel heading a section
 #   DialogTitle     a QLabel titling a dialog
@@ -127,6 +128,8 @@ TOKENS = {
 #   Console         a QPlainTextEdit of log text, monospace
 #   ImageWell       a QFrame or QScrollArea showing a picture on black
 #   Segmented       a QWidget holding a row of checkable buttons, one on
+#   HeaderSegmented the same on a filled track with no border (the header)
+#   LauncherButton  a 28px bordered icon button opening a window
 #   SectionHeader   a QPushButton heading a collapsible section
 #   KeyValue        a QTableWidget of label/value rows, no frame or header
 #   DocumentTabs    the QTabBar of the main window's image tabs
@@ -140,6 +143,7 @@ ROLES = (
     "IconOnlyNBGButton",
     "NavButton",
     "Switch",
+    "SwitchLabel",
     "Kicker",
     "SectionTitle",
     "DialogTitle",
@@ -170,6 +174,8 @@ ROLES = (
     "Console",
     "ImageWell",
     "Segmented",
+    "HeaderSegmented",
+    "LauncherButton",
     "SectionHeader",
     "KeyValue",
     "DocumentTabs",
@@ -200,6 +206,7 @@ DARK_PALETTE = {
     "row_rule": "rgba(233, 233, 237, 0.08)",
     "text": "#e9e9ed",
     "text_strong": "#cfd3e5",  # neutral-300: menus, values
+    "text_dim": "#b2b6ca",  # neutral-400: a switch's label while off
     "text_secondary": "#9397ab",  # neutral-500: labels, hints
     "input_text": "#e9e9ed",
     "disabled": "#595d6c",  # neutral-700
@@ -208,6 +215,9 @@ DARK_PALETTE = {
     "highlight_soft": "#423a6a",  # accent-800: fills behind the accent
     "highlight_deep": "#5d5294",  # accent-700: a switch's track when on
     "highlight_knob": "#e7e5fe",  # accent-200: a switch's knob when on
+    "text_bright": "#f5f4ff",  # accent-100: the chosen segment's text
+    "link": "#d2cefd",  # accent-300: link buttons
+    "outline": "#595d6c",  # neutral-700: a bordered icon button's edge
     "accent_hover": "rgba(145, 132, 217, 0.12)",
     "accent_pressed": "rgba(145, 132, 217, 0.22)",
     "highlight_text": "#161826",  # text on the accent
@@ -215,9 +225,9 @@ DARK_PALETTE = {
     "warning": "#fbbf24",
     "error": "#f87171",
     "secondary": "#a7a1db",
-    "switch_track": "#3f424d",  # neutral-800
-    "switch_track_hover": "#595d6c",  # neutral-700
-    "switch_knob": "#9397ab",  # neutral-500
+    "switch_track": "#292b31",  # neutral-900
+    "switch_track_hover": "#3f424d",  # neutral-800
+    "switch_knob": "#595d6c",  # neutral-700
     "plot_bg": "#161826",
     "plot_text": "#e9e9ed",
     "plot_grid": "#3f424d",
@@ -248,6 +258,7 @@ LIGHT_PALETTE = {
     "row_rule": "rgba(31, 35, 40, 0.08)",
     "text": "#1f2328",
     "text_strong": "#3f424d",
+    "text_dim": "#656d76",
     "text_secondary": "#656d76",
     "input_text": "#1f2328",
     "disabled": "#a0a4ad",
@@ -256,6 +267,9 @@ LIGHT_PALETTE = {
     "highlight_soft": "#e7e5fe",
     "highlight_deep": "#796cbf",
     "highlight_knob": "#ffffff",
+    "text_bright": "#1f2328",
+    "link": "#5d5294",
+    "outline": "#b2b6ca",
     "accent_hover": "rgba(93, 82, 148, 0.10)",
     "accent_pressed": "rgba(93, 82, 148, 0.20)",
     "highlight_text": "#ffffff",
@@ -468,6 +482,8 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {p['surface']};
         border: none;
         border-bottom: 1px solid {p['divider']};
+        min-height: 40px;
+        max-height: 40px;
     }}
     QFrame#Pinned {{
         background-color: {p['surface']};
@@ -533,8 +549,55 @@ def get_stylesheet(palette, is_dark=True):
     QWidget#Segmented QPushButton:checked, QFrame#Segmented QPushButton:checked,
     QWidget#Segmented QToolButton:checked, QFrame#Segmented QToolButton:checked {{
         background-color: transparent;
-        color: {p['highlight']};
+        color: {p['text_bright']};
         border-color: {p['highlight']};
+    }}
+    QFrame#HeaderSegmented {{
+        background-color: {p['surface_elevated']};
+        border: none;
+        border-radius: {RADIUS}px;
+        min-height: 26px;
+        max-height: 26px;
+    }}
+    QFrame#HeaderSegmented QPushButton {{
+        background-color: transparent;
+        color: {p['text_secondary']};
+        border: 1px solid transparent;
+        border-radius: {RADIUS}px;
+        padding: 0px 9px;
+        min-height: 22px;
+        max-height: 22px;
+        font-size: {FONT_META}pt;
+        font-weight: 500;
+    }}
+    QFrame#HeaderSegmented QPushButton:hover {{
+        color: {p['text']};
+        background-color: {p['hover']};
+    }}
+    QFrame#HeaderSegmented QPushButton:checked {{
+        background-color: transparent;
+        color: {p['text_bright']};
+        border-color: {p['highlight']};
+    }}
+    QFrame#HeaderSegmented QPushButton:disabled {{
+        color: {p['disabled']};
+        background-color: transparent;
+    }}
+    QPushButton#LauncherButton {{
+        background-color: transparent;
+        border: 1px solid {p['outline']};
+        border-radius: {RADIUS}px;
+        padding: 0px;
+        min-width: 26px;
+        max-width: 26px;
+        min-height: 26px;
+        max-height: 26px;
+    }}
+    QPushButton#LauncherButton:hover {{
+        background-color: {p['hover']};
+    }}
+    QPushButton#LauncherButton:disabled {{
+        border-color: {p['border']};
     }}
     QWidget#Segmented QPushButton:disabled, QFrame#Segmented QPushButton:disabled,
     QWidget#Segmented QToolButton:disabled, QFrame#Segmented QToolButton:disabled {{
@@ -644,7 +707,7 @@ def get_stylesheet(palette, is_dark=True):
     }}
     QPushButton#LinkButton {{
         background-color: transparent;
-        color: {p['highlight']};
+        color: {p['link']};
         border: 1px solid transparent;
         padding: 2px {SPACE_XS}px;
         min-height: 0px;
@@ -904,6 +967,19 @@ def get_stylesheet(palette, is_dark=True):
         spacing: {SPACE_S}px;
         font-size: {FONT_SMALL}pt;
         min-height: 18px;
+        color: {p['text_dim']};
+    }}
+    QCheckBox#Switch:checked {{
+        color: {p['text']};
+    }}
+    QLabel#SwitchLabel {{
+        color: {p['text_dim']};
+    }}
+    QLabel#SwitchLabel[on="true"] {{
+        color: {p['text']};
+    }}
+    QFrame#Surface[on="true"] {{
+        border: 1px solid {p['border_light']};
     }}
     QCheckBox#Switch::indicator {{
         width: 24px;
