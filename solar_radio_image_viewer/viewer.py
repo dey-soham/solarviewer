@@ -362,8 +362,8 @@ class SolarRadioImageTab(
         title, labels and colorbar), the rest to the sidebar, within reason."""
         width, height = self.width(), self.height()
         canvas_height = max(300, height - 60)  # the toolbar and margins
-        image_width = int(canvas_height * 1.25)
-        sidebar = max(self._sidebar_min, min(620, width - image_width))
+        image_width = int(canvas_height * 1.2)
+        sidebar = max(self._sidebar_min, min(640, width - image_width))
         return [max(400, width - sidebar), sidebar]
 
     def resizeEvent(self, event):

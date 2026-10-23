@@ -257,9 +257,9 @@ class TutorialDialog(QDialog):
             self._create_step(
                 2,
                 "Adjust Display",
-                "Use the display bar above the image to choose the colormap, "
-                "the stretch and the min/max values. Use F5 (Auto), F6 (1-99%), "
-                "or F7 (Med±3σ) for quick presets.",
+                "Use the Levels section of the sidebar: drag the markers on the "
+                "histogram or type the range, and choose the colormap and stretch. "
+                "F5 (Auto), F6 (1-99%) and F7 (Med±3σ) set the range by rule.",
             )
         )
 
@@ -346,6 +346,8 @@ class TutorialDialog(QDialog):
                 "The Image section of the sidebar",
                 [
                     "The path of the image shown, and a button to open another",
+                    "The arrows step through the files in the same folder; the gear "
+                    "filters them and the list shows them all",
                     "Stokes: select I, Q, U, or V parameter",
                     "Threshold: masking threshold for Q, U, V display, in σ of the RMS box",
                     "Fast: a quick preview of large images at reduced resolution",
@@ -366,8 +368,8 @@ class TutorialDialog(QDialog):
         layout.setSpacing(15)
 
         intro = QLabel(
-            "Configure how your images are displayed with the display bar above the "
-            "image and the Overlays section of the sidebar."
+            "Configure how your images are displayed with the Levels and Overlays "
+            "sections of the sidebar."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)

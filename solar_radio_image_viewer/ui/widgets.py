@@ -7,11 +7,13 @@ Pieces every dialog is built from, so they all read the same way.
   group box (no border), for grouping within an already framed area
 - ``FoldSection``: a titled block that folds when its title is clicked,
   and remembers whether it was open
+- ``ResponsiveRow``: widgets in as many columns as the width allows
 """
 
 from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtWidgets import (
     QDialogButtonBox,
+    QGridLayout,
     QLabel,
     QSizePolicy,
     QToolButton,
@@ -104,3 +106,36 @@ class FoldSection(QWidget):
         self.header.setArrowType(Qt.DownArrow if opened else Qt.RightArrow)
         if self._key:
             QSettings(*self.SETTINGS).setValue(self._key, opened)
+
+
+class ResponsiveRow(QWidget):
+    """``widgets`` side by side in as many columns as fit ``cell_width``
+    each, the rest wrapping to the next row: one row in a wide sidebar,
+    two or more in a narrow one."""
+
+    def __init__(self, widgets, cell_width, parent=None):
+        super().__init__(parent)
+        self._widgets = list(widgets)
+        self._cell_width = cell_width
+        self._columns = 0
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setHorizontalSpacing(12)
+        self._grid.setVerticalSpacing(6)
+        self._place(len(self._widgets))
+
+    def _place(self, columns):
+        columns = max(1, min(columns, len(self._widgets)))
+        if columns == self._columns:
+            return
+        self._columns = columns
+        for widget in self._widgets:
+            self._grid.removeWidget(widget)
+        for index, widget in enumerate(self._widgets):
+            self._grid.addWidget(widget, index // columns, index % columns, Qt.AlignTop)
+        for column in range(len(self._widgets)):
+            self._grid.setColumnStretch(column, 1 if column < columns else 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place(max(1, self.width() // self._cell_width))

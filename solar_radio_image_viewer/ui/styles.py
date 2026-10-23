@@ -94,6 +94,7 @@ TOKENS = {
 #   NavButton       a flat text/glyph button in a toolbar row
 #   Switch          a QCheckBox drawn as an on/off switch
 #   SectionTitle    a QLabel heading a section
+#   Subheading      a QLabel heading a block inside a section
 #   DialogTitle     a QLabel titling a dialog
 #   SecondaryText   a QLabel hint in muted text (alias: Hint)
 #   StatusLabel     a QLabel framed as a status line
@@ -122,6 +123,7 @@ ROLES = (
     "NavButton",
     "Switch",
     "SectionTitle",
+    "Subheading",
     "DialogTitle",
     "SecondaryText",
     "Hint",
@@ -277,6 +279,9 @@ def get_stylesheet(palette, is_dark=True):
     }}
     QLabel#SectionTitle {{
         font-size: {FONT_SECTION}pt;
+        font-weight: 600;
+    }}
+    QLabel#Subheading {{
         font-weight: 600;
     }}
     QLabel#DialogTitle {{
