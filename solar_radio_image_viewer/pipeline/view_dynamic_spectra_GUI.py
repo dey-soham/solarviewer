@@ -207,7 +207,7 @@ class MainWindow(
         self._bandpass_scope = "page"  # median over "page" or the whole "file"
         self._bandpass_method = "divide"  # by the median, or "subtract" it
         self._rfi_enabled = False  # automatic RFI flags applied
-        # What it does besides the sensitivity (the ⚙ dialog): rfi_flagging.RfiSettings
+        # What it does besides the sensitivity (the Settings dialog): rfi_flagging.RfiSettings
         # fields, and how flags show ("tint": over the data, else blanked)
         self._rfi_options = {
             "convrfi": True, "edges": True, "sumthreshold": False, "noise": True,
@@ -649,17 +649,17 @@ class MainWindow(
         toolsLayout.setContentsMargins(0, 0, 0, 0)
         toolsLayout.setSpacing(10)
 
-        self.panBtn = QPushButton("✋ Pan")
+        self.panBtn = QPushButton("Pan")
         self.panBtn.setToolTip("Pan/Zoom: drag to pan, scroll to zoom")
-        self.roiButton = QPushButton("✂️ Mask")
+        self.roiButton = QPushButton("Mask")
         self.roiButton.setToolTip("Mask: drag to mask a region (Delete removes)")
-        self.crossBtn = QPushButton("➕ Profile")
+        self.crossBtn = QPushButton("Profile")
         self.crossBtn.setToolTip("Profile: click for the light curve or spectrum")
-        self.driftBtn = QPushButton("📐 Drift")
+        self.driftBtn = QPushButton("Drift")
         self.driftBtn.setToolTip("Drift rate: click a burst's start, then its end")
-        self.keepBtn = QPushButton("🛡️ Keep")
+        self.keepBtn = QPushButton("Keep")
         self.keepBtn.setToolTip("Keep: drag to protect from auto-flagging (Delete removes)")
-        self.imageAtTimeBtn = QPushButton("🖼️ Image")
+        self.imageAtTimeBtn = QPushButton("Image")
         self.imageAtTimeBtn.setToolTip("Image: click to see SolarViewer's image at that time")
         # Only when launched from SolarViewer (it listens for the times)
         linked = self.link.connected
@@ -703,7 +703,6 @@ class MainWindow(
         cleanLayout.setHorizontalSpacing(12)
         cleanLayout.setVerticalSpacing(8)
         cleanLayout.setColumnStretch(1, 1)
-        muted = lambda p: f"color: {p.get('text_secondary', '#a0a0b0')}; font-size: 9pt;"
 
         def label(text):
             widget = QLabel(text)
@@ -768,13 +767,13 @@ class MainWindow(
         """)
         self.extendMaskBtn.clicked.connect(self.onExtendDefault)
         self._update_extend_button()
-        self.clearMaskBtn = QPushButton("🗑️ Clear")
+        self.clearMaskBtn = QPushButton("Clear")
         self.clearMaskBtn.setToolTip("Remove all masks and Keep regions (Undo restores)")
         self.clearMaskBtn.clicked.connect(self.onClearMasks)
         cleanLayout.addWidget(label("Masks"), 0, 0)
         cleanLayout.addLayout(pair(self.extendMaskBtn, self.clearMaskBtn), 0, 1)
         self.maskSummary = QLabel()
-        self._themed(self.maskSummary, muted)
+        self.maskSummary.setObjectName("Hint")
         cleanLayout.addWidget(self.maskSummary, 1, 1)
         gap(2)
 
@@ -783,7 +782,7 @@ class MainWindow(
         self.rfiBtn.setCheckable(True)
         self.rfiBtn.setToolTip("Flag RFI automatically (spikes, narrow lines, edges)")
         self.rfiBtn.toggled.connect(self.onRfiToggled)
-        self.rfiSettingsBtn = QPushButton("⚙ Settings")
+        self.rfiSettingsBtn = QPushButton("Settings")
         self.rfiSettingsBtn.setToolTip("Detectors, filling and display")
         self.rfiSettingsBtn.clicked.connect(self.openRfiSettings)
         self.rfiSlider = QSlider(Qt.Horizontal)
@@ -799,7 +798,7 @@ class MainWindow(
         for text, widget in (("gentle", None), (None, self.rfiSlider), ("strong", None)):
             if widget is None:
                 end = QLabel(text)
-                self._themed(end, muted)
+                end.setObjectName("Hint")
                 sensitivity.addWidget(end)
             else:
                 sensitivity.addWidget(widget, 1)
@@ -863,26 +862,6 @@ class MainWindow(
         ``choose(value)`` when one is clicked. (widget, {value: button})"""
         widget = QFrame()
         widget.setObjectName("Segmented")
-        self._themed(widget, lambda p: f"""
-            QFrame#Segmented {{
-                border: 1px solid {p.get("border", "#3a3a5a")};
-                border-radius: 8px;
-                background: transparent;
-            }}
-            QFrame#Segmented QPushButton {{
-                border: none;
-                border-radius: 6px;
-                padding: 5px 4px;
-                background: transparent;
-            }}
-            QFrame#Segmented QPushButton:hover {{
-                background: rgba(99, 102, 241, 0.15);
-            }}
-            QFrame#Segmented QPushButton:checked {{
-                background: {p["highlight"]};
-                color: #ffffff;
-            }}
-        """)
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(3, 3, 3, 3)
         layout.setSpacing(3)
@@ -901,30 +880,6 @@ class MainWindow(
 
     def _pager(self, palette):
         """« ‹ page/pages › » (Pages mode)."""
-        nav_btn_style = lambda p: f"""
-            QPushButton {{
-                background-color: transparent;
-                border: 1px solid rgba(120, 120, 150, 0.3);
-                border-radius: 6px;
-                padding: 2px;
-                font-size: 13pt;
-                font-weight: bold;
-                min-width: 32px;
-                max-width: 32px;
-                min-height: 28px;
-            }}
-            QPushButton:hover {{
-                background-color: rgba(99, 102, 241, 0.15);
-                border-color: {p["highlight"]};
-            }}
-            QPushButton:pressed {{
-                background-color: rgba(99, 102, 241, 0.25);
-            }}
-            QPushButton:disabled {{
-                border-color: transparent;
-                color: {p["disabled"]};
-            }}
-        """
         self.firstBtn = QPushButton("«")
         self.firstBtn.setToolTip("First Page")
         self.firstBtn.clicked.connect(self.onFirstPage)
@@ -938,20 +893,9 @@ class MainWindow(
         self.lastBtn.setToolTip("Last Page")
         self.lastBtn.clicked.connect(self.onLastPage)
         for button in (self.firstBtn, self.prevBtn, self.nextBtn, self.lastBtn):
-            self._themed(button, nav_btn_style)
+            button.setObjectName("NavButton")
         self.pageLabel = QLabel("1/1")
         self.pageLabel.setAlignment(Qt.AlignCenter)
-        self._themed(self.pageLabel, lambda p: f"""
-            QLabel {{
-                font-size: 10pt;
-                font-weight: 500;
-                min-width: 50px;
-                color: {p["text"]};
-            }}
-            QLabel:disabled {{
-                color: {p["disabled"]};
-            }}
-        """)
         layout = QHBoxLayout()
         layout.setSpacing(8)
         layout.setAlignment(Qt.AlignCenter)
@@ -1013,9 +957,7 @@ class MainWindow(
     # ---------------------------- Status Bar ------------------------------------
     def _createStatusBar(self):
         self.cursorInfoLabel = QLabel("")
-        self.cursorInfoLabel.setStyleSheet(
-            "font-family: monospace; font-weight: normal; font-size: 12px; margin-right: 12px;"
-        )
+        self.cursorInfoLabel.setObjectName("Mono")
         self.statusBar().addPermanentWidget(self.cursorInfoLabel)
 
     def _themed(self, widget, style):
@@ -1060,8 +1002,6 @@ class MainWindow(
         # Set hand cursor for all interactive elements programmatically
         self._setHandCursorRecursive(self)
 
-        # Update status message
-        self.statusBar().showMessage(f"Switched to {self.current_theme} theme", 3000)
 
     def _setHandCursorRecursive(self, widget):
         """Recursively set PointingHandCursor for all buttons and interactive widgets."""

@@ -38,11 +38,12 @@ from PyQt5.QtCore import (
     QRect,
     QVariantAnimation,
 )
-from PyQt5.QtGui import QPixmap, QImage, QColor, QKeySequence
+from PyQt5.QtGui import QPixmap, QImage, QColor, QKeySequence, QIcon
 from collections import OrderedDict
 from .helioviewer_data import ImageDownloader, fetch_all_instruments
 from .helioviewer_export import HelioviewerExportMixin
-from .ui.styles import set_hand_cursor
+from .ui.icons import themed_icon
+from .ui.styles import set_hand_cursor, set_tone
 
 # Global list to keep threads alive if window is closed while they are running
 # This prevents "QThread: Destroyed while thread is still running"
@@ -179,7 +180,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
     def __init__(self, parent=None, initial_start=None, initial_end=None):
         super().__init__(parent)
-        self.setWindowTitle("🌐 Helioviewer Browser")
+        self.setWindowTitle("Helioviewer Browser")
         fit_to_screen(self, 1600, 1000)
 
         # Data storage
@@ -301,50 +302,16 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         layout.addStretch()
 
-        # Load button
-        # Add load emoji
-        self.load_button = QPushButton("📥 Load")
+        self.load_button = QPushButton("Load")
+        self.load_button.setObjectName("PrimaryButton")
         self.load_button.clicked.connect(self.load_time_series)
-        self.load_button.setStyleSheet(
-            """
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #2196F3, stop:1 #1976D2);
-                color: white;
-                padding: 4px 12px;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #42A5F5, stop:1 #2196F3);
-            }
-        """
-        )
         layout.addWidget(self.load_button)
 
         # Cancel button (initially hidden)
-        self.cancel_button = QPushButton("❌ Cancel")
+        self.cancel_button = QPushButton("Cancel")
+        set_tone(self.cancel_button, "error")
         self.cancel_button.clicked.connect(self.cancel_loading)
         self.cancel_button.setVisible(False)
-        self.cancel_button.setStyleSheet(
-            """
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #f44336, stop:1 #d32f2f);
-                color: white;
-                padding: 4px 12px;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ef5350, stop:1 #f44336);
-            }
-        """
-        )
         layout.addWidget(self.cancel_button)
 
         parent_layout.addWidget(group)
@@ -355,57 +322,19 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        # Header with icon
-        '''header = QLabel("Select Instrument 🛰️")
-        header.setStyleSheet("padding: 5px;")
-        header.setAlignment(Qt.AlignCenter)
-        layout.addWidget(header)'''
-
-        # Load all instruments button
-        """refresh_btn = QPushButton("🔄 Refresh")
-        refresh_btn.setToolTip("Reload available instruments from Helioviewer API")
-        refresh_btn.clicked.connect(self.load_all_instruments)
-        layout.addWidget(refresh_btn)"""
-
         # Instrument tree - grouped by observatory
         self.instrument_tree = QTreeWidget()
-        self.instrument_tree.setHeaderLabels(["Instrument", "⏱️"])
+        self.instrument_tree.setHeaderLabels(["Instrument", "Cadence"])
         self.instrument_tree.setColumnCount(2)
         self.instrument_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.instrument_tree.header().setStretchLastSection(False)
-        self.instrument_tree.setColumnWidth(1, 45)  # Narrow cadence column
+        self.instrument_tree.setColumnWidth(1, self.fontMetrics().horizontalAdvance("Cadence") + 16)
         self.instrument_tree.header().setDefaultAlignment(Qt.AlignCenter)
         self.instrument_tree.setAlternatingRowColors(True)
         self.instrument_tree.setRootIsDecorated(True)
         self.instrument_tree.setAnimated(True)
         self.instrument_tree.setIndentation(20)
 
-        # Style the tree
-        self.instrument_tree.setStyleSheet(
-            """
-            QTreeWidget {
-                border: 1px solid #555;
-                border-radius: 4px;
-            }
-            QTreeWidget::item {
-                padding: 4px 2px;
-            }
-            QTreeWidget::item:selected {
-                background: #1976D2;
-                color: white;
-            }
-            QTreeWidget::branch:has-children:!has-siblings:closed,
-            QTreeWidget::branch:closed:has-children:has-siblings {
-                border-image: none;
-                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHBhdGggZD0iTTYgNGw0IDQtNCA0IiBzdHJva2U9IiM4ODgiIGZpbGw9Im5vbmUiLz48L3N2Zz4=);
-            }
-            QTreeWidget::branch:open:has-children:!has-siblings,
-            QTreeWidget::branch:open:has-children:has-siblings {
-                border-image: none;
-                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHBhdGggZD0iTTQgNmw0IDQgNC00IiBzdHJva2U9IiM4ODgiIGZpbGw9Im5vbmUiLz48L3N2Zz4=);
-            }
-        """
-        )
 
         # Load instruments
         self.load_all_instruments()
@@ -416,7 +345,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         # Image size control
         layout.addSpacing(10)
-        size_group = QGroupBox("📐 Image Size")
+        size_group = QGroupBox("Image Size")
         size_layout = QHBoxLayout(size_group)
         size_layout.setContentsMargins(8, 8, 8, 8)
         self.image_size_spin = QSpinBox()
@@ -429,7 +358,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         # Concurrent downloads control
         layout.addSpacing(10)
-        concurrent_group = QGroupBox("🚀 Download Speed")
+        concurrent_group = QGroupBox("Download Speed")
         concurrent_layout = QHBoxLayout(concurrent_group)
         concurrent_layout.setContentsMargins(8, 8, 8, 8)
         self.concurrent_spin = QSpinBox()
@@ -456,13 +385,13 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         # Observatory info with icons
         observatory_info = {
-            "SDO": ("🌟", "Solar Dynamics Observatory"),
-            "SOHO": ("☀️", "Solar and Heliospheric Observatory"),
+            "SDO": ("", "Solar Dynamics Observatory"),
+            "SOHO": ("", "Solar and Heliospheric Observatory"),
             "STEREO_A": ("🅰️", "STEREO Ahead"),
             "STEREO_B": ("🅱️", "STEREO Behind"),
-            "GOES-16": ("🛸", "GOES-16 Satellite"),
-            "GOES-17": ("🛸", "GOES-17 Satellite"),
-            "GOES-18": ("🛸", "GOES-18 Satellite"),
+            "GOES-16": ("", "GOES-16 Satellite"),
+            "GOES-17": ("", "GOES-17 Satellite"),
+            "GOES-18": ("", "GOES-18 Satellite"),
         }
 
         # Wavelength descriptions
@@ -493,7 +422,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         # Create tree items
         for observatory in sorted(obs_groups.keys()):
-            icon, full_name = observatory_info.get(observatory, ("🔭", observatory))
+            icon, full_name = observatory_info.get(observatory, ("", observatory))
 
             # Create observatory node
             obs_item = QTreeWidgetItem()
@@ -591,7 +520,6 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setStyleSheet("border: none; background: transparent;")
 
         # Container widget inside scroll area
         self.image_container = QWidget()
@@ -600,76 +528,34 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         # Placeholder
         placeholder = QLabel("Load a time series to display images")
-        placeholder.setStyleSheet("color: #888; padding: 50px;")
+        placeholder.setObjectName("Hint")
+        placeholder.setMargin(40)
         placeholder.setAlignment(Qt.AlignCenter)
         self.image_grid.addWidget(placeholder)
 
         scroll.setWidget(self.image_container)
         layout.addWidget(scroll, 0, 0)
 
-        # --- Floating Zoom Toolbar ---
-        from .ui.styles import theme_manager
-        is_dark = theme_manager.is_dark
-        bg_color = "rgba(40, 40, 40, 200)" if is_dark else "rgba(230, 230, 230, 200)"
-        text_color = "white" if is_dark else "black"
-        border_color = "rgba(255, 255, 255, 50)" if is_dark else "rgba(0, 0, 0, 50)"
-        hover_bg = "rgba(255, 255, 255, 40)" if is_dark else "rgba(0, 0, 0, 20)"
-
+        # Zoom buttons, floating over the bottom right of the image
         zoom_toolbar = ZoomOverlayFrame()
-        zoom_toolbar.setObjectName("zoomToolbar")
-        zoom_toolbar.setStyleSheet(f"""
-            #zoomToolbar {{
-                background-color: {bg_color};
-                border: 1px solid {border_color};
-                border-radius: 17px;
-            }}
-            QPushButton {{
-                background: transparent;
-                color: {text_color};
-                border: none;
-                padding: 0;
-                font-size: 14px;
-                border-radius: 14px;
-                text-align: center;
-            }}
-            QPushButton:hover {{
-                background-color: {hover_bg};
-            }}
-        """)
-        
+        zoom_toolbar.setObjectName("Card")
         toolbar_layout = QHBoxLayout(zoom_toolbar)
-        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setContentsMargins(4, 4, 4, 4)
         toolbar_layout.setSpacing(2)
-        toolbar_layout.setAlignment(Qt.AlignCenter)
-
-        btn_size = 28
-
-        # Zoom buttons with tooltips
-
-        z_in_btn = QPushButton("🔍+")
-        z_in_btn.setToolTip("Zoom In (+)")
-        z_in_btn.clicked.connect(self.zoom_in)
-        z_in_btn.setFixedSize(btn_size, btn_size)
-        toolbar_layout.addWidget(z_in_btn)
-
-        z_out_btn = QPushButton("🔍−")
-        z_out_btn.setToolTip("Zoom Out (-)")
-        z_out_btn.clicked.connect(self.zoom_out)
-        z_out_btn.setFixedSize(btn_size, btn_size)
-        toolbar_layout.addWidget(z_out_btn)
-
-        # Vertical separator
-        '''sep = QFrame()
-        sep.setFrameShape(QFrame.VLine)
-        sep_color = "rgba(255, 255, 255, 30)" if is_dark else "rgba(0, 0, 0, 30)"
-        sep.setStyleSheet(f"background-color: {sep_color}; width: 1px; margin: 6px 4px;")
-        toolbar_layout.addWidget(sep)'''
-
-        reset_z_btn = QPushButton("↺")
-        reset_z_btn.setToolTip("Reset Zoom (R)")
-        reset_z_btn.clicked.connect(self.reset_zoom)
-        reset_z_btn.setFixedSize(btn_size, btn_size)
-        toolbar_layout.addWidget(reset_z_btn)
+        self._zoom_buttons = []
+        for icon, tip, slot in (
+            ("zoom_in.png", "Zoom In (+)", self.zoom_in),
+            ("zoom_out.png", "Zoom Out (-)", self.zoom_out),
+            ("reset.png", "Reset Zoom (R)", self.reset_zoom),
+        ):
+            button = QPushButton()
+            button.setObjectName("IconOnlyNBGButton")
+            button.setIcon(QIcon(themed_icon(icon)))
+            button.setIconSize(QSize(18, 18))
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            toolbar_layout.addWidget(button)
+            self._zoom_buttons.append((button, icon))
 
         # Container for alignment (Small wrapper to provide 20px floating offset)
         toolbar_wrapper = QWidget()
@@ -762,40 +648,39 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.diff_combo.currentIndexChanged.connect(self.on_diff_mode_changed)
         self.diff_combo.setEnabled(False)
         self.diff_label.setEnabled(False)
-        self.diff_combo.setFixedWidth(100)
         layout.addWidget(self.diff_combo)
         
         # Crop tool
-        self.crop_btn = QPushButton("✂️ Crop")
+        self.crop_btn = QPushButton("Crop")
         self.crop_btn.setToolTip("Select a region to crop all frames")
         self.crop_btn.clicked.connect(self.toggle_crop_mode)
         self.crop_btn.setEnabled(False)
         layout.addWidget(self.crop_btn)
 
-        self.confirm_crop_btn = QPushButton("✅ Confirm")
+        self.confirm_crop_btn = QPushButton("Confirm")
         self.confirm_crop_btn.clicked.connect(self.confirm_crop)
         self.confirm_crop_btn.setVisible(False)
         layout.addWidget(self.confirm_crop_btn)
 
-        self.cancel_crop_btn = QPushButton("❌ Cancel")
+        self.cancel_crop_btn = QPushButton("Cancel")
         self.cancel_crop_btn.clicked.connect(self.cancel_crop)
         self.cancel_crop_btn.setVisible(False)
         layout.addWidget(self.cancel_crop_btn)
 
         # Save current frame
-        save_frame_btn = QPushButton("💾 Save Frame")
+        save_frame_btn = QPushButton("Save Frame")
         save_frame_btn.setToolTip("Save Current Frame (Ctrl+S)")
         save_frame_btn.clicked.connect(self.save_current_frame)
         layout.addWidget(save_frame_btn)
 
        # Export animation
-        export_btn = QPushButton("🎬 Export Animation")
+        export_btn = QPushButton("Export Animation")
         export_btn.setToolTip("Export Animation (Ctrl+E)")
         export_btn.clicked.connect(self.export_animation)
         layout.addWidget(export_btn)
 
         # Batch download
-        batch_btn = QPushButton("⬇️ Batch Download")
+        batch_btn = QPushButton("Batch Download")
         batch_btn.clicked.connect(self.batch_download)
         layout.addWidget(batch_btn)
 
@@ -1085,7 +970,8 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         selected = self.get_selected_instruments()
         if not selected:
             placeholder = QLabel("Please select an instrument from the list")
-            placeholder.setStyleSheet("color: #888; padding: 50px;")
+            placeholder.setObjectName("Hint")
+            placeholder.setMargin(40)
             placeholder.setAlignment(Qt.AlignCenter)
             self.image_grid.addWidget(placeholder)
             return
@@ -1095,13 +981,12 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         # Title with timestamp and instrument
         title = QLabel(f"<h2>{nickname} ({observatory})</h2>")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: #2196F3; padding: 1px;")
+        title.setObjectName("SectionTitle")
         self.image_grid.addWidget(title)
 
         time_label = QLabel(f"<h3>{timestamp.toString('yyyy-MM-dd HH:mm:ss')} UTC</h3>")
         time_label.setAlignment(Qt.AlignCenter)
-        #time_label.setStyleSheet("color: #666; padding: 5px;")
-        time_label.setStyleSheet("color: #666;")
+        time_label.setObjectName("Hint")
         self.image_grid.addWidget(time_label)
 
         # Fullscreen image
@@ -1142,7 +1027,8 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
                 img_label.setText("Loading...")
             else:
                 img_label.setText("No data loaded for this instrument")
-            img_label.setStyleSheet("color: #666; padding: 100px;")
+            img_label.setObjectName("Hint")
+            img_label.setMargin(60)
 
         # Add with stretch to center vertically
         self.image_grid.addWidget(img_label, 1)
@@ -1179,46 +1065,6 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         else:
             self._update_seekbar_smoothly(0)
 
-    '''def create_image_card(self, instrument_name, pixmap, timestamp):
-        """Create a card widget for an image."""
-        card = QFrame()
-        card.setFrameStyle(QFrame.Box | QFrame.Raised)
-        card.setLineWidth(1)
-        card.setStyleSheet("background: #2b2b2b; border-radius: 8px;")
-
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        # Instrument name
-        name_label = QLabel(f"<b>{instrument_name}</b>")
-        name_label.setStyleSheet("color: #2196F3;")
-        name_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(name_label)
-
-        # Time
-        time_label = QLabel(timestamp.toString("HH:mm:ss") + " UTC")
-        time_label.setStyleSheet("color: #888;")
-        time_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(time_label)
-
-        # Image
-        img_label = QLabel()
-        img_label.setFixedSize(250, 250)
-        img_label.setAlignment(Qt.AlignCenter)
-        img_label.setStyleSheet("background: #000; border: 1px solid #555;")
-
-        if pixmap:
-            scaled = pixmap.scaled(
-                250, 250, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            img_label.setPixmap(scaled)
-        else:
-            img_label.setText("No data")
-            img_label.setStyleSheet("background: #000; color: #666;")
-
-        layout.addWidget(img_label)
-
-        return card'''
 
     '''def show_full_image(self, pixmap, title):
         """Show full resolution image in dialog."""
@@ -1256,7 +1102,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         """Toggle animation playback."""
         if not self.playing:
             self.playing = True
-            self.play_btn.setText("❚❚")
+            self.play_btn.setText("❚")
             self.play_btn.setToolTip("Pause (P / Space)")
 
             # Get speed

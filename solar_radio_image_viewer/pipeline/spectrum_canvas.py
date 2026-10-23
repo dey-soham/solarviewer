@@ -1160,11 +1160,11 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addStretch()
-        csv_btn = QPushButton("💾 Save CSV")
+        csv_btn = QPushButton("Save CSV")
         csv_btn.clicked.connect(
             lambda: self._save_profile_csv(win, x, values, at_label, along_time, axis is not None)
         )
-        plot_btn = QPushButton("🖼️ Save Plot")
+        plot_btn = QPushButton("Save Plot")
         plot_btn.clicked.connect(
             lambda: self._save_profile_plot(win, x, values, at_label, title, x_label, along_time, axis is not None)
         )

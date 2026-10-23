@@ -994,37 +994,17 @@ class PipelineLoggerGUI(QMainWindow):
             self.help_dialog.activateWindow()
             return
 
-        # Header section with gradient
         header = QFrame()
-        if is_dark:
-            header.setStyleSheet("""
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 #312e81, stop:1 #4338ca);
-                    border-top-left-radius: 2px;
-                    border-top-right-radius: 2px;
-                }
-            """)
-        else:
-            header.setStyleSheet("""
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 #4f46e5, stop:1 #6366f1);
-                    border-top-left-radius: 2px;
-                    border-top-right-radius: 2px;
-                }
-            """)
-        
+        header.setObjectName("Banner")
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(25, 20, 25, 20)
         header_layout.setSpacing(8)
         
         title = QLabel("LOFAR Pipeline Log Viewer")
-        title.setStyleSheet("font-size: 18pt; font-weight: bold; color: white;")
+        title.setObjectName("DialogTitle")
         header_layout.addWidget(title)
         
         subtitle = QLabel("Real-time monitoring and analysis of pipeline logs")
-        subtitle.setStyleSheet("font-size: 11pt; color: rgba(255, 255, 255, 0.85);")
         header_layout.addWidget(subtitle)
         
         main_layout.addWidget(header)
@@ -1041,29 +1021,21 @@ class PipelineLoggerGUI(QMainWindow):
         
         def add_section(title_text):
             label = QLabel(title_text)
-            label.setStyleSheet(f"""
-                font-size: 12pt; 
-                font-weight: bold; 
-                letter-spacing: 0.5px;
-                color: {'#818cf8' if is_dark else '#4f46e5'};
-                margin-top: 5px;
-            """)
+            label.setObjectName("SectionTitle")
             content_layout.addWidget(label)
-            
             line = QFrame()
-            line.setFixedHeight(1)
-            line.setStyleSheet(f"background-color: {'#2d2d4a' if is_dark else '#e0e0e0'};")
+            line.setObjectName("Rule")
             content_layout.addWidget(line)
 
         # Features section
-        add_section("FEATURES")
+        add_section("Features")
         features = [
-            ("📊 Real-time Log Monitoring", "Automatic updates as pipeline runs"),
-            ("🔍 Advanced Filtering", "Filter by level and source"),
+            ("Real-time Log Monitoring", "Automatic updates as pipeline runs"),
+            ("Advanced Filtering", "Filter by level and source"),
             ("⌨️ Search & Regex", "Fast search with regular expression support"),
-            ("📜 Tail Mode", "Keep view focused on the latest N log entries"),
-            ("🚨 Error Navigation", "Quickly jump between errors and critical logs"),
-            ("📤 Data Export", "Save log history to CSV for external analysis")
+            ("Tail Mode", "Keep view focused on the latest N log entries"),
+            ("Error Navigation", "Quickly jump between errors and critical logs"),
+            ("Data Export", "Save log history to CSV for external analysis")
         ]
         
         feat_grid = QGridLayout()
@@ -1071,12 +1043,11 @@ class PipelineLoggerGUI(QMainWindow):
         for i, (f_title, f_desc) in enumerate(features):
             f_item = QLabel(f"<b>{f_title}</b>: {f_desc}")
             f_item.setWordWrap(True)
-            f_item.setStyleSheet("font-size: 10.5pt;")
             feat_grid.addWidget(f_item, i // 2, i % 2)
         content_layout.addLayout(feat_grid)
         
         # Keyboard Shortcuts
-        add_section("KEYBOARD SHORTCUTS")
+        add_section("Keyboard Shortcuts")
         
         shortcuts = [
             ("Ctrl+O", "Open log file"), ("F5", "Refresh log"),
@@ -1091,28 +1062,14 @@ class PipelineLoggerGUI(QMainWindow):
         shot_grid.setColumnStretch(3, 1)
         shot_grid.setSpacing(15)
         
-        key_bg = "#2d2d4a" if is_dark else "#f3f4f6"
-        key_text = "#e2e8f0" if is_dark else "#4b5563"
-        key_border = "#4338ca" if is_dark else "#d1d5db"
-        
         for i, (key, desc) in enumerate(shortcuts):
             row, col = i % 5, (i // 5) * 2
             
             key_pill = QLabel(key)
             key_pill.setAlignment(Qt.AlignCenter)
-            key_pill.setStyleSheet(f"""
-                background-color: {key_bg};
-                color: {key_text};
-                border: 1px solid {key_border};
-                border-radius: 4px;
-                padding: 3px 8px;
-                font-family: 'Courier New', monospace;
-                font-weight: bold;
-                font-size: 10pt;
-            """)
+            key_pill.setObjectName("Key")
             
             desc_label = QLabel(desc)
-            desc_label.setStyleSheet("font-size: 10.5pt;")
             
             shot_grid.addWidget(key_pill, row, col)
             shot_grid.addWidget(desc_label, row, col + 1)
@@ -1126,17 +1083,14 @@ class PipelineLoggerGUI(QMainWindow):
         
         # Bottom bar
         bottom_bar = QFrame()
-        bottom_bar.setFixedHeight(50)
-        bottom_bar.setStyleSheet(f"background-color: {'#16162a' if is_dark else '#f9fafb'}; border-top: 1px solid {'#2d2d4a' if is_dark else '#e5e7eb'};")
         bottom_layout = QHBoxLayout(bottom_bar)
         
         footer = QLabel("SolarViewer Log Utilities • v1.0.0")
-        footer.setStyleSheet(f"color: {'#888' if is_dark else '#666'}; font-size: 9pt;")
+        footer.setObjectName("Hint")
         bottom_layout.addWidget(footer)
         bottom_layout.addStretch()
         
         close_btn = QPushButton("Close")
-        close_btn.setFixedWidth(100)
         close_btn.clicked.connect(dialog.close)
         bottom_layout.addWidget(close_btn)
         

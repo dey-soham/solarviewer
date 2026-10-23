@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QPixmap
-from ..ui.styles import theme_manager
+from ..ui.styles import set_tone, theme_manager
 
 from .cache import _noaa_cache
 from .widgets import ClickableLabel, FullImageViewer
@@ -59,9 +59,7 @@ class ContextImagesTabMixin:
             "(SDO, SOHO, STEREO, GOES imagery)"
         )
         images_credits_label.setOpenExternalLinks(True)
-        images_credits_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;"
-        )
+        images_credits_label.setObjectName("Hint")
         images_layout.addWidget(images_credits_label)
 
         self.tabs.addTab(images_tab, "Context Images")
@@ -96,45 +94,20 @@ class ContextImagesTabMixin:
         for img in images:
             card = QFrame()
             # Theme-aware card styling
-            bg = (
-                palette["surface"]
-                if not theme_manager.is_dark
-                else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(80, 80, 80, 0.1), stop:1 rgba(80, 80, 80, 0.2))"
-            )
-            border = (
-                f"1px solid {palette['border']}"
-                if not theme_manager.is_dark
-                else "1px solid rgba(128, 128, 128, 0.3)"
-            )
-
-            card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background: {bg};
-                    border-radius: 8px;
-                    border: {border};
-                }}
-                QLabel {{ color: {palette['text']}; }}
-            """
-            )
+            card.setObjectName("Card")
             card_layout = QHBoxLayout(card)
             card_layout.setContentsMargins(10, 10, 10, 10)
 
             # Image container - LARGER thumbnails
             img_container = QFrame()
             img_container.setFixedSize(320, 320)  # Increased from 222
-            img_container.setStyleSheet(
-                "background: #000; border: 1px solid #555; border-radius: 4px;"
-            )
+            img_container.setObjectName("ImageWell")
             img_container_layout = QVBoxLayout(img_container)
             img_container_layout.setContentsMargins(0, 0, 0, 0)
 
             # Use ClickableLabel
             img_label = ClickableLabel("Queued...")
             img_label.setAlignment(Qt.AlignCenter)
-            img_label.setStyleSheet(
-                "color: #aaa; border: none; background: transparent;"
-            )
             img_label.setToolTip("Click to view High Resolution Image")
             img_label.setCursor(Qt.PointingHandCursor)
 
@@ -150,18 +123,17 @@ class ContextImagesTabMixin:
             title = ClickableLabel(img.title)
             title.clicked.connect(lambda i=img: self.show_high_res_image(i))
             title.setCursor(Qt.PointingHandCursor)
-            title.setStyleSheet("font-weight: bold; color: #2196F3;")
+            title.setObjectName("SectionTitle")
 
             instrument_lbl = QLabel(f"Instrument: {img.instrument}")
-            instrument_lbl.setStyleSheet("font-weight: bold; color: #555;")
+            instrument_lbl.setObjectName("Hint")
 
             desc = QLabel(img.description)
             desc.setWordWrap(True)
-            desc.setStyleSheet("color: #666;")
 
             # Credits label instead of View Source Page link
             credits_lbl = QLabel(f"Credits: {img.credits}")
-            credits_lbl.setStyleSheet("color: #666; font-style: italic;")
+            credits_lbl.setObjectName("Hint")
 
             info_layout.addWidget(title)
             info_layout.addWidget(instrument_lbl)
@@ -172,36 +144,17 @@ class ContextImagesTabMixin:
                 time_str = img.image_date.strftime("%Y-%m-%d %H:%M:%S UTC")
                 date_lbl = QLabel(f"Image Time: {time_str}")
                 if img.image_date.date() != query_date:
-                    date_lbl.setStyleSheet("font-weight: bold; color: #E65100; font-size: 11pt;") # Bold dark orange/alert
+                    set_tone(date_lbl, "warning")
                     date_lbl.setToolTip("WARNING: This image is from a different date than requested.")
                 else:
-                    date_lbl.setStyleSheet("color: #00796B; font-weight: bold;") # Nice green/teal for match
+                    set_tone(date_lbl, "success")
                 info_layout.addWidget(date_lbl)
 
             info_layout.addWidget(desc)
             info_layout.addWidget(credits_lbl)
 
             # Add save button for high-res image
-            save_btn = QPushButton("💾 Save High-Res")
-            save_btn.setStyleSheet(
-                """
-                QPushButton {
-                    padding: 4px 12px;
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 rgba(33, 150, 243, 0.9),
-                        stop:1 rgba(25, 118, 210, 0.9));
-                    border: none;
-                    border-radius: 4px;
-                    color: white;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 rgba(33, 150, 243, 1.0),
-                        stop:1 rgba(25, 118, 210, 1.0));
-                }
-            """
-            )
+            save_btn = QPushButton("Save High-Res")
             save_btn.clicked.connect(lambda checked, i=img: self.save_high_res_image(i))
             info_layout.addWidget(save_btn)
             info_layout.addStretch()

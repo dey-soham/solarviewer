@@ -14,10 +14,24 @@ from PyQt5.QtWidgets import (
     QMessageBox,
 )
 from PyQt5.QtCore import Qt
-from ..ui.styles import theme_manager
+from ..ui.styles import set_tone, theme_manager
 
 from .workers import GOESPlotWorker
 logger = logging.getLogger(__name__)
+
+
+
+def _tone_for(color_code):
+    """The tone ("success", "warning", "error" or None) standing for a
+    NOAA level colour."""
+    code = (color_code or "").lower()
+    if code in ("#4caf50", "#2e7d32", "green"):
+        return "success"
+    if code in ("#ff9800", "#ffc107", "#e65100", "orange", "amber"):
+        return "warning"
+    if code in ("#f44336", "#9c27b0", "#d32f2f", "red", "purple"):
+        return "error"
+    return None
 
 
 class ConditionsTabMixin:
@@ -43,34 +57,12 @@ class ConditionsTabMixin:
 
         # Geomagnetic Activity Card - modern styling
         geo_card = QFrame()
-        if self.is_dark_theme:
-            geo_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(99, 102, 241, 0.12),
-                        stop:1 rgba(99, 102, 241, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(99, 102, 241, 0.25);
-                }
-            """
-            )
-        else:
-            palette = theme_manager.palette
-            geo_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
+        geo_card.setObjectName("Card")
         geo_layout = QVBoxLayout(geo_card)
         geo_layout.setContentsMargins(20, 20, 20, 20)
 
-        geo_title = QLabel("🧭 Geomagnetic Activity (Daily)")
-        geo_title.setStyleSheet("font-weight: bold;")
+        geo_title = QLabel("Geomagnetic Activity (Daily)")
+        geo_title.setObjectName("SectionTitle")
         geo_layout.addWidget(geo_title)
 
         self.geo_ap_label = QLabel("Ap Index: —")
@@ -86,41 +78,19 @@ class ConditionsTabMixin:
             self.geo_storm_label,
             self.geo_kp_vals_label,
         ]:
-            lbl.setStyleSheet("padding-left: 10px;")
+            lbl.setIndent(12)
             geo_layout.addWidget(lbl)
 
         conditions_layout.addWidget(geo_card)
 
         # Solar Wind Card - modern styling
         self.wind_card = QFrame()
-        if self.is_dark_theme:
-            self.wind_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(16, 185, 129, 0.12),
-                        stop:1 rgba(16, 185, 129, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(16, 185, 129, 0.25);
-                }
-            """
-            )
-        else:
-            palette = theme_manager.palette
-            self.wind_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
+        self.wind_card.setObjectName("Card")
         wind_layout = QVBoxLayout(self.wind_card)
         wind_layout.setContentsMargins(20, 20, 20, 20)
 
-        wind_title = QLabel("💨 Solar Wind (Real-time)")
-        wind_title.setStyleSheet("font-weight: bold;")
+        wind_title = QLabel("Solar Wind (Real-time)")
+        wind_title.setObjectName("SectionTitle")
         wind_layout.addWidget(wind_title)
 
         self.sw_speed_label = QLabel("Speed: — km/s")
@@ -134,7 +104,7 @@ class ConditionsTabMixin:
             self.sw_temp_label,
             self.sw_status_label,
         ]:
-            lbl.setStyleSheet("padding-left: 10px;")
+            lbl.setIndent(12)
             wind_layout.addWidget(lbl)
 
         conditions_layout.addWidget(self.wind_card)
@@ -142,34 +112,12 @@ class ConditionsTabMixin:
 
         # F10.7 Flux card - modern styling
         f107_card = QFrame()
-        if self.is_dark_theme:
-            f107_card.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba(251, 146, 60, 0.12),
-                        stop:1 rgba(251, 146, 60, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba(251, 146, 60, 0.25);
-                }
-            """
-            )
-        else:
-            palette = theme_manager.palette
-            f107_card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
+        f107_card.setObjectName("Card")
         f107_layout = QVBoxLayout(f107_card)
         f107_layout.setContentsMargins(20, 20, 20, 20)
 
-        f107_title = QLabel("☀️ Solar Indices (Daily)")
-        f107_title.setStyleSheet("font-weight: bold;")
+        f107_title = QLabel("Solar Indices (Daily)")
+        f107_title.setObjectName("SectionTitle")
         f107_layout.addWidget(f107_title)
 
         self.f107_value_label = QLabel("Flux: — sfu")
@@ -183,7 +131,7 @@ class ConditionsTabMixin:
             self.sunspot_area_label,
             self.f107_activity_label,
         ]:
-            lbl.setStyleSheet("padding-left: 10px;")
+            lbl.setIndent(12)
             f107_layout.addWidget(lbl)
 
         conditions_layout.addWidget(f107_card)
@@ -193,9 +141,7 @@ class ConditionsTabMixin:
             "Real-time solar conditions from NOAA SWPC"
         )
         self.conditions_info_label.setWordWrap(True)
-        self.conditions_info_label.setStyleSheet(
-            f"color: {theme_manager.palette['text']}; font-style: italic; padding: 10px; font-weight: light; opacity: 0.4;"
-        )
+        self.conditions_info_label.setObjectName("Hint")
         conditions_layout.addWidget(self.conditions_info_label)
 
         conditions_layout.addStretch()
@@ -206,9 +152,7 @@ class ConditionsTabMixin:
             "(Space Weather Prediction Center)"
         )
         conditions_credits_label.setOpenExternalLinks(True)
-        conditions_credits_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;"
-        )
+        conditions_credits_label.setObjectName("Hint")
         conditions_layout.addWidget(conditions_credits_label)
 
         # Make conditions tab scrollable
@@ -222,7 +166,7 @@ class ConditionsTabMixin:
         """Display solar conditions for the selected date."""
         if conditions is None:
             self.conditions_info_label.setText(
-                "⚠️ Unable to fetch solar conditions data"
+                "Unable to fetch solar conditions data"
             )
             self.geo_ap_label.setText("Ap Index: —")
             self.geo_kp_max_label.setText("Kp max: —")
@@ -233,7 +177,7 @@ class ConditionsTabMixin:
             return
 
         # Update title label to show data source
-        self.conditions_info_label.setText(f"📊 {conditions.data_source}")
+        self.conditions_info_label.setText(f"{conditions.data_source}")
 
         # 1. Geomagnetic Data (Kp)
         if conditions.kp_index:
@@ -244,12 +188,10 @@ class ConditionsTabMixin:
             self.geo_kp_vals_label.setText(
                 f"8 Kp values: {', '.join([f'{v:.0f}' for v in kp.kp_values])}"
             )
-            self.geo_kp_vals_label.setStyleSheet("padding-left: 10px; color: #888;")
+            set_tone(self.geo_kp_vals_label, None)
 
             self.geo_storm_label.setText(f"Storm Level: {kp.storm_level}")
-            self.geo_storm_label.setStyleSheet(
-                f"padding-left: 10px; color: {kp.color_code}; font-weight: bold;"
-            )
+            set_tone(self.geo_storm_label, _tone_for(kp.color_code))
         else:
             self.geo_ap_label.setText("Ap Index: —")
             self.geo_kp_max_label.setText("Kp max: —")
@@ -265,18 +207,11 @@ class ConditionsTabMixin:
             self.sw_density_label.setText(f"Density: {sw.density:.1f} p/cm³")
             self.sw_temp_label.setText(f"Temperature: {sw.temperature:.0f} K")
 
-            status_color = "#888"
             status_text = sw.speed_category
-            if status_text == "High":
-                status_color = "#F44336"
-            elif status_text == "Elevated":
-                status_color = "#FF9800"
-            elif status_text == "Normal":
-                status_color = "#4CAF50"
-
             self.sw_status_label.setText(f"Status: {status_text} Speed")
-            self.sw_status_label.setStyleSheet(
-                f"padding-left: 10px; color: {status_color}; font-weight: bold;"
+            set_tone(
+                self.sw_status_label,
+                {"High": "error", "Elevated": "warning", "Normal": "success"}.get(status_text),
             )
         else:
             self.wind_card.hide()
@@ -292,38 +227,18 @@ class ConditionsTabMixin:
             area_str = f"{area} (10⁻⁶ Hemis.)" if area != "—" else "—"
             self.sunspot_area_label.setText(f"Sunspot Area: {area_str}")
 
-            """bg = getattr(f107, 'xray_background', '—')
-            bg_text = bg
-            bg_color = "#888" # Default gray
-            
-            if bg == '*':
-                bg_text = "N/A"
-                bg_color = "#4CAF50" # Green
-            elif bg and bg[0] in ['A', 'B']:
-                bg_color = "#4CAF50" # Green for A/B
-            elif bg and bg.startswith('C'):
-                bg_color = "#FF9800" # Orange for C
-            elif bg and bg.startswith('M'):
-                bg_color = "#F44336" # Red for M
-            elif bg and bg.startswith('X'):
-                bg_color = "#9C27B0" # Purple for X
-                
-            self.xray_bg_label.setText(f"X-Ray Background: {bg_text}")
-            self.xray_bg_label.setStyleSheet(f"padding-left: 10px; color: {bg_color}; font-weight: bold;")"""
 
-            # Color-code activity level
-            activity_colors = {
-                "Very Low": "#2196F3",
-                "Low": "#4CAF50",
-                "Moderate": "#FFC107",
-                "Elevated": "#FF9800",
-                "High": "#F44336",
-                "Very High": "#9C27B0",
-            }
-            color = activity_colors.get(f107.activity_level, "#9E9E9E")
             self.f107_activity_label.setText(f"Activity Level: {f107.activity_level}")
-            self.f107_activity_label.setStyleSheet(
-                f"padding-left: 10px; color: {color}; font-weight: bold;"
+            set_tone(
+                self.f107_activity_label,
+                {
+                    "Very Low": "success",
+                    "Low": "success",
+                    "Moderate": "warning",
+                    "Elevated": "warning",
+                    "High": "error",
+                    "Very High": "error",
+                }.get(f107.activity_level),
             )
         else:
             self.f107_value_label.setText("10.7cm Flux: — sfu")

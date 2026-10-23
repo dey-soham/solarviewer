@@ -91,7 +91,7 @@ class ImageStatsMixin:
             "Changes will be applied to the current image and all future Stokes parameter selections."
         )
         description.setWordWrap(True)
-        description.setStyleSheet("font-style: italic; opacity: 0.8;")
+        description.setObjectName("Hint")
         layout.addWidget(description)
 
         # Create grid layout for RMS box inputs

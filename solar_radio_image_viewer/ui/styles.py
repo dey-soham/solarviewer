@@ -109,6 +109,9 @@ TOKENS = {
 #   Sidebar         a QFrame navigation column
 #   NavList         a QListWidget of sections in a Sidebar
 #   Console         a QPlainTextEdit of log text, monospace
+#   ImageWell       a QFrame or QScrollArea showing a picture on black
+#   Segmented       a QWidget holding a row of checkable buttons, one on
+#   SectionHeader   a QPushButton heading a collapsible section
 # A label or StatusButton can also take a tone with ``set_tone``:
 # "success", "warning" or "error" colour it accordingly, None clears it.
 ROLES = (
@@ -134,6 +137,9 @@ ROLES = (
     "Sidebar",
     "NavList",
     "Console",
+    "ImageWell",
+    "Segmented",
+    "SectionHeader",
 )
 
 # ===== Palettes =====
@@ -358,6 +364,51 @@ def get_stylesheet(palette, is_dark=True):
         padding: {SPACE_S}px {SPACE_M}px;
         border-radius: {RADIUS}px;
         margin: 1px 0;
+    }}
+    QFrame#ImageWell, QScrollArea#ImageWell, QScrollArea#ImageWell > QWidget > QWidget {{
+        background-color: #000000;
+        border: 1px solid {p['border']};
+        border-radius: {RADIUS}px;
+    }}
+    QFrame#ImageWell QLabel {{
+        color: {p['text_secondary']};
+    }}
+    QWidget#Segmented, QFrame#Segmented {{
+        background-color: {p['surface']};
+        border: 1px solid {p['border']};
+        border-radius: {RADIUS}px;
+    }}
+    QWidget#Segmented QPushButton, QFrame#Segmented QPushButton {{
+        background-color: transparent;
+        color: {p['text_secondary']};
+        border: none;
+        border-radius: {RADIUS - 2}px;
+        padding: {SPACE_XS}px {SPACE_S}px;
+        min-height: 22px;
+    }}
+    QWidget#Segmented QPushButton:hover, QFrame#Segmented QPushButton:hover {{
+        color: {p['text']};
+        background-color: {p['button_hover']};
+    }}
+    QWidget#Segmented QPushButton:checked, QFrame#Segmented QPushButton:checked {{
+        background-color: {p['highlight']};
+        color: {p['highlight_text']};
+        font-weight: 600;
+    }}
+    QPushButton#SectionHeader {{
+        text-align: left;
+        padding: {SPACE_S}px {SPACE_M}px;
+        font-weight: 600;
+        background-color: {p['button']};
+        border: 1px solid {p['border']};
+    }}
+    QPushButton#SectionHeader:hover {{
+        background-color: {p['button_hover']};
+        border-color: {p['highlight']};
+    }}
+    QPushButton#SectionHeader:pressed {{
+        background-color: {p['button_pressed']};
+        color: {p['text']};
     }}
     QPlainTextEdit#Console {{
         font-family: {MONO_FAMILY};

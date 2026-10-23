@@ -443,7 +443,7 @@ class ProfileMixin:
         note_label = QLabel(
             "ℹ️ Length extends ±{} pixels from center (total {} pixels)"
         )
-        note_label.setStyleSheet("color: #666; font-style: italic;")
+        note_label.setObjectName("Hint")
         layout.addWidget(note_label)
 
         def update_note():
@@ -926,7 +926,8 @@ class ProfileMixin:
             f"{fwhm_str}  |  Points: {len(profile)}"
         )
         stats_label = QLabel(stats_text)
-        stats_label.setStyleSheet("font-family: monospace; padding: 5px;")
+        stats_label.setObjectName("Mono")
+        stats_label.setMargin(5)
         stats_label.setWordWrap(True)
         layout.addWidget(stats_label)
 

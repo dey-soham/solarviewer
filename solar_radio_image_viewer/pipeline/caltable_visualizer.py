@@ -307,7 +307,7 @@ class VisualizationApp(QMainWindow):
 
         dir_frame.addStretch()
 
-        select_button = QPushButton("🗁 Load")
+        select_button = QPushButton("Load")
         # select_button.setFixedSize(100, 30)
         select_button.clicked.connect(self.select_bandpass_directory)
         dir_frame.addWidget(select_button)
@@ -405,7 +405,7 @@ class VisualizationApp(QMainWindow):
 
         file_frame.addStretch()
 
-        select_button = QPushButton("🗁 Load")
+        select_button = QPushButton("Load")
         select_button.clicked.connect(self.select_crossphase_file)
         file_frame.addWidget(select_button)
         layout.addLayout(file_frame)
@@ -434,7 +434,7 @@ class VisualizationApp(QMainWindow):
 
         dir_frame.addStretch()
 
-        select_button = QPushButton("🗁 Load")
+        select_button = QPushButton("Load")
         select_button.clicked.connect(self.select_selfcal_directory)
         dir_frame.addWidget(select_button)
         layout.addLayout(dir_frame)

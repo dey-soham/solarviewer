@@ -448,7 +448,7 @@ class SpectraMasksMixin:
         fillCombo.currentIndexChanged.connect(lambda _: maxGap.setEnabled(fillCombo.currentData() != "blank"))
         pl.addRow("Reach:", maxGap)
         mask_note = QLabel("Masks you draw always stay blank.")
-        mask_note.setStyleSheet("color: #a0a0b0; font-size: 9pt;")
+        mask_note.setObjectName("Hint")
         pl.addRow(mask_note)
         layout.addWidget(pixels)
 
@@ -461,7 +461,7 @@ class SpectraMasksMixin:
         sl.addWidget(tint)
         sl.addWidget(share)
         note = QLabel("Saved files have no tint: flags blank or filled.")
-        note.setStyleSheet("color: #a0a0b0; font-size: 9pt;")
+        note.setObjectName("Hint")
         sl.addWidget(note)
         layout.addWidget(show)
 

@@ -41,7 +41,7 @@ except ImportError:
 try:
     # First try relative import (when used as part of package)
     from . import solar_data_downloader as sdd
-    from ..ui.styles import set_hand_cursor
+    from ..ui.styles import set_hand_cursor, set_tone
 except ImportError:
     try:
         # Then try importing from the same directory (when run as script)
@@ -185,7 +185,7 @@ class DownloadWorker(QThread):
                 elif "Calibration:" in line:
                     self.progress.emit(line)
                 elif "NO DATA FOUND" in line:
-                    self.progress.emit("❌ No data found for this query")
+                    self.progress.emit("No data found for this query")
                 elif "Retrying" in line or "WARNING:" in line:
                     self.progress.emit(line)
                 elif "Starting download" in line:
@@ -605,7 +605,7 @@ class SolarDataViewerGUI(QMainWindow):
         gong_label = QLabel(
             "GONG provides magnetogram data.\nNo additional parameters needed."
         )
-        gong_label.setStyleSheet("color: gray; font-style: italic;")
+        gong_label.setObjectName("Hint")
         gong_layout.addWidget(gong_label)
         self.gong_params.setLayout(gong_layout)
 
@@ -676,7 +676,7 @@ class SolarDataViewerGUI(QMainWindow):
 
         # Cadence info label
         self.cadence_label = QLabel()
-        self.cadence_label.setStyleSheet("color: #888; font-style: italic;")
+        self.cadence_label.setObjectName("Hint")
         self.cadence_label.setWordWrap(True)
         self.update_cadence_info()  # Set initial value
         layout.addWidget(self.cadence_label)
@@ -764,22 +764,22 @@ class SolarDataViewerGUI(QMainWindow):
 
         # AIA-specific options
         self.aia_calib_label = QLabel("AIA Advanced Options:")
-        self.aia_calib_label.setStyleSheet("font-weight: bold;")
+        self.aia_calib_label.setObjectName("SectionTitle")
         calib_layout.addWidget(self.aia_calib_label)
 
         self.psf_checkbox = QCheckBox("PSF Deconvolution")
         self.psf_checkbox.setChecked(False)  # Off by default (slow)
         self.psf_checkbox.setToolTip(
             "Apply Point Spread Function deconvolution to sharpen images.\n"
-            "⚠️ WARNING: This is VERY SLOW (~30-60 seconds per image)\n"
+            "WARNING: This is VERY SLOW (~30-60 seconds per image)\n"
             "Uses Richardson-Lucy algorithm with 25 iterations.\n"
             "Downloads PSF data from JSOC on first use."
         )
         calib_layout.addWidget(self.psf_checkbox)
 
         # Warning label for PSF
-        self.psf_warning = QLabel("⚠️ PSF deconvolution might take a while")
-        self.psf_warning.setStyleSheet("color: orange;")
+        self.psf_warning = QLabel("PSF deconvolution might take a while")
+        set_tone(self.psf_warning, "warning")
         self.psf_warning.hide()
         self.psf_checkbox.stateChanged.connect(
             lambda state: self.psf_warning.setVisible(state == 2)

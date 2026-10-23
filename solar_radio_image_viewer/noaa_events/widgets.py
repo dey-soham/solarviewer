@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QPixmap
-from ..ui.styles import theme_manager, set_hand_cursor
+from ..ui.styles import set_hand_cursor
 
 from .workers import ImageLoader, ImageUrlResolver
 logger = logging.getLogger(__name__)
@@ -56,11 +56,10 @@ class FullImageViewer(QDialog):
         self.scroll.setWidgetResizable(
             True
         )  # Start resizable, maybe set False when huge image loads?
-        self.scroll.setStyleSheet("background-color: #222;")
+        self.scroll.setObjectName("ImageWell")
 
         self.img_label = QLabel("Resolving high-resolution image URL...")
         self.img_label.setAlignment(Qt.AlignCenter)
-        self.img_label.setStyleSheet("color: #ccc; font-weight: bold;")
 
         self.scroll.setWidget(self.img_label)
         layout.addWidget(self.scroll)
@@ -169,44 +168,7 @@ class CollapsibleSection(QWidget):
         # Header
         self.header = QPushButton()
 
-        # Theme-aware styling
-        palette = theme_manager.palette
-        is_dark = theme_manager.is_dark
-
-        if is_dark:
-            bg_normal = "rgba(128, 128, 128, 0.12)"
-            bg_hover = "rgba(128, 128, 128, 0.18)"
-            bg_pressed = "rgba(128, 128, 128, 0.1)"
-            border = "none"
-            text_color = palette["text"]
-        else:
-            # Light theme: Use distinct solid colors
-            bg_normal = palette["button"]  # Distinct from window background
-            bg_hover = palette["button_hover"]
-            bg_pressed = palette["button_pressed"]
-            border = f"1px solid {palette['border']}"
-            text_color = palette["text"]
-
-        self.header.setStyleSheet(
-            f"""
-            QPushButton {{
-                text-align: left;
-                padding: 8px 14px;
-                font-weight: 600;
-                border: {border};
-                border-radius: 6px;
-                background-color: {bg_normal};
-                color: {text_color};
-            }}
-            QPushButton:hover {{
-                background-color: {bg_hover};
-                border-color: {palette['highlight']};
-            }}
-            QPushButton:pressed {{
-                background-color: {bg_pressed};
-            }}
-        """
-        )
+        self.header.setObjectName("SectionHeader")
         self.update_header(title, icon, count)
         self.header.clicked.connect(self.toggle)
         layout.addWidget(self.header)

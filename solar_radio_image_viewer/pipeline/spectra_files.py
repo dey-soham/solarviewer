@@ -877,16 +877,6 @@ class SpectraFilesMixin:
         dlg.setMinimumSize(750, 750)
         fit_to_screen(dlg, 750, 750)
 
-        # We rely on the global stylesheet applied in __init__ via apply_theme.
-        # Minimal dialog-specific tweaks for layout spacing
-        dlg.setStyleSheet(
-            dlg.styleSheet()
-            + f"""
-            QDialog {{ background-color: {palette["window"]}; }}
-            QTableWidget {{ border: none; }}
-        """
-        )
-
         main_layout = QVBoxLayout(dlg)
         main_layout.setSpacing(0)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -896,15 +886,8 @@ class SpectraFilesMixin:
         source_layout = QHBoxLayout(source_container)
         source_layout.setContentsMargins(35, 20, 35, 0)
 
-        source_label = QLabel(f"📄 {os.path.basename(self.current_filename)}")
-        source_label.setStyleSheet(f"""
-            font-size: 11pt; 
-            font-weight: 600; 
-            color: {palette["text_secondary"]};
-            background: {palette["button"]};
-            padding: 4px 12px;
-            border-radius: 6px;
-        """)
+        source_label = QLabel(os.path.basename(self.current_filename))
+        source_label.setObjectName("Badge")
         source_layout.addWidget(source_label)
         source_layout.addStretch()
         main_layout.addWidget(source_container)
@@ -915,10 +898,7 @@ class SpectraFilesMixin:
         search_layout.setContentsMargins(35, 15, 35, 20)
         search_layout.setSpacing(15)
 
-        search_label = QLabel("🔍 Search:")
-        search_label.setStyleSheet(
-            f"font-weight: 600; font-size: 11.5pt; color: {palette['text_secondary']};"
-        )
+        search_label = QLabel("Search:")
         search_layout.addWidget(search_label)
 
         search_input = QLineEdit()
@@ -996,21 +976,17 @@ class SpectraFilesMixin:
 
         # Bottom Bar
         bottom_bar = QFrame()
-        bottom_bar.setFixedHeight(95)
-        bottom_bar.setStyleSheet(f"border-top: 1px solid {palette['border']};")
         b_layout = QHBoxLayout(bottom_bar)
         b_layout.setContentsMargins(35, 0, 35, 0)
         b_layout.setSpacing(20)
 
-        copy_btn = QPushButton("📋 Copy to Clipboard")
+        copy_btn = QPushButton("Copy to Clipboard")
         copy_btn.clicked.connect(self._copy_metadata_to_clipboard)
         b_layout.addWidget(copy_btn)
 
         b_layout.addStretch()
 
         close_btn = QPushButton("Close")
-        close_btn.setFixedWidth(140)
-        close_btn.setStyleSheet("font-weight: bold;")
         close_btn.clicked.connect(dlg.close)
         b_layout.addWidget(close_btn)
 

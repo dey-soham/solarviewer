@@ -324,7 +324,7 @@ class PreviewPanel(QWidget):
 
         header_row = QHBoxLayout()
         header = QLabel("Preview")
-        header.setStyleSheet("font-weight: 600;")
+        header.setObjectName("SectionTitle")
         header_row.addWidget(header)
         header_row.addStretch()
         # Zoom buttons as in the main window; they set the video's region
@@ -340,13 +340,12 @@ class PreviewPanel(QWidget):
             button.setObjectName("IconOnlyButton")
             self._zoom_icons[name] = icon
             button.setIconSize(QSize(20, 20))
-            button.setFixedHeight(28)
             button.setToolTip(tip)
             header_row.addWidget(button)
             self.zoom_buttons[name] = button
         layout.addLayout(header_row)
         self._update_icons()
-        from ...ui.styles import theme_manager
+        from ...ui.styles import theme_manager, set_tone
 
         theme_manager.register_callback(self._update_icons)
 
@@ -366,7 +365,7 @@ class PreviewPanel(QWidget):
         # What could not be drawn on the frame shown
         self.problems_label = QLabel()
         self.problems_label.setWordWrap(True)
-        self.problems_label.setStyleSheet("color: #e69f00; font-weight: 600;")
+        set_tone(self.problems_label, "warning")
         self.problems_label.hide()
         layout.addWidget(self.problems_label)
 
@@ -436,7 +435,7 @@ class PreviewPanel(QWidget):
 
     def show_problems(self, problems):
         """List what could not be drawn (or hide the list if nothing)."""
-        self.problems_label.setText("\n".join(f"⚠ {message}" for message in problems))
+        self.problems_label.setText("\n".join(message for message in problems))
         self.problems_label.setVisible(bool(problems))
 
     def show_message(self, text):

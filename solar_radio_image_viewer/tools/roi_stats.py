@@ -141,15 +141,15 @@ class RoiStatsMixin:
 
         # Statistics info label
         stats_label = QLabel()
-        stats_label.setStyleSheet("font-family: monospace; padding: 5px;")
+        stats_label.setObjectName("Mono")
+        stats_label.setMargin(5)
         stats_label.setWordWrap(True)
         layout.addWidget(stats_label)
 
         # Fit results label
         fit_label = QLabel()
-        fit_label.setStyleSheet(
-            "font-family: monospace; padding: 5px; color: #1565C0; font-weight: bold;"
-        )
+        fit_label.setObjectName("Mono")
+        fit_label.setMargin(5)
         fit_label.setWordWrap(True)
         layout.addWidget(fit_label)
 

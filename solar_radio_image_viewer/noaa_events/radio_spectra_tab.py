@@ -75,9 +75,7 @@ class RadioSpectraTabMixin:
             "Click 'Fetch Spectra' to download radio spectra."
         )
         self.spectra_status_label.setWordWrap(True)
-        self.spectra_status_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']}; font-style: italic;"
-        )
+        self.spectra_status_label.setObjectName("Hint")
         spectra_layout.addWidget(self.spectra_status_label)
 
         # Scrollable content area for spectra images
@@ -93,7 +91,7 @@ class RadioSpectraTabMixin:
         self._add_spectrum_card(
             spectra_content_layout,
             "wind",
-            "🛰️ WIND/WAVES 24h Calibrated (14 kHz - 14 MHz)",
+            "WIND/WAVES 24h Calibrated (14 kHz - 14 MHz)",
             (99, 102, 241),
             "WIND/WAVES",
             "WIND/WAVES",
@@ -101,7 +99,7 @@ class RadioSpectraTabMixin:
         self._add_spectrum_card(
             spectra_content_layout,
             "stereo_a",
-            "🛰️ STEREO-A S/WAVES (10 kHz - 16 MHz)",
+            "STEREO-A S/WAVES (10 kHz - 16 MHz)",
             (16, 185, 129),
             "STEREO-A",
             "STEREO-A",
@@ -109,7 +107,7 @@ class RadioSpectraTabMixin:
         self._add_spectrum_card(
             spectra_content_layout,
             "stereo_b",
-            "🛰️ STEREO-B S/WAVES (10 kHz - 16 MHz)",
+            "STEREO-B S/WAVES (10 kHz - 16 MHz)",
             (251, 146, 60),
             "STEREO-B",
             "STEREO-B",
@@ -119,7 +117,7 @@ class RadioSpectraTabMixin:
         self._add_spectrum_card(
             spectra_content_layout,
             "norp",
-            "📡 Nobeyama Radio Polarimeter (NORP) Full-Day",
+            "Nobeyama Radio Polarimeter (NORP) Full-Day",
             (59, 130, 246),
             "Nobeyama",
             "Nobeyama NORP",
@@ -130,7 +128,7 @@ class RadioSpectraTabMixin:
         self._add_spectrum_card(
             spectra_content_layout,
             "yamagawa",
-            "🛰️ NICT Yamagawa Spectrograph",
+            "NICT Yamagawa Spectrograph",
             (20, 184, 166),
             "Yamagawa",
             "Yamagawa",
@@ -141,7 +139,7 @@ class RadioSpectraTabMixin:
         self._add_spectrum_card(
             spectra_content_layout,
             "hiras",
-            "🛰️ NICT HiRAS Spectrograph",
+            "NICT HiRAS Spectrograph",
             (14, 165, 233),
             "HiRAS",
             "HiRAS",
@@ -152,7 +150,7 @@ class RadioSpectraTabMixin:
         self._add_spectrum_card(
             spectra_content_layout,
             "orfees",
-            "📡 ORFEES (Nançay) Spectrograph",
+            "ORFEES (Nançay) Spectrograph",
             (168, 85, 247),
             "ORFEES",
             "ORFEES",
@@ -160,7 +158,7 @@ class RadioSpectraTabMixin:
         self._add_spectrum_card(
             spectra_content_layout,
             "nda",
-            "📡 NDA (Nançay) Spectrograph",
+            "NDA (Nançay) Spectrograph",
             (236, 72, 153),
             "NDA",
             "NDA",
@@ -178,9 +176,7 @@ class RadioSpectraTabMixin:
             '<a href="https://solobs.nict.go.jp/radio/cgi-bin/MainDisplay.pl">NICT</a>'
         )
         spectra_credits_label.setOpenExternalLinks(True)
-        spectra_credits_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;"
-        )
+        spectra_credits_label.setObjectName("Hint")
         spectra_layout.addWidget(spectra_credits_label)
 
         self.tabs.addTab(spectra_tab, "Radio Spectra")
@@ -209,37 +205,16 @@ class RadioSpectraTabMixin:
         card = QFrame()
         if keep_card:
             setattr(self, f"{key}_card", card)
-        if self.is_dark_theme:
-            card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                        stop:0 rgba({rgb}, 0.12),
-                        stop:1 rgba({rgb}, 0.06));
-                    border-radius: 12px;
-                    border: 1px solid rgba({rgb}, 0.25);
-                }}
-            """
-            )
-        else:
-            card.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 12px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
+        card.setObjectName("Card")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 12, 12, 12)
 
         header = QHBoxLayout()
         title_label = QLabel(title)
-        title_label.setStyleSheet("font-weight: bold;")
+        title_label.setObjectName("SectionTitle")
         header.addWidget(title_label)
         header.addStretch()
-        save_btn = QPushButton("💾 Save")
+        save_btn = QPushButton("Save")
         save_btn.setToolTip(f"Save {save_name} image as PNG")
         save_btn.clicked.connect(lambda checked: self.save_spectra_image(key))
         save_btn.setEnabled(False)
@@ -254,7 +229,6 @@ class RadioSpectraTabMixin:
             scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             scroll_area.setMinimumHeight(180)  # Scaled image + scrollbar
             scroll_area.setFrameShape(QFrame.NoFrame)
-            scroll_area.setStyleSheet("background: transparent;")
             setattr(self, f"{key}_scroll", scroll_area)
 
         image_label = ClickableLabel(label_text)
@@ -262,7 +236,7 @@ class RadioSpectraTabMixin:
         if not scroll:
             image_label.setMinimumHeight(min_height)
         image_label.setScaledContents(False)
-        image_label.setStyleSheet(f"color: {palette['text_secondary']};")
+        image_label.setObjectName("Hint")
         image_label.setCursor(Qt.PointingHandCursor)
         image_label.setToolTip("Click to view full resolution")
         image_label.clicked.connect(lambda: self.show_local_image(key, viewer_title))
@@ -533,7 +507,7 @@ class RadioSpectraTabMixin:
         # Scrollable image
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("background-color: #222;")
+        scroll.setObjectName("ImageWell")
 
         img_label = QLabel()
         img_label.setAlignment(Qt.AlignCenter)
@@ -545,7 +519,6 @@ class RadioSpectraTabMixin:
             img_label.adjustSize()
         else:
             img_label.setText("Failed to load image")
-            img_label.setStyleSheet("color: #ccc;")
 
         scroll.setWidget(img_label)
         layout.addWidget(scroll)

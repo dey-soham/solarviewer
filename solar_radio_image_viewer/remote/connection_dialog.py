@@ -61,7 +61,6 @@ class ConnectionDialog(QDialog):
         self._load_profiles()
 
         self._setup_ui()
-        self._apply_styles()
         
         try:
             from ..ui.styles import set_hand_cursor
@@ -194,59 +193,6 @@ class ConnectionDialog(QDialog):
         button_layout.addWidget(self.connect_btn)
 
         layout.addLayout(button_layout)
-
-    def _apply_styles(self):
-        """Apply styling to the dialog using theme_manager for consistency."""
-        from ..ui.styles import theme_manager
-
-        palette = theme_manager.palette
-        border = palette["border"]
-        surface = palette["surface"]
-        base = palette["base"]
-        highlight = palette["highlight"]
-        text = palette["text"]
-
-        self.setStyleSheet(
-            f"""
-            QGroupBox {{
-                font-weight: bold;
-                border: 1px solid {border};
-                border-radius: 6px;
-                margin-top: 12px;
-                padding-top: 12px;
-                background-color: {surface};
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 10px;
-                padding: 0 5px;
-                color: {highlight};
-            }}
-            QLineEdit, QSpinBox, QComboBox {{
-                padding: 6px;
-                border: 1px solid {border};
-                border-radius: 4px;
-                background-color: {base};
-                color: {text};
-            }}
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{
-                border-color: {highlight};
-                border-width: 2px;
-            }}
-            QPushButton {{
-                padding: 6px 16px;
-                border-radius: 4px;
-                border: 1px solid {border};
-            }}
-            QPushButton:hover {{
-                border-color: {highlight};
-            }}
-            QRadioButton {{
-                color: {text};
-            }}
-        """
-        )
 
     def _on_auth_type_changed(self, key_auth_selected: bool):
         """Toggle between key and password authentication UI."""
@@ -416,7 +362,7 @@ class ConnectionDialog(QDialog):
         params = self._get_connection_params()
 
         if not params["host"]:
-            self.status_label.setText("❌ Please enter a host.")
+            self.status_label.setText("Please enter a host.")
             return
 
         self.status_label.setText("⏳ Testing connection...")
@@ -433,14 +379,14 @@ class ConnectionDialog(QDialog):
 
             home_dir = conn.get_home_directory()
             self.status_label.setText(
-                f"✅ Connected successfully!\nHome directory: {home_dir}"
+                f"Connected successfully!\nHome directory: {home_dir}"
             )
             conn.disconnect()
 
         except SSHConnectionError as e:
-            self.status_label.setText(f"❌ Connection failed: {e}")
+            self.status_label.setText(f"Connection failed: {e}")
         except Exception as e:
-            self.status_label.setText(f"❌ Error: {e}")
+            self.status_label.setText(f"Error: {e}")
         finally:
             self.test_btn.setEnabled(True)
             self.connect_btn.setEnabled(True)
@@ -450,7 +396,7 @@ class ConnectionDialog(QDialog):
         params = self._get_connection_params()
 
         if not params["host"]:
-            self.status_label.setText("❌ Please enter a host.")
+            self.status_label.setText("Please enter a host.")
             return
 
         self.status_label.setText("⏳ Connecting...")
@@ -468,12 +414,12 @@ class ConnectionDialog(QDialog):
             self.accept()
 
         except SSHConnectionError as e:
-            self.status_label.setText(f"❌ Connection failed: {e}")
+            self.status_label.setText(f"Connection failed: {e}")
             self._ssh_connection = None
             self.test_btn.setEnabled(True)
             self.connect_btn.setEnabled(True)
         except Exception as e:
-            self.status_label.setText(f"❌ Error: {e}")
+            self.status_label.setText(f"Error: {e}")
             self._ssh_connection = None
             self.test_btn.setEnabled(True)
             self.connect_btn.setEnabled(True)

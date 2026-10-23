@@ -68,7 +68,7 @@ class NOAAEventsViewer(
 
     def __init__(self, parent=None, initial_date: Optional[date] = None):
         super().__init__(parent)
-        self.setWindowTitle("☀️ Solar Activity Viewer")
+        self.setWindowTitle("Solar Activity Viewer")
         fit_to_screen(self, 1000, 800)
 
         # Network Manager for image downloading
@@ -134,7 +134,6 @@ class NOAAEventsViewer(
         top_bar.setSpacing(12)
 
         date_label = QLabel("Date:")
-        date_label.setStyleSheet("font-weight: bold;")
         top_bar.addWidget(date_label)
 
         self.date_edit = QDateEdit()
@@ -145,7 +144,7 @@ class NOAAEventsViewer(
         top_bar.addWidget(self.date_edit)
 
         # Get date from current tab button
-        self.get_date_btn = QPushButton("📅 From Tab")
+        self.get_date_btn = QPushButton("From Tab")
         self.get_date_btn.setToolTip("Get date from currently open image/FITS file")
         self.get_date_btn.clicked.connect(self.get_date_from_parent_tab)
         if not self.parent():
@@ -161,12 +160,12 @@ class NOAAEventsViewer(
         self.progress.hide()
         top_bar.addWidget(self.progress)
 
-        self.fetch_btn = QPushButton("🔍 Fetch")
+        self.fetch_btn = QPushButton("Fetch")
         self.fetch_btn.setObjectName("PrimaryButton")
         self.fetch_btn.clicked.connect(self.fetch_data)
         top_bar.addWidget(self.fetch_btn)
 
-        self.plot_goes_btn = QPushButton("📈 Plot GOES X-ray Flux")
+        self.plot_goes_btn = QPushButton("Plot GOES X-ray Flux")
         self.plot_goes_btn.setToolTip("Plot the GOES X-ray light curve for this date")
         self.plot_goes_btn.clicked.connect(self.plot_goes_xray)
         top_bar.addWidget(self.plot_goes_btn)
@@ -176,37 +175,14 @@ class NOAAEventsViewer(
         # Modern summary bar - subtle styling
         self.summary_frame = QFrame()
 
-        # Use subtle transparent background matching the theme
-        palette = theme_manager.palette
-        if theme_manager.is_dark:
-            # Dark theme: subtle purple tint
-            self.summary_frame.setStyleSheet(
-                """
-                QFrame {
-                    background-color: rgba(99, 102, 241, 0.08);
-                    border-radius: 8px;
-                    border: 1px solid rgba(99, 102, 241, 0.2);
-                }
-            """
-            )
-        else:
-            # Light theme: subtle tinted background
-            self.summary_frame.setStyleSheet(
-                f"""
-                QFrame {{
-                    background-color: {palette['surface']};
-                    border-radius: 8px;
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            )
+        self.summary_frame.setObjectName("Card")
         summary_layout = QHBoxLayout(self.summary_frame)
         summary_layout.setContentsMargins(16, 10, 16, 10)
 
         self.summary_label = QLabel(
             "Select a date and click 'Fetch' to view solar activity."
         )
-        self.summary_label.setStyleSheet(f"color: {palette['text_secondary']};")
+        self.summary_label.setObjectName("Hint")
         self.summary_label.setWordWrap(True)
         summary_layout.addWidget(self.summary_label)
 
@@ -279,9 +255,7 @@ class NOAAEventsViewer(
             '<a href="https://soleil.i4ds.ch/solarradio/">e-CALLISTO</a> (C. Monstein)'
         )
         events_credits_label.setOpenExternalLinks(True)
-        events_credits_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;"
-        )
+        events_credits_label.setObjectName("Hint")
         events_layout.addWidget(events_credits_label)
 
         # Initial logic check
@@ -323,9 +297,7 @@ class NOAAEventsViewer(
             "Fetch data to view active sunspot regions and flare probabilities."
         )
         self.ar_info_label.setWordWrap(True)
-        self.ar_info_label.setStyleSheet(
-            f"color: {theme_manager.palette['text']}; font-style: italic; padding: 10px; font-weight: light; opacity: 0.4;"
-        )
+        self.ar_info_label.setObjectName("Hint")
         ar_layout.addWidget(self.ar_info_label)
 
         # Active Regions credits label
@@ -334,9 +306,7 @@ class NOAAEventsViewer(
             "(NOAA/SWPC Solar Region Summary & ARM Flare Forecasts)"
         )
         ar_credits_label.setOpenExternalLinks(True)
-        ar_credits_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 10px;"
-        )
+        ar_credits_label.setObjectName("Hint")
         ar_layout.addWidget(ar_credits_label)
 
         # ar_layout.addStretch()
@@ -373,9 +343,7 @@ class NOAAEventsViewer(
             "CME data from NASA DONKI (±3 days from selected date)"
         )
         self.cme_info_label.setWordWrap(True)
-        self.cme_info_label.setStyleSheet(
-            f"color: {theme_manager.palette['text']}; font-style: italic; padding: 10px; font-weight: light; opacity: 0.4;"
-        )
+        self.cme_info_label.setObjectName("Hint")
         cme_layout.addWidget(self.cme_info_label)
 
         # CME credits label with link
@@ -384,9 +352,7 @@ class NOAAEventsViewer(
             "(Space Weather Database Of Notifications, Knowledge, Information)"
         )
         cme_credits_label.setOpenExternalLinks(True)
-        cme_credits_label.setStyleSheet(
-            f"color: {theme_manager.palette['text_secondary']}; font-size: 10pt; padding: 5px 10px;"
-        )
+        cme_credits_label.setObjectName("Hint")
         cme_layout.addWidget(cme_credits_label)
 
         # Make CME tab scrollable
@@ -468,7 +434,7 @@ class NOAAEventsViewer(
 
             self.date_edit.setEnabled(True)
             self.fetch_btn.setEnabled(True)
-            self.fetch_btn.setText("🔍 Fetch")
+            self.fetch_btn.setText("Fetch")
             self.progress.hide()
             self.events = events
 
@@ -532,7 +498,7 @@ class NOAAEventsViewer(
             earth_directed = sum(1 for cme in cmes if cme.is_earth_directed)
             cme_text = f"CMEs: {cme_count}"
             if earth_directed > 0:
-                cme_text += f" (🌍 {earth_directed})"
+                cme_text += f" ({earth_directed})"
             summary_parts.append(cme_text)
         elif cmes is not None:
             summary_parts.append("CMEs: 0")
@@ -556,7 +522,7 @@ class NOAAEventsViewer(
 
             self.date_edit.setEnabled(True)
             self.fetch_btn.setEnabled(True)
-            self.fetch_btn.setText("🔍 Fetch")
+            self.fetch_btn.setText("Fetch")
             self.progress.hide()
 
             self.summary_label.setText(f"Error fetching data: {error_msg}")
@@ -595,7 +561,7 @@ class NOAAEventsViewer(
         # summary_parts = []
         # if xray_count > 0:
         #     max_note = f" (max: {max_class})" if max_class else ""
-        #     summary_parts.append(f"📊 {xray_count} X-ray flare{'s' if xray_count > 1 else ''}{max_note}")
+        #     summary_parts.append(f"{xray_count} X-ray flare{'s' if xray_count > 1 else ''}{max_note}")
         # if optical_count > 0:
         #     summary_parts.append(f"{optical_count} Optical")
         # if radio_count > 0:
@@ -789,7 +755,7 @@ class NOAAEventsViewer(
             time_str = cme.start_time.strftime("%Y-%m-%d %H:%M")
             speed_str = f"{cme.speed:.0f}"
             width_str = f"{cme.half_angle:.0f}°" if cme.half_angle else "—"
-            earth_str = "🌍 Yes" if cme.is_earth_directed else "No"
+            earth_str = "Yes" if cme.is_earth_directed else "No"
 
             # Color coding
             color_col = {}

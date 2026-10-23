@@ -233,7 +233,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.info_label = QLabel(
             "Learmonth Solar Observatory, Western Australia.\nFrequency: 25-180 MHz | Data from BOM Australia or NOAA NCEI."
         )
-        self.info_label.setStyleSheet("color: gray; font-style: italic;")
+        self.info_label.setObjectName("Hint")
         self.info_label.setWordWrap(True)
 
         layout.addWidget(self.instrument_combo)
@@ -252,7 +252,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         ecallisto_layout.addWidget(self.ecallisto_combo)
         
         # Refresh button to fetch observatories for selected date
-        self.refresh_obs_button = QPushButton("🔄")
+        self.refresh_obs_button = QPushButton("")
         self.refresh_obs_button.setToolTip("Refresh observatory list for selected date")
         self.refresh_obs_button.setMaximumWidth(40)
         self.refresh_obs_button.clicked.connect(self.refresh_observatories)
@@ -373,7 +373,7 @@ class RadioDataDownloaderGUI(QMainWindow):
             "Note: Data may not be available for all dates. "
             "Learmonth data is typically available within 1-2 days."
         )
-        note_label.setStyleSheet("color: #888;")
+        note_label.setObjectName("Hint")
         note_label.setWordWrap(True)
         layout.addWidget(note_label)"""
 
@@ -416,7 +416,7 @@ class RadioDataDownloaderGUI(QMainWindow):
     def on_observatory_refresh_finished(self, observatories: list):
         """Handle successful observatory fetch."""
         self.refresh_obs_button.setEnabled(True)
-        self.refresh_obs_button.setText("🔄")
+        self.refresh_obs_button.setText("")
         
         # Update the combobox
         current_selection = self.ecallisto_combo.currentText()
@@ -439,7 +439,7 @@ class RadioDataDownloaderGUI(QMainWindow):
     def on_observatory_refresh_error(self, error_message: str):
         """Handle observatory fetch error."""
         self.refresh_obs_button.setEnabled(True)
-        self.refresh_obs_button.setText("🔄")
+        self.refresh_obs_button.setText("")
         self.log_message(f"Error refreshing observatories: {error_message}")
 
     def on_start_date_changed(self, new_date):
@@ -518,7 +518,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.download_button = QPushButton("Download && Convert to FITS")
         self.download_button.clicked.connect(self.start_download)
         self.download_button.setMinimumHeight(40)
-        self.download_button.setStyleSheet("font-weight: bold;")
+        self.download_button.setObjectName("PrimaryButton")
         layout.addWidget(self.download_button)
 
         self.layout.addLayout(layout)
