@@ -911,7 +911,7 @@ class TutorialDialog(QDialog):
             self._create_info_box(
                 "Solar Activity Viewer",
                 [
-                    "Access via Apps → Solar Activity Viewer or the Activity button",
+                    "Access via Apps → Solar Activity Viewer or the activity icon at the top of the inspector",
                     "NOAA solar event reports and active regions",
                     "Solar conditions summary and CME alerts",
                     "GOES X-ray flux plots",
@@ -925,7 +925,7 @@ class TutorialDialog(QDialog):
             self._create_info_box(
                 "Helioviewer Browser",
                 [
-                    "Access via Apps → Helioviewer Browser or the Helioviewer button",
+                    "Access via Apps → Helioviewer Browser or the sun icon at the top of the inspector",
                     "Browse solar images by time range",
                     "Multiple instruments: SDO, SOHO, STEREO, GOES, Solar Orbiter",
                     "Frame-by-frame navigation with time slider",

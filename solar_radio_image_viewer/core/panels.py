@@ -1,8 +1,9 @@
 """
 The image tab's controls around the canvas: the top bar (file, Stokes,
-threshold, colormap, stretch), the inspector at the right (the Display
-and Statistics tabs, the cursor readout pinned at its foot, Reload and
-Helioviewer under that) and the empty canvas shown before an image.
+threshold, colormap, stretch), the inspector at the right (a header with
+the image's unit and frame and the observation-context launchers, the
+Display and Statistics tabs, the cursor readout pinned at its foot) and
+the empty canvas shown before an image.
 """
 
 import logging
@@ -29,12 +30,13 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon
+from ..ui.conversion_control import ConversionControl
 from ..ui.cursor_readout import CursorReadout
 from ..ui.empty_canvas import EmptyCanvas
 from ..ui.geometry import fit_width_to_text
 from ..ui.histogram import LevelsHistogram
 from ..ui.searchable_combobox import ColormapSelector
-from ..ui.icons import get_resource_path, themed_icon
+from ..ui.icons import get_resource_path, launcher_icon, themed_icon
 from ..ui.stokes_picker import StokesPicker
 from ..ui.styles import set_tone
 from ..ui.widgets import kicker, kicker_row, link_button, segmented, toggle_row, vrule
@@ -268,6 +270,8 @@ class PanelsMixin:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        layout.addWidget(self._inspector_header())
+
         self.inspector_tabs = QTabWidget()
         self.inspector_tabs.setObjectName("InspectorTabs")
         self.inspector_tabs.tabBar().setFocusPolicy(Qt.NoFocus)
@@ -276,48 +280,67 @@ class PanelsMixin:
         layout.addWidget(self.inspector_tabs, 1)
 
         self.cursor_readout = CursorReadout()
-        self._create_conversion_buttons()
         layout.addWidget(self.cursor_readout)
-
-        footer = QFrame()
-        footer.setObjectName("CanvasBar")
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(10, 8, 14, 8)
-        footer_layout.setSpacing(6)
-        # Display changes apply as they are made; this reads the image
-        # again, which is rarely needed
-        self.plot_button = link_button("Reload image", self.on_visualization_changed)
-        self.plot_button.setToolTip("Read the image again from disk")
-        footer_layout.addWidget(self.plot_button)
-        footer_layout.addStretch()
-        self.helioviewer_btn = QPushButton("Helioviewer")
-        self.helioviewer_btn.setToolTip(
-            "Browse Helioviewer images around current observation time"
-        )
-        self.helioviewer_btn.setEnabled(False)  # until an image is loaded
-        self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
-        footer_layout.addWidget(self.helioviewer_btn)
-        layout.addWidget(footer)
-
         return inspector
 
-    def _create_conversion_buttons(self):
-        """The brightness-temperature and helioprojective conversions,
-        beside the readout lines they change (their text is set by the
-        loaders and the conversions themselves: TB / FLUX, HPC / RA/DEC)."""
-        self.tb_btn = QPushButton("TB")
-        self.tb_btn.setToolTip(
-            "Convert to Brightness Temperature (K) - requires Jy/beam units"
-        )
-        self.tb_btn.setCheckable(True)
-        self.tb_btn.setEnabled(False)  # enabled when the units are Jy/beam
-        self.tb_btn.clicked.connect(self._toggle_tb_mode)
-        self.cursor_readout.set_value_button(self.tb_btn)
+    def _inspector_header(self):
+        """One row at the top of the inspector: what the image is in (its
+        unit, its coordinate frame; the other segment converts it), and
+        the two windows about its observation time."""
+        header = QFrame()
+        header.setObjectName("InspectorHeader")
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(14, 6, 10, 6)
+        layout.setSpacing(8)
 
-        self.hpc_btn = QPushButton("HPC")
-        self.hpc_btn.setToolTip("Convert to Helioprojective view")
+        # The loaders set the action these offer ("TB" / "FLUX", "HPC" /
+        # "RA/DEC"), which is the other state than the one on
+        self.tb_btn = ConversionControl(
+            ("Jy/beam", "K"),
+            {"TB": 0, "FLUX": 1},
+            "The image's unit: flux density, or brightness temperature (needs the beam)",
+        )
+        self.tb_btn.setEnabled(False)  # enabled when the units are Jy/beam or K
+        self.tb_btn.clicked.connect(self._toggle_tb_mode)
+        layout.addWidget(self.tb_btn)
+
+        self.hpc_btn = ConversionControl(
+            ("RA/Dec", "Solar XY"),
+            {"HPC": 0, "RA/DEC": 1},
+            "The image's coordinate frame: equatorial, or helioprojective (solar X and Y)",
+        )
+        self.hpc_btn.setEnabled(False)  # enabled with an image (loading)
         self.hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
-        self.cursor_readout.set_world_button(self.hpc_btn)
+        layout.addWidget(self.hpc_btn)
+        layout.addStretch()
+
+        # The observation's context, in windows of their own
+        self.noaa_events_btn = QPushButton()
+        self.noaa_events_btn.setObjectName("IconOnlyNBGButton")
+        self.noaa_events_btn.setIcon(launcher_icon("activity.svg"))
+        self.noaa_events_btn.setIconSize(QSize(16, 16))
+        self.noaa_events_btn.setAccessibleName("Solar activity")
+        self.noaa_events_btn.setEnabled(False)  # until an image is loaded
+        self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
+        self.helioviewer_btn = QPushButton()
+        self.helioviewer_btn.setObjectName("IconOnlyNBGButton")
+        self.helioviewer_btn.setIcon(launcher_icon("sun.svg"))
+        self.helioviewer_btn.setIconSize(QSize(16, 16))
+        self.helioviewer_btn.setAccessibleName("Helioviewer")
+        self.helioviewer_btn.setEnabled(False)
+        self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
+        self.show_observation_time(None)
+        layout.addWidget(self.noaa_events_btn)
+        layout.addWidget(self.helioviewer_btn)
+        return header
+
+    def show_observation_time(self, time):
+        """The launchers say which observation time they open."""
+        when = f" at {time}" if time else ""
+        self.noaa_events_btn.setToolTip(
+            f"Solar activity{when}: events, active regions, conditions, CMEs"
+        )
+        self.helioviewer_btn.setToolTip(f"Helioviewer images{when}")
 
     def _display_page(self):
         page = QWidget()
@@ -522,6 +545,11 @@ class PanelsMixin:
         row.addWidget(self.downsample_toggle)
         row.addWidget(self.downsample_status)
         row.addStretch()
+        # Display changes apply as they are made; this reads the image
+        # again, which is rarely needed
+        self.plot_button = link_button("Reload image", self.on_visualization_changed)
+        self.plot_button.setToolTip("Read the image again from disk")
+        row.addWidget(self.plot_button)
 
         rms_tip = (
             "RMS box: where the noise (RMS) is measured, by default a band "
@@ -590,16 +618,6 @@ class PanelsMixin:
         )
         self.image_stats_table.hide()
         block_layout.addWidget(self.image_stats_table)
-        self.noaa_events_btn = QPushButton("Activity")
-        self.noaa_events_btn.setToolTip(
-            "View Solar Activity (Events, Active Regions, Conditions, CMEs)"
-        )
-        self.noaa_events_btn.setEnabled(False)  # until an image is loaded
-        self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
-        row = QHBoxLayout()
-        row.addWidget(self.noaa_events_btn)
-        row.addStretch()
-        block_layout.addLayout(row)
         layout.addWidget(block)
         layout.addStretch()
         return page

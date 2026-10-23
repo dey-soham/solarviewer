@@ -1,8 +1,6 @@
 """
 The cursor readout pinned at the foot of the inspector: the pixel under
-the mouse, its world coordinates and its value, each on its own line, with
-the conversion buttons (brightness temperature, helioprojective) beside
-the lines they change.
+the mouse, its world coordinates and its value, each on its own line.
 """
 
 from PyQt5.QtCore import Qt
@@ -15,8 +13,7 @@ BLANK = "—"
 
 class CursorReadout(QFrame):
     """``set_state("no image")`` clears the lines and names the state;
-    ``show(pixel, world, value)`` fills them. ``value_button`` and
-    ``world_button`` are the slots for the TB and HPC buttons."""
+    ``show_cursor(pixel, world, value)`` fills them."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -26,7 +23,7 @@ class CursorReadout(QFrame):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(6)
         header, self.state_label = kicker_row("Cursor", "no image")
-        grid.addWidget(header, 0, 0, 1, 3)
+        grid.addWidget(header, 0, 0, 1, 2)
         self._values = {}
         for row, name in enumerate(("Pixel", "World", "Value"), start=1):
             label = QLabel(name)
@@ -39,13 +36,6 @@ class CursorReadout(QFrame):
             grid.addWidget(value, row, 1)
             self._values[name] = value
         grid.setColumnStretch(1, 1)
-        self._grid = grid
-
-    def set_world_button(self, button):
-        self._grid.addWidget(button, 2, 2, Qt.AlignRight)
-
-    def set_value_button(self, button):
-        self._grid.addWidget(button, 3, 2, Qt.AlignRight)
 
     def set_state(self, state):
         """No readout: say why ("no image", "off the image")."""

@@ -120,6 +120,7 @@ TOKENS = {
 #   TopBar          the main window's control bar (a line below)
 #   CanvasBar       the toolbar under the image (a line above)
 #   Inspector       the main window's right column (a line on its left)
+#   InspectorHeader the row at its top, on the surface (a line below)
 #   Pinned          a QFrame pinned at the inspector's foot, on the surface
 #   Sidebar         a QFrame navigation column
 #   NavList         a QListWidget of sections in a Sidebar
@@ -162,6 +163,7 @@ ROLES = (
     "TopBar",
     "CanvasBar",
     "Inspector",
+    "InspectorHeader",
     "Pinned",
     "Sidebar",
     "NavList",
@@ -461,6 +463,11 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {p['window']};
         border: none;
         border-left: 1px solid {p['divider']};
+    }}
+    QFrame#InspectorHeader {{
+        background-color: {p['surface']};
+        border: none;
+        border-bottom: 1px solid {p['divider']};
     }}
     QFrame#Pinned {{
         background-color: {p['surface']};

@@ -39,7 +39,7 @@ from .ui.styles import (
 )
 from .ui.app import apply_theme
 from .ui.geometry import fit_to_screen
-from .ui.icons import get_resource_path, themed_icon
+from .ui.icons import get_resource_path, launcher_icon, themed_icon
 from .ui.document_tabs import DocumentTabs
 from .utils.update_checker import check_for_updates
 from .version import __version__
@@ -1040,6 +1040,10 @@ class SolarRadioImageTab(
             self.info_action.setIcon(QIcon(themed_icon("icons8-info-90.png")))
         if hasattr(self, "_filter_btn"):
             self._filter_btn.setIcon(QIcon(themed_icon("filter.svg")))
+        if hasattr(self, "noaa_events_btn"):
+            self.noaa_events_btn.setIcon(launcher_icon("activity.svg"))
+        if hasattr(self, "helioviewer_btn"):
+            self.helioviewer_btn.setIcon(launcher_icon("sun.svg"))
         # Update search button in colormap selector
         if hasattr(self, "colormap_selector") and hasattr(
             self.colormap_selector, "search_button"

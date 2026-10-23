@@ -228,6 +228,7 @@ class LoadingMixin:
 
                 # Update HPC button based on coordinate system
                 if hasattr(self, "hpc_btn"):
+                    self.hpc_btn.setEnabled(True)
                     ctype1 = self.current_header.get("CTYPE1", "").upper()
                     ctype2 = self.current_header.get("CTYPE2", "").upper()
                     is_hpc = (
@@ -308,6 +309,7 @@ class LoadingMixin:
 
                     # Update HPC button based on coordinate system
                     if hasattr(self, "hpc_btn"):
+                        self.hpc_btn.setEnabled(True)
                         is_hpc = (
                             "SOLAR-X" in dimension_names
                             or "HPLN-TAN" in dimension_names

@@ -725,6 +725,8 @@ class RenderingMixin:
                         else "No Image"
                     )
                 ax.set_title(self._fit_title(title))
+                if hasattr(self, "show_observation_time"):
+                    self.show_observation_time(image_time)
             except Exception as e:
                 logger.error(f"Error getting title: {e}")
                 self.show_status_message(f"Error getting title: {e}")
