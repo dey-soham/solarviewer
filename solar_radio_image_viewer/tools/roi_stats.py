@@ -22,6 +22,8 @@ from ..ui.styles import set_hand_cursor
 
 
 # For region selection modes
+from ..ui.geometry import fit_to_screen
+
 class RegionMode:
     RECTANGLE = 0
     ELLIPSE = 1
@@ -89,6 +91,7 @@ class RoiStatsMixin:
         set_hand_cursor(dialog)
         dialog.resize(800, 650)
         dialog.setMinimumSize(600, 400)
+        fit_to_screen(dialog, 600, 400)
         layout = QVBoxLayout(dialog)
 
         # Create figure

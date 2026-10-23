@@ -12,7 +12,6 @@ from typing import Optional
 # Qt imports
 try:
     from PyQt5.QtWidgets import (
-        QApplication,
         QMainWindow,
         QWidget,
         QVBoxLayout,
@@ -27,8 +26,7 @@ try:
         QProgressBar,
         QTabWidget,
     )
-    from PyQt5.QtCore import Qt, QDate
-    from PyQt5.QtGui import QColor, QPalette
+    from PyQt5.QtCore import QDate
     from PyQt5.QtNetwork import QNetworkAccessManager
 except ImportError:
     print("PyQt5 is required. Install with: pip install PyQt5")
@@ -60,6 +58,9 @@ from .workers import FetchWorker
 from ..processing.fits_io import is_fits, readable_image_path
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class NOAAEventsViewer(
     ConditionsTabMixin, RadioSpectraTabMixin, ContextImagesTabMixin, QMainWindow
 ):
@@ -68,7 +69,7 @@ class NOAAEventsViewer(
     def __init__(self, parent=None, initial_date: Optional[date] = None):
         super().__init__(parent)
         self.setWindowTitle("☀️ Solar Activity Viewer")
-        self.resize(1000, 800)
+        fit_to_screen(self, 1000, 800)
 
         # Network Manager for image downloading
         self.nam = QNetworkAccessManager(self)
@@ -88,25 +89,7 @@ class NOAAEventsViewer(
 
             QApplication.setOverrideCursor(Qt.WaitCursor)
 
-        # Detect theme (dark vs light)
         self.is_dark_theme = theme_manager.is_dark
-        self.setStyleSheet(theme_manager.stylesheet)
-
-        # Improve Light Theme: Override window background to use 'base' (lighter) instead of 'window' (muddy)
-        if not self.is_dark_theme:
-            palette = theme_manager.palette
-            # Use base color for main window and dialogs to reduce the heavy beige look
-            # Use 'window' color (darker beige) for panels/containers to create hierarchy
-            light_overrides = f"""
-                QMainWindow, QDialog {{
-                    background-color: {palette['base']};
-                }}
-                QTabWidget::pane {{
-                    background-color: {palette['plot_bg']};
-                    border: 1px solid {palette['border']};
-                }}
-            """
-            self.setStyleSheet(theme_manager.stylesheet + light_overrides)
 
         self.init_ui()
 
@@ -1062,41 +1045,14 @@ def main():
     parser.add_argument(
         "--theme",
         choices=["light", "dark"],
-        default="dark",
-        help="Set application theme (light or dark)",
+        default=None,
+        help="Set application theme (light or dark; default: the one SolarViewer uses)",
     )
     args = parser.parse_args()
 
-    # Setup application
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
+    from ..ui.app import create_app
 
-    # Apply theme
-    if args.theme == "light":
-        theme_manager.set_theme(theme_manager.LIGHT)
-    else:
-        theme_manager.set_theme(theme_manager.DARK)
-
-    # Apply detailed palette to application (replicates main.py logic)
-    palette = theme_manager.palette
-    qt_palette = QPalette()
-    qt_palette.setColor(QPalette.Window, QColor(palette["window"]))
-    qt_palette.setColor(QPalette.WindowText, QColor(palette["text"]))
-    qt_palette.setColor(QPalette.Base, QColor(palette["base"]))
-    qt_palette.setColor(QPalette.AlternateBase, QColor(palette["surface"]))
-    qt_palette.setColor(QPalette.Text, QColor(palette["text"]))
-    qt_palette.setColor(QPalette.Button, QColor(palette["button"]))
-    qt_palette.setColor(QPalette.ButtonText, QColor(palette["text"]))
-    qt_palette.setColor(QPalette.Highlight, QColor(palette["highlight"]))
-    qt_palette.setColor(QPalette.HighlightedText, Qt.white)
-    qt_palette.setColor(QPalette.Link, QColor(palette["highlight"]))
-    qt_palette.setColor(QPalette.Disabled, QPalette.Text, QColor(palette["disabled"]))
-    qt_palette.setColor(
-        QPalette.Disabled, QPalette.ButtonText, QColor(palette["disabled"])
-    )
-
-    app.setPalette(qt_palette)
-    app.setStyleSheet(theme_manager.stylesheet)
+    app = create_app(args.theme)
 
     viewer = NOAAEventsViewer()
     viewer.show()

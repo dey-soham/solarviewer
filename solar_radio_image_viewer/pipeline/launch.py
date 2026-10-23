@@ -46,18 +46,15 @@ def main(argv=None):
     import importlib
 
     from PyQt5.QtCore import QTimer
-    from PyQt5.QtWidgets import QApplication
 
-    from .simpl_theme import apply_theme, setup_high_dpi
+    from ..ui.app import create_app
 
     module_name, class_name, takes_theme = TOOLS[tool]
     window_class = getattr(
         importlib.import_module(f".{module_name}", __package__), class_name
     )
 
-    setup_high_dpi()
-    app = QApplication(sys.argv)
-    apply_theme(app, theme)
+    app = create_app(theme)
     window = window_class(theme=theme) if takes_theme else window_class()
     window.show()
     if path and hasattr(window, "openFile"):

@@ -19,6 +19,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QSize
 
 
+from .ui.geometry import fit_to_screen
+
+
 class TutorialDialog(QDialog):
     """A comprehensive tutorial dialog with sidebar navigation."""
 
@@ -32,8 +35,8 @@ class TutorialDialog(QDialog):
 
     def _setup_ui(self):
         self.setWindowTitle("SolarViewer Tutorial")
-        self.setMinimumSize(900, 650)
-        self.resize(950, 700)
+        self.setMinimumSize(720, 520)
+        fit_to_screen(self, 950, 700)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)

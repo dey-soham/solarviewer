@@ -14,7 +14,6 @@ import time
 import psutil
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
-    QApplication,
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -84,6 +83,9 @@ __all__ = [
 ]
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class VideoCreationDialog(
     PreviewMixin,
     MainWindowMixin,
@@ -115,7 +117,7 @@ class VideoCreationDialog(
         self.reference_image = None
 
         self.setWindowTitle("Create Video")
-        self.resize(1320, 800)
+        fit_to_screen(self, 1320, 800)
 
         # Preview: rendered in the background, shortly after settings change
         self._preview_files = []
@@ -707,7 +709,9 @@ class VideoCreationDialog(
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+    from ..ui.app import create_app
+
+    app = create_app()
     dialog = VideoCreationDialog()
     dialog.show()
     sys.exit(app.exec_())

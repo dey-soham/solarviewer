@@ -13,11 +13,11 @@ os.environ.setdefault("OPENSSL_CONF", "/dev/null")
 import sys
 import argparse
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtGui import QPalette, QColor
-from PyQt5.QtCore import Qt, QSettings
+from PyQt5.QtCore import QSettings
 
 # Import theme manager FIRST, before viewer
 from .ui.styles import theme_manager, ThemeManager
+from .ui.app import create_app, apply_theme
 from . import __version__
 
 # Globally suppress Astropy's "Invalid 'BLANK' keyword" warning
@@ -48,31 +48,6 @@ try:
     )
 except ImportError:
     pass
-
-
-def apply_theme(app, theme_mgr):
-    """Apply the current theme to the application."""
-    palette = theme_mgr.palette
-
-    # Apply Qt palette
-    qt_palette = QPalette()
-    qt_palette.setColor(QPalette.Window, QColor(palette["window"]))
-    qt_palette.setColor(QPalette.WindowText, QColor(palette["text"]))
-    qt_palette.setColor(QPalette.Base, QColor(palette["base"]))
-    qt_palette.setColor(QPalette.AlternateBase, QColor(palette["surface"]))
-    qt_palette.setColor(QPalette.Text, QColor(palette["text"]))
-    qt_palette.setColor(QPalette.Button, QColor(palette["button"]))
-    qt_palette.setColor(QPalette.ButtonText, QColor(palette["text"]))
-    qt_palette.setColor(QPalette.Highlight, QColor(palette["highlight"]))
-    qt_palette.setColor(QPalette.HighlightedText, Qt.white)
-    qt_palette.setColor(QPalette.Link, QColor(palette["highlight"]))
-    qt_palette.setColor(QPalette.Disabled, QPalette.Text, QColor(palette["disabled"]))
-    qt_palette.setColor(
-        QPalette.Disabled, QPalette.ButtonText, QColor(palette["disabled"])
-    )
-
-    app.setPalette(qt_palette)
-    app.setStyleSheet(theme_mgr.stylesheet)
 
 
 # Threaded Loading Implementation
@@ -195,29 +170,11 @@ Examples:
         print("Please provide a valid path to an image file.")
         sys.exit(1)
 
-    # Enable HiDPI scaling for high-resolution displays
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-
-    pre_settings = QSettings("SolarViewer", "SolarViewer")
-    ui_scale_factor = pre_settings.value("ui_scale_factor", 1.0, type=float)
-    if ui_scale_factor != 1.0:
-        os.environ["QT_SCALE_FACTOR"] = str(ui_scale_factor)
-
-    # Initialize the application
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-
-    # Load saved theme preference BEFORE importing viewer
+    # The application: scaled for the display, themed (the saved theme, or
+    # light with --light) and fonted, before the viewer is imported so
+    # Matplotlib's colours are right from the start
+    app = create_app(ThemeManager.LIGHT if args.light else None)
     settings = QSettings("SolarViewer", "SolarViewer")
-    saved_theme = settings.value("theme", ThemeManager.DARK)
-
-    # Command line --light flag overrides saved preference
-    if args.light:
-        saved_theme = ThemeManager.LIGHT
-
-    # Set initial theme BEFORE importing viewer (so matplotlib rcParams are correct)
-    theme_manager._current_theme = saved_theme
 
     # === Initialize Log Console ===
     # Everything printed or logged also goes to the log file
@@ -308,19 +265,17 @@ Examples:
             splash.show_message("Building interface...")
             QApplication.processEvents()
 
-            # Apply theme BEFORE creating window to ensure correct initialization
-            apply_theme(app, theme_manager)
+            # Matplotlib is loaded now: give it the theme's colours too
+            apply_theme(app)
 
             # Instantiate the main window now that classes are imported and theme is active
             win = ViewerClass(args.imagename, fast_preview=args.fast)
             window_container["window"] = win
 
-            # Setup theme callback
-            def on_theme_change(new_theme):
-                apply_theme(app, theme_manager)
-                settings.setValue("theme", new_theme)
-
-            theme_manager.register_callback(on_theme_change)
+            # Remember the theme chosen in the View menu
+            theme_manager.register_callback(
+                lambda new_theme: settings.setValue("theme", new_theme), owner=win
+            )
 
             splash.set_progress(100)
             splash.show_message("Ready!")

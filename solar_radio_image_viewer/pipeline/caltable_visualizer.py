@@ -13,7 +13,6 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QComboBox,
     QGridLayout,
-    QStyleFactory,
     QProgressBar,
     QShortcut,
 )
@@ -28,7 +27,9 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 import io
 import subprocess
 import os
-from ..ui.styles import set_hand_cursor
+from matplotlib import rcParams
+
+from ..ui.styles import set_hand_cursor, theme_manager
 
 
 _READ_CALTABLE_SCRIPT = """
@@ -50,6 +51,9 @@ buffer = io.BytesIO()
 np.savez(buffer, **arrays)
 sys.stdout.buffer.write(buffer.getvalue())
 """
+
+
+from ..ui.geometry import fit_to_screen
 
 
 def read_caltable_safe(table_path, read_spectral_window=False):
@@ -98,7 +102,7 @@ class VisualizationApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Bandpass and Crossphase Visualizer")
-        self.setGeometry(100, 100, 860, 810)
+        fit_to_screen(self, 860, 810)
 
         # Variables for bandpass
         self.bandpass_solutions = None
@@ -1176,28 +1180,17 @@ class VisualizationApp(QMainWindow):
 
 def main():
     """Entry point for viewcaltable command."""
-    # Apply high DPI scaling
-    from solar_radio_image_viewer.pipeline.simpl_theme import setup_high_dpi
-    setup_high_dpi()
+    import argparse
 
-    app = QApplication(sys.argv)
-    app.setStyle(QStyleFactory.create("Fusion"))
+    from ..ui.app import create_app
 
-    # Apply dark theme from solarviewer
-    from solar_radio_image_viewer.pipeline.simpl_theme import apply_theme
+    parser = argparse.ArgumentParser(description="Bandpass and Crossphase Visualizer")
+    parser.add_argument("--theme", choices=["dark", "light"], default=None)
+    args = parser.parse_args()
 
-    apply_theme(app, "dark")
-
-    # Set seaborn theme for plots
+    app = create_app(args.theme)
     sns.set_theme(style="darkgrid")
-
-    # Configure matplotlib using theme_manager (same as solarviewer)
-    from matplotlib import rcParams
-    from solar_radio_image_viewer.ui.styles import theme_manager
-
     rcParams.update(theme_manager.matplotlib_params)
-    rcParams["axes.linewidth"] = 1.4
-    rcParams["font.size"] = 12
 
     window = VisualizationApp()
     window.show()

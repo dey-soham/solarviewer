@@ -25,7 +25,7 @@ from PyQt5.QtGui import QFont
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, Normalize, PowerNorm
-from .simpl_theme import get_palette
+from ..ui.styles import palette_for as get_palette
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )

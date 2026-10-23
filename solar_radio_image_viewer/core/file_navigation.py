@@ -18,6 +18,9 @@ from ..ui.styles import set_hand_cursor, theme_manager
 logger = logging.getLogger(__name__)
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class FileNavigationMixin:
     """File selection, directory scanning, prev/next/first/last, filter and playlist.
 
@@ -876,6 +879,7 @@ except Exception:
         dialog.setWindowTitle("File List")
         set_hand_cursor(dialog)
         dialog.setMinimumSize(550, 700)
+        fit_to_screen(dialog, 550, 700)
 
         # Store reference to prevent garbage collection
         self._playlist_dialog = dialog

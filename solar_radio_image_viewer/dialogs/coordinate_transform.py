@@ -32,6 +32,9 @@ import glob
 import uuid
 import traceback
 
+from ..ui.geometry import fit_to_screen
+
+
 def process_single_file_coordsys(args):
     """Process a single file for coordinate transformation - standalone function for multiprocessing
 
@@ -195,7 +198,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         super().__init__(parent)
         self.setWindowTitle("Batch Coordinate Transformation")
         self.setMinimumSize(600, 550)
-        self.resize(750, 650)
+        fit_to_screen(self, 750, 650)
         self.parent = parent
         self.current_file = current_file
 

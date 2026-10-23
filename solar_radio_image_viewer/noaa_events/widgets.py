@@ -25,6 +25,9 @@ from .workers import ImageLoader, ImageUrlResolver
 logger = logging.getLogger(__name__)
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class ClickableLabel(QLabel):
     """QLabel that emits a clicked signal."""
 
@@ -43,7 +46,7 @@ class FullImageViewer(QDialog):
         self.setWindowFlags(
             Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
         )
-        self.resize(1920, 1080)
+        fit_to_screen(self, 1920, 1080)
         self.page_url = page_url
         set_hand_cursor(self)
 

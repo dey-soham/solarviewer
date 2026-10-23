@@ -54,7 +54,6 @@ Notes:
 """
 
 import sys
-import os
 import json
 import re
 import numpy as np
@@ -88,7 +87,8 @@ from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt, pyqtSlot, QTimer
 from PyQt5.QtGui import QKeySequence
 
-from .simpl_theme import apply_theme, get_palette
+from ..ui.app import apply_theme
+from ..ui.styles import palette_for as get_palette, theme_manager
 from .spectra_common import _Section, _channel_medians, drift_rate, rebin
 from .spectra_files import SpectraFilesMixin
 from .spectra_masks import SpectraMasksMixin
@@ -111,6 +111,9 @@ from ..ui.free_dialogs import free_modal_dialogs
 ###############################################################################
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class MainWindow(
     SpectraFilesMixin,
     SpectraMasksMixin,
@@ -123,12 +126,7 @@ class MainWindow(
         free_modal_dialogs(self)  # (its settings, browsers... move on their own)
         self.setWindowTitle("Dynamic Spectra Viewer")
         # Tall enough for the side panel unfolded, as the screen allows
-        screen = QApplication.primaryScreen()
-        free = screen.availableGeometry() if screen is not None else None
-        self.resize(
-            min(1500, free.width() - 40) if free else 1500,
-            min(1000, free.height() - 40) if free else 850,
-        )
+        fit_to_screen(self, 1500, 1000)
 
         # Store theme from parameter (allows external theme override)
         self._external_theme = theme
@@ -1027,9 +1025,8 @@ class MainWindow(
 
     def _applyStyle(self):
         """Apply the global application theme."""
-        app = QApplication.instance()
-        if app:
-            apply_theme(app, self.current_theme)
+        theme_manager.set_theme(self.current_theme)
+        apply_theme()
 
         # The side panel's own colours
         self._palette = get_palette(self.current_theme)
@@ -1577,20 +1574,20 @@ class MainWindow(
 
 def main():
     """Entry point for viewds command."""
-    # Apply high DPI scaling
-    from solar_radio_image_viewer.pipeline.simpl_theme import setup_high_dpi
+    import argparse
 
-    setup_high_dpi()
+    from ..ui.app import create_app
 
-    app = QApplication(sys.argv)
+    parser = argparse.ArgumentParser(description="Dynamic Spectrum Viewer")
+    parser.add_argument("file", nargs="?", default=None, help="spectrum to open")
+    parser.add_argument("--theme", choices=["dark", "light"], default=None)
+    args = parser.parse_args()
 
-    # Apply dark theme from solarviewer
-    from solar_radio_image_viewer.pipeline.simpl_theme import apply_theme
-
-    apply_theme(app, "dark")
-
-    w = MainWindow(theme="dark")
+    app = create_app(args.theme)
+    w = MainWindow(theme=theme_manager.current_theme)
     w.show()
+    if args.file:
+        QTimer.singleShot(0, lambda: w.openFile(args.file))
     sys.exit(app.exec_())
 
 

@@ -22,6 +22,9 @@ from ..ui.icons import get_resource_path
 logger = logging.getLogger(__name__)
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class HelpMixin:
     """Shows the Help menu's windows.
 
@@ -62,7 +65,7 @@ class HelpMixin:
 
         dialog = QDialog(self)
         dialog.setWindowTitle("About SolarViewer")
-        dialog.resize(510, 580)
+        fit_to_screen(dialog, 510, 580)
 
         layout = QVBoxLayout(dialog)
         layout.setSpacing(0)
@@ -343,6 +346,7 @@ class HelpMixin:
         dialog = QDialog(self)
         dialog.setWindowTitle("Keyboard Shortcuts")
         dialog.setMinimumSize(850, 600)
+        fit_to_screen(dialog, 850, 600)
 
         main_layout = QVBoxLayout(dialog)
         main_layout.setSpacing(16)

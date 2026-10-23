@@ -1,7 +1,9 @@
 """
 Shared UI building blocks for SolarViewer.
 
-- ``styles``: themes, palettes, stylesheets (``theme_manager``)
+- ``styles``: themes, palettes, design tokens, the stylesheet (``theme_manager``)
+- ``app``: the one QApplication every window runs in (``create_app``)
+- ``geometry``: window sizes that fit the screen (``fit_to_screen``)
 - ``icons``: package resource paths and theme-aware icons
 - ``segmented_control``: pill-style segmented toggle
 - ``custom_tabs``: main-window tab bar / tab widget

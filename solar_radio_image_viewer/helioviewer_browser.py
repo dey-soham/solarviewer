@@ -49,6 +49,9 @@ from .ui.styles import set_hand_cursor
 _active_threads = []
 
 
+from .ui.geometry import fit_to_screen
+
+
 class InteractiveImageLabel(QLabel):
     """A QLabel that allows drawing a selection rectangle and panning."""
 
@@ -150,7 +153,7 @@ class ZoomOverlayFrame(QFrame):
     def __init__(self, parent, pixmap, title):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(1200, 1200)
+        fit_to_screen(self, 1200, 1200)
 
         layout = QVBoxLayout(self)
 
@@ -177,7 +180,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
     def __init__(self, parent=None, initial_start=None, initial_end=None):
         super().__init__(parent)
         self.setWindowTitle("🌐 Helioviewer Browser")
-        self.resize(1600, 1000)
+        fit_to_screen(self, 1600, 1000)
 
         # Data storage
         self.frames = OrderedDict()  # {frame_index: {instrument: pixmap}}
@@ -1484,7 +1487,9 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 def main():
     import sys
 
-    app = QApplication(sys.argv)
+    from .ui.app import create_app
+
+    app = create_app()
     window = HelioviewerBrowser()
     window.show()
     sys.exit(app.exec_())

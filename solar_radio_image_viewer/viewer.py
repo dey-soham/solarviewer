@@ -26,13 +26,15 @@ from PyQt5.QtWidgets import (
     QSplitter,
 )
 from PyQt5.QtCore import Qt, QEventLoop, QSettings, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QIcon, QColor, QPalette
+from PyQt5.QtGui import QIcon
 
 from .ui.styles import (
     theme_manager,
     get_stylesheet,
     set_hand_cursor,
 )
+from .ui.app import apply_theme
+from .ui.geometry import fit_to_screen
 from .ui.icons import get_resource_path, themed_icon
 from .ui.custom_tabs import CustomTabWidget
 from .utils.update_checker import check_for_updates
@@ -1103,11 +1105,7 @@ class SolarRadioImageViewerApp(
 
         self.setWindowTitle("SolarViewer")
 
-        screen = QApplication.primaryScreen().availableGeometry()
-        # Use 90% of available screen size, capped at reasonable maximums
-        width = min(int(screen.width() * 0.90), 1920)
-        height = min(int(screen.height() * 0.90), 1080)
-        self.resize(width, height)
+        fit_to_screen(self, 1920, 1080)
 
         # Use custom tab widget
         self.tab_widget = CustomTabWidget()
@@ -1434,30 +1432,8 @@ class SolarRadioImageViewerApp(
             self.theme_action.setText("🌙 Switch to Dark Mode")
 
     def _update_application_palette(self):
-        """Update the Qt application palette to match the current theme."""
-        palette = theme_manager.palette
-        qt_palette = QPalette()
-        qt_palette.setColor(QPalette.Window, QColor(palette["window"]))
-        qt_palette.setColor(QPalette.WindowText, QColor(palette["text"]))
-        qt_palette.setColor(QPalette.Base, QColor(palette["base"]))
-        qt_palette.setColor(QPalette.AlternateBase, QColor(palette["surface"]))
-        qt_palette.setColor(QPalette.Text, QColor(palette["text"]))
-        qt_palette.setColor(QPalette.Button, QColor(palette["button"]))
-        qt_palette.setColor(QPalette.ButtonText, QColor(palette["text"]))
-        qt_palette.setColor(QPalette.Highlight, QColor(palette["highlight"]))
-        qt_palette.setColor(QPalette.HighlightedText, Qt.white)
-        qt_palette.setColor(QPalette.Link, QColor(palette["highlight"]))
-        qt_palette.setColor(
-            QPalette.Disabled, QPalette.Text, QColor(palette["disabled"])
-        )
-        qt_palette.setColor(
-            QPalette.Disabled, QPalette.ButtonText, QColor(palette["disabled"])
-        )
-
-        app = QApplication.instance()
-        if app:
-            app.setPalette(qt_palette)
-            app.setStyleSheet(theme_manager.stylesheet)
+        """Restyle the application (palette and stylesheet) for the theme."""
+        apply_theme(QApplication.instance())
 
     def refresh_all_plots(self):
         """Refresh all matplotlib plots to apply new theme colors."""

@@ -37,6 +37,9 @@ from .download_thread import DownloadThread
 from ..ui.open_image import choose_image
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class ListDirectoryThread(QThread):
     """Thread for listing directories without blocking UI."""
 
@@ -360,7 +363,7 @@ class RemoteFileBrowser(QDialog):
             mode_str = "Image"
         self.setWindowTitle(f"Browse Remote {mode_str} - {connection.connection_info}")
         self.setMinimumSize(500, 500)
-        self.resize(800, 600)
+        fit_to_screen(self, 800, 600)
         self.setModal(True)
 
         self.connection = connection

@@ -33,6 +33,9 @@ import multiprocessing
 import glob
 import time
 
+from ..ui.geometry import fit_to_screen
+
+
 class PhaseShiftDialog(BatchDialogMixin, QDialog):
     """Dialog for configuring and executing solar phase center shifting."""
 
@@ -40,7 +43,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         super().__init__(parent)
         self.setWindowTitle("Solar Phase Center Shift")
         self.setMinimumSize(550, 600)
-        self.resize(650, 650)
+        fit_to_screen(self, 650, 650)
         self.imagename = imagename
 
         # Set the dialog size to match the parent window if available

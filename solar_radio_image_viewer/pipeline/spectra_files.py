@@ -33,10 +33,13 @@ from PyQt5.QtWidgets import (
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QColor
-from .simpl_theme import get_palette
+from ..ui.styles import palette_for as get_palette
 
 from .spectra_common import _RemoteRead, _local_block_stats, _size_text
 logger = logging.getLogger(__name__)
+
+
+from ..ui.geometry import fit_to_screen
 
 
 class SpectraFilesMixin:
@@ -859,7 +862,6 @@ class SpectraFilesMixin:
             self._metadata_dialog.activateWindow()
             return
 
-        # Fetch authoritative palette from simpl_theme
         palette = get_palette(self.current_theme)
 
         # Create a non-modal dialog
@@ -873,6 +875,7 @@ class SpectraFilesMixin:
         dlg.finished.connect(on_close)
         dlg.setWindowTitle("FITS File Metadata")
         dlg.setMinimumSize(750, 750)
+        fit_to_screen(dlg, 750, 750)
 
         # We rely on the global stylesheet applied in __init__ via apply_theme.
         # Minimal dialog-specific tweaks for layout spacing

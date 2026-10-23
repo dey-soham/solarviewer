@@ -17,6 +17,9 @@ import os
 from ..ui.styles import set_hand_cursor
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class ImageInfoDialog(QDialog):
     """Professional metadata display dialog with organized sections."""
 
@@ -24,6 +27,7 @@ class ImageInfoDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Image Metadata")
         self.setMinimumSize(700, 600)
+        fit_to_screen(self, 700, 600)
         self.metadata = metadata
         self.info_text = info_text
         self.imagename = imagename

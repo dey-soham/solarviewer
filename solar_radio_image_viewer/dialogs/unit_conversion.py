@@ -27,6 +27,9 @@ from ..ui.batch import BatchDialogMixin
 from ..ui.styles import set_hand_cursor
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class UnitConversionDialog(BatchDialogMixin, QDialog):
     """Dialog for batch unit conversion between Flux Density and Brightness Temperature."""
 
@@ -34,7 +37,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         super().__init__(parent)
         self.setWindowTitle("Batch Unit Conversion")
         self.setMinimumSize(600, 550)
-        self.resize(750, 650)
+        fit_to_screen(self, 750, 650)
 
         # Import theme manager for theme-aware styling
         try:

@@ -28,6 +28,9 @@ from ..ui.batch import BatchDialogMixin
 from ..ui.styles import set_hand_cursor
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class FormatConversionDialog(BatchDialogMixin, QDialog):
     """Dialog for batch format conversion between CASA Images and FITS files."""
 
@@ -35,7 +38,7 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         super().__init__(parent)
         self.setWindowTitle("Batch Format Conversion")
         self.setMinimumSize(600, 500)
-        self.resize(750, 650)
+        fit_to_screen(self, 750, 650)
         self.parent = parent
         self.current_file = current_file
 

@@ -23,12 +23,14 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QCheckBox,
     QMessageBox,
-    QApplication,
 )
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from ..ui.styles import set_hand_cursor
+
+
+from ..ui.geometry import fit_to_screen
 
 
 class ProcessingThread(QThread):
@@ -126,6 +128,7 @@ class DynamicSpectraDialog(QDialog):
     def _setup_ui(self):
         self.setWindowTitle("Create Dynamic Spectra")
         self.setMinimumSize(600, 500)
+        fit_to_screen(self, 600, 500)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -360,24 +363,22 @@ class DynamicSpectraDialog(QDialog):
 
 def main():
     """Main entry point for standalone dialog."""
+    import argparse
+
+    from ..ui.app import create_app
+    from ..ui.styles import theme_manager
+
     for key in ["QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH"]:
         if key in os.environ:
             del os.environ[key]
 
-    # Apply high DPI scaling
-    from .simpl_theme import setup_high_dpi
-    setup_high_dpi()
+    parser = argparse.ArgumentParser(description="Create Dynamic Spectra")
+    parser.add_argument("--theme", choices=["dark", "light"], default=None)
+    args = parser.parse_args()
 
-    app = QApplication(sys.argv)
-
-    # Get theme from command line
-    from .simpl_theme import apply_theme, get_theme_from_args
-    theme = get_theme_from_args()
-    apply_theme(app, theme)
-
-    dialog = DynamicSpectraDialog(theme=theme)
+    app = create_app(args.theme)
+    dialog = DynamicSpectraDialog(theme=theme_manager.current_theme)
     dialog.show()
-
     sys.exit(app.exec_())
 
 

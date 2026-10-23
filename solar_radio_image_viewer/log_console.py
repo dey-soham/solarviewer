@@ -12,6 +12,8 @@ from PyQt5.QtGui import QFont, QTextCursor
 
 
 # Thread-safe signal emitter for logging
+from .ui.geometry import fit_to_screen
+
 class LogSignal(QObject):
     text_written = pyqtSignal(str)
 
@@ -68,7 +70,7 @@ class LogConsole(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Log Console")
-        self.resize(800, 600)
+        fit_to_screen(self, 800, 600)
 
         # Force Window behavior to ensure Maximize works on all WMs
         self.setWindowFlags(

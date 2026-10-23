@@ -24,6 +24,9 @@ from .preview import contrast_colors, dashed_pen, halo, halo_pen, measure_previe
 
 logger = logging.getLogger(__name__)
 
+from ..ui.geometry import fit_to_screen
+
+
 class ProfileMixin:
     """Flux profile cuts (line and radial) and the profile plot dialog.
 
@@ -724,6 +727,7 @@ class ProfileMixin:
         dialog.setWindowTitle("Flux Profile")
         dialog.resize(800, 550)
         dialog.setMinimumSize(600, 400)
+        fit_to_screen(dialog, 600, 400)
         layout = QVBoxLayout(dialog)
 
         # Create figure with single plot

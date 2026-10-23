@@ -70,6 +70,9 @@ from PyQt5.QtGui import (
 )
 
 
+from ..ui.geometry import fit_to_screen
+
+
 class LogTableWidget(QTableWidget):
     """Custom QTableWidget that prevents horizontal auto-scrolling during navigation."""
 
@@ -729,7 +732,8 @@ class PipelineLoggerGUI(QMainWindow):
 
         # Initialize UI
         self.setWindowTitle("LOFAR Pipeline Logger")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(640, 480)
+        fit_to_screen(self, 1100, 750)
 
         # Create UI components
         self._create_ui()
@@ -1476,26 +1480,16 @@ def main():
         "-t",
         type=str,
         choices=["dark", "light"],
-        default="dark",
-        help="Color theme (dark or light, default: dark)",
+        default=None,
+        help="Color theme (dark or light; default: the one SolarViewer uses)",
     )
     args = parser.parse_args()
 
-    # Apply high DPI scaling
-    from solar_radio_image_viewer.pipeline.simpl_theme import setup_high_dpi
-    setup_high_dpi()
+    from ..ui.app import create_app
+    from ..ui.styles import theme_manager
 
-    app = QApplication(sys.argv)
-
-    # Set application style
-    app.setStyle("Fusion")
-
-    # Apply theme
-    from solar_radio_image_viewer.pipeline.simpl_theme import apply_theme
-    apply_theme(app, args.theme)
-
-    # Create and show the main window with theme
-    main_window = PipelineLoggerGUI(theme=args.theme)
+    app = create_app(args.theme)
+    main_window = PipelineLoggerGUI(theme=theme_manager.current_theme)
     main_window.show()
 
     # Open log file if specified
