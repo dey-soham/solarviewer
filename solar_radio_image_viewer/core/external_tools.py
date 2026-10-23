@@ -277,19 +277,39 @@ read -p "Press Enter to close..."
                 del env[key]
         return env
 
+    def _tool_link_server(self):
+        """The link the tools talk to this window over, made on first use;
+        None if it can't be (a warning says why, once)."""
+        if not hasattr(self, "_tool_link"):
+            from .tool_link import ToolLink
+
+            try:
+                self._tool_link = ToolLink(self)
+            except OSError as e:
+                logger.warning(f"Tools can't message this window: {e}")
+                self._tool_link = None
+        return self._tool_link
+
     def _get_current_theme(self):
         """Get current theme name for passing to subprocess."""
         return theme_manager.current_theme
 
     def open_spectrum(self, path):
-        """Show the dynamic spectrum ``path`` in the Dynamic Spectrum Viewer,
-        which has its own window; it goes first in Open Recent. True if the
-        viewer was started."""
+        """Show the dynamic spectrum ``path`` in the Dynamic Spectrum Viewer:
+        the one window of it, brought to the front, started if there is none.
+        The spectrum goes first in Open Recent. True if it was shown."""
         import os
 
-        started = self._launch_pipeline_tool(
-            "dynamic_spectrum_viewer", "Dynamic Spectrum Viewer", path
+        link = self._tool_link_server()
+        started = link is not None and link.deliver(
+            "dynamic_spectrum_viewer", {"open": path, "raise": True}
         )
+        if not started:
+            started = self._launch_pipeline_tool(
+                "dynamic_spectrum_viewer", "Dynamic Spectrum Viewer", path
+            )
+            if started and link is not None:
+                link.note_launch("dynamic_spectrum_viewer", path)
         if started:
             remember_image(path)
             self.statusBar().showMessage(
@@ -326,17 +346,12 @@ read -p "Press Enter to close..."
                 env["SOLARVIEWER_SSH"] = json.dumps(params)
             else:
                 env.pop("SOLARVIEWER_SSH", None)
-            # Messages back to this window (e.g. "show the image at this time")
-            from .tool_link import ENV, ToolLink
+            # Messages to and from this window (e.g. "show the image at this time")
+            from .tool_link import ENV
 
-            if getattr(self, "_tool_link", None) is None:
-                try:
-                    self._tool_link = ToolLink(self)
-                except OSError as e:
-                    logger.warning(f"Tools can't message this window: {e}")
-                    self._tool_link = None
-            if self._tool_link is not None:
-                env[ENV] = self._tool_link.name
+            link = self._tool_link_server()
+            if link is not None:
+                env[ENV] = link.name
             launch_cwd = (
                 os.getcwd()
                 if os.access(os.getcwd(), os.W_OK)

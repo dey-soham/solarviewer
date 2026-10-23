@@ -95,6 +95,7 @@ from .spectra_masks import SpectraMasksMixin
 from .spectra_navigation import SpectraNavigationMixin
 from .spectra_saving import SpectraSavingMixin
 from .spectrum_canvas import MinimapCanvas, PyQtGraphSpectrumCanvas
+from .viewer_link import ViewerLink
 from ..ui.free_dialogs import free_modal_dialogs
 
 # PyQtGraph for GPU-accelerated rendering
@@ -131,6 +132,11 @@ class MainWindow(
 
         # Store theme from parameter (allows external theme override)
         self._external_theme = theme
+
+        # To the SolarViewer window that launched this, if one did: it
+        # shows images at the times clicked here, and sends spectra to open
+        self.link = ViewerLink("dynamic_spectrum_viewer", self)
+        self.link.message.connect(self._on_link_message)
 
         # Data placeholders
         self.hdul = None  # Store FITS handle to keep memmap alive
@@ -651,7 +657,7 @@ class MainWindow(
         self.imageAtTimeBtn = QPushButton("🖼️ Image")
         self.imageAtTimeBtn.setToolTip("Image: click to see SolarViewer's image at that time")
         # Only when launched from SolarViewer (it listens for the times)
-        linked = bool(os.environ.get("SOLARVIEWER_LINK"))
+        linked = self.link.connected
         tools = [self.panBtn, self.roiButton, self.keepBtn, self.crossBtn, self.driftBtn]
         if linked:
             tools.append(self.imageAtTimeBtn)
@@ -1483,24 +1489,34 @@ class MainWindow(
     def sendTimeToViewer(self, t, f=float("nan")):
         """Ask SolarViewer (which launched this) for its image nearest time
         ``t`` (MJD seconds) and, of those, frequency ``f`` (MHz)."""
-        from PyQt5.QtNetwork import QLocalSocket
-
         when = datetime(1858, 11, 17) + timedelta(seconds=t)
-        socket = QLocalSocket(self)
-        socket.connectToServer(os.environ.get("SOLARVIEWER_LINK", ""))
-        if not socket.waitForConnected(1000):
-            self.statusBar().showMessage("SolarViewer isn't running any more", 5000)
-            return
         message = {"show_time": when.isoformat()}
         if np.isfinite(f):
             message["freq_mhz"] = f
-        socket.write((json.dumps(message) + "\n").encode())
-        socket.waitForBytesWritten(1000)
-        socket.disconnectFromServer()
+        if not self.link.send(message):
+            self.statusBar().showMessage("SolarViewer isn't running any more", 5000)
+            return
         at = f", {f:.2f} MHz" if np.isfinite(f) else ""
         self.statusBar().showMessage(
             f"Asked SolarViewer for its image nearest {when:%H:%M:%S}{at}", 5000
         )
+
+    def _on_link_message(self, message):
+        """Do as SolarViewer says: open a spectrum, come to the front, take
+        its theme, or close with it."""
+        if "open" in message:
+            self.openFile(message["open"])
+        if message.get("raise"):
+            if self.isMinimized():
+                self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        theme = message.get("theme")
+        if theme in ("dark", "light") and theme != self.current_theme:
+            self.current_theme = theme
+            self._applyStyle()
+        if message.get("close"):
+            self.close()
 
     def onDriftMeasured(self, t1, f1, t2, f2):
         d = drift_rate(t1, f1, t2, f2)

@@ -3,12 +3,17 @@ Messages to the main window from SolarViewer's tools, which run as separate
 processes (e.g. the Dynamic Spectrum Viewer), over a local socket. A tool
 learns the socket's name from SOLARVIEWER_LINK in its environment.
 
-Messages are JSON lines; {"show_time": "<UTC ISO time>", "freq_mhz": f}
-shows, in the current tab, the image nearest that time (of those, the one
-nearest frequency ``f``, if given): of its folder, or of the frequency
-folder beside it nearest ``f`` (pipelines writing final_images/FREQ_*MHz/).
+Messages are JSON lines. From a tool: {"hello": "<tool>", "pid": n} as it
+starts, keeping its socket open for what follows; {"show_time": "<UTC ISO
+time>", "freq_mhz": f} shows, in the current tab, the image nearest that
+time (of those, the one nearest frequency ``f``, if given): of its folder,
+or of the frequency folder beside it nearest ``f`` (pipelines writing
+final_images/FREQ_*MHz/); {"open_image": path} opens an image here. To a
+tool that said hello: {"open": path, "raise": true}, {"theme": "light"},
+{"close": true}.
 """
 
+import itertools
 import json
 import os
 import posixpath
@@ -21,6 +26,7 @@ from PyQt5.QtCore import QObject, QThread, QTimer, pyqtSignal
 from PyQt5.QtNetwork import QLocalServer
 
 ENV = "SOLARVIEWER_LINK"
+_link_numbers = itertools.count(1)
 
 # Images this close in time (s) count as taken together (e.g. one per frequency)
 SAME_TIME = 1.0
@@ -76,12 +82,16 @@ class ToolLink(QObject):
     def __init__(self, main_window):
         super().__init__(main_window)
         self.main_window = main_window
-        self.name = f"solarviewer-{os.getpid()}"
+        # One name per window: a process may make more than one
+        self.name = f"solarviewer-{os.getpid()}-{next(_link_numbers)}"
         self._times = {}  # (remote, folder files) -> (times, frequencies)
         self._listings = {}  # (kind, remote, folder) -> listing
         self._request = 0  # the latest request (earlier ones are dropped)
         self._jobs = []
         self._remote_files = None
+        self._tools = {}  # tool name -> its socket, from its hello on
+        self._starting = {}  # tool name -> until when a launched one may say hello
+        self._held = {}  # tool name -> message for it once it says hello
         QLocalServer.removeServer(self.name)  # left by a crashed run
         self.server = QLocalServer(self)
         if not self.server.listen(self.name):
@@ -92,7 +102,63 @@ class ToolLink(QObject):
         while self.server.hasPendingConnections():
             socket = self.server.nextPendingConnection()
             socket.readyRead.connect(lambda socket=socket: self._read(socket))
+            socket.disconnected.connect(lambda socket=socket: self._gone(socket))
             socket.disconnected.connect(socket.deleteLater)
+            if socket.bytesAvailable():
+                self._read(socket)  # sent before this end was listening
+
+    def _gone(self, socket):
+        for tool, held in list(self._tools.items()):
+            if held is socket:
+                del self._tools[tool]
+
+    # ---------- Tools that stay connected ----------
+
+    def note_launch(self, tool, path=None, seconds=20):
+        """A ``tool`` was just started (opening ``path``): for ``seconds`` a
+        message for it is held until it says hello, rather than starting
+        another."""
+        self._starting[tool] = (time.monotonic() + seconds, path)
+
+    def has(self, tool):
+        """Whether ``tool`` is connected (it said hello and is still there)."""
+        socket = self._tools.get(tool)
+        return socket is not None and not sip.isdeleted(socket) and socket.isValid()
+
+    def send(self, tool, message):
+        """Send ``message`` to ``tool``; False if it is not connected."""
+        if not self.has(tool):
+            return False
+        socket = self._tools[tool]
+        socket.write((json.dumps(message) + "\n").encode())
+        return socket.waitForBytesWritten(1000)
+
+    def deliver(self, tool, message):
+        """Send ``message`` to ``tool``, or hold it for one just started;
+        False if neither: the tool must be started (with the message)."""
+        if self.send(tool, message):
+            return True
+        until, path = self._starting.get(tool, (0, None))
+        if time.monotonic() < until:
+            if message.get("open") != path:  # (that one it opens as it starts)
+                self._held[tool] = message
+            return True
+        return False
+
+    def broadcast(self, message):
+        for tool in list(self._tools):
+            self.send(tool, message)
+
+    def close_tools(self):
+        """Close the tools' windows (the main window is closing)."""
+        self.broadcast({"close": True})
+
+    def _hello(self, tool, socket):
+        self._tools[tool] = socket
+        self._starting.pop(tool, None)
+        held = self._held.pop(tool, None)
+        if held is not None:
+            self.send(tool, held)
 
     def _read(self, socket):
         messages = []
@@ -105,11 +171,27 @@ class ToolLink(QObject):
         # (with a progress dialog running events), during which this socket
         # is deleted when the tool disconnects
         for message in messages:
+            if "hello" in message:
+                self._hello(str(message["hello"]), socket)
             if "show_time" in message:
                 QTimer.singleShot(
                     0,
                     lambda m=message: self.show_time(m["show_time"], m.get("freq_mhz")),
                 )
+            if "open_image" in message:
+                QTimer.singleShot(
+                    0, lambda m=message: self._open_image(str(m["open_image"]))
+                )
+
+    def _open_image(self, path):
+        """Show an image a tool was given (it belongs here), in front."""
+        window = self.main_window
+        if os.path.exists(path):
+            window.open_path(path)
+        if window.isMinimized():
+            window.showNormal()
+        window.raise_()
+        window.activateWindow()
 
     def _status(self, text, timeout=8000):
         self.main_window.statusBar().showMessage(text, timeout)

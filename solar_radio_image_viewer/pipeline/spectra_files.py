@@ -423,6 +423,17 @@ class SpectraFilesMixin:
             )
         if not fileName:
             return
+        if remote is None and self.link.connected:
+            # An image belongs in SolarViewer, which shows it in a tab
+            from ..processing.fits_io import IMAGE, fits_kind
+
+            if fits_kind(fileName) == IMAGE:
+                self.link.send({"open_image": fileName})
+                self.statusBar().showMessage(
+                    f"{os.path.basename(fileName)} is an image: opened in SolarViewer",
+                    8000,
+                )
+                return
 
         with self.wait_cursor():
             new_hdul = None

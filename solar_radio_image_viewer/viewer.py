@@ -1390,6 +1390,11 @@ class SolarRadioImageViewerApp(
         # Update matplotlib rcParams
         update_matplotlib_theme()
 
+        # The tools' windows follow
+        link = getattr(self, "_tool_link", None)
+        if link is not None:
+            link.broadcast({"theme": new_theme})
+
         # Update Qt application palette BEFORE refreshing icons
         self._update_application_palette()
 
@@ -1551,6 +1556,10 @@ class SolarRadioImageViewerApp(
     def closeEvent(self, event):
         image_prefetcher.shutdown()
         background.shutdown()
+        # The tools' windows close with this one
+        link = getattr(self, "_tool_link", None)
+        if link is not None:
+            link.close_tools()
         # Tabs get no close event of their own when the window closes
         for tab in self.tabs:
             tab.cleanup()
