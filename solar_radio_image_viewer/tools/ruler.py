@@ -157,7 +157,7 @@ class RulerMixin:
                 textcoords="offset points",
                 ha=ha,
                 va=va,
-                fontsize=8,
+                fontsize=10,
                 color=line,
                 bbox=dict(boxstyle="round,pad=0.25", facecolor=shadow, alpha=0.6, edgecolor="none"),
                 annotation_clip=True,
@@ -232,7 +232,7 @@ class RulerMixin:
         )
         label_style = dict(
             textcoords="offset points",
-            fontsize=7,
+            fontsize=8,
             color=line,
             bbox=dict(boxstyle="round,pad=0.25", facecolor=shadow, alpha=0.6, edgecolor="none"),
             annotation_clip=True,
