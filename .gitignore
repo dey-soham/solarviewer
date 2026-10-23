@@ -30,3 +30,6 @@ notes.txt
 merging.txt
 RESTRUCTURING.md
 docs/
+
+# Screenshots rendered for design reviews (regenerate with tests/screenshot_windows.py)
+design_screenshots/
