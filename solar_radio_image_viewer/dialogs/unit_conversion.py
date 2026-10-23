@@ -25,7 +25,7 @@ import os
 
 from ..ui.batch import BatchDialogMixin
 from ..ui.icons import themed_icon
-from ..ui.widgets import button_bar
+from ..ui.widgets import button_bar, section
 from ..ui.styles import set_hand_cursor, set_tone
 
 
@@ -84,8 +84,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         files_layout.setSpacing(16)
         files_layout.setContentsMargins(16, 16, 16, 16)
 
-        input_group = QGroupBox("Input Location")
-        input_layout = QVBoxLayout(input_group)
+        input_group, input_layout = section("Input Location")
         input_layout.setSpacing(12)
 
         dir_row = QHBoxLayout()
@@ -148,8 +147,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         options_layout.setSpacing(16)
         options_layout.setContentsMargins(16, 16, 16, 16)
 
-        settings_group = QGroupBox("Conversion Settings")
-        settings_layout = QVBoxLayout(settings_group)
+        settings_group, settings_layout = section("Conversion Settings")
         settings_layout.setSpacing(12)
 
         unit_row = QHBoxLayout()
@@ -167,8 +165,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         settings_layout.addLayout(unit_row)
         options_layout.addWidget(settings_group)
 
-        mp_group = QGroupBox("Performance")
-        mp_layout = QVBoxLayout(mp_group)
+        mp_group, mp_layout = section("Performance")
         mp_layout.setSpacing(12)
 
         self.multiprocessing_check = QCheckBox("Use multiprocessing")
@@ -205,8 +202,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         output_layout.setSpacing(16)
         output_layout.setContentsMargins(16, 16, 16, 16)
 
-        output_group = QGroupBox("Destination Location")
-        out_layout = QVBoxLayout(output_group)
+        output_group, out_layout = section("Destination Location")
         out_layout.setSpacing(12)
 
         out_dir_row = QHBoxLayout()
@@ -235,8 +231,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         out_pat_row.addWidget(self.output_pattern_edit, 1)
         out_layout.addLayout(out_pat_row)
 
-        help_group = QGroupBox("Pattern Help")
-        help_layout = QVBoxLayout(help_group)
+        help_group, help_layout = section("Pattern Help")
         help_text = QLabel(
             "Use <b>*</b> as a placeholder for the original filename."
         )

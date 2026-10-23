@@ -26,7 +26,7 @@ import os
 from ..processing.fits_io import is_fits
 from ..ui.batch import BatchDialogMixin
 from ..ui.icons import themed_icon
-from ..ui.widgets import button_bar
+from ..ui.widgets import button_bar, section
 from ..ui.styles import set_hand_cursor
 
 import multiprocessing
@@ -264,8 +264,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         files_layout.setContentsMargins(16, 16, 16, 16)
 
         # Input directory row
-        dir_group = QGroupBox("Input Location")
-        dir_group_layout = QVBoxLayout(dir_group)
+        dir_group, dir_group_layout = section("Input Location")
         dir_group_layout.setSpacing(12)
 
         dir_row = QHBoxLayout()
@@ -338,8 +337,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         options_layout.setContentsMargins(16, 16, 16, 16)
 
         # Target System Group
-        sys_group = QGroupBox("Target Coordinate System")
-        sys_layout = QVBoxLayout(sys_group)
+        sys_group, sys_layout = section("Target Coordinate System")
         sys_layout.setSpacing(12)
 
         sys_row = QHBoxLayout()
@@ -358,8 +356,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         options_layout.addWidget(sys_group)
 
         # Stokes Settings
-        stokes_group = QGroupBox("Stokes Parameters")
-        stokes_layout = QVBoxLayout(stokes_group)
+        stokes_group, stokes_layout = section("Stokes Parameters")
         stokes_layout.setSpacing(12)
 
         # Mode selection
@@ -406,8 +403,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         options_layout.addWidget(sep)
 
         # Performance Settings
-        perf_group = QGroupBox("Performance")
-        perf_layout = QVBoxLayout(perf_group)
+        perf_group, perf_layout = section("Performance")
         perf_layout.setSpacing(12)
 
         self.multiprocessing_check = QCheckBox(
@@ -453,8 +449,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         output_layout.setContentsMargins(16, 16, 16, 16)
 
         # Output location
-        out_group = QGroupBox("Output Location")
-        out_group_layout = QVBoxLayout(out_group)
+        out_group, out_group_layout = section("Output Location")
         out_group_layout.setSpacing(12)
 
         out_dir_row = QHBoxLayout()
@@ -492,8 +487,7 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         output_layout.addWidget(out_group)
 
         # Pattern help
-        help_group = QGroupBox("Pattern Help")
-        help_layout = QVBoxLayout(help_group)
+        help_group, help_layout = section("Pattern Help")
 
         help_text = QLabel(
             "Use <b>*</b> as a placeholder for the original filename.\n\n"

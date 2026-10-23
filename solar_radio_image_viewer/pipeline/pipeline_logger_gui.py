@@ -523,7 +523,6 @@ class MessageDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         """Return size hint based on text width."""
         from PyQt5.QtGui import QTextDocument
-        from PyQt5.QtCore import QSize
 
         text = index.data()
         if not text:
@@ -804,63 +803,30 @@ class PipelineLoggerGUI(QMainWindow):
 
     def _create_toolbar(self):
         """Create the main toolbar."""
+        # Plain labels: the same look in both themes, no stock icons
         self.toolbar = QToolBar("Main Toolbar")
-        self.toolbar.setIconSize(QSize(24, 24))
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.toolbar.setMovable(False)
         self.addToolBar(self.toolbar)
 
-        # File actions
-        self.action_open = QAction("Open Log File", self)
-        self.action_open.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
-        self.action_open.triggered.connect(self._open_log_file)
-        self.toolbar.addAction(self.action_open)
+        def action(text, slot, tip):
+            act = QAction(text, self)
+            act.setToolTip(tip)
+            act.triggered.connect(slot)
+            self.toolbar.addAction(act)
+            return act
 
-        self.action_export = QAction("Export", self)
-        self.action_export.setIcon(
-            self.style().standardIcon(QStyle.SP_DialogSaveButton)
-        )
-        self.action_export.triggered.connect(self._export_logs)
-        self.toolbar.addAction(self.action_export)
-
-        self.action_refresh = QAction("Refresh", self)
-        self.action_refresh.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.action_refresh.triggered.connect(self._refresh_monitor)
-        self.toolbar.addAction(self.action_refresh)
-
-        # Scroll navigation
+        self.action_open = action("Open", self._open_log_file, "Open a log file (Ctrl+O)")
+        self.action_export = action("Export", self._export_logs, "Save the log as CSV (Ctrl+E)")
+        self.action_refresh = action("Refresh", self._refresh_monitor, "Read the log file again (F5)")
         self.toolbar.addSeparator()
-
-        self.action_scroll_top = QAction("⏫", self)
-        self.action_scroll_top.triggered.connect(self._scroll_to_top)
-        self.toolbar.addAction(self.action_scroll_top)
-        # Add tooltip
-        self.action_scroll_top.setToolTip("Scroll to top of log")
-
-        self.action_scroll_bottom = QAction("⏬", self)
-        self.action_scroll_bottom.triggered.connect(self._scroll_to_bottom)
-        self.toolbar.addAction(self.action_scroll_bottom)
-        # Add tooltip
-        self.action_scroll_bottom.setToolTip("Scroll to bottom of log")
-
-        # Error navigation
+        self.action_scroll_top = action("Top", self._scroll_to_top, "Scroll to the top (Home)")
+        self.action_scroll_bottom = action("Bottom", self._scroll_to_bottom, "Scroll to the bottom (End)")
         self.toolbar.addSeparator()
-
-        self.action_prev_error = QAction("◀ Error", self)
-        self.action_prev_error.triggered.connect(self._jump_to_prev_error)
-        self.toolbar.addAction(self.action_prev_error)
-        # Add tooltip
-        self.action_prev_error.setToolTip("Jump to previous error")
-
-        self.action_next_error = QAction("Error ▶", self)
-        self.action_next_error.triggered.connect(self._jump_to_next_error)
-        self.toolbar.addAction(self.action_next_error)
-        # Add tooltip
-        self.action_next_error.setToolTip("Jump to next error")
-
-        # Help button
+        self.action_prev_error = action("Previous error", self._jump_to_prev_error, "Jump to the previous error (Ctrl+,)")
+        self.action_next_error = action("Next error", self._jump_to_next_error, "Jump to the next error (Ctrl+.)")
         self.toolbar.addSeparator()
-        self.action_help = QAction("?", self)
-        self.action_help.triggered.connect(self._show_help_dialog)
-        self.toolbar.addAction(self.action_help)
+        self.action_help = action("Help", self._show_help_dialog, "Features and shortcuts")
 
     def _setup_shortcuts(self):
         """Set up keyboard shortcuts."""

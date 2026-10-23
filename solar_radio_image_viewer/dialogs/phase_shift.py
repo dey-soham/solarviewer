@@ -28,7 +28,7 @@ from ..ui.busy import busy
 from ..ui.errors import show_error
 from ..ui.open_image import choose_image
 from ..ui.icons import themed_icon
-from ..ui.widgets import button_bar
+from ..ui.widgets import button_bar, section
 from ..ui.styles import set_hand_cursor, set_tone
 
 import multiprocessing
@@ -97,8 +97,9 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         files_layout.setContentsMargins(16, 16, 16, 16)
 
         # Mode Selection
-        mode_group = QGroupBox("Processing Mode")
-        mode_layout = QHBoxLayout(mode_group)
+        mode_group, mode_column = section("Processing Mode")
+        mode_layout = QHBoxLayout()
+        mode_column.addLayout(mode_layout)
         mode_layout.setSpacing(20)
 
         self.single_mode_radio = QRadioButton("Single File")
@@ -115,8 +116,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         self.batch_mode_radio.toggled.connect(self.update_mode_ui)
 
         # Input Settings Group
-        self.input_group = QGroupBox("Input Location")
-        input_group_layout = QVBoxLayout(self.input_group)
+        self.input_group, input_group_layout = section("Input Location")
         input_group_layout.setSpacing(12)
 
         # SINGLE MODE: Image Selection
@@ -208,8 +208,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         options_layout.setContentsMargins(16, 16, 16, 16)
 
         # Stokes Settings
-        stokes_group = QGroupBox("Stokes Parameters")
-        stokes_layout = QVBoxLayout(stokes_group)
+        stokes_group, stokes_layout = section("Stokes Parameters")
         stokes_layout.setSpacing(12)
 
         # Mode
@@ -246,8 +245,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         options_layout.addWidget(stokes_group)
 
         # Method Settings
-        method_group = QGroupBox("Detection Method")
-        method_layout = QVBoxLayout(method_group)
+        method_group, method_layout = section("Detection Method")
         method_layout.setSpacing(12)
 
         # Method selection
@@ -304,8 +302,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         mp_layout = QVBoxLayout(self.multiprocessing_widget)
         mp_layout.setContentsMargins(0, 0, 0, 0)
 
-        mp_group = QGroupBox("Performance")
-        mp_group_layout = QVBoxLayout(mp_group)
+        mp_group, mp_group_layout = section("Performance")
 
         self.multiprocessing_check = QCheckBox("Use multiprocessing")
         self.multiprocessing_check.setChecked(True)
@@ -346,8 +343,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         output_layout.setSpacing(16)
         output_layout.setContentsMargins(16, 16, 16, 16)
 
-        out_group = QGroupBox("Output Settings")
-        out_layout = QVBoxLayout(out_group)
+        out_group, out_layout = section("Output Settings")
         out_layout.setSpacing(12)
 
         # SINGLE OUTPUT
@@ -389,8 +385,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         output_layout.addWidget(out_group)
 
         # Pattern help
-        help_group = QGroupBox("Pattern Help")
-        help_layout = QVBoxLayout(help_group)
+        help_group, help_layout = section("Pattern Help")
         help_text = QLabel(
             "Use <b>*</b> as a placeholder for the original filename.\n\n"
             "<b>Example:</b> Input <code>sun_2024.fits</code> with pattern <code>centered_*.fits</code>\n"

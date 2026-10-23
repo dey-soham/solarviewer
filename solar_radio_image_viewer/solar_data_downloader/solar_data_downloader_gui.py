@@ -13,6 +13,9 @@ from pathlib import Path
 
 try:
     from PyQt5.QtWidgets import (
+    QScrollArea,
+    QFrame,
+    QTextEdit,
         QApplication,
         QMainWindow,
         QWidget,
@@ -42,6 +45,7 @@ try:
     # First try relative import (when used as part of package)
     from . import solar_data_downloader as sdd
     from ..ui.styles import set_hand_cursor, set_tone
+    from ..ui.geometry import fit_to_screen
 except ImportError:
     try:
         # Then try importing from the same directory (when run as script)
@@ -332,7 +336,7 @@ class SolarDataViewerGUI(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("Solar Data Downloader")
         self.setMinimumWidth(600)
-        self.setMinimumHeight(800)
+        fit_to_screen(self, 640, 900)
 
         # Store initial datetime for time selection
         self.initial_datetime = initial_datetime
@@ -340,14 +344,26 @@ class SolarDataViewerGUI(QMainWindow):
         # Initialize the main widget and layout
         self.main_widget = QWidget()
         self.setCentralWidget(self.main_widget)
-        self.layout = QVBoxLayout(self.main_widget)
+        outer = QVBoxLayout(self.main_widget)
 
-        # Create the UI components
+        # The form scrolls on a short screen; the status and the buttons
+        # stay in view below it
+        form = QWidget()
+        self.layout = QVBoxLayout(form)
+        self.layout.setContentsMargins(0, 0, 0, 0)
         self.create_instrument_selection()
         self.create_parameter_widgets()
         self.create_time_selection()
         self.create_output_selection()
         self.create_calibration_options()
+        self.layout.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidget(form)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll, 1)
+
+        self.layout = outer
         self.create_download_section()
 
         # Initialize the download worker
@@ -813,22 +829,47 @@ class SolarDataViewerGUI(QMainWindow):
         self.calib_options_widget.setVisible(state == 2)
 
     def create_download_section(self):
-        """Create the download button and progress section."""
-        # Progress bar
+        """The status log, the progress bar and the Cancel and Download buttons."""
+        group = QGroupBox("Status")
+        group_layout = QVBoxLayout(group)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        line = self.log_text.fontMetrics().lineSpacing()
+        self.log_text.setMinimumHeight(line * 5)
+        self.log_text.setMaximumHeight(line * 9)
+        self.log_text.setPlaceholderText("Download status will appear here...")
+        group_layout.addWidget(self.log_text)
+        self.layout.addWidget(group)
+
         self.progress_bar = QProgressBar()
-        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setRange(0, 0)  # busy
         self.progress_bar.hide()
         self.layout.addWidget(self.progress_bar)
 
-        # Status label
-        self.status_label = QLabel()
-        self.status_label.setWordWrap(True)
-        self.layout.addWidget(self.status_label)
-
-        # Download button
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self.cancel_download)
+        buttons.addWidget(self.cancel_button)
         self.download_button = QPushButton("Download")
+        self.download_button.setObjectName("PrimaryButton")
         self.download_button.clicked.connect(self.start_download)
-        self.layout.addWidget(self.download_button)
+        buttons.addWidget(self.download_button)
+        self.layout.addLayout(buttons)
+
+    def log_message(self, message):
+        """Add a line to the status log."""
+        self.log_text.append(message)
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def cancel_download(self):
+        """Stop the download in progress."""
+        if self.download_worker is not None and self.download_worker.isRunning():
+            self.download_worker.cancel()
+            self.log_message("Cancelling download...")
 
     def browse_output_dir(self):
         """Open a directory selection dialog."""
@@ -1117,11 +1158,11 @@ class SolarDataViewerGUI(QMainWindow):
             # Create output directory if it doesn't exist
             Path(self.output_dir.text()).mkdir(parents=True, exist_ok=True)
 
-            # Disable the download button and show progress
             self.download_button.setEnabled(False)
-            self.progress_bar.setMaximum(0)  # Indeterminate progress
+            self.cancel_button.setEnabled(True)
             self.progress_bar.show()
-            self.status_label.setText("Preparing download...")
+            self.log_text.clear()
+            self.log_message("Preparing download...")
 
             # Create and start the download worker
             params = self.get_download_parameters()
@@ -1134,29 +1175,33 @@ class SolarDataViewerGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start download: {str(e)}")
             self.download_button.setEnabled(True)
+            self.cancel_button.setEnabled(False)
             self.progress_bar.hide()
 
     def update_progress(self, message):
         """Update the progress display."""
-        self.status_label.setText(message)
+        self.log_message(message)
 
     def download_finished(self, files):
         """Handle download completion."""
         self.download_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         self.progress_bar.hide()
 
         if files:
             message = f"Download complete! Downloaded {len(files)} files to {self.output_dir.text()}"
-            self.status_label.setText(message)
+            self.log_message(message)
             QMessageBox.information(self, "Success", message)
         else:
+            self.log_message("No files were downloaded.")
             QMessageBox.warning(self, "Warning", "No files were downloaded.")
 
     def download_error(self, error_message):
         """Handle download errors."""
         self.download_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         self.progress_bar.hide()
-        self.status_label.setText(f"Error: {error_message}")
+        self.log_message(f"Error: {error_message}")
         QMessageBox.critical(self, "Error", f"Download failed: {error_message}")
 
 

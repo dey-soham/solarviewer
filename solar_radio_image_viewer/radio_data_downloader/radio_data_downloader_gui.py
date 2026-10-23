@@ -11,6 +11,8 @@ import os
 
 try:
     from PyQt5.QtWidgets import (
+    QScrollArea,
+    QFrame,
         QApplication,
         QMainWindow,
         QWidget,
@@ -37,6 +39,7 @@ except ImportError:
 # Import the radio data downloader module
 try:
     from . import radio_data_downloader as rdd
+    from ..ui.geometry import fit_to_screen
     from ..ui.styles import set_hand_cursor
 except ImportError:
     try:
@@ -181,7 +184,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("Radio Solar Data Downloader")
         self.setMinimumWidth(600)
-        self.setMinimumHeight(800)
+        fit_to_screen(self, 640, 900)
 
         # Store initial datetime for time selection
         self.initial_datetime = initial_datetime
@@ -189,13 +192,25 @@ class RadioDataDownloaderGUI(QMainWindow):
         # Main widget and layout
         self.main_widget = QWidget()
         self.setCentralWidget(self.main_widget)
-        self.layout = QVBoxLayout(self.main_widget)
+        outer = QVBoxLayout(self.main_widget)
 
-        # Create UI sections
+        # The form scrolls on a short screen; the status and the buttons
+        # stay in view below it
+        form = QWidget()
+        self.layout = QVBoxLayout(form)
+        self.layout.setContentsMargins(0, 0, 0, 0)
         self.create_instrument_selection()
         self.create_time_selection()
         self.create_output_selection()
         self.create_processing_options()
+        self.layout.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidget(form)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll, 1)
+
+        self.layout = outer
         self.create_log_section()
         self.create_download_section()
         set_hand_cursor(self)
@@ -512,12 +527,11 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.cancel_download)
         self.cancel_button.setEnabled(False)
-        self.cancel_button.setMinimumHeight(40)
+        layout.addStretch()
         layout.addWidget(self.cancel_button)
 
         self.download_button = QPushButton("Download && Convert to FITS")
         self.download_button.clicked.connect(self.start_download)
-        self.download_button.setMinimumHeight(40)
         self.download_button.setObjectName("PrimaryButton")
         layout.addWidget(self.download_button)
 
@@ -537,7 +551,9 @@ class RadioDataDownloaderGUI(QMainWindow):
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        #self.log_text.setMaximumHeight(350)
+        line = self.log_text.fontMetrics().lineSpacing()
+        self.log_text.setMinimumHeight(line * 5)
+        self.log_text.setMaximumHeight(line * 9)
         self.log_text.setPlaceholderText("Download status will appear here...")
 
         layout.addWidget(self.log_text)
