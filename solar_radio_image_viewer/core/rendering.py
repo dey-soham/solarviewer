@@ -144,6 +144,8 @@ class RenderingMixin:
         if vmax_val is None:
             vmax_val = np.nanmax(data)
         vmin_val, vmax_val = display_range(vmin_val, vmax_val)
+        self._show_canvas_page()
+        self._sync_levels(data, vmin_val, vmax_val)
 
         norm = self._make_norm(stretch, vmin_val, vmax_val, gamma)
         if self._try_fast_redraw(
@@ -214,8 +216,8 @@ class RenderingMixin:
         # Draw now rather than when idle, so it happens under the wait cursor
         self.canvas.draw()
 
-        if self.coord_label.text() == "No image loaded":
-            self.coord_label.setText(READOUT_HINT)
+        if self.cursor_readout.state_label.text() == "no image":
+            self.cursor_readout.set_state(READOUT_HINT)
 
         # Save state for next update
         self._last_rendered_state = self._get_render_state(tight_layout=tight_layout)
@@ -884,6 +886,16 @@ class RenderingMixin:
             alpha=self.beam_style.get("alpha", 0.4),
         )
         ax.add_patch(ellipse)
+
+    def _sync_levels(self, data, vmin_val, vmax_val):
+        """The inspector's histogram shows this image and range."""
+        levels = getattr(self, "levels", None)
+        if levels is None:
+            return
+        if getattr(self, "_levels_data_id", None) != id(data):
+            self._levels_data_id = id(data)
+            levels.set_data(data)
+        levels.set_range(vmin_val, vmax_val)
 
     def _apply_layout_settings(self, tight_layout):
         """Matplotlib's tight layout, if turned on in Plot Customization

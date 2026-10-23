@@ -1,30 +1,33 @@
 """
-The toolbar under the image: tools, zoom and view buttons, TB and HPC, and
-the file navigation buttons.
+The bar under the image: the tools at the left (one on at a time), the
+zoom group and the file navigation at the right.
 """
 
 import logging
 from PyQt5.QtWidgets import (
-    QWidget,
     QAction,
+    QActionGroup,
+    QFrame,
+    QHBoxLayout,
     QLabel,
     QPushButton,
-    QToolBar,
-    QActionGroup,
-    QSizePolicy,
+    QToolButton,
 )
-from PyQt5.QtCore import QSize
+from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QIcon
 from ..ui.icons import get_resource_path, themed_icon
+from ..ui.widgets import segmented
 from ..tools import (
     RegionMode,
 )
 
 logger = logging.getLogger(__name__)
 
+ICON_SIZE = QSize(16, 16)
+
 
 class FigureToolbarMixin:
-    """Builds the toolbar under the image.
+    """Builds the bar under the image.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
 
@@ -33,228 +36,159 @@ class FigureToolbarMixin:
     ``_on_first_file``, ``_on_last_file``,
     ``_on_next_file``, ``_on_prev_file``, ``_show_filter_dialog``,
     ``_show_playlist_dialog``, ``_toggle_profile_mode``,
-    ``_toggle_ruler_mode``, ``_toggle_tb_mode``,
-    ``launch_helioprojective_viewer``, ``reset_view``,
-    ``set_region_mode``, ``show_plot_customization_dialog``,
+    ``_toggle_ruler_mode``, ``reset_view``, ``set_region_mode``,
     ``zoom_60arcmin``, ``zoom_in``, ``zoom_out``
     """
 
+    def _tool_action(self, icon, tip, slot=None, checkable=False):
+        action = QAction(QIcon(icon), "", self)
+        action.setToolTip(tip)
+        if checkable:
+            action.setCheckable(True)
+        if slot is not None:
+            action.triggered.connect(slot)
+        return action
+
+    @staticmethod
+    def _tool_button(action):
+        button = QToolButton()
+        button.setDefaultAction(action)
+        button.setIconSize(ICON_SIZE)
+        button.setAutoRaise(True)
+        return button
+
     def setup_figure_toolbar(self, parent_layout):
-        """Set up the figure toolbar with zoom and other controls"""
-        toolbar = QToolBar()
-        toolbar.setIconSize(QSize(18, 18))
+        """Set up the bar under the image: tools, zoom, file navigation."""
+        bar = QFrame()
+        bar.setObjectName("CanvasBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(10)
         action_group = QActionGroup(self)
 
-        # Pan action (default)
-        self.pan_action = QAction(
-            QIcon(get_resource_path("assets/pan.png")),
-            "",
-            self,
+        # The tools: pan (the default), regions, the ruler and the profile
+        self.pan_action = self._tool_action(
+            get_resource_path("assets/pan.png"),
+            "Pan: drag, or middle-drag in any mode. Scroll to zoom, arrows to move",
+            lambda: self.set_region_mode(RegionMode.PAN),
+            checkable=True,
         )
-        self.pan_action.setToolTip(
-            "Pan: drag, or middle-drag in any mode. Scroll to zoom, arrows to move"
-        )
-        self.pan_action.setCheckable(True)
         self.pan_action.setChecked(True)
-        self.pan_action.triggered.connect(lambda: self.set_region_mode(RegionMode.PAN))
-        action_group.addAction(self.pan_action)
-        toolbar.addAction(self.pan_action)
-
-        self.rect_action = QAction(
-            QIcon(get_resource_path("assets/rectangle_selection.png")),
-            "",
-            self,
+        self.rect_action = self._tool_action(
+            get_resource_path("assets/rectangle_selection.png"),
+            "Rectangle Select",
+            lambda: self.set_region_mode(RegionMode.RECTANGLE),
+            checkable=True,
         )
-        self.rect_action.setToolTip("Rectangle Select")
-        self.rect_action.setCheckable(True)
-        self.rect_action.setChecked(False)
-        self.rect_action.triggered.connect(
-            lambda: self.set_region_mode(RegionMode.RECTANGLE)
+        self.ellipse_action = self._tool_action(
+            get_resource_path("assets/ellipse_selection.png"),
+            "Ellipse Select",
+            lambda: self.set_region_mode(RegionMode.ELLIPSE),
+            checkable=True,
         )
-        action_group.addAction(self.rect_action)
-        toolbar.addAction(self.rect_action)
-
-        # Ellipse selection action
-        self.ellipse_action = QAction(
-            QIcon(get_resource_path("assets/ellipse_selection.png")),
-            "",
-            self,
+        self.ruler_action = self._tool_action(
+            themed_icon("ruler.png"),
+            "Measure Angular Distance (Select two points on the map)",
+            checkable=True,
         )
-        self.ellipse_action.setToolTip("Ellipse Select")
-        self.ellipse_action.setCheckable(True)
-        self.ellipse_action.setChecked(False)
-        self.ellipse_action.triggered.connect(
-            lambda: self.set_region_mode(RegionMode.ELLIPSE)
+        self.ruler_action.toggled.connect(self._toggle_ruler_mode)
+        self.profile_action = self._tool_action(
+            themed_icon("profile.png"),
+            "Plot Flux Profile along a line cut",
+            checkable=True,
         )
-        action_group.addAction(self.ellipse_action)
-
-        self.zoom_in_action = QAction(
-            QIcon(get_resource_path("assets/zoom_in.png")),
-            "",
-            self,
-        )
-        self.zoom_in_action.setToolTip("Zoom In (+)")
-        self.zoom_in_action.triggered.connect(self.zoom_in)
-        self.zoom_out_action = QAction(
-            QIcon(get_resource_path("assets/zoom_out.png")),
-            "",
-            self,
-        )
-        self.zoom_out_action.setToolTip("Zoom Out (-)")
-        self.zoom_out_action.triggered.connect(self.zoom_out)
-        self.reset_view_action = QAction(
-            QIcon(get_resource_path("assets/reset.png")),
-            "",
-            self,
-        )
-        self.reset_view_action.setToolTip("Reset View (R)")
-        self.reset_view_action.triggered.connect(
-            lambda: self.reset_view(show_status_message=True, animate=True)
-        )
-        self.zoom_60arcmin_action = QAction(
-            QIcon(get_resource_path("assets/zoom_60arcmin.png")),
-            "",
-            self,
-        )
-        self.zoom_60arcmin_action.setToolTip("1°×1° Zoom (1)")
-        self.zoom_60arcmin_action.triggered.connect(self.zoom_60arcmin)
-
-        # Add customize plot action
-        self.customize_plot_action = QAction(
-            QIcon(get_resource_path("assets/settings.png")),
-            "",
-            self,
-        )
-        self.customize_plot_action.setToolTip("Customize Plot Appearance")
-        self.customize_plot_action.triggered.connect(
-            self.show_plot_customization_dialog
-        )
-
-        # Ruler/distance measurement action
-        from ..ui.styles import get_icon_path
-
-        self.ruler_action = QAction(
-            QIcon(get_resource_path(f"assets/{get_icon_path('ruler.png')}")),
-            "",
-            self,
-        )
-        self.ruler_action.setToolTip(
-            "Measure Angular Distance (Select two points on the map)"
-        )
-        self.ruler_action.setCheckable(True)
-        self.ruler_action.setChecked(False)
-        self.ruler_action.toggled.connect(
-            self._toggle_ruler_mode
-        )  # Use toggled instead of triggered
-        action_group.addAction(
-            self.ruler_action
-        )  # Add to action group with rect/ellipse
-
-        # Profile cut action
-        self.profile_action = QAction(
-            QIcon(get_resource_path(f"assets/{get_icon_path('profile.png')}")),
-            "",
-            self,
-        )
-        self.profile_action.setToolTip("Plot Flux Profile along a line cut")
-        self.profile_action.setCheckable(True)
-        self.profile_action.setChecked(False)
         self.profile_action.toggled.connect(self._toggle_profile_mode)
-        action_group.addAction(self.profile_action)
+        tools = [
+            self.pan_action,
+            self.rect_action,
+            self.ellipse_action,
+            self.ruler_action,
+            self.profile_action,
+        ]
+        for action in tools:
+            action_group.addAction(action)
+        layout.addWidget(segmented([self._tool_button(action) for action in tools]))
 
-        # Add drawing/measurement tools
-        toolbar.addActions(
-            [
-                self.rect_action,
-                self.ellipse_action,
-                self.ruler_action,
-                self.profile_action,
-            ]
+        hint = QLabel("Drag pans · scroll zooms · R resets · 1 is 1°")
+        hint.setObjectName("Meta")
+        layout.addWidget(hint)
+        layout.addStretch()
+
+        # Zoom: in, how far in, out, reset, one degree
+        self.zoom_in_action = self._tool_action(
+            get_resource_path("assets/zoom_in.png"), "Zoom In (+)", self.zoom_in
         )
-
-        toolbar.addSeparator()
-
-        # Add zoom and view tools
-        toolbar.addActions(
-            [
-                self.zoom_in_action,
-                self.zoom_out_action,
-                self.reset_view_action,
-                self.zoom_60arcmin_action,
-                self.customize_plot_action,
-            ]
+        self.zoom_out_action = self._tool_action(
+            get_resource_path("assets/zoom_out.png"), "Zoom Out (-)", self.zoom_out
         )
-
-        # Add a spacer to push the helioprojective button to the right
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        toolbar.addWidget(spacer)
-
-        # Brightness temperature and helioprojective toggles: checkable
-        # buttons, filled in the accent colour while on
-        self.tb_btn = QPushButton("TB")
-        self.tb_btn.setToolTip(
-            "Convert to Brightness Temperature (K) - requires Jy/beam units"
+        self.reset_view_action = self._tool_action(
+            get_resource_path("assets/reset.png"),
+            "Reset View (R)",
+            lambda: self.reset_view(show_status_message=True, animate=True),
         )
-        self.tb_btn.setCheckable(True)
-        self.tb_btn.setEnabled(False)  # enabled when the units are Jy/beam
-        self.tb_btn.clicked.connect(self._toggle_tb_mode)
-        toolbar.addWidget(self.tb_btn)
-
-        self.hpc_btn = QPushButton("HPC")
-        self.hpc_btn.setToolTip("Convert to Helioprojective view")
-        self.hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
-        toolbar.addWidget(self.hpc_btn)
-        toolbar.addSeparator()
+        self.zoom_60arcmin_action = self._tool_action(
+            get_resource_path("assets/zoom_60arcmin.png"), "1°×1° Zoom (1)", self.zoom_60arcmin
+        )
+        self.zoom_label = QLabel("—")
+        self.zoom_label.setToolTip("How much of the image's width is in view")
+        self.zoom_label.setMinimumWidth(self.zoom_label.fontMetrics().horizontalAdvance("0000%"))
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        zoom_buttons = [
+            self._tool_button(self.zoom_in_action),
+            self.zoom_label,
+            self._tool_button(self.zoom_out_action),
+            self._tool_button(self.reset_view_action),
+            self._tool_button(self.zoom_60arcmin_action),
+        ]
+        layout.addWidget(segmented(zoom_buttons))
 
         # File navigation
+        nav = QHBoxLayout()
+        nav.setSpacing(0)
         self._first_file_btn = QPushButton("|◄")
         self._first_file_btn.setToolTip("Go to first file")
         self._first_file_btn.clicked.connect(self._on_first_file)
-        self._first_file_btn.setEnabled(False)
-        toolbar.addWidget(self._first_file_btn)
-
         self._prev_file_btn = QPushButton("◀")
-        self._prev_file_btn.setToolTip("Previous file in directory")
+        self._prev_file_btn.setToolTip("Previous file in directory ([)")
         self._prev_file_btn.clicked.connect(self._on_prev_file)
-        self._prev_file_btn.setEnabled(False)
-        toolbar.addWidget(self._prev_file_btn)
-
+        self._file_pos_label = QLabel("— / —")
+        self._file_pos_label.setObjectName("Meta")
+        self._file_pos_label.setMinimumWidth(
+            self._file_pos_label.fontMetrics().horizontalAdvance("000 / 000")
+        )
         self._next_file_btn = QPushButton("▶")
-        self._next_file_btn.setToolTip("Next file in directory")
+        self._next_file_btn.setToolTip("Next file in directory (])")
         self._next_file_btn.clicked.connect(self._on_next_file)
-        self._next_file_btn.setEnabled(False)
-        toolbar.addWidget(self._next_file_btn)
-
         self._last_file_btn = QPushButton("►|")
         self._last_file_btn.setToolTip("Go to last file")
         self._last_file_btn.clicked.connect(self._on_last_file)
-        self._last_file_btn.setEnabled(False)
-        toolbar.addWidget(self._last_file_btn)
-
         self._filter_btn = QPushButton()
         self._filter_btn.setIcon(QIcon(themed_icon("settings.png")))
-        self._filter_btn.setIconSize(QSize(16, 16))
+        self._filter_btn.setIconSize(QSize(14, 14))
         self._filter_btn.setToolTip("Set file filter pattern")
         self._filter_btn.clicked.connect(self._show_filter_dialog)
-        toolbar.addWidget(self._filter_btn)
-
         self._playlist_btn = QPushButton("☰")
         self._playlist_btn.setToolTip("Show all files in directory")
         self._playlist_btn.clicked.connect(self._show_playlist_dialog)
-        toolbar.addWidget(self._playlist_btn)
-
-        self._file_pos_label = QLabel("")
-        self._file_pos_label.setObjectName("Hint")
-        toolbar.addWidget(self._file_pos_label)
         for button in (
             self._first_file_btn,
             self._prev_file_btn,
             self._next_file_btn,
             self._last_file_btn,
+        ):
+            button.setEnabled(False)
+        for widget in (
+            self._first_file_btn,
+            self._prev_file_btn,
+            self._file_pos_label,
+            self._next_file_btn,
+            self._last_file_btn,
             self._filter_btn,
             self._playlist_btn,
         ):
-            button.setObjectName("NavButton")
+            if isinstance(widget, QPushButton):
+                widget.setObjectName("NavButton")
+            nav.addWidget(widget)
+        layout.addLayout(nav)
 
-        parent_layout.addWidget(toolbar)
+        parent_layout.addWidget(bar)

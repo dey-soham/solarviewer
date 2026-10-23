@@ -58,6 +58,8 @@ class RoiStatsMixin:
         stats_values = [rmin, rmax, rmean, rstd, rsum, rrms]
         for i, val in enumerate(stats_values):
             self.stats_table.setItem(i, 1, QTableWidgetItem(f"{val:.6g}"))
+        self.stats_table.show()  # (hidden until there are statistics)
+        self.histogram_btn.show()
 
         main_window = self.parent()
         if main_window:

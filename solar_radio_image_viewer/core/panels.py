@@ -1,6 +1,8 @@
 """
-The image tab's side panels: Image Selection and Display Settings on the
-left, the statistics and Cursor Position panels on the right.
+The image tab's controls around the canvas: the top bar (file, Stokes,
+threshold, colormap, stretch), the inspector at the right (the Display
+and Statistics tabs, the cursor readout pinned at its foot, Reload and
+Helioviewer under that) and the empty canvas shown before an image.
 """
 
 import logging
@@ -17,25 +19,35 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QFrame,
-    # QInputDialog,
-    # QMenuBar,
     QCheckBox,
     QGridLayout,
-    QGroupBox,
     QHeaderView,
-    QFormLayout,
+    QScrollArea,
     QSizePolicy,
+    QTabWidget,
+    QButtonGroup,
 )
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QIcon
+from ..ui.cursor_readout import CursorReadout
+from ..ui.empty_canvas import EmptyCanvas
 from ..ui.geometry import fit_width_to_text
+from ..ui.histogram import LevelsHistogram
 from ..ui.searchable_combobox import ColormapSelector
 from ..ui.icons import get_resource_path, themed_icon
+from ..ui.stokes_picker import StokesPicker
 from ..ui.styles import set_tone
-from ..ui.widgets import section
-from ..ui.item_delegates import DisabledItemDelegate
+from ..ui.widgets import kicker, kicker_row, link_button, segmented, toggle_row, vrule
 
 logger = logging.getLogger(__name__)
+
+# The display-range presets: button text, apply_auto_range mode, tooltip
+RANGE_PRESETS = (
+    ("Auto", "minmax", "The image's minimum to its maximum (F5)"),
+    ("1–99%", "p1_99", "The 1st to the 99th percentile (F6)"),
+    ("Med±3σ", "median_rms", "The median, three times the RMS either side (F7)"),
+)
+
 
 def _fit_rows(table):
     """Make ``table`` exactly as tall as its rows: no blank rows below them
@@ -44,76 +56,133 @@ def _fit_rows(table):
     for row in range(table.rowCount()):
         table.setRowHeight(row, row_height)
     table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    header = table.horizontalHeader()
-    header.setFixedHeight(table.fontMetrics().height() + 12)
-    table.setFixedHeight(
-        header.height() + row_height * table.rowCount() + 2 * table.frameWidth()
-    )
+    table.horizontalHeader().setVisible(False)
+    table.setFixedHeight(row_height * table.rowCount() + 2 * table.frameWidth())
     table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
 
+def _key_value_table(rows, tips=None):
+    """A table of label / value rows in the KeyValue role: no frame, no
+    header, the values right-aligned, as tall as its rows."""
+    table = QTableWidget(len(rows), 2)
+    table.setObjectName("KeyValue")
+    table.verticalHeader().setVisible(False)
+    table.setEditTriggers(QTableWidget.NoEditTriggers)
+    table.setSelectionMode(QTableWidget.NoSelection)
+    table.setFocusPolicy(Qt.NoFocus)
+    table.setShowGrid(False)
+    table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+    table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    for row, label in enumerate(rows):
+        item = QTableWidgetItem(label)
+        if tips and label in tips:
+            item.setToolTip(tips[label])
+        table.setItem(row, 0, item)
+        table.setItem(row, 1, QTableWidgetItem("−"))
+        table.item(row, 1).setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    _fit_rows(table)
+    return table
+
+
+def _scroll(widget):
+    """``widget`` in a scroll area, scrolling vertically when the window
+    is too short for all of it."""
+    area = QScrollArea()
+    area.setWidget(widget)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    return area
+
+
+def _block(title, aside=None):
+    """A block of the inspector: a kicker over a layout to fill. Returns
+    (widget, layout, aside label or None)."""
+    widget = QWidget()
+    layout = QVBoxLayout(widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    if aside is None:
+        layout.addWidget(kicker(title))
+        label = None
+    else:
+        row, label = kicker_row(title, aside)
+        layout.addWidget(row)
+    return widget, layout, label
+
+
+def _settings_button(tip, slot):
+    button = QPushButton()
+    button.setObjectName("IconOnlyNBGButton")
+    button.setIcon(QIcon(themed_icon("settings.png")))
+    button.setIconSize(QSize(14, 14))
+    button.setToolTip(tip)
+    button.clicked.connect(slot)
+    return button
+
+
 class PanelsMixin:
-    """Builds the tab's side panels.
+    """Builds the tab's controls around the canvas.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
 
     Host attributes/methods used:
 
     ``_apply_gamma_change``, ``_on_threshold_edited``,
-    ``_show_roi_histogram``, ``apply_auto_range``, ``current_image_data``,
-    ``imagename``, ``invalidate_contours``, ``on_checkbox_changed``,
+    ``_show_roi_histogram``, ``_toggle_tb_mode``, ``apply_auto_range``,
+    ``current_image_data``, ``imagename``, ``invalidate_contours``,
+    ``launch_helioprojective_viewer``, ``on_checkbox_changed``,
     ``on_stokes_changed``, ``on_stretch_changed``,
     ``on_visualization_changed``, ``open_helioviewer_with_time``,
-    ``reset_view``, ``select_file_or_directory``, ``set_solar_disk_center``,
-    ``show_beam_settings``, ``show_contour_settings``, ``show_grid_settings``,
-    ``show_noaa_events_for_current_image``, ``show_rms_box_dialog``,
+    ``open_path``, ``reset_view``, ``select_file_or_directory``,
+    ``set_solar_disk_center``, ``show_beam_settings``,
+    ``show_contour_settings``, ``show_grid_settings``,
+    ``show_noaa_events_for_current_image``,
+    ``show_plot_customization_dialog``, ``show_rms_box_dialog``,
     ``update_display``, ``update_gamma_slider``, ``update_gamma_value``
     """
 
-    def create_file_controls(self, parent_layout):
-        group = QGroupBox("Image Selection")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(8)
+    # ------------------------------------------------------------ top bar
+    def create_top_bar(self, parent_layout):
+        """The bar above the image: the file, Stokes, the threshold, the
+        colormap and the stretch."""
+        bar = QFrame()
+        bar.setObjectName("TopBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(14, 7, 14, 7)
+        layout.setSpacing(14)
 
-        file_layout = QHBoxLayout()
-        file_layout.setSpacing(8)
+        # The file: typed or pasted and entered, or chosen with the icon
         self.dir_entry = QLineEdit()
         self.dir_entry.setPlaceholderText("FITS file or CASA image")
-        self.dir_entry.setReadOnly(True)
-        self.browse_btn = QPushButton()
-        self.browse_btn.setObjectName("IconOnlyNBGButton")
-        self.browse_btn.setIcon(QIcon(get_resource_path("assets/browse.png")))
-        self.browse_btn.setIconSize(QSize(22, 22))
-        self.browse_btn.setToolTip("Open a FITS file or CASA image (Ctrl+O)")
-        self.browse_btn.clicked.connect(self.select_file_or_directory)
-        file_layout.addWidget(self.dir_entry, 1)
-        file_layout.addWidget(self.browse_btn)
-        layout.addLayout(file_layout)
-
-        # Add a separator line
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator)
-
-        # Row 1: Stokes + Threshold on same row
-        stokes_thresh_layout = QHBoxLayout()
-        stokes_thresh_layout.setSpacing(12)
-
-        # Stokes dropdown
-        stokes_label = QLabel("Stokes:")
-        self.stokes_combo = QComboBox()
-        self.stokes_combo.addItems(
-            ["I", "Q", "U", "V", "L", "Lfrac", "Vfrac", "Q/I", "U/I", "U/V", "PANG"]
+        self.dir_entry.setToolTip(
+            "The image shown. Type or paste a path and press Enter, or click "
+            "the icon to choose one (Ctrl+O)"
         )
+        self.dir_entry.setClearButtonEnabled(False)
+        self.dir_entry.setMinimumWidth(self.dir_entry.fontMetrics().averageCharWidth() * 44)
+        self.dir_entry.returnPressed.connect(self._open_entered_path)
+        self.browse_action = self.dir_entry.addAction(
+            QIcon(themed_icon("browse.png")), QLineEdit.LeadingPosition
+        )
+        self.browse_action.setToolTip("Open a FITS file or CASA image (Ctrl+O)")
+        self.browse_action.triggered.connect(self.select_file_or_directory)
+        layout.addWidget(self.dir_entry, 1)
+        layout.addWidget(vrule())
+
+        # Stokes
+        stokes_label = QLabel("Stokes")
+        stokes_label.setObjectName("Hint")
+        self.stokes_picker = StokesPicker()
+        self.stokes_combo = self.stokes_picker.combo
         self.stokes_combo.currentTextChanged.connect(self.on_stokes_changed)
+        layout.addWidget(stokes_label)
+        layout.addWidget(self.stokes_picker)
 
-        # Use custom delegate to properly render disabled items with grayed text
-        self.stokes_combo.setItemDelegate(DisabledItemDelegate(self.stokes_combo))
-
-        stokes_thresh_layout.addStretch()
         # Threshold (sigma)
-        thresh_label = QLabel("Threshold (σ):")
+        thresh_label = QLabel("Threshold")
+        thresh_label.setObjectName("Hint")
         threshold_tip = (
             "Threshold, in units of the RMS (σ) measured in the RMS box.\n"
             "Lfrac, Vfrac, Q/I, U/I and U/V: pixels whose numerator is below "
@@ -126,85 +195,14 @@ class PanelsMixin:
         fit_width_to_text(self.threshold_entry, "0000")
         self.threshold_entry.setToolTip(threshold_tip)
         self.threshold_entry.editingFinished.connect(self._on_threshold_edited)
+        sigma = QLabel("σ")
+        sigma.setObjectName("Hint")
+        layout.addWidget(thresh_label)
+        layout.addWidget(self.threshold_entry)
+        layout.addWidget(sigma)
+        layout.addWidget(vrule())
 
-        stokes_thresh_layout.addWidget(stokes_label)
-        stokes_thresh_layout.addWidget(self.stokes_combo, 1)
-        stokes_thresh_layout.addWidget(thresh_label)
-        stokes_thresh_layout.addWidget(self.threshold_entry)
-        layout.addLayout(stokes_thresh_layout)
-
-        # Row 2: Fast Load toggle on left, RMS settings on right
-        options_row = QHBoxLayout()
-        options_row.setSpacing(8)
-        options_row.setContentsMargins(0, 2, 0, 2)
-
-        # Fast Load toggle (left side)
-        self.downsample_toggle = QCheckBox("Fast")
-        self.downsample_toggle.setObjectName("Switch")
-        self.downsample_toggle.setToolTip(
-            "Enable fast preview mode for quick image browsing.\n"
-            "Images are loaded at reduced resolution for faster display."
-        )
-
-        # Says "preview" while the image shown is the reduced one
-        self.downsample_status = QLabel("")
-        self.downsample_status.setObjectName("Hint")
-        set_tone(self.downsample_status, "success")
-
-        def update_fast_load_status(checked):
-            self.downsample_status.setText("preview" if checked else "")
-
-            # Invalidate contour data when downsample mode changes
-            # This ensures contour data will be reloaded at the correct resolution
-            self.invalidate_contours()
-
-            # If image is already loaded, reload it with new downsample setting
-            if self.current_image_data is not None and self.imagename:
-                self.on_visualization_changed()
-                self.reset_view()
-
-        self.downsample_toggle.stateChanged.connect(update_fast_load_status)
-
-        # Add Fast Load widgets to the left
-        options_row.addWidget(self.downsample_toggle)
-        options_row.addWidget(self.downsample_status)
-
-        # Stretch in the middle
-        options_row.addStretch()
-
-        # RMS Box settings on the right (label + icon)
-        self.rms_label = QLabel("RMS box")
-        self.rms_label.setObjectName("Hint")
-        rms_tip = (
-            "RMS box: where the noise (RMS) is measured, by default a band "
-            "along the bottom of the image.\nThe RMS sets the threshold of the "
-            "derived Stokes products, the image statistics (RMS, dynamic range) "
-            "and contour levels in σ.\nClick the gear to change the box."
-        )
-        self.rms_label.setToolTip(rms_tip)
-
-        self.rms_settings_btn = QPushButton()
-        self.rms_settings_btn.setObjectName("IconOnlyNBGButton")
-        self.rms_settings_btn.setIcon(QIcon(themed_icon("settings.png")))
-        self.rms_settings_btn.setIconSize(QSize(16, 16))
-        self.rms_settings_btn.setToolTip(rms_tip)
-        self.rms_settings_btn.setAccessibleName("RMS box settings")
-        self.rms_settings_btn.clicked.connect(self.show_rms_box_dialog)
-
-        options_row.addWidget(self.rms_label)
-        options_row.addWidget(self.rms_settings_btn)
-
-        layout.addLayout(options_row)
-
-        parent_layout.addWidget(group)
-
-    def create_display_controls(self, parent_layout):
-        group = QGroupBox("Display Settings")
-        main_layout = QVBoxLayout(group)
-        main_layout.setSpacing(8)  # Tighter spacing
-
-        # Basic display settings - compact row
-        form_layout = QFormLayout()
+        # Colormap and stretch
         radio_colormaps = [
             "viridis",
             "plasma",
@@ -222,18 +220,17 @@ class PanelsMixin:
             preferred_items=radio_colormaps, all_items=all_colormaps
         )
         self.cmap_combo.setCurrentText("viridis")
+        self.cmap_combo.setToolTip("Colormap")
         self.cmap_combo.colormapSelected.connect(self.update_display)
-        form_layout.addRow("Colormap:", self.cmap_combo)
+        layout.addWidget(self.cmap_combo)
 
-        # Stretch function
         self.stretch_combo = QComboBox()
         self.stretch_combo.addItems(
             ["linear", "sqrt", "log", "arcsinh", "power", "zscale", "histeq"]
         )
         self.stretch_combo.setCurrentText("power")
+        self.stretch_combo.setToolTip("Stretch")
         self.stretch_combo.currentIndexChanged.connect(self.on_stretch_changed)
-
-        # Add tooltips for each stretch
         stretch_tooltips = {
             0: "Linear stretch - no transformation",
             1: "Square root stretch - enhances faint features",
@@ -245,296 +242,350 @@ class PanelsMixin:
         }
         for idx, tooltip in stretch_tooltips.items():
             self.stretch_combo.setItemData(idx, tooltip, Qt.ToolTipRole)
+        layout.addWidget(self.stretch_combo)
+        layout.addStretch(2)
 
-        form_layout.addRow("Stretch:", self.stretch_combo)
-        main_layout.addLayout(form_layout)
+        parent_layout.addWidget(bar)
 
-        # Overlays subgroup
-        overlays_group, overlays_layout = section("Overlays")
+    def _open_entered_path(self):
+        """Open the path typed or pasted into the file field."""
+        import os
 
-        # Modern grid layout with fixed column widths for perfect alignment
-        grid_layout = QGridLayout()
-        grid_layout.setSpacing(6)
-        grid_layout.setContentsMargins(0, 0, 0, 0)
+        path = os.path.expanduser(self.dir_entry.text().strip().strip("'\""))
+        if path and os.path.exists(path):
+            self.open_path(path)
+        elif path:
+            self.show_status_message(f"No such file or image: {path}")
 
-        # Row 0: Show Beam + settings | Show Grid + settings
+    # ---------------------------------------------------------- inspector
+    def create_inspector(self):
+        """The column at the right: the Display and Statistics tabs, the
+        cursor readout pinned under them, Reload and Helioviewer at the
+        foot. Returns the widget."""
+        inspector = QFrame()
+        inspector.setObjectName("Inspector")
+        layout = QVBoxLayout(inspector)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.inspector_tabs = QTabWidget()
+        self.inspector_tabs.setObjectName("InspectorTabs")
+        self.inspector_tabs.tabBar().setFocusPolicy(Qt.NoFocus)
+        self.inspector_tabs.addTab(_scroll(self._display_page()), "Display")
+        self.inspector_tabs.addTab(_scroll(self._statistics_page()), "Statistics")
+        layout.addWidget(self.inspector_tabs, 1)
+
+        self.cursor_readout = CursorReadout()
+        self._create_conversion_buttons()
+        layout.addWidget(self.cursor_readout)
+
+        footer = QFrame()
+        footer.setObjectName("CanvasBar")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(10, 8, 14, 8)
+        footer_layout.setSpacing(6)
+        # Display changes apply as they are made; this reads the image
+        # again, which is rarely needed
+        self.plot_button = link_button("Reload image", self.on_visualization_changed)
+        self.plot_button.setToolTip("Read the image again from disk")
+        footer_layout.addWidget(self.plot_button)
+        footer_layout.addStretch()
+        self.helioviewer_btn = QPushButton("Helioviewer")
+        self.helioviewer_btn.setToolTip(
+            "Browse Helioviewer images around current observation time"
+        )
+        self.helioviewer_btn.setEnabled(False)  # until an image is loaded
+        self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
+        footer_layout.addWidget(self.helioviewer_btn)
+        layout.addWidget(footer)
+
+        return inspector
+
+    def _create_conversion_buttons(self):
+        """The brightness-temperature and helioprojective conversions,
+        beside the readout lines they change (their text is set by the
+        loaders and the conversions themselves: TB / FLUX, HPC / RA/DEC)."""
+        self.tb_btn = QPushButton("TB")
+        self.tb_btn.setToolTip(
+            "Convert to Brightness Temperature (K) - requires Jy/beam units"
+        )
+        self.tb_btn.setCheckable(True)
+        self.tb_btn.setEnabled(False)  # enabled when the units are Jy/beam
+        self.tb_btn.clicked.connect(self._toggle_tb_mode)
+        self.cursor_readout.set_value_button(self.tb_btn)
+
+        self.hpc_btn = QPushButton("HPC")
+        self.hpc_btn.setToolTip("Convert to Helioprojective view")
+        self.hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
+        self.cursor_readout.set_world_button(self.hpc_btn)
+
+    def _display_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(14, 16, 14, 16)
+        layout.setSpacing(18)
+        layout.addWidget(self._overlays_block())
+        layout.addWidget(self._intensity_block())
+        layout.addWidget(self._loading_block())
+        layout.addStretch()
+        return page
+
+    def _overlays_block(self):
+        block, layout, _ = _block("Overlays")
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(6)
+
         self.show_beam_checkbox = QCheckBox("")
         self.show_beam_checkbox.setAccessibleName("Beam")
         self.show_beam_label = QLabel("Beam")
         self.show_beam_checkbox.setChecked(True)
         self.show_beam_checkbox.setObjectName("Switch")
         self.show_beam_checkbox.stateChanged.connect(self.on_checkbox_changed)
-
-        self.beam_settings_button = QPushButton()
-        self.beam_settings_button.setObjectName("IconOnlyNBGButton")
-        self.beam_settings_button.setIcon(QIcon(themed_icon("settings.png")))
-        self.beam_settings_button.setIconSize(QSize(16, 16))
-        self.beam_settings_button.setToolTip("Beam Settings")
-        self.beam_settings_button.clicked.connect(self.show_beam_settings)
+        self.beam_settings_button = _settings_button("Beam Settings", self.show_beam_settings)
 
         self.show_grid_checkbox = QCheckBox("Grid")
         self.show_grid_checkbox.setChecked(False)
         self.show_grid_checkbox.setObjectName("Switch")
         self.show_grid_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        self.grid_settings_button = _settings_button("Grid Settings", self.show_grid_settings)
 
-        self.grid_settings_button = QPushButton()
-        self.grid_settings_button.setObjectName("IconOnlyNBGButton")
-        self.grid_settings_button.setIcon(QIcon(themed_icon("settings.png")))
-        self.grid_settings_button.setIconSize(QSize(16, 16))
-        self.grid_settings_button.setToolTip("Grid Settings")
-        self.grid_settings_button.clicked.connect(self.show_grid_settings)
-
-        # Row 1: Solar Disk + settings | Contours + settings
-        self.show_solar_disk_checkbox = QCheckBox("Solar Disk")
+        self.show_solar_disk_checkbox = QCheckBox("Solar disk")
         self.show_solar_disk_checkbox.setObjectName("Switch")
         self.show_solar_disk_checkbox.stateChanged.connect(self.on_checkbox_changed)
-
-        self.solar_disk_center_button = QPushButton()
-        self.solar_disk_center_button.setObjectName("IconOnlyNBGButton")
-        self.solar_disk_center_button.setIcon(QIcon(themed_icon("settings.png")))
-        self.solar_disk_center_button.setIconSize(QSize(16, 16))
-        self.solar_disk_center_button.setToolTip("Customize Solar Disk")
-        self.solar_disk_center_button.clicked.connect(self.set_solar_disk_center)
+        self.solar_disk_center_button = _settings_button(
+            "Customize Solar Disk", self.set_solar_disk_center
+        )
 
         self.show_contours_checkbox = QCheckBox("Contours")
         self.show_contours_checkbox.setChecked(False)
         self.show_contours_checkbox.setObjectName("Switch")
         self.show_contours_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        self.contour_settings_button = _settings_button(
+            "Contour Settings", self.show_contour_settings
+        )
 
-        self.contour_settings_button = QPushButton()
-        self.contour_settings_button.setObjectName("IconOnlyNBGButton")
-        self.contour_settings_button.setIcon(QIcon(themed_icon("settings.png")))
-        self.contour_settings_button.setIconSize(QSize(16, 16))
-        self.contour_settings_button.setToolTip("Contour Settings")
-        self.contour_settings_button.clicked.connect(self.show_contour_settings)
+        grid.addWidget(
+            toggle_row(self.show_beam_checkbox, self.beam_settings_button, self.show_beam_label),
+            0, 0,
+        )
+        grid.addWidget(toggle_row(self.show_grid_checkbox, self.grid_settings_button), 0, 1)
+        grid.addWidget(
+            toggle_row(self.show_solar_disk_checkbox, self.solar_disk_center_button), 1, 0
+        )
+        grid.addWidget(
+            toggle_row(self.show_contours_checkbox, self.contour_settings_button), 1, 1
+        )
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+        return block
 
-        # Create left/right widget containers for tight grouping
-        left_group_0 = QWidget()
-        left_layout_0 = QHBoxLayout(left_group_0)
-        left_layout_0.setContentsMargins(0, 0, 0, 0)
-        left_layout_0.setSpacing(2)
-        left_layout_0.addWidget(self.show_beam_checkbox)
-        left_layout_0.addWidget(self.show_beam_label)
-        left_layout_0.addWidget(self.beam_settings_button)
-        left_layout_0.addStretch()
+    def _intensity_block(self):
+        block, layout, self.range_preset_label = _block("Intensity range", "")
 
-        right_group_0 = QWidget()
-        right_layout_0 = QHBoxLayout(right_group_0)
-        right_layout_0.setContentsMargins(0, 0, 0, 0)
-        right_layout_0.setSpacing(2)
-        right_layout_0.addWidget(self.show_grid_checkbox)
-        right_layout_0.addWidget(self.grid_settings_button)
-        right_layout_0.addStretch()
+        # The histogram, the range draggable on it
+        self.levels = LevelsHistogram()
+        self.levels.rangeEdited.connect(self._on_levels_dragged)
+        layout.addWidget(self.levels)
 
-        left_group_1 = QWidget()
-        left_layout_1 = QHBoxLayout(left_group_1)
-        left_layout_1.setContentsMargins(0, 0, 0, 0)
-        left_layout_1.setSpacing(2)
-        left_layout_1.addWidget(self.show_solar_disk_checkbox)
-        left_layout_1.addWidget(self.solar_disk_center_button)
-        left_layout_1.addStretch()
-
-        right_group_1 = QWidget()
-        right_layout_1 = QHBoxLayout(right_group_1)
-        right_layout_1.setContentsMargins(0, 0, 0, 0)
-        right_layout_1.setSpacing(2)
-        right_layout_1.addWidget(self.show_contours_checkbox)
-        right_layout_1.addWidget(self.contour_settings_button)
-        right_layout_1.addStretch()
-
-        # Add to grid - 2 columns, stretch only in the middle
-        grid_layout.addWidget(left_group_0, 0, 0)
-        grid_layout.addWidget(right_group_0, 0, 1)
-        grid_layout.addWidget(left_group_1, 1, 0)
-        grid_layout.addWidget(right_group_1, 1, 1)
-
-        # Equal column stretch for alignment
-        grid_layout.setColumnStretch(0, 1)
-        grid_layout.setColumnStretch(1, 1)
-
-        overlays_layout.addLayout(grid_layout)
-        main_layout.addWidget(overlays_group)
-
-        # Intensity Range subgroup
-        intensity_group, intensity_layout = section("Intensity Range")
-
-        # Min/Max range
-        range_layout = QHBoxLayout()
+        # Min and Max, their names above them
+        fields = QGridLayout()
+        fields.setContentsMargins(0, 0, 0, 0)
+        fields.setHorizontalSpacing(8)
+        fields.setVerticalSpacing(3)
         self.vmin_entry = QLineEdit("0.0")
-        self.vmin_entry.editingFinished.connect(self.update_display)
+        self.vmin_entry.editingFinished.connect(self._on_range_typed)
         self.vmax_entry = QLineEdit("1.0")
-        self.vmax_entry.editingFinished.connect(self.update_display)
-        range_layout.addWidget(QLabel("Min:"))
-        range_layout.addWidget(self.vmin_entry)
-        range_layout.addWidget(QLabel("Max:"))
-        range_layout.addWidget(self.vmax_entry)
-        intensity_layout.addLayout(range_layout)
+        self.vmax_entry.editingFinished.connect(self._on_range_typed)
+        for column, (name, entry) in enumerate((("Min", self.vmin_entry), ("Max", self.vmax_entry))):
+            label = QLabel(name)
+            label.setObjectName("Meta")
+            fields.addWidget(label, 0, column)
+            fields.addWidget(entry, 1, column)
+        layout.addLayout(fields)
 
-        # Gamma control
+        # Gamma
         gamma_layout = QHBoxLayout()
+        gamma_layout.setSpacing(10)
+        gamma_label = QLabel("Gamma")
+        gamma_label.setObjectName("Hint")
         self.gamma_slider = QSlider(Qt.Horizontal)
         self.gamma_slider.setRange(1, 60)
         self.gamma_slider.setValue(20)
         self.gamma_slider.valueChanged.connect(self.update_gamma_value)
         self.gamma_slider.sliderReleased.connect(self._apply_gamma_change)
         self.gamma_entry = QLineEdit("1.0")
+        self.gamma_entry.setObjectName("Mono")
+        self.gamma_entry.setAlignment(Qt.AlignRight)
         fit_width_to_text(self.gamma_entry, "0.00")
         self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
-        gamma_layout.addWidget(QLabel("Gamma:"))
-        gamma_layout.addWidget(self.gamma_slider)
+        gamma_layout.addWidget(gamma_label)
+        gamma_layout.addWidget(self.gamma_slider, 1)
         gamma_layout.addWidget(self.gamma_entry)
-        intensity_layout.addLayout(gamma_layout)
+        layout.addLayout(gamma_layout)
 
-        # Preset buttons - compact secondary actions
-        preset_layout = QHBoxLayout()
-        preset_layout.setSpacing(6)
+        # The presets, the one last applied outlined
+        self._preset_group = QButtonGroup(self)
+        self._preset_group.setExclusive(True)
+        buttons = []
+        for text, mode, tip in RANGE_PRESETS:
+            button = QPushButton(text)
+            button.setCheckable(True)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _=False, m=mode: self.apply_auto_range(m))
+            self._preset_group.addButton(button)
+            buttons.append(button)
+        self.auto_minmax_button, self.auto_percentile_button, self.auto_median_button = buttons
+        layout.addWidget(segmented(buttons, stretch=True))
+        return block
 
-        self.auto_minmax_button = QPushButton("Auto")
-        self.auto_minmax_button.clicked.connect(
-            lambda: self.apply_auto_range("minmax")
+    def _on_range_typed(self):
+        """A range typed in is no preset's."""
+        self.show_range_preset(None)
+        self.update_display()
+
+    def _on_levels_dragged(self, vmin, vmax):
+        """The range dragged on the histogram is shown as it goes."""
+        self.show_range(vmin, vmax)
+        self.show_range_preset(None)
+        self.update_display()
+
+    def show_range_preset(self, mode):
+        """Mark the preset ``mode`` (an apply_auto_range mode, or None) as
+        the one the range came from."""
+        self._preset_group.setExclusive(False)
+        for (text, preset_mode, _tip), button in zip(RANGE_PRESETS, self._preset_group.buttons()):
+            button.setChecked(preset_mode == mode)
+            if preset_mode == mode:
+                self.range_preset_label.setText(text)
+        self._preset_group.setExclusive(True)
+        if mode is None:
+            self.range_preset_label.setText("")
+
+    def _loading_block(self):
+        block, layout, _ = _block("Loading")
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.downsample_toggle = QCheckBox("Fast load")
+        self.downsample_toggle.setObjectName("Switch")
+        self.downsample_toggle.setToolTip(
+            "Enable fast preview mode for quick image browsing.\n"
+            "Images are loaded at reduced resolution for faster display."
         )
+        # Says "preview" while the image shown is the reduced one
+        self.downsample_status = QLabel("")
+        self.downsample_status.setObjectName("Hint")
+        set_tone(self.downsample_status, "success")
 
-        self.auto_percentile_button = QPushButton("1-99%")
-        self.auto_percentile_button.clicked.connect(
-            lambda: self.apply_auto_range("p1_99")
+        def update_fast_load_status(checked):
+            self.downsample_status.setText("preview" if checked else "")
+            # Contour data is reloaded at the new resolution
+            self.invalidate_contours()
+            if self.current_image_data is not None and self.imagename:
+                self.on_visualization_changed()
+                self.reset_view()
+
+        self.downsample_toggle.stateChanged.connect(update_fast_load_status)
+        row.addWidget(self.downsample_toggle)
+        row.addWidget(self.downsample_status)
+        row.addStretch()
+
+        rms_tip = (
+            "RMS box: where the noise (RMS) is measured, by default a band "
+            "along the bottom of the image.\nThe RMS sets the threshold of the "
+            "derived Stokes products, the image statistics (RMS, dynamic range) "
+            "and contour levels in σ."
         )
+        self.rms_settings_btn = link_button("RMS box…", self.show_rms_box_dialog)
+        self.rms_settings_btn.setToolTip(rms_tip)
+        self.rms_settings_btn.setAccessibleName("RMS box settings")
+        row.addWidget(self.rms_settings_btn)
+        layout.addLayout(row)
 
-        self.auto_median_button = QPushButton("Med±3σ")
-        self.auto_median_button.clicked.connect(
-            lambda: self.apply_auto_range("median_rms")
-        )
+        style_row = QHBoxLayout()
+        style_row.setSpacing(8)
+        style_hint = QLabel("Title, labels, fonts, colours, margins")
+        style_hint.setObjectName("Hint")
+        style_row.addWidget(style_hint)
+        style_row.addStretch()
+        self.plot_style_btn = link_button("Plot style…", self.show_plot_customization_dialog)
+        self.plot_style_btn.setToolTip("Customize Plot Appearance")
+        style_row.addWidget(self.plot_style_btn)
+        layout.addLayout(style_row)
+        return block
 
-        preset_layout.addWidget(self.auto_minmax_button)
-        preset_layout.addWidget(self.auto_percentile_button)
-        preset_layout.addWidget(self.auto_median_button)
-        intensity_layout.addLayout(preset_layout)
+    def _statistics_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(14, 16, 14, 16)
+        layout.setSpacing(18)
 
-        main_layout.addWidget(intensity_group)
-
-        # Display changes apply as they are made; this reads the image again,
-        # which is rarely needed
-        self.plot_button = QPushButton("Reload Image")
-        self.plot_button.setToolTip("Read the image again from disk")
-        self.plot_button.clicked.connect(self.on_visualization_changed)
-        reload_row = QHBoxLayout()
-        reload_row.addStretch()
-        reload_row.addWidget(self.plot_button)
-        main_layout.addLayout(reload_row)
-
-        parent_layout.addWidget(group)
-
-    def create_stats_table(self, parent_layout):
-
-        group = QGroupBox("Region Statistics")
-        layout = QVBoxLayout(group)
-        self.info_label = QLabel(
-            "No selection. Draw a rectangle or ellipse on the image."
-        )
+        # The region: its statistics appear with the first region drawn
+        block, block_layout, _ = _block("Region")
+        self.info_label = QLabel("No selection. Draw a rectangle or ellipse on the image.")
         self.info_label.setObjectName("Hint")
         self.info_label.setWordWrap(True)
-        layout.addWidget(self.info_label)
-        self.stats_table = QTableWidget(6, 2)
-        self.stats_table.setHorizontalHeaderLabels(["Metric", "Value"])
-        self.stats_table.verticalHeader().setVisible(False)
-        self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        # Make columns resizable - Metric fits content, Value stretches
-        self.stats_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeToContents
-        )
-        self.stats_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        # Allow user to resize columns manually
-        self.stats_table.horizontalHeader().setSectionsMovable(False)
-        headers = ["Min", "Max", "Mean", "Std Dev", "Sum", "RMS"]
-        for row, label in enumerate(headers):
-            self.stats_table.setItem(row, 0, QTableWidgetItem(label))
-            self.stats_table.setItem(row, 1, QTableWidgetItem("−"))
-            self.stats_table.item(row, 1).setTextAlignment(
-                Qt.AlignRight | Qt.AlignVCenter
-            )
-        _fit_rows(self.stats_table)
-        layout.addWidget(self.stats_table)
-
-        # Histogram button - compact styling
+        block_layout.addWidget(self.info_label)
+        self.stats_table = _key_value_table(["Min", "Max", "Mean", "Std Dev", "Sum", "RMS"])
+        self.stats_table.hide()
+        block_layout.addWidget(self.stats_table)
         self.histogram_btn = QPushButton("Histogram")
         self.histogram_btn.setToolTip("Show pixel value histogram for current ROI")
         self.histogram_btn.clicked.connect(self._show_roi_histogram)
-        layout.addWidget(self.histogram_btn)
+        self.histogram_btn.hide()
+        row = QHBoxLayout()
+        row.addWidget(self.histogram_btn)
+        row.addStretch()
+        block_layout.addLayout(row)
+        layout.addWidget(block)
 
-        parent_layout.addWidget(group)
-
-    def create_image_stats_table(self, parent_layout):
-        group = QGroupBox("Image Statistics")
-        layout = QVBoxLayout(group)
-
-        self.image_info_label = QLabel("Full image statistics")
+        # The whole image: its statistics appear with the image
+        block, block_layout, _ = _block("Image")
+        self.image_info_label = QLabel("Loads with the image")
         self.image_info_label.setObjectName("Hint")
         self.image_info_label.setWordWrap(True)
-        layout.addWidget(self.image_info_label)
-
-        self.image_stats_table = QTableWidget(6, 2)
-        self.image_stats_table.setHorizontalHeaderLabels(["Metric", "Value"])
-        self.image_stats_table.verticalHeader().setVisible(False)
-        self.image_stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.image_stats_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeToContents
-        )
-        self.image_stats_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.Stretch
-        )
+        block_layout.addWidget(self.image_info_label)
         # Short labels, so the values keep their room in a narrow panel
-        headers = ["Max", "Min", "RMS", "Box mean", "Pos. DR", "Neg. DR"]
-        tips = {
-            "RMS": "RMS inside the RMS box",
-            "Box mean": "Mean inside the RMS box",
-            "Pos. DR": "Positive dynamic range: Max / RMS",
-            "Neg. DR": "Negative dynamic range: Min / RMS",
-        }
-        for row, label in enumerate(headers):
-            item = QTableWidgetItem(label)
-            if label in tips:
-                item.setToolTip(tips[label])
-            self.image_stats_table.setItem(row, 0, item)
-            self.image_stats_table.setItem(row, 1, QTableWidgetItem("−"))
-            self.image_stats_table.item(row, 1).setTextAlignment(
-                Qt.AlignRight | Qt.AlignVCenter
-            )
-        self.image_stats_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        _fit_rows(self.image_stats_table)
-        layout.addWidget(self.image_stats_table)
-        self.create_noaa_events_button(layout)
-        parent_layout.addWidget(group)
-
-    def create_noaa_events_button(self, parent_layout):
-        """Solar Activity and Helioviewer buttons for the image's observation time."""
-        # Create horizontal layout for both buttons side-by-side
-        buttons_layout = QHBoxLayout()
-
+        self.image_stats_table = _key_value_table(
+            ["Max", "Min", "RMS", "Box mean", "Pos. DR", "Neg. DR"],
+            tips={
+                "RMS": "RMS inside the RMS box",
+                "Box mean": "Mean inside the RMS box",
+                "Pos. DR": "Positive dynamic range: Max / RMS",
+                "Neg. DR": "Negative dynamic range: Min / RMS",
+            },
+        )
+        self.image_stats_table.hide()
+        block_layout.addWidget(self.image_stats_table)
         self.noaa_events_btn = QPushButton("Activity")
         self.noaa_events_btn.setToolTip(
             "View Solar Activity (Events, Active Regions, Conditions, CMEs)"
         )
-        self.noaa_events_btn.setEnabled(False)  # Disabled by default
+        self.noaa_events_btn.setEnabled(False)  # until an image is loaded
         self.noaa_events_btn.clicked.connect(self.show_noaa_events_for_current_image)
-        buttons_layout.addWidget(self.noaa_events_btn)
+        row = QHBoxLayout()
+        row.addWidget(self.noaa_events_btn)
+        row.addStretch()
+        block_layout.addLayout(row)
+        layout.addWidget(block)
+        layout.addStretch()
+        return page
 
-        self.helioviewer_btn = QPushButton("Helioviewer")
-        self.helioviewer_btn.setToolTip(
-            "Browse Helioviewer images around current observation time"
-        )
-        self.helioviewer_btn.setEnabled(False)  # Disabled by default
-        self.helioviewer_btn.clicked.connect(self.open_helioviewer_with_time)
-        buttons_layout.addWidget(self.helioviewer_btn)
+    # -------------------------------------------------------- empty canvas
+    def create_empty_canvas(self):
+        """What the canvas shows before an image: how to open one, and the
+        recent files. Returns the widget."""
+        self.empty_canvas = EmptyCanvas()
+        self.empty_canvas.openRequested.connect(self.select_file_or_directory)
+        self.empty_canvas.pathRequested.connect(self.open_path)
+        self.empty_canvas.allRecentRequested.connect(self._show_recent_menu)
+        return self.empty_canvas
 
-        # Add horizontal layout to parent
-        parent_layout.addLayout(buttons_layout)
+    def _show_recent_menu(self):
+        """File > Open Recent, at the pointer."""
+        from PyQt5.QtGui import QCursor
 
-    def create_coord_display(self, parent_layout):
-        group = QGroupBox("Cursor Position")
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(8, 8, 8, 8)
-        self.coord_label = QLabel("No image loaded")
-        self.coord_label.setAlignment(Qt.AlignCenter)
-        self.coord_label.setObjectName("Mono")
-        self.coord_label.setMinimumHeight(self.coord_label.fontMetrics().lineSpacing() * 3)
-        layout.addWidget(self.coord_label)
-        parent_layout.addWidget(group)
+        menu = getattr(self.window(), "recent_menu", None)
+        if menu is not None:
+            menu.exec_(QCursor.pos())

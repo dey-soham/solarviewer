@@ -38,8 +38,8 @@ EMPTY_HINT = (
     "Drop a FITS image, CASA image or dynamic spectrum here\n"
     "or open one from the File menu"
 )
-# Cursor Position text while the mouse is off the image
-READOUT_HINT = "Hover over the image"
+# The cursor readout's state while the mouse is off the image
+READOUT_HINT = "off the image"
 # Arrow key -> (x, y) pan steps; Right shows more of the image to the right
 _ARROW_PAN_STEPS = {
     Qt.Key_Left: (-1, 0),
@@ -174,7 +174,7 @@ class CanvasMixin:
 
     Host attributes/methods used:
 
-    ``coord_label``, ``image_plot``, ``init_region_editor``, ``_is_panning``,
+    ``cursor_readout``, ``image_plot``, ``init_region_editor``, ``_is_panning``,
     ``_profile_mode``, ``ruler_action``, ``_ruler_mode``,
     ``show_beam_checkbox``, ``show_status_message``, ``_toggle_ruler_mode``,
     ``_update_beam_position``, ``_view_anim``, ``window``, ``_zoom_timer``
@@ -227,8 +227,24 @@ class CanvasMixin:
 
         self.show_empty_hint()
 
+    def _show_canvas_page(self, shown=True):
+        """The canvas in place of the empty state (or back)."""
+        stack = getattr(self, "_canvas_stack", None)
+        if stack is not None:
+            stack.setCurrentIndex(1 if shown else 0)
+
     def show_empty_hint(self):
-        """Say on the figure how to open an image (while none is shown)."""
+        """Show the empty state (while no image is shown), and say on the
+        figure under it how to open an image."""
+        self._show_canvas_page(False)
+        empty = getattr(self, "empty_canvas", None)
+        if empty is not None:
+            empty.refresh()
+        readout = getattr(self, "cursor_readout", None)
+        if readout is not None:
+            readout.set_state("no image")
+        if hasattr(self, "zoom_label"):
+            self.zoom_label.setText("—")
         self.figure.text(
             0.5,
             0.5,
@@ -588,6 +604,21 @@ class CanvasMixin:
         ax = self._nav_axes()
         self._drawn_view = (ax, ax.get_xlim(), ax.get_ylim()) if ax else None
         self._view_preview.hide()
+        self._show_zoom(ax)
+
+    def _show_zoom(self, ax):
+        """The toolbar's zoom readout: the image's width over the view's."""
+        label = getattr(self, "zoom_label", None)
+        if label is None:
+            return
+        if ax is None or self.current_image_data is None:
+            label.setText("—")
+            return
+        width = self.current_image_data.shape[-1]
+        x0, x1 = ax.get_xlim()
+        shown = abs(x1 - x0)
+        if shown > 0 and width:
+            label.setText(f"{round(100 * width / shown):d}%")
 
     def _animate_view(self, ax, xlim, ylim):
         """Glide to ``xlim``/``ylim`` over GLIDE_SECONDS, easing out."""
@@ -647,11 +678,11 @@ class CanvasMixin:
             return
 
         if self.current_image_data is None:
-            self.coord_label.setText("No image loaded")
+            self.cursor_readout.set_state("no image")
             return
 
         if not event.inaxes:
-            self.coord_label.setText(READOUT_HINT)
+            self.cursor_readout.set_state(READOUT_HINT)
             self.canvas.setCursor(Qt.ArrowCursor)
             return
 
@@ -675,26 +706,18 @@ class CanvasMixin:
 
             # 2. The pixel value, with the image's unit
             cursor_data = im.get_cursor_data(event)
-            if cursor_data is not None:
-                val_str = _format_value(
-                    cursor_data, getattr(self, "_current_bunit", "") or ""
-                )
-
-                pixel_info = f"<b>Pixel:</b> X={x}, Y={y}<br><b>Value:</b> {val_str}"
-                world_info = f"<b>World:</b> {world_str}"
-                coord_info = f"{pixel_info}<br>{world_info}"
-            else:
-                pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
-                world_info = f"<b>World:</b> {world_str}"
-                coord_info = f"{pixel_info}<br>{world_info}"
-
-            self.coord_label.setText(coord_info)
+            val_str = (
+                _format_value(cursor_data, getattr(self, "_current_bunit", "") or "")
+                if cursor_data is not None
+                else ""
+            )
+            self.cursor_readout.show_cursor(f"{x}, {y}", world_str, val_str)
             return
 
         except Exception as e:
             # Fallback to simple pixel info if Artist API fails
             logger.debug(f"Coordinate Readout Fallback: {e}")
-            self.coord_label.setText(f"<b>Pixel:</b> X={x}, Y={y}")
+            self.cursor_readout.show_cursor(f"{x}, {y}", "", "")
 
     def _on_mouse_press(self, event):
         """Start a drag pan (middle button, or left in Pan mode); double-click zooms."""

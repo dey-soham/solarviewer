@@ -62,6 +62,7 @@ class ImageStatsMixin:
         stats_values = [dmax, dmin, drms, dmean_rms_box, positive_DR, negative_DR]
         for i, val in enumerate(stats_values):
             self.image_stats_table.setItem(i, 1, QTableWidgetItem(f"{val:.6g}"))
+        self.image_stats_table.show()  # (hidden until there is an image)
 
         # Update the RMS box info in the label
         h, w = data.shape

@@ -7,7 +7,11 @@ Shared UI building blocks for SolarViewer.
 - ``widgets``: a dialog's button bar and titled sections
 - ``icons``: package resource paths and theme-aware icons
 - ``segmented_control``: pill-style segmented toggle
-- ``custom_tabs``: main-window tab bar / tab widget
+- ``document_tabs``: the main window's image tabs, in the menu bar
+- ``histogram``: the intensity histogram with the range draggable on it
+- ``stokes_picker``: Stokes I/Q/U/V as buttons, the rest in a dropdown
+- ``cursor_readout``: the readout pinned at the inspector's foot
+- ``empty_canvas``: the canvas before an image, with the recent files
 - ``item_delegates``: combo box item delegates
 - ``searchable_combobox``: colormap selector with search
 - ``free_dialogs``: modal dialogs that move apart from their window

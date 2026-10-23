@@ -360,6 +360,8 @@ class PresetsMixin:
 
         vmin, vmax = compute_range(self.current_image_data, mode)
         self.set_range(vmin, vmax)
+        if hasattr(self, "show_range_preset"):
+            self.show_range_preset(mode)
 
         stretch = (
             self.stretch_combo.currentText()

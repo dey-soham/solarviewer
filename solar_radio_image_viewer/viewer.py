@@ -38,7 +38,7 @@ from .ui.styles import (
 from .ui.app import apply_theme
 from .ui.geometry import fit_to_screen
 from .ui.icons import get_resource_path, themed_icon
-from .ui.custom_tabs import CustomTabWidget
+from .ui.document_tabs import DocumentTabs
 from .utils.update_checker import check_for_updates
 from .version import __version__
 from .tools import (
@@ -128,20 +128,6 @@ rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
 update_matplotlib_theme()
 mplstyle.use("fast")
-
-
-def _side_panel(panel):
-    """``panel`` in a scroll area: as wide as its controls need, scrolling
-    vertically when the window is too short for all of them."""
-    area = QScrollArea()
-    area.setWidget(panel)
-    area.setWidgetResizable(True)
-    area.setFrameShape(QFrame.NoFrame)
-    area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    width = panel.minimumSizeHint().width()
-    area.setMinimumWidth(width + area.verticalScrollBar().sizeHint().width())
-    area.setMaximumWidth(700)
-    return area
 
 
 class SolarRadioImageTab(
@@ -309,57 +295,46 @@ class SolarRadioImageTab(
             pass
 
     def setup_ui(self):
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        """The top bar over the canvas and its toolbar, the inspector at
+        the right; the empty canvas until an image is loaded."""
+        from PyQt5.QtWidgets import QStackedWidget
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
+        self.create_top_bar(main_layout)
 
-        # Create splitter for resizable panels
         splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(5)
-        splitter.setChildrenCollapsible(True)
+        splitter.setHandleWidth(1)
+        splitter.setChildrenCollapsible(False)
 
-        # Left Control Panel (its minimum width is what its controls need:
-        # a fixed smaller one let the splitter squeeze and clip them). On a
-        # short screen the panels scroll rather than clip.
-        control_panel = QWidget()
-        control_layout = QVBoxLayout(control_panel)
-        control_layout.setContentsMargins(0, 0, 10, 0)
-        control_layout.setSpacing(15)
-        self.create_file_controls(control_layout)
-        self.create_display_controls(control_layout)
-        control_layout.addStretch()
-        splitter.addWidget(_side_panel(control_panel))
+        # The canvas (or the empty state) with its toolbar under it
+        column = QWidget()
+        column_layout = QVBoxLayout(column)
+        column_layout.setContentsMargins(0, 0, 0, 0)
+        column_layout.setSpacing(0)
+        self._canvas_stack = QStackedWidget()
+        self._canvas_stack.addWidget(self.create_empty_canvas())
+        canvas_host = QWidget()
+        host_layout = QVBoxLayout(canvas_host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(0)
+        self.setup_canvas(host_layout)
+        self._canvas_stack.addWidget(canvas_host)
+        column_layout.addWidget(self._canvas_stack, 1)
+        self.setup_figure_toolbar(column_layout)
+        column.setMinimumWidth(400)
+        splitter.addWidget(column)
 
-        # Center Figure Panel
-        figure_panel = QWidget()
-        figure_panel.setMinimumWidth(400)
-        figure_layout = QVBoxLayout(figure_panel)
-        figure_layout.setContentsMargins(0, 0, 0, 0)
-        figure_layout.setSpacing(10)
-        self.setup_canvas(figure_layout)
-        self.setup_figure_toolbar(figure_layout)
-        splitter.addWidget(figure_panel)
+        inspector = self.create_inspector()
+        inspector.setMinimumWidth(inspector.fontMetrics().averageCharWidth() * 40)
+        splitter.addWidget(inspector)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        width = inspector.fontMetrics().averageCharWidth() * 48
+        splitter.setSizes([max(800, 1400 - width), width])
 
-        # Right Stats Panel
-        stats_panel = QWidget()
-        stats_layout = QVBoxLayout(stats_panel)
-        stats_layout.setContentsMargins(10, 0, 0, 0)
-        stats_layout.setSpacing(15)
-        self.create_stats_table(stats_layout)
-        self.create_image_stats_table(stats_layout)
-        self.create_coord_display(stats_layout)
-        splitter.addWidget(_side_panel(stats_panel))
-
-        # Initial sizes: the side panels 300 px, or what their controls need
-        splitter.setSizes(
-            [
-                max(300, control_panel.minimumSizeHint().width()),
-                800,
-                max(300, stats_panel.minimumSizeHint().width()),
-            ]
-        )
-
-        main_layout.addWidget(splitter)
+        main_layout.addWidget(splitter, 1)
         self._name_icon_only_controls()
 
     def _name_icon_only_controls(self):
@@ -770,12 +745,6 @@ class SolarRadioImageTab(
                 QIcon(get_resource_path(f"assets/{get_icon_path('profile.png')}"))
             )
 
-        # Update RMS settings button icon
-        if hasattr(self, "rms_settings_btn"):
-            self.rms_settings_btn.setIcon(
-                QIcon(get_resource_path(f"assets/{get_icon_path('settings.png')}"))
-            )
-
         # Update beam settings button icon
         if hasattr(self, "beam_settings_button"):
             self.beam_settings_button.setIcon(
@@ -1029,13 +998,10 @@ class SolarRadioImageTab(
 
     def refresh_icons(self):
         """Refresh all icons to match the current theme."""
-        # Update left panel buttons
-        if hasattr(self, "browse_btn"):
-            self.browse_btn.setIcon(QIcon(themed_icon("browse.png")))
+        if hasattr(self, "browse_action"):
+            self.browse_action.setIcon(QIcon(themed_icon("browse.png")))
         if hasattr(self, "solar_disk_center_button"):
             self.solar_disk_center_button.setIcon(QIcon(themed_icon("settings.png")))
-        if hasattr(self, "rms_settings_btn"):
-            self.rms_settings_btn.setIcon(QIcon(themed_icon("settings.png")))
         if hasattr(self, "contour_settings_button"):
             self.contour_settings_button.setIcon(QIcon(themed_icon("settings.png")))
         if hasattr(self, "beam_settings_button"):
@@ -1070,8 +1036,6 @@ class SolarRadioImageTab(
             self.ellipse_action.setIcon(QIcon(themed_icon("ellipse_selection.png")))
         if hasattr(self, "info_action"):
             self.info_action.setIcon(QIcon(themed_icon("icons8-info-90.png")))
-        if hasattr(self, "customize_plot_action"):
-            self.customize_plot_action.setIcon(QIcon(themed_icon("settings.png")))
         if hasattr(self, "_filter_btn"):
             self._filter_btn.setIcon(QIcon(themed_icon("settings.png")))
         # Update search button in colormap selector
@@ -1107,14 +1071,13 @@ class SolarRadioImageViewerApp(
 
         fit_to_screen(self, 1920, 1080)
 
-        # Use custom tab widget
-        self.tab_widget = CustomTabWidget()
-        self.tab_widget.setTabsClosable(True)
+        # The image tabs: their strip at the right end of the menu bar
+        self.tab_widget = DocumentTabs()
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.update_window_title)
         self.tab_widget.add_tab_button.clicked.connect(self.handle_add_tab)
-
         self.setCentralWidget(self.tab_widget)
+        self.setMinimumSize(1100, 720)
         self.tabs = []
         self.settings = QSettings("SolarViewer", "SolarViewer")
         self._open_dialogs = []  # Track non-modal dialogs to prevent garbage collection
@@ -1158,6 +1121,7 @@ class SolarRadioImageViewerApp(
 
         self.statusBar().showMessage("Ready")
         self.create_menus()
+        self.menuBar().setCornerWidget(self.tab_widget.strip, Qt.TopRightCorner)
 
         # Set hand cursor for all interactive elements programmatically
         self._set_hand_cursor_recursive(self)
@@ -1190,9 +1154,6 @@ class SolarRadioImageViewerApp(
                     dir_load=True, colormap_name="inferno"
                 ),
             )"""
-
-        # Ensure add button is visible after initialization
-        QTimer.singleShot(200, self.ensureAddButtonVisible)
 
     def dragEnterEvent(self, event):
         """Handle drag enter events for file dropping."""
@@ -1249,15 +1210,6 @@ class SolarRadioImageViewerApp(
         """Show the software update dialog."""
         self.show_update_dialog()
 
-    def ensureAddButtonVisible(self):
-        """Make sure the add button is visible and on top"""
-        if (
-            hasattr(self.tab_widget, "add_tab_button")
-            and self.tab_widget.add_tab_button
-        ):
-            self.tab_widget.add_tab_button.show()
-            self.tab_widget.add_tab_button.raise_()
-
     def close_tab(self, index):
         """Close the tab at the given index (the last one gives way to an
         empty tab)"""
@@ -1281,9 +1233,6 @@ class SolarRadioImageViewerApp(
         tab_name = f"Tab{tab_count}"
         self.add_new_tab(tab_name)
 
-        # Ensure add button is visible after adding a new tab
-        QTimer.singleShot(100, self.ensureAddButtonVisible)
-
     def add_new_tab(self, name):
         new_tab = SolarRadioImageTab(self, name)
         self.tabs.append(new_tab)
@@ -1295,10 +1244,6 @@ class SolarRadioImageViewerApp(
 
         # Apply hand cursors to the new tab
         self._set_hand_cursor_recursive(new_tab)
-
-        # Ensure add button is visible after adding a new tab
-        QTimer.singleShot(100, self.ensureAddButtonVisible)
-
         return new_tab
 
     def update_window_title(self, *args):
@@ -1369,10 +1314,8 @@ class SolarRadioImageViewerApp(
             tab.refresh_icons()
 
         # Refresh tab bar theme (colors and icons)
-        if hasattr(self, "tab_widget") and hasattr(
-            self.tab_widget.tabBar(), "refresh_theme"
-        ):
-            self.tab_widget.tabBar().refresh_theme()
+        if hasattr(self, "tab_widget"):
+            self.tab_widget.refresh_theme()
 
         # Refresh all matplotlib plots
         self.refresh_all_plots()
