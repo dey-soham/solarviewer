@@ -181,6 +181,8 @@ class EmptyCanvas(QWidget):
             item = layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
+        # (the link row is a widget of its own: a nested layout's widgets
+        # would be left behind, and the link shown twice)
         paths = recent_images()
         self.recent.setVisible(bool(paths))
         if not paths:
@@ -195,12 +197,12 @@ class EmptyCanvas(QWidget):
             layout.addWidget(row)
         more = link_button("All recent files →", self.allRecentRequested)
         more.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        more.setContentsMargins(0, 0, 0, 0)
-        row = QHBoxLayout()
-        row.setContentsMargins(6, 4, 0, 0)
-        row.addWidget(more)
-        row.addStretch()
-        layout.addLayout(row)
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(6, 4, 0, 0)
+        row_layout.addWidget(more)
+        row_layout.addStretch()
+        layout.addWidget(row)
         layout.addStretch()
 
     def _paste_path(self):
