@@ -151,6 +151,67 @@ def is_fits(path):
     return name.endswith(FITS_EXTENSIONS) and not is_casa_image(path)
 
 
+IMAGE = "image"
+SPECTRUM = "spectrum"
+
+
+def fits_kind(path):
+    """What ``path`` holds, from its headers alone: ``IMAGE`` (a FITS image
+    or CASA image, shown in a tab), ``SPECTRUM`` (a dynamic spectrum, for
+    the Dynamic Spectrum Viewer) or None (neither, or unreadable).
+
+    A spectrum is recognised as the Dynamic Spectrum Viewer reads one: a
+    TIME_AXIS or FREQ_AXIS extension, an EXTNAME of DYNAMIC_SPECTRUM, TIME
+    and FREQ as the first two axes of an image, or a table with TIME and
+    FREQ columns. Any other image of two or more axes is an image, with or
+    without a WCS.
+    """
+    if is_casa_image(path):
+        return IMAGE
+    if not is_fits(path) or not os.path.isfile(path):
+        return None
+    from astropy.io import fits
+
+    has_image = False
+    try:
+        with fits.open(path, memmap=True, lazy_load_hdus=True) as hdul:
+            for hdu in hdul:
+                header = hdu.header
+                name = str(header.get("EXTNAME", "")).strip().upper()
+                if name in ("TIME_AXIS", "FREQ_AXIS", "DYNAMIC_SPECTRUM"):
+                    return SPECTRUM
+                if hdu.is_image:
+                    if header.get("NAXIS", 0) < 2:
+                        continue
+                    axes = {
+                        _axis_kind(header.get("CTYPE1")),
+                        _axis_kind(header.get("CTYPE2")),
+                    }
+                    if axes == {"TIME", "FREQ"}:
+                        return SPECTRUM
+                    has_image = True
+                else:
+                    columns = {
+                        _axis_kind(header.get(f"TTYPE{i}"))
+                        for i in range(1, int(header.get("TFIELDS", 0)) + 1)
+                    }
+                    if {"TIME", "FREQ"} <= columns:
+                        return SPECTRUM
+    except Exception as e:
+        logger.debug(f"Not a readable FITS file {path}: {e}")
+        return None
+    return IMAGE if has_image else None
+
+
+def _axis_kind(ctype):
+    """"TIME" or "FREQ" if an axis or column name says so, else the name."""
+    name = str(ctype or "").strip().upper()
+    for kind in ("TIME", "FREQ"):
+        if kind in name:
+            return kind
+    return name
+
+
 # CASA image signature -> its FITS export, as for _resolved
 _exported = {}
 
