@@ -215,6 +215,8 @@ DARK_PALETTE = {
     "highlight_soft": "#423a6a",  # accent-800: fills behind the accent
     "highlight_deep": "#5d5294",  # accent-700: a switch's track when on
     "highlight_knob": "#e7e5fe",  # accent-200: a switch's knob when on
+    "slider_handle": "#e7e5fe",  # the gamma slider's knob, the histogram's range lines
+    "hist_out": "#292b31",  # histogram bars outside the range (neutral-900)
     "text_bright": "#f5f4ff",  # accent-100: the chosen segment's text
     "link": "#d2cefd",  # accent-300: link buttons
     "outline": "#595d6c",  # neutral-700: a bordered icon button's edge
@@ -267,6 +269,8 @@ LIGHT_PALETTE = {
     "highlight_soft": "#e7e5fe",
     "highlight_deep": "#796cbf",
     "highlight_knob": "#ffffff",
+    "slider_handle": "#5d5294",  # (white would vanish on the light ground)
+    "hist_out": "#d0d0d8",
     "text_bright": "#1f2328",
     "link": "#5d5294",
     "outline": "#b2b6ca",
@@ -710,7 +714,7 @@ def get_stylesheet(palette, is_dark=True):
         color: {p['link']};
         border: 1px solid transparent;
         padding: 2px {SPACE_XS}px;
-        min-height: 0px;
+        min-height: 20px;
         font-weight: 500;
     }}
     QPushButton#LinkButton:hover {{
@@ -1016,7 +1020,7 @@ def get_stylesheet(palette, is_dark=True):
         background: {p['border']};
     }}
     QSlider::handle:horizontal {{
-        background: {p['highlight_knob']};
+        background: {p['slider_handle']};
         width: 10px;
         height: 10px;
         margin: -4px 0;

@@ -170,7 +170,7 @@ class LevelsHistogram(QWidget):
         self._centres = centres
         ax.axhline(0, color=palette["outline"], linewidth=1)
         self._markers = tuple(
-            ax.axvline(value, color=palette["highlight_knob"], linewidth=2, zorder=3)
+            ax.axvline(value, color=palette["slider_handle"], linewidth=2, zorder=3)
             for value in (self._vmin, self._vmax)
         )
         self._place_markers()
@@ -193,7 +193,7 @@ class LevelsHistogram(QWidget):
             marker.set_xdata([value, value])
         inside = (self._centres >= self._vmin) & (self._centres <= self._vmax)
         for bar, within in zip(self._bars, inside):
-            bar.set_color(palette["highlight_deep"] if within else palette["surface_elevated"])
+            bar.set_color(palette["highlight_deep"] if within else palette["hist_out"])
         self.canvas.draw_idle()
 
     # ------------------------------------------------------------- dragging
