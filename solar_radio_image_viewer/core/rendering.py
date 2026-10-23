@@ -144,7 +144,6 @@ class RenderingMixin:
         if vmax_val is None:
             vmax_val = np.nanmax(data)
         vmin_val, vmax_val = display_range(vmin_val, vmax_val)
-        self._sync_levels(data, vmin_val, vmax_val, cmap)
 
         norm = self._make_norm(stretch, vmin_val, vmax_val, gamma)
         if self._try_fast_redraw(
@@ -886,18 +885,6 @@ class RenderingMixin:
         )
         ax.add_patch(ellipse)
 
-    def _sync_levels(self, data, vmin_val, vmax_val, cmap):
-        """The sidebar's levels histogram shows this image, range and colormap."""
-        levels = getattr(self, "levels", None)
-        if levels is None:
-            return
-        if getattr(self, "_levels_data_id", None) != id(data):
-            self._levels_data_id = id(data)
-            levels.set_data(data)
-        levels.set_range(vmin_val, vmax_val)
-        if isinstance(cmap, str):
-            levels.set_cmap(cmap)
-
     def _apply_layout_settings(self, tight_layout):
         """Matplotlib's tight layout (the default, and set again whenever
         the canvas is resized); or, if it is turned off in Plot
@@ -924,7 +911,7 @@ class RenderingMixin:
         is too narrow for it on one: Matplotlib centres a title over the
         axes and would cut a long one off at both sides."""
         width = self.figure.get_size_inches()[0] * self.figure.dpi
-        if " | " in title and width < 900:
+        if " | " in title and width < 1100:
             return title.replace(" | ", "\n", 1)
         return title
 

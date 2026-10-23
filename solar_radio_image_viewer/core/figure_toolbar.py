@@ -1,12 +1,13 @@
 """
-The toolbar under the image: tools, zoom and view buttons, TB and HPC.
-(The file navigation is in the sidebar's Image section.)
+The toolbar under the image: tools, zoom and view buttons, TB and HPC, and
+the file navigation buttons.
 """
 
 import logging
 from PyQt5.QtWidgets import (
     QWidget,
     QAction,
+    QLabel,
     QPushButton,
     QToolBar,
     QActionGroup,
@@ -14,7 +15,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QSize
 from PyQt5.QtGui import QIcon
-from ..ui.icons import get_resource_path
+from ..ui.icons import get_resource_path, themed_icon
 from ..tools import (
     RegionMode,
 )
@@ -29,7 +30,9 @@ class FigureToolbarMixin:
 
     Host attributes/methods used:
 
-    ``_toggle_profile_mode``,
+    ``_on_first_file``, ``_on_last_file``,
+    ``_on_next_file``, ``_on_prev_file``, ``_show_filter_dialog``,
+    ``_show_playlist_dialog``, ``_toggle_profile_mode``,
     ``_toggle_ruler_mode``, ``_toggle_tb_mode``,
     ``launch_helioprojective_viewer``, ``reset_view``,
     ``set_region_mode``, ``show_plot_customization_dialog``,
@@ -202,4 +205,56 @@ class FigureToolbarMixin:
         self.hpc_btn.setToolTip("Convert to Helioprojective view")
         self.hpc_btn.clicked.connect(self.launch_helioprojective_viewer)
         toolbar.addWidget(self.hpc_btn)
+        toolbar.addSeparator()
+
+        # File navigation
+        self._first_file_btn = QPushButton("|◄")
+        self._first_file_btn.setToolTip("Go to first file")
+        self._first_file_btn.clicked.connect(self._on_first_file)
+        self._first_file_btn.setEnabled(False)
+        toolbar.addWidget(self._first_file_btn)
+
+        self._prev_file_btn = QPushButton("◀")
+        self._prev_file_btn.setToolTip("Previous file in directory")
+        self._prev_file_btn.clicked.connect(self._on_prev_file)
+        self._prev_file_btn.setEnabled(False)
+        toolbar.addWidget(self._prev_file_btn)
+
+        self._next_file_btn = QPushButton("▶")
+        self._next_file_btn.setToolTip("Next file in directory")
+        self._next_file_btn.clicked.connect(self._on_next_file)
+        self._next_file_btn.setEnabled(False)
+        toolbar.addWidget(self._next_file_btn)
+
+        self._last_file_btn = QPushButton("►|")
+        self._last_file_btn.setToolTip("Go to last file")
+        self._last_file_btn.clicked.connect(self._on_last_file)
+        self._last_file_btn.setEnabled(False)
+        toolbar.addWidget(self._last_file_btn)
+
+        self._filter_btn = QPushButton()
+        self._filter_btn.setIcon(QIcon(themed_icon("settings.png")))
+        self._filter_btn.setIconSize(QSize(16, 16))
+        self._filter_btn.setToolTip("Set file filter pattern")
+        self._filter_btn.clicked.connect(self._show_filter_dialog)
+        toolbar.addWidget(self._filter_btn)
+
+        self._playlist_btn = QPushButton("☰")
+        self._playlist_btn.setToolTip("Show all files in directory")
+        self._playlist_btn.clicked.connect(self._show_playlist_dialog)
+        toolbar.addWidget(self._playlist_btn)
+
+        self._file_pos_label = QLabel("")
+        self._file_pos_label.setObjectName("Hint")
+        toolbar.addWidget(self._file_pos_label)
+        for button in (
+            self._first_file_btn,
+            self._prev_file_btn,
+            self._next_file_btn,
+            self._last_file_btn,
+            self._filter_btn,
+            self._playlist_btn,
+        ):
+            button.setObjectName("NavButton")
+
         parent_layout.addWidget(toolbar)

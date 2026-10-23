@@ -140,7 +140,7 @@ def _side_panel(panel):
     area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     width = panel.minimumSizeHint().width()
     area.setMinimumWidth(width + area.verticalScrollBar().sizeHint().width())
-    area.setMaximumWidth(600)
+    area.setMaximumWidth(700)
     return area
 
 
@@ -309,67 +309,58 @@ class SolarRadioImageTab(
             pass
 
     def setup_ui(self):
-        """The image with its toolbar below, and the sidebar beside it
-        (folding sections; hidden with View > Sidebar). The image keeps the
-        tab's full height; a square image leaves width over, which the
-        sidebar takes by default (the splitter sets it otherwise)."""
         main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(10, 8, 10, 8)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(0)
 
+        # Create splitter for resizable panels
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(5)
         splitter.setChildrenCollapsible(True)
 
-        image_panel = QWidget()
-        image_panel.setMinimumWidth(400)
-        image_layout = QVBoxLayout(image_panel)
-        image_layout.setContentsMargins(0, 0, 0, 0)
-        image_layout.setSpacing(6)
-        self.setup_canvas(image_layout)
-        self.setup_figure_toolbar(image_layout)
-        splitter.addWidget(image_panel)
+        # Left Control Panel (its minimum width is what its controls need:
+        # a fixed smaller one let the splitter squeeze and clip them). On a
+        # short screen the panels scroll rather than clip.
+        control_panel = QWidget()
+        control_layout = QVBoxLayout(control_panel)
+        control_layout.setContentsMargins(0, 0, 10, 0)
+        control_layout.setSpacing(15)
+        self.create_file_controls(control_layout)
+        self.create_display_controls(control_layout)
+        control_layout.addStretch()
+        splitter.addWidget(_side_panel(control_panel))
 
-        # The sidebar: as wide as its controls need, scrolling when short
-        sidebar = QWidget()
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(10, 0, 4, 0)
-        sidebar_layout.setSpacing(12)
-        self.create_sidebar(sidebar_layout)
-        self.sidebar = _side_panel(sidebar)
-        splitter.addWidget(self.sidebar)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        # The sidebar takes the width a square image leaves over, following
-        # the window's size until the user drags the splitter
-        self.splitter = splitter
-        self._sidebar_min = sidebar.minimumSizeHint().width() + 24
-        self._splitter_moved = False
-        splitter.splitterMoved.connect(lambda *_: setattr(self, "_splitter_moved", True))
-        splitter.setSizes(self._initial_split())
-        self.sidebar.setVisible(
-            QSettings("SolarViewer", "SolarViewer").value("sidebar_visible", True, type=bool)
+        # Center Figure Panel
+        figure_panel = QWidget()
+        figure_panel.setMinimumWidth(400)
+        figure_layout = QVBoxLayout(figure_panel)
+        figure_layout.setContentsMargins(0, 0, 0, 0)
+        figure_layout.setSpacing(10)
+        self.setup_canvas(figure_layout)
+        self.setup_figure_toolbar(figure_layout)
+        splitter.addWidget(figure_panel)
+
+        # Right Stats Panel
+        stats_panel = QWidget()
+        stats_layout = QVBoxLayout(stats_panel)
+        stats_layout.setContentsMargins(10, 0, 0, 0)
+        stats_layout.setSpacing(15)
+        self.create_stats_table(stats_layout)
+        self.create_image_stats_table(stats_layout)
+        self.create_coord_display(stats_layout)
+        splitter.addWidget(_side_panel(stats_panel))
+
+        # Initial sizes: the side panels 300 px, or what their controls need
+        splitter.setSizes(
+            [
+                max(300, control_panel.minimumSizeHint().width()),
+                800,
+                max(300, stats_panel.minimumSizeHint().width()),
+            ]
         )
-
-        self.create_coord_display()
 
         main_layout.addWidget(splitter)
         self._name_icon_only_controls()
-
-    def _initial_split(self):
-        """[image width, sidebar width] for the tab's size: the image area
-        about 1.25 times as wide as it is tall (a square image with its
-        title, labels and colorbar), the rest to the sidebar, within reason."""
-        width, height = self.width(), self.height()
-        canvas_height = max(300, height - 60)  # the toolbar and margins
-        image_width = int(canvas_height * 1.2)
-        sidebar = max(self._sidebar_min, min(640, width - image_width))
-        return [max(400, width - sidebar), sidebar]
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if not self._splitter_moved and self.sidebar.isVisible():
-            self.splitter.setSizes(self._initial_split())
 
     def _name_icon_only_controls(self):
         """Name the icon-only buttons and toolbar actions for screen readers,
@@ -1275,11 +1266,9 @@ class SolarRadioImageViewerApp(
                 self.add_new_tab("Tab1")
             tab = self.tabs.pop(index)
             self.tab_widget.removeTab(index)
-            self.statusBar().removeWidget(tab.coord_label)
             # A removed page is not deleted by Qt: free it and its image
             tab.cleanup()
             tab.deleteLater()
-            self._show_current_readout()
 
     def close_current_tab(self):
         """Close the currently active tab"""
@@ -1299,11 +1288,7 @@ class SolarRadioImageViewerApp(
         new_tab = SolarRadioImageTab(self, name)
         self.tabs.append(new_tab)
         self.tab_widget.addTab(new_tab, name)
-        # The tab's cursor readout lives in the status bar, shown while
-        # the tab is current
-        self.statusBar().insertPermanentWidget(0, new_tab.coord_label)
         self.tab_widget.setCurrentWidget(new_tab)
-        self._show_current_readout()
 
         # Refresh icons to match current theme
         new_tab.refresh_icons()
@@ -1324,22 +1309,6 @@ class SolarRadioImageViewerApp(
             self.setWindowTitle(f"{name} — SolarViewer")
         else:
             self.setWindowTitle("SolarViewer")
-        self._show_current_readout()
-
-    def _show_current_readout(self):
-        """The status bar shows the current tab's cursor readout only."""
-        current = self.tab_widget.currentWidget()
-        for tab in self.tabs:
-            label = getattr(tab, "coord_label", None)
-            if label is not None:
-                label.setVisible(tab is current)
-
-    def set_sidebar_visible(self, visible):
-        """Show or hide every tab's sidebar (View > Sidebar, Ctrl+B)."""
-        self.settings.setValue("sidebar_visible", bool(visible))
-        for tab in self.tabs:
-            if hasattr(tab, "sidebar"):
-                tab.sidebar.setVisible(visible)
 
     def toggle_theme(self):
         """Toggle between dark and light themes."""

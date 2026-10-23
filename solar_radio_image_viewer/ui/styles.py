@@ -94,7 +94,6 @@ TOKENS = {
 #   NavButton       a flat text/glyph button in a toolbar row
 #   Switch          a QCheckBox drawn as an on/off switch
 #   SectionTitle    a QLabel heading a section
-#   Subheading      a QLabel heading a block inside a section
 #   DialogTitle     a QLabel titling a dialog
 #   SecondaryText   a QLabel hint in muted text (alias: Hint)
 #   StatusLabel     a QLabel framed as a status line
@@ -113,7 +112,6 @@ TOKENS = {
 #   ImageWell       a QFrame or QScrollArea showing a picture on black
 #   Segmented       a QWidget holding a row of checkable buttons, one on
 #   SectionHeader   a QPushButton heading a collapsible section
-#   FoldHeader      a QToolButton heading a FoldSection (ui.widgets)
 # A label or StatusButton can also take a tone with ``set_tone``:
 # "success", "warning" or "error" colour it accordingly, None clears it.
 ROLES = (
@@ -123,7 +121,6 @@ ROLES = (
     "NavButton",
     "Switch",
     "SectionTitle",
-    "Subheading",
     "DialogTitle",
     "SecondaryText",
     "Hint",
@@ -143,7 +140,6 @@ ROLES = (
     "ImageWell",
     "Segmented",
     "SectionHeader",
-    "FoldHeader",
 )
 
 # ===== Palettes =====
@@ -281,9 +277,6 @@ def get_stylesheet(palette, is_dark=True):
         font-size: {FONT_SECTION}pt;
         font-weight: 600;
     }}
-    QLabel#Subheading {{
-        font-weight: 600;
-    }}
     QLabel#DialogTitle {{
         font-size: {FONT_TITLE}pt;
         font-weight: 600;
@@ -401,25 +394,6 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {p['highlight']};
         color: {p['highlight_text']};
         font-weight: 600;
-    }}
-    QToolButton#FoldHeader {{
-        text-align: left;
-        padding: {SPACE_XS}px 0px;
-        font-size: {FONT_SECTION}pt;
-        font-weight: 600;
-        color: {p['text']};
-        background-color: transparent;
-        border: none;
-        border-bottom: 1px solid {p['border']};
-        border-radius: 0px;
-    }}
-    QToolButton#FoldHeader:hover {{
-        color: {p['highlight']};
-        background-color: transparent;
-    }}
-    QToolButton#FoldHeader:checked {{
-        background-color: transparent;
-        color: {p['text']};
     }}
     QPushButton#SectionHeader {{
         text-align: left;

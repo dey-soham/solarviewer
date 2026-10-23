@@ -680,12 +680,13 @@ class CanvasMixin:
                     cursor_data, getattr(self, "_current_bunit", "") or ""
                 )
 
-                coord_info = (
-                    f"<b>Pixel</b> {x}, {y} &nbsp;·&nbsp; <b>World</b> {world_str}"
-                    f" &nbsp;·&nbsp; <b>Value</b> {val_str}"
-                )
+                pixel_info = f"<b>Pixel:</b> X={x}, Y={y}<br><b>Value:</b> {val_str}"
+                world_info = f"<b>World:</b> {world_str}"
+                coord_info = f"{pixel_info}<br>{world_info}"
             else:
-                coord_info = f"<b>Pixel</b> {x}, {y} &nbsp;·&nbsp; <b>World</b> {world_str}"
+                pixel_info = f"<b>Pixel:</b> X={x}, Y={y}"
+                world_info = f"<b>World:</b> {world_str}"
+                coord_info = f"{pixel_info}<br>{world_info}"
 
             self.coord_label.setText(coord_info)
             return
@@ -693,7 +694,7 @@ class CanvasMixin:
         except Exception as e:
             # Fallback to simple pixel info if Artist API fails
             logger.debug(f"Coordinate Readout Fallback: {e}")
-            self.coord_label.setText(f"<b>Pixel</b> {x}, {y}")
+            self.coord_label.setText(f"<b>Pixel:</b> X={x}, Y={y}")
 
     def _on_mouse_press(self, event):
         """Start a drag pan (middle button, or left in Pan mode); double-click zooms."""
