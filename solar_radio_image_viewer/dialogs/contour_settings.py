@@ -40,6 +40,10 @@ from ..ui.styles import set_hand_cursor
 
 logger = logging.getLogger(__name__)
 
+# The products of the Stokes dropdown; the image's correlation planes
+# (RR, LL...) follow them
+CONTOUR_PRODUCTS = ["I", "Q", "U", "V", "Q/I", "U/I", "V/I", "L", "Lfrac", "PANG"]
+
 # Offered after the default palette; not all of these suit colour-blind viewers
 EXTRA_COLORS = [
     ("Red", "red"),
@@ -185,9 +189,7 @@ class ContourSettingsDialog(QDialog):
         stokes_row.addWidget(stokes_label)
 
         self.stokes_combo = QComboBox()
-        self.stokes_combo.addItems(
-            ["I", "Q", "U", "V", "Q/I", "U/I", "V/I", "L", "Lfrac", "PANG"]
-        )
+        self.stokes_combo.addItems(CONTOUR_PRODUCTS)
         self.stokes_combo.setMinimumWidth(100)
         current_stokes = self.settings.get("stokes", "I")
         self.stokes_combo.setCurrentText(current_stokes)
@@ -864,7 +866,10 @@ class ContourSettingsDialog(QDialog):
             enabled_color = QColor("#000000")
 
         from ..processing.stokes import missing_planes
+        from ..ui.stokes_picker import offer_correlations
 
+        # The image's correlation planes (RR, LL...) are products too
+        offer_correlations(self.stokes_combo, len(CONTOUR_PRODUCTS), available_stokes)
         # Enable the items whose planes the image has
         model = self.stokes_combo.model()
         for i in range(self.stokes_combo.count()):

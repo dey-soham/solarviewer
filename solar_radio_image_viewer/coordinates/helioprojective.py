@@ -33,8 +33,7 @@ except ImportError:
 from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.stokes import (
     fits_stokes_labels,
-    plane_index,
-    planes_needed,
+    read_planes,
     stokes_product,
 )
 
@@ -203,20 +202,18 @@ def convert_to_hpc_planes(
 
         labels = fits_stokes_labels(header) if stokes_axis is not None else None
 
-        def plane(name):
-            """The ``name`` Stokes plane, first channel, as [x, y]."""
+        def read_plane(plane_idx):
+            """The Stokes plane at ``plane_idx``, first channel, as [x, y]."""
             index = [slice(None)] * ndim
             if stokes_axis is not None:
-                index[stokes_axis] = plane_index(labels, name)
-            else:
-                plane_index(None, name)  # only Stokes I without a Stokes axis
+                index[stokes_axis] = plane_idx
             if freq_axis is not None:
                 index[freq_axis] = 0
             return np.array(data_all[tuple(index)]).T
 
         def select(Stokes):
             """The ``Stokes`` product as [y, x], the order of the FITS data."""
-            planes = {name: plane(name) for name in planes_needed(Stokes)}
+            planes = read_planes(labels, Stokes, read_plane)
             return stokes_product(
                 Stokes, planes, thres, rms_box, csys, sun_radius_arcmin=60
             ).T

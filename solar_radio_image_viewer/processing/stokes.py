@@ -5,6 +5,8 @@ and the products shown from them (L, Lfrac, Vfrac, Q/I, U/I, U/V, PANG).
 Images hold their polarization planes in any order and any subset: I, Q, U
 and V; only I and V (common for solar radio images); or correlations (RR,
 LL, XX, ...). A plane is always found by its label, never by its position.
+A correlation plane is a product of its own, and an image of correlations
+also yields the standard parameters its pairs make (I = (RR + LL) / 2 ...).
 
 Planes are 2D arrays indexed [x, y] (CASA's order, drawn transposed), and an
 RMS box is (x1, x2, y1, y2) in the same pixels.
@@ -36,6 +38,7 @@ FITS_STOKES_CODES = {
 }
 
 STANDARD_STOKES = ("I", "Q", "U", "V")
+CORRELATIONS = ("RR", "LL", "RL", "LR", "XX", "YY", "XY", "YX")
 
 # The planes each product is computed from
 PLANES_NEEDED = {
@@ -43,6 +46,7 @@ PLANES_NEEDED = {
     "Q": ("Q",),
     "U": ("U",),
     "V": ("V",),
+    **{label: (label,) for label in CORRELATIONS},
     "L": ("Q", "U"),
     "Lfrac": ("I", "Q", "U"),
     "Vfrac": ("I", "V"),
@@ -51,6 +55,19 @@ PLANES_NEEDED = {
     "U/I": ("I", "U"),
     "U/V": ("U", "V"),
     "PANG": ("Q", "U"),
+}
+
+
+# The standard parameters an image of correlations yields, from which pair
+# and how (only those made from real planes: U needs the imaginary part of
+# the cross-hands, which an image does not hold)
+FROM_CORRELATIONS = {
+    "I": (
+        (("RR", "LL"), lambda a, b: (a + b) / 2),
+        (("XX", "YY"), lambda a, b: (a + b) / 2),
+    ),
+    "V": ((("RR", "LL"), lambda a, b: (a - b) / 2),),
+    "Q": ((("XX", "YY"), lambda a, b: (a - b) / 2),),
 }
 
 
@@ -70,6 +87,60 @@ def missing_planes(stokes, available):
     """The planes the ``stokes`` product needs that are not among
     ``available`` (as from get_available_stokes)."""
     return [label for label in planes_needed(stokes) if label not in available]
+
+
+def fallback_product(preferred, available):
+    """The product to show of an image lacking the one asked for:
+    ``preferred`` if the image has its planes, else the first of
+    ``available`` (as from get_available_stokes: I before V before LL)."""
+    if not missing_planes(preferred, available):
+        return preferred
+    return available[0]
+
+
+def _correlation_pairs(label, labels):
+    """The (pair, combine) entries of FROM_CORRELATIONS that make ``label``
+    from planes among ``labels``."""
+    return [
+        (pair, combine)
+        for pair, combine in FROM_CORRELATIONS.get(label, ())
+        if all(plane in labels for plane in pair)
+    ]
+
+
+def offered_planes(labels):
+    """The planes an image whose Stokes planes are ``labels`` offers: the
+    standard parameters it has or its correlations make, in I, Q, U, V
+    order, then its correlations in its own order. None for ``labels``
+    (no Stokes axis) is a Stokes I image."""
+    if labels is None:
+        return ["I"]
+    standard = [
+        s for s in STANDARD_STOKES if s in labels or _correlation_pairs(s, labels)
+    ]
+    return standard + [label for label in labels if label in CORRELATIONS]
+
+
+def read_planes(labels, stokes, read_plane):
+    """{label: plane} of the planes the ``stokes`` product needs, from an
+    image whose Stokes planes are ``labels`` (None: no Stokes axis), each
+    read with ``read_plane(index)`` (index along the Stokes axis; None
+    without one). A standard parameter the image lacks is made from its
+    correlations (FROM_CORRELATIONS).
+
+    Raises StokesUnavailable for a plane the image has not and cannot make.
+    """
+
+    def plane(label):
+        if labels is None or label in labels:
+            return read_plane(plane_index(labels, label))
+        pairs = _correlation_pairs(label, labels)
+        if not pairs:
+            plane_index(labels, label)  # raises StokesUnavailable
+        pair, combine = pairs[0]
+        return combine(*(read_plane(labels.index(p)) for p in pair))
+
+    return {label: plane(label) for label in planes_needed(stokes)}
 
 
 def fits_stokes_labels(header):
@@ -151,7 +222,7 @@ def stokes_product(stokes, planes, thres, rms_box, csys=None, sun_radius_arcmin=
         pix[np.abs(pix) < thres * rms_in_box(pix, rms_box)] = 0
         return pix
 
-    if stokes in STANDARD_STOKES:
+    if stokes in STANDARD_STOKES or stokes in CORRELATIONS:
         return planes[stokes]
     if stokes == "L":
         return np.sqrt(planes["Q"] ** 2 + planes["U"] ** 2)
@@ -185,8 +256,10 @@ def get_available_stokes(imagename):
             Path to the CASA image directory or FITS file.
 
     Returns:
-        list: The standard Stokes parameters the image has, in I, Q, U, V
-        order, e.g. ["I"], ["I", "V"] or ["I", "Q", "U", "V"]
+        list: The products the image's planes offer (offered_planes): the
+        standard parameters in I, Q, U, V order, e.g. ["I"], ["I", "V"]
+        or ["I", "Q", "U", "V"], then its correlations, e.g. ["LL"] or
+        ["I", "V", "RR", "LL"]
     """
     labels = None
     if not is_casa_image(imagename) and ASTROPY_AVAILABLE:
@@ -205,9 +278,6 @@ def get_available_stokes(imagename):
             logger.warning(f"Could not detect Stokes from CASA image: {e}")
             return ["I"]
 
-    if labels is None:
-        return ["I"]  # No Stokes axis: the image is Stokes I
-    available = [s for s in STANDARD_STOKES if s in labels]
-    # An image of correlations only (RR, LL, ...) offers I, which fails to load
-    # with a message naming the planes it has
-    return available or ["I"]
+    # An image of planes the viewer does not know (code 7...) offers I, which
+    # fails to load with a message naming the planes it has
+    return offered_planes(labels) or ["I"]

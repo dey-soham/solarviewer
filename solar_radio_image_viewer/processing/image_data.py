@@ -24,12 +24,12 @@ from .image_meta import (
 from .stokes import (
     StokesUnavailable,
     casa_stokes_labels,
+    fallback_product,
     fits_stokes_axis,
     fits_stokes_labels,
     get_available_stokes,
     missing_planes,
-    plane_index,
-    planes_needed,
+    read_planes,
     stokes_product,
 )
 
@@ -90,7 +90,9 @@ def get_pixel_values_from_image(
       imagename : str
          Path to the CASA image directory or FITS file.
       stokes : str
-         The stokes parameter to extract ("I", "Q", "U", "V", "L", "Lfrac", "Vfrac", "Q/I", "U/I", "U/V", or "PANG").
+         The stokes parameter to extract ("I", "Q", "U", "V", "L", "Lfrac",
+         "Vfrac", "Q/I", "U/I", "U/V", "PANG", or a correlation the image
+         holds: "RR", "LL", "XX"...).
       thres : float
          Threshold, in units of the RMS, for the derived parameters.
       rms_box : tuple, optional
@@ -118,7 +120,6 @@ def get_pixel_values_from_image(
     if not CASA_AVAILABLE:
         raise RuntimeError("CASA is not available")
 
-    labels_needed = planes_needed(stokes)
     signature = file_signature(imagename)
     try:
         ia_tool = IA()
@@ -156,9 +157,8 @@ def get_pixel_values_from_image(
         # (half the memory)
         single = ia_tool.pixeltype() == "float"
 
-        def read_plane(label):
-            """The ``label`` Stokes plane, first channel, as [x, y]."""
-            index = plane_index(labels, label)
+        def read_plane(index):
+            """The Stokes plane at ``index``, first channel, as [x, y]."""
             # The first channel of every axis but the sky axes ...
             blc = [0] * len(shape)
             trc = [n - 1 if axis in (x_idx, y_idx) else 0 for axis, n in enumerate(shape)]
@@ -176,7 +176,7 @@ def get_pixel_values_from_image(
             ]
             return plane.astype(np.float32) if single else plane
 
-        planes = {label: read_plane(label) for label in labels_needed}
+        planes = read_planes(labels, stokes, read_plane)
 
         # Adjust coordinate system for downsampled data
         if downsample > 1:
@@ -217,17 +217,16 @@ def read_fits_stokes(imagename, stokes, thres, rms_box=(0, 200, 0, 130)):
         labels = fits_stokes_labels(header)
         stokes_axis = fits_stokes_axis(header)
 
-        def plane(name):
-            """The ``name`` plane, first channel of every other axis, as [x, y]."""
+        def read_plane(plane_idx):
+            """The Stokes plane at ``plane_idx``, first channel of every
+            other axis, as [x, y]."""
             # NumPy axes are the FITS axes reversed: the last two are y, x
             index = [0] * (data.ndim - 2) + [slice(None), slice(None)]
             if stokes_axis is not None:
-                index[data.ndim - stokes_axis] = plane_index(labels, name)
-            else:
-                plane_index(None, name)  # only Stokes I without a Stokes axis
+                index[data.ndim - stokes_axis] = plane_idx
             return np.array(data[tuple(index)], dtype=float).T
 
-        planes = {name: plane(name) for name in planes_needed(stokes)}
+        planes = read_planes(labels, stokes, read_plane)
     return stokes_product(stokes, planes, thres, rms_box)
 
 
@@ -242,15 +241,16 @@ def read_image(
     Every file access of a load happens here, so that it can run in a worker
     process (see ``ui/background`` and ``processing/prefetch``). If the image
     lacks a plane ``stokes`` needs and ``fallback_stokes`` is given, that
-    product is read instead. FITS files CASA cannot read are read with
-    astropy, without coordinates or beam.
+    product is read instead, or the first the image offers if it lacks
+    that too (an image of LL alone shows LL). FITS files CASA cannot read
+    are read with astropy, without coordinates or beam.
 
     Raises StokesUnavailable, or ImageUnreadable if neither reader can read it.
     """
     signature = file_signature(imagename)
     available = get_available_stokes(imagename)
     if fallback_stokes is not None and missing_planes(stokes, available):
-        stokes = fallback_stokes
+        stokes = fallback_product(fallback_stokes, available)
     try:
         pix, csys, psf = get_pixel_values_from_image(
             imagename, stokes, threshold, rms_box=rms_box, target_size=target_size

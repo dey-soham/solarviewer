@@ -423,6 +423,9 @@ class LoadingMixin:
         """
         if not hasattr(self, "stokes_combo") or self.stokes_combo is None:
             return
+        picker = getattr(self, "stokes_picker", None)
+        if picker is not None:
+            picker.offer_correlations(available_stokes)
 
         from PyQt5.QtGui import QBrush, QColor
 
@@ -477,14 +480,16 @@ class LoadingMixin:
         self._update_stokes_combo_state(available)
         if shown == requested:
             return
+        missing = missing_planes(requested, available)
+        if missing == [requested]:
+            why = f"The image has no Stokes {requested} plane"
+        else:
+            why = f"Stokes {requested} needs {', '.join(missing)}, which the image lacks"
         QMessageBox.warning(
             self,
             "Stokes Parameter Unavailable",
-            f"The selected Stokes parameter '{requested}' requires "
-            f"polarization data ({', '.join(missing_planes(requested, available))}) "
-            f"that is not available in this image.\n\n"
-            f"Available Stokes: {', '.join(available)}\n\n"
-            f"Switching to Stokes {shown}.",
+            f"{why} (its planes are {', '.join(available)}).\n\n"
+            f"Showing Stokes {shown}.",
         )
         self.stokes_combo.blockSignals(True)
         self.stokes_combo.setCurrentText(shown)
