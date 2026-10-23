@@ -41,6 +41,8 @@ class LevelsHistogram(QWidget):
         self._vmin = 0.0
         self._vmax = 1.0
         self._drag = None  # "min" or "max" while a marker is dragged
+        self._values = None  # the sample of the image's values
+        self._bulk = (0.0, 1.0)  # the values' 0.1-99.9 percentiles
         self._bars = None  # the drawn bars, recoloured as the range moves
         self._markers = ()  # the two range lines, moved as it does
 
@@ -67,26 +69,40 @@ class LevelsHistogram(QWidget):
         self._draw()
 
     # ------------------------------------------------------------- the data
-    def set_data(self, data):
-        """The image's values (any shape; NaNs and infinities ignored)."""
-        if data is None:
+    def set_data(self, data, vmin=None, vmax=None):
+        """The image's values (any shape; NaNs and infinities ignored),
+        and the range shown with them (else the range stays as it was)."""
+        if vmin is not None and vmax is not None:
+            try:
+                vmin, vmax = float(vmin), float(vmax)
+                if np.isfinite(vmin) and np.isfinite(vmax):
+                    self._vmin, self._vmax = vmin, vmax
+            except (TypeError, ValueError):
+                pass
+        self._values = None
+        if data is not None:
+            values = np.asarray(data).ravel()
+            if values.size > SAMPLE:
+                values = values[:: max(1, values.size // SAMPLE)]
+            values = values[np.isfinite(values)]
+            if values.size >= 2 and np.nanmax(values) > np.nanmin(values):
+                self._values = values
+        if self._values is None:
             self._counts = self._edges = None
             self._draw()
             return
-        values = np.asarray(data).ravel()
-        if values.size > SAMPLE:
-            values = values[:: max(1, values.size // SAMPLE)]
-        values = values[np.isfinite(values)]
-        if values.size < 2 or not np.nanmax(values) > np.nanmin(values):
-            self._counts = self._edges = None
-        else:
-            # The bulk of the values, not the one hot pixel: clip the
-            # extremes so the histogram keeps its shape
-            low, high = np.percentile(values, [0.1, 99.9])
-            if not high > low:
-                low, high = float(values.min()), float(values.max())
-            self._counts, self._edges = np.histogram(values, bins=BINS, range=(low, high))
+        # The bulk of the values, not the one hot pixel: the bins span
+        # the 0.1-99.9 percentiles, widened to take in the display range
+        # (set_range widens them again if the range goes further)
+        low, high = np.percentile(self._values, [0.1, 99.9])
+        if not high > low:
+            low, high = float(self._values.min()), float(self._values.max())
+        self._bulk = (float(low), float(high))
+        self._bin(min(low, self._vmin), max(high, self._vmax))
         self._draw()
+
+    def _bin(self, low, high):
+        self._counts, self._edges = np.histogram(self._values, bins=BINS, range=(low, high))
 
     def set_range(self, vmin, vmax):
         try:
@@ -95,7 +111,14 @@ class LevelsHistogram(QWidget):
             return
         if np.isfinite(vmin) and np.isfinite(vmax) and (vmin, vmax) != (self._vmin, self._vmax):
             self._vmin, self._vmax = vmin, vmax
-            self._place_markers()
+            if self._edges is not None and (vmin < self._edges[0] or vmax > self._edges[-1]):
+                # The bins widen to take the range in (and narrow back to
+                # the bulk when it comes back)
+                low, high = self._bulk
+                self._bin(min(low, vmin), max(high, vmax))
+                self._draw()
+            else:
+                self._place_markers()
 
     # ------------------------------------------------------------ the picture
     def _draw(self):

@@ -4,10 +4,12 @@ Rendering the image tab: plot_image and its drawing steps.
 
 import logging
 import os
+import weakref
 
 import matplotlib
 import numpy as np
 from matplotlib.axes import Axes
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.colors import LogNorm, Normalize
 from matplotlib.patches import Ellipse
 
@@ -924,8 +926,10 @@ class RenderingMixin:
             and type(a).__name__ != "_WCSAxesArtist"
         ]
         try:
+            # Drawn into the buffer only (not the Qt canvas's draw, which
+            # would put the figure without its image on screen)
             im.set_visible(False)
-            self.canvas.draw()
+            FigureCanvasAgg.draw(self.canvas)
             background = self.canvas.copy_from_bbox(self.figure.bbox)
         except Exception as e:
             logger.debug(f"Range preview without blitting: {e}")
@@ -933,21 +937,27 @@ class RenderingMixin:
         finally:
             im.set_visible(True)
         self._range_preview = (full, extent, background, above)
+        # The preview as it is now, so the buffer holds a whole picture
+        # again before anything repaints the canvas
+        self._blit_preview()
         return True
 
     def preview_range(self, vmin, vmax):
         """Draw the preview with this range (the stretch and gamma as set)."""
-        preview = getattr(self, "_range_preview", None)
-        if preview is None:
+        if getattr(self, "_range_preview", None) is None:
             return
-        _full, _extent, background, above = preview
         vmin, vmax = display_range(vmin, vmax)
         norm = self._make_norm(self.stretch_combo.currentText(), vmin, vmax, self._current_gamma())
-        im = self.image_plot
-        im.set_norm(norm)
+        self.image_plot.set_norm(norm)
+        self._blit_preview()
+
+    def _blit_preview(self):
+        """The saved picture, the image and the overlays above it, on screen."""
+        _full, _extent, background, above = self._range_preview
         if background is None:
             self.canvas.draw()
             return
+        im = self.image_plot
         try:
             self.canvas.restore_region(background)
             ax = im.axes
@@ -987,10 +997,14 @@ class RenderingMixin:
         levels = getattr(self, "levels", None)
         if levels is None:
             return
-        if getattr(self, "_levels_data_id", None) != id(data):
-            self._levels_data_id = id(data)
-            levels.set_data(data)
-        levels.set_range(vmin_val, vmax_val)
+        # Known by a weak reference, not id(): a new array often gets a
+        # freed one's id, and the histogram stayed the last image's
+        known = getattr(self, "_levels_data_ref", None)
+        if known is None or known() is not data:
+            self._levels_data_ref = weakref.ref(data)
+            levels.set_data(data, vmin_val, vmax_val)
+        else:
+            levels.set_range(vmin_val, vmax_val)
 
     def _apply_layout_settings(self, tight_layout):
         """Matplotlib's tight layout, if turned on in Plot Customization
