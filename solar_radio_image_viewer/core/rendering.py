@@ -24,6 +24,11 @@ from ..ui.busy import busy
 logger = logging.getLogger(__name__)
 
 
+from ..processing.plot_style import DEFAULT_PLOT_SETTINGS
+
+_PAD_KEYS = ("pad_left", "pad_right", "pad_top", "pad_bottom")
+
+
 class RenderingMixin:
     """Draws the current image: norm, WCS axes, title, colorbar, styling, beam, layout.
 
@@ -715,14 +720,14 @@ class RenderingMixin:
                         if self.imagename
                         else "No Image"
                     )
-                ax.set_title(title)
+                ax.set_title(self._fit_title(title))
             except Exception as e:
                 logger.error(f"Error getting title: {e}")
                 self.show_status_message(f"Error getting title: {e}")
                 title = (
                     os.path.basename(self.imagename) if self.imagename else "No Image"
                 )
-                ax.set_title(title)
+                ax.set_title(self._fit_title(title))
 
     def _add_colorbar(self, ax, im, stretch, vmin_val, vmax_val):
         """Add the colorbar (dropping out-of-range ticks for non-linear stretches)."""
@@ -881,18 +886,61 @@ class RenderingMixin:
         ax.add_patch(ellipse)
 
     def _apply_layout_settings(self, tight_layout):
-        """tight_layout or the custom subplot padding from plot_settings."""
-        # Apply layout/padding settings from plot customization
+        """tight_layout, the custom subplot padding from plot_settings, or,
+        with the default padding, margins sized for the fonts and the canvas
+        so the title, tick labels and colorbar labels are never cut off."""
         ps = self.plot_settings
         if ps.get("use_tight_layout", True) and tight_layout:
             self.figure.tight_layout()
-        else:
-            # Apply custom subplot adjust if not using tight layout
-            self.figure.subplots_adjust(
-                left=ps.get("pad_left", 0.135),
-                right=ps.get("pad_right", 1.0),
-                top=ps.get("pad_top", 0.95),
-                bottom=ps.get("pad_bottom", 0.08),
-                wspace=ps.get("pad_wspace", 0.2),
-                hspace=ps.get("pad_hspace", 0.2),
-            )
+            return
+        pads = {k: ps.get(k, DEFAULT_PLOT_SETTINGS[k]) for k in _PAD_KEYS}
+        if all(pads[k] == DEFAULT_PLOT_SETTINGS[k] for k in _PAD_KEYS):
+            pads.update(self._margins_for_fonts())
+        self.figure.subplots_adjust(
+            left=pads["pad_left"],
+            right=pads["pad_right"],
+            top=pads["pad_top"],
+            bottom=pads["pad_bottom"],
+            wspace=ps.get("pad_wspace", 0.2),
+            hspace=ps.get("pad_hspace", 0.2),
+        )
+
+    def _fit_title(self, title):
+        """``title`` on two lines ("Time: ...\\nFreq: ...") when the canvas
+        is too narrow for it on one: Matplotlib centres a title over the
+        axes and would cut a long one off at both sides."""
+        width = self.figure.get_size_inches()[0] * self.figure.dpi
+        if " | " in title and width < 1100:
+            return title.replace(" | ", "\n", 1)
+        return title
+
+    def _margins_for_fonts(self):
+        """Subplot margins (fractions of the figure) leaving room for the
+        title above, the tick labels and axis label left and below, and the
+        colorbar's tick labels and label on the right, at the current font
+        sizes and canvas size."""
+        ps = self.plot_settings
+        width, height = self.figure.get_size_inches() * self.figure.dpi
+        px = self.figure.dpi / 72.0  # pixels per point
+        tick = ps.get("axis_tick_fontsize", 10)
+        label = ps.get("axis_label_fontsize", 12)
+        title = ps.get("title_fontsize", 12)
+        cb_tick = ps.get("colorbar_tick_fontsize", 10)
+        cb_label = ps.get("colorbar_label_fontsize", 10)
+        axes = self.figure.axes[0] if self.figure.axes else None
+        title_lines = axes.get_title().count("\n") + 1 if axes is not None else 1
+        top_px = title * 1.5 * title_lines * px + 10
+        bottom_px = (tick * 1.4 + label * 1.6) * px + 12
+        left_px = (tick * 0.65 * 8 + label * 2.0) * px + 12
+        right_px = (cb_tick * 0.6 * 6 + cb_label * 1.6) * px + 10
+        return {
+            "pad_left": min(0.35, left_px / max(width, 1)),
+            "pad_right": max(0.6, 1 - right_px / max(width, 1)),
+            "pad_top": max(0.7, 1 - top_px / max(height, 1)),
+            "pad_bottom": min(0.3, bottom_px / max(height, 1)),
+        }
+
+    def relayout_for_size(self):
+        """Margins again for a canvas of a new size (the resize hook)."""
+        if self.current_image_data is not None and self.figure.axes:
+            self._apply_layout_settings(False)

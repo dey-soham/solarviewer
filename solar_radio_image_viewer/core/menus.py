@@ -51,9 +51,8 @@ class MenusMixin:
         self._create_annotations_menu(menubar)
         self._create_presets_menu(menubar)
         self._create_tabs_menu(menubar)
-        self._create_download_menu(menubar)
+        self._create_apps_menu(menubar)
         self._create_help_menu(menubar)
-        self._create_lofar_menu(tools_menu)
 
     def _create_file_menu(self, menubar):
         """File menu: open, remote, export, quit."""
@@ -211,7 +210,7 @@ class MenusMixin:
         theme_manager.register_callback(self._on_theme_changed)
 
     def _create_tools_menu(self, menubar):
-        """Tools menu (the LOFAR submenu is added by _create_lofar_menu)."""
+        """Tools menu: what works on the image or a batch of images."""
         tools_menu = menubar.addMenu("&Tools")
 
         # Add Solar Phase Shift option
@@ -268,29 +267,6 @@ class MenusMixin:
         create_video_act.triggered.connect(self.show_create_video_dialog)
         tools_menu.addAction(create_video_act)
 
-        tools_menu.addSeparator()
-
-        # Add NOAA Solar Events Viewer
-        noaa_events_act = QAction("Solar Activity Viewer", self)
-        noaa_events_act.setStatusTip("View solar activity for a specific date")
-        noaa_events_act.triggered.connect(self.show_noaa_events_viewer)
-        tools_menu.addAction(noaa_events_act)
-
-        # Add Helioviewer Browser
-        helioviewer_action = QAction("Helioviewer Browser", self)
-        helioviewer_action.setStatusTip("Browse solar images from Helioviewer")
-        helioviewer_action.triggered.connect(self.open_helioviewer_browser)
-        tools_menu.addAction(helioviewer_action)
-
-        # Dynamic Spectrum Viewer
-        dynamic_spectrum_act = QAction("Dynamic Spectrum Viewer", self)
-        dynamic_spectrum_act.setStatusTip("View and clean dynamic spectra FITS files")
-        dynamic_spectrum_act.triggered.connect(
-            lambda: self._launch_pipeline_tool(
-                "dynamic_spectrum_viewer", "Dynamic Spectrum Viewer"
-            )
-        )
-        tools_menu.addAction(dynamic_spectrum_act)
         return tools_menu
 
     def _create_region_menu(self, menubar):
@@ -371,35 +347,6 @@ class MenusMixin:
         close_tab_act.triggered.connect(self.close_current_tab)
         tabs_menu.addAction(close_tab_act)
 
-    def _create_download_menu(self, menubar):
-        """Download menu."""
-        # Add Data Download menu after File menu
-        download_menu = menubar.addMenu("&Download")
-
-        # GUI Downloader action
-        gui_downloader_action = QAction("Non-radio Solar Data Downloader", self)
-        gui_downloader_action.setStatusTip(
-            "Launch the graphical interface for downloading non-radio solar data"
-        )
-        gui_downloader_action.triggered.connect(self.launch_data_downloader_gui)
-        download_menu.addAction(gui_downloader_action)
-
-        # Radio Data Downloader action
-        radio_downloader_action = QAction("Radio Solar Data Downloader", self)
-        radio_downloader_action.setStatusTip(
-            "Download radio solar data (Learmonth, etc.) and convert to FITS"
-        )
-        radio_downloader_action.triggered.connect(self.launch_radio_data_downloader_gui)
-        download_menu.addAction(radio_downloader_action)
-
-        # CLI Downloader action
-        """cli_downloader_action = QAction("Solar Data Downloader (CLI)", self)
-        cli_downloader_action.setStatusTip(
-            "Launch the command-line interface for downloading solar data"
-        )
-        cli_downloader_action.triggered.connect(self.launch_data_downloader_cli)
-        download_menu.addAction(cli_downloader_action)"""
-
     def _create_help_menu(self, menubar):
         """Help menu."""
         help_menu = menubar.addMenu("&Help")
@@ -425,44 +372,38 @@ class MenusMixin:
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
 
-    def _create_lofar_menu(self, tools_menu):
-        """LOFAR Tools submenu at the end of the Tools menu."""
-        # Add LOFAR Tools submenu
-        tools_menu.addSeparator()
-        lofar_menu = QMenu("LOFAR Tools", self)
+    def _create_apps_menu(self, menubar):
+        """Apps menu: the other windows and tools SolarViewer ships."""
+        apps_menu = menubar.addMenu("&Apps")
 
-        # Calibration Table Visualizer
-        caltable_act = QAction("Calibration Table Visualizer", self)
-        caltable_act.setStatusTip(
-            "Visualize bandpass, selfcal, and crossphase calibration tables"
-        )
-        caltable_act.triggered.connect(
-            lambda: self._launch_pipeline_tool(
-                "caltable_visualizer", "Calibration Table Visualizer"
-            )
-        )
-        lofar_menu.addAction(caltable_act)
+        def app(text, slot, tip):
+            act = QAction(text, self)
+            act.setStatusTip(tip)
+            act.triggered.connect(slot)
+            apps_menu.addAction(act)
+            return act
 
-        # Log Viewer
-        log_viewer_act = QAction("Log Viewer", self)
-        log_viewer_act.setStatusTip("View and filter log files")
-        log_viewer_act.triggered.connect(
-            lambda: self._launch_pipeline_tool("log_viewer", "Log Viewer")
-        )
-        lofar_menu.addAction(log_viewer_act)
-
-        # Create Dynamic Spectra
-        lofar_menu.addSeparator()
-        create_ds_act = QAction("Create Dynamic Spectra...", self)
-        create_ds_act.setStatusTip("Create dynamic spectra FITS from MS files")
-        create_ds_act.triggered.connect(
-            lambda: self._launch_pipeline_tool(
-                "create_dynamic_spectra", "Dynamic Spectra Creator"
-            )
-        )
-        lofar_menu.addAction(create_ds_act)
-
-        tools_menu.addMenu(lofar_menu)
+        app("Solar Activity Viewer", self.show_noaa_events_viewer,
+            "View solar activity for a specific date")
+        app("Helioviewer Browser", self.open_helioviewer_browser,
+            "Browse solar images from Helioviewer")
+        apps_menu.addSeparator()
+        app("Dynamic Spectrum Viewer",
+            lambda: self._launch_pipeline_tool("dynamic_spectrum_viewer", "Dynamic Spectrum Viewer"),
+            "View and clean dynamic spectra FITS files")
+        app("Create Dynamic Spectra...",
+            lambda: self._launch_pipeline_tool("create_dynamic_spectra", "Dynamic Spectra Creator"),
+            "Create dynamic spectra FITS from MS files")
+        app("Calibration Table Visualizer",
+            lambda: self._launch_pipeline_tool("caltable_visualizer", "Calibration Table Visualizer"),
+            "Visualize bandpass, selfcal, and crossphase calibration tables")
+        app("Log Viewer", lambda: self._launch_pipeline_tool("log_viewer", "Log Viewer"),
+            "View and filter pipeline log files")
+        apps_menu.addSeparator()
+        app("Solar Data Downloader", self.launch_data_downloader_gui,
+            "Download non-radio solar data (SDO, SOHO, STEREO, GOES, IRIS)")
+        app("Radio Data Downloader", self.launch_radio_data_downloader_gui,
+            "Download radio solar data (Learmonth, e-CALLISTO...) and convert to FITS")
 
     def open_image(self):
         """Open a FITS file or CASA image in the current tab (File menu)."""

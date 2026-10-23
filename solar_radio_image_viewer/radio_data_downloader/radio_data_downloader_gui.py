@@ -695,7 +695,7 @@ class RadioDataDownloaderGUI(QMainWindow):
         self.log_message(
             "\nYou can now open this file with the Dynamic Spectrum Viewer:"
         )
-        self.log_message("  Tools → LOFAR Tools → Dynamic Spectrum Viewer")
+        self.log_message("  Apps → Dynamic Spectrum Viewer")
 
         QMessageBox.information(
             self,

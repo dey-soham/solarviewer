@@ -874,7 +874,7 @@ class TutorialDialog(QDialog):
             self._create_info_box(
                 "Making Spectra",
                 [
-                    "Tools → LOFAR → Create Dynamic Spectra: from Measurement Sets",
+                    "Apps → Create Dynamic Spectra: from Measurement Sets",
                     "viewds on the command line runs the viewer on its own",
                 ],
             )
@@ -911,7 +911,7 @@ class TutorialDialog(QDialog):
             self._create_info_box(
                 "Solar Activity Viewer",
                 [
-                    "Access via Tools → Solar Activity Viewer or Activity button",
+                    "Access via Apps → Solar Activity Viewer or the Activity button",
                     "NOAA solar event reports and active regions",
                     "Solar conditions summary and CME alerts",
                     "GOES X-ray flux plots",
@@ -925,7 +925,7 @@ class TutorialDialog(QDialog):
             self._create_info_box(
                 "Helioviewer Browser",
                 [
-                    "Access via Tools → Helioviewer Browser or Helioviewer button",
+                    "Access via Apps → Helioviewer Browser or the Helioviewer button",
                     "Browse solar images by time range",
                     "Multiple instruments: SDO, SOHO, STEREO, GOES, Solar Orbiter",
                     "Frame-by-frame navigation with time slider",

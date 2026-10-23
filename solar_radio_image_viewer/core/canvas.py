@@ -222,6 +222,8 @@ class CanvasMixin:
         self._settle_timer.setInterval(SETTLE_MS)
         self._settle_timer.timeout.connect(self._settle_view)
         self.canvas.mpl_connect("draw_event", self._on_canvas_drawn)
+        # A resized canvas gets margins for its new size before it is drawn
+        self.canvas.mpl_connect("resize_event", lambda event: self.relayout_for_size())
 
         self.show_empty_hint()
 
