@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QTabWidget,
     QButtonGroup,
+    QMenu,
 )
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon
@@ -699,10 +700,19 @@ class PanelsMixin:
         self.fit_gaussian_btn.setToolTip("Fit a 2D Gaussian to the selected region")
         self.fit_gaussian_btn.clicked.connect(self._fit_gaussian)
         self.fit_gaussian_btn.hide()
+        # The region's exports (the Region menu's), under one button
+        self.export_region_btn = QPushButton("Export")
+        self.export_region_btn.setToolTip("Export the region: as a sub-image, or as a CASA region file")
+        export_menu = QMenu(self.export_region_btn)
+        export_menu.addAction("Sub-image (ROI)…", self._export_sub_image)
+        export_menu.addAction("ROI as region file…", self._export_region)
+        self.export_region_btn.setMenu(export_menu)
+        self.export_region_btn.hide()
         row = QHBoxLayout()
         row.setSpacing(6)
         row.addWidget(self.histogram_btn)
         row.addWidget(self.fit_gaussian_btn)
+        row.addWidget(self.export_region_btn)
         row.addStretch()
         block_layout.addLayout(row)
         layout.addWidget(block)
@@ -738,6 +748,18 @@ class PanelsMixin:
         self.empty_canvas.pathRequested.connect(self.open_path)
         self.empty_canvas.allRecentRequested.connect(self._show_recent_menu)
         return self.empty_canvas
+
+    def _export_sub_image(self):
+        """Region > Export Sub-Image (ROI)."""
+        window = self.window()
+        if hasattr(window, "save_sub_image"):
+            window.save_sub_image()
+
+    def _export_region(self):
+        """Region > Export ROI as Region."""
+        window = self.window()
+        if hasattr(window, "export_casa_region"):
+            window.export_casa_region()
 
     def _fit_gaussian(self):
         """Fitting > Fit 2D Gaussian, on this tab's region."""

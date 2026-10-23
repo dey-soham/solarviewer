@@ -693,6 +693,14 @@ def get_stylesheet(palette, is_dark=True):
         background-color: transparent;
         border-color: {p['divider']};
     }}
+    QPushButton::menu-indicator {{
+        image: url({arrow_down});
+        width: 10px;
+        height: 6px;
+        subcontrol-position: right center;
+        subcontrol-origin: padding;
+        right: {SPACE_S}px;
+    }}
     QPushButton#PrimaryButton {{
         background-color: transparent;
         color: {p['highlight']};

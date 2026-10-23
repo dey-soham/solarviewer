@@ -61,6 +61,7 @@ class RoiStatsMixin:
         self.stats_table.show()  # (hidden until there are statistics)
         self.histogram_btn.show()
         self.fit_gaussian_btn.show()
+        self.export_region_btn.show()
 
         main_window = self.parent()
         if main_window:
