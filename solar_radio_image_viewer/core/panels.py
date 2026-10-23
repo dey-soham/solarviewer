@@ -695,8 +695,14 @@ class PanelsMixin:
         self.histogram_btn.setToolTip("Show pixel value histogram for current ROI")
         self.histogram_btn.clicked.connect(self._show_roi_histogram)
         self.histogram_btn.hide()
+        self.fit_gaussian_btn = QPushButton("Fit Gaussian")
+        self.fit_gaussian_btn.setToolTip("Fit a 2D Gaussian to the selected region")
+        self.fit_gaussian_btn.clicked.connect(self._fit_gaussian)
+        self.fit_gaussian_btn.hide()
         row = QHBoxLayout()
+        row.setSpacing(6)
         row.addWidget(self.histogram_btn)
+        row.addWidget(self.fit_gaussian_btn)
         row.addStretch()
         block_layout.addLayout(row)
         layout.addWidget(block)
@@ -732,6 +738,12 @@ class PanelsMixin:
         self.empty_canvas.pathRequested.connect(self.open_path)
         self.empty_canvas.allRecentRequested.connect(self._show_recent_menu)
         return self.empty_canvas
+
+    def _fit_gaussian(self):
+        """Fitting > Fit 2D Gaussian, on this tab's region."""
+        window = self.window()
+        if hasattr(window, "fit_2d_gaussian"):
+            window.fit_2d_gaussian()
 
     def _show_recent_menu(self):
         """File > Open Recent, at the pointer."""
