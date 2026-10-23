@@ -309,8 +309,10 @@ class SolarRadioImageTab(
             pass
 
     def setup_ui(self):
-        """The image with its display bar above and toolbar below, and the
-        sidebar beside it (folding sections; hidden with View > Sidebar)."""
+        """The image with its toolbar below, and the sidebar beside it
+        (folding sections; hidden with View > Sidebar). The image keeps the
+        tab's full height; a square image leaves width over, which the
+        sidebar takes by default (the splitter sets it otherwise)."""
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(10, 8, 10, 8)
         main_layout.setSpacing(0)
@@ -324,7 +326,6 @@ class SolarRadioImageTab(
         image_layout = QVBoxLayout(image_panel)
         image_layout.setContentsMargins(0, 0, 0, 0)
         image_layout.setSpacing(6)
-        self.create_display_bar(image_layout)
         self.setup_canvas(image_layout)
         self.setup_figure_toolbar(image_layout)
         splitter.addWidget(image_panel)
@@ -332,14 +333,20 @@ class SolarRadioImageTab(
         # The sidebar: as wide as its controls need, scrolling when short
         sidebar = QWidget()
         sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(10, 0, 0, 0)
+        sidebar_layout.setContentsMargins(10, 0, 4, 0)
         sidebar_layout.setSpacing(12)
         self.create_sidebar(sidebar_layout)
         self.sidebar = _side_panel(sidebar)
         splitter.addWidget(self.sidebar)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
-        splitter.setSizes([1000, max(300, sidebar.minimumSizeHint().width())])
+        # The sidebar takes the width a square image leaves over, following
+        # the window's size until the user drags the splitter
+        self.splitter = splitter
+        self._sidebar_min = sidebar.minimumSizeHint().width() + 24
+        self._splitter_moved = False
+        splitter.splitterMoved.connect(lambda *_: setattr(self, "_splitter_moved", True))
+        splitter.setSizes(self._initial_split())
         self.sidebar.setVisible(
             QSettings("SolarViewer", "SolarViewer").value("sidebar_visible", True, type=bool)
         )
@@ -348,6 +355,21 @@ class SolarRadioImageTab(
 
         main_layout.addWidget(splitter)
         self._name_icon_only_controls()
+
+    def _initial_split(self):
+        """[image width, sidebar width] for the tab's size: the image area
+        about 1.25 times as wide as it is tall (a square image with its
+        title, labels and colorbar), the rest to the sidebar, within reason."""
+        width, height = self.width(), self.height()
+        canvas_height = max(300, height - 60)  # the toolbar and margins
+        image_width = int(canvas_height * 1.25)
+        sidebar = max(self._sidebar_min, min(620, width - image_width))
+        return [max(400, width - sidebar), sidebar]
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self._splitter_moved and self.sidebar.isVisible():
+            self.splitter.setSizes(self._initial_split())
 
     def _name_icon_only_controls(self):
         """Name the icon-only buttons and toolbar actions for screen readers,

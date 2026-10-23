@@ -1,14 +1,13 @@
 """
-The image tab's controls around the image: the display bar above it
-(colormap, stretch, range, presets, gamma) and the sidebar beside it
-(Image, Overlays, Region Statistics, Image Statistics), plus the cursor
-readout the window shows in its status bar.
+The image tab's sidebar beside the image (Image, Display, Overlays, Region
+Statistics, Image Statistics: folding sections) and the cursor readout the
+window shows in its status bar. The image keeps the full height of the tab;
+the sidebar takes the width a square image leaves over.
 """
 
 import logging
 import matplotlib.pyplot as plt
 from PyQt5.QtWidgets import (
-    QWidget,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -92,7 +91,7 @@ def _switch(text, slot, checked=False):
 
 
 class PanelsMixin:
-    """Builds the display bar, the sidebar and the cursor readout.
+    """Builds the sidebar and the cursor readout.
 
     Mixed into :class:`SolarRadioImageTab`; relies on its attributes via ``self``.
 
@@ -109,14 +108,16 @@ class PanelsMixin:
     ``update_display``, ``update_gamma_slider``, ``update_gamma_value``
     """
 
-    # ------------------------------------------------------------ display bar
-    def create_display_bar(self, parent_layout):
-        """One row above the image: how it is shown. Colormap and stretch,
-        the intensity range with its presets, and gamma."""
-        bar = QWidget()
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+    # -------------------------------------------------------- display section
+    def create_display_section(self, parent_layout):
+        """How the image is shown: colormap and stretch, the intensity
+        range with its presets, and gamma. The first section of the sidebar,
+        so the canvas keeps its height for the image."""
+        fold = FoldSection("Display", "display")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(1, 1)
 
         radio_colormaps = [
             "viridis", "plasma", "inferno", "magma", "gist_heat", "hot",
@@ -127,19 +128,15 @@ class PanelsMixin:
             preferred_items=radio_colormaps, all_items=all_colormaps
         )
         self.cmap_combo.setCurrentText("viridis")
-        self.cmap_combo.setToolTip("Colormap")
         self.cmap_combo.colormapSelected.connect(self.update_display)
-        self.cmap_combo.setMaximumWidth(
-            bar.fontMetrics().horizontalAdvance("twilight_shifted") + 80
-        )
-        layout.addWidget(self.cmap_combo)
+        grid.addWidget(QLabel("Colormap:"), 0, 0)
+        grid.addWidget(self.cmap_combo, 0, 1)
 
         self.stretch_combo = QComboBox()
         self.stretch_combo.addItems(
             ["linear", "sqrt", "log", "arcsinh", "power", "zscale", "histeq"]
         )
         self.stretch_combo.setCurrentText("power")
-        self.stretch_combo.setToolTip("Stretch")
         self.stretch_combo.currentIndexChanged.connect(self.on_stretch_changed)
         stretch_tooltips = {
             0: "Linear stretch - no transformation",
@@ -152,22 +149,42 @@ class PanelsMixin:
         }
         for idx, tooltip in stretch_tooltips.items():
             self.stretch_combo.setItemData(idx, tooltip, Qt.ToolTipRole)
-        layout.addWidget(self.stretch_combo)
+        grid.addWidget(QLabel("Stretch:"), 1, 0)
+        grid.addWidget(self.stretch_combo, 1, 1)
 
-        layout.addSpacing(6)
-        layout.addWidget(QLabel("Min:"))
+        range_row = QHBoxLayout()
+        range_row.setSpacing(6)
         self.vmin_entry = QLineEdit("0.0")
         self.vmin_entry.setToolTip("Lowest value shown")
-        fit_width_to_text(self.vmin_entry, "-0.0000000")
         self.vmin_entry.editingFinished.connect(self.update_display)
-        layout.addWidget(self.vmin_entry)
-        layout.addWidget(QLabel("Max:"))
         self.vmax_entry = QLineEdit("1.0")
         self.vmax_entry.setToolTip("Highest value shown")
-        fit_width_to_text(self.vmax_entry, "-0.0000000")
         self.vmax_entry.editingFinished.connect(self.update_display)
-        layout.addWidget(self.vmax_entry)
+        range_row.addWidget(self.vmin_entry, 1)
+        range_row.addWidget(QLabel("to"))
+        range_row.addWidget(self.vmax_entry, 1)
+        grid.addWidget(QLabel("Range:"), 2, 0)
+        grid.addLayout(range_row, 2, 1)
 
+        gamma_row = QHBoxLayout()
+        gamma_row.setSpacing(6)
+        self.gamma_slider = QSlider(Qt.Horizontal)
+        self.gamma_slider.setRange(1, 60)
+        self.gamma_slider.setValue(20)
+        self.gamma_slider.setToolTip("Gamma of the power stretch")
+        self.gamma_slider.valueChanged.connect(self.update_gamma_value)
+        self.gamma_slider.sliderReleased.connect(self._apply_gamma_change)
+        self.gamma_entry = QLineEdit("1.0")
+        fit_width_to_text(self.gamma_entry, "0.00")
+        self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
+        gamma_row.addWidget(self.gamma_slider, 1)
+        gamma_row.addWidget(self.gamma_entry)
+        grid.addWidget(QLabel("Gamma:"), 3, 0)
+        grid.addLayout(gamma_row, 3, 1)
+        fold.layout.addLayout(grid)
+
+        presets = QHBoxLayout()
+        presets.setSpacing(6)
         self.auto_minmax_button = QPushButton("Auto")
         self.auto_minmax_button.setToolTip("Range: the image's minimum to its maximum (F5)")
         self.auto_minmax_button.clicked.connect(lambda: self.apply_auto_range("minmax"))
@@ -178,35 +195,16 @@ class PanelsMixin:
         self.auto_median_button.setToolTip("Range: the median ± 3 times the RMS (F7)")
         self.auto_median_button.clicked.connect(lambda: self.apply_auto_range("median_rms"))
         for button in (self.auto_minmax_button, self.auto_percentile_button, self.auto_median_button):
-            layout.addWidget(button)
-
-        layout.addSpacing(6)
-        gamma_label = QLabel("γ")
-        gamma_label.setToolTip("Gamma of the power stretch")
-        layout.addWidget(gamma_label)
-        self.gamma_slider = QSlider(Qt.Horizontal)
-        self.gamma_slider.setRange(1, 60)
-        self.gamma_slider.setValue(20)
-        self.gamma_slider.setToolTip("Gamma of the power stretch")
-        self.gamma_slider.setMinimumWidth(80)
-        self.gamma_slider.setMaximumWidth(160)
-        self.gamma_slider.valueChanged.connect(self.update_gamma_value)
-        self.gamma_slider.sliderReleased.connect(self._apply_gamma_change)
-        layout.addWidget(self.gamma_slider)
-        self.gamma_entry = QLineEdit("1.0")
-        fit_width_to_text(self.gamma_entry, "0.00")
-        self.gamma_entry.editingFinished.connect(self.update_gamma_slider)
-        layout.addWidget(self.gamma_entry)
-
-        layout.addStretch()
-        parent_layout.addWidget(bar)
-        self.display_bar = bar
+            presets.addWidget(button)
+        fold.layout.addLayout(presets)
+        parent_layout.addWidget(fold)
 
     # ---------------------------------------------------------------- sidebar
     def create_sidebar(self, parent_layout):
         """The sidebar beside the image: the image and how it is read,
         the overlays, and the statistics. Each section folds."""
         self.create_image_section(parent_layout)
+        self.create_display_section(parent_layout)
         self.create_overlays_section(parent_layout)
         self.create_stats_table(parent_layout)
         self.create_image_stats_table(parent_layout)

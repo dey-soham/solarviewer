@@ -911,7 +911,7 @@ class RenderingMixin:
         is too narrow for it on one: Matplotlib centres a title over the
         axes and would cut a long one off at both sides."""
         width = self.figure.get_size_inches()[0] * self.figure.dpi
-        if " | " in title and width < 1100:
+        if " | " in title and width < 900:
             return title.replace(" | ", "\n", 1)
         return title
 
