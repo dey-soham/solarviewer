@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
 )
 
-from ..processing.fits_io import is_fits
+from ..processing.fits_io import SPECTRUM, fits_kind, is_fits
 from ..ui.open_image import choose_image
 from ..ui.recent_files import forget_image, last_image_folder, remember_image
 from ..ui.styles import set_hand_cursor, theme_manager
@@ -67,7 +67,16 @@ class FileNavigationMixin:
             start_dir = os.path.dirname(self.imagename.rstrip("/"))
         path = choose_image(self, directory=start_dir)
         if path:
-            self.open_image_path(path)
+            self.open_path(path)
+
+    def open_path(self, path):
+        """Open ``path`` where it belongs: an image in this tab, a dynamic
+        spectrum in the Dynamic Spectrum Viewer (see the window's
+        ``open_path``)."""
+        main_window = self.window()
+        if hasattr(main_window, "open_path"):
+            return main_window.open_path(path, tab=self)
+        return self.open_image_path(path)
 
     def open_image_path(self, path):
         """Show the local image ``path`` (a FITS file or CASA image) in this
@@ -120,6 +129,9 @@ class FileNavigationMixin:
             # Connect to handle the selected file
             def on_file_selected(local_path, is_remote):
                 if not local_path or not os.path.exists(local_path):
+                    return
+                if fits_kind(local_path) == SPECTRUM:
+                    main_window.open_spectrum(local_path)
                     return
 
                 start_time = time.time()
@@ -677,7 +689,9 @@ except Exception:
                     entry.size,
                 )
 
-            # Load the file
+            # Load the file: a dynamic spectrum in its own viewer
+            if fits_kind(local_path) == SPECTRUM:
+                return main_window.open_spectrum(local_path)
             self._reset_hpc_state()
             self.imagename = local_path
             self.dir_entry.setText(local_path)
@@ -699,8 +713,15 @@ except Exception:
 
     def _load_file_index(self, new_index, done="Loaded"):
         """Load file ``new_index`` of the file list (as next/previous do);
-        once it is shown, the status bar says ``done`` and its name."""
+        once it is shown, the status bar says ``done`` and its name. A
+        dynamic spectrum in the list goes to the Dynamic Spectrum Viewer and
+        the tab keeps its image."""
         new_path = self._file_list[new_index]
+        if not self._is_remote_mode and fits_kind(new_path) == SPECTRUM:
+            main_window = self.window()
+            if hasattr(main_window, "open_spectrum"):
+                return main_window.open_spectrum(new_path)
+            return False
         self._file_list_index = new_index
 
         if self._is_remote_mode:
@@ -720,11 +741,21 @@ except Exception:
             self.show_status_message(f"{done} {os.path.basename(new_path)}")
         return shown
 
+    def _step_file(self, start, step, done="Loaded"):
+        """Load the first image from ``start`` on, ``step`` places at a time:
+        next/previous step over dynamic spectra, which have their own viewer."""
+        index = start
+        while 0 <= index < len(self._file_list):
+            if self._is_remote_mode or fits_kind(self._file_list[index]) != SPECTRUM:
+                return self._load_file_index(index, done)
+            index += step
+        return False
+
     def _on_prev_file(self):
         """Load the previous file in the file list"""
         if self._file_list_index <= 0:
             return
-        self._load_file_index(self._file_list_index - 1)
+        self._step_file(self._file_list_index - 1, -1)
 
     def _on_next_file(self):
         """Load the next file in the file list"""
@@ -733,19 +764,19 @@ except Exception:
             or self._file_list_index >= len(self._file_list) - 1
         ):
             return
-        self._load_file_index(self._file_list_index + 1)
+        self._step_file(self._file_list_index + 1, 1)
 
     def _on_first_file(self):
         """Load the first file in the file list"""
         if not self._file_list or self._file_list_index <= 0:
             return
-        self._load_file_index(0, "Loaded first file:")
+        self._step_file(0, 1, "Loaded first file:")
 
     def _on_last_file(self):
         """Load the last file in the file list"""
         if not self._file_list or self._file_list_index >= len(self._file_list) - 1:
             return
-        self._load_file_index(len(self._file_list) - 1, "Loaded last file:")
+        self._step_file(len(self._file_list) - 1, -1, "Loaded last file:")
 
     def _show_filter_dialog(self):
         """Show a dialog to set the file filter pattern"""

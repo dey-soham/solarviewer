@@ -4,7 +4,9 @@ Run one of the SIMPL pipeline GUI tools as a standalone process.
 SolarViewer launches these in a separate process to avoid memory conflicts
 between python-casacore and casatasks/casatools:
 
-    python -m solar_radio_image_viewer.pipeline.launch <tool> [theme]
+    python -m solar_radio_image_viewer.pipeline.launch <tool> [theme] [file]
+
+A ``file`` is opened in the tool as it appears (the Dynamic Spectrum Viewer).
 """
 
 import os
@@ -23,12 +25,18 @@ TOOLS = {
 }
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
+def parse_args(argv):
+    """(tool, theme, file to open or None) from the command line."""
     if not argv or argv[0] not in TOOLS:
-        sys.exit(f"usage: launch.py {{{','.join(TOOLS)}}} [theme]")
+        sys.exit(f"usage: launch.py {{{','.join(TOOLS)}}} [theme] [file]")
     tool = argv[0]
-    theme = argv[1] if len(argv) > 1 else "dark"
+    theme = argv[1] if len(argv) > 1 and argv[1] else "dark"
+    path = argv[2] if len(argv) > 2 and argv[2] else None
+    return tool, theme, path
+
+
+def main(argv=None):
+    tool, theme, path = parse_args(sys.argv[1:] if argv is None else argv)
 
     # Clear opencv Qt paths before importing PyQt5
     for key in ["QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH"]:
@@ -37,6 +45,7 @@ def main(argv=None):
 
     import importlib
 
+    from PyQt5.QtCore import QTimer
     from PyQt5.QtWidgets import QApplication
 
     from .simpl_theme import apply_theme, setup_high_dpi
@@ -51,6 +60,9 @@ def main(argv=None):
     apply_theme(app, theme)
     window = window_class(theme=theme) if takes_theme else window_class()
     window.show()
+    if path and hasattr(window, "openFile"):
+        # Once the window is on screen, so its wait cursor and messages show
+        QTimer.singleShot(0, lambda: window.openFile(path))
     sys.exit(app.exec_())
 
 

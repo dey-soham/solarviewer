@@ -480,9 +480,21 @@ class MenusMixin:
         menu.addAction("Clear List").triggered.connect(clear_recent_images)
 
     def open_recent_image(self, path):
-        """Open ``path`` in the current tab (in a new one if that shows an
-        image from a server)."""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab is None or getattr(current_tab, "_is_remote_mode", False):
-            current_tab = self.add_new_tab(os.path.basename(path.rstrip("/")))
-        current_tab.open_image_path(path)
+        """Open ``path`` where it belongs (File > Open Recent)."""
+        return self.open_path(path)
+
+    def open_path(self, path, tab=None):
+        """Open the local ``path`` where it belongs: a dynamic spectrum in
+        the Dynamic Spectrum Viewer, an image in ``tab``, else in the current
+        tab (in a new one if that shows an image from a server). Every way
+        of opening a file comes through here. Returns whether it loaded
+        (None if the user cancelled), as ``open_image_path``."""
+        from ..processing.fits_io import SPECTRUM, fits_kind
+
+        if fits_kind(path) == SPECTRUM:
+            return self.open_spectrum(path)
+        if tab is None:
+            tab = self.tab_widget.currentWidget()
+            if tab is None or getattr(tab, "_is_remote_mode", False):
+                tab = self.add_new_tab(os.path.basename(path.rstrip("/")))
+        return tab.open_image_path(path)

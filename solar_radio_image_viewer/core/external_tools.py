@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from ..ui.styles import theme_manager
 from ..processing.fits_io import is_fits, readable_image_path
+from ..ui.recent_files import remember_image
 from ..processing.image_meta import casa_obs_time
 
 logger = logging.getLogger(__name__)
@@ -280,8 +281,27 @@ read -p "Press Enter to close..."
         """Get current theme name for passing to subprocess."""
         return theme_manager.current_theme
 
-    def _launch_pipeline_tool(self, tool, display_name):
-        """Launch a SIMPL pipeline GUI tool (see ``pipeline/launch.py``).
+    def open_spectrum(self, path):
+        """Show the dynamic spectrum ``path`` in the Dynamic Spectrum Viewer,
+        which has its own window; it goes first in Open Recent. True if the
+        viewer was started."""
+        import os
+
+        started = self._launch_pipeline_tool(
+            "dynamic_spectrum_viewer", "Dynamic Spectrum Viewer", path
+        )
+        if started:
+            remember_image(path)
+            self.statusBar().showMessage(
+                f"{os.path.basename(path)} is a dynamic spectrum: "
+                "opened in the Dynamic Spectrum Viewer",
+                8000,
+            )
+        return started
+
+    def _launch_pipeline_tool(self, tool, display_name, path=None):
+        """Launch a SIMPL pipeline GUI tool (see ``pipeline/launch.py``),
+        opening ``path`` in it if given. True if it was started.
 
         These tools are launched as separate processes to avoid memory
         conflicts between python-casacore and casatasks/casatools.
@@ -322,19 +342,20 @@ read -p "Press Enter to close..."
                 if os.access(os.getcwd(), os.W_OK)
                 else os.path.expanduser("~")
             )
+            command = [
+                sys.executable,
+                "-m",
+                "solar_radio_image_viewer.pipeline.launch",
+                tool,
+                self._get_current_theme(),
+            ]
+            if path:
+                command.append(path)
             subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "solar_radio_image_viewer.pipeline.launch",
-                    tool,
-                    self._get_current_theme(),
-                ],
-                start_new_session=True,
-                env=env,
-                cwd=launch_cwd,
+                command, start_new_session=True, env=env, cwd=launch_cwd
             )
             self.statusBar().showMessage(f"{display_name} launched", 3000)
+            return True
         except Exception as e:
             error_message = f"Error launching {display_name}: {str(e)}"
             logger.error(f"{error_message}")
@@ -342,3 +363,4 @@ read -p "Press Enter to close..."
 
             traceback.print_exc()
             QMessageBox.critical(self, "Error", error_message)
+            return False

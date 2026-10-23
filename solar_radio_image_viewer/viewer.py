@@ -53,6 +53,7 @@ from .tools import (
 )
 from .core.presets import display_range
 from .processing.colormaps import ensure_solar_colormaps
+from .processing.fits_io import SPECTRUM, fits_kind
 from .core import (
     CanvasMixin,
     ContoursMixin,
@@ -1170,7 +1171,10 @@ class SolarRadioImageViewerApp(
         if self._fast_preview and hasattr(first_tab, "downsample_toggle"):
             first_tab.downsample_toggle.setChecked(True)
 
-        if imagename and os.path.exists(imagename):
+        if imagename and os.path.exists(imagename) and fits_kind(imagename) == SPECTRUM:
+            # Once this window is up, in the Dynamic Spectrum Viewer
+            QTimer.singleShot(100, lambda: self.open_spectrum(imagename))
+        elif imagename and os.path.exists(imagename):
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
 
@@ -1220,6 +1224,9 @@ class SolarRadioImageViewerApp(
 
             file_path = url.toLocalFile()
             if not os.path.exists(file_path):
+                continue
+            if fits_kind(file_path) == SPECTRUM:
+                self.open_spectrum(file_path)
                 continue
 
             # If there's only one tab and it's empty, use it. Otherwise add tab.

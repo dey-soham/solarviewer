@@ -119,6 +119,11 @@ class RemoteModeMixin:
         """Handle file selected from remote browser (now downloaded locally)."""
         if not local_path or not os.path.exists(local_path):
             return
+        from ..processing.fits_io import SPECTRUM, fits_kind
+
+        if fits_kind(local_path) == SPECTRUM:
+            self.open_spectrum(local_path)
+            return
 
         # Get the current tab and load the file
         current_tab = self.tab_widget.currentWidget()
