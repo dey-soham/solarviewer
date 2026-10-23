@@ -1,18 +1,34 @@
 """
-Pieces every dialog is built from, so they all read the same way.
+Pieces every window is built from, so they all read the same way.
 
 - ``button_bar``: the row of buttons at the bottom of a dialog, laid out
-  the platform's way, with the one main action filled in the accent
+  the platform's way, with the one main action outlined in the accent
 - ``section``: a titled block inside a dialog or panel, lighter than a
   group box (no border), for grouping within an already framed area
+- ``kicker``: a block's small-capitals heading in the accent
+- ``segmented``: a row of choices in one outlined group, one chosen
+- ``link_button``: a text button in the accent with no border
+- ``toggle_row``: a switch with its name and settings button on a surface
+- ``vrule``: a short vertical line between groups in a bar
 """
 
-from PyQt5.QtWidgets import QDialogButtonBox, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
+from PyQt5.QtWidgets import (
+    QDialogButtonBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 def button_bar(primary=None, secondary=None, extras=(), parent=None):
     """A dialog's buttons: ``primary`` ("Apply", slot) is the main action,
-    filled in the accent and the default; ``secondary`` ("Cancel", slot)
+    outlined in the accent and the default; ``secondary`` ("Cancel", slot)
     closes or cancels; ``extras`` [("Reset", slot), ...] are other actions,
     kept to the left. The platform decides the order on the right.
 
@@ -53,3 +69,95 @@ def section(title, parent=None):
     label.setObjectName("SectionTitle")
     layout.addWidget(label)
     return widget, layout
+
+
+def kicker(text, parent=None):
+    """A block's heading: ``text`` in small spaced capitals, in the accent
+    (the Kicker role; the stylesheet cannot space or capitalise letters,
+    so that is done here)."""
+    label = QLabel(text.upper(), parent)
+    label.setObjectName("Kicker")
+    font = QFont(label.font())
+    font.setLetterSpacing(QFont.PercentageSpacing, 110)
+    label.setFont(font)
+    return label
+
+
+def kicker_row(text, aside=None, parent=None):
+    """A kicker with, at the right end of its line, ``aside``: a label in
+    the Meta role, for a block's current state ("1–99%", "no image").
+    Returns (row widget, aside label)."""
+    row = QWidget(parent)
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    layout.addWidget(kicker(text))
+    layout.addStretch()
+    label = QLabel(aside or "")
+    label.setObjectName("Meta")
+    layout.addWidget(label)
+    return row, label
+
+
+def segmented(buttons, parent=None, stretch=False):
+    """``buttons`` (QPushButtons or QToolButtons, checkable ones for a
+    choice) in one outlined group, the Segmented role: the one checked has
+    an accent outline. ``stretch`` gives each the same share of the width
+    (the presets row). Returns the group widget."""
+    group = QFrame(parent)
+    group.setObjectName("Segmented")
+    layout = QHBoxLayout(group)
+    layout.setContentsMargins(2, 2, 2, 2)
+    layout.setSpacing(1)
+    for button in buttons:
+        button.setCursor(Qt.PointingHandCursor)
+        if stretch:
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        layout.addWidget(button, 1 if stretch else 0)
+    return group
+
+
+def link_button(text, slot=None, parent=None):
+    """A text button in the accent with no border, for a small action
+    beside a line ("RMS box…", "All recent files →")."""
+    button = QPushButton(text, parent)
+    button.setObjectName("LinkButton")
+    button.setCursor(Qt.PointingHandCursor)
+    if slot is not None:
+        button.clicked.connect(slot)
+    return button
+
+
+def toggle_row(switch, settings_button=None, label=None, parent=None):
+    """A switch (a QCheckBox in the Switch role) with its name and, at the
+    right, its settings button, on the surface colour. ``label`` is a
+    separate QLabel when the switch has no text of its own."""
+    row = QFrame(parent)
+    row.setObjectName("Surface")
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(9, 5, 7, 5)
+    layout.setSpacing(6)
+    layout.addWidget(switch)
+    if label is not None:
+        layout.addWidget(label)
+    layout.addStretch()
+    if settings_button is not None:
+        layout.addWidget(settings_button)
+    return row
+
+
+def rule(parent=None):
+    """A 1px horizontal line, fading at both ends (the Rule role)."""
+    line = QFrame(parent)
+    line.setObjectName("Rule")
+    line.setFrameShape(QFrame.NoFrame)
+    return line
+
+
+def vrule(height=20, parent=None):
+    """A 1px vertical line ``height`` tall, between groups in a bar."""
+    line = QFrame(parent)
+    line.setObjectName("VRule")
+    line.setFrameShape(QFrame.NoFrame)
+    line.setFixedHeight(height)
+    return line

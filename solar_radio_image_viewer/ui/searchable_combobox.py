@@ -143,10 +143,9 @@ class ColormapSelector(QWidget):
         self.search_button = QPushButton()
         self.search_button.setObjectName("IconOnlyNBGButton")
         self.search_button.setToolTip("Search all colormaps")
-        self.search_button.setMaximumWidth(32)
-        self.search_button.setFixedSize(32, 32)
+        self.search_button.setFixedSize(26, 26)
         self._update_search_icon()  # Use theme-aware icon
-        self.search_button.setIconSize(QSize(24, 24))
+        self.search_button.setIconSize(QSize(16, 16))
         self.search_button.clicked.connect(self.show_search_dialog)
         self.main_layout.addWidget(self.search_button)
 

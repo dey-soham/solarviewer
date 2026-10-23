@@ -71,7 +71,7 @@ version = { attr = "solar_radio_image_viewer.version.__version__" }
 include = ["solar_radio_image_viewer*"]
 
 [tool.setuptools.package-data]
-"solar_radio_image_viewer.assets" = ["*.png", "*.fits", "*.ttf"]
+"solar_radio_image_viewer.assets" = ["*.png", "*.svg", "*.fits", "*.ttf"]
 
 # ---------------------------------------------------------------- dev tools
 

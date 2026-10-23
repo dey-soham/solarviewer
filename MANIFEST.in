@@ -1,2 +1,2 @@
 include README.md LICENSE
-recursive-include solar_radio_image_viewer/assets *.png *.ttf
+recursive-include solar_radio_image_viewer/assets *.png *.svg *.ttf
