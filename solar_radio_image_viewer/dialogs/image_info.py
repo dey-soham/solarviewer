@@ -46,18 +46,8 @@ class ImageInfoDialog(QDialog):
             source_layout = QHBoxLayout(source_container)
             source_layout.setContentsMargins(0, 5, 0, 10)
             
-            from ..ui.styles import theme_manager
-            palette = theme_manager.palette
-            
-            source_label = QLabel(f"📄 {os.path.basename(self.imagename)}")
-            source_label.setStyleSheet(f"""
-                font-size: 11pt; 
-                font-weight: 600; 
-                color: {palette.get('text_secondary', '#888888')};
-                background: {palette.get('button', '#444444')};
-                padding: 4px 12px;
-                border-radius: 6px;
-            """)
+            source_label = QLabel(os.path.basename(self.imagename))
+            source_label.setObjectName("Badge")
             source_layout.addWidget(source_label)
             source_layout.addStretch()
             layout.addWidget(source_container)
@@ -79,7 +69,7 @@ class ImageInfoDialog(QDialog):
         button_layout = QHBoxLayout()
 
         # Copy button
-        copy_btn = QPushButton("📋 Copy to Clipboard")
+        copy_btn = QPushButton("Copy to Clipboard")
         copy_btn.clicked.connect(self._copy_to_clipboard)
         button_layout.addWidget(copy_btn)
 
@@ -160,7 +150,7 @@ class ImageInfoDialog(QDialog):
 
         # Search box
         search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel("🔍 Search:"))
+        search_layout.addWidget(QLabel("Search:"))
         search_edit = QLineEdit()
         search_edit.setPlaceholderText("Filter headers...")
         search_layout.addWidget(search_edit)

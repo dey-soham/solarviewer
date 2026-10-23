@@ -22,7 +22,7 @@ from ..ui.icons import get_resource_path
 logger = logging.getLogger(__name__)
 
 
-from ..ui.geometry import fit_to_screen
+from ..ui.geometry import fit_to_screen, fit_width_to_text
 
 
 class HelpMixin:
@@ -58,10 +58,7 @@ class HelpMixin:
 
     def show_about_dialog(self):
         """Show a modern, professional about dialog."""
-        from ..ui.styles import theme_manager
         from PyQt5.QtGui import QPixmap
-
-        is_dark = theme_manager.is_dark
 
         dialog = QDialog(self)
         dialog.setWindowTitle("About SolarViewer")
@@ -71,28 +68,9 @@ class HelpMixin:
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Header section with gradient background
+        # Header: a banner in the accent colour
         header = QFrame()
-        if is_dark:
-            header.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 #4c1d95, stop:1 #7c3aed);
-                    border-radius: 0px;
-                }
-            """
-            )
-        else:
-            header.setStyleSheet(
-                """
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 #7c3aed, stop:1 #a78bfa);
-                    border-radius: 0px;
-                }
-            """
-            )
+        header.setObjectName("Banner")
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(30, 25, 30, 20)
         header_layout.setSpacing(10)
@@ -105,14 +83,13 @@ class HelpMixin:
                 pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             )
         except Exception:
-            icon_label.setText("☀️")
-            icon_label.setStyleSheet("font-size: 48pt;")
+            pass
         icon_label.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(icon_label)
 
         # App title
         title = QLabel("SolarViewer")
-        title.setStyleSheet("font-size: 26pt; font-weight: bold; color: white;")
+        title.setObjectName("DialogTitle")
         title.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(title)
 
@@ -121,19 +98,7 @@ class HelpMixin:
 
         version_container = QHBoxLayout()
         version_container.addStretch()
-        version_label = QLabel(f"v{__version__}")
-        version_label.setStyleSheet(
-            """
-            QLabel {
-                background-color: rgba(255, 255, 255, 0.2);
-                color: white;
-                padding: 5px 14px;
-                border-radius: 12px;
-                font-size: 11pt;
-                font-weight: bold;
-            }
-        """
-        )
+        version_label = QLabel(f"Version {__version__}")
         version_container.addWidget(version_label)
         version_container.addStretch()
         header_layout.addLayout(version_container)
@@ -150,7 +115,6 @@ class HelpMixin:
         desc = QLabel("A visualization tool for CASA and FITS solar radio images")
         desc.setWordWrap(True)
         desc.setAlignment(Qt.AlignCenter)
-        desc.setStyleSheet("font-size: 12pt;")
         content_layout.addWidget(desc)
 
         # Feature pills
@@ -158,19 +122,9 @@ class HelpMixin:
         features_layout.setSpacing(10)
         features_layout.addStretch()
 
-        feature_style = f"""
-            QLabel {{
-                background-color: {'rgba(124, 58, 237, 0.15)' if is_dark else 'rgba(124, 58, 237, 0.1)'};
-                color: {'#a78bfa' if is_dark else '#7c3aed'};
-                padding: 6px 14px;
-                border-radius: 14px;
-                font-size: 10pt;
-            }}
-        """
-
         for feature in ["Multi-tab", "Stokes", "Fitting", "Contours", "Remote"]:
             pill = QLabel(feature)
-            pill.setStyleSheet(feature_style)
+            pill.setObjectName("Badge")
             features_layout.addWidget(pill)
 
         features_layout.addStretch()
@@ -180,10 +134,7 @@ class HelpMixin:
 
         # Divider
         divider = QFrame()
-        divider.setFixedHeight(1)
-        divider.setStyleSheet(
-            f"background-color: {'#3a3a4a' if is_dark else '#e0e0e0'};"
-        )
+        divider.setObjectName("Rule")
         content_layout.addWidget(divider)
 
         content_layout.addSpacing(8)
@@ -191,14 +142,12 @@ class HelpMixin:
         # Author section
         author_label = QLabel("Developed by")
         author_label.setAlignment(Qt.AlignCenter)
-        author_label.setStyleSheet(
-            f"font-size: 11pt; color: {'#888' if is_dark else '#666'};"
-        )
+        author_label.setObjectName("Hint")
         content_layout.addWidget(author_label)
 
         author_name = QLabel("Soham Dey")
         author_name.setAlignment(Qt.AlignCenter)
-        author_name.setStyleSheet("font-size: 15pt; font-weight: bold;")
+        author_name.setObjectName("SectionTitle")
         content_layout.addWidget(author_name)
 
         # Contact links
@@ -206,18 +155,8 @@ class HelpMixin:
         links_layout.setSpacing(20)
         links_layout.addStretch()
 
-        link_style = f"""
-            QLabel {{
-                color: {'#a78bfa' if is_dark else '#7c3aed'};
-                font-size: 11pt;
-            }}
-            QLabel:hover {{
-                text-decoration: underline;
-            }}
-        """
-
-        email_link = QLabel("📧 sohamd943@gmail.com")
-        email_link.setStyleSheet(link_style)
+        email_link = QLabel('<a href="mailto:sohamd943@gmail.com">sohamd943@gmail.com</a>')
+        email_link.setOpenExternalLinks(True)
         email_link.setCursor(Qt.PointingHandCursor)
         links_layout.addWidget(email_link)
 
@@ -229,9 +168,7 @@ class HelpMixin:
         # Keyboard shortcut hint
         hint = QLabel("Press F1 for keyboard shortcuts")
         hint.setAlignment(Qt.AlignCenter)
-        hint.setStyleSheet(
-            f"font-size: 10pt; font-style: italic; color: {'#666' if is_dark else '#888'};"
-        )
+        hint.setObjectName("Hint")
         content_layout.addWidget(hint)
 
         content_layout.addStretch()
@@ -240,15 +177,6 @@ class HelpMixin:
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         close_btn = QPushButton("Close")
-        close_btn.setFixedWidth(100)
-        close_btn.setStyleSheet(
-            """
-            QPushButton {
-                padding: 8px 20px;
-                font-size: 11pt;
-            }
-        """
-        )
         close_btn.clicked.connect(dialog.accept)
         close_btn.setDefault(True)
         btn_layout.addWidget(close_btn)
@@ -355,24 +283,17 @@ class HelpMixin:
         # Header with search
         header_layout = QHBoxLayout()
 
-        title = QLabel("⌨️ Keyboard Shortcuts")
-        title.setStyleSheet("font-size: 16pt; font-weight: bold;")
+        title = QLabel("Keyboard Shortcuts")
+        title.setObjectName("DialogTitle")
         header_layout.addWidget(title)
 
         header_layout.addStretch()
 
         # Search filter
         search_box = QLineEdit()
-        search_box.setPlaceholderText("🔍 Filter shortcuts...")
-        search_box.setFixedWidth(200)
-        search_box.setStyleSheet(
-            """
-            QLineEdit {
-                padding: 6px 12px;
-                border-radius: 15px;
-            }
-        """
-        )
+        search_box.setPlaceholderText("Filter shortcuts...")
+        search_box.setClearButtonEnabled(True)
+        fit_width_to_text(search_box, "Filter shortcuts......................")
         header_layout.addWidget(search_box)
 
         main_layout.addLayout(header_layout)
@@ -390,45 +311,6 @@ class HelpMixin:
 
         categories = [("", title, rows) for title, rows in self._shortcut_sections()]
 
-        # Get theme for styling
-        from ..ui.styles import theme_manager
-
-        is_dark = theme_manager.is_dark
-
-        # Define theme-aware badge styles
-        if is_dark:
-            badge_style = """
-                QLabel {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #4a4a5a, stop:1 #3a3a4a);
-                    color: #f0f0f5;
-                    padding: 4px 10px;
-                    border-radius: 5px;
-                    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
-                    font-weight: bold;
-                    font-size: 10pt;
-                    border: 1px solid #5a5a6a;
-                    border-bottom: 2px solid #2a2a3a;
-                }
-            """
-            separator_color = "#888"
-        else:
-            badge_style = """
-                QLabel {
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #ffffff, stop:1 #e8e8ec);
-                    color: #1f2937;
-                    padding: 4px 10px;
-                    border-radius: 5px;
-                    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
-                    font-weight: bold;
-                    font-size: 10pt;
-                    border: 1px solid #c0c0c8;
-                    border-bottom: 2px solid #a0a0a8;
-                }
-            """
-            separator_color = "#666"
-
         def create_key_badge(key_text):
             """Create a styled keyboard key badge."""
             container = QWidget()
@@ -442,12 +324,10 @@ class HelpMixin:
                 for j, alt in enumerate(alternatives):
                     if j > 0:
                         or_label = QLabel("or")
-                        or_label.setStyleSheet(
-                            f"color: {separator_color}; font-size: 10pt; margin: 0 6px;"
-                        )
+                        or_label.setObjectName("Hint")
                         layout.addWidget(or_label)
                     badge = QLabel(alt.strip())
-                    badge.setStyleSheet(badge_style)
+                    badge.setObjectName("Key")
                     layout.addWidget(badge)
             # Handle compound keys like "Ctrl+O"
             elif "+" in key_text and len(key_text) > 1:
@@ -458,17 +338,15 @@ class HelpMixin:
                         continue
                     if i > 0:
                         plus = QLabel("+")
-                        plus.setStyleSheet(
-                            f"font-weight: bold; color: {separator_color}; font-size: 11pt;"
-                        )
+                        plus.setObjectName("Hint")
                         layout.addWidget(plus)
                     badge = QLabel(part)
-                    badge.setStyleSheet(badge_style)
+                    badge.setObjectName("Key")
                     layout.addWidget(badge)
             else:
                 # Single key
                 badge = QLabel(key_text.strip())
-                badge.setStyleSheet(badge_style)
+                badge.setObjectName("Key")
                 layout.addWidget(badge)
 
             layout.addStretch()
@@ -480,40 +358,7 @@ class HelpMixin:
         def create_category_section(icon, name, shortcuts):
             """Create a styled category section."""
             section = QFrame()
-            if is_dark:
-                section.setStyleSheet(
-                    """
-                    QFrame {
-                        background-color: rgba(255, 255, 255, 0.03);
-                        border-radius: 10px;
-                        padding: 8px;
-                    }
-                """
-                )
-                header_style = """
-                    font-size: 12pt;
-                    font-weight: bold;
-                    color: #a78bfa;
-                    padding-bottom: 6px;
-                    border-bottom: 1px solid rgba(167, 139, 250, 0.3);
-                """
-            else:
-                section.setStyleSheet(
-                    """
-                    QFrame {
-                        background-color: rgba(0, 0, 0, 0.03);
-                        border-radius: 10px;
-                        padding: 8px;
-                    }
-                """
-                )
-                header_style = """
-                    font-size: 12pt;
-                    font-weight: bold;
-                    color: #7c3aed;
-                    padding-bottom: 6px;
-                    border-bottom: 1px solid rgba(124, 58, 237, 0.3);
-                """
+            section.setObjectName("Card")
 
             layout = QVBoxLayout(section)
             layout.setContentsMargins(16, 12, 16, 12)
@@ -521,7 +366,7 @@ class HelpMixin:
 
             # Category header
             header = QLabel(f"{icon}  {name}" if icon else name)
-            header.setStyleSheet(header_style)
+            header.setObjectName("SectionTitle")
             layout.addWidget(header)
 
             # Shortcuts grid
@@ -535,8 +380,6 @@ class HelpMixin:
             for row, (key, action) in enumerate(shortcuts):
                 key_widget = create_key_badge(key)
                 action_label = QLabel(action)
-                # Use palette text color for theme compatibility
-                action_label.setStyleSheet("font-size: 10.5pt;")
 
                 grid.addWidget(key_widget, row, 0)
                 grid.addWidget(action_label, row, 1)
@@ -579,15 +422,6 @@ class HelpMixin:
         footer.addStretch()
 
         close_btn = QPushButton("Close")
-        close_btn.setFixedWidth(100)
-        close_btn.setStyleSheet(
-            """
-            QPushButton {
-                padding: 8px 20px;
-                font-size: 11pt;
-            }
-        """
-        )
         close_btn.clicked.connect(dialog.accept)
         close_btn.setDefault(True)
         footer.addWidget(close_btn)

@@ -1,3 +1,4 @@
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -24,7 +25,8 @@ import multiprocessing
 import os
 
 from ..ui.batch import BatchDialogMixin
-from ..ui.styles import set_hand_cursor
+from ..ui.icons import themed_icon
+from ..ui.styles import set_hand_cursor, set_tone
 
 
 from ..ui.geometry import fit_to_screen
@@ -56,103 +58,6 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         highlight_color = palette["highlight"]
         text_secondary = palette.get("text_secondary", disabled_color)
 
-        # Apply theme-aware stylesheet
-        self.setStyleSheet(
-            f"""
-            QGroupBox {{
-                background-color: {surface_color};
-                border: 1px solid {border_color};
-                border-radius: 10px;
-                margin-top: 16px;
-                padding: 15px;
-                padding-top: 10px;
-                font-weight: bold;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 15px;
-                top: 2px;
-                padding: 2px 12px;
-                background-color: {surface_color};
-                color: {highlight_color};
-                border-radius: 4px;
-            }}
-            QLineEdit {{
-                background-color: {base_color};
-                color: {text_color};
-                padding: 6px 10px;
-                border: 1px solid {border_color};
-                border-radius: 6px;
-            }}
-            QLineEdit:focus {{
-                border-color: {highlight_color};
-                border-width: 2px;
-            }}
-            QLineEdit:disabled {{
-                background-color: {surface_color};
-                color: {disabled_color};
-            }}
-            QComboBox {{
-                background-color: {base_color};
-                color: {text_color};
-                padding: 5px 10px;
-                border: 1px solid {border_color};
-                border-radius: 6px;
-            }}
-            QComboBox:hover {{
-                border-color: {highlight_color};
-            }}
-            QComboBox:disabled {{
-                background-color: {surface_color};
-                color: {disabled_color};
-            }}
-            QSpinBox, QDoubleSpinBox {{
-                background-color: {base_color};
-                color: {text_color};
-                border: 1px solid {border_color};
-                border-radius: 6px;
-                padding: 4px 8px;
-            }}
-            QSpinBox:disabled, QDoubleSpinBox:disabled {{
-                background-color: {surface_color};
-                color: {disabled_color};
-            }}
-            QCheckBox {{
-                color: {text_color};
-                spacing: 8px;
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border: 2px solid {border_color};
-                border-radius: 4px;
-                background-color: {base_color};
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {highlight_color};
-                border-color: {highlight_color};
-            }}
-            QLabel {{
-                color: {text_color};
-            }}
-            QLabel:disabled {{
-                color: {disabled_color};
-            }}
-            QPlainTextEdit {{
-                background-color: {base_color};
-                color: {text_color};
-                border: 1px solid {border_color};
-                border-radius: 6px;
-                padding: 8px;
-            }}
-            QPushButton {{
-                padding: 6px 16px;
-                border-radius: 6px;
-            }}
-        """
-        )
-
         self.setup_ui(text_secondary)
         set_hand_cursor(self)
 
@@ -166,9 +71,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
             "Batch process multiple FITS/CASA files between Flux Density (Jy/beam) and Brightness Temperature (K)."
         )
         header.setWordWrap(True)
-        header.setStyleSheet(
-            f"font-style: italic; color: {text_secondary}; padding: 4px 0;"
-        )
+        header.setObjectName("Hint")
         main_layout.addWidget(header)
 
         # ========== TAB WIDGET ==========
@@ -188,7 +91,6 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         dir_row = QHBoxLayout()
         dir_row.setSpacing(12)
         dir_label = QLabel("Directory:")
-        dir_label.setStyleSheet("font-weight: 600;")
         dir_label.setMinimumWidth(70)
         dir_row.addWidget(dir_label)
 
@@ -204,7 +106,6 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         pattern_row = QHBoxLayout()
         pattern_row.setSpacing(12)
         pattern_label = QLabel("Pattern:")
-        pattern_label.setStyleSheet("font-weight: 600;")
         pattern_label.setMinimumWidth(70)
         pattern_row.addWidget(pattern_label)
 
@@ -212,8 +113,9 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         self.pattern_edit.setPlaceholderText("e.g., *.fits, sun_*.fits")
         pattern_row.addWidget(self.pattern_edit, 1)
 
-        scan_btn = QPushButton("🔍")
-        scan_btn.setFixedWidth(36)
+        scan_btn = QPushButton()
+        scan_btn.setIcon(QIcon(themed_icon("search.png")))
+        scan_btn.setObjectName("IconOnlyButton")
         scan_btn.setToolTip("Scan for matching files")
         scan_btn.clicked.connect(self.scan_files)
         pattern_row.addWidget(scan_btn)
@@ -226,9 +128,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         input_layout.addLayout(pattern_row)
 
         self.files_count_label = QLabel("")
-        self.files_count_label.setStyleSheet(
-            f"color: {text_secondary}; font-style: italic; padding-left: 82px;"
-        )
+        self.files_count_label.setObjectName("Hint")
         input_layout.addWidget(self.files_count_label)
         
         files_layout.addWidget(input_group)
@@ -238,7 +138,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         files_scroll.setWidgetResizable(True)
         files_scroll.setFrameShape(QFrame.NoFrame)
         files_scroll.setWidget(files_tab)
-        self.tab_widget.addTab(files_scroll, "📁 Files")
+        self.tab_widget.addTab(files_scroll, "Files")
 
         # ========== TAB 2: OPTIONS ==========
         options_tab = QWidget()
@@ -253,7 +153,6 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         unit_row = QHBoxLayout()
         unit_label = QLabel("Target Unit:")
         unit_label.setMinimumWidth(80)
-        unit_label.setStyleSheet("font-weight: 600;")
         unit_row.addWidget(unit_label)
 
         self.target_unit_combo = QComboBox()
@@ -277,7 +176,6 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         cores_row = QHBoxLayout()
         cores_row.setSpacing(20)
         cores_label = QLabel("CPU cores:")
-        cores_label.setStyleSheet("font-weight: 600;")
         cores_row.addWidget(cores_label)
 
         self.cores_spinbox = QSpinBox()
@@ -295,7 +193,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         options_scroll.setWidgetResizable(True)
         options_scroll.setFrameShape(QFrame.NoFrame)
         options_scroll.setWidget(options_tab)
-        self.tab_widget.addTab(options_scroll, "⚙️ Options")
+        self.tab_widget.addTab(options_scroll, "Options")
 
         # ========== TAB 3: OUTPUT ==========
         output_tab = QWidget()
@@ -310,7 +208,6 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         out_dir_row = QHBoxLayout()
         out_dir_row.setSpacing(12)
         out_dir_label = QLabel("Directory:")
-        out_dir_label.setStyleSheet("font-weight: 600;")
         out_dir_label.setMinimumWidth(70)
         out_dir_row.addWidget(out_dir_label)
 
@@ -326,7 +223,6 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         out_pat_row = QHBoxLayout()
         out_pat_row.setSpacing(12)
         out_pat_label = QLabel("Pattern:")
-        out_pat_label.setStyleSheet("font-weight: 600;")
         out_pat_label.setMinimumWidth(70)
         out_pat_row.addWidget(out_pat_label)
 
@@ -341,7 +237,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
             "Use <b>*</b> as a placeholder for the original filename."
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet(f"color: {text_secondary}; line-height: 1.5;")
+        help_text.setObjectName("Hint")
         help_layout.addWidget(help_text)
 
         output_layout.addWidget(output_group)
@@ -352,7 +248,7 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         output_scroll.setWidgetResizable(True)
         output_scroll.setFrameShape(QFrame.NoFrame)
         output_scroll.setWidget(output_tab)
-        self.tab_widget.addTab(output_scroll, "💾 Output")
+        self.tab_widget.addTab(output_scroll, "Output")
 
         main_layout.addWidget(self.tab_widget, 1)
 
@@ -426,8 +322,8 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
         pattern = self.pattern_edit.text()
         
         if not dir_path or not pattern:
-            self.files_count_label.setText("⚠️ Please specify directory and pattern")
-            self.files_count_label.setStyleSheet("color: #f44336; font-weight: bold; padding-left: 82px;")
+            self.files_count_label.setText("Please specify directory and pattern")
+            set_tone(self.files_count_label, "error")
             return []
             
         try:
@@ -435,17 +331,17 @@ class UnitConversionDialog(BatchDialogMixin, QDialog):
             files = sorted(glob.glob(full_pattern))
             
             if files:
-                self.files_count_label.setText(f"✓ Found {len(files)} matching files")
-                self.files_count_label.setStyleSheet("color: #4CAF50; font-weight: bold; padding-left: 82px;")
+                self.files_count_label.setText(f"Found {len(files)} matching files")
+                set_tone(self.files_count_label, "success")
                 self.status_text.setPlainText(f"Found {len(files)} files matching the pattern.")
             else:
-                self.files_count_label.setText("⚠️ No matching files found")
-                self.files_count_label.setStyleSheet("color: #f44336; font-weight: bold; padding-left: 82px;")
+                self.files_count_label.setText("No matching files found")
+                set_tone(self.files_count_label, "error")
                 self.status_text.setPlainText(f"No files found matching: {pattern}")
                 
             return files
         except Exception as e:
-            self.files_count_label.setText(f"⚠️ Error: {str(e)}")
+            self.files_count_label.setText(f"Error: {str(e)}")
             return []
 
     def preview_files(self):

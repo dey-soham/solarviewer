@@ -1,4 +1,5 @@
 import logging
+from ..ui.styles import set_tone
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -7,7 +8,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QGridLayout,
     QMessageBox,
-    QWidget,
     QFrame,
     QApplication,
 )
@@ -41,26 +41,6 @@ class UpdateDialog(QDialog):
         self.setMinimumWidth(400)
         self._pip = None  # the QProcess installing the update
 
-        # Theme styling
-        from ..ui.styles import theme_manager
-
-        self.theme = theme_manager
-        self.palette = theme_manager.palette
-
-        # Apply base dialog styling
-        self.setStyleSheet(
-            f"""
-            QDialog {{
-                background-color: {self.palette['window']};
-                color: {self.palette['text']};
-            }}
-            QLabel {{
-                color: {self.palette['text']};
-                font-size: 11pt;
-            }}
-        """
-        )
-
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -69,36 +49,15 @@ class UpdateDialog(QDialog):
         header_layout = QHBoxLayout()
         header_layout.setSpacing(16)
 
-        # Icon (Text-based placeholder for now)
-        icon_label = QLabel("🔄")
-        icon_label.setStyleSheet(
-            f"""
-            font-size: 32pt;
-            color: {self.palette['highlight']};
-        """
-        )
-        header_layout.addWidget(icon_label)
-
         # Title/Subtitle
         title_layout = QVBoxLayout()
         title_layout.setSpacing(4)
 
         title_label = QLabel("Software Update")
-        title_label.setStyleSheet(
-            f"""
-            font-size: 14pt;
-            font-weight: bold;
-            color: {self.palette['text']};
-        """
-        )
+        title_label.setObjectName("DialogTitle")
 
         subtitle_label = QLabel("Check for new versions of SolarViewer")
-        subtitle_label.setStyleSheet(
-            f"""
-            color: {self.palette['text_secondary']};
-            font-size: 10.2pt;
-        """
-        )
+        subtitle_label.setObjectName("Hint")
 
         title_layout.addWidget(title_label)
         title_layout.addWidget(subtitle_label)
@@ -109,28 +68,12 @@ class UpdateDialog(QDialog):
 
         # Divider
         divider = QFrame()
-        divider.setFrameShape(QFrame.HLine)
-        divider.setFrameShadow(QFrame.Sunken)
-        divider.setStyleSheet(
-            f"background-color: {self.palette['border_light']}; max-height: 1px;"
-        )
+        divider.setObjectName("Rule")
         layout.addWidget(divider)
 
         # Info Grid
-        info_container = QWidget()
-        info_container.setStyleSheet(
-            f"""
-            QWidget {{
-                background-color: {self.palette['surface']};
-                border-radius: 8px;
-                border: 1px solid {self.palette['border']};
-            }}
-            QLabel {{
-                background-color: transparent;
-                border: none;
-            }}
-        """
-        )
+        info_container = QFrame()
+        info_container.setObjectName("Card")
         info_grid = QGridLayout(info_container)
         info_grid.setContentsMargins(16, 16, 16, 16)
         info_grid.setVerticalSpacing(12)
@@ -138,24 +81,20 @@ class UpdateDialog(QDialog):
 
         # Current Version
         self.current_ver_label = QLabel(f"{__version__}")
-        self.current_ver_label.setStyleSheet(
-            "font-family: monospace; font-weight: bold;"
-        )
+        self.current_ver_label.setObjectName("Mono")
 
         lbl_current = QLabel("Current Version:")
-        lbl_current.setStyleSheet(f"color: {self.palette['text_secondary']};")
+        lbl_current.setObjectName("Hint")
 
         info_grid.addWidget(lbl_current, 0, 0)
         info_grid.addWidget(self.current_ver_label, 0, 1)
 
         # Latest Version
         self.latest_ver_label = QLabel("Checking...")
-        self.latest_ver_label.setStyleSheet(
-            f"color: {self.palette['text_secondary']}; font-style: italic;"
-        )
+        self.latest_ver_label.setObjectName("Mono")
 
         lbl_latest = QLabel("Latest Version:")
-        lbl_latest.setStyleSheet(f"color: {self.palette['text_secondary']};")
+        lbl_latest.setObjectName("Hint")
 
         info_grid.addWidget(lbl_latest, 1, 0)
         info_grid.addWidget(self.latest_ver_label, 1, 1)
@@ -166,13 +105,7 @@ class UpdateDialog(QDialog):
         self.status_label = QLabel("Connecting to update server...")
         self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet(
-            f"""
-            color: {self.palette['text_secondary']};
-            padding: 8px;
-            font-style: italic;
-        """
-        )
+        self.status_label.setObjectName("Hint")
         layout.addWidget(self.status_label)
 
         layout.addStretch()
@@ -183,47 +116,13 @@ class UpdateDialog(QDialog):
 
         self.close_btn = QPushButton("Close")
         self.close_btn.setCursor(Qt.PointingHandCursor)
-        self.close_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: {self.palette['surface']};
-                border: 1px solid {self.palette['border']};
-                border-radius: 6px;
-                color: {self.palette['text']};
-                padding: 8px 16px;
-                font-weight: 500;
-            }}
-            QPushButton:hover {{
-                background-color: {self.palette['window']};
-                border-color: {self.palette['text_secondary']};
-            }}
-        """
-        )
         self.close_btn.clicked.connect(self.accept)
         button_row.addWidget(self.close_btn)
 
         self.update_btn = QPushButton("Update Now")
         self.update_btn.setCursor(Qt.PointingHandCursor)
         self.update_btn.setVisible(False)
-        self.update_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: {self.palette['highlight']};
-                border: none;
-                border-radius: 6px;
-                color: #ffffff;
-                padding: 8px 20px;
-                font-weight: 600;
-            }}
-            QPushButton:hover {{
-                background-color: {self.palette['highlight_hover']};
-            }}
-            QPushButton:disabled {{
-                background-color: {self.palette['disabled']};
-                color: {self.palette['text_secondary']};
-            }}
-        """
-        )
+        self.update_btn.setObjectName("PrimaryButton")
         self.update_btn.clicked.connect(self.start_update)
         button_row.addWidget(self.update_btn)
 
@@ -241,39 +140,20 @@ class UpdateDialog(QDialog):
 
         if error_msg:
             self.status_label.setText(f"Error: {error_msg}")
-            self.status_label.setStyleSheet(
-                f"color: {self.palette['error']}; font-weight: 500;"
-            )
+            set_tone(self.status_label, "error")
             self.latest_ver_label.setText("Unknown")
         else:
             self.latest_ver_label.setText(f"{latest_version}")
-            self.latest_ver_label.setStyleSheet(
-                "font-family: monospace; font-weight: bold;"
-            )
 
             if is_available:
-                self.status_label.setText(
-                    "🚀 A new version of SolarViewer is available!"
-                )
-                self.status_label.setStyleSheet(
-                    f"color: {self.palette['highlight']}; font-weight: bold;"
-                )
+                self.status_label.setText("A new version of SolarViewer is available.")
+                set_tone(self.status_label, "success")
+                set_tone(self.latest_ver_label, "success")
                 self.update_btn.setVisible(True)
                 self.update_btn.setEnabled(True)
-
-                # Highlight the latest version label
-                self.latest_ver_label.setStyleSheet(
-                    f"""
-                    font-family: monospace; 
-                    font-weight: bold; 
-                    color: {self.palette['success']};
-                """
-                )
             else:
-                self.status_label.setText("✅ You are using the latest version.")
-                self.status_label.setStyleSheet(
-                    f"color: {self.palette['success']}; font-weight: 500;"
-                )
+                self.status_label.setText("You are using the latest version.")
+                set_tone(self.status_label, "success")
 
     # The pip of the Python running SolarViewer installs into its environment
     # (a virtualenv's python needs no activation); no shell is involved
@@ -290,10 +170,8 @@ class UpdateDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
 
-        self.status_label.setText("📦 Installing update... Please wait.")
-        self.status_label.setStyleSheet(
-            f"color: {self.palette['text']}; font-weight: 500;"
-        )
+        self.status_label.setText("Installing update... Please wait.")
+        set_tone(self.status_label, None)
         self.update_btn.setEnabled(False)
         self.update_btn.setText("Updating...")
 
@@ -344,10 +222,8 @@ class UpdateDialog(QDialog):
             self._update_failed(f"Could not start pip ({sys.executable} -m pip).")
 
     def _update_failed(self, reason):
-        self.status_label.setText("❌ Update failed.")
-        self.status_label.setStyleSheet(
-            f"color: {self.palette['error']}; font-weight: bold;"
-        )
+        self.status_label.setText("Update failed.")
+        set_tone(self.status_label, "error")
         QMessageBox.critical(self, "Update Failed", f"Could not install update:\n{reason}")
         self.update_btn.setEnabled(True)
         self.update_btn.setText("Update Now")
@@ -355,6 +231,6 @@ class UpdateDialog(QDialog):
     def reject(self):
         # Closing mid-install would stop pip half-way
         if self._pip is not None:
-            self.status_label.setText("📦 Installing update... please wait until it finishes.")
+            self.status_label.setText("Installing update... please wait until it finishes.")
             return
         super().reject()

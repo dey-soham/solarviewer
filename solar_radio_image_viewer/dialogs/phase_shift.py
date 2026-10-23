@@ -1,3 +1,4 @@
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -27,7 +28,8 @@ from ..ui.batch import BatchDialogMixin
 from ..ui.busy import busy
 from ..ui.errors import show_error
 from ..ui.open_image import choose_image
-from ..ui.styles import set_hand_cursor
+from ..ui.icons import themed_icon
+from ..ui.styles import set_hand_cursor, set_tone
 
 import multiprocessing
 import glob
@@ -81,9 +83,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
             "This tool relocates the quiet Sun disk to the actual solar center."
         )
         description.setWordWrap(True)
-        description.setStyleSheet(
-            f"font-style: italic; color: {text_secondary}; padding: 4px 0;"
-        )
+        description.setObjectName("Hint")
         main_layout.addWidget(description)
 
         # ========== TAB WIDGET ==========
@@ -126,7 +126,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
         img_label = QLabel("Image:")
         img_label.setMinimumWidth(70)
-        img_label.setStyleSheet("font-weight: 600;")
         single_file_layout.addWidget(img_label)
 
         self.image_path_edit = QLineEdit(self.imagename or "")
@@ -149,7 +148,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         ref_row = QHBoxLayout()
         ref_label = QLabel("Ref Image:")
         ref_label.setMinimumWidth(70)
-        ref_label.setStyleSheet("font-weight: 600;")
         ref_row.addWidget(ref_label)
 
         self.reference_image_edit = QLineEdit("")
@@ -167,7 +165,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         pat_row = QHBoxLayout()
         pat_label = QLabel("Pattern:")
         pat_label.setMinimumWidth(70)
-        pat_label.setStyleSheet("font-weight: 600;")
         pat_row.addWidget(pat_label)
 
         self.input_pattern_edit = QLineEdit("")
@@ -175,8 +172,9 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         pat_row.addWidget(self.input_pattern_edit, 1)
 
         # Scan button
-        scan_btn = QPushButton("🔍")
-        scan_btn.setFixedWidth(36)
+        scan_btn = QPushButton()
+        scan_btn.setIcon(QIcon(themed_icon("search.png")))
+        scan_btn.setObjectName("IconOnlyButton")
         scan_btn.setToolTip("Scan for matching files")
         scan_btn.clicked.connect(self.scan_files)
         pat_row.addWidget(scan_btn)
@@ -188,9 +186,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
         # File count label
         self.files_count_label = QLabel("")
-        self.files_count_label.setStyleSheet(
-            f"color: {text_secondary}; font-style: italic; padding-left: 70px;"
-        )
+        self.files_count_label.setObjectName("Hint")
         batch_file_layout.addWidget(self.files_count_label)
 
         input_group_layout.addWidget(self.batch_file_widget)
@@ -202,7 +198,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         files_scroll.setWidgetResizable(True)
         files_scroll.setFrameShape(QFrame.NoFrame)
         files_scroll.setWidget(files_tab)
-        self.tab_widget.addTab(files_scroll, "📁 Files")
+        self.tab_widget.addTab(files_scroll, "Files")
 
         # ========== TAB 2: OPTIONS ==========
         options_tab = QWidget()
@@ -219,7 +215,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         stokes_mode_row = QHBoxLayout()
         stokes_mode_row.setSpacing(20)
         st_mode_label = QLabel("Mode:")
-        st_mode_label.setStyleSheet("font-weight: 600;")
         stokes_mode_row.addWidget(st_mode_label)
 
         self.single_stokes_radio = QRadioButton("Single Stokes")
@@ -234,7 +229,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         param_row = QHBoxLayout()
         param_row.setSpacing(20)
         self.stokes_label = QLabel("Parameter:")
-        self.stokes_label.setStyleSheet("font-weight: 600;")
         param_row.addWidget(self.stokes_label)
 
         self.stokes_combo = QComboBox()
@@ -259,7 +253,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         met_sel_row = QHBoxLayout()
         met_sel_row.setSpacing(20)
         met_label = QLabel("Method:")
-        met_label.setStyleSheet("font-weight: 600;")
         met_sel_row.addWidget(met_label)
 
         self.gaussian_method_radio = QRadioButton("Gaussian Fitting")
@@ -274,7 +267,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         sigma_row = QHBoxLayout()
         sigma_row.setSpacing(20)
         self.sigma_label = QLabel("Sigma:")
-        self.sigma_label.setStyleSheet("font-weight: 600;")
         sigma_row.addWidget(self.sigma_label)
 
         self.sigma_spinbox = QDoubleSpinBox()
@@ -321,7 +313,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         cores_row = QHBoxLayout()
         cores_row.setSpacing(20)
         cores_label = QLabel("CPU cores:")
-        cores_label.setStyleSheet("font-weight: 600;")
         cores_row.addWidget(cores_label)
 
         self.cores_spinbox = QSpinBox()
@@ -345,7 +336,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         options_scroll.setWidgetResizable(True)
         options_scroll.setFrameShape(QFrame.NoFrame)
         options_scroll.setWidget(options_tab)
-        self.tab_widget.addTab(options_scroll, "⚙️ Options")
+        self.tab_widget.addTab(options_scroll, "Options")
 
         # ========== TAB 3: OUTPUT ==========
         output_tab = QWidget()
@@ -364,7 +355,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
         out_label = QLabel("File:")
         out_label.setMinimumWidth(70)
-        out_label.setStyleSheet("font-weight: 600;")
         single_out_layout.addWidget(out_label)
 
         self.output_path_edit = QLineEdit("")
@@ -383,7 +373,6 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
         out_pat_label = QLabel("Pattern:")
         out_pat_label.setMinimumWidth(70)
-        out_pat_label.setStyleSheet("font-weight: 600;")
         batch_out_layout.addWidget(out_pat_label)
 
         self.output_pattern_edit = QLineEdit("")
@@ -406,7 +395,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
             "→ Output: <code>centered_sun_2024.fits</code>"
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet(f"color: {text_secondary}; line-height: 1.5;")
+        help_text.setObjectName("Hint")
         help_layout.addWidget(help_text)
         output_layout.addWidget(help_group)
         output_layout.addStretch()
@@ -416,7 +405,7 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
         output_scroll.setWidgetResizable(True)
         output_scroll.setFrameShape(QFrame.NoFrame)
         output_scroll.setWidget(output_tab)
-        self.tab_widget.addTab(output_scroll, "💾 Output")
+        self.tab_widget.addTab(output_scroll, "Output")
 
         main_layout.addWidget(self.tab_widget, 1)
 
@@ -608,20 +597,15 @@ class PhaseShiftDialog(BatchDialogMixin, QDialog):
 
             # Format text
             if count == 0:
-                text = "No files found"
-                color = "#FF6B6B"  # Light red
+                self.files_count_label.setText("No files found")
+                set_tone(self.files_count_label, "error")
             else:
-                text = f"Found {count} files"
-                color = "#69F0AE"  # Light green (matching HPC dialog style)
-
-            self.files_count_label.setText(text)
-            self.files_count_label.setStyleSheet(
-                f"color: {color}; font-style: italic; padding-left: 70px;"
-            )
+                self.files_count_label.setText(f"Found {count} files")
+                set_tone(self.files_count_label, "success")
 
         except Exception as e:
             self.files_count_label.setText(f"Error: {str(e)}")
-            self.files_count_label.setStyleSheet("color: #FF6B6B; padding-left: 70px;")
+            set_tone(self.files_count_label, "error")
 
     def _get_matching_files(self):
         """Helper to get files matching the input pattern"""

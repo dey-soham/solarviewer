@@ -16,10 +16,10 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QWidget,
 )
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt
 
 
-from .ui.geometry import fit_to_screen
+from .ui.geometry import fit_to_screen, fit_width_to_text
 
 
 class TutorialDialog(QDialog):
@@ -27,9 +27,8 @@ class TutorialDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        from .ui.styles import theme_manager, set_hand_cursor
+        from .ui.styles import set_hand_cursor
 
-        self.is_dark = theme_manager.is_dark
         self._setup_ui()
         set_hand_cursor(self)
 
@@ -56,131 +55,49 @@ class TutorialDialog(QDialog):
     def _create_sidebar(self):
         """Create the navigation sidebar."""
         sidebar = QFrame()
-        sidebar.setFixedWidth(220)
+        sidebar.setObjectName("Sidebar")
 
-        if self.is_dark:
-            sidebar.setStyleSheet(
-                """
-                QFrame {
-                    background-color: #1e1e2e;
-                    border-right: 1px solid #3a3a4a;
-                }
-            """
-            )
-        else:
-            sidebar.setStyleSheet(
-                """
-                QFrame {
-                    background-color: #f5f5f7;
-                    border-right: 1px solid #e0e0e0;
-                }
-            """
-            )
 
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(12, 15, 12, 15)
         layout.setSpacing(8)
 
-        # Header
-        header = QLabel("📖 Tutorial")
-        header.setStyleSheet(
-            f"""
-            font-size: 16pt;
-            font-weight: bold;
-            color: {'#a78bfa' if self.is_dark else '#7c3aed'};
-            padding: 8px 0 15px 5px;
-        """
-        )
+        header = QLabel("Tutorial")
+        header.setObjectName("DialogTitle")
         layout.addWidget(header)
 
         # Navigation list
         self.nav_list = QListWidget()
-        self.nav_list.setStyleSheet(self._get_nav_list_style())
-        self.nav_list.setSpacing(2)
+        self.nav_list.setObjectName("NavList")
+        fit_width_to_text(self.nav_list, "Stokes Parameters..........")
 
         # Add navigation items
         sections = [
-            ("🚀", "Getting Started"),
-            ("📂", "Opening Images"),
-            ("🎨", "Display Settings"),
-            ("📊", "Stokes Parameters"),
-            ("🧭", "Navigation"),
-            ("📐", "Fitting Tools"),
-            ("📈", "Contour Overlays"),
-            ("✂️", "Regions & Export"),
-            ("🌐", "Remote Access"),
-            ("📡", "Dynamic Spectra"),
-            ("🎬", "Advanced Tools"),
+            "Getting Started",
+            "Opening Images",
+            "Display Settings",
+            "Stokes Parameters",
+            "Navigation",
+            "Fitting Tools",
+            "Contour Overlays",
+            "Regions & Export",
+            "Remote Access",
+            "Dynamic Spectra",
+            "Advanced Tools",
         ]
 
-        for icon, title in sections:
-            item = QListWidgetItem(f"{icon}  {title}")
-            item.setSizeHint(QSize(0, 40))
-            self.nav_list.addItem(item)
+        for title in sections:
+            self.nav_list.addItem(QListWidgetItem(title))
 
         self.nav_list.currentRowChanged.connect(self._on_section_changed)
         layout.addWidget(self.nav_list, 1)
 
         # Close button at bottom
         close_btn = QPushButton("Close")
-        close_btn.setStyleSheet(
-            """
-            QPushButton {
-                padding: 10px 20px;
-                font-size: 11pt;
-            }
-        """
-        )
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
 
         return sidebar
-
-    def _get_nav_list_style(self):
-        if self.is_dark:
-            return """
-                QListWidget {
-                    background-color: transparent;
-                    border: none;
-                    font-size: 11pt;
-                    outline: none;
-                }
-                QListWidget::item {
-                    color: #c0c0d0;
-                    padding: 10px 12px;
-                    border-radius: 8px;
-                    margin: 2px 0;
-                }
-                QListWidget::item:selected {
-                    background-color: rgba(124, 58, 237, 0.3);
-                    color: #a78bfa;
-                }
-                QListWidget::item:hover:!selected {
-                    background-color: rgba(255, 255, 255, 0.05);
-                }
-            """
-        else:
-            return """
-                QListWidget {
-                    background-color: transparent;
-                    border: none;
-                    font-size: 11pt;
-                    outline: none;
-                }
-                QListWidget::item {
-                    color: #4a4a5a;
-                    padding: 10px 12px;
-                    border-radius: 8px;
-                    margin: 2px 0;
-                }
-                QListWidget::item:selected {
-                    background-color: rgba(124, 58, 237, 0.15);
-                    color: #7c3aed;
-                }
-                QListWidget::item:hover:!selected {
-                    background-color: rgba(0, 0, 0, 0.03);
-                }
-            """
 
     def _create_content_area(self):
         """Create the main content area with stacked pages."""
@@ -219,15 +136,9 @@ class TutorialDialog(QDialog):
 
         # Title
         title_label = QLabel(title)
-        title_label.setStyleSheet(
-            f"""
-            font-size: 20pt;
-            font-weight: bold;
-            color: {'#e0e0f0' if self.is_dark else '#1f2937'};
-            padding-bottom: 20px;
-        """
-        )
+        title_label.setObjectName("DialogTitle")
         layout.addWidget(title_label)
+        layout.addSpacing(16)
 
         # Scroll area for content
         scroll = QScrollArea()
@@ -248,19 +159,8 @@ class TutorialDialog(QDialog):
 
         # Number badge
         num_label = QLabel(str(number))
-        num_label.setFixedSize(32, 32)
+        num_label.setObjectName("StepNumber")
         num_label.setAlignment(Qt.AlignCenter)
-        num_label.setStyleSheet(
-            f"""
-            QLabel {{
-                background-color: {'#7c3aed' if self.is_dark else '#7c3aed'};
-                color: white;
-                border-radius: 16px;
-                font-size: 12pt;
-                font-weight: bold;
-            }}
-        """
-        )
         step_layout.addWidget(num_label, 0, Qt.AlignTop)
 
         # Content
@@ -268,81 +168,38 @@ class TutorialDialog(QDialog):
         content.setSpacing(6)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(
-            f"""
-            font-size: 12pt;
-            font-weight: bold;
-            color: {'#e0e0f0' if self.is_dark else '#1f2937'};
-        """
-        )
+        title_label.setObjectName("SectionTitle")
         content.addWidget(title_label)
 
         desc_label = QLabel(description)
         desc_label.setWordWrap(True)
-        desc_label.setStyleSheet(
-            f"""
-            font-size: 11pt;
-            color: {'#a0a0b0' if self.is_dark else '#4b5563'};
-            line-height: 1.5;
-        """
-        )
         content.addWidget(desc_label)
 
         if tip:
-            tip_label = QLabel(f"💡 {tip}")
+            tip_label = QLabel(f"Tip: {tip}")
+            tip_label.setObjectName("Tip")
             tip_label.setWordWrap(True)
-            tip_label.setStyleSheet(
-                f"""
-                font-size: 10pt;
-                color: {'#a78bfa' if self.is_dark else '#7c3aed'};
-                padding: 8px 12px;
-                background-color: {'rgba(124, 58, 237, 0.1)' if self.is_dark else 'rgba(124, 58, 237, 0.08)'};
-                border-radius: 6px;
-                margin-top: 6px;
-            """
-            )
             content.addWidget(tip_label)
 
         step_layout.addLayout(content, 1)
         return step
 
-    def _create_info_box(self, icon, title, items):
-        """Create an info box with icon and bullet points."""
+    def _create_info_box(self, title, items):
+        """Create an info box with bullet points."""
         box = QFrame()
-        box.setStyleSheet(
-            f"""
-            QFrame {{
-                background-color: {'rgba(255, 255, 255, 0.03)' if self.is_dark else 'rgba(0, 0, 0, 0.02)'};
-                border-radius: 10px;
-                padding: 15px;
-            }}
-        """
-        )
+        box.setObjectName("Card")
 
         layout = QVBoxLayout(box)
         layout.setContentsMargins(18, 15, 18, 15)
         layout.setSpacing(10)
 
-        header = QLabel(f"{icon}  {title}")
-        header.setStyleSheet(
-            f"""
-            font-size: 13pt;
-            font-weight: bold;
-            color: {'#a78bfa' if self.is_dark else '#7c3aed'};
-        """
-        )
+        header = QLabel(title)
+        header.setObjectName("SectionTitle")
         layout.addWidget(header)
 
         for item in items:
             item_label = QLabel(f"• {item}")
             item_label.setWordWrap(True)
-            item_label.setStyleSheet(
-                f"""
-                font-size: 11pt;
-                color: {'#c0c0d0' if self.is_dark else '#4b5563'};
-                padding-left: 10px;
-            """
-            )
             layout.addWidget(item_label)
 
         return box
@@ -362,19 +219,11 @@ class TutorialDialog(QDialog):
             "all the features of the application for solar radio image visualization."
         )
         welcome.setWordWrap(True)
-        welcome.setStyleSheet(
-            f"""
-            font-size: 12pt;
-            color: {'#c0c0d0' if self.is_dark else '#4b5563'};
-            padding-bottom: 10px;
-        """
-        )
         layout.addWidget(welcome)
 
         # What is SolarViewer
         layout.addWidget(
             self._create_info_box(
-                "☀️",
                 "What is SolarViewer?",
                 [
                     "A visualization tool for solar radio astronomy images",
@@ -391,14 +240,7 @@ class TutorialDialog(QDialog):
 
         # Quick start steps
         quick_title = QLabel("Quick Start")
-        quick_title.setStyleSheet(
-            f"""
-            font-size: 14pt;
-            font-weight: bold;
-            color: {'#e0e0f0' if self.is_dark else '#1f2937'};
-            padding: 10px 0;
-        """
-        )
+        quick_title.setObjectName("SectionTitle")
         layout.addWidget(quick_title)
 
         layout.addWidget(
@@ -441,7 +283,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("🚀 Getting Started", content)
+        return self._create_scroll_page("Getting Started", content)
 
     def _create_opening_images(self):
         """Opening Images section."""
@@ -457,15 +299,11 @@ class TutorialDialog(QDialog):
             "lists the images opened lately."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         # CASA Images
         layout.addWidget(
             self._create_info_box(
-                "📦",
                 "CASA Images",
                 [
                     "Native format for radio interferometry data",
@@ -479,7 +317,6 @@ class TutorialDialog(QDialog):
         # FITS Files
         layout.addWidget(
             self._create_info_box(
-                "📄",
                 "FITS Files",
                 [
                     "Standard astronomical FITS format",
@@ -493,7 +330,6 @@ class TutorialDialog(QDialog):
         # Remote Access
         layout.addWidget(
             self._create_info_box(
-                "🌐",
                 "Remote Files (Ctrl+Shift+R)",
                 [
                     "Connect to servers via SSH/SFTP",
@@ -507,7 +343,6 @@ class TutorialDialog(QDialog):
         # Image Selection Panel
         layout.addWidget(
             self._create_info_box(
-                "📋",
                 "Image Selection Panel",
                 [
                     "Directory Entry: Type or paste paths directly",
@@ -520,7 +355,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("📂 Opening Images", content)
+        return self._create_scroll_page("Opening Images", content)
 
     def _create_display_settings(self):
         """Display Settings section."""
@@ -533,9 +368,6 @@ class TutorialDialog(QDialog):
             "Configure how your images are displayed using the Display Settings panel."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         # Colormap
@@ -575,7 +407,6 @@ class TutorialDialog(QDialog):
         # Presets
         layout.addWidget(
             self._create_info_box(
-                "⚡",
                 "Preset Shortcuts",
                 [
                     "F5 - Auto Min/Max (full data range)",
@@ -590,7 +421,6 @@ class TutorialDialog(QDialog):
         # Instrument Presets
         layout.addWidget(
             self._create_info_box(
-                "🔬",
                 "Instrument Presets (Presets Menu)",
                 [
                     "SDO/AIA: 94, 131, 171, 193, 211, 304, 335, 1600, 1700, 4500 Å",
@@ -603,7 +433,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("🎨 Display Settings", content)
+        return self._create_scroll_page("Display Settings", content)
 
     def _create_stokes_params(self):
         """Stokes Parameters section."""
@@ -616,15 +446,11 @@ class TutorialDialog(QDialog):
             "For polarimetric observations, SolarViewer provides full Stokes parameter support."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         # What are Stokes params
         layout.addWidget(
             self._create_info_box(
-                "📊",
                 "Stokes Parameters",
                 [
                     "I - Total intensity (always available)",
@@ -661,13 +487,13 @@ class TutorialDialog(QDialog):
             self._create_step(
                 3,
                 "RMS Box Configuration",
-                "Click the gear icon (⚙️) next to Stokes to configure the RMS calculation box. "
+                "Click the gear button next to Stokes to configure the RMS calculation box. "
                 "This affects RMS-based statistics and the Med±3σ preset.",
             )
         )
 
         layout.addStretch()
-        return self._create_scroll_page("📊 Stokes Parameters", content)
+        return self._create_scroll_page("Stokes Parameters", content)
 
     def _create_navigation(self):
         """Navigation section."""
@@ -680,15 +506,11 @@ class TutorialDialog(QDialog):
             "Navigate through your images efficiently with mouse and keyboard controls."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         # Mouse controls
         layout.addWidget(
             self._create_info_box(
-                "🖱️",
                 "Mouse Controls",
                 [
                     "Scroll wheel or pinch - Zoom about the pointer",
@@ -703,7 +525,6 @@ class TutorialDialog(QDialog):
         # Keyboard navigation
         layout.addWidget(
             self._create_info_box(
-                "⌨️",
                 "View Controls",
                 [
                     "R - Reset view to full image",
@@ -721,7 +542,6 @@ class TutorialDialog(QDialog):
         # File navigation
         layout.addWidget(
             self._create_info_box(
-                "📁",
                 "File Navigation",
                 [
                     "[ - Previous file in directory",
@@ -735,7 +555,6 @@ class TutorialDialog(QDialog):
         # Status bar
         layout.addWidget(
             self._create_info_box(
-                "📍",
                 "Status Bar Information",
                 [
                     "Pixel coordinates (x, y)",
@@ -747,7 +566,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("🧭 Navigation", content)
+        return self._create_scroll_page("Navigation", content)
 
     def _create_fitting_tools(self):
         """Fitting Tools section."""
@@ -760,9 +579,6 @@ class TutorialDialog(QDialog):
             "SolarViewer includes 2D fitting tools for source characterization."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         # Gaussian fitting
@@ -792,7 +608,6 @@ class TutorialDialog(QDialog):
         # Tips
         layout.addWidget(
             self._create_info_box(
-                "💡",
                 "Fitting Tips",
                 [
                     "Draw a selection rectangle around the source region first",
@@ -805,7 +620,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("📐 Fitting Tools", content)
+        return self._create_scroll_page("Fitting Tools", content)
 
     def _create_contours(self):
         """Contour Overlays section."""
@@ -819,9 +634,6 @@ class TutorialDialog(QDialog):
             "up to ten layers at once."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         layout.addWidget(
@@ -874,7 +686,6 @@ class TutorialDialog(QDialog):
 
         layout.addWidget(
             self._create_info_box(
-                "🔄",
                 "Coordinate Matching",
                 [
                     "Contours automatically aligned to the base image",
@@ -886,7 +697,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("📈 Contour Overlays", content)
+        return self._create_scroll_page("Contour Overlays", content)
 
     def _create_regions_export(self):
         """Regions and Export section."""
@@ -897,15 +708,11 @@ class TutorialDialog(QDialog):
 
         intro = QLabel("Export images, sub-regions, and data in various formats.")
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         # Region operations
         layout.addWidget(
             self._create_info_box(
-                "✂️",
                 "Region Operations",
                 [
                     "Export Sub-Image (Ctrl+Shift+S): Save selected region as new image",
@@ -917,7 +724,6 @@ class TutorialDialog(QDialog):
         # Export options
         layout.addWidget(
             self._create_info_box(
-                "💾",
                 "Export Options (File Menu)",
                 [
                     "Export Figure (Ctrl+S or Ctrl+E): Save as PNG, PDF, or SVG with colorbar",
@@ -932,7 +738,6 @@ class TutorialDialog(QDialog):
         # Annotations
         layout.addWidget(
             self._create_info_box(
-                "✏️",
                 "Annotations (Annotations Menu)",
                 [
                     "Add Text Annotation (Ctrl+T): Place text labels",
@@ -942,7 +747,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("✂️ Regions & Export", content)
+        return self._create_scroll_page("Regions & Export", content)
 
     def _create_remote_access(self):
         """Remote Access section."""
@@ -953,9 +758,6 @@ class TutorialDialog(QDialog):
 
         intro = QLabel("Access files on remote servers directly via SSH/SFTP.")
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         layout.addWidget(
@@ -996,7 +798,6 @@ class TutorialDialog(QDialog):
 
         layout.addWidget(
             self._create_info_box(
-                "🔒",
                 "Security",
                 [
                     "SSH key authentication recommended",
@@ -1007,7 +808,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("🌐 Remote Access", content)
+        return self._create_scroll_page("Remote Access", content)
 
     def _create_dynamic_spectra(self):
         """Dynamic Spectra section."""
@@ -1023,9 +824,6 @@ class TutorialDialog(QDialog):
             "with it."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         layout.addWidget(
@@ -1074,7 +872,6 @@ class TutorialDialog(QDialog):
 
         layout.addWidget(
             self._create_info_box(
-                "🛠️",
                 "Making Spectra",
                 [
                     "Tools → LOFAR → Create Dynamic Spectra: from Measurement Sets",
@@ -1084,7 +881,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("📡 Dynamic Spectra", content)
+        return self._create_scroll_page("Dynamic Spectra", content)
 
     def _create_advanced_tools(self):
         """Advanced Tools section."""
@@ -1095,15 +892,11 @@ class TutorialDialog(QDialog):
 
         intro = QLabel("Additional tools for analysis, visualization, and data access.")
         intro.setWordWrap(True)
-        intro.setStyleSheet(
-            f"font-size: 11pt; color: {'#a0a0b0' if self.is_dark else '#4b5563'};"
-        )
         layout.addWidget(intro)
 
         # Tools Menu
         layout.addWidget(
             self._create_info_box(
-                "🔧",
                 "Tools Menu",
                 [
                     "Image Metadata (Ctrl+M): View complete image metadata",
@@ -1116,7 +909,6 @@ class TutorialDialog(QDialog):
         # Solar Activity Viewer
         layout.addWidget(
             self._create_info_box(
-                "☀️",
                 "Solar Activity Viewer",
                 [
                     "Access via Tools → Solar Activity Viewer or Activity button",
@@ -1131,7 +923,6 @@ class TutorialDialog(QDialog):
         # Helioviewer Browser
         layout.addWidget(
             self._create_info_box(
-                "🌐",
                 "Helioviewer Browser",
                 [
                     "Access via Tools → Helioviewer Browser or Helioviewer button",
@@ -1146,7 +937,6 @@ class TutorialDialog(QDialog):
         # Data Downloaders
         layout.addWidget(
             self._create_info_box(
-                "⬇️",
                 "Data Downloaders (Download Menu)",
                 [
                     "Non-radio Solar Data: SDO, SOHO, STEREO, GOES, IRIS archives",
@@ -1158,7 +948,6 @@ class TutorialDialog(QDialog):
         # Multi-Tab
         layout.addWidget(
             self._create_info_box(
-                "📑",
                 "Multi-Tab Comparison (Tabs Menu)",
                 [
                     "Add New Tab (Ctrl+N): Open multiple images",
@@ -1171,7 +960,6 @@ class TutorialDialog(QDialog):
         # View Options
         layout.addWidget(
             self._create_info_box(
-                "👁️",
                 "View Options (View Menu)",
                 [
                     "Toggle Dark/Light Mode (Ctrl+D)",
@@ -1182,4 +970,4 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("🎬 Advanced Tools", content)
+        return self._create_scroll_page("Advanced Tools", content)

@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 from PyQt5.QtCore import Qt, QObject, pyqtSignal
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtGui import QTextCursor
 
 
 # Thread-safe signal emitter for logging
@@ -89,11 +89,7 @@ class LogConsole(QDialog):
         )  # No wrap for log lines usually better
         self.text_edit.setMaximumBlockCount(self.MAX_LINES)
 
-        # Set Monospace font
-        font = QFont("Consolas, 'Courier New', monospace")
-        font.setStyleHint(QFont.Monospace)
-        font.setPointSize(10)
-        self.text_edit.setFont(font)
+        self.text_edit.setObjectName("Console")
 
         layout.addWidget(self.text_edit)
 
@@ -136,19 +132,10 @@ class LogConsole(QDialog):
         sys.stdout = StreamRedirector(self.stdout_orig, self.log_signal)
         sys.stderr = StreamRedirector(self.stderr_orig, self.log_signal)
 
-        self.apply_theme()
         
         try:
             from .ui.styles import set_hand_cursor
             set_hand_cursor(self)
-        except ImportError:
-            pass
-
-        # Register for theme updates
-        try:
-            from .ui.styles import theme_manager
-
-            theme_manager.register_callback(self.apply_theme, owner=self)
         except ImportError:
             pass
 
@@ -215,37 +202,6 @@ class LogConsole(QDialog):
         cursor = self.text_edit.textCursor()
         cursor.clearSelection()
         self.text_edit.setTextCursor(cursor)
-
-    def apply_theme(self, *args):
-        """Apply current theme colors."""
-        try:
-            from .ui.styles import theme_manager
-
-            self.setStyleSheet(theme_manager.stylesheet)
-
-            # Specific styling for console text area
-            palette = theme_manager.palette
-            is_dark = theme_manager.is_dark
-
-            # Darker background for console than standard input
-            console_bg = "#0d0d15" if is_dark else "#fcfcfc"
-            console_text = palette["text"]
-            border_color = palette["border"]
-
-            self.text_edit.setStyleSheet(
-                f"""
-                QPlainTextEdit {{
-                    background-color: {console_bg};
-                    color: {console_text};
-                    border: 1px solid {border_color};
-                    border-radius: 4px;
-                    font-family: 'Consolas', 'Courier New', monospace;
-                    padding: 4px;
-                }}
-            """
-            )
-        except ImportError:
-            pass
 
     def closeEvent(self, event):
         # Don't destroy, just hide

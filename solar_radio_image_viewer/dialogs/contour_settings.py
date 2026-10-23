@@ -103,126 +103,6 @@ class ContourSettingsDialog(QDialog):
         text_color = palette["text"]
         highlight_color = palette["highlight"]
 
-        # Set stylesheet BEFORE creating widgets so styles apply correctly
-        self.setStyleSheet(
-            f"""
-            QGroupBox {{
-                background-color: {surface_color};
-                border: 1px solid {border_color};
-                border-radius: 10px;
-                margin-top: 16px;
-                padding: 15px;
-                padding-top: 10px;
-                font-weight: bold;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 15px;
-                top: 2px;
-                padding: 2px 12px;
-                background-color: {surface_color};
-                color: {highlight_color};
-                border-radius: 4px;
-            }}
-            QLineEdit {{
-                background-color: {base_color};
-                color: {text_color};
-                padding: 5px;
-                border: 1px solid {border_color};
-                border-radius: 6px;
-            }}
-            QLineEdit:focus {{
-                border-color: {highlight_color};
-                border-width: 2px;
-            }}
-            QLineEdit:disabled {{
-                background-color: {surface_color};
-                color: {disabled_color};
-            }}
-            QComboBox {{
-                background-color: {base_color};
-                color: {text_color};
-                padding: 5px;
-                border: 1px solid {border_color};
-                border-radius: 6px;
-            }}
-            QComboBox:hover {{
-                border-color: {highlight_color};
-            }}
-            QComboBox:disabled {{
-                background-color: {surface_color};
-                color: {disabled_color};
-            }}
-            QRadioButton {{
-                color: {text_color};
-            }}
-            QRadioButton::indicator {{
-                width: 18px;
-                height: 18px;
-                border: 2px solid {border_color};
-                border-radius: 9px;
-                background-color: {base_color};
-            }}
-            QRadioButton::indicator:checked {{
-                background-color: {highlight_color};
-                border-color: {highlight_color};
-            }}
-            QRadioButton:disabled {{
-                color: {disabled_color};
-            }}
-            QSpinBox, QDoubleSpinBox {{
-                background-color: {base_color};
-                color: {text_color};
-                border: 1px solid {border_color};
-                border-radius: 6px;
-            }}
-            QSpinBox:disabled, QDoubleSpinBox:disabled {{
-                background-color: {surface_color};
-                color: {disabled_color};
-            }}
-            QCheckBox {{
-                color: {text_color};
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border: 2px solid {border_color};
-                border-radius: 4px;
-                background-color: {base_color};
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {highlight_color};
-                border-color: {highlight_color};
-            }}
-            QLabel {{
-                color: {text_color};
-            }}
-            QLabel:disabled {{
-                color: {disabled_color};
-            }}
-            QListWidget {{
-                background-color: {base_color};
-                color: {text_color};
-                border: 1px solid {border_color};
-                border-radius: 6px;
-                padding: 4px;
-            }}
-            QListWidget::item {{
-                padding: 6px 4px;
-                border-radius: 4px;
-            }}
-            QListWidget::item:selected {{
-                background-color: {highlight_color};
-                color: #ffffff;
-            }}
-        """
-        )
-
-        # Store theme colors for use in browse button
-        self._hover_bg = button_hover
-        self._pressed_bg = button_pressed
-
         self.setup_ui()
         set_hand_cursor(self)
 
@@ -255,7 +135,6 @@ class ContourSettingsDialog(QDialog):
         label_row = QHBoxLayout()
         label_row.setSpacing(20)
         layer_label_label = QLabel("Label:")
-        layer_label_label.setStyleSheet("font-weight: 600;")
         label_row.addWidget(layer_label_label)
         self.layer_label_edit = QLineEdit(self.settings.get("label", ""))
         self.layer_label_edit.setPlaceholderText(
@@ -273,7 +152,6 @@ class ContourSettingsDialog(QDialog):
         source_row.setSpacing(20)
 
         source_label = QLabel("Source:")
-        source_label.setStyleSheet("font-weight: 600;")
         source_row.addWidget(source_label)
 
         self.same_image_radio = QRadioButton(
@@ -304,7 +182,6 @@ class ContourSettingsDialog(QDialog):
         stokes_row.setSpacing(20)
 
         stokes_label = QLabel("Stokes:")
-        stokes_label.setStyleSheet("font-weight: 600;")
         stokes_row.addWidget(stokes_label)
 
         self.stokes_combo = QComboBox()
@@ -320,7 +197,6 @@ class ContourSettingsDialog(QDialog):
 
         # Noise threshold for derived Stokes parameters (Q/I, U/I, V/I, Lfrac, PANG)
         self.threshold_label = QLabel("Threshold (σ):")
-        self.threshold_label.setStyleSheet("font-weight: 600;")
         self.threshold_label.setToolTip(
             "Pixels with signal below this many σ (noise RMS) are masked.\n"
             "Only applies to derived parameters: Q/I, U/I, V/I, Lfrac, Vfrac, PANG."
@@ -354,8 +230,7 @@ class ContourSettingsDialog(QDialog):
         # Separator line
         sep_line = QFrame()
         sep_line.setFrameShape(QFrame.HLine)
-        sep_line.setStyleSheet(f"background-color: {border_color};")
-        sep_line.setFixedHeight(1)
+        sep_line.setObjectName("Rule")
         external_layout.addWidget(sep_line)
 
         # File path
@@ -363,7 +238,6 @@ class ContourSettingsDialog(QDialog):
         path_row.setSpacing(12)
 
         path_label = QLabel("Path:")
-        path_label.setStyleSheet("font-weight: 600;")
         path_row.addWidget(path_label)
 
         self.file_path_edit = QLineEdit(self.settings.get("external_image", ""))
@@ -430,7 +304,6 @@ class ContourSettingsDialog(QDialog):
         type_row.setSpacing(20)
 
         type_label = QLabel("Level Type:")
-        type_label.setStyleSheet("font-weight: 600;")
         type_row.addWidget(type_label)
 
         self.level_type_combo = QComboBox()
@@ -447,7 +320,6 @@ class ContourSettingsDialog(QDialog):
         preset_row.setSpacing(12)
 
         presets_label = QLabel("Presets:")
-        presets_label.setStyleSheet("font-weight: 600;")
         preset_row.addWidget(presets_label)
 
         self.preset_5_btn = QPushButton("5 Levels")
@@ -469,7 +341,6 @@ class ContourSettingsDialog(QDialog):
         pos_row = QHBoxLayout()
         pos_row.setSpacing(12)
         pos_label = QLabel("Positive:")
-        pos_label.setStyleSheet("font-weight: 600;")
         pos_label.setMinimumWidth(70)
         pos_row.addWidget(pos_label)
 
@@ -486,7 +357,6 @@ class ContourSettingsDialog(QDialog):
         neg_row = QHBoxLayout()
         neg_row.setSpacing(12)
         neg_label = QLabel("Negative:")
-        neg_label.setStyleSheet("font-weight: 600;")
         neg_label.setMinimumWidth(70)
         neg_row.addWidget(neg_label)
 
@@ -526,7 +396,6 @@ class ContourSettingsDialog(QDialog):
 
         # ===== Positive Contours Section =====
         pos_header = QLabel("Positive Contours")
-        pos_header.setStyleSheet("font-weight: 600; font-size: 11pt;")
         appearance_layout.addWidget(pos_header)
 
         pos_row = QHBoxLayout()
@@ -569,7 +438,6 @@ class ContourSettingsDialog(QDialog):
 
         # ===== Negative Contours Section =====
         neg_header = QLabel("Negative Contours")
-        neg_header.setStyleSheet("font-weight: 600; font-size: 11pt;")
         appearance_layout.addWidget(neg_header)
 
         neg_row = QHBoxLayout()
@@ -613,7 +481,6 @@ class ContourSettingsDialog(QDialog):
         appearance_layout.addSpacing(8)
 
         options_header = QLabel("Options")
-        options_header.setStyleSheet("font-weight: 600; font-size: 11pt;")
         appearance_layout.addWidget(options_header)
 
         options_row = QHBoxLayout()
@@ -644,7 +511,6 @@ class ContourSettingsDialog(QDialog):
         self.use_default_rms_box.setChecked(
             self.settings.get("use_default_rms_region", True)
         )
-        self.use_default_rms_box.setStyleSheet("font-weight: 500;")
         self.use_default_rms_box.stateChanged.connect(self.toggle_rms_inputs)
         rms_layout.addWidget(self.use_default_rms_box)
 
@@ -652,7 +518,7 @@ class ContourSettingsDialog(QDialog):
         info_label = QLabel(
             "Define a source-free region for RMS/noise calculation (σ levels)."
         )
-        info_label.setStyleSheet(f"color: {text_secondary}; font-size: 10pt;")
+        info_label.setObjectName("Hint")
         rms_layout.addWidget(info_label)
 
         # Custom region inputs
@@ -693,7 +559,7 @@ class ContourSettingsDialog(QDialog):
         h = self.settings.get("dim_h", 0)
         dim_text = f"{w} x {h}" if w > 0 and h > 0 else "Unknown"
         self.rms_dims_label = QLabel(f"Contour Dimensions: {dim_text}")
-        self.rms_dims_label.setStyleSheet(f"color: {text_secondary}; font-size: 9pt;")
+        self.rms_dims_label.setObjectName("Hint")
         rms_grid.addWidget(self.rms_dims_label, 2, 0, 1, 4, Qt.AlignLeft)
 
         rms_layout.addWidget(self.rms_inputs_container)
@@ -790,20 +656,7 @@ class ContourSettingsDialog(QDialog):
 
         reset_btn = QPushButton("Reset Layer")
         reset_btn.setToolTip("Reset the selected layer's settings to the defaults")
-        reset_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                color: {text_secondary};
-                font-size: 10pt;
-                padding: 6px 10px;
-            }}
-            QPushButton:hover {{
-                color: {highlight_color};
-            }}
-        """
-        )
+        reset_btn.setObjectName("NavButton")
         reset_btn.clicked.connect(self._reset_to_defaults)
         button_row.addWidget(reset_btn)
 
@@ -816,24 +669,7 @@ class ContourSettingsDialog(QDialog):
         ok_button = button_box.button(QDialogButtonBox.Ok)
         if ok_button:
             ok_button.setText("Apply")
-            ok_button.setMinimumWidth(100)
-            ok_button.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                        stop:0 {palette.get('button_gradient_start', highlight_color)}, 
-                        stop:1 {palette.get('button_gradient_end', palette.get('highlight_hover', highlight_color))});
-                    color: #ffffff;
-                    border: none;
-                    border-radius: 6px;
-                    padding: 8px 20px;
-                    font-weight: 600;
-                }}
-                QPushButton:hover {{
-                    background-color: {palette.get('highlight_hover', highlight_color)};
-                }}
-            """
-            )
+            ok_button.setObjectName("PrimaryButton")
 
         cancel_button = button_box.button(QDialogButtonBox.Cancel)
         if cancel_button:
@@ -1136,13 +972,12 @@ class ContourSettingsDialog(QDialog):
     def _build_layer_panel(self, text_secondary):
         """The layer list with Add / Duplicate / Remove."""
         panel = QWidget()
-        panel.setFixedWidth(280)
+        panel.setFixedWidth(panel.fontMetrics().averageCharWidth() * 40)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
         header = QLabel("Layers")
-        header.setStyleSheet("font-weight: 600; font-size: 11pt;")
         layout.addWidget(header)
 
         self.layer_list = QListWidget()
@@ -1171,7 +1006,7 @@ class ContourSettingsDialog(QDialog):
         layout.addLayout(buttons)
 
         self.layer_count_label = QLabel()
-        self.layer_count_label.setStyleSheet(f"color: {text_secondary}; font-size: 9pt;")
+        self.layer_count_label.setObjectName("Hint")
         layout.addWidget(self.layer_count_label)
 
         for layer in self.layers:

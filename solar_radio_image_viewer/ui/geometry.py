@@ -44,4 +44,7 @@ def fit_width_to_text(widget, sample):
     """Give ``widget`` (a line edit or label) the width of ``sample`` in its
     font, plus room for the frame: a field sized for "0.000" rather than
     a pixel count that is wrong at another font size."""
-    widget.setFixedWidth(widget.fontMetrics().horizontalAdvance(sample) + 20)
+    from PyQt5.QtWidgets import QAbstractSpinBox
+
+    extra = 44 if isinstance(widget, QAbstractSpinBox) else 20  # frame, buttons
+    widget.setFixedWidth(widget.fontMetrics().horizontalAdvance(sample) + extra)

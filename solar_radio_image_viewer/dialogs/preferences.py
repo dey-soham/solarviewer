@@ -8,11 +8,11 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QDialogButtonBox,
     QMessageBox,
-    QFrame,
     QApplication,
 )
 from PyQt5.QtCore import Qt
 
+from ..ui.geometry import fit_width_to_text
 from ..ui.styles import set_hand_cursor
 
 
@@ -74,7 +74,7 @@ class PreferencesDialog(QDialog):
         self.scale_spinbox.setDecimals(2)
         self.scale_spinbox.setSuffix("x")
         self.scale_spinbox.setValue(current_scale)
-        self.scale_spinbox.setFixedWidth(75)
+        fit_width_to_text(self.scale_spinbox, "2.00x")
 
         # Connect slider and spinbox to sync values
         self.scale_slider.valueChanged.connect(self._on_slider_changed)
@@ -100,7 +100,6 @@ class PreferencesDialog(QDialog):
         ]
         for label, value in presets:
             btn = QPushButton(label)
-            btn.setFixedWidth(50)
             btn.clicked.connect(lambda checked, v=value: self._set_scale(v))
             preset_layout.addWidget(btn)
         preset_layout.addStretch()
@@ -109,29 +108,10 @@ class PreferencesDialog(QDialog):
         layout.addWidget(scale_group)
 
         # Restart notice
-        notice_frame = QFrame()
-        notice_frame.setFrameShape(QFrame.StyledPanel)
-        '''notice_frame.setStyleSheet("""
-            QFrame {
-                background-color: rgba(255, 193, 7, 0.15);
-                border: 1px solid rgba(255, 193, 7, 0.5);
-                border-radius: 6px;
-                padding: 8px;
-            }
-            QLabel {
-                color: inherit;
-            }
-        """)'''
-        notice_layout = QHBoxLayout(notice_frame)
-        notice_layout.setContentsMargins(10, 8, 10, 8)
-        notice_icon = QLabel("⚠️")
-        notice_icon.setStyleSheet("font-size: 16px;")
-        notice_text = QLabel(
-            "Scale changes require application restart to take effect."
-        )
-        notice_layout.addWidget(notice_icon)
-        notice_layout.addWidget(notice_text, 1)
-        layout.addWidget(notice_frame)
+        notice_text = QLabel("Scale changes take effect after the application restarts.")
+        notice_text.setObjectName("Hint")
+        notice_text.setWordWrap(True)
+        layout.addWidget(notice_text)
 
         layout.addStretch()
 

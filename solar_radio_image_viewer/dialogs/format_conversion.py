@@ -20,12 +20,14 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QProgressBar,
 )
+from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import QTimer
 import multiprocessing
 import os
 
 from ..ui.batch import BatchDialogMixin
-from ..ui.styles import set_hand_cursor
+from ..ui.icons import themed_icon
+from ..ui.styles import set_hand_cursor, set_tone
 
 
 from ..ui.geometry import fit_to_screen
@@ -63,9 +65,7 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
             "Batch convert multiple files between CASA Image format and standard FITS files."
         )
         header.setWordWrap(True)
-        header.setStyleSheet(
-            f"font-style: italic; color: {text_secondary}; padding: 4px 0;"
-        )
+        header.setObjectName("Hint")
         main_layout.addWidget(header)
 
         # ========== TAB WIDGET ==========
@@ -85,7 +85,6 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         dir_row = QHBoxLayout()
         dir_row.setSpacing(12)
         dir_label = QLabel("Directory:")
-        dir_label.setStyleSheet("font-weight: 600;")
         dir_label.setMinimumWidth(70)
         dir_row.addWidget(dir_label)
 
@@ -103,7 +102,6 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         pattern_row = QHBoxLayout()
         pattern_row.setSpacing(12)
         pattern_label = QLabel("Pattern:")
-        pattern_label.setStyleSheet("font-weight: 600;")
         pattern_label.setMinimumWidth(70)
         pattern_row.addWidget(pattern_label)
 
@@ -111,8 +109,9 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         self.pattern_edit.setPlaceholderText("e.g., *.fits, *.image, sun_*")
         pattern_row.addWidget(self.pattern_edit, 1)
 
-        scan_btn = QPushButton("🔍")
-        scan_btn.setFixedWidth(36)
+        scan_btn = QPushButton()
+        scan_btn.setIcon(QIcon(themed_icon("search.png")))
+        scan_btn.setObjectName("IconOnlyButton")
         scan_btn.setToolTip("Scan for matching files")
         scan_btn.clicked.connect(self.scan_files)
         pattern_row.addWidget(scan_btn)
@@ -125,9 +124,7 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         input_layout.addLayout(pattern_row)
 
         self.files_count_label = QLabel("")
-        self.files_count_label.setStyleSheet(
-            f"color: {text_secondary}; font-style: italic; padding-left: 82px;"
-        )
+        self.files_count_label.setObjectName("Hint")
         input_layout.addWidget(self.files_count_label)
         
         files_layout.addWidget(input_group)
@@ -137,7 +134,7 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         files_scroll.setWidgetResizable(True)
         files_scroll.setFrameShape(QFrame.NoFrame)
         files_scroll.setWidget(files_tab)
-        self.tab_widget.addTab(files_scroll, "📁 Files")
+        self.tab_widget.addTab(files_scroll, "Files")
 
         # ========== TAB 2: OPTIONS ==========
         options_tab = QWidget()
@@ -152,7 +149,6 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         format_row = QHBoxLayout()
         format_label = QLabel("Convert To:")
         format_label.setMinimumWidth(80)
-        format_label.setStyleSheet("font-weight: 600;")
         format_row.addWidget(format_label)
 
         self.target_format_combo = QComboBox()
@@ -176,7 +172,6 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         cores_row = QHBoxLayout()
         cores_row.setSpacing(20)
         cores_label = QLabel("CPU cores:")
-        cores_label.setStyleSheet("font-weight: 600;")
         cores_row.addWidget(cores_label)
 
         self.cores_spinbox = QSpinBox()
@@ -194,7 +189,7 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         options_scroll.setWidgetResizable(True)
         options_scroll.setFrameShape(QFrame.NoFrame)
         options_scroll.setWidget(options_tab)
-        self.tab_widget.addTab(options_scroll, "⚙️ Options")
+        self.tab_widget.addTab(options_scroll, "Options")
 
         # ========== TAB 3: OUTPUT ==========
         output_tab = QWidget()
@@ -209,7 +204,6 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         out_dir_row = QHBoxLayout()
         out_dir_row.setSpacing(12)
         out_dir_label = QLabel("Directory:")
-        out_dir_label.setStyleSheet("font-weight: 600;")
         out_dir_label.setMinimumWidth(70)
         out_dir_row.addWidget(out_dir_label)
 
@@ -225,7 +219,6 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         out_pat_row = QHBoxLayout()
         out_pat_row.setSpacing(12)
         out_pat_label = QLabel("Pattern:")
-        out_pat_label.setStyleSheet("font-weight: 600;")
         out_pat_label.setMinimumWidth(70)
         out_pat_row.addWidget(out_pat_label)
 
@@ -240,7 +233,7 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
             "Use <b>*</b> as a placeholder for the original filename (e.g., target_*.fits)."
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet(f"color: {text_secondary}; line-height: 1.5;")
+        help_text.setObjectName("Hint")
         help_layout.addWidget(help_text)
         
         output_layout.addWidget(out_group)
@@ -251,7 +244,7 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         output_scroll.setWidgetResizable(True)
         output_scroll.setFrameShape(QFrame.NoFrame)
         output_scroll.setWidget(output_tab)
-        self.tab_widget.addTab(output_scroll, "💾 Output")
+        self.tab_widget.addTab(output_scroll, "Output")
 
         main_layout.addWidget(self.tab_widget)
 
@@ -327,8 +320,8 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
         pattern = self.pattern_edit.text()
         
         if not dir_path or not pattern:
-            self.files_count_label.setText("⚠️ Please specify directory and pattern")
-            self.files_count_label.setStyleSheet("color: #f44336; font-weight: bold; padding-left: 82px;")
+            self.files_count_label.setText("Please specify directory and pattern")
+            set_tone(self.files_count_label, "error")
             return []
             
         try:
@@ -336,17 +329,17 @@ class FormatConversionDialog(BatchDialogMixin, QDialog):
             files = sorted(glob.glob(full_pattern))
             
             if files:
-                self.files_count_label.setText(f"✓ Found {len(files)} matching files")
-                self.files_count_label.setStyleSheet("color: #4CAF50; font-weight: bold; padding-left: 82px;")
+                self.files_count_label.setText(f"Found {len(files)} matching files")
+                set_tone(self.files_count_label, "success")
                 self.status_text.setPlainText(f"Found {len(files)} files matching the pattern.")
             else:
-                self.files_count_label.setText("⚠️ No matching files found")
-                self.files_count_label.setStyleSheet("color: #f44336; font-weight: bold; padding-left: 82px;")
+                self.files_count_label.setText("No matching files found")
+                set_tone(self.files_count_label, "error")
                 self.status_text.setPlainText(f"No files found matching: {pattern}")
                 
             return files
         except Exception as e:
-            self.files_count_label.setText(f"⚠️ Error: {str(e)}")
+            self.files_count_label.setText(f"Error: {str(e)}")
             return []
 
     def preview_files(self):

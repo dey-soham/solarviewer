@@ -20,7 +20,6 @@ class BatchProcessDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Batch Processing")
         self.setMinimumWidth(500)
-        self.setStyleSheet("background-color: #484848; color: #ffffff;")
         self.image_list = QListWidget()
         self.add_button = QPushButton("Add Image")
         self.remove_button = QPushButton("Remove Selected")
