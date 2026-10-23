@@ -69,11 +69,13 @@ class ConversionControl(QWidget):
         return self._text
 
     def setChecked(self, checked):
-        """Checked meant "converted" on the old button: the second state."""
-        self._show(1 if checked else 0)
+        """Checked meant "converted by the viewer" on the old button, not
+        which state the image is in (an image loaded in K is not
+        converted): kept for ``isChecked``, the segments follow setText."""
+        self._checked = bool(checked)
 
     def isChecked(self):
-        return self._index == 1
+        return getattr(self, "_checked", False)
 
     def setToolTip(self, tip):
         for button in self._buttons:
