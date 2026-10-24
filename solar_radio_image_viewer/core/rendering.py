@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 from ..processing.plot_style import DEFAULT_PLOT_SETTINGS
 
 _PAD_KEYS = ("pad_left", "pad_right", "pad_top", "pad_bottom")
+# The compact colorbar (a pane of a compare page): its gap from the image
+# and its width, as fractions of the image's width
+COMPACT_CB_PAD = 0.03
+COMPACT_CB_WIDTH = 0.04
 
 
 class RenderingMixin:
@@ -750,7 +754,12 @@ class RenderingMixin:
         """Add the colorbar (dropping out-of-range ticks for non-linear
         stretches); a slim one, close to the image, for a compact plot."""
         if self.compact_plot:
-            cb = self.figure.colorbar(im, ax=ax, fraction=0.035, pad=0.02, aspect=40)
+            # Placed against the image, as tall as the image: an inset of
+            # the axes follows the box the image settles into (its aspect
+            # is fixed), where a colorbar beside the axes would take the
+            # axes' full allotted height
+            cax = ax.inset_axes([1.0 + COMPACT_CB_PAD, 0.0, COMPACT_CB_WIDTH, 1.0])
+            cb = self.figure.colorbar(im, cax=cax)
             self.colorbar = cb
             return cb
         # For non-linear stretches, filter ticks to only show those within data range
@@ -1086,11 +1095,13 @@ class RenderingMixin:
         width, height = self.figure.get_size_inches() * self.figure.dpi
         px = self.figure.dpi / 72.0  # pixels per point
         if self.compact_plot:
-            # Only the colorbar's two labels want room, at the right
+            # Only the colorbar (an inset right of the axes, so no part
+            # of them) and its two labels want room, at the right
             labels_px = ps.get("colorbar_tick_fontsize", 10) * 0.6 * 7 * px + 8
+            right = (labels_px + (COMPACT_CB_PAD + COMPACT_CB_WIDTH) * width) / max(width, 1)
             return {
                 "pad_left": min(0.1, 6 / max(width, 1)),
-                "pad_right": max(0.6, 1 - labels_px / max(width, 1)),
+                "pad_right": max(0.6, 1 - right),
                 "pad_top": max(0.8, 1 - 6 / max(height, 1)),
                 "pad_bottom": min(0.1, 6 / max(height, 1)),
             }
