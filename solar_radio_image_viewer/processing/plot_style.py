@@ -232,6 +232,7 @@ def drop_outside_ticks(cbar, vmin, vmax):
     clips values outside its range to the ends, so Matplotlib would draw
     those ticks' labels squeezed at the ends of the colorbar."""
     low, high = min(vmin, vmax), max(vmin, vmax)
-    valid = [t for t in cbar.ax.get_yticks() if low <= t <= high]
+    axis = cbar.ax.xaxis if cbar.orientation == "horizontal" else cbar.ax.yaxis
+    valid = [t for t in axis.get_ticklocs() if low <= t <= high]
     if len(valid) >= 2:
-        cbar.ax.set_yticks(valid)
+        axis.set_ticks(valid)

@@ -31,9 +31,40 @@ from ..processing.plot_style import DEFAULT_PLOT_SETTINGS
 _PAD_KEYS = ("pad_left", "pad_right", "pad_top", "pad_bottom")
 
 
-def _strip_below(ax, gap_px, height_px):
+def _spread_ticks(norm, vmin, vmax, most):
+    """Up to ``most`` round values between ``vmin`` and ``vmax``, no two
+    closer along a colorbar of ``norm`` than a fair share of it."""
+    from matplotlib.ticker import MaxNLocator
+
+    low, high = min(vmin, vmax), max(vmin, vmax)
+    if not (high > low):
+        return [low]
+    candidates = [t for t in MaxNLocator(nbins=most * 2).tick_values(low, high) if low <= t <= high]
+    kept, last = [], None
+    for tick in candidates:
+        try:
+            place = float(norm(tick))
+        except Exception:
+            place = (tick - low) / (high - low)
+        if last is None or place - last >= 1.0 / most:
+            kept.append(tick)
+            last = place
+    return kept or [low, high]
+
+
+def _plain_number(value):
+    """``value`` in few plain figures: 6119, 552.7, -6.66, 0, 1.5e+06."""
+    if value == 0:
+        return "0"
+    if 0.01 <= abs(value) < 1e5:
+        text = f"{value:.4g}"
+        return text if "e" not in text else f"{value:.0f}"
+    return f"{value:.2g}"
+
+
+def _strip_above(ax, gap_px, height_px):
     """An axes locator: a strip ``height_px`` tall and the width of ``ax``,
-    ``gap_px`` under it as drawn (the box its image settles into, once
+    ``gap_px`` over it as drawn (the box its image settles into, once
     its aspect is applied), in the figure's coordinates."""
     from matplotlib.transforms import Bbox
 
@@ -41,15 +72,16 @@ def _strip_below(ax, gap_px, height_px):
         ax.apply_aspect()
         box = ax.bbox
         strip = Bbox.from_extents(
-            box.x0, box.y0 - gap_px - height_px, box.x1, box.y0 - gap_px
+            box.x0, box.y1 + gap_px, box.x1, box.y1 + gap_px + height_px
         )
         return ax.figure.transSubfigure.inverted().transform_bbox(strip)
 
     return locate
-# The colorbar of a pane of a compare page: a strip under the image, its
-# height and its gap from what is above it, in points
+# The colorbar of a pane of a compare page: a strip over the image, its
+# height and its gap from the image, in points
 COMPACT_CB_HEIGHT_PT = 6
-COMPACT_CB_GAP_PT = 6
+COMPACT_CB_GAP_PT = 5
+COMPACT_CB_TICKS = 5  # at most this many values along it
 
 
 class RenderingMixin:
@@ -776,15 +808,17 @@ class RenderingMixin:
             if not self.pane_colorbar:
                 self.colorbar = None
                 return None
-            # A strip under the image, as wide as the image: placed by a
+            # A strip over the image, as wide as the image: placed by a
             # locator from the box the image settles into (its aspect is
-            # fixed) each time it is drawn, under the tick labels when
-            # the axes are shown
+            # fixed) each time it is drawn
             px = self.figure.dpi / 72.0
-            gap = (self._axes_bottom_pt() if self.pane_axes else COMPACT_CB_GAP_PT) * px
             cax = ax.inset_axes([0.0, 0.0, 1.0, 1.0])
-            cax.set_axes_locator(_strip_below(ax, gap, COMPACT_CB_HEIGHT_PT * px))
+            cax.set_axes_locator(_strip_above(ax, COMPACT_CB_GAP_PT * px, COMPACT_CB_HEIGHT_PT * px))
             cb = self.figure.colorbar(im, cax=cax, orientation="horizontal")
+            if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
+                from ..processing.plot_style import drop_outside_ticks
+
+                drop_outside_ticks(cb, vmin_val, vmax_val)
             self.colorbar = cb
             return cb
         # For non-linear stretches, filter ticks to only show those within data range
@@ -830,21 +864,44 @@ class RenderingMixin:
                 ax.set_yticks([])
         if cb is None:
             return
+        # Its values over the strip: a few round ones within the range,
+        # spread along the strip (so not crowded where a stretch packs
+        # the values), in plain figures
         cb.set_label("")
-        cb.set_ticks([vmin_val, vmax_val])
-        cb.ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value:.4g}"))
-        cb.ax.tick_params(
-            labelsize=max(7, self.plot_settings.get("colorbar_tick_fontsize", 10) - 2),
-            length=0,
-            pad=2,
-        )
+        cb.ax.xaxis.set_ticks_position("top")
+        cb.ax.xaxis.set_label_position("top")
+        size_pt = max(7, self.plot_settings.get("colorbar_tick_fontsize", 10) - 2)
+        ticks = self._ticks_that_fit(ax, cb, vmin_val, vmax_val, size_pt)
+        cb.set_ticks(ticks)
+        cb.ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _pos: _plain_number(value)))
+        cb.ax.tick_params(labelsize=size_pt, length=2, pad=2)
         cb.ax.minorticks_off()
-        # The two labels kept within the strip's width: the first starts
-        # at its left end, the last ends at its right end
+        # A value at an end of the strip kept within it
         labels = cb.ax.get_xticklabels()
-        if len(labels) == 2:
-            labels[0].set_horizontalalignment("left")
-            labels[1].set_horizontalalignment("right")
+        if ticks and labels:
+            low, high = min(vmin_val, vmax_val), max(vmin_val, vmax_val)
+            span = max(high - low, 1e-30)
+            if (ticks[0] - low) / span < 0.05:
+                labels[0].set_horizontalalignment("left")
+            if (high - ticks[-1]) / span < 0.05:
+                labels[-1].set_horizontalalignment("right")
+
+    def _ticks_that_fit(self, ax, cb, vmin_val, vmax_val, size_pt):
+        """As many of the strip's values as their labels have room for
+        along the image's width, at ``size_pt``."""
+        px = self.figure.dpi / 72.0
+        width, height = self.figure.get_size_inches() * self.figure.dpi
+        box = ax.get_position(original=True)
+        shape = self.image_plot.get_array().shape if self.image_plot is not None else (1, 1)
+        # The image's width once it settles into its box, keeping its aspect
+        strip_px = min(box.width * width, box.height * height * shape[1] / max(shape[0], 1))
+        ticks = [vmin_val]
+        for most in range(COMPACT_CB_TICKS, 1, -1):
+            ticks = _spread_ticks(cb.norm, vmin_val, vmax_val, most)
+            widest = max(len(_plain_number(tick)) for tick in ticks) * 0.62 * size_pt * px
+            if len(ticks) * (widest + 8 * px) <= strip_px:
+                break
+        return ticks
 
     def _axes_bottom_pt(self):
         """The room the tick labels and axis label under the axes take,
@@ -1142,19 +1199,20 @@ class RenderingMixin:
         px = self.figure.dpi / 72.0  # pixels per point
         if self.compact_plot:
             # No title; the tick labels and axis labels only when the axes
-            # are shown; under them the colorbar strip and its two labels
+            # are shown; over the image the colorbar strip and its values
             # when it is shown
             tick = ps.get("axis_tick_fontsize", 10)
             label = ps.get("axis_label_fontsize", 12)
             left_px = (tick * 0.65 * 8 + label * 2.0) * px + 12 if self.pane_axes else 6
             bottom_px = self._axes_bottom_pt() * px + 3 if self.pane_axes else 6
+            top_px = 6
             if self.pane_colorbar:
                 cb_tick = max(7, ps.get("colorbar_tick_fontsize", 10) - 2)
-                bottom_px += (COMPACT_CB_GAP_PT + COMPACT_CB_HEIGHT_PT + cb_tick * 1.5) * px + 2
+                top_px += (COMPACT_CB_GAP_PT + COMPACT_CB_HEIGHT_PT + 2 + cb_tick * 1.4) * px + 2
             return {
                 "pad_left": min(0.35, left_px / max(width, 1)),
                 "pad_right": max(0.6, 1 - 8 / max(width, 1)),
-                "pad_top": max(0.7, 1 - 6 / max(height, 1)),
+                "pad_top": max(0.6, 1 - top_px / max(height, 1)),
                 "pad_bottom": min(0.4, bottom_px / max(height, 1)),
             }
         tick = ps.get("axis_tick_fontsize", 10)
