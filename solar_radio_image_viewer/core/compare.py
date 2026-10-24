@@ -561,6 +561,9 @@ class PaneFrame(QFrame):
         # it later, which may wait for a transition): the pane's window
         # is the main window at once, as loading an image expects
         super().__init__(page._grid_host)
+        # Sized by the grid's stretch alone, not by what the pane would
+        # like: every slot of a layout the same size, full or empty
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.setObjectName("PaneFrame")
         self.pane = pane
         self._page = page
@@ -689,6 +692,7 @@ class EmptySlot(QFrame):
     def __init__(self, letter, index=0, parent=None):
         super().__init__(parent)
         self.setObjectName("EmptySlot")
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
