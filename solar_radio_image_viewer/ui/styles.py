@@ -241,57 +241,59 @@ DARK_PALETTE = {
     "shadow": "rgba(0, 0, 0, 0.55)",
 }
 
-# The light theme: the same roles on a light ground, the accent deepened
-# (accent-700) so it reads on white. To be tuned in a pass of its own.
+# The light theme: the dark palette mirrored on Nocturne's ramps (the
+# neutral and accent ramps share one lightness scale, so each role takes
+# the step opposite the one it holds in the dark), with the accent
+# deepened to accent-700 so it reads on the light ground.
 LIGHT_PALETTE = {
-    "window": "#f4f4f8",
+    "window": "#f3f5fe",  # neutral-100
     "base": "#ffffff",
     "surface": "#ffffff",
     "surface_elevated": "#ffffff",
-    "canvas_glow": "#fafaff",
+    "canvas_glow": "#fafbff",  # between white and the window
     "button": "#ffffff",
-    "button_hover": "#ededf3",
-    "button_pressed": "#e1e1ea",
-    "border": "#d0d0d8",
-    "border_light": "#e2e2ea",
-    "divider": "rgba(31, 35, 40, 0.16)",
-    "hover": "rgba(31, 35, 40, 0.06)",
-    "pressed": "rgba(31, 35, 40, 0.12)",
-    "row_rule": "rgba(31, 35, 40, 0.08)",
-    "text": "#1f2328",
-    "text_strong": "#3f424d",
-    "text_dim": "#656d76",
-    "text_secondary": "#656d76",
-    "input_text": "#1f2328",
-    "disabled": "#a0a4ad",
-    "highlight": "#5d5294",
-    "highlight_hover": "#796cbf",
-    "highlight_soft": "#e7e5fe",
-    "highlight_deep": "#796cbf",
+    "button_hover": "#f3f5fe",  # neutral-100
+    "button_pressed": "#e4e7f5",  # neutral-200
+    "border": "#cfd3e5",  # neutral-300
+    "border_light": "#e4e7f5",  # neutral-200: separators, table grid
+    "divider": "rgba(41, 43, 49, 0.16)",
+    "hover": "rgba(41, 43, 49, 0.06)",
+    "pressed": "rgba(41, 43, 49, 0.12)",
+    "row_rule": "rgba(41, 43, 49, 0.08)",
+    "text": "#292b31",  # neutral-900
+    "text_strong": "#3f424d",  # neutral-800
+    "text_dim": "#75798c",  # neutral-600
+    "text_secondary": "#75798c",  # neutral-600
+    "input_text": "#292b31",
+    "disabled": "#b2b6ca",  # neutral-400
+    "highlight": "#5d5294",  # accent-700
+    "highlight_hover": "#796cbf",  # accent-600
+    "highlight_soft": "#e7e5fe",  # accent-200
+    "highlight_deep": "#796cbf",  # accent-600
     "highlight_knob": "#ffffff",
-    "slider_handle": "#5d5294",  # (white would vanish on the light ground)
-    "hist_out": "#d0d0d8",
-    "text_bright": "#1f2328",
-    "link": "#5d5294",
-    "outline": "#b2b6ca",
+    "slider_handle": "#5d5294",  # accent-700 (white would vanish on the light ground)
+    "hist_out": "#cfd3e5",  # neutral-300
+    "text_bright": "#2b2741",  # accent-900: the chosen segment's text
+    "link": "#5d5294",  # accent-700
+    "outline": "#b2b6ca",  # neutral-400
     "accent_hover": "rgba(93, 82, 148, 0.10)",
     "accent_pressed": "rgba(93, 82, 148, 0.20)",
     "highlight_text": "#ffffff",
     "success": "#16a34a",
     "warning": "#d97706",
     "error": "#dc2626",
-    "secondary": "#7972a9",
-    "switch_track": "#cfd3e5",
-    "switch_track_hover": "#b2b6ca",
+    "secondary": "#5c5783",  # accent-2-700
+    "switch_track": "#cfd3e5",  # neutral-300
+    "switch_track_hover": "#b2b6ca",  # neutral-400
     "switch_knob": "#ffffff",
     "plot_bg": "#ffffff",
-    "plot_text": "#1f2328",
-    "plot_grid": "#e2e2ea",
+    "plot_text": "#292b31",
+    "plot_grid": "#e4e7f5",
     "toolbar_bg": "#ffffff",
     "highlight_glow": "rgba(93, 82, 148, 0.15)",
     "button_gradient_start": "#5d5294",
     "button_gradient_end": "#5d5294",
-    "shadow": "rgba(0, 0, 0, 0.08)",
+    "shadow": "rgba(41, 43, 49, 0.12)",
 }
 
 
