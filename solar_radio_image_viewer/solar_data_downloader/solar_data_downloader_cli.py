@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
 """
-Solar Data Downloader - Interactive tool for downloading solar observatory data.
-
-This script provides a user-friendly interface for downloading data from
-various solar observatories using the solar_data_downloader module.
-
-Supported observatories:
-- SDO/AIA (Atmospheric Imaging Assembly)
-- SDO/HMI (Helioseismic and Magnetic Imager)
-- IRIS (Interface Region Imaging Spectrograph)
-- SOHO (Solar and Heliospheric Observatory)
-- GOES/SUVI (Solar Ultraviolet Imager)
-- STEREO/SECCHI (Sun Earth Connection)
-- GONG (Global Oscillation Network Group)
+Solar Data Downloader: an interactive terminal menu for downloading images
+from SDO, IRIS, SOHO, GOES and STEREO and preparing them for SolarViewer.
 """
 
 import os
@@ -20,25 +9,18 @@ import sys
 import datetime
 from pathlib import Path
 
-# Try to import the solar_data_downloader module
 try:
-    # First try relative import (when used as part of package)
     from . import solar_data_downloader as sdd
 except ImportError:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.append(script_dir)
     try:
-        # Then try importing from the same directory (when run as script)
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        if script_dir not in sys.path:
-            sys.path.append(script_dir)
         import solar_data_downloader as sdd
     except ImportError:
-        print("Error: Could not import solar_data_downloader module.")
-        print(
-            "Make sure solar_data_downloader.py is in the same directory as this script."
-        )
+        print("Error: Could not import the solar_data_downloader module.")
         sys.exit(1)
 
-# Check if required packages are installed
 try:
     import sunpy  # noqa: F401 (availability check)
     import drms  # noqa: F401 (availability check)
@@ -47,38 +29,59 @@ except ImportError as e:
     print(f"Error: Missing required package: {e.name}")
     print("Please install the required packages with:")
     print("  pip install sunpy drms astropy")
-    print("For AIA Level 1.5 calibration, also install:")
+    print("For AIA level 1.5 calibration, also install:")
     print("  pip install aiapy")
     sys.exit(1)
 
 
+CADENCES = [
+    ("Every image", None),
+    ("1 minute", 60),
+    ("2 minutes", 120),
+    ("5 minutes", 300),
+    ("10 minutes", 600),
+    ("15 minutes", 900),
+    ("30 minutes", 1800),
+    ("1 hour", 3600),
+    ("6 hours", 21600),
+    ("1 day", 86400),
+]
+
+
 def clear_screen():
-    """Clear the terminal screen."""
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def print_header():
-    """Print the application header."""
+def print_header(title=None):
     clear_screen()
     print("=" * 80)
-    print("                           SOLAR DATA DOWNLOADER                           ")
+    print("                           SOLAR DATA DOWNLOADER")
     print("=" * 80)
-    print("Download and process data from various solar observatories")
+    print("Download solar images and prepare them for SolarViewer")
     print("=" * 80)
     print()
+    if title:
+        print(title)
+        print("-" * len(title))
+
+
+def choose(prompt, options, default="1"):
+    """Print numbered ``options`` (label, value) and return the chosen value."""
+    for i, (label, _) in enumerate(options, 1):
+        print(f"  {i}: {label}")
+    while True:
+        answer = input(f"\n{prompt} (1-{len(options)}) [default: {default}]: ").strip() or default
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            return options[int(answer) - 1][1]
+        print(f"Invalid choice. Please enter a number between 1 and {len(options)}.")
+
+
+def yes(prompt, default=True):
+    answer = input(f"{prompt} (y/n) [default: {'y' if default else 'n'}]: ").strip().lower()
+    return default if not answer else answer in ("y", "yes")
 
 
 def get_date_input(prompt, default=None):
-    """
-    Get a date input from the user with validation.
-
-    Args:
-        prompt (str): The prompt to display to the user
-        default (str, optional): Default value to use if user presses Enter
-
-    Returns:
-        str: Date in YYYY.MM.DD format
-    """
     while True:
         if default:
             user_input = input(f"{prompt} [default: {default}]: ")
@@ -86,27 +89,13 @@ def get_date_input(prompt, default=None):
                 return default
         else:
             user_input = input(f"{prompt} (YYYY.MM.DD): ")
-
         try:
-            # Try to parse the date
-            date_obj = datetime.datetime.strptime(user_input, "%Y.%m.%d")
-            # Format it back to ensure consistency
-            return date_obj.strftime("%Y.%m.%d")
+            return datetime.datetime.strptime(user_input.strip(), "%Y.%m.%d").strftime("%Y.%m.%d")
         except ValueError:
             print("Error: Invalid date format. Please use YYYY.MM.DD.")
 
 
 def get_time_input(prompt, default=None):
-    """
-    Get a time input from the user with validation.
-
-    Args:
-        prompt (str): The prompt to display to the user
-        default (str, optional): Default value to use if user presses Enter
-
-    Returns:
-        str: Time in HH:MM:SS format
-    """
     while True:
         if default:
             user_input = input(f"{prompt} [default: {default}]: ")
@@ -114,808 +103,396 @@ def get_time_input(prompt, default=None):
                 return default
         else:
             user_input = input(f"{prompt} (HH:MM:SS): ")
-
         try:
-            # Try to parse the time
-            time_obj = datetime.datetime.strptime(user_input, "%H:%M:%S")
-            # Format it back to ensure consistency
-            return time_obj.strftime("%H:%M:%S")
+            return datetime.datetime.strptime(user_input.strip(), "%H:%M:%S").strftime("%H:%M:%S")
         except ValueError:
             print("Error: Invalid time format. Please use HH:MM:SS.")
 
 
 def get_datetime_range():
-    """
-    Get a datetime range from the user.
-
-    Returns:
-        tuple: (start_time, end_time) both in 'YYYY.MM.DD HH:MM:SS' format
-    """
-    # Get default dates (today)
-    today = datetime.datetime.now().strftime("%Y.%m.%d")
-    now = datetime.datetime.now().strftime("%H:%M:%S")
-    one_hour_later = (datetime.datetime.now() + datetime.timedelta(hours=1)).strftime(
-        "%H:%M:%S"
-    )
-
-    print("\nPlease specify the time range for data download:")
-    print("------------------------------------------------")
-
-    start_date = get_date_input("  Start date", today)
-    start_time = get_time_input("  Start time", now)
+    """(start, end) as 'YYYY.MM.DD HH:MM:SS' strings."""
+    now = datetime.datetime.utcnow()
+    print("\nTime range (UTC):")
+    start_date = get_date_input("  Start date", now.strftime("%Y.%m.%d"))
+    start_time = get_time_input("  Start time", now.strftime("%H:%M:%S"))
     end_date = get_date_input("  End date", start_date)
+    default_end = (now + datetime.timedelta(hours=1)).strftime("%H:%M:%S") if end_date == start_date else start_time
+    end_time = get_time_input("  End time", default_end)
+    return f"{start_date} {start_time}", f"{end_date} {end_time}"
 
-    # If end date is same as start date, suggest a time 1 hour after start
-    default_end_time = one_hour_later if end_date == start_date else now
-    end_time = get_time_input("  End time", default_end_time)
 
-    # Format the full datetime strings
-    start_datetime = f"{start_date} {start_time}"
-    end_datetime = f"{end_date} {end_time}"
-
-    return start_datetime, end_datetime
+def get_cadence(default="1"):
+    print("\nCadence (one image per interval):")
+    return choose("Select cadence", CADENCES, default)
 
 
 def get_output_directory(instrument):
-    """
-    Get the output directory from the user.
-
-    Args:
-        instrument (str): The selected instrument
-
-    Returns:
-        str: Path to the output directory
-    """
     default_dir = f"./{instrument.lower()}_data"
-    user_input = input(f"\nOutput directory [default: {default_dir}]: ")
-
-    output_dir = user_input.strip() if user_input.strip() else default_dir
-
-    # Create the directory if it doesn't exist
+    user_input = input(f"\nOutput directory [default: {default_dir}]: ").strip()
+    output_dir = user_input or default_dir
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-
     return output_dir
 
 
-def download_aia_data():
-    """
-    Guide the user through downloading AIA data.
-    """
-    print_header()
-    print("SDO/AIA Data Download")
-    print("---------------------")
+def get_processing(processing):
+    """Whether to prepare the files, and whether to keep the originals."""
+    print(f"\nPreparation for SolarViewer: {processing}")
+    prepare = yes("Prepare the files?")
+    keep = yes("Keep the downloaded files as well?", default=False) if prepare else False
+    return dict(skip_calibration=not prepare, keep_originals=keep)
 
-    # Get wavelength
-    wavelength_options = {
-        "1": "94",
-        "2": "131",
-        "3": "171",
-        "4": "193",
-        "5": "211",
-        "6": "304",
-        "7": "335",
-        "8": "1600",
-        "9": "1700",
-        "10": "4500",
-    }
 
-    print("\nAvailable wavelengths:")
-    for key, value in wavelength_options.items():
-        print(f"  {key}: {value} Å")
+def get_jsoc_email():
+    email = input("\nEmail address registered at JSOC: ").strip()
+    if not email:
+        print("A JSOC export needs a registered email (jsoc.stanford.edu/ajax/register_email.html).")
+    return email or None
 
-    while True:
-        wavelength_choice = input("\nSelect wavelength (1-10) [default: 3]: ")
-        wavelength_choice = "3" if not wavelength_choice.strip() else wavelength_choice
 
-        if wavelength_choice in wavelength_options:
-            wavelength = wavelength_options[wavelength_choice]
-            break
-        else:
-            print("Invalid choice. Please enter a number between 1 and 10.")
-
-    # Get time range
-    start_time, end_time = get_datetime_range()
-
-    # Get output directory
-    output_dir = get_output_directory("AIA")
-
-    # Download method - Fido is now default
-    print("\nDownload method:")
-    print("  1: Fido client (recommended, no email required)")
-    print("  2: DRMS client (for advanced users)")
-
-    while True:
-        method_choice = input("\nSelect download method (1-2) [default: 1]: ")
-        method_choice = "1" if not method_choice.strip() else method_choice
-
-        if method_choice in ["1", "2"]:
-            break
-        else:
-            print("Invalid choice. Please enter 1 or 2.")
-
-    # Get email and cadence if using DRMS
-    email = None
-    cadence = "12s"
-    if method_choice == "2":
-        print("\nEmail is required for DRMS downloads.")
-        email = input("Email address: ")
-        if not email.strip():
-            print("Warning: No email provided. Download may fail for large requests.")
-            email = None
-
-        # Get cadence for DRMS
-        cadence_options = {"1": "12s", "2": "24s", "3": "1h"}
-        print("\nAvailable cadences:")
-        print("  1: 12s (for EUV: 94, 131, 171, 193, 211, 304, 335 Å)")
-        print("  2: 24s (for UV: 1600, 1700 Å)")
-        print("  3: 1h (for Visible: 4500 Å)")
-
-        # Auto-select cadence based on wavelength
-        default_cadence = "1"
-        if wavelength in ["1600", "1700"]:
-            default_cadence = "2"
-        elif wavelength in ["4500"]:
-            default_cadence = "3"
-
-        while True:
-            cadence_choice = input(
-                f"\nSelect cadence (1-3) [default: {default_cadence}]: "
-            )
-            cadence_choice = (
-                default_cadence if not cadence_choice.strip() else cadence_choice
-            )
-
-            if cadence_choice in cadence_options:
-                cadence = cadence_options[cadence_choice]
-                break
-            else:
-                print("Invalid choice. Please enter a number between 1 and 3.")
-
-    # Confirm download
+def summary(lines):
     print("\n" + "=" * 50)
     print("Download Summary:")
-    print("  Instrument: SDO/AIA")
-    print(f"  Wavelength: {wavelength} Å")
-    print(f"  Time range: {start_time} to {end_time}")
-    print(f"  Output directory: {output_dir}")
-    print(f"  Download method: {'Fido' if method_choice == '1' else 'DRMS'}")
-    if method_choice == "2":
-        print(f"  Cadence: {cadence}")
-        if email:
-            print(f"  Email: {email}")
+    for line in lines:
+        print(f"  {line}")
     print("=" * 50)
+    return yes("\nProceed with download?")
 
-    confirm = input("\nProceed with download? (y/n) [default: y]: ")
-    if confirm.lower() in ["", "y", "yes"]:
-        print("\nDownloading data...")
-        try:
-            if method_choice == "1":
-                # Use Fido method
-                files = sdd.download_aia_with_fido(
-                    wavelength=wavelength,
-                    start_time=start_time,
-                    end_time=end_time,
-                    output_dir=output_dir,
-                )
-            else:
-                # Use DRMS method
-                files = sdd.download_aia(
-                    wavelength=wavelength,
-                    cadence=cadence,
-                    start_time=start_time,
-                    end_time=end_time,
-                    output_dir=output_dir,
-                    email=email,
-                )
 
-            print(
-                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
-            )
-        except Exception as e:
-            print(f"\nError during download: {str(e)}")
-    else:
-        print("\nDownload cancelled.")
-
+def run(download, **kwargs):
+    print("\nDownloading data...")
+    try:
+        files = download(**kwargs)
+        print(f"\n{len(files) if files else 0} files in {kwargs['output_dir']}")
+    except Exception as e:
+        print(f"\nError during download: {e}")
     input("\nPress Enter to return to the main menu...")
+
+
+def cadence_label(sample):
+    return next(label for label, seconds in CADENCES if seconds == sample)
+
+
+def download_aia_data():
+    print_header("SDO/AIA")
+    print("\nWavelength:")
+    wavelength = choose(
+        "Select wavelength",
+        [
+            ("94 Å (Fe XVIII, flaring)", "94"),
+            ("131 Å (Fe VIII, Fe XXI)", "131"),
+            ("171 Å (Fe IX, quiet corona)", "171"),
+            ("193 Å (Fe XII, Fe XXIV)", "193"),
+            ("211 Å (Fe XIV, active regions)", "211"),
+            ("304 Å (He II, chromosphere)", "304"),
+            ("335 Å (Fe XVI)", "335"),
+            ("1600 Å (C IV, transition region)", "1600"),
+            ("1700 Å (UV continuum)", "1700"),
+            ("4500 Å (visible continuum)", "4500"),
+        ],
+        "3",
+    )
+    start_time, end_time = get_datetime_range()
+    print("\nAIA takes an EUV image every 12 s: an hour at every image is about 300 files of 12 MB.")
+    sample = get_cadence("4")
+    output_dir = get_output_directory("AIA")
+    print("\nSource:")
+    use_jsoc = choose(
+        "Select source",
+        [("VSO through Fido (no account needed)", False), ("JSOC export (email registered at JSOC)", True)],
+    )
+    email = get_jsoc_email() if use_jsoc else None
+    processing = get_processing(
+        "level 1.5 with aiapy (pointing update, registration, degradation correction, counts per second)"
+    )
+    psf = False
+    if not processing["skip_calibration"]:
+        psf = yes("Deconvolve the PSF as well (about a minute per image)?", default=False)
+    if not summary(
+        [
+            "Instrument: SDO/AIA",
+            f"Wavelength: {wavelength} Å",
+            f"Time range: {start_time} to {end_time}",
+            f"Cadence: {cadence_label(sample)}",
+            f"Output directory: {output_dir}",
+            f"Source: {'JSOC export' if use_jsoc else 'VSO'}",
+            f"Preparation: {'level 1.5' + (' with PSF deconvolution' if psf else '') if not processing['skip_calibration'] else 'none'}",
+        ]
+    ):
+        print("\nDownload cancelled.")
+        return input("\nPress Enter to return to the main menu...")
+    common = dict(
+        wavelength=wavelength,
+        start_time=start_time,
+        end_time=end_time,
+        output_dir=output_dir,
+        sample=sample,
+        apply_psf=psf,
+        **processing,
+    )
+    if use_jsoc:
+        run(sdd.download_aia, email=email, **common)
+    else:
+        run(sdd.download_aia_with_fido, **common)
 
 
 def download_hmi_data():
-    """
-    Guide the user through downloading HMI data.
-    """
-    print_header()
-    print("SDO/HMI Data Download")
-    print("---------------------")
-
-    # Get series - now includes V_ velocity series
-    series_options = {
-        "1": "45s",
-        "2": "720s",
-        "3": "B_45s",
-        "4": "B_720s",
-        "5": "Ic_45s",
-        "6": "Ic_720s",
-        "7": "V_45s",
-        "8": "V_720s",
-    }
-
-    series_descriptions = {
-        "1": "LOS magnetogram (45s cadence)",
-        "2": "LOS magnetogram (12 min cadence)",
-        "3": "LOS magnetogram B (45s cadence)",
-        "4": "LOS magnetogram B (12 min cadence)",
-        "5": "Continuum intensity (45s cadence)",
-        "6": "Continuum intensity (12 min cadence)",
-        "7": "LOS velocity (45s cadence)",
-        "8": "LOS velocity (12 min cadence)",
-    }
-
-    print("\nAvailable data series:")
-    for key, value in series_descriptions.items():
-        print(f"  {key}: {value}")
-
-    while True:
-        series_choice = input("\nSelect series (1-8) [default: 3]: ")
-        series_choice = "3" if not series_choice.strip() else series_choice
-
-        if series_choice in series_options:
-            series = series_options[series_choice]
-            break
-        else:
-            print("Invalid choice. Please enter a number between 1 and 8.")
-
-    # Get time range
+    print_header("SDO/HMI")
+    print("\nSeries (the 720 s series exist only at JSOC):")
+    series = choose(
+        "Select series",
+        [
+            ("Magnetogram, 45 s", "M_45s"),
+            ("Continuum intensity, 45 s", "Ic_45s"),
+            ("Doppler velocity, 45 s", "V_45s"),
+            ("Magnetogram, 720 s (JSOC only)", "M_720s"),
+            ("Continuum intensity, 720 s (JSOC only)", "Ic_720s"),
+            ("Continuum without limb darkening, 720 s (JSOC only)", "Ic_noLimbDark_720s"),
+            ("Doppler velocity, 720 s (JSOC only)", "V_720s"),
+        ],
+    )
     start_time, end_time = get_datetime_range()
-
-    # Get output directory
+    sample = get_cadence("4")
     output_dir = get_output_directory("HMI")
-
-    # Download method - Fido is now default
-    print("\nDownload method:")
-    print("  1: Fido client (recommended, no email required)")
-    print("  2: DRMS client (for advanced users)")
-
-    while True:
-        method_choice = input("\nSelect download method (1-2) [default: 1]: ")
-        method_choice = "1" if not method_choice.strip() else method_choice
-
-        if method_choice in ["1", "2"]:
-            break
-        else:
-            print("Invalid choice. Please enter 1 or 2.")
-
-    # Get email if using DRMS
-    email = None
-    if method_choice == "2":
-        print("\nEmail is required for DRMS downloads.")
-        email = input("Email address: ")
-        if not email.strip():
-            print("Warning: No email provided. Download may fail for large requests.")
-            email = None
-
-    # Set interval seconds based on series
-    interval_seconds = 45.0 if "45s" in series else 720.0
-
-    # Confirm download
-    print("\n" + "=" * 50)
-    print("Download Summary:")
-    print("  Instrument: SDO/HMI")
-    print(f"  Series: {series} ({series_descriptions[series_choice]})")
-    print(f"  Time range: {start_time} to {end_time}")
-    print(f"  Output directory: {output_dir}")
-    print(f"  Download method: {'Fido' if method_choice == '1' else 'DRMS'}")
-    if email:
-        print(f"  Email: {email}")
-    print("=" * 50)
-
-    confirm = input("\nProceed with download? (y/n) [default: y]: ")
-    if confirm.lower() in ["", "y", "yes"]:
-        print("\nDownloading data...")
-        try:
-            if method_choice == "1":
-                # Use Fido method
-                files = sdd.download_hmi_with_fido(
-                    series=series,
-                    start_time=start_time,
-                    end_time=end_time,
-                    output_dir=output_dir,
-                )
-            else:
-                # Use DRMS method
-                files = sdd.download_hmi(
-                    series=series,
-                    start_time=start_time,
-                    end_time=end_time,
-                    output_dir=output_dir,
-                    email=email,
-                    interval_seconds=interval_seconds,
-                )
-
-            print(
-                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
-            )
-        except Exception as e:
-            print(f"\nError during download: {str(e)}")
+    if "720" in series:
+        use_jsoc = True
+        print("\nThe 720 s series come from JSOC.")
     else:
+        print("\nSource:")
+        use_jsoc = choose(
+            "Select source",
+            [("VSO through Fido (no account needed)", False), ("JSOC export (email registered at JSOC)", True)],
+        )
+    email = get_jsoc_email() if use_jsoc else None
+    processing = get_processing("north up with the Sun centred, native 0.504 arcsec per pixel")
+    if not summary(
+        [
+            "Instrument: SDO/HMI",
+            f"Series: {series}",
+            f"Time range: {start_time} to {end_time}",
+            f"Cadence: {cadence_label(sample)}",
+            f"Output directory: {output_dir}",
+            f"Source: {'JSOC export' if use_jsoc else 'VSO'}",
+        ]
+    ):
         print("\nDownload cancelled.")
-
-    input("\nPress Enter to return to the main menu...")
+        return input("\nPress Enter to return to the main menu...")
+    common = dict(series=series, start_time=start_time, end_time=end_time, output_dir=output_dir, sample=sample, **processing)
+    if use_jsoc:
+        run(sdd.download_hmi, email=email, **common)
+    else:
+        run(sdd.download_hmi_with_fido, **common)
 
 
 def download_iris_data():
-    """
-    Guide the user through downloading IRIS data.
-    """
-    print_header()
-    print("IRIS Data Download")
-    print("------------------")
-    print("Note: IRIS data uses Fido (no email required)")
-
-    # Get observation type
-    obs_type_options = {
-        "1": "SJI",
-        "2": "raster",
-    }
-
-    print("\nObservation types:")
-    print("  1: SJI (Slit-Jaw Imager)")
-    print("  2: Raster (Spectrograph data)")
-
-    while True:
-        obs_type_choice = input("\nSelect observation type (1-2) [default: 1]: ")
-        obs_type_choice = "1" if not obs_type_choice.strip() else obs_type_choice
-
-        if obs_type_choice in obs_type_options:
-            obs_type = obs_type_options[obs_type_choice]
-            break
-        else:
-            print("Invalid choice. Please enter 1 or 2.")
-
-    # Get wavelength if using SJI
-    wavelength = None
-    if obs_type == "SJI":
-        wavelength_options = {"1": "1330", "2": "1400", "3": "2796", "4": "2832"}
-
-        print("\nAvailable wavelengths for SJI:")
-        print("  1: 1330 Å (C II, Transition Region)")
-        print("  2: 1400 Å (Si IV, Transition Region)")
-        print("  3: 2796 Å (Mg II k, Chromosphere)")
-        print("  4: 2832 Å (Photosphere)")
-
-        while True:
-            wavelength_choice = input("\nSelect wavelength (1-4) [default: 2]: ")
-            wavelength_choice = (
-                "2" if not wavelength_choice.strip() else wavelength_choice
-            )
-
-            if wavelength_choice in wavelength_options:
-                wavelength = wavelength_options[wavelength_choice]
-                break
-            else:
-                print("Invalid choice. Please enter a number between 1 and 4.")
-
-    # Get time range
+    print_header("IRIS slit-jaw images")
+    print("\nLevel 2 slit-jaw cubes; each becomes one file per exposure. Rasters are spectra and are not offered.")
+    print("\nChannel:")
+    wavelength = choose(
+        "Select channel",
+        [
+            ("1330 Å (C II, upper chromosphere)", "1330"),
+            ("1400 Å (Si IV, transition region)", "1400"),
+            ("2796 Å (Mg II k, chromosphere)", "2796"),
+            ("2832 Å (Mg II wing, photosphere)", "2832"),
+            ("All channels", None),
+        ],
+        "2",
+    )
     start_time, end_time = get_datetime_range()
-
-    # Get output directory
+    print("\nThe cadence thins the exposures of each observation.")
+    sample = get_cadence()
     output_dir = get_output_directory("IRIS")
-
-    # Confirm download
-    print("\n" + "=" * 50)
-    print("Download Summary:")
-    print("  Instrument: IRIS")
-    print(f"  Observation type: {obs_type}")
-    if wavelength:
-        print(f"  Wavelength: {wavelength} Å")
-    print(f"  Time range: {start_time} to {end_time}")
-    print(f"  Output directory: {output_dir}")
-    print("=" * 50)
-
-    confirm = input("\nProceed with download? (y/n) [default: y]: ")
-    if confirm.lower() in ["", "y", "yes"]:
-        print("\nDownloading data...")
-        try:
-            files = sdd.download_iris(
-                start_time=start_time,
-                end_time=end_time,
-                output_dir=output_dir,
-                obs_type=obs_type,
-                wavelength=wavelength,
-            )
-
-            print(
-                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
-            )
-        except Exception as e:
-            print(f"\nError during download: {str(e)}")
-    else:
+    processing = get_processing("one file per exposure with its own time and pointing, counts per second, north up")
+    if not summary(
+        [
+            "Instrument: IRIS SJI",
+            f"Channel: {wavelength or 'all'}",
+            f"Time range: {start_time} to {end_time}",
+            f"Cadence: {cadence_label(sample)}",
+            f"Output directory: {output_dir}",
+        ]
+    ):
         print("\nDownload cancelled.")
-
-    input("\nPress Enter to return to the main menu...")
+        return input("\nPress Enter to return to the main menu...")
+    run(
+        sdd.download_iris,
+        start_time=start_time,
+        end_time=end_time,
+        output_dir=output_dir,
+        obs_type="SJI",
+        wavelength=wavelength,
+        sample=sample,
+        **processing,
+    )
 
 
 def download_soho_data():
-    """
-    Guide the user through downloading SOHO data.
-    """
-    print_header()
-    print("SOHO Data Download")
-    print("------------------")
-    print("Note: SOHO data uses Fido (no email required)")
-
-    # Get instrument
-    instrument_options = {
-        "1": "EIT",
-        "2": "LASCO",
-        "3": "MDI",
-    }
-
-    print("\nAvailable instruments:")
-    print("  1: EIT (Extreme-ultraviolet Imaging Telescope)")
-    print("  2: LASCO (Large Angle and Spectrometric Coronagraph)")
-    print("  3: MDI (Michelson Doppler Imager - pre-2011)")
-
-    while True:
-        instrument_choice = input("\nSelect instrument (1-3) [default: 1]: ")
-        instrument_choice = "1" if not instrument_choice.strip() else instrument_choice
-
-        if instrument_choice in instrument_options:
-            instrument = instrument_options[instrument_choice]
-            break
-        else:
-            print("Invalid choice. Please enter a number between 1 and 3.")
-
-    # Get instrument-specific parameters
-    wavelength = None
-    detector = None
-
+    print_header("SOHO")
+    print("\nInstrument:")
+    instrument = choose("Select instrument", [("EIT (EUV imager)", "EIT"), ("LASCO (coronagraph)", "LASCO"), ("MDI (magnetograph)", "MDI")])
+    wavelength = detector = physobs = None
     if instrument == "EIT":
-        wavelength_options = {"1": "171", "2": "195", "3": "284", "4": "304"}
-
-        print("\nAvailable wavelengths for EIT:")
-        print("  1: 171 Å (Fe IX/X)")
-        print("  2: 195 Å (Fe XII)")
-        print("  3: 284 Å (Fe XV)")
-        print("  4: 304 Å (He II)")
-
-        while True:
-            wavelength_choice = input("\nSelect wavelength (1-4) [default: 2]: ")
-            wavelength_choice = (
-                "2" if not wavelength_choice.strip() else wavelength_choice
-            )
-
-            if wavelength_choice in wavelength_options:
-                wavelength = wavelength_options[wavelength_choice]
-                break
-            else:
-                print("Invalid choice. Please enter a number between 1 and 4.")
-
+        print("\nWavelength:")
+        wavelength = choose(
+            "Select wavelength",
+            [("171 Å (Fe IX, Fe X)", "171"), ("195 Å (Fe XII)", "195"), ("284 Å (Fe XV)", "284"), ("304 Å (He II)", "304")],
+            "2",
+        )
+        processing = "the level 1 product where SDAC has it (dark, flat, degridding, degradation and exposure corrected), north up"
     elif instrument == "LASCO":
-        detector_options = {"1": "C2", "2": "C3"}
-
-        print("\nAvailable detectors for LASCO:")
-        print("  1: C2 (2-6 solar radii)")
-        print("  2: C3 (3.7-30 solar radii)")
-
-        while True:
-            detector_choice = input("\nSelect detector (1-2) [default: 1]: ")
-            detector_choice = "1" if not detector_choice.strip() else detector_choice
-
-            if detector_choice in detector_options:
-                detector = detector_options[detector_choice]
-                break
-            else:
-                print("Invalid choice. Please enter 1 or 2.")
-
-    # Get time range
-    start_time, end_time = get_datetime_range()
-
-    # Get output directory
-    output_dir = get_output_directory(f"SOHO_{instrument}")
-
-    # Confirm download
-    print("\n" + "=" * 50)
-    print("Download Summary:")
-    print(f"  Instrument: SOHO/{instrument}")
-    if wavelength:
-        print(f"  Wavelength: {wavelength} Å")
-    if detector:
-        print(f"  Detector: {detector}")
-    print(f"  Time range: {start_time} to {end_time}")
-    print(f"  Output directory: {output_dir}")
-    print("=" * 50)
-
-    confirm = input("\nProceed with download? (y/n) [default: y]: ")
-    if confirm.lower() in ["", "y", "yes"]:
-        print("\nDownloading data...")
-        try:
-            files = sdd.download_soho(
-                instrument=instrument,
-                start_time=start_time,
-                end_time=end_time,
-                output_dir=output_dir,
-                wavelength=wavelength,
-                detector=detector,
-            )
-
-            print(
-                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
-            )
-        except Exception as e:
-            print(f"\nError during download: {str(e)}")
+        print("\nDetector:")
+        detector = choose("Select detector", [("C2 (2 to 6 solar radii)", "C2"), ("C3 (3.7 to 30 solar radii)", "C3")])
+        processing = "north up (the level 0.5 roll undone), counts per second"
     else:
+        print("\nProduct:")
+        physobs = choose("Select product", [("Magnetogram (96 min, level 1.8)", "magnetogram"), ("Continuum intensity", "continuum")])
+        processing = "north up with the Sun centred"
+    start_time, end_time = get_datetime_range()
+    sample = get_cadence()
+    output_dir = get_output_directory(f"SOHO_{instrument}")
+    options = get_processing(processing)
+    if not summary(
+        [
+            f"Instrument: SOHO/{instrument}",
+            f"{'Wavelength: ' + wavelength + ' Å' if wavelength else 'Detector: ' + detector if detector else 'Product: ' + physobs}",
+            f"Time range: {start_time} to {end_time}",
+            f"Cadence: {cadence_label(sample)}",
+            f"Output directory: {output_dir}",
+        ]
+    ):
         print("\nDownload cancelled.")
-
-    input("\nPress Enter to return to the main menu...")
+        return input("\nPress Enter to return to the main menu...")
+    run(
+        sdd.download_soho,
+        instrument=instrument,
+        start_time=start_time,
+        end_time=end_time,
+        output_dir=output_dir,
+        wavelength=wavelength,
+        detector=detector,
+        physobs=physobs,
+        sample=sample,
+        **options,
+    )
 
 
 def download_suvi_data():
-    """
-    Guide the user through downloading GOES SUVI data.
-    """
-    print_header()
-    print("GOES/SUVI Data Download")
-    print("-----------------------")
-    print("Note: SUVI data uses Fido (no email required)")
-
-    # Get wavelength
-    wavelength_options = {
-        "1": "94",
-        "2": "131",
-        "3": "171",
-        "4": "195",
-        "5": "284",
-        "6": "304",
-    }
-
-    print("\nAvailable wavelengths:")
-    for key, value in wavelength_options.items():
-        print(f"  {key}: {value} Å")
-
-    while True:
-        wavelength_choice = input("\nSelect wavelength (1-6) [default: 3]: ")
-        wavelength_choice = "3" if not wavelength_choice.strip() else wavelength_choice
-
-        if wavelength_choice in wavelength_options:
-            wavelength = wavelength_options[wavelength_choice]
-            break
-        else:
-            print("Invalid choice. Please enter a number between 1 and 6.")
-
-    # Get data level
-    print("\nData level:")
-    print("  1: Level 2 (calibrated, recommended)")
-    print("  2: Level 1b (raw)")
-
-    level_choice = input("\nSelect data level (1-2) [default: 1]: ")
-    level = "2" if level_choice != "2" else "1b"
-
-    # Get time range
+    print_header("GOES/SUVI")
+    print("\nWavelength:")
+    wavelength = choose(
+        "Select wavelength",
+        [
+            ("94 Å (Fe XVIII)", "94"),
+            ("131 Å (Fe VIII, Fe XXI)", "131"),
+            ("171 Å (Fe IX)", "171"),
+            ("195 Å (Fe XII)", "195"),
+            ("284 Å (Fe XV)", "284"),
+            ("304 Å (He II)", "304"),
+        ],
+        "3",
+    )
+    print("\nLevel:")
+    level = choose("Select level", [("Level 2 (4 min composites, calibrated)", "2"), ("Level 1b (single exposures)", "1b")])
     start_time, end_time = get_datetime_range()
-
-    # Get output directory
+    sample = get_cadence()
     output_dir = get_output_directory("SUVI")
-
-    # Confirm download
-    print("\n" + "=" * 50)
-    print("Download Summary:")
-    print("  Instrument: GOES/SUVI")
-    print(f"  Wavelength: {wavelength} Å")
-    print(f"  Data level: {level}")
-    print(f"  Time range: {start_time} to {end_time}")
-    print(f"  Output directory: {output_dir}")
-    print("=" * 50)
-
-    confirm = input("\nProceed with download? (y/n) [default: y]: ")
-    if confirm.lower() in ["", "y", "yes"]:
-        print("\nDownloading data...")
-        try:
-            files = sdd.download_goes_suvi(
-                start_time=start_time,
-                end_time=end_time,
-                output_dir=output_dir,
-                wavelength=wavelength,
-                level=level,
-            )
-
-            print(
-                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
-            )
-        except Exception as e:
-            print(f"\nError during download: {str(e)}")
-    else:
+    options = get_processing("the image into the primary HDU" + ("" if level == "2" else ", north up"))
+    if not summary(
+        [
+            "Instrument: GOES/SUVI",
+            f"Wavelength: {wavelength} Å",
+            f"Level: {level}",
+            f"Time range: {start_time} to {end_time}",
+            f"Cadence: {cadence_label(sample)}",
+            f"Output directory: {output_dir}",
+        ]
+    ):
         print("\nDownload cancelled.")
-
-    input("\nPress Enter to return to the main menu...")
+        return input("\nPress Enter to return to the main menu...")
+    run(
+        sdd.download_goes_suvi,
+        start_time=start_time,
+        end_time=end_time,
+        output_dir=output_dir,
+        wavelength=wavelength,
+        level=level,
+        sample=sample,
+        **options,
+    )
 
 
 def download_stereo_data():
-    """
-    Guide the user through downloading STEREO data.
-    """
-    print_header()
-    print("STEREO/SECCHI Data Download")
-    print("---------------------------")
-    print("Note: STEREO data uses Fido (no email required)")
-
-    # Get spacecraft
+    print_header("STEREO/SECCHI")
     print("\nSpacecraft:")
-    print("  1: STEREO-A (currently active)")
-    print("  2: STEREO-B (pre-2014 data only)")
-
-    sc_choice = input("\nSelect spacecraft (1-2) [default: 1]: ")
-    spacecraft = "A" if sc_choice != "2" else "B"
-
-    # Get instrument
-    instrument_options = {
-        "1": "EUVI",
-        "2": "COR1",
-        "3": "COR2",
-    }
-
-    print("\nAvailable instruments:")
-    print("  1: EUVI (Extreme Ultraviolet Imager)")
-    print("  2: COR1 (Inner Coronagraph)")
-    print("  3: COR2 (Outer Coronagraph)")
-
-    while True:
-        inst_choice = input("\nSelect instrument (1-3) [default: 1]: ")
-        inst_choice = "1" if not inst_choice.strip() else inst_choice
-
-        if inst_choice in instrument_options:
-            instrument = instrument_options[inst_choice]
-            break
-        else:
-            print("Invalid choice. Please enter a number between 1 and 3.")
-
-    # Get wavelength if EUVI
+    spacecraft = choose("Select spacecraft", [("STEREO-A", "A"), ("STEREO-B (until 2014)", "B")])
+    print("\nInstrument:")
+    instrument = choose(
+        "Select instrument",
+        [
+            ("EUVI (EUV imager)", "EUVI"),
+            ("COR1 (inner coronagraph, 1.4 to 4 solar radii)", "COR1"),
+            ("COR2 (outer coronagraph, 2.5 to 15 solar radii)", "COR2"),
+        ],
+    )
     wavelength = None
     if instrument == "EUVI":
-        wavelength_options = {"1": "171", "2": "195", "3": "284", "4": "304"}
-
-        print("\nAvailable wavelengths for EUVI:")
-        print("  1: 171 Å")
-        print("  2: 195 Å")
-        print("  3: 284 Å")
-        print("  4: 304 Å")
-
-        while True:
-            wavelength_choice = input("\nSelect wavelength (1-4) [default: 2]: ")
-            wavelength_choice = (
-                "2" if not wavelength_choice.strip() else wavelength_choice
-            )
-
-            if wavelength_choice in wavelength_options:
-                wavelength = wavelength_options[wavelength_choice]
-                break
-            else:
-                print("Invalid choice. Please enter a number between 1 and 4.")
-
-    # Get time range
-    start_time, end_time = get_datetime_range()
-
-    # Get output directory
-    output_dir = get_output_directory(f"STEREO_{spacecraft}")
-
-    # Confirm download
-    print("\n" + "=" * 50)
-    print("Download Summary:")
-    print(f"  Instrument: STEREO-{spacecraft}/{instrument}")
-    if wavelength:
-        print(f"  Wavelength: {wavelength} Å")
-    print(f"  Time range: {start_time} to {end_time}")
-    print(f"  Output directory: {output_dir}")
-    print("=" * 50)
-
-    confirm = input("\nProceed with download? (y/n) [default: y]: ")
-    if confirm.lower() in ["", "y", "yes"]:
-        print("\nDownloading data...")
-        try:
-            files = sdd.download_stereo(
-                start_time=start_time,
-                end_time=end_time,
-                output_dir=output_dir,
-                spacecraft=spacecraft,
-                instrument=instrument,
-                wavelength=wavelength,
-            )
-
-            print(
-                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
-            )
-        except Exception as e:
-            print(f"\nError during download: {str(e)}")
+        print("\nWavelength:")
+        wavelength = choose("Select wavelength", [("171 Å", "171"), ("195 Å", "195"), ("284 Å", "284"), ("304 Å", "304")], "2")
+        processing = "north up with the Sun centred, counts per second"
     else:
+        processing = "polarizer triplets combined into total brightness, north up, counts per second"
+    start_time, end_time = get_datetime_range()
+    sample = get_cadence()
+    output_dir = get_output_directory(f"STEREO_{spacecraft}_{instrument}")
+    options = get_processing(processing)
+    if not summary(
+        [
+            f"Instrument: STEREO-{spacecraft}/{instrument}",
+            f"Wavelength: {wavelength} Å" if wavelength else "Polarizer sequences",
+            f"Time range: {start_time} to {end_time}",
+            f"Cadence: {cadence_label(sample)}",
+            f"Output directory: {output_dir}",
+        ]
+    ):
         print("\nDownload cancelled.")
-
-    input("\nPress Enter to return to the main menu...")
-
-
-def download_gong_data():
-    """
-    Guide the user through downloading GONG data.
-    """
-    print_header()
-    print("GONG Magnetogram Data Download")
-    print("-------------------------------")
-    print("Note: GONG data uses Fido (no email required)")
-    print(
-        "\nGONG provides ground-based magnetogram observations from a global network."
+        return input("\nPress Enter to return to the main menu...")
+    run(
+        sdd.download_stereo,
+        start_time=start_time,
+        end_time=end_time,
+        output_dir=output_dir,
+        spacecraft=spacecraft,
+        instrument=instrument,
+        wavelength=wavelength,
+        sample=sample,
+        **options,
     )
-
-    # Get time range
-    start_time, end_time = get_datetime_range()
-
-    # Get output directory
-    output_dir = get_output_directory("GONG")
-
-    # Confirm download
-    print("\n" + "=" * 50)
-    print("Download Summary:")
-    print("  Instrument: GONG")
-    print("  Data type: LOS Magnetogram")
-    print(f"  Time range: {start_time} to {end_time}")
-    print(f"  Output directory: {output_dir}")
-    print("=" * 50)
-
-    confirm = input("\nProceed with download? (y/n) [default: y]: ")
-    if confirm.lower() in ["", "y", "yes"]:
-        print("\nDownloading data...")
-        try:
-            files = sdd.download_gong(
-                start_time=start_time,
-                end_time=end_time,
-                output_dir=output_dir,
-            )
-
-            print(
-                f"\nDownload complete. Downloaded {len(files) if files else 0} files to {output_dir}"
-            )
-        except Exception as e:
-            print(f"\nError during download: {str(e)}")
-    else:
-        print("\nDownload cancelled.")
-
-    input("\nPress Enter to return to the main menu...")
 
 
 def main_menu():
-    """
-    Display the main menu and handle user selection.
-    """
+    actions = [
+        ("SDO/AIA (Atmospheric Imaging Assembly)", download_aia_data),
+        ("SDO/HMI (Helioseismic and Magnetic Imager)", download_hmi_data),
+        ("IRIS slit-jaw images", download_iris_data),
+        ("SOHO (EIT, LASCO, MDI)", download_soho_data),
+        ("GOES/SUVI (Solar Ultraviolet Imager)", download_suvi_data),
+        ("STEREO/SECCHI (EUVI, COR1, COR2)", download_stereo_data),
+        ("Exit", None),
+    ]
     while True:
         print_header()
         print("Main Menu:")
-        print("  1. Download SDO/AIA Data (Atmospheric Imaging Assembly)")
-        print("  2. Download SDO/HMI Data (Helioseismic and Magnetic Imager)")
-        print("  3. Download IRIS Data (Interface Region Imaging Spectrograph)")
-        print("  4. Download SOHO Data (Solar and Heliospheric Observatory)")
-        print("  5. Download GOES/SUVI Data (Solar Ultraviolet Imager)")
-        print("  6. Download STEREO Data (Sun Earth Connection)")
-        print("  7. Download GONG Data (Global Oscillation Network Group)")
-        print("  8. Exit")
-
-        choice = input("\nSelect an option (1-8): ")
-
-        if choice == "1":
-            download_aia_data()
-        elif choice == "2":
-            download_hmi_data()
-        elif choice == "3":
-            download_iris_data()
-        elif choice == "4":
-            download_soho_data()
-        elif choice == "5":
-            download_suvi_data()
-        elif choice == "6":
-            download_stereo_data()
-        elif choice == "7":
-            download_gong_data()
-        elif choice == "8":
-            print("\nExiting Solar Data Downloader CLI. Goodbye!")
-            sys.exit(0)
+        for i, (label, _) in enumerate(actions, 1):
+            print(f"  {i}. {label}")
+        choice = input(f"\nSelect an option (1-{len(actions)}): ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(actions):
+            action = actions[int(choice) - 1][1]
+            if action is None:
+                print("\nExiting Solar Data Downloader. Goodbye!")
+                sys.exit(0)
+            action()
         else:
-            print("\nInvalid choice. Please enter a number between 1 and 8.")
+            print(f"\nInvalid choice. Please enter a number between 1 and {len(actions)}.")
             input("\nPress Enter to continue...")
 
 
@@ -923,5 +500,5 @@ if __name__ == "__main__":
     try:
         main_menu()
     except KeyboardInterrupt:
-        print("\n\nExiting Solar Data Downloader CLI. Goodbye!")
+        print("\n\nExiting Solar Data Downloader. Goodbye!")
         sys.exit(0)

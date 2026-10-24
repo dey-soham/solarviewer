@@ -1,52 +1,162 @@
-import drms, os, glob, warnings
-import aiohttp
-from parfive import Downloader, SessionConfig
-from sunpy.map import Map
+"""
+Solar data download and preparation for SolarViewer.
 
-# from sunpy.instr.aia import aiaprep  # This import is no longer available in sunpy 6.0.5
-# In newer versions of sunpy, aiaprep has been moved to the aiapy package
+Downloads images from the observatories below and prepares them so that
+SolarViewer shows them correctly: one 2-D image per file in the primary HDU,
+solar north up with the Sun at the reference pixel, exposure-normalised
+where the data are raw counts, a standard WCS (HPLN-TAN/HPLT-TAN in
+arcsec) and an ISO DATE-OBS. Every prepared image is saved as 32-bit
+floats.
+
+- SDO/AIA: level 1 to level 1.5 with aiapy (pointing update, optional PSF
+  deconvolution, registration, degradation correction, DN/s)
+- SDO/HMI: north up and Sun-centred at the native 0.504"/px
+- IRIS slit-jaw images: one file per exposure with that exposure's time,
+  pointing and exposure time, DN/s, north up
+- SOHO/EIT: the level 1 product where SDAC has it (dark, flat, degridding,
+  degradation and exposure corrected), else level 0 made DN/s; north up
+- SOHO/LASCO C2 and C3: north up (the level 0.5 roll undone), DN/s
+- SOHO/MDI: north up (the level 1.8 product arrives in a tar file)
+- GOES/SUVI: level 2 composites rewritten into the primary HDU; level 1b
+  rotated north up
+- STEREO/SECCHI: EUVI north up in DN/s; COR1 and COR2 polarizer triplets
+  combined into total brightness, north up, DN/s
+
+Downloads go through SunPy's Fido (the VSO, NOAA) or, for SDO with an
+email address registered at JSOC, through a JSOC export. Some networks
+hand out IPv6 addresses that do not route; the downloader notices that
+and prefers IPv4, which is the difference between a search taking seconds
+and minutes.
+"""
+
+import os
+import re
+import shutil
+import socket
+import tarfile
+import time
+import warnings
+from datetime import datetime, timedelta
+
+import numpy as np
+from astropy.io import fits
+import astropy.units as u
+
 try:
     from aiapy.calibrate import register, update_pointing, correct_degradation
+    from aiapy.calibrate.utils import get_pointing_table, get_correction_table
     from aiapy.psf import deconvolve as aia_deconvolve
 
     HAS_AIAPY = True
-except ImportError:
-    # If aiapy is not installed, we'll provide a helpful message
+except ImportError:  # the AIA steps that need it are skipped, with a note
     HAS_AIAPY = False
-    # Only print warning once when module is first loaded
-    import sys
-    if not hasattr(sys, '_aiapy_warning_shown'):
-        print(
-            "\n" + "="*60 + "\n"
-            "WARNING: aiapy package not found.\n"
-            "Level 1.5 calibration (pointing, degradation correction) will NOT be applied.\n"
-            "To install: pip install aiapy\n"
-            + "="*60 + "\n"
-        )
-        sys._aiapy_warning_shown = True
-from astropy.io import fits
-from datetime import datetime, timedelta
-import astropy.units as u  # Import astropy units for use throughout the code
 
-# Default download settings for Fido
-DEFAULT_MAX_CONN = 4  # Maximum simultaneous connections
-DEFAULT_MAX_SPLITS = 5  # Maximum splits per file
-DEFAULT_MAX_RETRIES = 5  # Number of retry attempts for failed downloads (increased from 3)
-DEFAULT_TIMEOUT = 120  # Seconds without data before a file's download is abandoned (and retried)
+# Default download settings
+DEFAULT_MAX_CONN = 5  # simultaneous connections
+DEFAULT_MAX_SPLITS = 3  # parallel parts per file
+DEFAULT_MAX_RETRIES = 4  # retries of the files that failed
+DEFAULT_TIMEOUT = 120  # seconds without data before a file is abandoned and retried
+
+TIME_FORMAT = "%Y.%m.%d %H:%M:%S"
+
+# SDO series at JSOC
+AIA_SERIES = {"12s": "aia.lev1_euv_12s", "24s": "aia.lev1_uv_24s", "1h": "aia.lev1_vis_1h"}
+WAVELENGTHS = {
+    "12s": ["94", "131", "171", "193", "211", "304", "335"],
+    "24s": ["1600", "1700"],
+    "1h": ["4500"],
+}
+# HMI series: the key is what the interfaces call it. Only the 45 s series
+# are served by the VSO; the 720 s ones need a JSOC export (an email).
+HMI_SERIES = {
+    "M_45s": "hmi.M_45s",
+    "M_720s": "hmi.M_720s",
+    "Ic_45s": "hmi.Ic_45s",
+    "Ic_720s": "hmi.Ic_720s",
+    "Ic_noLimbDark_720s": "hmi.Ic_noLimbDark_720s",
+    "V_45s": "hmi.V_45s",
+    "V_720s": "hmi.V_720s",
+}
+HMI_PHYSOBS = {"M": "LOS_magnetic_field", "Ic": "intensity", "V": "LOS_velocity"}
+
+
+def _quiet():
+    import logging
+
+    warnings.filterwarnings("ignore")
+    logging.getLogger("sunpy").setLevel(logging.ERROR)
+
+
+# ------------------------------------------------------------------ network
+_ipv4_preferred = None
+
+
+def prefer_ipv4():
+    """Prefer IPv4 for this process when IPv6 does not reach the internet.
+
+    Some networks hand out IPv6 addresses (often NAT64 ones) that do not
+    route. Python then waits for each IPv6 connection attempt to time out
+    before trying IPv4, which makes every search and download minutes slow.
+    This probes once; when IPv6 fails and IPv4 works, name lookups put the
+    IPv4 addresses first from then on. Returns True when IPv4 is preferred.
+    """
+    global _ipv4_preferred
+    if _ipv4_preferred is not None:
+        return _ipv4_preferred
+    _ipv4_preferred = False
+    try:
+        infos = socket.getaddrinfo("sdac.virtualsolar.org", 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    v6 = [i for i in infos if i[0] == socket.AF_INET6]
+    v4 = [i for i in infos if i[0] == socket.AF_INET]
+    if not v6 or not v4:
+        return False
+
+    def reaches(info):
+        try:
+            with socket.socket(info[0], socket.SOCK_STREAM) as s:
+                s.settimeout(3)
+                s.connect(info[4])
+            return True
+        except OSError:
+            return False
+
+    if reaches(v6[0]) or not reaches(v4[0]):
+        return False
+    real = socket.getaddrinfo
+
+    def ipv4_first(*args, **kwargs):
+        found = real(*args, **kwargs)
+        return sorted(found, key=lambda i: i[0] != socket.AF_INET)
+
+    socket.getaddrinfo = ipv4_first
+    _ipv4_preferred = True
+    print("IPv6 does not reach the data centres from here; using IPv4.", flush=True)
+    return True
 
 
 def _downloader(max_conn, max_splits, timeout, progress):
     """A parfive Downloader that abandons a file when no data has arrived for
     ``timeout`` seconds (a stalled connection), so the retry loop can try it
-    again. There is no limit on the whole download: a slow file that keeps
-    receiving data is never cut off."""
+    again. A slow file that keeps receiving data is never cut off."""
+    import aiohttp
+    from parfive import Downloader, SessionConfig
+
     timeouts = aiohttp.ClientTimeout(total=None, sock_connect=timeout, sock_read=timeout)
-    return Downloader(
-        max_conn=max_conn,
-        max_splits=max_splits,
-        progress=progress,
-        config=SessionConfig(timeouts=timeouts),
-    )
+    if prefer_ipv4():
+
+        def session(config):
+            return aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(family=socket.AF_INET),
+                timeout=timeouts,
+                headers=config.headers,
+            )
+
+        config = SessionConfig(aiohttp_session_generator=session)
+    else:
+        config = SessionConfig(timeouts=timeouts)
+    return Downloader(max_conn=max_conn, max_splits=max_splits, progress=progress, config=config)
 
 
 def robust_fido_fetch(
@@ -58,612 +168,705 @@ def robust_fido_fetch(
     timeout=DEFAULT_TIMEOUT,
     progress=True,
 ):
-    """
-    Robust Fido.fetch wrapper with retry logic, timeout, and configurable connection settings.
-
-    This function handles common download issues like timeouts and partial downloads
-    by using a custom parfive Downloader with better settings and automatically
-    retrying failed downloads.
-
-    Args:
-        result: Fido search result to download
-        output_dir (str): Directory to save downloaded files
-        max_conn (int): Maximum simultaneous connections (default: 4)
-        max_splits (int): Maximum splits per file for parallel download (default: 5)
-        max_retries (int): Number of retry attempts for failed downloads (default: 5)
-        timeout (int): Seconds without any data arriving after which a file's
-            download is abandoned and retried; slow downloads that keep
-            receiving data are not cut off (default: 120)
-        progress (bool): Show download progress bar (default: True)
-
-    Returns:
-        parfive.Results: Downloaded file results
-    """
+    """Fido.fetch with retries of the files that failed, each retry with
+    fewer connections. Returns the parfive Results (``.errors`` lists what
+    still failed)."""
     from sunpy.net import Fido
 
-    downloader = _downloader(max_conn, max_splits, timeout, progress)
-
-    print(f"Starting download with settings: max_conn={max_conn}, retries={max_retries}, timeout={timeout}s without data")
-
-    # Initial fetch attempt
-    downloaded = Fido.fetch(result, path=output_dir + "/{file}", downloader=downloader)
-
-    # Retry failed downloads
-    retry_count = 0
-    while downloaded.errors and retry_count < max_retries:
-        retry_count += 1
-        failed_count = len(downloaded.errors)
+    print(
+        f"Starting download with settings: max_conn={max_conn}, retries={max_retries}, "
+        f"timeout={timeout}s without data",
+        flush=True,
+    )
+    downloaded = Fido.fetch(
+        result,
+        path=os.path.join(output_dir, "{file}"),
+        downloader=_downloader(max_conn, max_splits, timeout, progress),
+    )
+    retry = 0
+    while downloaded.errors and retry < max_retries:
+        retry += 1
         print(
-            f"\nRetrying {failed_count} failed downloads (attempt {retry_count}/{max_retries})..."
+            f"\nRetrying {len(downloaded.errors)} failed downloads (attempt {retry}/{max_retries})...",
+            flush=True,
         )
-        
-        # Add small delay between retries to help with rate limiting
-        import time as time_module
-        time_module.sleep(2)
-
-        # Create a fresh downloader for retry with reduced connections
-        retry_downloader = _downloader(max(1, max_conn // 2), max_splits, timeout, progress)
-        downloaded = Fido.fetch(downloaded, downloader=retry_downloader)
-
-    # Report final status
-    if downloaded.errors:
-        print(
-            "\n" + "="*60 + "\n"
-            f"WARNING: {len(downloaded.errors)} files failed to download after {max_retries} retries\n"
-            + "="*60
+        time.sleep(2)
+        downloaded = Fido.fetch(
+            downloaded, downloader=_downloader(max(1, max_conn // 2), max_splits, timeout, progress)
         )
-        for error in downloaded.errors[:5]:  # Show first 5 errors
-            print(f"  - {error}")
-        if len(downloaded.errors) > 5:
-            print(f"  ... and {len(downloaded.errors) - 5} more errors")
-        print("\nTroubleshooting tips:")
-        print("  - Check VSO status: https://sdac.virtualsolar.org/cgi/health_report")
-        print("  - Try a smaller time range")
-        print("  - The data provider may be temporarily unavailable")
-    else:
-        print(f"\nSuccessfully downloaded {len(downloaded)} files.")
-
+    _report_errors(downloaded)
     return downloaded
 
 
-"""
-Solar Data Download and Calibration Module
+def _report_errors(downloaded):
+    if downloaded.errors:
+        print("\n" + "=" * 60 + f"\nWARNING: {len(downloaded.errors)} files failed to download\n" + "=" * 60)
+        for error in downloaded.errors[:5]:
+            print(f"  - {str(error).strip().splitlines()[-1][:300]}")
+        if len(downloaded.errors) > 5:
+            print(f"  ... and {len(downloaded.errors) - 5} more errors")
+        print("\nTroubleshooting tips:")
+        print("  - The data provider may be slow or down; try again later")
+        print("  - Try a smaller time range or a coarser cadence")
+    else:
+        print(f"\nSuccessfully downloaded {len(downloaded)} files.", flush=True)
 
-This module provides functionality to download and process data from various solar observatories:
-- SDO/AIA (Atmospheric Imaging Assembly)
-- SDO/HMI (Helioseismic and Magnetic Imager)
-- IRIS (Interface Region Imaging Spectrograph)
-- SOHO (Solar and Heliospheric Observatory)
 
-It can be used as a standalone script or imported as a module in other Python scripts.
+def _fetch_urls(urls, output_dir, filenames=None, max_conn=DEFAULT_MAX_CONN, max_retries=DEFAULT_MAX_RETRIES):
+    """Download plain URLs (a JSOC export) in parallel, with retries. Returns
+    the paths that arrived."""
+    downloader = _downloader(max_conn, 1, DEFAULT_TIMEOUT, True)
+    for i, url in enumerate(urls):
+        downloader.enqueue_file(url, path=output_dir, filename=filenames[i] if filenames else None)
+    results = downloader.download()
+    retry = 0
+    while results.errors and retry < max_retries:
+        retry += 1
+        print(f"\nRetrying {len(results.errors)} failed downloads (attempt {retry}/{max_retries})...", flush=True)
+        time.sleep(2)
+        results = downloader.retry(results)
+    _report_errors(results)
+    return [str(p) for p in results]
 
-Functions:
-    - get_key: Find a key in a dictionary by its value
-    - aiaexport: Generate an export command for AIA data
-    - download_aia: Download and process AIA data for a given time range
-    - get_time_list: Generate a list of timestamps within a given range
-    - download_aia_with_fido: Download AIA data using SunPy's Fido client
-    - download_hmi: Download and process HMI data
-    - download_hmi_with_fido: Download HMI data using Fido
-    - download_iris: Download IRIS data
-    - download_soho: Download SOHO data (EIT, LASCO, MDI)
-    - download_goes_suvi: Download GOES SUVI data
-    - download_stereo: Download STEREO SECCHI data
-    - download_gong: Download GONG magnetogram data
 
-Notes:
-    - This module uses the DRMS client to access JSOC data for SDO instruments
-    - An email address is technically optional for small requests but recommended
-    - For large requests, an email address is required for notification when data is ready
-    - Alternative download methods include using the SunPy Fido client or directly 
-      downloading from https://sdo.gsfc.nasa.gov/data/
-"""
+# -------------------------------------------------------------- time helpers
+def _parse_time(text):
+    """A 'YYYY.MM.DD HH:MM:SS' string (or ISO) as a datetime."""
+    text = str(text).strip().replace("_", " ").replace("T", " ")
+    for fmt in (
+        TIME_FORMAT,
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y.%m.%d %H:%M",
+        "%Y-%m-%d %H:%M",
+        "%Y.%m.%d",
+        "%Y-%m-%d",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Cannot read the time {text!r}; use YYYY.MM.DD HH:MM:SS")
 
-# AIA Series Constants
-AIA_SERIES = {
-    "12s": "aia.lev1_euv_12s",
-    "24s": "aia.lev1_uv_24s",
-    "1h": "aia.lev1_vis_1h",
-}
 
-# HMI Series Constants
-# Note: For Fido downloads, M_ and B_ series both use LOS_magnetic_field physobs
-HMI_SERIES = {
-    "45s": "hmi.M_45s",  # LOS magnetogram (45s cadence)
-    "720s": "hmi.M_720s",  # LOS magnetogram (12 min cadence)
-    "B_45s": "hmi.B_45s",  # Line-of-sight magnetogram (same as M_)
-    "B_720s": "hmi.B_720s",  # Line-of-sight magnetogram (12 min)
-    "Ic_45s": "hmi.Ic_45s",  # Continuum intensity
-    "Ic_720s": "hmi.Ic_720s",  # Continuum intensity (12 min)
-    "V_45s": "hmi.V_45s",  # LOS velocity
-    "V_720s": "hmi.V_720s",  # LOS velocity (12 min)
-}
+def _sample_attrs(sample):
+    """The Fido attribute asking for one image every ``sample`` seconds, or
+    nothing for every image."""
+    from sunpy.net import attrs as a
 
-# Wavelength Options by Cadence
-WAVELENGTHS = {
-    "12s": ["94", "131", "171", "193", "211", "304", "335"],
-    "24s": ["1600", "1700"],
-    "1h": ["4500"],
-}
+    return [a.Sample(float(sample) * u.second)] if sample else []
+
+
+def _jsoc_record(series, start_dt, end_dt, sample=None, wavelength=None):
+    """A JSOC record set string for ``series`` over the time range, every
+    ``sample`` seconds (the series' own cadence when None), e.g.
+    aia.lev1_euv_12s[2022.05.19_12:00:00_UTC/3600s@60s][171]."""
+    seconds = max(1, int(round((end_dt - start_dt).total_seconds())))
+    cadence = f"@{int(round(float(sample)))}s" if sample else ""
+    record = f"{series}[{start_dt.strftime('%Y.%m.%d_%H:%M:%S')}_UTC/{seconds}s{cadence}]"
+    if wavelength is not None:
+        record += f"[{int(wavelength)}]"
+    return record
+
+
+def aiaexport(wavelength, cadence, start_time, end_time, sample=None):
+    """The JSOC record set for AIA ``wavelength`` at the series ``cadence``
+    ('12s', '24s' or '1h'), or None for a wavelength the series lacks."""
+    if cadence not in AIA_SERIES:
+        print(f"Error: Invalid cadence '{cadence}'. Use '12s', '24s', or '1h'.")
+        return None
+    if str(wavelength) not in WAVELENGTHS[cadence]:
+        print(f"Error: {wavelength}Å image not available for {cadence} cadence")
+        return None
+    return _jsoc_record(AIA_SERIES[cadence], _parse_time(start_time), _parse_time(end_time), sample, wavelength)
+
+
+def hmiexport(series, start_time, end_time, sample=None):
+    """The JSOC record set for the HMI ``series`` (a key of HMI_SERIES)."""
+    if series not in HMI_SERIES:
+        print(f"Error: Invalid HMI series '{series}'. Use one of: {', '.join(HMI_SERIES)}")
+        return None
+    return _jsoc_record(HMI_SERIES[series], _parse_time(start_time), _parse_time(end_time), sample)
+
+
+def aia_cadence(wavelength):
+    """The AIA series cadence ('12s', '24s' or '1h') that has ``wavelength``."""
+    for cadence, wavelengths in WAVELENGTHS.items():
+        if str(wavelength) in wavelengths:
+            return cadence
+    return None
 
 
 def get_key(val, my_dict):
-    """
-    Find a key in a dictionary by its value.
-
-    Args:
-        val: The value to search for
-        my_dict: The dictionary to search in
-
-    Returns:
-        The key corresponding to the value, or None if not found
-    """
+    """The key of ``my_dict`` whose value is ``val``, or None."""
     for key, value in my_dict.items():
         if val == value:
             return key
     return None
 
 
-def aiaexport(wavelength, cadence, start_time, end_time):
-    """
-    Generate an export command for AIA data.
-
-    Args:
-        wavelength (str): AIA wavelength (e.g., '171', '1600')
-        cadence (str): Time cadence ('12s', '24s', or '1h')
-        start_time (str): Start time in 'YYYY.MM.DD_HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD_HH:MM:SS' format
-
-    Returns:
-        str: The export command string or None if invalid parameters
-    """
-    # Validate wavelength for the given cadence
-    if cadence not in AIA_SERIES:
-        print(f"Error: Invalid cadence '{cadence}'. Use '12s', '24s', or '1h'.")
-        return None
-
-    if wavelength not in WAVELENGTHS[cadence]:
-        print(f"Error: {wavelength}Å image not available for {cadence} cadence")
-        return None
-
-    # Calculate duration between start and end times
-    try:
-        start_dt = datetime.strptime(start_time.replace("_", " "), "%Y.%m.%d %H:%M:%S")
-        end_dt = datetime.strptime(end_time.replace("_", " "), "%Y.%m.%d %H:%M:%S")
-        duration_seconds = (end_dt - start_dt).total_seconds()
-
-        # Convert to a duration string (e.g., "1h", "30m", "3600s")
-        if duration_seconds >= 3600:
-            duration_str = f"{int(duration_seconds / 3600)}h"
-        elif duration_seconds >= 60:
-            duration_str = f"{int(duration_seconds / 60)}m"
-        else:
-            duration_str = f"{int(duration_seconds)}s"
-    except (ValueError, TypeError):
-        # Default to 1 hour if parsing fails
-        duration_str = "1h"
-
-    # Format time for the export command
-    time_utc = start_time + "_UTC"
-
-    # Create export command with calculated duration
-    export_cmd = (
-        f"{AIA_SERIES[cadence]}[{time_utc}/{duration_str}@{cadence}][{wavelength}]"
-    )
-    return export_cmd
-
-
 def get_time_list(start_time, end_time, interval_seconds=0.5):
-    """
-    Generate a list of timestamps within a given range.
-
-    Args:
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        interval_seconds (float): Time interval between timestamps in seconds
-
-    Returns:
-        list: List of timestamps in 'HH:MM:SS' format
-    """
-    stt = datetime.strptime(start_time, "%Y.%m.%d %H:%M:%S")
-    ett = datetime.strptime(end_time, "%Y.%m.%d %H:%M:%S")
-    time_list = []
-
+    """'HH:MM:SS' strings from ``start_time`` to ``end_time`` every
+    ``interval_seconds``."""
+    stt, ett = _parse_time(start_time), _parse_time(end_time)
+    times = []
     while stt <= ett:
-        tm = datetime.strftime(stt, "%Y.%m.%d %H:%M:%S").split(" ")[-1]
-        time_list.append(tm)
+        times.append(stt.strftime("%H:%M:%S"))
         stt += timedelta(seconds=interval_seconds)
+    return times
 
-    return time_list
+
+# ----------------------------------------------------------- map preparation
+def _roll_degrees(smap):
+    """How far the map's pixel grid is turned from solar north, in degrees."""
+    pc = smap.rotation_matrix
+    return float(np.degrees(np.arctan2(pc[1, 0], pc[0, 0])))
 
 
-def download_aia(
-    wavelength,
-    cadence,
-    start_time,
-    end_time,
-    output_dir,
-    email=None,
-    interval_seconds=0.5,
-    skip_calibration=False,
-):
-    """
-    Download and process AIA data for a given time range.
+def _north_up(smap, steps):
+    """The map turned so that solar north is up and its reference
+    coordinate (the Sun's centre for full-disk and coronagraph images) sits
+    at the image centre. The map's own rotation matrix is what rotate()
+    undoes when it is given no angle; the header then records no roll.
+    Maps already north up are only re-centred when the reference pixel is
+    off centre."""
+    from sunpy.map import Map
 
-    Args:
-        wavelength (str): AIA wavelength (e.g., '171', '1600')
-        cadence (str): Time cadence ('12s', '24s', or '1h')
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        output_dir (str): Directory to save downloaded files
-        email (str, optional): Email for DRMS client. Recommended for reliability.
-                               Small requests may work without an email, but large requests
-                               require an email for notification when data is ready.
-        interval_seconds (float, optional): Time interval between images
-        skip_calibration (bool, optional): If True, skip Level 1.5 calibration even if aiapy is available
+    roll = _roll_degrees(smap)
+    data = smap.data if smap.data.dtype.kind == "f" else smap.data.astype(np.float32)
+    smap = Map(data, smap.meta)
+    if abs(roll) > 0.01:
+        turned = smap.rotate(recenter=True, missing=np.nan, order=3)
+        steps.append(f"Rotated {-roll:.3f} deg to solar north, reference coordinate centred")
+        return turned
+    centre = ((smap.data.shape[1] - 1) / 2, (smap.data.shape[0] - 1) / 2)
+    ref = (smap.reference_pixel.x.value, smap.reference_pixel.y.value)
+    if abs(centre[0] - ref[0]) > 0.5 or abs(centre[1] - ref[1]) > 0.5:
+        turned = smap.rotate(recenter=True, missing=np.nan, order=3)
+        steps.append("Reference coordinate centred")
+        return turned
+    return smap
 
-    Returns:
-        list: Paths to downloaded Level 1.5 FITS files (or Level 1.0 if calibration is skipped/unavailable)
 
-    Notes:
-        Alternative download methods if you don't want to provide an email:
-        1. Use SunPy's Fido client (import sunpy.net; from sunpy.net import Fido, attrs)
-        2. Download directly from https://sdo.gsfc.nasa.gov/data/
-    """
-    # Check if we can perform calibration
-    can_calibrate = HAS_AIAPY and not skip_calibration
+def _is_per_second(unit):
+    unit = str(unit or "").replace(" ", "")
+    return "/s" in unit or unit.endswith("s-1") or unit.endswith("s^-1")
 
-    # Create output directory if it doesn't exist
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
 
-    # Create temp directory for downloads
-    temp_dir = os.path.join(output_dir, "temp")
-    if not os.path.isdir(temp_dir):
-        os.makedirs(temp_dir)
+def _per_second(smap, steps, exptime=None):
+    """The map in counts per second, unless it already is or has no
+    exposure time."""
+    from sunpy.map import Map
 
-    # Initialize DRMS client
-    # DRMS 0.9.0+ requires an email for all export requests
-    if email is None:
-        print("Error: Email is required for DRMS downloads.")
-        print("Please provide an email address with the --email option,")
-        print("or use --use-fido for downloads without email requirement.")
-        return []
-
-    client = drms.Client(email=email)
-
-    # Format start and end times for export command - YYYY.MM.DD_HH:MM:SS format required by DRMS
-    start_time_fmt = start_time.replace(" ", "_")
-    end_time_fmt = end_time.replace(" ", "_")
-
-    # Create export command with proper duration
-    export_cmd = aiaexport(
-        wavelength=wavelength,
-        cadence=cadence,
-        start_time=start_time_fmt,
-        end_time=end_time_fmt,
-    )
-    if export_cmd is None:
-        return []
-
-    # Request data export
-    print(f"Requesting data export with command: {export_cmd}")
-    try:
-        response = client.export(export_cmd, method="url", protocol="fits")
-
-        # Wait for export to be ready
-        print("Waiting for JSOC export to be ready...")
-        response.wait()
-
-        if response.status != 0:
-            print(f"Export failed with status {response.status}")
-            print("Try using the --use-fido option as an alternative download method.")
-            return []
-
-        # Get list of files to download
-        export_data = response.data
-        if export_data is None or len(export_data) == 0:
-            print("No data returned from JSOC export.")
-            print("Try using the --use-fido option as an alternative download method.")
-            return []
-
-        print(f"Export ready. Found {len(export_data)} files. Downloading...")
-
-    except Exception as e:
-        print(f"Error during data export: {str(e)}")
-        print("Try using the --use-fido option as an alternative download method.")
-        return []
-
-    # Filter to only download image files (not spikes)
-    # Export returns both .image_lev1.fits and .spikes.fits files
-    image_data = export_data[export_data["filename"].str.contains("image_lev1")]
-
-    if len(image_data) == 0:
-        print("No image files found in export (only spike files).")
-        return []
-
-    print(
-        f"Downloading {len(image_data)} image files (filtered from {len(export_data)} total)..."
-    )
-
-    # Download all image files from the export
-    downloaded_files = []
-    for idx in image_data.index:
+    unit = str(smap.meta.get("bunit", "") or "")
+    if _is_per_second(unit):
+        return smap
+    if exptime is None:
         try:
-            # Get the actual filename from the export data
-            original_filename = export_data.loc[idx, "filename"]
+            exptime = float(smap.exposure_time.to_value(u.s))
+        except Exception:
+            return smap
+    if not np.isfinite(exptime) or exptime <= 0:
+        return smap
+    meta = dict(smap.meta)
+    meta["bunit"] = f"{unit or 'DN'}/s"
+    steps.append(f"Divided by the exposure time ({exptime:.4g} s)")
+    return Map(np.asarray(smap.data, dtype=np.float32) / np.float32(exptime), meta)
 
-            # Define output files for Level 1.0 and Level 1.5
-            level1_file = os.path.join(output_dir, original_filename)
-            level1_5_file = os.path.join(
-                output_dir, original_filename.replace(".fits", "_lev1.5.fits")
-            )
 
-            # Skip if already processed
-            output_file = level1_5_file if can_calibrate else level1_file
-            if os.path.isfile(output_file):
-                downloaded_files.append(output_file)
-                continue
+def _standard_header(smap, steps, extra=None):
+    """The map with a header SolarViewer reads at face value: an ISO
+    DATE-OBS (SOHO splits date and time), HPLN-TAN/HPLT-TAN axes in arcsec
+    (SOHO writes SOLAR-X), and a HISTORY of what was done."""
+    from sunpy.map import Map
 
-            # Download the file using keyword argument for index
-            response.download(temp_dir, index=idx)
-            temp_files = glob.glob(os.path.join(temp_dir, "*.fits"))
-            if not temp_files:
-                print(f"Warning: No file downloaded for index {idx}")
-                continue
+    meta = dict(smap.meta)
+    try:
+        meta["date-obs"] = smap.date.isot
+    except Exception:
+        pass
+    for key in ("time-obs", "date_obs"):
+        meta.pop(key, None)
+    if str(meta.get("ctype1", "")).upper().startswith("SOLAR"):
+        meta["ctype1"], meta["ctype2"] = "HPLN-TAN", "HPLT-TAN"
+    for key in ("cunit1", "cunit2"):
+        if str(meta.get(key, "")).upper() == "ARCSEC":
+            meta[key] = "arcsec"
+    if extra:
+        meta.update(extra)
+    history = meta.get("history")
+    lines = list(history) if isinstance(history, (list, tuple)) else str(history).splitlines() if history else []
+    lines += [f"SolarViewer: {step}" for step in steps]
+    meta["history"] = "\n".join(lines)
+    return Map(smap.data, meta)
 
-            temp_file = temp_files[0]
-            os.rename(temp_file, level1_file)
-            print(f"Downloaded: {os.path.basename(level1_file)}")
 
-            if can_calibrate:
-                try:
-                    print(f"Processing {os.path.basename(level1_file)} to Level 1.5...")
-                    aia_map = Map(level1_file)
-                    warnings.filterwarnings("ignore")
-                    lev1_5map = register(aia_map)
-                    lev1_5map.save(level1_5_file)
-                    os.remove(level1_file)
-                    print(f"Processed: {os.path.basename(level1_5_file)}")
-                    output_file = level1_5_file
-                except Exception as e:
-                    print(f"Error during Level 1.5 calibration: {str(e)}")
-                    print(
-                        f"Using Level 1.0 file instead: {os.path.basename(level1_file)}"
-                    )
-                    output_file = level1_file
-            else:
-                print(f"Downloaded Level 1.0 file: {os.path.basename(level1_file)}")
-                if not HAS_AIAPY:
-                    print("For Level 1.5 calibration, install aiapy: pip install aiapy")
-                output_file = level1_file
+def _save_map(smap, path):
+    """Save ``smap`` as a plain FITS file: 32-bit floats in the primary HDU."""
+    from sunpy.map import Map
 
-            downloaded_files.append(output_file)
+    data = smap.data
+    if data.dtype != np.float32:
+        data = data.astype(np.float32)
+    Map(data, smap.meta).save(path, overwrite=True)
+    return path
 
-        except Exception as e:
-            print(f"Error downloading file {idx}: {str(e)}")
+
+def _strip_fits(name):
+    for ending in (".fits.gz", ".fts.gz", ".fits.fz", ".fits", ".fts", ".fit"):
+        if name.lower().endswith(ending):
+            return name[: -len(ending)]
+    return name
+
+
+def _out_name(path, output_dir, suffix="_prepped"):
+    """The output path for the prepared version of ``path``."""
+    return os.path.join(output_dir, f"{_strip_fits(os.path.basename(path))}{suffix}.fits")
+
+
+def _clean_header(header):
+    """A copy of a FITS ``header`` without the cards astropy cannot parse
+    (SUVI level 1b has a broken CONTINUE card) and without comments."""
+    clean = fits.Header()
+    for card in header.cards:
+        try:
+            value = card.value
+        except Exception:
             continue
+        if card.keyword in ("", "COMMENT", "HISTORY", "CONTINUE"):
+            continue
+        try:
+            clean[card.keyword] = (value, card.comment)
+        except Exception:
+            continue
+    return clean
 
-    # Clean up temp directory
-    if os.path.exists(temp_dir):
-        for file in glob.glob(os.path.join(temp_dir, "*")):
-            os.remove(file)
-        os.rmdir(temp_dir)
 
-    return downloaded_files
-
-
-def main():
-    """
-    Main function to run when the script is executed directly.
-    """
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Download and process data from solar observatories",
-        epilog="""
-Instruments and typical parameters:
-  - AIA: --instrument aia --wavelength 171 --cadence 12s
-  - HMI: --instrument hmi --series 45s (or B_45s, Ic_720s, etc.)
-  - IRIS: --instrument iris --obs-type SJI --wavelength 1400
-  - SOHO/EIT: --instrument soho --soho-instrument EIT --wavelength 195
-  - SOHO/LASCO: --instrument soho --soho-instrument LASCO --detector C2
-        
-Troubleshooting:
-  - If you get 'Bad record-set subset specification' errors, try using --use-fido
-  - For 'email required' errors, either provide --email or use --use-fido
-  - If downloads fail, try a smaller time range between start and end times
-        """,
-    )
-
-    # General arguments
-    parser.add_argument(
-        "--instrument",
-        type=str,
-        default="aia",
-        choices=["aia", "hmi", "iris", "soho"],
-        help="Observatory instrument to download data from",
-    )
-    parser.add_argument(
-        "--start-time",
-        type=str,
-        required=True,
-        help="Start time in YYYY.MM.DD HH:MM:SS format",
-    )
-    parser.add_argument(
-        "--end-time",
-        type=str,
-        required=True,
-        help="End time in YYYY.MM.DD HH:MM:SS format",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="./solar_data",
-        help="Directory to save downloaded files",
-    )
-    parser.add_argument(
-        "--email",
-        type=str,
-        help="Email for DRMS client. Recommended for reliability. Required for large requests.",
-    )
-    parser.add_argument(
-        "--skip-calibration",
-        action="store_true",
-        help="Skip calibration steps even if available",
-    )
-    parser.add_argument(
-        "--use-fido",
-        action="store_true",
-        help="Use SunPy's Fido client instead of DRMS (no email required)",
-    )
-
-    # AIA-specific arguments
-    parser.add_argument(
-        "--wavelength", type=str, help="Wavelength or channel (instrument-specific)"
-    )
-    parser.add_argument(
-        "--cadence",
-        type=str,
-        default="12s",
-        help="Time cadence for AIA (12s, 24s, or 1h)",
-    )
-
-    # HMI-specific arguments
-    parser.add_argument(
-        "--series",
-        type=str,
-        help="Series for HMI (45s, 720s, B_45s, B_720s, Ic_45s, Ic_720s)",
-    )
-
-    # IRIS-specific arguments
-    parser.add_argument(
-        "--obs-type",
-        type=str,
-        default="SJI",
-        help="IRIS observation type (SJI or raster)",
-    )
-
-    # SOHO-specific arguments
-    parser.add_argument(
-        "--soho-instrument",
-        type=str,
-        choices=["EIT", "LASCO", "MDI"],
-        help="SOHO instrument (EIT, LASCO, or MDI)",
-    )
-    parser.add_argument(
-        "--detector", type=str, help="Detector for SOHO/LASCO (C1, C2, C3)"
-    )
-
-    args = parser.parse_args()
+def _read_map(path):
+    """``path`` as a sunpy Map, reading the first HDU with an image (SUVI
+    level 1b and HMI keep theirs in the first extension) and cleaning the
+    header when sunpy cannot read the file as it is."""
+    from sunpy.map import Map
 
     try:
-        # Handle downloading based on selected instrument
-        if args.instrument.lower() == "aia":
-            # AIA data download
-            if args.use_fido:
-                if not args.wavelength:
-                    print("Error: --wavelength is required for AIA data")
-                    return 1
+        return Map(path)
+    except Exception:
+        pass
+    with fits.open(path) as hdul:
+        for hdu in hdul:
+            if hdu.data is not None and getattr(hdu.data, "ndim", 0) >= 2:
+                return Map(np.array(hdu.data), _clean_header(hdu.header))
+    raise ValueError(f"No image in {os.path.basename(path)}")
 
-                downloaded_files = download_aia_with_fido(
-                    wavelength=args.wavelength,
-                    start_time=args.start_time,
-                    end_time=args.end_time,
-                    output_dir=args.output_dir,
-                    skip_calibration=args.skip_calibration,
-                )
-            else:
-                if not args.wavelength:
-                    print("Error: --wavelength is required for AIA data")
-                    return 1
 
-                downloaded_files = download_aia(
-                    wavelength=args.wavelength,
-                    cadence=args.cadence,
-                    start_time=args.start_time,
-                    end_time=args.end_time,
-                    output_dir=args.output_dir,
-                    email=args.email,
-                    skip_calibration=args.skip_calibration,
-                )
+# per-instrument preparation ------------------------------------------------
+def _prepare_generic(path, output_dir, options, per_second):
+    """North up, reference coordinate centred, per second when asked,
+    standard header."""
+    steps = []
+    smap = _read_map(path)
+    if per_second:
+        smap = _per_second(smap, steps)
+    smap = _north_up(smap, steps)
+    smap = _standard_header(smap, steps)
+    return [_save_map(smap, _out_name(path, output_dir))]
 
-        elif args.instrument.lower() == "hmi":
-            # HMI data download
-            if not args.series:
-                print("Error: --series is required for HMI data")
-                return 1
 
-            if args.use_fido:
-                downloaded_files = download_hmi_with_fido(
-                    series=args.series,
-                    start_time=args.start_time,
-                    end_time=args.end_time,
-                    output_dir=args.output_dir,
-                    skip_calibration=args.skip_calibration,
-                )
-            else:
-                downloaded_files = download_hmi(
-                    series=args.series,
-                    start_time=args.start_time,
-                    end_time=args.end_time,
-                    output_dir=args.output_dir,
-                    email=args.email,
-                    skip_calibration=args.skip_calibration,
-                )
+def _prepare_aia(path, output_dir, options):
+    """Level 1 to level 1.5 with aiapy."""
+    from sunpy.map import Map
 
-        elif args.instrument.lower() == "iris":
-            # IRIS data download (only Fido is supported)
-            downloaded_files = download_iris(
-                start_time=args.start_time,
-                end_time=args.end_time,
-                output_dir=args.output_dir,
-                obs_type=args.obs_type,
-                wavelength=args.wavelength,
-                skip_calibration=args.skip_calibration,
-            )
+    steps = []
+    smap = Map(path)
+    if options.get("pointing_table") is not None:
+        try:
+            smap = update_pointing(smap, pointing_table=options["pointing_table"])
+            steps.append("Pointing updated from the JSOC master pointing table")
+        except Exception as e:
+            print(f"  - Warning: could not update the pointing: {e}", flush=True)
+    if options.get("apply_psf"):
+        smap = aia_deconvolve(smap, iterations=25)
+        steps.append("PSF deconvolved (Richardson-Lucy, 25 iterations)")
+    smap = register(smap)
+    steps.append("Registered: north up, 0.6 arcsec/pixel, Sun centred (level 1.5)")
+    if options.get("apply_degradation", True):
+        try:
+            smap = correct_degradation(smap, correction_table=options.get("correction_table"))
+            steps.append("Corrected for the instrument degradation")
+        except Exception as e:
+            print(f"  - Warning: could not correct the degradation: {e}", flush=True)
+    if options.get("apply_exposure_norm", True):
+        smap = _per_second(smap, steps)
+    smap = _standard_header(smap, steps, {"lvl_num": 1.5})
+    base = os.path.basename(path)
+    if re.search(r"lev1(\.fits|\.fits\.gz|\.fts)$", base):
+        out = os.path.join(output_dir, re.sub(r"lev1(\.fits|\.fits\.gz|\.fts)$", "lev1.5.fits", base))
+    else:
+        out = _out_name(path, output_dir, "_lev1.5")
+    return [_save_map(smap, out)]
 
-        elif args.instrument.lower() == "soho":
-            # SOHO data download (only Fido is supported)
-            if not args.soho_instrument:
-                print("Error: --soho-instrument is required for SOHO data")
-                return 1
 
-            downloaded_files = download_soho(
-                instrument=args.soho_instrument,
-                start_time=args.start_time,
-                end_time=args.end_time,
-                output_dir=args.output_dir,
-                wavelength=args.wavelength,
-                detector=args.detector,
-                skip_calibration=args.skip_calibration,
-            )
+def _prepare_iris_sji(path, output_dir, options):
+    """One 2-D file per slit-jaw exposure of an IRIS level 2 cube, each with
+    its own time, exposure time and pointing from the cube's auxiliary
+    table, in DN/s and turned north up. Exposures with no data are skipped,
+    and with a cadence set only one exposure per interval is kept."""
+    from sunpy.map import Map
 
+    outputs = []
+    sample = float(options.get("sample") or 0)
+    with fits.open(path) as hdul:
+        header = hdul[0].header
+        cube = hdul[0].data
+        if cube is None or cube.ndim != 3:
+            raise ValueError("not an IRIS slit-jaw cube")
+        aux, columns = None, {}
+        if len(hdul) > 1 and hdul[1].data is not None and getattr(hdul[1].data, "ndim", 0) == 2:
+            aux = np.asarray(hdul[1].data, dtype=float)
+            skip = ("NAXIS", "NAXIS1", "NAXIS2", "BITPIX", "PCOUNT", "GCOUNT")
+            columns = {
+                k: int(hdul[1].header[k])
+                for k in hdul[1].header
+                if k not in skip and isinstance(hdul[1].header[k], (int, np.integer))
+            }
+        start = None
+        for key in ("STARTOBS", "DATE_OBS", "DATE-OBS"):  # TIME counts from STARTOBS
+            if header.get(key):
+                try:
+                    start = datetime.fromisoformat(str(header[key]).rstrip("Z"))
+                    break
+                except ValueError:
+                    continue
+        base = _strip_fits(os.path.basename(path))
+        frame_header = _clean_header(header)
+        for key in ("NAXIS3", "CTYPE3", "CUNIT3", "CRVAL3", "CRPIX3", "CDELT3", "PC3_1", "PC3_2", "PC3_3", "PC1_3", "PC2_3"):
+            frame_header.remove(key, ignore_missing=True)
+        frame_header["NAXIS"] = 2
+        for key in ("CUNIT1", "CUNIT2"):
+            if not frame_header.get(key):
+                frame_header[key] = "arcsec"
+
+        def column(name, i):
+            if aux is None or name not in columns or columns[name] >= aux.shape[1]:
+                return None
+            value = aux[i, columns[name]]
+            return float(value) if np.isfinite(value) else None
+
+        last_kept = None
+        for i in range(cube.shape[0]):
+            frame = cube[i]
+            if not np.any(frame > -199):  # a missing exposure is all -200
+                continue
+            seconds = column("TIME", i)
+            when = start + timedelta(seconds=seconds) if (start is not None and seconds is not None) else None
+            if sample and when is not None and last_kept is not None:
+                if (when - last_kept).total_seconds() < sample - 0.5:
+                    continue
+            if when is not None:
+                last_kept = when
+            meta = frame_header.copy()
+            if when is not None:
+                meta["DATE-OBS"] = when.isoformat(timespec="milliseconds")
+                meta["DATE_OBS"] = meta["DATE-OBS"]
+            exptime = column("EXPTIMES", i)
+            if exptime is not None and exptime > 0:
+                meta["EXPTIME"] = exptime
+            xcen, ycen = column("XCENIX", i), column("YCENIX", i)
+            if xcen is not None and ycen is not None and (xcen, ycen) != (0.0, 0.0):
+                meta["CRVAL1"], meta["CRVAL2"] = xcen, ycen
+                meta["XCEN"], meta["YCEN"] = xcen, ycen
+            pc = [column(k, i) for k in ("PC1_1IX", "PC1_2IX", "PC2_1IX", "PC2_2IX")]
+            if all(v is not None for v in pc) and any(v != 0 for v in pc):
+                meta["PC1_1"], meta["PC1_2"], meta["PC2_1"], meta["PC2_2"] = pc
+            meta["FRAME"] = i
+            data = np.array(frame, dtype=np.float32)
+            data[data <= -199] = np.nan
+            steps = [f"Exposure {i} of the IRIS level 2 cube {os.path.basename(path)}"]
+            smap = Map(data, meta)
+            smap = _per_second(smap, steps, exptime)
+            smap = _north_up(smap, steps)
+            smap = _standard_header(smap, steps)
+            outputs.append(_save_map(smap, os.path.join(output_dir, f"{base}_frame{i:04d}.fits")))
+    return outputs
+
+
+def _prepare_cor_group(paths, output_dir, options):
+    """A COR1/COR2 polarizer triplet (0, 120 and 240 degrees) combined into
+    total brightness, 2/3 of the sum of the three per-second images
+    (Billings 1966), north up; a lone image is prepared on its own."""
+    from sunpy.map import Map
+
+    paths = sorted(paths)
+    if len(paths) != 3:
+        return [out for p in paths for out in _prepare_generic(p, output_dir, options, per_second=True)]
+    maps = [_per_second(_read_map(p), []) for p in paths]
+    reference = maps[1]
+    if not all(m.data.shape == reference.data.shape for m in maps):
+        return [out for p in paths for out in _prepare_generic(p, output_dir, options, per_second=True)]
+    total = (2.0 / 3.0) * sum(np.asarray(m.data, dtype=np.float64) for m in maps)
+    meta = dict(reference.meta)
+    meta.pop("polar", None)
+    steps = [
+        "Total brightness: 2/3 of the sum of the polarizer images at 0, 120 and 240 degrees ("
+        + ", ".join(os.path.basename(p) for p in paths)
+        + "), each divided by its exposure time"
+    ]
+    smap = Map(total.astype(np.float32), meta)
+    smap = _north_up(smap, steps)
+    smap = _standard_header(smap, steps)
+    stem = re.sub(r"_[a-z]\dc[12][AB]$", "", _strip_fits(os.path.basename(paths[0])))
+    detector = str(reference.meta.get("detector", "cor")).lower()
+    craft = str(reference.meta.get("obsrvtry", "STEREO_A"))[-1].upper()
+    return [_save_map(smap, os.path.join(output_dir, f"{stem}_{detector}{craft}_total_brightness.fits"))]
+
+
+def _cor_groups(paths):
+    """COR images grouped into polarizer triplets taken within three minutes
+    of each other at 0, 120 and 240 degrees; the rest as single files."""
+    records = []
+    for p in paths:
+        try:
+            h = fits.getheader(p)
+            when = datetime.fromisoformat(str(h.get("DATE-OBS", "")).rstrip("Z"))
+            records.append((when, float(h.get("POLAR", -1)), p))
+        except Exception:
+            records.append((None, -1.0, p))
+    records.sort(key=lambda r: (r[0] or datetime.min, r[2]))
+    groups, i = [], 0
+    while i < len(records):
+        trio = records[i : i + 3]
+        angles = sorted(r[1] for r in trio)
+        if (
+            len(trio) == 3
+            and all(r[0] is not None for r in trio)
+            and angles == [0.0, 120.0, 240.0]
+            and (trio[-1][0] - trio[0][0]).total_seconds() < 180
+        ):
+            groups.append([r[2] for r in trio])
+            i += 3
         else:
-            print(f"Error: Unsupported instrument: {args.instrument}")
-            return 1
+            groups.append([records[i][2]])
+            i += 1
+    return groups
 
-        # Report download results
-        instrument_name = args.instrument.upper()
-        if args.instrument.lower() == "soho" and args.soho_instrument:
-            instrument_name = f"SOHO/{args.soho_instrument}"
 
-        print(
-            f"Download complete. Downloaded {len(downloaded_files)} {instrument_name} files to {args.output_dir}"
-        )
+PREPARERS = {
+    "aia": _prepare_aia,
+    "hmi": lambda p, d, o: _prepare_generic(p, d, o, per_second=False),
+    "eit": lambda p, d, o: _prepare_generic(p, d, o, per_second=True),
+    "lasco": lambda p, d, o: _prepare_generic(p, d, o, per_second=True),
+    "mdi": lambda p, d, o: _prepare_generic(p, d, o, per_second=False),
+    "suvi": lambda p, d, o: _prepare_generic(p, d, o, per_second=False),
+    "euvi": lambda p, d, o: _prepare_generic(p, d, o, per_second=True),
+    "cor": _prepare_cor_group,
+    "iris_sji": _prepare_iris_sji,
+}
 
+
+def _prepare_one(kind, item, output_dir, options):
+    """Prepare one downloaded file (or file group) of ``kind``; returns
+    (the output paths or None, the lines to print). Runs in a worker
+    process."""
+    _quiet()
+    name = ", ".join(os.path.basename(p) for p in (item if isinstance(item, list) else [item]))
+    try:
+        outputs = PREPARERS[kind](item, output_dir, options)
+        return outputs, [f"Processed {name} -> {', '.join(os.path.basename(o) for o in outputs)}"]
     except Exception as e:
-        print(f"Error: {str(e)}")
-        print("\nTroubleshooting tips:")
-        print("1. Try using the --use-fido option if you're having issues with DRMS")
-        print("2. Make sure your time format is correct (YYYY.MM.DD HH:MM:SS)")
-        print("3. Try a smaller time range between start and end times")
-        print("4. If using DRMS, consider providing an email with --email")
-        print("5. If using Fido, ensure you have the latest sunpy version installed")
-        print("   You can update with: pip install --upgrade sunpy")
-        return 1
+        return None, [f"Warning: could not process {name}: {e}"]
 
-    return 0
+
+def prepare_files(kind, items, output_dir, options=None, keep_originals=False, workers=None):
+    """Prepare the downloaded ``items`` (paths, or lists of paths for file
+    groups) of ``kind`` for SolarViewer, several at a time in worker
+    processes. Returns the output paths; an item that fails stays as it was
+    downloaded and its path is returned instead. The originals are deleted
+    unless ``keep_originals``."""
+    options = dict(options or {})
+    items = list(items)
+    if not items:
+        return []
+    wanted = options.pop("workers", None) or 4
+    if workers is None:
+        workers = max(1, min(len(items), wanted, (os.cpu_count() or 2) // 2))
+    results = [None] * len(items)
+    many = f" ({workers} at a time)" if workers > 1 else ""
+    print(f"Processing {len(items)} files for SolarViewer{many}...", flush=True)
+    done = 0
+
+    def finish(i, result):
+        nonlocal done
+        done += 1
+        outputs, lines = result
+        for line in lines:
+            print(f"  [{done}/{len(items)}] {line}", flush=True)
+        results[i] = outputs
+
+    if workers > 1 and len(items) > 1:
+        try:
+            import multiprocessing
+            from concurrent.futures import ProcessPoolExecutor
+
+            context = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
+                futures = {pool.submit(_prepare_one, kind, item, output_dir, options): i for i, item in enumerate(items)}
+                for future in futures:
+                    finish(futures[future], future.result())
+        except Exception as e:
+            print(f"  Worker processes failed ({e}); processing one by one.", flush=True)
+            results, done = [None] * len(items), 0
+            for i, item in enumerate(items):
+                finish(i, _prepare_one(kind, item, output_dir, options))
+    else:
+        for i, item in enumerate(items):
+            finish(i, _prepare_one(kind, item, output_dir, options))
+
+    final = []
+    for item, outputs in zip(items, results):
+        originals = item if isinstance(item, list) else [item]
+        if outputs is None:
+            final.extend(originals)
+            continue
+        final.extend(outputs)
+        if not keep_originals:
+            for p in originals:
+                if p not in outputs and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+    print(f"Successfully processed {sum(o is not None for o in results)} of {len(items)} files.", flush=True)
+    return final
+
+
+def _ensure_dir(path):
+    if not os.path.isdir(path):
+        os.makedirs(path)
+
+
+def _unpack_archives(paths, output_dir):
+    """FITS files inside any tar archives among ``paths`` (MDI arrives that
+    way) moved next to the others; the archives are removed."""
+    out = []
+    for p in paths:
+        if not re.search(r"\.(tar|tar\.gz|tgz)$", p, re.I):
+            out.append(p)
+            continue
+        try:
+            with tarfile.open(p, "r:*") as tar:
+                for member in tar.getmembers():
+                    if not member.isfile() or not re.search(r"\.(fits|fts|fit)(\.gz)?$", member.name, re.I):
+                        continue
+                    target = os.path.join(output_dir, os.path.basename(member.name))
+                    with tar.extractfile(member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    out.append(target)
+            os.remove(p)
+        except Exception as e:
+            print(f"Warning: could not unpack {os.path.basename(p)}: {e}")
+            out.append(p)
+    return out
+
+
+def _fits_extension(paths):
+    """Downloaded files renamed to end in .fits when they are FITS files
+    without an extension (SDAC's EIT level 0 files)."""
+    out = []
+    for p in paths:
+        if re.search(r"\.(fits|fts|fit|fz|gz|tar|tgz)$", p, re.I):
+            out.append(p)
+            continue
+        try:
+            with fits.open(p):
+                pass
+            os.rename(p, p + ".fits")
+            out.append(p + ".fits")
+        except Exception:
+            out.append(p)
+    return out
+
+
+def _print_search(label, start_time, end_time, sample):
+    cadence = f", one image every {int(sample)} s" if sample else ""
+    print(f"Searching for {label} data from {start_time} to {end_time}{cadence}", flush=True)
+
+
+def _no_data(label, start_time, end_time):
+    print("\n" + "=" * 60 + "\nNO DATA FOUND\n" + "=" * 60)
+    print(f"  Time range: {start_time} to {end_time}\n  {label}")
+    print("\nPossible causes:\n  - No observations in this time range\n  - The provider may be temporarily unavailable")
+    if _parse_time(end_time) > datetime.now():
+        print("  - NOTE: End time is in the future!")
+
+
+def _found(result):
+    """Print and return how many files a Fido result (or one of its tables) lists."""
+    total = result.file_num if hasattr(result, "file_num") else len(result)
+    if total:
+        print(f"Found {total} files. Downloading...", flush=True)
+    return total
+
+
+def _thin_rows(table, sample, hold=0):
+    """Row indices of a Fido result ``table`` keeping one image (or one
+    sequence of up to ``hold`` seconds) every ``sample`` seconds."""
+    keep, last = [], None
+    for i, row in enumerate(table):
+        when = row["Start Time"].to_datetime()
+        if last is None or (when - last).total_seconds() >= float(sample) - 0.5:
+            last = when
+        if (when - last).total_seconds() <= hold:
+            keep.append(i)
+    return keep
+
+
+# ------------------------------------------------------------------ SDO / AIA
+def _aia_tables(start_dt, end_dt, apply_degradation):
+    """The JSOC pointing table and degradation correction table for the time
+    range, fetched once for all the files (None where unavailable)."""
+    pointing_table = correction_table = None
+    for source in ("jsoc", "lmsal"):
+        try:
+            pointing_table = get_pointing_table(
+                source, time_range=(start_dt - timedelta(hours=12), end_dt + timedelta(hours=12))
+            )
+            break
+        except Exception:
+            continue
+    if pointing_table is None:
+        print("  - Warning: the pointing table could not be fetched; the header pointing is kept")
+    if apply_degradation:
+        for source in ("JSOC", "SSW"):
+            try:
+                correction_table = get_correction_table(source)
+                break
+            except Exception:
+                continue
+        if correction_table is None:
+            print("  - Warning: the degradation table could not be fetched; aiapy will try itself per file")
+    return pointing_table, correction_table
+
+
+def _finish_aia(files, output_dir, start_dt, end_dt, skip_calibration, apply_psf, apply_degradation, apply_exposure_norm, keep_originals):
+    files = [str(p) for p in files]
+    if skip_calibration or not files:
+        if files:
+            print(f"Successfully downloaded {len(files)} AIA level 1 files.", flush=True)
+        return files
+    if not HAS_AIAPY:
+        print("  Calibration: DISABLED (aiapy not installed; pip install aiapy)")
+        return files
+    print("  Calibration: ENABLED (aiapy level 1.5)", flush=True)
+    pointing_table, correction_table = _aia_tables(start_dt, end_dt, apply_degradation)
+    options = dict(
+        pointing_table=pointing_table,
+        correction_table=correction_table,
+        apply_psf=apply_psf,
+        apply_degradation=apply_degradation,
+        apply_exposure_norm=apply_exposure_norm,
+        workers=1 if apply_psf else 2,  # a 4k image needs about 1 GB while it is registered
+    )
+    return prepare_files("aia", files, output_dir, options, keep_originals)
 
 
 def download_aia_with_fido(
@@ -675,1266 +878,460 @@ def download_aia_with_fido(
     apply_psf=False,
     apply_degradation=True,
     apply_exposure_norm=True,
+    sample=None,
+    keep_originals=False,
 ):
-    """
-    Alternative download function using SunPy's Fido client which doesn't require an email.
+    """Download AIA ``wavelength`` images through the VSO (no email needed)
+    and prepare them to level 1.5. ``sample`` is the cadence in seconds
+    (every image when None). Returns the output paths."""
+    from sunpy.net import Fido, attrs as a
 
-    Args:
-        wavelength (str): AIA wavelength (e.g., '171', '1600')
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        output_dir (str): Directory to save downloaded files
-        skip_calibration (bool, optional): If True, skip Level 1.5 calibration
-        apply_psf (bool, optional): If True, apply PSF deconvolution (slow, ~30-60s/image)
-        apply_degradation (bool, optional): If True, apply time-dependent degradation correction
-        apply_exposure_norm (bool, optional): If True, normalize by exposure time
-
-    Returns:
-        list: Paths to downloaded Level 1.5 FITS files (or Level 1.0 if calibration is skipped/unavailable)
-    """
+    _quiet()
+    prefer_ipv4()
+    _ensure_dir(output_dir)
+    start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
+    label = f"AIA {wavelength}Å"
+    _print_search(label, start_time, end_time, sample)
     try:
-        import sunpy.net  # noqa: F401 (availability check)
-        from sunpy.net import Fido, attrs as a
-    except ImportError:
-        print("Error: SunPy not installed or not properly configured.")
-        return []
-
-    # Create output directory if it doesn't exist
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
-
-    # Check if we can perform calibration
-    can_calibrate = HAS_AIAPY and not skip_calibration
-
-    # Parse the time strings
-    start_dt = datetime.strptime(start_time, "%Y.%m.%d %H:%M:%S")
-    end_dt = datetime.strptime(end_time, "%Y.%m.%d %H:%M:%S")
-
-    # Convert wavelength string to integer
-    wl_int = int(wavelength)
-
-    print(f"Searching for AIA {wavelength}Å data from {start_time} to {end_time}")
-    
-    # Show calibration status upfront
-    if can_calibrate:
-        print("  Calibration: ENABLED (aiapy available)")
-    else:
-        print(f"  Calibration: DISABLED {'(aiapy not installed)' if not HAS_AIAPY else '(skipped by user)'}")
-
-    try:
-        # Create the query with correct unit import
         result = Fido.search(
             a.Time(start_dt, end_dt),
             a.Instrument("AIA"),
-            a.Wavelength(wl_int * u.angstrom),  # Now using the correct astropy units
+            a.Wavelength(int(wavelength) * u.angstrom),
+            *_sample_attrs(sample),
         )
-
-        if len(result) == 0 or len(result[0]) == 0:
-            print("\n" + "="*60)
-            print("NO DATA FOUND")
-            print("="*60)
-            print(f"  Time range: {start_time} to {end_time}")
-            print(f"  Instrument: AIA, Wavelength: {wavelength}Å")
-            print("\nPossible causes:")
-            print("  - Data may not exist for this time range")
-            print("  - VSO provider may be temporarily unavailable")
-            print("  - Check VSO status: https://sdac.virtualsolar.org/cgi/health_report")
-            if end_dt > datetime.now():
-                print("  - NOTE: End time is in the future!")
+        if not _found(result):
+            _no_data(label, start_time, end_time)
             return []
-
-        print(f"Found {len(result[0])} files. Downloading...")
-
-        # Download the files with retry logic
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
-        print(f"Error during Fido search/fetch: {str(e)}")
-        print("Check your search parameters and ensure sunpy is properly installed.")
+        print(f"Error during Fido search/fetch: {e}")
         return []
-
-    downloaded_files = []
-
-    # Process the downloaded files if calibration is requested
-    for file_path in downloaded:
-        file_path = str(file_path)
-        # Determine output file names
-        base_name = os.path.basename(file_path)
-        level1_5_file = os.path.join(
-            output_dir, f"{base_name.replace('lev1','lev1_5')}"
-        )
-        output_file = level1_5_file if can_calibrate else file_path
-
-        if can_calibrate and not os.path.isfile(level1_5_file):
-            try:
-                # Convert to level 1.5 using aiapy calibration
-                # Order: 1) update_pointing, 2) PSF deconvolve, 3) register, 4) correct_degradation
-                print(f"Processing {base_name} to Level 1.5...")
-                aia_map = Map(file_path)
-                warnings.filterwarnings("ignore")
-
-                # Step 1: Update pointing information from JSOC
-                try:
-                    aia_map = update_pointing(aia_map)
-                    print(f"  - Updated pointing for {base_name}")
-                except Exception as e:
-                    print(f"  - Warning: Could not update pointing: {e}")
-
-                # Step 2: PSF deconvolution (MUST be done on Level 1 before registration)
-                if apply_psf:
-                    try:
-                        print(
-                            "  - Applying PSF deconvolution (this may take 30-60 seconds)..."
-                        )
-                        aia_map = aia_deconvolve(aia_map, iterations=25)
-                        print("  - Applied PSF deconvolution (25 iterations)")
-                    except Exception as e:
-                        print(f"  - Warning: Could not apply PSF deconvolution: {e}")
-
-                # Step 3: Register (rotate, scale to 0.6"/px, center sun)
-                lev1_5map = register(aia_map)
-                print("  - Registered (rotated, scaled, centered)")
-
-                # Step 4: Correct for time-dependent degradation
-                if apply_degradation:
-                    try:
-                        lev1_5map = correct_degradation(lev1_5map)
-                        print("  - Applied degradation correction")
-                    except Exception as e:
-                        print(
-                            f"  - Warning: Could not apply degradation correction: {e}"
-                        )
-
-                # Step 5: Normalize by exposure time
-                if apply_exposure_norm and lev1_5map.exposure_time.value > 0:
-                    lev1_5map = lev1_5map / lev1_5map.exposure_time
-                    print("  - Normalized by exposure time")
-
-                lev1_5map.save(level1_5_file)
-
-                print(f"Successfully processed: {os.path.basename(level1_5_file)}")
-                output_file = level1_5_file
-                os.remove(file_path)
-            except Exception as e:
-                print(f"Error during Level 1.5 calibration: {str(e)}")
-                print(f"Using Level 1.0 file instead: {base_name}")
-                output_file = file_path
-        else:
-            print(f"Downloaded Level 1.0 file: {base_name}")
-            if not HAS_AIAPY:
-                print("For Level 1.5 calibration, install aiapy: pip install aiapy")
-
-        downloaded_files.append(output_file)
-
-    return downloaded_files
+    if downloaded.errors and len(downloaded) == 0:
+        print("The VSO's AIA export is not answering; the JSOC method (an email registered at JSOC) is the alternative.")
+    return _finish_aia(downloaded, output_dir, start_dt, end_dt, skip_calibration, apply_psf, apply_degradation, apply_exposure_norm, keep_originals)
 
 
-def hmiexport(series, start_time, end_time):
-    """
-    Generate an export command for HMI data.
+def _jsoc_export(record, email, output_dir, segment=None):
+    """Export ``record`` from JSOC as FITS files with full headers and
+    download them in parallel. Returns the paths."""
+    import drms
 
-    Args:
-        series (str): HMI series (e.g., 'M_45s', 'B_45s', 'Ic_720s')
-        start_time (str): Start time in 'YYYY.MM.DD_HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD_HH:MM:SS' format
-
-    Returns:
-        str: The export command string or None if invalid parameters
-    """
-    # Validate series
-    if series not in HMI_SERIES.keys():
-        print(
-            f"Error: Invalid HMI series '{series}'. Use one of: {', '.join(HMI_SERIES.keys())}"
-        )
-        return None
-
-    # Calculate duration between start and end times
-    try:
-        start_dt = datetime.strptime(start_time.replace("_", " "), "%Y.%m.%d %H:%M:%S")
-        end_dt = datetime.strptime(end_time.replace("_", " "), "%Y.%m.%d %H:%M:%S")
-        duration_seconds = (end_dt - start_dt).total_seconds()
-
-        # Convert to a duration string (e.g., "1h", "30m", "3600s")
-        if duration_seconds >= 3600:
-            duration_str = f"{int(duration_seconds / 3600)}h"
-        elif duration_seconds >= 60:
-            duration_str = f"{int(duration_seconds / 60)}m"
-        else:
-            duration_str = f"{int(duration_seconds)}s"
-    except (ValueError, TypeError):
-        # Default to 1 hour if parsing fails
-        duration_str = "1h"
-
-    # Format time for the export command
-    time_utc = start_time + "_UTC"
-
-    # Create export command with calculated duration
-    export_cmd = f"{HMI_SERIES[series]}[{time_utc}/{duration_str}]"
-    return export_cmd
-
-
-def download_hmi(
-    series,
-    start_time,
-    end_time,
-    output_dir,
-    email=None,
-    interval_seconds=45.0,
-    skip_calibration=False,
-):
-    """
-    Download and process HMI data for a given time range.
-
-    Args:
-        series (str): HMI series type ('45s', '720s', 'B_45s', 'B_720s', 'Ic_45s', 'Ic_720s')
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        output_dir (str): Directory to save downloaded files
-        email (str, optional): Email for DRMS client. Recommended for reliability.
-                               Small requests may work without an email, but large requests
-                               require an email for notification when data is ready.
-        interval_seconds (float, optional): Time interval between images.
-                                           Default is 45.0 seconds for '45s' series.
-                                           For '720s' series, consider using 720.0.
-        skip_calibration (bool, optional): If True, skip calibration steps
-
-    Returns:
-        list: Paths to downloaded FITS files
-
-    Notes:
-        HMI data calibration is different from AIA. For proper scientific analysis,
-        consider using the SunPy or additional HMI-specific tools to further calibrate the data.
-    """
-    # Create output directory if it doesn't exist
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
-
-    # Create temp directory for downloads
-    temp_dir = os.path.join(output_dir, "temp")
-    if not os.path.isdir(temp_dir):
-        os.makedirs(temp_dir)
-
-    # Initialize DRMS client
-    # DRMS 0.9.0+ requires an email for all export requests
-    if email is None:
-        print("Error: Email is required for DRMS downloads.")
-        print("Please provide an email address with the --email option,")
-        print("or use --use-fido for downloads without email requirement.")
+    prefer_ipv4()
+    if not email:
+        print("Error: an email address registered at JSOC is required for JSOC exports.")
+        print("Register at http://jsoc.stanford.edu/ajax/register_email.html, or use the Fido method.")
         return []
-
     client = drms.Client(email=email)
-
-    # Format start and end times for export command
-    start_time_fmt = start_time.replace(" ", "_")
-    end_time_fmt = end_time.replace(" ", "_")
-
-    # Create export command with proper duration
-    export_cmd = hmiexport(
-        series=series, start_time=start_time_fmt, end_time=end_time_fmt
-    )
-    if export_cmd is None:
-        return []
-
-    # Request data export
-    print(f"Requesting data export with command: {export_cmd}")
+    print(f"Requesting a JSOC export of {record}", flush=True)
     try:
-        response = client.export(export_cmd, method="url", protocol="fits")
-
-        # Wait for export to be ready
-        print("Waiting for JSOC export to be ready...")
+        response = client.export(record, method="url", protocol="fits")
+        print("Waiting for the JSOC export to be ready...", flush=True)
         response.wait()
-
         if response.status != 0:
             print(f"Export failed with status {response.status}")
-            print("Try using the --use-fido option as an alternative download method.")
             return []
-
-        # Get list of files to download
-        export_data = response.data
-        if export_data is None or len(export_data) == 0:
-            print("No data returned from JSOC export.")
-            print("Try using the --use-fido option as an alternative download method.")
-            return []
-
-        print(f"Export ready. Found {len(export_data)} files. Downloading...")
-
+        table = response.urls
     except Exception as e:
-        print(f"Error during data export: {str(e)}")
-        print("Try using the --use-fido option as an alternative download method.")
+        print(f"Error during the JSOC export: {e}")
         return []
-
-    # Download all files from the export
-    downloaded_files = []
-    for idx in export_data.index:
-        try:
-            # Get the actual filename from the export data
-            original_filename = export_data.loc[idx, "filename"]
-            output_file = os.path.join(output_dir, original_filename)
-
-            # Skip if already exists
-            if os.path.isfile(output_file):
-                downloaded_files.append(output_file)
-                continue
-
-            # Download the file using keyword argument for index
-            response.download(temp_dir, index=idx)
-            temp_files = glob.glob(os.path.join(temp_dir, "*.fits"))
-            if not temp_files:
-                print(f"Warning: No file downloaded for index {idx}")
-                continue
-
-            temp_file = temp_files[0]
-            os.rename(temp_file, output_file)
-            print(f"Downloaded: {os.path.basename(output_file)}")
-            downloaded_files.append(output_file)
-
-        except Exception as e:
-            print(f"Error downloading file {idx}: {str(e)}")
-            continue
-
-    # Apply calibration if requested
-    if not skip_calibration and downloaded_files:
-        calibrated_files = []
-        for file_path in downloaded_files:
-            try:
-                lvl1_map = Map(file_path)
-                print(f"Processing {os.path.basename(file_path)} to Level 1.5...")
-                lvl1_5_map = update_hmi_pointing(lvl1_map)
-                lvl1_5_map_output_file = file_path.replace(".fits", "_lvl1.5.fits")
-                lvl1_5_map.save(lvl1_5_map_output_file, filetype="fits")
-                print(f"Processed: {os.path.basename(lvl1_5_map_output_file)}")
-                os.remove(file_path)
-                calibrated_files.append(lvl1_5_map_output_file)
-            except Exception as e:
-                print(f"Error calibrating {file_path}: {str(e)}")
-                calibrated_files.append(file_path)
-        downloaded_files = calibrated_files
-
-    # Clean up temp directory
-    if os.path.exists(temp_dir):
-        for file in glob.glob(os.path.join(temp_dir, "*")):
-            os.remove(file)
-        os.rmdir(temp_dir)
-
-    return downloaded_files
+    if table is None or len(table) == 0:
+        print("No data returned from the JSOC export.")
+        return []
+    if segment:
+        table = table[table["filename"].str.contains(segment)]
+    urls, names = list(table["url"]), list(table["filename"])
+    print(f"Found {len(urls)} files. Downloading...", flush=True)
+    return _fetch_urls(urls, output_dir, names)
 
 
-def download_hmi_with_fido(
-    series,
-    start_time,
-    end_time,
-    output_dir,
+def download_aia(
+    wavelength,
+    cadence=None,
+    start_time=None,
+    end_time=None,
+    output_dir=None,
+    email=None,
+    interval_seconds=None,
     skip_calibration=False,
+    sample=None,
+    apply_psf=False,
+    apply_degradation=True,
+    apply_exposure_norm=True,
+    keep_originals=False,
 ):
-    """
-    Alternative download function for HMI data using SunPy's Fido client which doesn't require an email.
-
-    Args:
-        series (str): HMI series ('45s', '720s', 'B_45s', 'B_720s', 'Ic_45s', 'Ic_720s')
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        output_dir (str): Directory to save downloaded files
-        skip_calibration (bool, optional): If True, skip calibration steps
-
-    Returns:
-        list: Paths to downloaded FITS files
-    """
-    try:
-        import sunpy.net  # noqa: F401 (availability check)
-        from sunpy.net import Fido, attrs as a
-    except ImportError:
-        print("Error: SunPy not installed or not properly configured.")
+    """Download AIA ``wavelength`` images with a JSOC export (``email`` must
+    be registered at JSOC) and prepare them to level 1.5. ``cadence`` is
+    the series ('12s', '24s', '1h'), found from the wavelength when None;
+    ``sample`` the cadence in seconds. Returns the output paths."""
+    _quiet()
+    _ensure_dir(output_dir)
+    cadence = cadence or aia_cadence(wavelength)
+    if sample is None and interval_seconds:
+        sample = interval_seconds
+    record = aiaexport(wavelength, cadence, start_time, end_time, sample)
+    if record is None:
         return []
+    files = _jsoc_export(record, email, output_dir, segment="image")
+    start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
+    return _finish_aia(files, output_dir, start_dt, end_dt, skip_calibration, apply_psf, apply_degradation, apply_exposure_norm, keep_originals)
 
-    # Create output directory if it doesn't exist
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
 
-    # Parse the time strings
-    start_dt = datetime.strptime(start_time, "%Y.%m.%d %H:%M:%S")
-    end_dt = datetime.strptime(end_time, "%Y.%m.%d %H:%M:%S")
+# ------------------------------------------------------------------ SDO / HMI
+def _finish_hmi(files, output_dir, skip_calibration, keep_originals):
+    files = [str(p) for p in files]
+    if skip_calibration or not files:
+        if files:
+            print(f"Successfully downloaded {len(files)} HMI files.", flush=True)
+        return files
+    print("  Processing: north up, Sun centred, native 0.504 arcsec/pixel", flush=True)
+    return prepare_files("hmi", files, output_dir, {"workers": 2}, keep_originals)
 
-    # Map series to physobs for Fido queries
-    # Note: M_ and B_ series both correspond to LOS_magnetic_field
-    # Vector magnetograms are not directly available via simple Fido queries
-    physobs = None
-    if "V_" in series:
-        physobs = "LOS_velocity"
-    elif "Ic_" in series:
-        physobs = "intensity"  # continuum intensity
-    else:  # M_ and B_ series both use LOS magnetic field
-        physobs = "LOS_magnetic_field"
 
-    # Determine cadence
-    if "45s" in series:
-        sample = 45 * u.second
-    else:  # 720s
-        sample = 720 * u.second
+def download_hmi_with_fido(series, start_time, end_time, output_dir, skip_calibration=False, sample=None, keep_originals=False):
+    """Download an HMI 45 s ``series`` ('M_45s', 'Ic_45s', 'V_45s') through
+    the VSO and turn the images north up. The 720 s series are not at the
+    VSO; use download_hmi (JSOC) for them."""
+    from sunpy.net import Fido, attrs as a
 
-    print(f"Searching for HMI {series} data from {start_time} to {end_time}")
-
+    _quiet()
+    prefer_ipv4()
+    _ensure_dir(output_dir)
+    series = str(series)
+    if "720" in series:
+        print(f"Error: the VSO serves only the 45 s HMI series; {series} needs the JSOC method (an email).")
+        return []
+    physobs = HMI_PHYSOBS.get(series.split("_")[0], "LOS_magnetic_field")
+    start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
+    label = f"HMI {series}"
+    _print_search(label, start_time, end_time, sample)
     try:
-        # Create the query
-        if physobs:
-            result = Fido.search(
-                a.Time(start_dt, end_dt),
-                a.Instrument("HMI"),
-                a.Physobs(physobs),
-                a.Sample(sample),
-            )
-        else:
-            # Fallback to just instrument and time if physobs mapping is unclear
-            result = Fido.search(
-                a.Time(start_dt, end_dt), a.Instrument("HMI"), a.Sample(sample)
-            )
-
-        if len(result) == 0 or len(result[0]) == 0:
-            print("\n" + "="*60)
-            print("NO DATA FOUND")
-            print("="*60)
-            print(f"  Time range: {start_time} to {end_time}")
-            print(f"  Instrument: HMI, Series: {series}")
-            print("\nPossible causes:")
-            print("  - Data may not exist for this time range")
-            print("  - VSO provider may be temporarily unavailable")
-            print("  - Check VSO status: https://sdac.virtualsolar.org/cgi/health_report")
-            if end_dt > datetime.now():
-                print("  - NOTE: End time is in the future!")
+        result = Fido.search(
+            a.Time(start_dt, end_dt), a.Instrument("HMI"), a.Physobs(physobs), *_sample_attrs(sample)
+        )
+        if not _found(result):
+            _no_data(label, start_time, end_time)
             return []
-
-        print(f"Found {len(result[0])} files. Downloading...")
-
-        # Download the files with retry logic
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
-        print(f"Error during Fido search/fetch: {str(e)}")
-        print("Check your search parameters and ensure sunpy is properly installed.")
+        print(f"Error during Fido search/fetch: {e}")
         return []
+    return _finish_hmi(downloaded, output_dir, skip_calibration, keep_originals)
 
-    downloaded_files = [str(file_path) for file_path in downloaded]
-    
-    # Show calibration status
-    print(f"  Calibration: {'ENABLED' if not skip_calibration else 'DISABLED (skipped by user)'}")
-    
-    if not skip_calibration:
-        for file_path in downloaded_files:
-            lvl1_map = Map(file_path)
-            print(f"Processing {os.path.basename(file_path)} to Level 1.5...")
-            lvl1_5_map = update_hmi_pointing(lvl1_map)
-            lvl1_5_map_output_file = os.path.join(
-                output_dir, f"{os.path.basename(file_path)}_lvl1.5.fits"
-            )
-            lvl1_5_map.save(lvl1_5_map_output_file, filetype="fits")
-            print(f"Successfully processed {os.path.basename(file_path)} to Level 1.5")
-            print(f"Deleting {file_path}")
-            os.remove(file_path)
-    print(f"Successfully downloaded {len(downloaded_files)} HMI files.")
-    return downloaded_files
+
+def download_hmi(series, start_time, end_time, output_dir, email=None, interval_seconds=None, skip_calibration=False, sample=None, keep_originals=False):
+    """Download an HMI ``series`` (a key of HMI_SERIES) with a JSOC export and
+    turn the images north up."""
+    _quiet()
+    _ensure_dir(output_dir)
+    if sample is None and interval_seconds:
+        sample = interval_seconds
+    record = hmiexport(series, start_time, end_time, sample)
+    if record is None:
+        return []
+    files = _jsoc_export(record, email, output_dir)
+    return _finish_hmi(files, output_dir, skip_calibration, keep_originals)
 
 
 def update_hmi_pointing(hmi_map):
-    """
-    Calibrate HMI Level-1 data to Level-1.5.
-
-    This function performs comprehensive HMI calibration including:
-    1. Roll angle correction (CROTA2) - rotate to solar north up
-    2. Re-centering to disk center (update CRPIX)
-    3. Plate scale normalization to 0.5 arcsec/pixel (HMI standard)
-
-    For HMI Level-1 data, the basic calibrations (dark subtraction, flat-fielding,
-    bad pixel correction) have already been applied by the JSOC pipeline.
-
-    Parameters:
-        hmi_map (sunpy.map.Map): Input Level-1 HMI map.
-
-    Returns:
-        sunpy.map.Map: A new map with Level-1.5 calibration applied.
-    """
-    import copy
-
-    # Target plate scale for HMI Level-1.5 (0.5 arcsec/pixel)
-    TARGET_SCALE = 0.5  # arcsec/pixel
-
-    # Get current metadata
-    meta = copy.deepcopy(hmi_map.meta)
-
-    # Step 1: Get rotation angle and rotate to solar north
-    current_crota = float(meta.get("CROTA2", 0.0))
-
-    # Step 2: Calculate re-centering offset
-    # CRPIX should be at the center of the sun (CRVAL = 0, 0 in helioprojective)
-    # Current sun center in pixels
-    current_crpix1 = float(meta.get("CRPIX1", meta.get("NAXIS1", 4096) / 2))
-    current_crpix2 = float(meta.get("CRPIX2", meta.get("NAXIS2", 4096) / 2))
-
-    # Target center (middle of image)
-    naxis1 = int(meta.get("NAXIS1", 4096))
-    naxis2 = int(meta.get("NAXIS2", 4096))
-    target_crpix1 = (naxis1 + 1) / 2.0
-    target_crpix2 = (naxis2 + 1) / 2.0
-
-    # Step 3: Get current plate scale
-    current_cdelt1 = abs(float(meta.get("CDELT1", TARGET_SCALE)))
-    current_cdelt2 = abs(float(meta.get("CDELT2", TARGET_SCALE)))
-
-    print(
-        f"  - Current CROTA2: {current_crota:.4f}°, CDELT: {current_cdelt1:.4f}×{current_cdelt2:.4f} arcsec/px"
-    )
-    print(
-        f"  - Current CRPIX: ({current_crpix1:.1f}, {current_crpix2:.1f}), Target: ({target_crpix1:.1f}, {target_crpix2:.1f})"
-    )
-
-    # Perform rotation to remove roll angle
-    if abs(current_crota) > 0.01:  # Only rotate if significant
-        rotated_map = hmi_map.rotate(
-            angle=-current_crota * u.deg, recenter=True, order=3
-        )
-        print(f"  - Rotated by {-current_crota:.4f}° to remove roll angle")
-    else:
-        rotated_map = hmi_map
-        print(f"  - No significant rotation needed (CROTA2 = {current_crota:.4f}°)")
-
-    # Check if plate scale normalization is needed
-    scale_factor = current_cdelt1 / TARGET_SCALE
-    if abs(scale_factor - 1.0) > 0.01:  # Only rescale if different by >1%
-        # Calculate new dimensions
-        new_naxis1 = int(naxis1 * scale_factor)
-        new_naxis2 = int(naxis2 * scale_factor)
-        new_dimensions = [new_naxis1, new_naxis2] * u.pixel
-
-        # Resample to target plate scale
-        try:
-            calibrated_map = rotated_map.resample(new_dimensions)
-            print(
-                f"  - Rescaled to {TARGET_SCALE} arcsec/px ({naxis1}→{new_naxis1} pixels)"
-            )
-        except Exception as e:
-            print(f"  - Warning: Could not rescale: {e}")
-            calibrated_map = rotated_map
-    else:
-        calibrated_map = rotated_map
-        print(f"  - Plate scale already at ~{TARGET_SCALE} arcsec/px")
-
-    print("  - HMI Level-1.5 calibration complete")
-
-    return calibrated_map
+    """An HMI map turned north up with the Sun centred (the old name)."""
+    return _north_up(hmi_map, [])
 
 
-def download_iris(
-    start_time,
-    end_time,
-    output_dir,
-    obs_type="SJI",  # "SJI" for slit-jaw images or "raster" for spectrograph data
-    wavelength=None,  # For SJI: 1330, 1400, 2796, 2832
-    skip_calibration=False,
-):
-    """
-    Download IRIS (Interface Region Imaging Spectrograph) data for a given time range.
-
-    IRIS data is not available through DRMS/JSOC, so this function uses SunPy's Fido client.
-
-    Args:
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        output_dir (str): Directory to save downloaded files
-        obs_type (str): Type of observation - "SJI" for slit-jaw images or "raster" for spectral data
-        wavelength (int, optional): For SJI, specify wavelength (1330, 1400, 2796, 2832)
-        skip_calibration (bool, optional): If True, skip calibration steps
-
-    Returns:
-        list: Paths to downloaded FITS files
-    """
+# ----------------------------------------------------------------------- IRIS
+def _row_wavelength(row):
+    """The wavelength (Å) a VSO result row names, as an int, or None."""
     try:
-        import sunpy.net  # noqa: F401 (availability check)
-        from sunpy.net import Fido, attrs as a
-    except ImportError:
-        print("Error: SunPy not installed or not properly configured.")
+        value = row["Wavelength"]
+        value = value[0] if getattr(value, "shape", ()) else value
+        return int(round(float(getattr(value, "value", value))))
+    except Exception:
+        return None
+
+
+def download_iris(start_time, end_time, output_dir, obs_type="SJI", wavelength=None, skip_calibration=False, sample=None, keep_originals=False):
+    """Download IRIS level 2 slit-jaw cubes (``wavelength`` 1330, 1400, 2796
+    or 2832 Å, any when None) and split them into one north-up image per
+    exposure. Rasters are spectra, which SolarViewer does not show, so only
+    slit-jaw images are offered. ``sample`` thins the exposures to one per
+    that many seconds."""
+    from sunpy.net import Fido, attrs as a
+
+    _quiet()
+    prefer_ipv4()
+    _ensure_dir(output_dir)
+    if str(obs_type).lower() != "sji":
+        print("Only IRIS slit-jaw images (SJI) are supported: rasters are spectra, not images.")
         return []
-
-    # Create output directory if it doesn't exist
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
-
-    # Parse the time strings
-    start_dt = datetime.strptime(start_time, "%Y.%m.%d %H:%M:%S")
-    end_dt = datetime.strptime(end_time, "%Y.%m.%d %H:%M:%S")
-
-    print(f"Searching for IRIS {obs_type} data from {start_time} to {end_time}")
-
+    start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
+    label = "IRIS SJI" + (f" {wavelength}Å" if wavelength else "")
+    _print_search(label, start_time, end_time, sample)
     try:
-        # Create the query based on observation type
-        if obs_type.lower() == "sji":
-            if wavelength is not None:
-                # SJI with specific wavelength
-                wl = int(wavelength) * u.angstrom
-                result = Fido.search(
-                    a.Time(start_dt, end_dt),
-                    a.Instrument("IRIS"),
-                    a.Wavelength(wl),
-                )
-            else:
-                # Any SJI
-                result = Fido.search(
-                    a.Time(start_dt, end_dt),
-                    a.Instrument("IRIS"),
-                    a.Physobs("intensity"),
-                )
-        else:
-            # Spectral/raster data
-            result = Fido.search(
-                a.Time(start_dt, end_dt),
-                a.Instrument("IRIS"),
-                a.Physobs("intensity"),
-                a.Level(2),
-            )
-
-        if len(result) == 0 or len(result[0]) == 0:
-            print("No data found for the specified parameters.")
+        query = [a.Time(start_dt, end_dt), a.Instrument("IRIS"), a.Physobs("intensity")]
+        if wavelength:
+            query.append(a.Wavelength(int(wavelength) * u.angstrom))
+        result = Fido.search(*query)
+        if not len(result):
+            _no_data(label, start_time, end_time)
             return []
+        # Each row is a whole observation's cube; drop the raster archives
+        table = result[0]
+        rows = [i for i, row in enumerate(table) if not str(row["fileid"]).lower().startswith("raster")]
+        if wavelength:
+            rows = [i for i in rows if _row_wavelength(table[i]) == int(wavelength)]
+        if not rows:
+            _no_data(label, start_time, end_time)
+            return []
+        print(f"Found {len(rows)} files. Downloading...", flush=True)
+        downloaded = robust_fido_fetch(result[0, rows], output_dir)
+    except Exception as e:
+        print(f"Error during Fido search/fetch: {e}")
+        return []
+    files = [str(p) for p in downloaded]
+    if skip_calibration or not files:
+        if files:
+            print(f"Successfully downloaded {len(files)} IRIS files.", flush=True)
+        return files
+    print("  Processing: one file per exposure, counts per second, north up", flush=True)
+    return prepare_files("iris_sji", files, output_dir, {"sample": sample, "workers": 2}, keep_originals)
 
-        print(f"Found {len(result[0])} files. Downloading...")
 
-        # Download the files with retry logic
+# ----------------------------------------------------------------------- SOHO
+def download_soho(instrument, start_time, end_time, output_dir, wavelength=None, detector=None, skip_calibration=False, sample=None, physobs=None, keep_originals=False):
+    """Download SOHO data through the VSO and prepare it: EIT (``wavelength``
+    171, 195, 284 or 304; the level 1 product when SDAC has it), LASCO
+    (``detector`` C2 or C3) or MDI (``physobs`` 'magnetogram' or
+    'continuum'). Everything is turned north up; counts become per second."""
+    from sunpy.net import Fido, attrs as a
+
+    _quiet()
+    prefer_ipv4()
+    _ensure_dir(output_dir)
+    instrument = str(instrument).upper()
+    if instrument not in ("EIT", "LASCO", "MDI"):
+        print(f"Error: Invalid SOHO instrument '{instrument}'. Use 'EIT', 'LASCO', or 'MDI'.")
+        return []
+    start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
+    query = [a.Time(start_dt, end_dt), a.Instrument(instrument), *_sample_attrs(sample)]
+    label = f"SOHO/{instrument}"
+    if instrument == "EIT":
+        query.append(a.Provider("SDAC"))
+        if wavelength:
+            query.append(a.Wavelength(int(wavelength) * u.angstrom))
+            label += f" {wavelength}Å"
+    elif instrument == "LASCO":
+        if detector:
+            query.append(a.Detector(str(detector).upper()))
+            label += f" {str(detector).upper()}"
+    elif instrument == "MDI" and physobs:
+        continuum = any(s in str(physobs).lower() for s in ("cont", "int"))
+        query.append(a.Physobs("intensity" if continuum else "LOS_magnetic_field"))
+        label += " continuum" if continuum else " magnetogram"
+    _print_search(label, start_time, end_time, sample)
+    try:
+        result = Fido.search(*query)
+        if instrument == "EIT" and len(result):
+            # SDAC lists level 0 (lz) and level 1 (l1) of each image: take
+            # the calibrated level 1 where it exists
+            table = result[0]
+            l1 = [i for i, row in enumerate(table) if "/l1/" in str(row["fileid"])]
+            if l1:
+                print(f"  Taking the {len(l1)} EIT level 1 files (calibrated) of {len(table)} listed", flush=True)
+                result = result[0, l1]
+        if not _found(result):
+            _no_data(label, start_time, end_time)
+            return []
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
-        print(f"Error during Fido search/fetch: {str(e)}")
-        print("Check your search parameters and ensure sunpy is properly installed.")
+        print(f"Error during Fido search/fetch: {e}")
         return []
-
-    downloaded_files = [str(file_path) for file_path in downloaded]
-
-    # Post-process IRIS files for solarviewer compatibility
-    # IRIS SJI files are 3D data cubes that need to be converted to 2D FITS
-    # IRIS raster files come as tar.gz archives that need extraction
-    if not skip_calibration:
-        import tarfile
-
-        # First, extract any tar.gz files (raster data comes as archives)
-        extracted_files = []
-        for file_path in downloaded_files:
-            if file_path.endswith(".tar.gz") or file_path.endswith(".tar"):
-                try:
-                    print(f"Extracting archive: {os.path.basename(file_path)}...")
-                    with tarfile.open(file_path, "r:*") as tar:
-                        tar.extractall(path=output_dir)
-                        for member in tar.getmembers():
-                            if member.isfile():
-                                extracted_path = os.path.join(output_dir, member.name)
-                                extracted_files.append(extracted_path)
-                                print(f"  - Extracted: {member.name}")
-                    os.remove(file_path)  # Remove the archive after extraction
-                except Exception as e:
-                    print(f"Warning: Could not extract {file_path}: {e}")
-                    extracted_files.append(file_path)
-            else:
-                extracted_files.append(file_path)
-
-        downloaded_files = extracted_files
-
-        processed_files = []
-        for file_path in downloaded_files:
-            try:
-                base_name = os.path.basename(file_path)
-                print(f"Processing {base_name}...")
-
-                with fits.open(file_path) as hdu:
-                    data = hdu[0].data
-                    header_orig = hdu[0].header.copy()
-
-                    # Check if 3D (time series) and extract all frames
-                    if data is not None and data.ndim == 3:
-                        n_frames = data.shape[0]
-                        print(f"  - Found {n_frames} frames, extracting all...")
-
-                        base_no_ext = (
-                            base_name.replace(".fits.gz", "")
-                            .replace(".fits", "")
-                            .replace(".gz", "")
-                        )
-
-                        for frame_idx in range(n_frames):
-                            header = header_orig.copy()
-                            data_2d = data[frame_idx]
-
-                            # Update header for 2D data
-                            header["NAXIS"] = 2
-                            header["NAXIS1"] = data_2d.shape[1]
-                            header["NAXIS2"] = data_2d.shape[0]
-                            header["FRAME"] = frame_idx
-                            if "NAXIS3" in header:
-                                del header["NAXIS3"]
-
-                            # Add coordinate units if missing
-                            if header.get("CUNIT1") is None and header.get("CTYPE1"):
-                                header["CUNIT1"] = "arcsec"
-                            if header.get("CUNIT2") is None and header.get("CTYPE2"):
-                                header["CUNIT2"] = "arcsec"
-
-                            # Create output filename with frame number
-                            out_name = f"iris_{base_no_ext}_frame{frame_idx:03d}.fits"
-                            output_file = os.path.join(output_dir, out_name)
-
-                            # Save as 2D FITS
-                            hdu_out = fits.PrimaryHDU(data_2d, header=header)
-                            hdu_out.header.add_history(
-                                "IRIS frame extracted by SolarViewer"
-                            )
-                            hdu_out.writeto(output_file, overwrite=True)
-
-                            processed_files.append(output_file)
-
-                        print(f"  - Saved {n_frames} frames as individual FITS files")
-
-                        # Remove original compressed file
-                        if file_path.endswith(".gz"):
-                            os.remove(file_path)
-                    else:
-                        # 2D data, just decompress if needed
-                        if file_path.endswith(".gz"):
-                            out_name = base_name.replace(".gz", "")
-                            output_file = os.path.join(output_dir, out_name)
-                            hdu_out = fits.PrimaryHDU(data, header=header_orig)
-                            hdu_out.header.add_history("Decompressed by SolarViewer")
-                            hdu_out.writeto(output_file, overwrite=True)
-                            os.remove(file_path)
-                            processed_files.append(output_file)
-                        else:
-                            processed_files.append(file_path)
-            except Exception as e:
-                print(f"Warning: Could not process {base_name}: {e}")
-                processed_files.append(file_path)
-
-        downloaded_files = processed_files
-        print("Note: IRIS data is Level 2 (pre-calibrated).")
-        print("  - SJI files: 2D image frames extracted for solarviewer")
-        print("  - Raster files: 3D spectroscopic data (requires specialized tools)")
-
-    print(f"Successfully downloaded {len(downloaded_files)} IRIS files.")
-    return downloaded_files
+    files = _unpack_archives(_fits_extension([str(p) for p in downloaded]), output_dir)
+    if skip_calibration or not files:
+        if files:
+            print(f"Successfully downloaded {len(files)} SOHO/{instrument} files.", flush=True)
+        return files
+    kind = instrument.lower()
+    per_second = ", counts per second" if kind in ("eit", "lasco") else ""
+    print(f"  Processing: north up, Sun centred{per_second}", flush=True)
+    return prepare_files(kind, files, output_dir, {}, keep_originals)
 
 
-def download_soho(
-    instrument,
-    start_time,
-    end_time,
-    output_dir,
-    wavelength=None,
-    detector=None,
-    skip_calibration=False,
-):
-    """
-    Download SOHO (Solar and Heliospheric Observatory) data for a given time range.
+# ------------------------------------------------------------------ GOES SUVI
+def download_goes_suvi(start_time, end_time, output_dir, wavelength=None, level="2", skip_calibration=False, sample=None, keep_originals=False):
+    """Download GOES SUVI images from NOAA (``wavelength`` 94, 131, 171, 195,
+    284 or 304 Å; ``level`` '2' composites or '1b' single exposures) and
+    prepare them: level 2 goes into the primary HDU as it is, level 1b is
+    turned north up."""
+    from sunpy.net import Fido, attrs as a
 
-    SOHO data is not available through DRMS/JSOC, so this function uses SunPy's Fido client.
-
-    Args:
-        instrument (str): SOHO instrument ('EIT', 'LASCO', 'MDI')
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        output_dir (str): Directory to save downloaded files
-        wavelength (int, optional): For EIT, wavelength in Angstroms (171, 195, 284, 304)
-        detector (str, optional): For LASCO, detector name ('C1', 'C2', 'C3')
-        skip_calibration (bool, optional): If True, skip calibration steps
-
-    Returns:
-        list: Paths to downloaded FITS files
-    """
+    _quiet()
+    prefer_ipv4()
+    _ensure_dir(output_dir)
+    start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
+    label = f"GOES SUVI level {level}" + (f" {wavelength}Å" if wavelength else "")
+    _print_search(label, start_time, end_time, sample)
     try:
-        import sunpy.net  # noqa: F401 (availability check)
-        from sunpy.net import Fido, attrs as a
-    except ImportError:
-        print("Error: SunPy not installed or not properly configured.")
-        return []
-
-    # Create output directory if it doesn't exist
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
-
-    # Parse the time strings
-    start_dt = datetime.strptime(start_time, "%Y.%m.%d %H:%M:%S")
-    end_dt = datetime.strptime(end_time, "%Y.%m.%d %H:%M:%S")
-
-    # Validate and normalize instrument name
-    instrument = instrument.upper()
-    if instrument not in ["EIT", "LASCO", "MDI"]:
-        print(
-            f"Error: Invalid SOHO instrument '{instrument}'. Use 'EIT', 'LASCO', or 'MDI'."
-        )
-        return []
-
-    print(f"Searching for SOHO/{instrument} data from {start_time} to {end_time}")
-
-    try:
-        # Build query based on instrument
-        query_args = [
-            a.Time(start_dt, end_dt),
-            a.Instrument(instrument),
-        ]
-
-        # Add instrument-specific parameters
-        if instrument == "EIT":
-            # Use SDAC provider which works more reliably for EIT
-            query_args.append(a.Provider("SDAC"))
-            # For EIT wavelength filtering, use a range to improve matching
-            if wavelength is not None:
-                wl = int(wavelength)
-                # Use a small tolerance range for wavelength matching
-                query_args.append(
-                    a.Wavelength((wl - 1) * u.angstrom, (wl + 1) * u.angstrom)
-                )
-        elif instrument == "LASCO" and detector is not None:
-            query_args.append(a.Detector(detector.upper()))
-
-        result = Fido.search(*query_args)
-
-        # Count total files across all result tables
-        total_files = sum(len(r) for r in result) if len(result) > 0 else 0
-
-        if total_files == 0:
-            # Try again without wavelength filter for EIT
-            if instrument == "EIT" and wavelength is not None:
-                print("No exact wavelength match, searching all EIT data...")
-                result = Fido.search(
-                    a.Time(start_dt, end_dt),
-                    a.Instrument("EIT"),
-                    a.Provider("SDAC"),
-                )
-                total_files = sum(len(r) for r in result) if len(result) > 0 else 0
-
-            if total_files == 0:
-                print("No data found for the specified parameters.")
-                return []
-
-        print(f"Found {total_files} files. Downloading...")
-
-        # Download the files with retry logic
-        downloaded = robust_fido_fetch(result, output_dir)
-    except Exception as e:
-        print(f"Error during Fido search/fetch: {str(e)}")
-        print("Check your search parameters and ensure sunpy is properly installed.")
-        return []
-
-    downloaded_files = [str(file_path) for file_path in downloaded]
-
-    # Fix files without .fits extension (SOHO/EIT files from SDAC often lack proper extension)
-    fixed_files = []
-    for file_path in downloaded_files:
-        if (
-            not file_path.endswith(".fits")
-            and not file_path.endswith(".fits.gz")
-            and not file_path.endswith(".fts")
-        ):
-            # Check if it's actually a FITS file
-            try:
-                with fits.open(file_path):
-                    # It's a valid FITS file, rename it
-                    new_path = file_path + ".fits"
-                    os.rename(file_path, new_path)
-                    print(
-                        f"Renamed {os.path.basename(file_path)} -> {os.path.basename(new_path)}"
-                    )
-                    fixed_files.append(new_path)
-            except Exception:
-                # Not a FITS file or can't open, keep original
-                fixed_files.append(file_path)
-        else:
-            fixed_files.append(file_path)
-    downloaded_files = fixed_files
-
-    if not skip_calibration and not downloaded_files:
-        print("Warning: No files were downloaded to calibrate.")
-        return []
-
-    # Calibration for SOHO data
-    if not skip_calibration and len(downloaded_files) > 0:
-        calibrated_files = []
-
-        if instrument == "EIT":
-            print("Performing EIT Level 1.5 calibration...")
-            for file_path in downloaded_files:
-                try:
-                    eit_map = Map(file_path)
-                    base_name = os.path.basename(file_path)
-                    print(f"Processing {base_name}...")
-
-                    # Step 1: Rotate to solar north using SC_ROLL (EIT-specific)
-                    crota = float(
-                        eit_map.meta.get(
-                            "sc_roll",
-                            eit_map.meta.get("crota", eit_map.meta.get("crota2", 0.0)),
-                        )
-                    )
-                    if abs(crota) > 0.01:
-                        # Convert to float and use NaN for missing pixels (displays as transparent)
-                        import numpy as np
-
-                        float_data = eit_map.data.astype(np.float64)
-                        eit_map = Map(float_data, eit_map.meta)
-                        eit_map = eit_map.rotate(
-                            angle=-crota * u.deg, recenter=True, missing=np.nan
-                        )
-                        print(f"  - Rotated {-crota:.2f}° to solar north")
-
-                    # Step 2: Fix WCS metadata for solarviewer compatibility
-                    # EIT uses "Solar-X/Solar-Y" which needs to be HPLN-TAN/HPLT-TAN
-                    meta = eit_map.meta.copy()
-                    if meta.get("ctype1", "").lower() in ["solar-x", "solar_x", ""]:
-                        meta["ctype1"] = "HPLN-TAN"
-                        meta["ctype2"] = "HPLT-TAN"
-                    if meta.get("cunit1") is None:
-                        meta["cunit1"] = "arcsec"
-                        meta["cunit2"] = "arcsec"
-                    # Negate CDELT1 to correct Solar-X direction after rotation
-                    meta["cdelt1"] = -abs(meta.get("cdelt1", 2.63))
-                    eit_map = Map(eit_map.data, meta)
-                    print("  - Fixed WCS (HPLN-TAN, arcsec, Solar-X corrected)")
-
-                    # Step 3: Normalize by exposure time
-                    exptime = (
-                        eit_map.exposure_time.value
-                        if hasattr(eit_map, "exposure_time")
-                        else 0
-                    )
-                    if exptime > 0:
-                        eit_map = eit_map / eit_map.exposure_time
-                        print(f"  - Normalized by exposure time ({exptime:.2f}s)")
-
-                    # Save calibrated file
-                    output_file = os.path.join(output_dir, f"eit_lev1_5_{base_name}")
-                    # Ensure .fits extension
-                    if not output_file.endswith(".fits"):
-                        output_file = output_file + ".fits"
-                    eit_map.save(output_file, overwrite=True)
-                    print(f"  - Saved as {os.path.basename(output_file)}")
-
-                    # Remove original
-                    if os.path.exists(output_file) and file_path != output_file:
-                        os.remove(file_path)
-                        calibrated_files.append(output_file)
-                    else:
-                        calibrated_files.append(output_file)
-                except Exception as e:
-                    print(
-                        f"Warning: Could not calibrate {os.path.basename(file_path)}: {e}"
-                    )
-                    calibrated_files.append(file_path)
-            downloaded_files = calibrated_files
-
-        elif instrument == "LASCO":
-            print("Performing LASCO basic calibration...")
-            for file_path in downloaded_files:
-                try:
-                    lasco_map = Map(file_path)
-                    base_name = os.path.basename(file_path)
-                    calibrated = False
-
-                    # Step 1: Rotate to solar north. The map's rotation matrix
-                    # (from the header's CROTA) is what rotate() undoes when it
-                    # is given no angle; rotating by -CROTA instead turns the
-                    # image the other way and leaves twice the roll in the header.
-                    import numpy as np
-
-                    roll = float(
-                        np.degrees(
-                            np.arctan2(
-                                lasco_map.rotation_matrix[1, 0],
-                                lasco_map.rotation_matrix[0, 0],
-                            )
-                        )
-                    )
-                    if abs(roll) > 0.01:
-                        float_data = lasco_map.data.astype(np.float64)
-                        lasco_map = Map(float_data, lasco_map.meta)
-                        lasco_map = lasco_map.rotate(recenter=True, missing=np.nan)
-                        print(f"  - Rotated {-roll:.2f}° to solar north")
-                        calibrated = True
-
-                    # LASCO calibration is complex (stray light, F-corona, vignetting)
-                    # We do basic exposure normalization
-                    exptime = (
-                        lasco_map.exposure_time.value
-                        if hasattr(lasco_map, "exposure_time")
-                        else 0
-                    )
-                    if exptime > 0:
-                        lasco_map = lasco_map / lasco_map.exposure_time
-                        print(f"  - Normalized by exposure time ({exptime:.2f}s)")
-                        calibrated = True
-
-                    if calibrated:
-                        output_file = os.path.join(output_dir, f"lasco_cal_{base_name}")
-                        if not output_file.endswith(".fits"):
-                            output_file = output_file + ".fits"
-                        lasco_map.save(output_file, overwrite=True)
-                        print(f"Calibrated {base_name}")
-
-                        if os.path.exists(output_file) and file_path != output_file:
-                            os.remove(file_path)
-                            calibrated_files.append(output_file)
-                        else:
-                            calibrated_files.append(output_file)
-                    else:
-                        calibrated_files.append(file_path)
-                except Exception as e:
-                    print(
-                        f"Warning: Could not process {os.path.basename(file_path)}: {e}"
-                    )
-                    calibrated_files.append(file_path)
-            downloaded_files = calibrated_files
-            print("Note: For full LASCO calibration (stray light, F-corona removal),")
-            print("      additional specialized tools are required.")
-
-    print(f"Successfully downloaded {len(downloaded_files)} SOHO/{instrument} files.")
-    return downloaded_files
-
-
-def download_goes_suvi(
-    start_time,
-    end_time,
-    output_dir,
-    wavelength=None,
-    level="2",
-):
-    """
-    Download GOES SUVI (Solar Ultraviolet Imager) data for a given time range.
-
-    SUVI is the EUV imager on the GOES-16/17/18 satellites, providing
-    similar coverage to SDO/AIA but from geostationary orbit.
-
-    Args:
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        output_dir (str): Directory to save downloaded files
-        wavelength (int, optional): Wavelength in Angstroms (94, 131, 171, 195, 284, 304)
-        level (str): Data level ('1b' or '2')
-
-    Returns:
-        list: Paths to downloaded FITS files
-    """
-    try:
-        from sunpy.net import Fido, attrs as a
-    except ImportError:
-        print("Error: SunPy not installed or not properly configured.")
-        return []
-
-    # Create output directory if it doesn't exist
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
-
-    # Parse the time strings
-    start_dt = datetime.strptime(start_time, "%Y.%m.%d %H:%M:%S")
-    end_dt = datetime.strptime(end_time, "%Y.%m.%d %H:%M:%S")
-
-    print(f"Searching for GOES SUVI data from {start_time} to {end_time}")
-
-    try:
-        # Build query
-        query_args = [
-            a.Time(start_dt, end_dt),
-            a.Instrument("SUVI"),
-            a.Level(level),
-        ]
-
-        if wavelength is not None:
+        query = [a.Time(start_dt, end_dt), a.Instrument("SUVI"), a.Level(str(level))]
+        if wavelength:
             wl = int(wavelength)
-            query_args.append(
-                a.Wavelength((wl - 1) * u.angstrom, (wl + 1) * u.angstrom)
-            )
-
-        result = Fido.search(*query_args)
-
-        # Count total files across all result tables
-        total_files = sum(len(r) for r in result) if len(result) > 0 else 0
-
-        if total_files == 0:
-            print("No data found for the specified parameters.")
+            query.append(a.Wavelength((wl - 1) * u.angstrom, (wl + 1) * u.angstrom))
+        result = Fido.search(*query)
+        if sample and len(result):  # NOAA's client has no cadence attribute
+            result = result[0, _thin_rows(result[0], sample)]
+        if not _found(result):
+            _no_data(label, start_time, end_time)
             return []
-
-        print(f"Found {total_files} files. Downloading...")
-
-        # Download the files with retry logic
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
-        print(f"Error during Fido search/fetch: {str(e)}")
+        print(f"Error during Fido search/fetch: {e}")
         return []
-
-    # Post-process SUVI files to fix WCS for solarviewer compatibility
-    # SUVI files store data in compressed HDU 1, but solarviewer reads HDU 0
-    downloaded_files = []
-    for file_path in downloaded:
-        file_path = str(file_path)
-        try:
-            # Use sunpy to load the file correctly (handles compressed HDU)
-            suvi_map = Map(file_path)
-
-            # Create output filename
-            base_name = os.path.basename(file_path)
-            processed_file = os.path.join(output_dir, f"processed_{base_name}")
-
-            # Save as standard FITS with WCS in HDU 0
-            suvi_map.save(processed_file, overwrite=True)
-
-            # Remove original compressed file
-            if os.path.exists(processed_file) and processed_file != file_path:
-                os.remove(file_path)
-                print(f"Processed {base_name} for solarviewer compatibility")
-                downloaded_files.append(processed_file)
-            else:
-                downloaded_files.append(file_path)
-        except Exception as e:
-            print(f"Warning: Could not process {os.path.basename(file_path)}: {e}")
-            downloaded_files.append(file_path)
-
-    print(f"Successfully downloaded {len(downloaded_files)} GOES SUVI files.")
-    return downloaded_files
+    files = [str(p) for p in downloaded]
+    if skip_calibration or not files:
+        if files:
+            print(f"Successfully downloaded {len(files)} GOES SUVI files.", flush=True)
+        return files
+    print("  Processing: image into the primary HDU" + (", north up" if str(level) != "2" else ""), flush=True)
+    return prepare_files("suvi", files, output_dir, {}, keep_originals)
 
 
-def download_stereo(
-    start_time,
-    end_time,
-    output_dir,
-    spacecraft="A",
-    instrument="EUVI",
-    wavelength=None,
-):
-    """
-    Download STEREO SECCHI data for a given time range.
+# --------------------------------------------------------------------- STEREO
+def download_stereo(start_time, end_time, output_dir, spacecraft="A", instrument="EUVI", wavelength=None, skip_calibration=False, sample=None, keep_originals=False):
+    """Download STEREO SECCHI data through the VSO: EUVI (``wavelength`` 171,
+    195, 284 or 304 Å) turned north up in DN/s, or COR1/COR2 whose
+    polarizer triplets become total-brightness images, north up, DN/s.
+    STEREO-B ended in 2014."""
+    from sunpy.net import Fido, attrs as a
 
-    STEREO consists of two spacecraft (A and B) providing stereoscopic
-    views of solar activity. STEREO-B lost contact in 2014.
-
-    Args:
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        output_dir (str): Directory to save downloaded files
-        spacecraft (str): 'A' or 'B' (B only available until 2014)
-        instrument (str): 'EUVI' (EUV), 'COR1' (inner coronagraph),
-                         'COR2' (outer coronagraph), 'HI1', 'HI2' (heliospheric imagers)
-        wavelength (int, optional): For EUVI - 171, 195, 284, or 304 Angstroms
-
-    Returns:
-        list: Paths to downloaded FITS files
-    """
-    try:
-        from sunpy.net import Fido, attrs as a
-    except ImportError:
-        print("Error: SunPy not installed or not properly configured.")
-        return []
-
-    # Create output directory if it doesn't exist
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
-
-    # Parse the time strings
-    start_dt = datetime.strptime(start_time, "%Y.%m.%d %H:%M:%S")
-    end_dt = datetime.strptime(end_time, "%Y.%m.%d %H:%M:%S")
-
-    # Normalize inputs
-    spacecraft = spacecraft.upper()
-    instrument = instrument.upper()
+    _quiet()
+    prefer_ipv4()
+    _ensure_dir(output_dir)
+    start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
+    spacecraft, instrument = str(spacecraft).upper(), str(instrument).upper()
     source = f"STEREO_{spacecraft}"
-
-    print(f"Searching for {source}/{instrument} data from {start_time} to {end_time}")
-
+    label = f"{source}/{instrument}" + (f" {wavelength}Å" if instrument == "EUVI" and wavelength else "")
+    _print_search(label, start_time, end_time, sample)
     try:
-        # Build query
-        query_args = [
-            a.Time(start_dt, end_dt),
-            a.Source(source),
-            a.Instrument("SECCHI"),
-            a.Detector(instrument),
-        ]
-
-        if instrument == "EUVI" and wavelength is not None:
-            wl = int(wavelength)
-            query_args.append(
-                a.Wavelength((wl - 1) * u.angstrom, (wl + 1) * u.angstrom)
-            )
-
-        result = Fido.search(*query_args)
-
-        # Count total files across all result tables
-        total_files = sum(len(r) for r in result) if len(result) > 0 else 0
-
-        if total_files == 0:
-            print("No data found for the specified parameters.")
+        query = [a.Time(start_dt, end_dt), a.Source(source), a.Instrument("SECCHI"), a.Detector(instrument)]
+        if instrument == "EUVI":
+            if wavelength:
+                query.append(a.Wavelength(int(wavelength) * u.angstrom))
+            query += _sample_attrs(sample)
+        result = Fido.search(*query)
+        if instrument != "EUVI" and sample and len(result):
+            # keep whole polarizer sequences (three images within three minutes)
+            result = result[0, _thin_rows(result[0], sample, hold=180)]
+        if not _found(result):
+            _no_data(label, start_time, end_time)
             return []
-
-        print(f"Found {total_files} files. Downloading...")
-
-        # Download the files with retry logic
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
-        print(f"Error during Fido search/fetch: {str(e)}")
+        print(f"Error during Fido search/fetch: {e}")
         return []
+    files = [str(p) for p in downloaded]
+    if skip_calibration or not files:
+        if files:
+            print(f"Successfully downloaded {len(files)} {source}/{instrument} files.", flush=True)
+        return files
+    if instrument == "EUVI":
+        print("  Processing: north up, Sun centred, counts per second", flush=True)
+        return prepare_files("euvi", files, output_dir, {}, keep_originals)
+    print("  Processing: polarizer triplets to total brightness, north up, counts per second", flush=True)
+    return prepare_files("cor", _cor_groups(files), output_dir, {}, keep_originals)
 
-    downloaded_files = [str(file_path) for file_path in downloaded]
-    print(
-        f"Successfully downloaded {len(downloaded_files)} {source}/{instrument} files."
-    )
-    return downloaded_files
 
+# ----------------------------------------------------------------------- GONG
+def download_gong(start_time, end_time, output_dir, sample=None):
+    """Download GONG line-of-sight magnetograms from NSO. Kept for scripts;
+    the NSO server is often unreachable, so the interfaces do not offer it."""
+    from sunpy.net import Fido, attrs as a
 
-def download_gong(
-    start_time,
-    end_time,
-    output_dir,
-):
-    """
-    Download GONG (Global Oscillation Network Group) magnetogram data.
-
-    GONG provides ground-based magnetogram observations with continuous
-    coverage from a network of stations around the world.
-
-    Args:
-        start_time (str): Start time in 'YYYY.MM.DD HH:MM:SS' format
-        end_time (str): End time in 'YYYY.MM.DD HH:MM:SS' format
-        output_dir (str): Directory to save downloaded files
-
-    Returns:
-        list: Paths to downloaded FITS files
-    """
+    _quiet()
+    prefer_ipv4()
+    _ensure_dir(output_dir)
+    start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
+    _print_search("GONG magnetogram", start_time, end_time, sample)
     try:
-        from sunpy.net import Fido, attrs as a
-    except ImportError:
-        print("Error: SunPy not installed or not properly configured.")
-        return []
-
-    # Create output directory if it doesn't exist
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
-
-    # Parse the time strings
-    start_dt = datetime.strptime(start_time, "%Y.%m.%d %H:%M:%S")
-    end_dt = datetime.strptime(end_time, "%Y.%m.%d %H:%M:%S")
-
-    print(f"Searching for GONG magnetogram data from {start_time} to {end_time}")
-
-    try:
-        # GONG data query
         result = Fido.search(
-            a.Time(start_dt, end_dt),
-            a.Instrument("GONG"),
-            a.Physobs("LOS_magnetic_field"),
+            a.Time(start_dt, end_dt), a.Instrument("GONG"), a.Physobs("LOS_magnetic_field"), *_sample_attrs(sample)
         )
-
-        # Count total files across all result tables
-        total_files = sum(len(r) for r in result) if len(result) > 0 else 0
-
-        if total_files == 0:
-            print("No data found for the specified parameters.")
+        if not _found(result):
+            _no_data("GONG magnetograms", start_time, end_time)
             return []
-
-        print(f"Found {total_files} files. Downloading...")
-
-        # Download the files with retry logic
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
-        print(f"Error during Fido search/fetch: {str(e)}")
+        print(f"Error during Fido search/fetch: {e}")
         return []
+    files = [str(p) for p in downloaded]
+    print(f"Successfully downloaded {len(files)} GONG magnetogram files.", flush=True)
+    return files
 
-    downloaded_files = [str(file_path) for file_path in downloaded]
-    print(f"Successfully downloaded {len(downloaded_files)} GONG magnetogram files.")
-    return downloaded_files
+
+# ------------------------------------------------------------------------ CLI
+def main():
+    """Command line: python -m solar_radio_image_viewer.solar_data_downloader --instrument aia ..."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m solar_radio_image_viewer.solar_data_downloader", description="Download solar images and prepare them for SolarViewer.")
+    parser.add_argument("--instrument", required=True, choices=["aia", "hmi", "iris", "soho", "suvi", "stereo", "gong"])
+    parser.add_argument("--start", required=True, help="start time, YYYY.MM.DD HH:MM:SS")
+    parser.add_argument("--end", required=True, help="end time, YYYY.MM.DD HH:MM:SS")
+    parser.add_argument("--output", default="./solar_data", help="output folder")
+    parser.add_argument("--wavelength", help="AIA/EIT/SUVI/EUVI/IRIS wavelength in Å")
+    parser.add_argument("--series", default="M_45s", help="HMI series: " + ", ".join(HMI_SERIES))
+    parser.add_argument("--soho-instrument", default="EIT", choices=["EIT", "LASCO", "MDI"])
+    parser.add_argument("--detector", default="C2", help="LASCO detector (C2, C3) or STEREO instrument (EUVI, COR1, COR2)")
+    parser.add_argument("--spacecraft", default="A", choices=["A", "B"], help="STEREO spacecraft")
+    parser.add_argument("--physobs", default="magnetogram", help="MDI product: magnetogram or continuum")
+    parser.add_argument("--level", default="2", help="SUVI level: 2 or 1b")
+    parser.add_argument("--sample", type=float, help="cadence in seconds (every image when omitted)")
+    parser.add_argument("--email", help="email registered at JSOC (JSOC exports of AIA/HMI)")
+    parser.add_argument("--use-jsoc", action="store_true", help="export from JSOC instead of the VSO (needs --email)")
+    parser.add_argument("--no-process", action="store_true", help="keep the files as downloaded")
+    parser.add_argument("--keep-originals", action="store_true", help="keep the downloaded files next to the prepared ones")
+    parser.add_argument("--psf", action="store_true", help="AIA: deconvolve the PSF (slow)")
+    parser.add_argument("--no-degradation", action="store_true", help="AIA: skip the degradation correction")
+    parser.add_argument("--no-exposure-norm", action="store_true", help="AIA: keep DN instead of DN/s")
+    args = parser.parse_args()
+
+    common = dict(
+        start_time=args.start,
+        end_time=args.end,
+        output_dir=args.output,
+        skip_calibration=args.no_process,
+        sample=args.sample,
+        keep_originals=args.keep_originals,
+    )
+    try:
+        if args.instrument == "aia":
+            if not args.wavelength:
+                parser.error("--wavelength is required for AIA")
+            aia = dict(apply_psf=args.psf, apply_degradation=not args.no_degradation, apply_exposure_norm=not args.no_exposure_norm)
+            if args.use_jsoc:
+                files = download_aia(args.wavelength, email=args.email, **common, **aia)
+            else:
+                files = download_aia_with_fido(args.wavelength, **common, **aia)
+        elif args.instrument == "hmi":
+            if args.use_jsoc or "720" in args.series:
+                files = download_hmi(args.series, email=args.email, **common)
+            else:
+                files = download_hmi_with_fido(args.series, **common)
+        elif args.instrument == "iris":
+            files = download_iris(wavelength=args.wavelength, **common)
+        elif args.instrument == "soho":
+            files = download_soho(args.soho_instrument, wavelength=args.wavelength, detector=args.detector, physobs=args.physobs, **common)
+        elif args.instrument == "suvi":
+            files = download_goes_suvi(wavelength=args.wavelength, level=args.level, **common)
+        elif args.instrument == "stereo":
+            detector = args.detector.upper() if args.detector.upper() in ("EUVI", "COR1", "COR2") else "EUVI"
+            files = download_stereo(spacecraft=args.spacecraft, instrument=detector, wavelength=args.wavelength, **common)
+        else:
+            files = download_gong(args.start, args.end, args.output, sample=args.sample)
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    print(f"\n{len(files)} files in {args.output}")
+    for f in files:
+        print("  " + f)
+    return 0 if files else 1
 
 
 if __name__ == "__main__":

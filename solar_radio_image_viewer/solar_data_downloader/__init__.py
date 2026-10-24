@@ -1,25 +1,25 @@
 """
-Solar Data Downloader Package
+Solar Data Downloader
 
-This package provides tools for downloading and processing solar data from various observatories:
-- SDO/AIA (Atmospheric Imaging Assembly)
-- SDO/HMI (Helioseismic and Magnetic Imager)
-- IRIS (Interface Region Imaging Spectrograph)
-- SOHO (Solar and Heliospheric Observatory)
+Downloads images from SDO (AIA, HMI), IRIS, SOHO (EIT, LASCO, MDI), GOES
+(SUVI) and STEREO (EUVI, COR1, COR2) and prepares them for SolarViewer.
 
-The package includes:
-- Core downloader module (solar_data_downloader.py)
-- Command-line interface (solar_data_downloader_cli.py)
-- Graphical user interface (solar_data_downloader_gui.py)
+- solar_data_downloader.py: the download and preparation functions
+- solar_data_downloader_cli.py: an interactive terminal menu
+- solar_data_downloader_gui.py: the window
 """
 
 from .solar_data_downloader import (
     download_aia,
     download_aia_with_fido,
+    download_goes_suvi,
+    download_gong,
     download_hmi,
     download_hmi_with_fido,
     download_iris,
     download_soho,
+    download_stereo,
+    prepare_files,
 )
 
 from .solar_data_downloader_gui import launch_gui
@@ -27,9 +27,13 @@ from .solar_data_downloader_gui import launch_gui
 __all__ = [
     "download_aia",
     "download_aia_with_fido",
+    "download_goes_suvi",
+    "download_gong",
     "download_hmi",
     "download_hmi_with_fido",
     "download_iris",
     "download_soho",
+    "download_stereo",
+    "prepare_files",
     "launch_gui",
 ]

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-Solar Data Viewer GUI - PyQt5-based interface for downloading solar observatory data.
-
-This module provides a graphical interface for downloading data from various solar
-observatories using the solar_data_downloader module. It can be used as a standalone
-application or integrated into other PyQt applications.
+Solar Data Downloader window: downloads images from SDO, IRIS, SOHO, GOES
+and STEREO through solar_data_downloader and prepares them for SolarViewer.
+Works on its own or inside the viewer.
 """
 
 import sys
@@ -13,26 +11,27 @@ from pathlib import Path
 
 try:
     from PyQt5.QtWidgets import (
-    QScrollArea,
-    QFrame,
-    QTextEdit,
         QApplication,
-        QMainWindow,
-        QWidget,
-        QVBoxLayout,
-        QHBoxLayout,
-        QLabel,
-        QComboBox,
-        QPushButton,
-        QLineEdit,
-        QDateTimeEdit,
-        QFileDialog,
-        QProgressBar,
-        QMessageBox,
-        QGroupBox,
-        QRadioButton,
         QButtonGroup,
         QCheckBox,
+        QComboBox,
+        QDateTimeEdit,
+        QFileDialog,
+        QFormLayout,
+        QFrame,
+        QGroupBox,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QMainWindow,
+        QMessageBox,
+        QProgressBar,
+        QPushButton,
+        QRadioButton,
+        QScrollArea,
+        QTextEdit,
+        QVBoxLayout,
+        QWidget,
     )
     from PyQt5.QtCore import QDateTime, pyqtSignal, QThread
 except ImportError:
@@ -40,27 +39,30 @@ except ImportError:
     print("  pip install PyQt5")
     sys.exit(1)
 
-# Try to import the solar_data_downloader module
 try:
-    # First try relative import (when used as part of package)
-    from . import solar_data_downloader as sdd
+    from . import solar_data_downloader as sdd  # noqa: F401 (availability check)
     from ..ui.styles import set_hand_cursor, set_tone
     from ..ui.geometry import fit_to_screen
 except ImportError:
     try:
-        # Then try importing from the same directory (when run as script)
         script_dir = os.path.dirname(os.path.abspath(__file__))
         if script_dir not in sys.path:
             sys.path.append(script_dir)
         import solar_data_downloader as sdd  # noqa: F401 (availability check)
+
+        def set_hand_cursor(widget):
+            pass
+
+        def set_tone(widget, tone):
+            pass
+
+        def fit_to_screen(window, width, height, fraction=0.9):
+            window.resize(width, height)
+
     except ImportError:
         print("Error: Could not import solar_data_downloader module.")
-        print(
-            "Make sure solar_data_downloader.py is in the same directory as this script."
-        )
         sys.exit(1)
 
-# Check if required packages are installed
 try:
     import sunpy  # noqa: F401 (availability check)
     import drms  # noqa: F401 (availability check)
@@ -74,8 +76,34 @@ except ImportError as e:
     sys.exit(1)
 
 
-# Instruments that only support Fido (no DRMS option)
-FIDO_ONLY_INSTRUMENTS = ["IRIS", "SOHO", "GOES SUVI", "STEREO", "GONG"]
+INSTRUMENTS = ["AIA", "HMI", "IRIS", "SOHO", "GOES SUVI", "STEREO"]
+# Instruments served only through Fido (no JSOC export)
+FIDO_ONLY_INSTRUMENTS = ["IRIS", "SOHO", "GOES SUVI", "STEREO"]
+
+# Cadence choices: label and seconds (None keeps every image)
+CADENCES = [
+    ("Every image", None),
+    ("1 minute", 60),
+    ("2 minutes", 120),
+    ("5 minutes", 300),
+    ("10 minutes", 600),
+    ("15 minutes", 900),
+    ("30 minutes", 1800),
+    ("1 hour", 3600),
+    ("6 hours", 21600),
+    ("1 day", 86400),
+]
+DEFAULT_CADENCE = {"AIA": 300, "HMI": 300}
+
+HMI_SERIES_ITEMS = [
+    ("Magnetogram, 45 s", "M_45s"),
+    ("Continuum intensity, 45 s", "Ic_45s"),
+    ("Doppler velocity, 45 s", "V_45s"),
+    ("Magnetogram, 720 s (JSOC only)", "M_720s"),
+    ("Continuum intensity, 720 s (JSOC only)", "Ic_720s"),
+    ("Continuum without limb darkening, 720 s (JSOC only)", "Ic_noLimbDark_720s"),
+    ("Doppler velocity, 720 s (JSOC only)", "V_720s"),
+]
 
 
 # Runs one downloader function in a separate process: argv[1] is the folder
@@ -99,11 +127,11 @@ except Exception:
 
 
 class DownloadWorker(QThread):
-    """Worker thread for handling downloads using subprocess with real-time progress updates."""
+    """Runs the download in a separate process and streams its output."""
 
-    progress = pyqtSignal(str)  # Signal to update progress text
-    finished = pyqtSignal(list)  # Signal emitted with list of downloaded files
-    error = pyqtSignal(str)  # Signal emitted when an error occurs
+    progress = pyqtSignal(str)  # a status line
+    finished = pyqtSignal(list)  # the files, when done
+    error = pyqtSignal(str)  # when it failed
 
     def __init__(self, download_params: dict):
         super().__init__()
@@ -115,7 +143,7 @@ class DownloadWorker(QThread):
         self._cancelled = True
 
     def run(self):
-        """Execute the download operation in a subprocess with real-time progress streaming."""
+        """Run the download process, relaying its status lines and progress."""
         import json
         import os
         import queue
@@ -133,17 +161,14 @@ class DownloadWorker(QThread):
             package_parent = os.path.dirname(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             )
-
-            # Run the download in a subprocess with real-time output
             self.progress.emit("Starting download...")
 
             launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             process = subprocess.Popen(
-                # -u for unbuffered output
                 [sys.executable, "-u", "-c", _DOWNLOAD_SCRIPT, package_parent, request],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                bufsize=0,  # Unbuffered
+                bufsize=0,
                 cwd=launch_cwd,
             )
 
@@ -162,39 +187,20 @@ class DownloadWorker(QThread):
             files = []
             stdout_buffer = ""
             stderr_buffer = ""
-            total_files = 0
             last_progress_update = time.time()
 
             def stdout_line(line):
-                nonlocal files, total_files
-                # Print ALL subprocess output to parent terminal
+                nonlocal files
                 if line:
-                    print(line, flush=True)
-
+                    print(line, flush=True)  # the terminal sees everything
                 if line.startswith("DOWNLOADED_FILES:"):
                     try:
                         files = json.loads(line.replace("DOWNLOADED_FILES:", "").strip())
                     except json.JSONDecodeError:
                         pass
-                elif line.startswith("Searching for"):
-                    self.progress.emit(line)
-                elif line.startswith("Found"):
-                    self.progress.emit(line)
-                    match = re.search(r"Found (\d+) files", line)
-                    if match:
-                        total_files = int(match.group(1))
-                elif "Successfully" in line or "Processing" in line:
-                    self.progress.emit(line)
-                # Diagnostic messages for better visibility
-                elif "Calibration:" in line:
-                    self.progress.emit(line)
                 elif "NO DATA FOUND" in line:
                     self.progress.emit("No data found for this query")
-                elif "Retrying" in line or "WARNING:" in line:
-                    self.progress.emit(line)
-                elif "Starting download" in line:
-                    self.progress.emit(line)
-                elif "Troubleshooting" in line or "Check VSO" in line:
+                elif line and not set(line) <= set("=-"):
                     self.progress.emit(line)
 
             def stderr_line(line):
@@ -262,86 +268,87 @@ class DownloadWorker(QThread):
         """The downloader function to call and its keyword arguments."""
         params = self.params
         instrument = params.get("instrument")
-        times = dict(
+        common = dict(
             start_time=params["start_time"],
             end_time=params["end_time"],
             output_dir=params["output_dir"],
+            skip_calibration=params.get("skip_calibration", False),
+            sample=params.get("sample"),
+            keep_originals=params.get("keep_originals", False),
         )
 
         if instrument == "AIA":
-            skip_cal = params.get("skip_calibration", False)
-            if params.get("use_fido", True):
-                return "download_aia_with_fido", dict(
-                    times,
-                    wavelength=str(params["wavelength"]),
-                    skip_calibration=skip_cal,
-                    apply_psf=params.get("apply_psf", False),
-                    apply_degradation=params.get("apply_degradation", True),
-                    apply_exposure_norm=params.get("apply_exposure_norm", True),
-                )
-            return "download_aia", dict(
-                times,
+            aia = dict(
+                common,
                 wavelength=str(params["wavelength"]),
-                cadence=str(params["cadence"]),
-                email=params.get("email") or None,
-                skip_calibration=skip_cal,
+                apply_psf=params.get("apply_psf", False),
+                apply_degradation=params.get("apply_degradation", True),
+                apply_exposure_norm=params.get("apply_exposure_norm", True),
             )
-        if instrument == "HMI":
-            skip_cal = params.get("skip_calibration", False)
             if params.get("use_fido", True):
-                return "download_hmi_with_fido", dict(
-                    times, series=str(params["series"]), skip_calibration=skip_cal
-                )
-            return "download_hmi", dict(
-                times,
-                series=str(params["series"]),
-                email=params.get("email") or None,
-                skip_calibration=skip_cal,
-            )
+                return "download_aia_with_fido", aia
+            return "download_aia", dict(aia, email=params.get("email") or None)
+        if instrument == "HMI":
+            hmi = dict(common, series=str(params["series"]))
+            if params.get("use_fido", True) and "720" not in hmi["series"]:
+                return "download_hmi_with_fido", hmi
+            return "download_hmi", dict(hmi, email=params.get("email") or None)
         if instrument == "IRIS":
-            return "download_iris", dict(
-                times,
-                obs_type=str(params["obs_type"]),
-                wavelength=params.get("wavelength"),
-            )
+            return "download_iris", dict(common, obs_type="SJI", wavelength=params.get("wavelength"))
         if instrument == "SOHO":
             return "download_soho", dict(
-                times,
+                common,
                 instrument=str(params["soho_instrument"]),
                 wavelength=params.get("wavelength"),
                 detector=params.get("detector"),
+                physobs=params.get("physobs"),
             )
         if instrument == "GOES SUVI":
             return "download_goes_suvi", dict(
-                times,
-                wavelength=params.get("wavelength"),
-                level=str(params.get("level", "2")),
+                common, wavelength=params.get("wavelength"), level=str(params.get("level", "2"))
             )
         if instrument == "STEREO":
             return "download_stereo", dict(
-                times,
+                common,
                 spacecraft=str(params.get("spacecraft", "A")),
                 instrument=str(params.get("stereo_instrument", "EUVI")),
                 wavelength=params.get("wavelength"),
             )
-        if instrument == "GONG":
-            return "download_gong", times
         raise ValueError(f"Unknown instrument: {instrument}")
 
 
+def _combo(items, data=None):
+    """A combo box of ``items``; ``data`` holds a value per item."""
+    box = QComboBox()
+    for i, text in enumerate(items):
+        box.addItem(text, data[i] if data is not None else text.split()[0])
+    return box
+
+
+def _hint(text=""):
+    label = QLabel(text)
+    label.setObjectName("Hint")
+    label.setWordWrap(True)
+    return label
+
+
+def _form():
+    form = QFormLayout()
+    form.setContentsMargins(0, 0, 0, 0)
+    form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+    return form
+
+
 class SolarDataViewerGUI(QMainWindow):
-    """Main window for the Solar Data Viewer GUI application."""
+    """The Solar Data Downloader window."""
 
     def __init__(self, parent=None, initial_datetime=None):
         super().__init__(parent)
         self.setWindowTitle("Solar Data Downloader")
         self.setMinimumWidth(600)
         fit_to_screen(self, 640, 900)
-
-        # Store initial datetime for time selection
         self.initial_datetime = initial_datetime
 
-        # Initialize the main widget and layout
         self.main_widget = QWidget()
         self.setCentralWidget(self.main_widget)
         outer = QVBoxLayout(self.main_widget)
@@ -366,467 +373,301 @@ class SolarDataViewerGUI(QMainWindow):
         self.layout = outer
         self.create_download_section()
 
-        # Initialize the download worker
         self.download_worker = None
-
-        # Initial update for method visibility
         self.on_instrument_changed(0)
-        
         try:
             set_hand_cursor(self)
         except Exception:
             pass
 
     def closeEvent(self, event):
-        """Clean up download worker thread when window is closed."""
-        if hasattr(self, "download_worker") and self.download_worker is not None:
-            if self.download_worker.isRunning():
-                self.download_worker.cancel()
-                self.download_worker.quit()
-                self.download_worker.wait(2000)
+        """Stop a running download when the window is closed."""
+        if getattr(self, "download_worker", None) is not None and self.download_worker.isRunning():
+            self.download_worker.cancel()
+            self.download_worker.quit()
+            self.download_worker.wait(2000)
         super().closeEvent(event)
 
+    # ------------------------------------------------------------ the form
     def create_instrument_selection(self):
-        """Create the instrument selection section."""
-        group = QGroupBox("Select Instrument")
-        layout = QVBoxLayout()
-
+        group = QGroupBox("Instrument")
+        layout = QVBoxLayout(group)
         self.instrument_combo = QComboBox()
         self.instrument_combo.addItems(
             [
                 "SDO/AIA (Atmospheric Imaging Assembly)",
                 "SDO/HMI (Helioseismic and Magnetic Imager)",
-                "IRIS (Interface Region Imaging Spectrograph)",
-                "SOHO (Solar and Heliospheric Observatory)",
+                "IRIS slit-jaw images (Interface Region Imaging Spectrograph)",
+                "SOHO (EIT, LASCO, MDI)",
                 "GOES/SUVI (Solar Ultraviolet Imager)",
-                "STEREO/SECCHI (Sun Earth Connection)",
-                # "GONG (Global Oscillation Network Group)",
+                "STEREO/SECCHI (EUVI, COR1, COR2)",
             ]
         )
         self.instrument_combo.currentIndexChanged.connect(self.on_instrument_changed)
-
         layout.addWidget(self.instrument_combo)
-        group.setLayout(layout)
         self.layout.addWidget(group)
 
     def create_parameter_widgets(self):
-        """Create the parameter selection widgets for each instrument."""
+        """One page of parameters per instrument."""
         self.param_group = QGroupBox("Instrument Parameters")
-        self.param_layout = QVBoxLayout()
+        self.param_layout = QVBoxLayout(self.param_group)
+        self.param_pages = []  # one per instrument; only the chosen one is shown
 
-        # AIA parameters
-        self.aia_params = QWidget()
-        aia_layout = QVBoxLayout()
-
-        # Wavelength selection
-        wavelength_layout = QHBoxLayout()
-        wavelength_layout.addWidget(QLabel("Wavelength:"))
-        self.wavelength_combo = QComboBox()
-        self.wavelength_combo.addItems(
+        # AIA
+        page = QWidget()
+        form = _form()
+        page.setLayout(form)
+        self.wavelength_combo = _combo(
             [
-                "94 Å (Fe XVIII, hot)",
-                "131 Å (Fe VIII/XXI)",
-                "171 Å (Fe IX, corona)",
-                "193 Å (Fe XII/XXIV)",
-                "211 Å (Fe XIV)",
-                "304 Å (He II)",
+                "94 Å (Fe XVIII, flaring)",
+                "131 Å (Fe VIII, Fe XXI)",
+                "171 Å (Fe IX, quiet corona)",
+                "193 Å (Fe XII, Fe XXIV)",
+                "211 Å (Fe XIV, active regions)",
+                "304 Å (He II, chromosphere)",
                 "335 Å (Fe XVI)",
-                "1600 Å (C IV, UV)",
+                "1600 Å (C IV, transition region)",
                 "1700 Å (UV continuum)",
-                "4500 Å (Visible)",
+                "4500 Å (visible continuum)",
             ]
         )
-        self.wavelength_combo.currentIndexChanged.connect(
-            self.on_aia_wavelength_changed
-        )
-        wavelength_layout.addWidget(self.wavelength_combo)
-        aia_layout.addLayout(wavelength_layout)
+        self.wavelength_combo.setCurrentIndex(2)
+        self.wavelength_combo.currentIndexChanged.connect(self.update_cadence_info)
+        form.addRow("Wavelength:", self.wavelength_combo)
+        self._add_page(page)
 
-        # Cadence selection (for DRMS only)
-        self.cadence_widget = QWidget()
-        cadence_layout = QHBoxLayout()
-        cadence_layout.setContentsMargins(0, 0, 0, 0)
-        cadence_layout.addWidget(QLabel("Cadence:"))
-        self.cadence_combo = QComboBox()
-        self.cadence_combo.addItems(["12s", "24s", "1h"])
-        cadence_layout.addWidget(self.cadence_combo)
-        self.cadence_widget.setLayout(cadence_layout)
-        aia_layout.addWidget(self.cadence_widget)
+        # HMI
+        page = QWidget()
+        form = _form()
+        page.setLayout(form)
+        self.series_combo = _combo([t for t, _ in HMI_SERIES_ITEMS], [k for _, k in HMI_SERIES_ITEMS])
+        self.series_combo.currentIndexChanged.connect(self.on_hmi_series_changed)
+        form.addRow("Series:", self.series_combo)
+        self._add_page(page)
 
-        self.aia_params.setLayout(aia_layout)
-
-        # HMI parameters
-        self.hmi_params = QWidget()
-        hmi_layout = QVBoxLayout()
-
-        series_layout = QHBoxLayout()
-        series_layout.addWidget(QLabel("Series:"))
-        self.series_combo = QComboBox()
-        self.series_combo.addItems(
+        # IRIS
+        page = QWidget()
+        form = _form()
+        page.setLayout(form)
+        self.iris_wavelength_combo = _combo(
             [
-                "45s (LOS magnetogram)",
-                "720s (LOS magnetogram, 12 min)",
-                "B_45s (LOS magnetogram)",
-                "B_720s (LOS magnetogram, 12 min)",
-                "Ic_45s (Continuum intensity)",
-                "Ic_720s (Continuum intensity, 12 min)",
-                "V_45s (LOS velocity)",
-                "V_720s (LOS velocity, 12 min)",
-            ]
+                "1330 Å (C II, upper chromosphere)",
+                "1400 Å (Si IV, transition region)",
+                "2796 Å (Mg II k, chromosphere)",
+                "2832 Å (Mg II wing, photosphere)",
+                "All channels",
+            ],
+            ["1330", "1400", "2796", "2832", None],
         )
-        series_layout.addWidget(self.series_combo)
-        hmi_layout.addLayout(series_layout)
-
-        self.hmi_params.setLayout(hmi_layout)
-
-        # IRIS parameters
-        self.iris_params = QWidget()
-        iris_layout = QVBoxLayout()
-
-        obs_type_layout = QHBoxLayout()
-        obs_type_layout.addWidget(QLabel("Observation Type:"))
-        self.obs_type_combo = QComboBox()
-        self.obs_type_combo.addItems(["SJI (Slit-Jaw)", "Raster (Spectrograph)"])
-        obs_type_layout.addWidget(self.obs_type_combo)
-        iris_layout.addLayout(obs_type_layout)
-
-        iris_wavelength_layout = QHBoxLayout()
-        iris_wavelength_layout.addWidget(QLabel("Wavelength:"))
-        self.iris_wavelength_combo = QComboBox()
-        self.iris_wavelength_combo.addItems(
-            [
-                "1330 Å (C II)",
-                "1400 Å (Si IV)",
-                "2796 Å (Mg II k)",
-                "2832 Å (Photosphere)",
-            ]
+        form.addRow("Channel:", self.iris_wavelength_combo)
+        form.addRow(
+            _hint(
+                "Level 2 slit-jaw cubes; each becomes one file per exposure with "
+                "that exposure's time and pointing. Rasters are spectra and are not offered."
+            )
         )
-        iris_wavelength_layout.addWidget(self.iris_wavelength_combo)
-        iris_layout.addLayout(iris_wavelength_layout)
+        self._add_page(page)
 
-        self.iris_params.setLayout(iris_layout)
-
-        # SOHO parameters
-        self.soho_params = QWidget()
-        soho_layout = QVBoxLayout()
-
-        soho_instrument_layout = QHBoxLayout()
-        soho_instrument_layout.addWidget(QLabel("SOHO Instrument:"))
-        self.soho_instrument_combo = QComboBox()
-        self.soho_instrument_combo.addItems(["EIT", "LASCO", "MDI"])
-        self.soho_instrument_combo.currentIndexChanged.connect(
-            self.on_soho_instrument_changed
+        # SOHO
+        page = QWidget()
+        form = _form()
+        page.setLayout(form)
+        self.soho_instrument_combo = _combo(["EIT", "LASCO", "MDI"])
+        self.soho_instrument_combo.currentIndexChanged.connect(self.on_soho_instrument_changed)
+        form.addRow("Instrument:", self.soho_instrument_combo)
+        self.eit_wavelength_combo = _combo(
+            ["171 Å (Fe IX, Fe X)", "195 Å (Fe XII)", "284 Å (Fe XV)", "304 Å (He II)"]
         )
-        soho_instrument_layout.addWidget(self.soho_instrument_combo)
-        soho_layout.addLayout(soho_instrument_layout)
-
-        # SOHO EIT wavelength
-        self.soho_eit_params = QWidget()
-        eit_layout = QHBoxLayout()
-        eit_layout.setContentsMargins(0, 0, 0, 0)
-        eit_layout.addWidget(QLabel("Wavelength:"))
-        self.eit_wavelength_combo = QComboBox()
-        self.eit_wavelength_combo.addItems(
-            ["171 Å (Fe IX/X)", "195 Å (Fe XII)", "284 Å (Fe XV)", "304 Å (He II)"]
+        self.eit_wavelength_combo.setCurrentIndex(1)
+        self.eit_wavelength_label = QLabel("Wavelength:")
+        form.addRow(self.eit_wavelength_label, self.eit_wavelength_combo)
+        self.lasco_detector_combo = _combo(["C2 (2 to 6 solar radii)", "C3 (3.7 to 30 solar radii)"])
+        self.lasco_detector_label = QLabel("Detector:")
+        form.addRow(self.lasco_detector_label, self.lasco_detector_combo)
+        self.mdi_product_combo = _combo(
+            ["Magnetogram (96 min, level 1.8)", "Continuum intensity"], ["magnetogram", "continuum"]
         )
-        eit_layout.addWidget(self.eit_wavelength_combo)
-        self.soho_eit_params.setLayout(eit_layout)
+        self.mdi_product_label = QLabel("Product:")
+        form.addRow(self.mdi_product_label, self.mdi_product_combo)
+        self._add_page(page)
 
-        # SOHO LASCO detector
-        self.soho_lasco_params = QWidget()
-        lasco_layout = QHBoxLayout()
-        lasco_layout.setContentsMargins(0, 0, 0, 0)
-        lasco_layout.addWidget(QLabel("Detector:"))
-        self.lasco_detector_combo = QComboBox()
-        self.lasco_detector_combo.addItems(["C2 (2-6 Rs)", "C3 (3.7-30 Rs)"])
-        lasco_layout.addWidget(self.lasco_detector_combo)
-        self.soho_lasco_params.setLayout(lasco_layout)
-
-        soho_layout.addWidget(self.soho_eit_params)
-        soho_layout.addWidget(self.soho_lasco_params)
-        self.soho_params.setLayout(soho_layout)
-
-        # GOES SUVI parameters
-        self.suvi_params = QWidget()
-        suvi_layout = QVBoxLayout()
-
-        suvi_wavelength_layout = QHBoxLayout()
-        suvi_wavelength_layout.addWidget(QLabel("Wavelength:"))
-        self.suvi_wavelength_combo = QComboBox()
-        self.suvi_wavelength_combo.addItems(
+        # GOES SUVI
+        page = QWidget()
+        form = _form()
+        page.setLayout(form)
+        self.suvi_wavelength_combo = _combo(
             [
                 "94 Å (Fe XVIII)",
-                "131 Å (Fe VIII/XXI)",
+                "131 Å (Fe VIII, Fe XXI)",
                 "171 Å (Fe IX)",
                 "195 Å (Fe XII)",
                 "284 Å (Fe XV)",
                 "304 Å (He II)",
             ]
         )
-        suvi_wavelength_layout.addWidget(self.suvi_wavelength_combo)
-        suvi_layout.addLayout(suvi_wavelength_layout)
-
-        suvi_level_layout = QHBoxLayout()
-        suvi_level_layout.addWidget(QLabel("Data Level:"))
-        self.suvi_level_combo = QComboBox()
-        self.suvi_level_combo.addItems(["Level 2 (calibrated)", "Level 1b (raw)"])
-        suvi_level_layout.addWidget(self.suvi_level_combo)
-        suvi_layout.addLayout(suvi_level_layout)
-
-        self.suvi_params.setLayout(suvi_layout)
-
-        # STEREO parameters
-        self.stereo_params = QWidget()
-        stereo_layout = QVBoxLayout()
-
-        stereo_sc_layout = QHBoxLayout()
-        stereo_sc_layout.addWidget(QLabel("Spacecraft:"))
-        self.stereo_sc_combo = QComboBox()
-        self.stereo_sc_combo.addItems(["STEREO-A", "STEREO-B (pre-2014 only)"])
-        stereo_sc_layout.addWidget(self.stereo_sc_combo)
-        stereo_layout.addLayout(stereo_sc_layout)
-
-        stereo_inst_layout = QHBoxLayout()
-        stereo_inst_layout.addWidget(QLabel("Instrument:"))
-        self.stereo_inst_combo = QComboBox()
-        self.stereo_inst_combo.addItems(
-            [
-                "EUVI (EUV Imager)",
-                "COR1 (Inner coronagraph)",
-                "COR2 (Outer coronagraph)",
-            ]
+        self.suvi_wavelength_combo.setCurrentIndex(2)
+        form.addRow("Wavelength:", self.suvi_wavelength_combo)
+        self.suvi_level_combo = _combo(
+            ["Level 2 (4 min composites, calibrated)", "Level 1b (single exposures)"], ["2", "1b"]
         )
-        self.stereo_inst_combo.currentIndexChanged.connect(
-            self.on_stereo_instrument_changed
+        form.addRow("Level:", self.suvi_level_combo)
+        self._add_page(page)
+
+        # STEREO
+        page = QWidget()
+        form = _form()
+        page.setLayout(form)
+        self.stereo_sc_combo = _combo(["STEREO-A", "STEREO-B (until 2014)"], ["A", "B"])
+        form.addRow("Spacecraft:", self.stereo_sc_combo)
+        self.stereo_inst_combo = _combo(
+            ["EUVI (EUV imager)", "COR1 (inner coronagraph, 1.4 to 4 solar radii)", "COR2 (outer coronagraph, 2.5 to 15 solar radii)"]
         )
-        stereo_inst_layout.addWidget(self.stereo_inst_combo)
-        stereo_layout.addLayout(stereo_inst_layout)
+        self.stereo_inst_combo.currentIndexChanged.connect(self.on_stereo_instrument_changed)
+        form.addRow("Instrument:", self.stereo_inst_combo)
+        self.stereo_wavelength_combo = _combo(["171 Å", "195 Å", "284 Å", "304 Å"])
+        self.stereo_wavelength_combo.setCurrentIndex(1)
+        self.stereo_wavelength_label = QLabel("Wavelength:")
+        form.addRow(self.stereo_wavelength_label, self.stereo_wavelength_combo)
+        self._add_page(page)
 
-        # STEREO EUVI wavelength
-        self.stereo_euvi_params = QWidget()
-        euvi_layout = QHBoxLayout()
-        euvi_layout.setContentsMargins(0, 0, 0, 0)
-        euvi_layout.addWidget(QLabel("Wavelength:"))
-        self.stereo_wavelength_combo = QComboBox()
-        self.stereo_wavelength_combo.addItems(["171 Å", "195 Å", "284 Å", "304 Å"])
-        euvi_layout.addWidget(self.stereo_wavelength_combo)
-        self.stereo_euvi_params.setLayout(euvi_layout)
-        stereo_layout.addWidget(self.stereo_euvi_params)
-
-        self.stereo_params.setLayout(stereo_layout)
-
-        # GONG parameters (minimal - just magnetograms)
-        self.gong_params = QWidget()
-        gong_layout = QVBoxLayout()
-        gong_label = QLabel(
-            "GONG provides magnetogram data.\nNo additional parameters needed."
-        )
-        gong_label.setObjectName("Hint")
-        gong_layout.addWidget(gong_label)
-        self.gong_params.setLayout(gong_layout)
-
-        # Add all parameter widgets to the group
-        self.param_layout.addWidget(self.aia_params)
-        self.param_layout.addWidget(self.hmi_params)
-        self.param_layout.addWidget(self.iris_params)
-        self.param_layout.addWidget(self.soho_params)
-        self.param_layout.addWidget(self.suvi_params)
-        self.param_layout.addWidget(self.stereo_params)
-        self.param_layout.addWidget(self.gong_params)
-
-        self.param_group.setLayout(self.param_layout)
         self.layout.addWidget(self.param_group)
 
-        # Hide all except AIA initially
-        self.hmi_params.hide()
-        self.iris_params.hide()
-        self.soho_params.hide()
-        self.soho_eit_params.hide()
-        self.soho_lasco_params.hide()
-        self.suvi_params.hide()
-        self.stereo_params.hide()
-        self.gong_params.hide()
+    def _add_page(self, page):
+        self.param_layout.addWidget(page)
+        self.param_pages.append(page)
+        page.hide()
 
     def create_time_selection(self):
-        """Create the time range selection section."""
         group = QGroupBox("Time Range")
-        layout = QVBoxLayout()
+        form = _form()
+        form.setContentsMargins(9, 9, 9, 9)
+        group.setLayout(form)
 
-        # Start time
-        start_layout = QHBoxLayout()
-        start_layout.addWidget(QLabel("Start:"))
         self.start_datetime = QDateTimeEdit()
         self.start_datetime.setCalendarPopup(True)
         self.start_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
-
-        # Use initial_datetime if provided, otherwise current time
-        if self.initial_datetime:
-            self.start_datetime.setDateTime(QDateTime(self.initial_datetime))
-        else:
-            self.start_datetime.setDateTime(QDateTime.currentDateTime())
-
-        # Connect to sync end time when start time changes
-        self.start_datetime.dateTimeChanged.connect(self.on_start_datetime_changed)
-        start_layout.addWidget(self.start_datetime)
-        layout.addLayout(start_layout)
-
-        # End time
-        end_layout = QHBoxLayout()
-        end_layout.addWidget(QLabel("End:"))
         self.end_datetime = QDateTimeEdit()
         self.end_datetime.setCalendarPopup(True)
         self.end_datetime.setDisplayFormat("yyyy.MM.dd HH:mm:ss")
-
-        # Use initial_datetime + 1 hour if provided, otherwise current time + 1 hour
         if self.initial_datetime:
             from datetime import timedelta
 
-            end_dt = self.initial_datetime + timedelta(hours=1)
-            self.end_datetime.setDateTime(QDateTime(end_dt))
+            self.start_datetime.setDateTime(QDateTime(self.initial_datetime))
+            self.end_datetime.setDateTime(QDateTime(self.initial_datetime + timedelta(hours=1)))
         else:
-            self.end_datetime.setDateTime(
-                QDateTime.currentDateTime().addSecs(3600)  # Default to 1 hour later
-            )
-        end_layout.addWidget(self.end_datetime)
-        layout.addLayout(end_layout)
+            self.start_datetime.setDateTime(QDateTime.currentDateTime())
+            self.end_datetime.setDateTime(QDateTime.currentDateTime().addSecs(3600))
+        self.start_datetime.dateTimeChanged.connect(self.on_start_datetime_changed)
+        form.addRow("Start (UTC):", self.start_datetime)
+        form.addRow("End (UTC):", self.end_datetime)
 
-        # Cadence info label
-        self.cadence_label = QLabel()
-        self.cadence_label.setObjectName("Hint")
-        self.cadence_label.setWordWrap(True)
-        self.update_cadence_info()  # Set initial value
-        layout.addWidget(self.cadence_label)
-
-        group.setLayout(layout)
+        self.cadence_combo = _combo([t for t, _ in CADENCES], [s for _, s in CADENCES])
+        self.cadence_combo.setToolTip("Keep one image per interval; the rest are not downloaded")
+        form.addRow("Cadence:", self.cadence_combo)
+        self.cadence_label = _hint()
+        form.addRow(self.cadence_label)
         self.layout.addWidget(group)
 
     def on_start_datetime_changed(self, new_datetime):
-        """Sync end time when start time is changed (keep 1 hour difference)."""
-        # Set end time to start time + 1 hour
-        end_dt = new_datetime.addSecs(3600)
-        self.end_datetime.setDateTime(end_dt)
+        """The end time keeps an hour behind a moved start time."""
+        self.end_datetime.setDateTime(new_datetime.addSecs(3600))
 
     def create_output_selection(self):
-        """Create the output directory selection section."""
-        group = QGroupBox("Output Settings")
-        layout = QVBoxLayout()
+        group = QGroupBox("Output")
+        form = _form()
+        form.setContentsMargins(9, 9, 9, 9)
+        group.setLayout(form)
 
-        # Output directory
-        dir_layout = QHBoxLayout()
-        dir_layout.addWidget(QLabel("Output Directory:"))
+        dir_row = QHBoxLayout()
         self.output_dir = QLineEdit()
         self.output_dir.setText(os.path.join(os.getcwd(), "solar_data"))
-        dir_layout.addWidget(self.output_dir)
-
+        dir_row.addWidget(self.output_dir)
         browse_button = QPushButton("Browse...")
         browse_button.clicked.connect(self.browse_output_dir)
-        dir_layout.addWidget(browse_button)
-        layout.addLayout(dir_layout)
+        dir_row.addWidget(browse_button)
+        form.addRow("Folder:", dir_row)
 
-        # Download method section
         self.method_widget = QWidget()
-        method_layout = QHBoxLayout()
+        method_layout = QHBoxLayout(self.method_widget)
         method_layout.setContentsMargins(0, 0, 0, 0)
-        method_layout.addWidget(QLabel("Download Method:"))
-        self.method_group = QButtonGroup()
-
-        self.fido_radio = QRadioButton("Fido (recommended)")
-        self.fido_radio.setChecked(True)  # Fido is now default
+        self.method_group = QButtonGroup(self)
+        self.fido_radio = QRadioButton("VSO (no account needed)")
+        self.fido_radio.setChecked(True)
         self.method_group.addButton(self.fido_radio, 1)
         method_layout.addWidget(self.fido_radio)
-
-        self.drms_radio = QRadioButton("DRMS")
+        self.drms_radio = QRadioButton("JSOC export")
+        self.drms_radio.setToolTip(
+            "Export from JSOC with an email address registered there.\n"
+            "The only source of the HMI 720 s series, and the alternative\n"
+            "when the VSO's SDO export is down."
+        )
         self.method_group.addButton(self.drms_radio, 0)
         method_layout.addWidget(self.drms_radio)
-
+        method_layout.addStretch()
         self.method_group.buttonClicked.connect(self.on_method_changed)
-        self.method_widget.setLayout(method_layout)
-        layout.addWidget(self.method_widget)
+        self.method_label = QLabel("Source:")
+        form.addRow(self.method_label, self.method_widget)
 
-        # Email for DRMS (hidden by default since Fido is default)
-        self.email_widget = QWidget()
-        email_layout = QHBoxLayout()
-        email_layout.setContentsMargins(0, 0, 0, 0)
-        email_layout.addWidget(QLabel("Email (for DRMS):"))
         self.email_input = QLineEdit()
-        self.email_input.setPlaceholderText("Required for DRMS downloads")
-        email_layout.addWidget(self.email_input)
-        self.email_widget.setLayout(email_layout)
-        self.email_widget.hide()  # Hidden by default
-        layout.addWidget(self.email_widget)
-
-        group.setLayout(layout)
+        self.email_input.setPlaceholderText("Address registered at jsoc.stanford.edu")
+        self.email_label = QLabel("JSOC email:")
+        form.addRow(self.email_label, self.email_input)
         self.layout.addWidget(group)
 
     def create_calibration_options(self):
-        """Create the calibration options section."""
-        group = QGroupBox("Calibration Options")
-        layout = QVBoxLayout()
+        group = QGroupBox("Processing")
+        layout = QVBoxLayout(group)
 
-        # Main calibration checkbox
-        self.calibrate_checkbox = QCheckBox("Apply Level 1.5 Calibration")
+        self.calibrate_checkbox = QCheckBox("Prepare the images for SolarViewer")
         self.calibrate_checkbox.setChecked(True)
         self.calibrate_checkbox.setToolTip(
-            "Apply standard calibration (recommended for scientific use)\n"
-            "Includes: pointing correction, rotation, scaling, centering"
+            "One image per file, solar north up, Sun centred, counts per second\n"
+            "where the data are raw counts, a standard header."
         )
         self.calibrate_checkbox.stateChanged.connect(self.on_calibration_changed)
         layout.addWidget(self.calibrate_checkbox)
+        self.processing_hint = _hint()
+        self.processing_hint.setContentsMargins(20, 0, 0, 0)
+        layout.addWidget(self.processing_hint)
 
-        # Advanced options container
         self.calib_options_widget = QWidget()
-        calib_layout = QVBoxLayout()
-        calib_layout.setContentsMargins(20, 0, 0, 0)  # Indent
+        calib_layout = QVBoxLayout(self.calib_options_widget)
+        calib_layout.setContentsMargins(20, 0, 0, 0)
 
-        # AIA-specific options
-        self.aia_calib_label = QLabel("AIA Advanced Options:")
+        self.aia_calib_label = QLabel("AIA level 1.5 options")
         self.aia_calib_label.setObjectName("SectionTitle")
         calib_layout.addWidget(self.aia_calib_label)
-
-        self.psf_checkbox = QCheckBox("PSF Deconvolution")
-        self.psf_checkbox.setChecked(False)  # Off by default (slow)
+        self.psf_checkbox = QCheckBox("PSF deconvolution")
         self.psf_checkbox.setToolTip(
-            "Apply Point Spread Function deconvolution to sharpen images.\n"
-            "WARNING: This is VERY SLOW (~30-60 seconds per image)\n"
-            "Uses Richardson-Lucy algorithm with 25 iterations.\n"
-            "Downloads PSF data from JSOC on first use."
+            "Sharpen each image with the instrument point spread function\n"
+            "(Richardson-Lucy, 25 iterations). Slow: about a minute per image."
         )
         calib_layout.addWidget(self.psf_checkbox)
-
-        # Warning label for PSF
-        self.psf_warning = QLabel("PSF deconvolution might take a while")
+        self.psf_warning = QLabel("PSF deconvolution takes about a minute per image")
         set_tone(self.psf_warning, "warning")
         self.psf_warning.hide()
-        self.psf_checkbox.stateChanged.connect(
-            lambda state: self.psf_warning.setVisible(state == 2)
-        )
+        self.psf_checkbox.stateChanged.connect(lambda state: self.psf_warning.setVisible(state == 2))
         calib_layout.addWidget(self.psf_warning)
-
-        self.degradation_checkbox = QCheckBox("Degradation Correction")
+        self.degradation_checkbox = QCheckBox("Degradation correction")
         self.degradation_checkbox.setChecked(True)
-        self.degradation_checkbox.setToolTip(
-            "Apply time-dependent degradation correction.\n"
-            "Compensates for instrument sensitivity changes over time."
-        )
+        self.degradation_checkbox.setToolTip("Correct for the loss of sensitivity since launch")
         calib_layout.addWidget(self.degradation_checkbox)
-
-        self.exposure_norm_checkbox = QCheckBox("Exposure Time Normalization")
+        self.exposure_norm_checkbox = QCheckBox("Counts per second")
         self.exposure_norm_checkbox.setChecked(True)
-        self.exposure_norm_checkbox.setToolTip(
-            "Normalize data by exposure time.\n"
-            "Converts DN to DN/s for consistent comparison."
-        )
+        self.exposure_norm_checkbox.setToolTip("Divide by the exposure time (DN to DN/s)")
         calib_layout.addWidget(self.exposure_norm_checkbox)
 
-        self.calib_options_widget.setLayout(calib_layout)
+        self.keep_originals_checkbox = QCheckBox("Keep the downloaded files as well")
+        self.keep_originals_checkbox.setToolTip(
+            "Leave the files as the archive sent them next to the prepared ones"
+        )
+        calib_layout.addWidget(self.keep_originals_checkbox)
         layout.addWidget(self.calib_options_widget)
-
-        group.setLayout(layout)
         self.layout.addWidget(group)
 
     def on_calibration_changed(self, state):
-        """Handle calibration checkbox state changes."""
         self.calib_options_widget.setVisible(state == 2)
+        self.processing_hint.setVisible(state == 2)
 
     def create_download_section(self):
         """The status log, the progress bar and the Cancel and Download buttons."""
@@ -859,345 +700,229 @@ class SolarDataViewerGUI(QMainWindow):
         buttons.addWidget(self.download_button)
         self.layout.addLayout(buttons)
 
+    # -------------------------------------------------------------- events
     def log_message(self, message):
-        """Add a line to the status log."""
         self.log_text.append(message)
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
     def cancel_download(self):
-        """Stop the download in progress."""
         if self.download_worker is not None and self.download_worker.isRunning():
             self.download_worker.cancel()
             self.log_message("Cancelling download...")
 
     def browse_output_dir(self):
-        """Open a directory selection dialog."""
         dir_path = QFileDialog.getExistingDirectory(
-            self,
-            "Select Output Directory",
-            self.output_dir.text(),
-            QFileDialog.ShowDirsOnly,
+            self, "Select Output Directory", self.output_dir.text(), QFileDialog.ShowDirsOnly
         )
         if dir_path:
             self.output_dir.setText(dir_path)
 
     def get_instrument_name(self, index):
-        """Get short instrument name from index."""
-        names = ["AIA", "HMI", "IRIS", "SOHO", "GOES SUVI", "STEREO", "GONG"]
-        return names[index] if index < len(names) else "Unknown"
+        return INSTRUMENTS[index] if index < len(INSTRUMENTS) else "Unknown"
 
     def on_instrument_changed(self, index):
-        """Handle instrument selection changes."""
-        # Hide all parameter widgets
-        self.aia_params.hide()
-        self.hmi_params.hide()
-        self.iris_params.hide()
-        self.soho_params.hide()
-        self.suvi_params.hide()
-        self.stereo_params.hide()
-        self.gong_params.hide()
-
-        # Show the selected instrument's parameters
-        if index == 0:  # AIA
-            self.aia_params.show()
-        elif index == 1:  # HMI
-            self.hmi_params.show()
-        elif index == 2:  # IRIS
-            self.iris_params.show()
-        elif index == 3:  # SOHO
-            self.soho_params.show()
+        for i, page in enumerate(self.param_pages):
+            page.setVisible(i == index)
+        name = self.get_instrument_name(index)
+        if name == "SOHO":
             self.on_soho_instrument_changed(self.soho_instrument_combo.currentIndex())
-        elif index == 4:  # GOES SUVI
-            self.suvi_params.show()
-        elif index == 5:  # STEREO
-            self.stereo_params.show()
+        elif name == "STEREO":
             self.on_stereo_instrument_changed(self.stereo_inst_combo.currentIndex())
-        elif index == 6:  # GONG
-            self.gong_params.show()
 
-        # Handle Fido-only instruments
-        instrument_name = self.get_instrument_name(index)
-        if instrument_name in FIDO_ONLY_INSTRUMENTS:
-            # Force Fido and hide method selection
+        fido_only = name in FIDO_ONLY_INSTRUMENTS
+        if fido_only:
             self.fido_radio.setChecked(True)
-            self.method_widget.hide()
-            self.email_widget.hide()
-            self.cadence_widget.hide()
+        self.method_label.setVisible(not fido_only)
+        self.method_widget.setVisible(not fido_only)
+        if name == "HMI":
+            self.on_hmi_series_changed()
         else:
-            # Show method selection for AIA/HMI
-            self.method_widget.show()
-            self.on_method_changed()
+            self.fido_radio.setEnabled(True)
+        self.on_method_changed()
 
-        # Show AIA-specific calibration options only for AIA
-        if index == 0:  # AIA
-            self.aia_calib_label.show()
-            self.psf_checkbox.show()
-            self.psf_warning.setVisible(self.psf_checkbox.isChecked())
-            self.degradation_checkbox.show()
-            self.exposure_norm_checkbox.show()
-        else:
-            self.aia_calib_label.hide()
-            self.psf_checkbox.hide()
-            self.psf_warning.hide()
-            self.degradation_checkbox.hide()
-            self.exposure_norm_checkbox.hide()
+        is_aia = name == "AIA"
+        for w in (self.aia_calib_label, self.psf_checkbox, self.degradation_checkbox, self.exposure_norm_checkbox):
+            w.setVisible(is_aia)
+        self.psf_warning.setVisible(is_aia and self.psf_checkbox.isChecked())
 
-        # Update cadence info for the selected instrument
+        seconds = DEFAULT_CADENCE.get(name)
+        self.cadence_combo.setCurrentIndex([s for _, s in CADENCES].index(seconds))
         self.update_cadence_info()
 
     def on_method_changed(self, button=None):
-        """Handle download method changes."""
-        use_fido = self.method_group.checkedId() == 1
+        use_jsoc = self.method_group.checkedId() == 0 and self.method_widget.isVisibleTo(self)
+        self.email_label.setVisible(use_jsoc)
+        self.email_input.setVisible(use_jsoc)
 
-        if use_fido:
-            self.email_widget.hide()
-            self.cadence_widget.hide()  # Fido doesn't use cadence
-        else:
-            self.email_widget.show()
-            # Show cadence only for AIA with DRMS
-            if self.instrument_combo.currentIndex() == 0:
-                self.cadence_widget.show()
-                self.on_aia_wavelength_changed()  # Update cadence based on wavelength
-
-    def on_aia_wavelength_changed(self, index=None):
-        """Auto-select cadence based on AIA wavelength."""
-        wavelength_text = self.wavelength_combo.currentText()
-
-        if "1600" in wavelength_text or "1700" in wavelength_text:
-            self.cadence_combo.setCurrentIndex(1)  # 24s
-        elif "4500" in wavelength_text:
-            self.cadence_combo.setCurrentIndex(2)  # 1h
-        else:
-            self.cadence_combo.setCurrentIndex(0)  # 12s
-
+    def on_hmi_series_changed(self, index=None):
+        """The 720 s series exist only at JSOC."""
+        jsoc_only = "720" in str(self.series_combo.currentData())
+        if jsoc_only:
+            self.drms_radio.setChecked(True)
+        self.fido_radio.setEnabled(not jsoc_only)
+        self.on_method_changed()
         self.update_cadence_info()
 
     def on_soho_instrument_changed(self, index):
-        """Handle SOHO instrument selection changes."""
-        self.soho_eit_params.hide()
-        self.soho_lasco_params.hide()
-
-        if index == 0:  # EIT
-            self.soho_eit_params.show()
-        elif index == 1:  # LASCO
-            self.soho_lasco_params.show()
-
+        name = self.soho_instrument_combo.currentData()
+        for label, widget, shown in (
+            (self.eit_wavelength_label, self.eit_wavelength_combo, name == "EIT"),
+            (self.lasco_detector_label, self.lasco_detector_combo, name == "LASCO"),
+            (self.mdi_product_label, self.mdi_product_combo, name == "MDI"),
+        ):
+            label.setVisible(shown)
+            widget.setVisible(shown)
         self.update_cadence_info()
 
     def on_stereo_instrument_changed(self, index):
-        """Handle STEREO instrument selection changes."""
-        if index == 0:  # EUVI
-            self.stereo_euvi_params.show()
-        else:  # COR1/COR2
-            self.stereo_euvi_params.hide()
+        euvi = self.stereo_inst_combo.currentData() == "EUVI"
+        self.stereo_wavelength_label.setVisible(euvi)
+        self.stereo_wavelength_combo.setVisible(euvi)
         self.update_cadence_info()
 
-    def update_cadence_info(self):
-        """Update the cadence info label based on selected instrument and parameters."""
-        index = self.instrument_combo.currentIndex()
-
-        # Cadence info for each instrument
-        cadence_info = {
-            0: {  # AIA
-                "default": "12s (EUV), 24s (UV), 1h (4500Å)",
-                "wavelengths": {
-                    "94": "12s",
-                    "131": "12s",
-                    "171": "12s",
-                    "193": "12s",
-                    "211": "12s",
-                    "304": "12s",
-                    "335": "12s",
-                    "1600": "24s",
-                    "1700": "24s",
-                    "4500": "1 hour",
-                },
-            },
-            1: {"default": "45s (magnetogram), 45s (continuum), 45s (Doppler)"},  # HMI
-            2: {  # IRIS
-                "default": "Variable (depends on observing program, typically minutes)"
-            },
-            3: {  # SOHO
-                "EIT": "~12 min (synoptic), 1-6 min (campaign)",
-                "LASCO": "~12-30 min (C2/C3)",
-                "MDI": "1 min (discontinued 2011)",
-            },
-            4: {"default": "4 min (Level 2 composites)"},  # GOES SUVI
-            5: {  # STEREO
-                "EUVI": "2.5-10 min (wavelength dependent)",
-                "COR1": "5 min",
-                "COR2": "15-30 min",
-            },
-            6: {"default": "1 min (magnetograms)"},  # GONG
-        }
-
-        if index == 0:  # AIA - show wavelength-specific cadence
-            wl = self.wavelength_combo.currentText().split()[0]
-            wl_cadences = cadence_info[0]["wavelengths"]
-            cadence = wl_cadences.get(wl, "12s")
-            self.cadence_label.setText(f"ℹ️ Typical cadence: {cadence}")
-        elif index == 3:  # SOHO - depends on sub-instrument
-            soho_inst = self.soho_instrument_combo.currentText()
-            cadence = cadence_info[3].get(soho_inst, "Variable")
-            self.cadence_label.setText(f"ℹ️ Typical cadence: {cadence}")
-        elif index == 5:  # STEREO - depends on sub-instrument
-            stereo_inst = self.stereo_inst_combo.currentText()
-            if "EUVI" in stereo_inst:
-                cadence = cadence_info[5]["EUVI"]
-            elif "COR1" in stereo_inst:
-                cadence = cadence_info[5]["COR1"]
-            else:
-                cadence = cadence_info[5]["COR2"]
-            self.cadence_label.setText(f"ℹ️ Typical cadence: {cadence}")
+    def update_cadence_info(self, index=None):
+        """The native cadence of what is selected, and what preparing it does."""
+        name = self.get_instrument_name(self.instrument_combo.currentIndex())
+        if name == "AIA":
+            wl = self.wavelength_combo.currentData()
+            native = {"1600": "24 s", "1700": "24 s", "4500": "1 hour"}.get(wl, "12 s")
+            cadence = f"AIA takes a {wl} Å image every {native}; at every image an hour is about 300 files of 12 MB."
+            if native != "12 s":
+                cadence = f"AIA takes a {wl} Å image every {native}."
+            processing = (
+                "Level 1.5 with aiapy: pointing update, registration (north up, 0.6 arcsec per pixel, "
+                "Sun centred), degradation correction, counts per second."
+            )
+        elif name == "HMI":
+            series = str(self.series_combo.currentData())
+            cadence = f"One image every {'720 s' if '720' in series else '45 s'}; each file is about 15 MB."
+            processing = "North up with the Sun centred, at the native 0.504 arcsec per pixel."
+        elif name == "IRIS":
+            cadence = (
+                "One file per observation holds every exposure, seconds to minutes apart; "
+                "the cadence thins the exposures when the files are prepared."
+            )
+            processing = "One file per exposure with its own time, exposure time and pointing; counts per second; north up."
+        elif name == "SOHO":
+            inst = self.soho_instrument_combo.currentData()
+            cadence = {
+                "EIT": "About every 12 minutes for the synoptic 195 Å images, less often for the other wavelengths.",
+                "LASCO": "About every 12 minutes (C2) or 20 minutes (C3).",
+                "MDI": "Every 96 minutes; MDI ended in April 2011.",
+            }[inst]
+            processing = {
+                "EIT": "The level 1 product where SDAC has it (dark, flat, degridding, degradation and exposure corrected), else level 0 in counts per second; north up.",
+                "LASCO": "The level 0.5 roll undone (north up, Sun centred); counts per second.",
+                "MDI": "North up with the Sun centred.",
+            }[inst]
+        elif name == "GOES SUVI":
+            cadence = "Level 2 composites every 4 minutes; level 1b exposures every few seconds."
+            processing = "Level 2 composites moved into the primary HDU as they are; level 1b exposures turned north up."
         else:
-            cadence = cadence_info.get(index, {}).get("default", "Variable")
-            self.cadence_label.setText(f"ℹ️ Typical cadence: {cadence}")
+            inst = self.stereo_inst_combo.currentData()
+            cadence = {
+                "EUVI": "Every 2.5 to 10 minutes depending on the wavelength.",
+                "COR1": "A polarizer triplet every 5 to 10 minutes.",
+                "COR2": "A polarizer triplet every 15 to 30 minutes.",
+            }[inst]
+            processing = (
+                "North up with the Sun centred; counts per second."
+                if inst == "EUVI"
+                else "The three polarizer images of each sequence combined into total brightness; north up; counts per second."
+            )
+        self.cadence_label.setText(cadence)
+        self.processing_hint.setText(processing)
 
     def get_download_parameters(self) -> dict:
-        """Gather all parameters needed for the download."""
-        instrument_index = self.instrument_combo.currentIndex()
-        start_time = self.start_datetime.dateTime().toString("yyyy.MM.dd HH:mm:ss")
-        end_time = self.end_datetime.dateTime().toString("yyyy.MM.dd HH:mm:ss")
-        output_dir = self.output_dir.text()
-        use_fido = self.method_group.checkedId() == 1
-        email = self.email_input.text() if not use_fido else None
-
+        """What the download needs, from the form."""
+        name = self.get_instrument_name(self.instrument_combo.currentIndex())
+        use_fido = self.method_group.checkedId() == 1 or name in FIDO_ONLY_INSTRUMENTS
         params = {
-            "start_time": start_time,
-            "end_time": end_time,
-            "output_dir": output_dir,
+            "instrument": name,
+            "start_time": self.start_datetime.dateTime().toString("yyyy.MM.dd HH:mm:ss"),
+            "end_time": self.end_datetime.dateTime().toString("yyyy.MM.dd HH:mm:ss"),
+            "output_dir": self.output_dir.text(),
             "use_fido": use_fido,
-            "email": email,
-            # Calibration options
+            "email": self.email_input.text().strip() if not use_fido else None,
+            "sample": self.cadence_combo.currentData(),
             "skip_calibration": not self.calibrate_checkbox.isChecked(),
+            "keep_originals": self.keep_originals_checkbox.isChecked(),
             "apply_psf": self.psf_checkbox.isChecked(),
             "apply_degradation": self.degradation_checkbox.isChecked(),
             "apply_exposure_norm": self.exposure_norm_checkbox.isChecked(),
         }
-
-        if instrument_index == 0:  # AIA
-            params.update(
-                {
-                    "instrument": "AIA",
-                    "wavelength": self.wavelength_combo.currentText().split()[0],
-                    "cadence": self.cadence_combo.currentText(),
-                }
-            )
-        elif instrument_index == 1:  # HMI
-            params.update(
-                {
-                    "instrument": "HMI",
-                    "series": self.series_combo.currentText().split()[0],
-                }
-            )
-        elif instrument_index == 2:  # IRIS
-            obs_type = "SJI" if "SJI" in self.obs_type_combo.currentText() else "raster"
-            params.update(
-                {
-                    "instrument": "IRIS",
-                    "obs_type": obs_type,
-                    "wavelength": self.iris_wavelength_combo.currentText().split()[0],
-                }
-            )
-        elif instrument_index == 3:  # SOHO
-            soho_instrument = self.soho_instrument_combo.currentText()
-            params.update({"instrument": "SOHO", "soho_instrument": soho_instrument})
-
-            if soho_instrument == "EIT":
-                params["wavelength"] = self.eit_wavelength_combo.currentText().split()[
-                    0
-                ]
-            elif soho_instrument == "LASCO":
-                params["detector"] = self.lasco_detector_combo.currentText().split()[0]
-
-        elif instrument_index == 4:  # GOES SUVI
-            params.update(
-                {
-                    "instrument": "GOES SUVI",
-                    "wavelength": self.suvi_wavelength_combo.currentText().split()[0],
-                    "level": (
-                        "2"
-                        if "Level 2" in self.suvi_level_combo.currentText()
-                        else "1b"
-                    ),
-                }
-            )
-        elif instrument_index == 5:  # STEREO
-            spacecraft = (
-                "A" if "STEREO-A" in self.stereo_sc_combo.currentText() else "B"
-            )
-            stereo_inst_text = self.stereo_inst_combo.currentText()
-            if "EUVI" in stereo_inst_text:
-                stereo_inst = "EUVI"
-            elif "COR1" in stereo_inst_text:
-                stereo_inst = "COR1"
+        if name == "AIA":
+            params["wavelength"] = self.wavelength_combo.currentData()
+        elif name == "HMI":
+            params["series"] = self.series_combo.currentData()
+        elif name == "IRIS":
+            params["obs_type"] = "SJI"
+            params["wavelength"] = self.iris_wavelength_combo.currentData()
+        elif name == "SOHO":
+            inst = self.soho_instrument_combo.currentData()
+            params["soho_instrument"] = inst
+            if inst == "EIT":
+                params["wavelength"] = self.eit_wavelength_combo.currentData()
+            elif inst == "LASCO":
+                params["detector"] = self.lasco_detector_combo.currentData()
             else:
-                stereo_inst = "COR2"
-
-            params.update(
-                {
-                    "instrument": "STEREO",
-                    "spacecraft": spacecraft,
-                    "stereo_instrument": stereo_inst,
-                }
-            )
-            if stereo_inst == "EUVI":
-                params["wavelength"] = (
-                    self.stereo_wavelength_combo.currentText().split()[0]
-                )
-
-        elif instrument_index == 6:  # GONG
-            params.update({"instrument": "GONG"})
-
+                params["physobs"] = self.mdi_product_combo.currentData()
+        elif name == "GOES SUVI":
+            params["wavelength"] = self.suvi_wavelength_combo.currentData()
+            params["level"] = self.suvi_level_combo.currentData()
+        elif name == "STEREO":
+            params["spacecraft"] = self.stereo_sc_combo.currentData()
+            params["stereo_instrument"] = self.stereo_inst_combo.currentData()
+            if params["stereo_instrument"] == "EUVI":
+                params["wavelength"] = self.stereo_wavelength_combo.currentData()
         return params
 
     def start_download(self):
-        """Start the download process."""
+        params = self.get_download_parameters()
+        if self.end_datetime.dateTime() <= self.start_datetime.dateTime():
+            QMessageBox.warning(self, "Time range", "The end time must be after the start time.")
+            return
+        if not params["use_fido"] and not params["email"]:
+            QMessageBox.warning(
+                self,
+                "JSOC email",
+                "A JSOC export needs an email address registered at JSOC\n"
+                "(jsoc.stanford.edu/ajax/register_email.html).",
+            )
+            return
         try:
-            # Create output directory if it doesn't exist
-            Path(self.output_dir.text()).mkdir(parents=True, exist_ok=True)
-
-            self.download_button.setEnabled(False)
-            self.cancel_button.setEnabled(True)
-            self.progress_bar.show()
-            self.log_text.clear()
-            self.log_message("Preparing download...")
-
-            # Create and start the download worker
-            params = self.get_download_parameters()
-            self.download_worker = DownloadWorker(params)
-            self.download_worker.progress.connect(self.update_progress)
-            self.download_worker.finished.connect(self.download_finished)
-            self.download_worker.error.connect(self.download_error)
-            self.download_worker.start()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to start download: {str(e)}")
-            self.download_button.setEnabled(True)
-            self.cancel_button.setEnabled(False)
-            self.progress_bar.hide()
+            Path(params["output_dir"]).mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            QMessageBox.critical(self, "Output folder", f"Cannot create the output folder:\n{e}")
+            return
+        self.download_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.progress_bar.show()
+        self.log_text.clear()
+        self.log_message("Preparing download...")
+        self.download_worker = DownloadWorker(params)
+        self.download_worker.progress.connect(self.update_progress)
+        self.download_worker.finished.connect(self.download_finished)
+        self.download_worker.error.connect(self.download_error)
+        self.download_worker.start()
 
     def update_progress(self, message):
-        """Update the progress display."""
         self.log_message(message)
 
     def download_finished(self, files):
-        """Handle download completion."""
         self.download_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.progress_bar.hide()
-
         if files:
-            message = f"Download complete! Downloaded {len(files)} files to {self.output_dir.text()}"
+            message = f"{len(files)} files are ready in {self.output_dir.text()}"
             self.log_message(message)
-            QMessageBox.information(self, "Success", message)
+            QMessageBox.information(self, "Download complete", message)
         else:
             self.log_message("No files were downloaded.")
-            QMessageBox.warning(self, "Warning", "No files were downloaded.")
+            QMessageBox.warning(self, "Nothing downloaded", "No files were downloaded.")
 
     def download_error(self, error_message):
-        """Handle download errors."""
         self.download_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.progress_bar.hide()
@@ -1206,27 +931,13 @@ class SolarDataViewerGUI(QMainWindow):
 
 
 def launch_gui(parent=None, initial_datetime=None) -> SolarDataViewerGUI:
-    """
-    Launch the Solar Data Viewer GUI.
-
-    Args:
-        parent: Optional parent widget for integration with other PyQt applications
-        initial_datetime: Optional datetime to initialize the time selectors
-
-    Returns:
-        SolarDataViewerGUI: The main window instance
-    """
-    if not QApplication.instance():
-        app = QApplication(sys.argv)
-    else:
-        app = QApplication.instance()
-
+    """Show the Solar Data Downloader window (its own application when run
+    without a parent)."""
+    app = QApplication.instance() or QApplication(sys.argv)
     window = SolarDataViewerGUI(parent, initial_datetime=initial_datetime)
     window.show()
-
     if parent is None:
         sys.exit(app.exec_())
-
     return window
 
 
