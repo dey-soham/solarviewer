@@ -19,7 +19,15 @@ currentWidget()`` is the current page's active pane.
 import logging
 import os
 
-from PyQt5.QtCore import QEvent, QSize, Qt, pyqtSignal
+from PyQt5.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QTimer,
+    pyqtSignal,
+)
 from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
@@ -45,7 +53,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ..ui.icons import launcher_icon, themed_icon
-from ..ui.styles import set_hand_cursor
+from ..ui.styles import _qt_deleted, set_hand_cursor
 from ..ui.widgets import kicker_row, link_button, segmented, toggle_row
 from .compare_sync import (
     FRAME_NAMES,
@@ -70,6 +78,11 @@ LAYOUTS = (
 )
 GRID_GAP = 6
 ICON_SIZE = QSize(16, 16)
+# A change of layout is covered by a picture of the page as it was, held
+# while the panes draw themselves into their new places (at most this
+# long) and then faded away
+VEIL_HOLD_MS = 900
+VEIL_FADE_MS = 260
 
 
 def _positions(size):
@@ -81,6 +94,70 @@ def _positions(size):
     if size == 4:
         return [(0, 0), (0, 1), (1, 0), (1, 1)]
     return [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
+
+
+class _Veil(QLabel):
+    """A picture of the page as it was, over it while the panes settle
+    into a new layout, faded away once they have drawn: the change reads
+    as one cross-fade rather than widgets shifting about."""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.setPixmap(page.grab())
+        self.setGeometry(page.rect())
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._effect = QGraphicsOpacityEffect(self)
+        self._effect.setOpacity(1.0)
+        self.setGraphicsEffect(self._effect)
+        self._waiting = set()
+        self._fade = None
+        self.raise_()
+        self.show()
+        page.installEventFilter(self)
+        QTimer.singleShot(VEIL_HOLD_MS, self.fade)
+
+    def wait_for(self, panes):
+        """Hold until each of ``panes`` has drawn (or the hold runs out)."""
+        self._waiting = set(panes)
+        if not self._waiting:
+            QTimer.singleShot(0, self.fade)
+
+    def drawn(self, pane):
+        # A pane with a plot scheduled (drawn compact, say) is not there
+        # yet: this draw is of the old picture at the new size
+        timer = getattr(pane, "_plot_timer", None)
+        if timer is not None and timer.isActive():
+            return
+        self._waiting.discard(pane)
+        if not self._waiting:
+            self.fade()
+
+    def fading(self):
+        return self._fade is not None
+
+    def fade(self):
+        if self._fade is not None or _qt_deleted(self):
+            return
+        self._fade = QPropertyAnimation(self._effect, b"opacity", self)
+        self._fade.setDuration(VEIL_FADE_MS)
+        self._fade.setStartValue(1.0)
+        self._fade.setEndValue(0.0)
+        self._fade.setEasingCurve(QEasingCurve.InOutSine)
+        self._fade.finished.connect(self._done)
+        self._fade.start()
+
+    def _done(self):
+        if _qt_deleted(self):
+            return
+        self.hide()
+        self.setParent(None)
+        self.deleteLater()
+
+    def eventFilter(self, watched, event):
+        # The page resized under the picture: it no longer fits, so go
+        if event.type() == QEvent.Resize:
+            self._done()
+        return False
 
 
 def _tool_button(action):
@@ -522,6 +599,7 @@ class ImagePage(QWidget):
         self._pane_names = {}
         self.layout_size = 1
         self.full_axes = False  # compare panes drawn with ticks, labels, title
+        self._veil_widget = None
         self.sync = PaneSync(self)
 
         layout = QVBoxLayout(self)
@@ -952,9 +1030,29 @@ class ImagePage(QWidget):
                 self.set_layout(size)
                 return
 
+    def _veil(self):
+        """The picture that covers the change of layout about to happen,
+        if the page is on screen to see it; None otherwise."""
+        veil = self._veil_widget
+        if veil is not None and (_qt_deleted(veil) or veil.fading()):
+            veil = self._veil_widget = None
+        if veil is None and self.isVisible() and not self.rect().isEmpty():
+            veil = self._veil_widget = _Veil(self)
+        return veil
+
+    def pane_drawn(self, pane):
+        """``pane``'s canvas drew itself afresh."""
+        self.sync.canvas_drawn(pane)
+        veil = self._veil_widget
+        if veil is not None and not _qt_deleted(veil):
+            veil.drawn(pane)
+
     def _place_panes(self):
         """Lay the panes out in the grid, a slot offering an image where
-        there is none; alone, a pane fills the grid without a header."""
+        there is none; alone, a pane fills the grid without a header. The
+        change happens under a picture of the page as it was, which fades
+        once the panes have drawn in their new places."""
+        veil = self._veil()
         while self._grid.count():
             item = self._grid.takeAt(0)
             widget = item.widget()
@@ -1005,6 +1103,8 @@ class ImagePage(QWidget):
                 else "Close a pane first"
             )
         self.update_title()
+        if veil is not None:
+            veil.wait_for(pane for pane in self.panes if pane.imagename)
 
     # ----------------------------------------------------------- drops
     def dragEnterEvent(self, event):

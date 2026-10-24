@@ -616,7 +616,7 @@ class CanvasMixin:
         self._show_zoom(ax)
         page = getattr(self, "page", None)
         if page is not None:
-            page.sync.canvas_drawn(self)
+            page.pane_drawn(self)
 
     def _cursor_left(self):
         """The mouse left the image: no crosshair in the other panes."""
