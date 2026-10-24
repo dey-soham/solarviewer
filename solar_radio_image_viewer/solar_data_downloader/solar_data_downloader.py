@@ -1627,22 +1627,25 @@ def download_soho(
                     base_name = os.path.basename(file_path)
                     calibrated = False
 
-                    # Step 1: Rotate to solar north using CROTA
-                    crota = float(
-                        lasco_map.meta.get(
-                            "crota",
-                            lasco_map.meta.get("crota2", lasco_map.meta.get("crota1", 0.0)),
+                    # Step 1: Rotate to solar north. The map's rotation matrix
+                    # (from the header's CROTA) is what rotate() undoes when it
+                    # is given no angle; rotating by -CROTA instead turns the
+                    # image the other way and leaves twice the roll in the header.
+                    import numpy as np
+
+                    roll = float(
+                        np.degrees(
+                            np.arctan2(
+                                lasco_map.rotation_matrix[1, 0],
+                                lasco_map.rotation_matrix[0, 0],
+                            )
                         )
                     )
-                    if abs(crota) > 0.01:
-                        import numpy as np
-
+                    if abs(roll) > 0.01:
                         float_data = lasco_map.data.astype(np.float64)
                         lasco_map = Map(float_data, lasco_map.meta)
-                        lasco_map = lasco_map.rotate(
-                            angle=-crota * u.deg, recenter=True, missing=np.nan
-                        )
-                        print(f"  - Rotated {-crota:.2f}° to solar north")
+                        lasco_map = lasco_map.rotate(recenter=True, missing=np.nan)
+                        print(f"  - Rotated {-roll:.2f}° to solar north")
                         calibrated = True
 
                     # LASCO calibration is complex (stray light, F-corona, vignetting)
