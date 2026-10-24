@@ -12,7 +12,12 @@ other frame keeps its own view):
 - the cursor crosshair: the mouse in one pane draws a crosshair at the
   same sky position in every linked pane, and the inspector lists the
   value under it in each;
-- frame stepping and the intensity range: see the page.
+- frame stepping: next, previous, first or last in one pane steps every
+  linked pane through its own folder (whatever its frame);
+- the intensity range: a range given to one pane goes to the linked
+  panes in the same unit;
+- a region drawn in one pane is drawn at the same sky position in the
+  panes following it, each with its own statistics.
 """
 
 import logging
@@ -33,6 +38,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ..tools.preview import contrast_colors, halo_pen, measure_preview
+from ..tools.preview import halo as halo_effects
 from ..ui.widgets import kicker, kicker_row, link_button, rule, toggle_row
 
 logger = logging.getLogger(__name__)
@@ -153,6 +159,13 @@ def format_value(value, unit):
     return f"{text} {unit}" if unit else text
 
 
+class _Point:
+    """A mouse event's data position, for the region handlers."""
+
+    def __init__(self, xdata, ydata):
+        self.xdata, self.ydata = xdata, ydata
+
+
 # ---------------------------------------------------------------- the sync
 class PaneSync:
     """What keeps a page's panes together; the page calls it as things
@@ -254,6 +267,110 @@ class PaneSync:
     def canvas_drawn(self, pane):
         """A pane drawn afresh: its crosshair (a picture over it) is stale."""
         self._hide_crosshair(pane)
+
+    # --------------------------------------------------------- frames
+    def frame_stepped(self, leader, kind):
+        """``leader`` stepped to another file: the linked panes step the
+        same way through their own folders."""
+        if not self.on["frames"] or self._busy or not leader.linked:
+            return
+        self._busy = True
+        try:
+            for pane in self.page.panes:
+                if pane is leader or not pane.linked or not pane._file_list:
+                    continue
+                getattr(pane, f"_on_{kind}_file")()
+        finally:
+            self._busy = False
+
+    # ---------------------------------------------------------- range
+    def range_changed(self, leader, vmin, vmax):
+        """``leader`` is shown with this range: the linked panes in the
+        same unit take it."""
+        if not self.on["range"] or self._busy or not leader.linked:
+            return
+        unit = getattr(leader, "_current_bunit", None)
+        self._busy = True
+        try:
+            for pane in self.page.panes:
+                if pane is leader or not pane.linked or pane.current_image_data is None:
+                    continue
+                if getattr(pane, "_current_bunit", None) != unit:
+                    continue
+                shown = getattr(pane, "_last_norm_params", None)
+                if shown is not None and np.allclose(shown[:2], (vmin, vmax), rtol=1e-9, atol=0):
+                    continue
+                pane.show_range(vmin, vmax)
+                pane.show_range_preset(None)
+                pane.update_display()
+        finally:
+            self._busy = False
+
+    # -------------------------------------------------------- regions
+    def region_drawn(self, leader, shape, corners):
+        """A ``shape`` ("rect" or "ellipse") spanning ``corners`` (x1, y1,
+        x2, y2) of ``leader``: drawn at the same sky position in the panes
+        following it, each taking its statistics; the page's tables follow."""
+        page = self.page
+        if self._busy:
+            return
+        self._remove_mirror(leader)
+        if leader.linked and None not in corners:
+            x1, y1, x2, y2 = corners
+            first, second = to_world(leader, x1, y1), to_world(leader, x2, y2)
+            if first is not None and second is not None:
+                self._busy = True
+                try:
+                    for pane in self.followers(leader):
+                        p1, p2 = to_pixel(pane, *first), to_pixel(pane, *second)
+                        if p1 is None or p2 is None:
+                            continue
+                        self._draw_mirror(pane, shape, p1, p2)
+                        handler = pane.on_rectangle if shape == "rect" else pane.on_ellipse
+                        handler(_Point(*p1), _Point(*p2))
+                finally:
+                    self._busy = False
+        page.regions_changed()
+
+    def _draw_mirror(self, pane, shape, p1, p2):
+        """The region as a dashed outline on ``pane`` (its own selector,
+        if any, goes out of sight)."""
+        from matplotlib.patches import Ellipse, Rectangle
+
+        ax = pane._nav_axes()
+        if ax is None:
+            return
+        self._remove_mirror(pane)
+        (x1, y1), (x2, y2) = p1, p2
+        line, halo = contrast_colors(pane)
+        style = dict(
+            fill=False,
+            edgecolor=line,
+            linewidth=1.2,
+            linestyle="--",
+            path_effects=halo_effects(halo, 1.2),
+        )
+        if shape == "rect":
+            patch = Rectangle((min(x1, x2), min(y1, y2)), abs(x2 - x1), abs(y2 - y1), **style)
+        else:
+            patch = Ellipse(((x1 + x2) / 2, (y1 + y2) / 2), abs(x2 - x1), abs(y2 - y1), **style)
+        ax.add_patch(patch)
+        pane._mirror_patch = patch
+        selector = getattr(pane, "roi_selector", None)
+        if selector is not None:
+            selector.set_visible(False)
+        pane.canvas.draw_idle()
+
+    @staticmethod
+    def _remove_mirror(pane):
+        patch = getattr(pane, "_mirror_patch", None)
+        pane._mirror_patch = None
+        if patch is not None:
+            try:
+                patch.remove()
+                pane.canvas.draw_idle()
+            except Exception:
+                pass  # (the figure was cleared since)
 
     def _show_crosshair(self, pane, x, y):
         if pane._in_measurement_mode():

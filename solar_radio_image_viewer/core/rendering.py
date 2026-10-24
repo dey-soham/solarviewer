@@ -90,9 +90,15 @@ class RenderingMixin:
         return state
 
     def plot_image(self, *args, **kwargs):
-        """Draw the image (see _plot_image), with the wait cursor until it is on screen."""
+        """Draw the image (see _plot_image), with the wait cursor until it
+        is on screen; the page hears of the range shown (the linked panes
+        may take it, core/compare_sync.py)."""
         with busy():
             self._plot_image(*args, **kwargs)
+        page = getattr(self, "page", None)
+        params = getattr(self, "_last_norm_params", None)
+        if page is not None and params is not None and self.current_image_data is not None:
+            page.sync.range_changed(self, params[0], params[1])
 
     def _plot_image(
         self,

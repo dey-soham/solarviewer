@@ -276,7 +276,6 @@ class SolarRadioImageTab(
         self.region_mode = RegionMode.PAN
 
         self.setup_ui()
-        self._setup_file_navigation_shortcuts()
         self._set_button_cursors()
 
     def _set_button_cursors(self):

@@ -20,7 +20,7 @@ import logging
 import os
 
 from PyQt5.QtCore import QEvent, QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -32,9 +32,12 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QShortcut,
     QSizePolicy,
     QSplitter,
     QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -159,6 +162,40 @@ def _repolish(widget):
     widget.style().polish(widget)
 
 
+REGION_ROWS = ("Min", "Max", "Mean", "Std Dev", "Sum", "RMS")
+IMAGE_ROWS = ("Max", "Min", "RMS", "Box mean", "Pos. DR", "Neg. DR")
+
+
+def _stats_table(rows, letters):
+    """A table of ``rows`` with a column per pane, headed by the panes'
+    letters, in the KeyValue role; as tall as its rows."""
+    table = QTableWidget(len(rows), 1 + len(letters))
+    table.setObjectName("KeyValue")
+    table.verticalHeader().setVisible(False)
+    table.setHorizontalHeaderLabels([""] + list(letters))
+    table.setEditTriggers(QTableWidget.NoEditTriggers)
+    table.setSelectionMode(QTableWidget.NoSelection)
+    table.setFocusPolicy(Qt.NoFocus)
+    table.setShowGrid(False)
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(0, header.ResizeToContents)
+    for column in range(1, 1 + len(letters)):
+        header.setSectionResizeMode(column, header.Stretch)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    row_height = table.fontMetrics().height() + 8
+    for row, label in enumerate(rows):
+        table.setItem(row, 0, QTableWidgetItem(label))
+        for column in range(1, 1 + len(letters)):
+            item = QTableWidgetItem("—")
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            table.setItem(row, column, item)
+        table.setRowHeight(row, row_height)
+    table.setFixedHeight(row_height * len(rows) + header.sizeHint().height() + 2 * table.frameWidth())
+    table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    return table
+
+
 def _scroll(widget):
     area = QScrollArea()
     area.setWidget(widget)
@@ -212,6 +249,7 @@ class ComparePanel(QWidget):
         apply_row.setSpacing(8)
         self.apply_hint = QLabel("Colormap, stretch, gamma, range, overlays")
         self.apply_hint.setObjectName("Hint")
+        self.apply_hint.setWordWrap(True)  # (gives way, rather than widening the tab)
         apply_row.addWidget(self.apply_hint)
         apply_row.addStretch()
         self.apply_button = link_button("Apply to all panes", page.apply_display_to_all)
@@ -222,7 +260,59 @@ class ComparePanel(QWidget):
         apply_row.addWidget(self.apply_button)
         block_layout.addLayout(apply_row)
         layout.addWidget(block)
+
+        # The statistics of every pane: the region's, the image's
+        self._region_block, self._region_layout, _aside = self._stats_block(
+            "Region", "Draw a rectangle or ellipse on a pane: the panes following it take it too"
+        )
+        layout.addWidget(self._region_block)
+        self._image_block, self._image_layout, _aside = self._stats_block(
+            "Image", "Loads with the images"
+        )
+        layout.addWidget(self._image_block)
+        self._region_table = self._image_table = None
         layout.addStretch()
+
+    @staticmethod
+    def _stats_block(title, hint):
+        block = QWidget()
+        block_layout = QVBoxLayout(block)
+        block_layout.setContentsMargins(0, 0, 0, 0)
+        block_layout.setSpacing(10)
+        row, aside = kicker_row(title, "")
+        block_layout.addWidget(row)
+        label = QLabel(hint)
+        label.setObjectName("Hint")
+        label.setWordWrap(True)
+        block_layout.addWidget(label)
+        return block, block_layout, aside
+
+    def refresh_stats(self):
+        """The tables again, a column per pane, from each pane's own tables."""
+        page = self._page
+        letters = LETTERS[: len(page.panes)]
+        for old in (self._region_table, self._image_table):
+            if old is not None:
+                old.setParent(None)
+                old.deleteLater()
+        self._region_table = _stats_table(REGION_ROWS, letters)
+        self._image_table = _stats_table(IMAGE_ROWS, letters)
+        self._region_layout.addWidget(self._region_table)
+        self._image_layout.addWidget(self._image_table)
+        any_region = any_image = False
+        for column, pane in enumerate(page.panes, start=1):
+            if not pane.stats_table.isHidden():
+                any_region = True
+                for row in range(len(REGION_ROWS)):
+                    item = pane.stats_table.item(row, 1)
+                    self._region_table.item(row, column).setText(item.text() if item else "—")
+            if not pane.image_stats_table.isHidden():
+                any_image = True
+                for row in range(len(IMAGE_ROWS)):
+                    item = pane.image_stats_table.item(row, 1)
+                    self._image_table.item(row, column).setText(item.text() if item else "—")
+        self._region_table.setVisible(any_region)
+        self._image_table.setVisible(any_image)
 
     def refresh(self):
         """The rows follow the page's panes: letter, name, what it shows."""
@@ -255,6 +345,7 @@ class ComparePanel(QWidget):
                 editing.setObjectName("Meta")
                 row_layout.addWidget(editing)
             self._rows.addWidget(row)
+        self.refresh_stats()
 
 
 class PaneFrame(QFrame):
@@ -470,6 +561,20 @@ class ImagePage(QWidget):
         self.sync_popover = SyncPopover(self)
         self._sync_button = sync_button(self)
         self._sync_button.hide()
+        # The file-stepping keys, for the active pane ([ ] { })
+        for keys, name in (
+            ("[", "_on_prev_file"),
+            ("]", "_on_next_file"),
+            ("{", "_on_first_file"),
+            ("}", "_on_last_file"),
+        ):
+            QShortcut(QKeySequence(keys), self).activated.connect(
+                lambda name=name: self._active_step(name)
+            )
+
+    def _active_step(self, name):
+        if self._active is not None:
+            getattr(self._active, name)()
 
     def _build_inspector(self):
         """The column at the right: the active pane's header, the Display
@@ -734,6 +839,10 @@ class ImagePage(QWidget):
             if len(in_sync) >= 2 and ways:
                 said += f" · {', '.join(ways).lower()} synced on {letters}"
             self.window().statusBar().showMessage(said)
+
+    def regions_changed(self):
+        """A region drawn (or mirrored): the Compare tab's tables follow."""
+        self._compare_panel.refresh_stats()
 
     # --------------------------------------------------------- display
     def set_full_axes(self, on):

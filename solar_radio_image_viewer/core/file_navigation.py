@@ -36,24 +36,13 @@ class FileNavigationMixin:
     ``update_tab_name_from_path``, ``window``
     """
 
-    def _setup_file_navigation_shortcuts(self):
-        """Setup keyboard shortcuts for file navigation within this tab"""
-        from PyQt5.QtGui import QKeySequence
-        from PyQt5.QtWidgets import QShortcut
-
-        # Use [ and ] for prev/next
-        # Use { and } (Shift+[ Shift+]) for first/last
-        prev_shortcut = QShortcut(QKeySequence("["), self)
-        prev_shortcut.activated.connect(self._on_prev_file)
-
-        next_shortcut = QShortcut(QKeySequence("]"), self)
-        next_shortcut.activated.connect(self._on_next_file)
-
-        first_shortcut = QShortcut(QKeySequence("{"), self)  # Shift+[
-        first_shortcut.activated.connect(self._on_first_file)
-
-        last_shortcut = QShortcut(QKeySequence("}"), self)  # Shift+]
-        last_shortcut.activated.connect(self._on_last_file)
+    def _stepped(self, kind):
+        """The page hears of a step ("prev", "next", "first", "last"): the
+        panes following this one step too (core/compare_sync.py). The
+        keys [ ] { } are the page's, for its active pane."""
+        page = getattr(self, "page", None)
+        if page is not None:
+            page.sync.frame_stepped(self, kind)
 
     def select_file_or_directory(self):
         # Check if we're in remote mode - if so, use remote file browser
@@ -759,6 +748,7 @@ except Exception:
         if self._file_list_index <= 0:
             return
         self._step_file(self._file_list_index - 1, -1)
+        self._stepped("prev")
 
     def _on_next_file(self):
         """Load the next file in the file list"""
@@ -768,18 +758,21 @@ except Exception:
         ):
             return
         self._step_file(self._file_list_index + 1, 1)
+        self._stepped("next")
 
     def _on_first_file(self):
         """Load the first file in the file list"""
         if not self._file_list or self._file_list_index <= 0:
             return
         self._step_file(0, 1, "Loaded first file:")
+        self._stepped("first")
 
     def _on_last_file(self):
         """Load the last file in the file list"""
         if not self._file_list or self._file_list_index >= len(self._file_list) - 1:
             return
         self._step_file(len(self._file_list) - 1, -1, "Loaded last file:")
+        self._stepped("last")
 
     def _show_filter_dialog(self):
         """Show a dialog to set the file filter pattern"""

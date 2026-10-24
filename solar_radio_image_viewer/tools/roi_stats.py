@@ -460,6 +460,16 @@ class RoiStatsMixin:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
 
         self.show_roi_stats(roi, ra_dec_info)
+        self._region_drawn("rect", eclick, erelease)
+
+    def _region_drawn(self, shape, eclick, erelease):
+        """The page hears of the region (the panes following this one get
+        it too, core/compare_sync.py)."""
+        page = getattr(self, "page", None)
+        if page is not None:
+            page.sync.region_drawn(
+                self, shape, (eclick.xdata, eclick.ydata, erelease.xdata, erelease.ydata)
+            )
 
     def on_ellipse(self, eclick, erelease):
         """Handle ellipse selection for ROI statistics"""
@@ -590,3 +600,4 @@ class RoiStatsMixin:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
 
         self.show_roi_stats(roi_data, ra_dec_info)
+        self._region_drawn("ellipse", eclick, erelease)
