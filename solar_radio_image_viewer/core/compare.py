@@ -44,7 +44,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from ..ui.icons import themed_icon
+from ..ui.icons import launcher_icon, themed_icon
 from ..ui.styles import set_hand_cursor
 from ..ui.widgets import kicker_row, link_button, segmented, toggle_row
 from .compare_sync import (
@@ -620,7 +620,7 @@ class ImagePage(QWidget):
         group.setExclusive(True)
         buttons = []
         for size, icon, tip in LAYOUTS:
-            action = QAction(QIcon(themed_icon(icon)), "", self)
+            action = QAction(launcher_icon(icon), "", self)
             action.setCheckable(True)
             action.setToolTip(tip)
             action.setText(tip)
@@ -1080,7 +1080,7 @@ class ImagePage(QWidget):
         for frame in self.frames.values():
             frame.refresh_icons()
         for (size, icon, _tip) in LAYOUTS:
-            self._layout_actions[size].setIcon(QIcon(themed_icon(icon)))
+            self._layout_actions[size].setIcon(launcher_icon(icon))
         self.refresh_sync()
 
     def cleanup(self):
