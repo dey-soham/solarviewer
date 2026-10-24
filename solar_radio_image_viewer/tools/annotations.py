@@ -180,9 +180,7 @@ class AnnotationDialogsMixin:
         def on_add():
             try:
                 # Check if tab still exists
-                if tab_ref not in [
-                    self.tab_widget.widget(i) for i in range(self.tab_widget.count())
-                ]:
+                if tab_ref not in self.all_panes():
                     QMessageBox.warning(
                         self, "Error", "The target tab has been closed."
                     )
@@ -320,9 +318,7 @@ class AnnotationDialogsMixin:
         def on_add():
             try:
                 # Check if tab still exists
-                if tab_ref not in [
-                    self.tab_widget.widget(i) for i in range(self.tab_widget.count())
-                ]:
+                if tab_ref not in self.all_panes():
                     QMessageBox.warning(
                         self, "Error", "The target tab has been closed."
                     )

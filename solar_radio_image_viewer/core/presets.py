@@ -373,7 +373,7 @@ class PresetsMixin:
         )
         self.plot_image(vmin, vmax, stretch, cmap, self._current_gamma())
 
-        if self.parent():
+        if self.window():
             self.show_status_message(
                 AUTO_RANGES[mode].status_message.format(vmin=vmin, vmax=vmax)
             )
@@ -414,7 +414,7 @@ class PresetsMixin:
             vmin, vmax, preset.stretch, cmap, gamma, interpolation="nearest"
         )
 
-        if self.parent():
+        if self.window():
             self.show_status_message(
                 f"Set {preset.label} preset: range [{vmin:.4g}, {vmax:.4g}], "
                 f"colormap={cmap}, stretch={preset.stretch}"

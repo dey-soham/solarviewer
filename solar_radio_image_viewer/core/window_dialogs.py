@@ -109,10 +109,7 @@ class WindowDialogsMixin:
             try:
                 # Check if tab still exists and refresh if accepted
                 if result == QDialog.Accepted and tab_ref:
-                    if tab_ref in [
-                        self.tab_widget.widget(i)
-                        for i in range(self.tab_widget.count())
-                    ]:
+                    if tab_ref in self.all_panes():
                         if tab_ref.imagename:
                             tab_ref.on_visualization_changed()
             except RuntimeError:

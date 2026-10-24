@@ -159,9 +159,7 @@ class SolarEventsMixin:
                 return
 
             # Get main window to store reference
-            main_window = self.parent()
-            if main_window and hasattr(main_window, "parent"):
-                main_window = main_window.parent()
+            main_window = self.window()
 
             # Create and show the viewer with the date
             viewer = NOAAEventsViewer(self, extracted_date)

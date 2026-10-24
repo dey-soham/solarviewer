@@ -24,9 +24,6 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     # QPlainTextEdit,
     # QListWidget,
-    QSplitter,
-    QScrollArea,
-    QFrame,
 )
 from PyQt5.QtCore import Qt, QEventLoop, QSettings, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QIcon
@@ -72,6 +69,7 @@ from .core import (
     RemoteModeMixin,
 )
 from .core.canvas import EMPTY_HINT_GID
+from .core.compare import ImagePage
 from .core.figure_toolbar import FigureToolbarMixin
 from .core.help import HelpMixin
 from .core.loading import LoadingMixin
@@ -279,7 +277,8 @@ class SolarRadioImageTab(
 
     def _set_button_cursors(self):
         """Set pointing hand cursor on all buttons and interactive widgets for better UX"""
-        set_hand_cursor(self)
+        for widget in self.chrome():
+            set_hand_cursor(widget)
 
     def show_status_message(self, message, timeout=0, flush=True):
         """Helper method to show messages in the status bar
@@ -297,24 +296,19 @@ class SolarRadioImageTab(
             pass
 
     def setup_ui(self):
-        """The top bar over the canvas and its toolbar, the inspector at
-        the right; the empty canvas until an image is loaded."""
+        """The canvas (the empty state until an image is loaded) fills this
+        widget. The controls around it are built here for the page that
+        holds the pane to place (core.compare.ImagePage): the top bar, the
+        canvas bar, and the inspector's header, Display and Statistics
+        pages and cursor readout."""
         from PyQt5.QtWidgets import QStackedWidget
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        self.create_top_bar(main_layout)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.page = None  # the ImagePage this pane is in
+        self.top_bar = self.create_top_bar()
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(1)
-        splitter.setChildrenCollapsible(False)
-
-        # The canvas (or the empty state) with its toolbar under it
-        column = QWidget()
-        column_layout = QVBoxLayout(column)
-        column_layout.setContentsMargins(0, 0, 0, 0)
-        column_layout.setSpacing(0)
         self._canvas_stack = QStackedWidget()
         self._canvas_stack.addWidget(self.create_empty_canvas())
         canvas_host = QWidget()
@@ -323,21 +317,23 @@ class SolarRadioImageTab(
         host_layout.setSpacing(0)
         self.setup_canvas(host_layout)
         self._canvas_stack.addWidget(canvas_host)
-        column_layout.addWidget(self._canvas_stack, 1)
-        self.setup_figure_toolbar(column_layout)
-        column.setMinimumWidth(400)
-        splitter.addWidget(column)
+        layout.addWidget(self._canvas_stack, 1)
 
-        inspector = self.create_inspector()
-        inspector.setMinimumWidth(inspector.fontMetrics().averageCharWidth() * 40)
-        splitter.addWidget(inspector)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        width = inspector.fontMetrics().averageCharWidth() * 48
-        splitter.setSizes([max(800, 1400 - width), width])
-
-        main_layout.addWidget(splitter, 1)
+        self.canvas_bar = self.setup_figure_toolbar()
+        self.create_inspector()
         self._name_icon_only_controls()
+
+    def chrome(self):
+        """This widget and the controls built for the page to place."""
+        return (
+            self,
+            self.top_bar,
+            self.canvas_bar,
+            self.inspector_header,
+            self.display_page,
+            self.statistics_page,
+            self.cursor_readout,
+        )
 
     def _name_icon_only_controls(self):
         """Name the icon-only buttons and toolbar actions for screen readers,
@@ -347,32 +343,19 @@ class SolarRadioImageTab(
         def short(tip):
             return tip.split("\n")[0].split(":")[0].split(" - ")[0].strip()
 
-        for button in self.findChildren(QAbstractButton):
-            if not button.text() and not button.accessibleName() and button.toolTip():
-                button.setAccessibleName(short(button.toolTip()))
-        for action in self.findChildren(QAction):
-            if not action.text() and action.toolTip():
-                action.setText(short(action.toolTip()))
+        for widget in self.chrome():
+            for button in widget.findChildren(QAbstractButton):
+                if not button.text() and not button.accessibleName() and button.toolTip():
+                    button.setAccessibleName(short(button.toolTip()))
+            for action in widget.findChildren(QAction):
+                if not action.text() and action.toolTip():
+                    action.setText(short(action.toolTip()))
 
     def update_tab_name_from_path(self, path):
-        """Update the tab name to the basename of the given path"""
-        if path:
-            basename = os.path.basename(
-                path.rstrip("/")
-            )  # Remove trailing slash for directories
-
-            # Get the main window
-            main_window = self.window()
-            if isinstance(main_window, SolarRadioImageViewerApp):
-                # Get the tab widget
-                tab_widget = main_window.tab_widget
-                # Find our index in the tabs list
-                try:
-                    index = main_window.tabs.index(self)
-                    tab_widget.setTabText(index, basename)
-                    main_window.update_window_title()
-                except ValueError:
-                    pass  # Not found in tabs list
+        """The pane shows the image at ``path``: its tab is named after it
+        (through the page, which names the tab for its panes)."""
+        if path and self.page is not None:
+            self.page.pane_renamed(self, os.path.basename(path.rstrip("/")))
 
     def schedule_plot(self):
         # If a timer already exists and is active, stop it.
@@ -430,8 +413,7 @@ class SolarRadioImageTab(
         """on_visualization_changed's work, run with the wait cursor."""
         tight_layout = False  # (the layout itself is decided in _apply_layout_settings)
 
-        main_window = self.parent()
-        # if main_window and hasattr(main_window, "statusBar"):
+        main_window = self.window()
         if main_window:
             if reload_data:
                 name = os.path.basename(self.imagename.rstrip("/"))
@@ -722,8 +704,7 @@ class SolarRadioImageTab(
         # The plot reads the range, stretch and gamma from the controls
         if self.current_image_data is not None:
             self.schedule_plot()
-        main_window = self.parent()
-        if main_window:
+        if self.window():
             self.show_status_message(f"Changed stretch to {stretch}")
 
     def update_gamma_slider_state(self):
@@ -1119,7 +1100,7 @@ class SolarRadioImageViewerApp(
         # Set hand cursor for all interactive elements programmatically
         self._set_hand_cursor_recursive(self)
 
-        first_tab = self.add_new_tab("Tab1")
+        first_tab = self.add_new_tab("Tab1")  # (the pane of the first page)
 
         # Apply fast preview flag from CLI
         if self._fast_preview and hasattr(first_tab, "downsample_toggle"):
@@ -1236,11 +1217,11 @@ class SolarRadioImageViewerApp(
         if index >= 0 and index < len(self.tabs):
             if len(self.tabs) == 1:
                 self.add_new_tab("Tab1")
-            tab = self.tabs.pop(index)
+            page = self.tabs.pop(index)
             self.tab_widget.removeTab(index)
-            # A removed page is not deleted by Qt: free it and its image
-            tab.cleanup()
-            tab.deleteLater()
+            # A removed page is not deleted by Qt: free it and its images
+            page.cleanup()
+            page.deleteLater()
 
     def close_current_tab(self):
         """Close the currently active tab"""
@@ -1254,17 +1235,34 @@ class SolarRadioImageViewerApp(
         self.add_new_tab(tab_name)
 
     def add_new_tab(self, name):
-        new_tab = SolarRadioImageTab(self, name)
-        self.tabs.append(new_tab)
-        self.tab_widget.addTab(new_tab, name)
-        self.tab_widget.setCurrentWidget(new_tab)
+        """A new tab, with one pane: returns the pane (the page holding it
+        goes in ``tabs``)."""
+        page = ImagePage(name)
+        pane = SolarRadioImageTab(page, name)
+        page.add_pane(pane)
+        self.tabs.append(page)
+        self.tab_widget.addTab(page, name)
+        self.tab_widget.setCurrentWidget(page)
 
         # Refresh icons to match current theme
-        new_tab.refresh_icons()
+        page.refresh_icons()
 
         # Apply hand cursors to the new tab
-        self._set_hand_cursor_recursive(new_tab)
-        return new_tab
+        self._set_hand_cursor_recursive(page)
+        return pane
+
+    def all_panes(self):
+        """Every pane of every tab."""
+        return [pane for page in self.tabs for pane in page.panes]
+
+    def set_tab_title(self, page, title):
+        """Name ``page``'s tab, and the window after the current one."""
+        try:
+            index = self.tabs.index(page)
+        except ValueError:
+            return
+        self.tab_widget.setTabText(index, title)
+        self.update_window_title()
 
     def update_window_title(self, *args):
         """Window title: the current tab's image, then the app name."""
@@ -1330,8 +1328,8 @@ class SolarRadioImageViewerApp(
         self._update_theme_action_text()
 
         # Icons are pictures of the theme
-        for tab in self.tabs:
-            tab.refresh_icons()
+        for page in self.tabs:
+            page.refresh_icons()
 
         # Refresh tab bar theme (colors and icons)
         if hasattr(self, "tab_widget"):
@@ -1374,7 +1372,7 @@ class SolarRadioImageViewerApp(
             axes_bg = palette.get("plot_bg", "#ffffff")
             text_color = palette.get("plot_text", "#1a1a1a")
 
-        for tab in self.tabs:
+        for tab in self.all_panes():
             if hasattr(tab, "figure") and tab.figure:
                 # Update figure background
                 tab.figure.set_facecolor(fig_bg)
@@ -1461,8 +1459,8 @@ class SolarRadioImageViewerApp(
         if link is not None:
             link.close_tools()
         # Tabs get no close event of their own when the window closes
-        for tab in self.tabs:
-            tab.cleanup()
+        for page in self.tabs:
+            page.cleanup()
         super().closeEvent(event)
 
         # Ensure the entire application (including Log Console) quits

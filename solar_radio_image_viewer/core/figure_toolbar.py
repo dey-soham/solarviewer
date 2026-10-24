@@ -57,8 +57,9 @@ class FigureToolbarMixin:
         button.setAutoRaise(True)
         return button
 
-    def setup_figure_toolbar(self, parent_layout):
-        """Set up the bar under the image: tools, zoom, file navigation."""
+    def setup_figure_toolbar(self):
+        """The bar under the image: tools, zoom, file navigation. Returns
+        the widget."""
         bar = QFrame()
         bar.setObjectName("CanvasBar")
         layout = QHBoxLayout(bar)
@@ -190,6 +191,4 @@ class FigureToolbarMixin:
             self._tool_button(self.zoom_60arcmin_action),
         ]
         layout.addWidget(segmented(zoom_buttons))
-
-
-        parent_layout.addWidget(bar)
+        return bar

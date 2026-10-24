@@ -159,6 +159,15 @@ class DocumentTabs(QStackedWidget):
             self._fit_strip(watched)
         return super().eventFilter(watched, event)
 
+    def currentWidget(self):
+        """The current page's active pane (see core.compare.ImagePage),
+        which the window's actions work on; ``currentPage`` is the page."""
+        page = super().currentWidget()
+        return getattr(page, "active_pane", page)
+
+    def currentPage(self):
+        return super().currentWidget()
+
     def setCurrentIndex(self, index):
         self._bar.setCurrentIndex(index)
 

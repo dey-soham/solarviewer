@@ -274,8 +274,7 @@ class ContoursMixin:
                 layer["contour_wcs"] = contour_csys
                 layer["loaded_path"] = image_to_load
 
-            main_window = self.parent()
-            if main_window:
+            if self.window():
                 if layer["contour_data"] is not None:
                     self.show_status_message(
                         f"Contour data loaded: {contour_layer_name(layer)}"
@@ -496,8 +495,7 @@ class ContoursMixin:
             import traceback
 
             traceback.print_exc()
-            main_window = self.parent()
-            if main_window:
+            if self.window():
                 self.show_status_message(f"Error drawing contours ({name}): {str(e)}")
             return []
 

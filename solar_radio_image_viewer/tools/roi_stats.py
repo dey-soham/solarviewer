@@ -63,8 +63,7 @@ class RoiStatsMixin:
         self.fit_gaussian_btn.show()
         self.export_region_btn.show()
 
-        main_window = self.parent()
-        if main_window:
+        if self.window():
             self.show_status_message(
                 f"ROI selected: {roi.size} pixels, Mean={rmean:.4g}, Sum={rsum:.4g}, RMS={rrms:.4g}"
             )

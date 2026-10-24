@@ -25,7 +25,6 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QScrollArea,
     QSizePolicy,
-    QTabWidget,
     QButtonGroup,
     QMenu,
 )
@@ -158,9 +157,9 @@ class PanelsMixin:
     """
 
     # ------------------------------------------------------------ top bar
-    def create_top_bar(self, parent_layout):
+    def create_top_bar(self):
         """The bar above the image: the file, Stokes, the threshold, the
-        colormap and the stretch."""
+        colormap and the stretch. Returns the widget."""
         bar = QFrame()
         bar.setObjectName("TopBar")
         layout = QHBoxLayout(bar)
@@ -258,8 +257,7 @@ class PanelsMixin:
             self.stretch_combo.setItemData(idx, tooltip, Qt.ToolTipRole)
         layout.addWidget(self.stretch_combo)
         layout.addStretch(2)
-
-        parent_layout.addWidget(bar)
+        return bar
 
     def _open_entered_path(self):
         """Open the path typed or pasted into the file field."""
@@ -273,28 +271,15 @@ class PanelsMixin:
 
     # ---------------------------------------------------------- inspector
     def create_inspector(self):
-        """The column at the right: the Display and Statistics tabs, the
-        cursor readout pinned under them, Reload and Helioviewer at the
-        foot. Returns the widget."""
-        inspector = QFrame()
-        inspector.setObjectName("Inspector")
-        layout = QVBoxLayout(inspector)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        layout.addWidget(self._inspector_header())
-
-        self.inspector_tabs = QTabWidget()
-        self.inspector_tabs.setObjectName("InspectorTabs")
-        self.inspector_tabs.tabBar().setFocusPolicy(Qt.NoFocus)
-        self.inspector_tabs.addTab(_scroll(self._display_page()), "Display")
-        self.inspector_tabs.addTab(_scroll(self._statistics_page()), "Statistics")
-        layout.addWidget(self.inspector_tabs, 1)
-
+        """This pane's parts of the inspector, for its page to stack (see
+        core.compare.ImagePage): the header, the Display and Statistics
+        pages, the cursor readout pinned at the foot."""
+        self.inspector_header = self._inspector_header()
+        self.display_page = _scroll(self._display_page())
+        self.statistics_page = _scroll(self._statistics_page())
         self.cursor_readout = CursorReadout()
-        layout.addWidget(self.cursor_readout)
+        self.inspector_tabs = None  # the page's Display/Statistics tabs
         self.show_image_context(None)
-        return inspector
 
     def _inspector_header(self):
         """One row at the top of the inspector: what the image is in (its
@@ -425,12 +410,14 @@ class PanelsMixin:
         self.image_summary_more = QLabel()
         self.image_summary_more.setObjectName("Meta")
         self.image_summary_more.setTextFormat(Qt.RichText)
-        self.image_summary_more.linkActivated.connect(
-            lambda _link: self.inspector_tabs.setCurrentIndex(1)
-        )
+        self.image_summary_more.linkActivated.connect(self._show_statistics_tab)
         self._set_summary_link()
         layout.addWidget(self.image_summary_more)
         return block
+
+    def _show_statistics_tab(self, _link=None):
+        if self.inspector_tabs is not None:
+            self.inspector_tabs.setCurrentIndex(1)
 
     def _set_summary_link(self):
         from ..ui.styles import theme_manager

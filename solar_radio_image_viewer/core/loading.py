@@ -359,8 +359,7 @@ class LoadingMixin:
         if not self.imagename:
             return
 
-        main_window = self.parent()
-        if main_window:
+        if self.window():
             self.show_status_message(
                 f"Loading data for Stokes {stokes}... Please wait..."
             )
@@ -409,10 +408,9 @@ class LoadingMixin:
             self.set_range(dmin, dmax)
             self.schedule_plot()
 
-            if main_window:
-                self.show_status_message(
-                    f"Stokes changed to {stokes}, display range: [{dmin:.4g}, {dmax:.4g}]"
-                )
+            self.show_status_message(
+                f"Stokes changed to {stokes}, display range: [{dmin:.4g}, {dmax:.4g}]"
+            )
 
     def _update_stokes_combo_state(self, available_stokes):
         """
