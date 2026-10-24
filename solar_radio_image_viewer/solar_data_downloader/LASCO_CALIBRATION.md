@@ -141,19 +141,20 @@ sky brightness near the C2 occulter is about 1e-8, a bright streamer a few
 A calibrated image falls off about 15-fold from the occulter to the edge
 of the field, far more than the raw counts do (the vignetting hid most of
 the fall-off, which is why byte-scaled raw images such as Helioviewer's
-look flat). No colour stretch shows both ends at once, so SolarViewer's
-LASCO and COR presets draw the image through a radial filter: the
-departure from a smooth background in local standard deviations, where
-the background and the spread are fitted ring by ring as low-order
-Fourier series in position angle (the Fourier normalising radial graded
-filter of Druckmüllerová, Morgan and Habbal 2011; the Display tab also
-offers the plain radial median and the normalising radial graded filter
-of Morgan, Habbal and Woo 2006). The LASCO presets also subtract the
-`BACKGROUND` extension first, so that the K corona alone is drawn; the
-Display tab's "Background" switch and the Presets menu turn that off and
-on. Both are display choices only: the file, the statistics and the
-cursor's first value keep the total mean solar brightness, and the
-cursor shows the drawn value after it.
+look flat). SolarViewer opens the image as it is, square-root stretched
+between its 1st and 99th percentiles, and offers two display choices for
+coronagraph images in the Display tab (and in the Presets menu's Radial
+Filter submenu). The "Radial filter" draws the departure from a smooth
+background in local standard deviations, where the background and the
+spread are fitted ring by ring as low-order Fourier series in position
+angle (the Fourier normalising radial graded filter of Druckmüllerová,
+Morgan and Habbal 2011; the plain radial median and the normalising
+radial graded filter of Morgan, Habbal and Woo 2006 are there too), so
+that streamers and fronts show at every distance. The "Background"
+switch subtracts the `BACKGROUND` extension first, so that the K corona
+alone is drawn. Both are display choices only: the file, the statistics
+and the cursor's first value keep the total mean solar brightness, and
+the cursor shows the drawn value after it.
 
 For physics the background-subtracted image is the one to use: the K
 corona's brightness gives the electron density and a CME's mass (Vourlidas

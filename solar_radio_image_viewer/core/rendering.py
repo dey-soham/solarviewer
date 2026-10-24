@@ -161,6 +161,7 @@ class RenderingMixin:
             "pane_axes": self.pane_axes,
             "pane_colorbar": self.pane_colorbar,
             "radial_filter": self.radial_filter,
+            "background_subtracted": self.background_subtracted,
         }
 
         # Settings snapshots (identity of loaded contour data tracked separately)
@@ -337,8 +338,10 @@ class RenderingMixin:
         if not redraw or not changed or self.current_image_data is None:
             return
         data = self.display_data()
-        # the sigma modes have a natural range; the ratio takes the data's
-        vmin, vmax = compute_range(data, {"off": "minmax", "ratio": "p1_99"}.get(mode, (-1.5, 4.0)))
+        # the sigma modes have a natural range; the ratio takes the data's;
+        # a coronagraph image shown as it is needs its tails cut
+        plain = "p1_99" if self.is_coronagraph() else "minmax"
+        vmin, vmax = compute_range(data, {"off": plain, "ratio": "p1_99"}.get(mode, (-1.5, 4.0)))
         self.set_range(vmin, vmax)
         if hasattr(self, "show_range_preset"):
             self.show_range_preset(None)

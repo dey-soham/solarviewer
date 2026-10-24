@@ -607,7 +607,9 @@ class SolarRadioImageTab(
         if self.current_image_data is None:
             return
 
-        data = self.current_image_data
+        # the range belongs to what is drawn (filtered, background taken
+        # away), whose values differ from the image's
+        data = self.display_data()
         finite = np.isfinite(data).any()
         dmin = float(np.nanmin(data)) if finite else float("nan")
         dmax = float(np.nanmax(data)) if finite else float("nan")

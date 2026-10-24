@@ -122,6 +122,8 @@ class Preset:
     cmap: str  # preferred colormap
     fallback_cmap: Optional[str]  # used if cmap is missing; None keeps current
     gamma: Optional[float] = 1.0  # None keeps the current gamma
+    # Display choices a preset makes; the coronagraph presets leave both
+    # off (the user turns them on in the Display tab or the Presets menu)
     radial: str = "off"  # radial filter for display (core/radial_filter.py)
     background: bool = False  # draw the image less the background plane it carries, if any
 
@@ -190,7 +192,7 @@ INSTRUMENTS = {
             # background in units of the local spread (FNRGF): the corona
             # falls off 15-fold across the field, more than a stretch can
             # show, and the streamer belt would otherwise swamp the rays
-            d: Preset(f"SOHO LASCO {d}", (-1.5, 4.0), "linear", f"soholasco{d[1]}", "afmhot", radial="fnrgf", background=True)
+            d: Preset(f"SOHO LASCO {d}", "p1_99", "sqrt", f"soholasco{d[1]}", "afmhot")
             for d in ("C2", "C3")
         },
         default_variant="C2",
@@ -218,8 +220,8 @@ INSTRUMENTS = {
         "STEREO Presets",
         {
             "EUVI": Preset("STEREO EUVI", "minmax", "sqrt", "sdoaia171", "inferno"),
-            "COR1": Preset("STEREO COR1", (-1.5, 4.0), "linear", "soholasco2", "afmhot", radial="fnrgf"),
-            "COR2": Preset("STEREO COR2", (-1.5, 4.0), "linear", "soholasco2", "afmhot", radial="fnrgf"),
+            "COR1": Preset("STEREO COR1", "p1_99", "sqrt", "soholasco2", "afmhot"),
+            "COR2": Preset("STEREO COR2", "p1_99", "sqrt", "soholasco2", "afmhot"),
         },
         unknown_variant=Preset("STEREO", "minmax", "linear", "viridis", "viridis"),
         variant_label="{}",

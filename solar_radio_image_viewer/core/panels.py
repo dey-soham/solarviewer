@@ -558,9 +558,9 @@ class PanelsMixin:
         self.radial_combo = QComboBox()
         self.radial_combo.addItems([name for name, _ in MODES.values()])
         self.radial_combo.setToolTip(
-            "Flatten the radial fall-off of a coronagraph image for display: divide by "
+            "<qt>Flatten the radial fall-off of a coronagraph image for display: divide by "
             "the median brightness at each distance from the Sun, or show the departure "
-            "from it in standard deviations. Values and statistics keep the image's unit."
+            "from it in standard deviations. Values and statistics keep the image's unit.</qt>"
         )
         self.radial_combo.currentIndexChanged.connect(self.on_radial_filter_changed)
         radial_layout.addWidget(radial_label)
@@ -581,9 +581,9 @@ class PanelsMixin:
         self.background_checkbox = QCheckBox("Subtract the F corona and stray light")
         self.background_checkbox.setObjectName("Switch")
         self.background_checkbox.setToolTip(
-            "Draw the image less the background stored with it (NRL's monthly minimum: "
+            "<qt>Draw the image less the background stored with it (NRL's monthly minimum: "
             "F corona, stray light and the quietest K corona), leaving the K corona. "
-            "Values and statistics keep the total brightness."
+            "Values and statistics keep the total brightness.</qt>"
         )
         self.background_checkbox.toggled.connect(self.on_background_toggled)
         background_layout.addWidget(background_label)
