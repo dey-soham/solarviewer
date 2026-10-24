@@ -29,10 +29,27 @@ logger = logging.getLogger(__name__)
 from ..processing.plot_style import DEFAULT_PLOT_SETTINGS
 
 _PAD_KEYS = ("pad_left", "pad_right", "pad_top", "pad_bottom")
-# The compact colorbar (a pane of a compare page): its gap from the image
-# and its width, as fractions of the image's width
-COMPACT_CB_PAD = 0.03
-COMPACT_CB_WIDTH = 0.04
+
+
+def _strip_below(ax, gap_px, height_px):
+    """An axes locator: a strip ``height_px`` tall and the width of ``ax``,
+    ``gap_px`` under it as drawn (the box its image settles into, once
+    its aspect is applied), in the figure's coordinates."""
+    from matplotlib.transforms import Bbox
+
+    def locate(_axes, _renderer):
+        ax.apply_aspect()
+        box = ax.bbox
+        strip = Bbox.from_extents(
+            box.x0, box.y0 - gap_px - height_px, box.x1, box.y0 - gap_px
+        )
+        return ax.figure.transSubfigure.inverted().transform_bbox(strip)
+
+    return locate
+# The colorbar of a pane of a compare page: a strip under the image, its
+# height and its gap from what is above it, in points
+COMPACT_CB_HEIGHT_PT = 6
+COMPACT_CB_GAP_PT = 6
 
 
 class RenderingMixin:
@@ -73,6 +90,8 @@ class RenderingMixin:
             "show_solar_disk": self.show_solar_disk_checkbox.isChecked(),
             "show_contours": self.show_contours_checkbox.isChecked(),
             "compact": self.compact_plot,
+            "pane_axes": self.pane_axes,
+            "pane_colorbar": self.pane_colorbar,
         }
 
         # Settings snapshots (identity of loaded contour data tracked separately)
@@ -754,12 +773,18 @@ class RenderingMixin:
         """Add the colorbar (dropping out-of-range ticks for non-linear
         stretches); a slim one, close to the image, for a compact plot."""
         if self.compact_plot:
-            # Placed against the image, as tall as the image: an inset of
-            # the axes follows the box the image settles into (its aspect
-            # is fixed), where a colorbar beside the axes would take the
-            # axes' full allotted height
-            cax = ax.inset_axes([1.0 + COMPACT_CB_PAD, 0.0, COMPACT_CB_WIDTH, 1.0])
-            cb = self.figure.colorbar(im, cax=cax)
+            if not self.pane_colorbar:
+                self.colorbar = None
+                return None
+            # A strip under the image, as wide as the image: placed by a
+            # locator from the box the image settles into (its aspect is
+            # fixed) each time it is drawn, under the tick labels when
+            # the axes are shown
+            px = self.figure.dpi / 72.0
+            gap = (self._axes_bottom_pt() if self.pane_axes else COMPACT_CB_GAP_PT) * px
+            cax = ax.inset_axes([0.0, 0.0, 1.0, 1.0])
+            cax.set_axes_locator(_strip_below(ax, gap, COMPACT_CB_HEIGHT_PT * px))
+            cb = self.figure.colorbar(im, cax=cax, orientation="horizontal")
             self.colorbar = cb
             return cb
         # For non-linear stretches, filter ticks to only show those within data range
@@ -783,28 +808,49 @@ class RenderingMixin:
         return cb
 
     def _make_compact(self, ax, cb, vmin_val, vmax_val):
-        """The plot as a pane of a compare page shows it: the image and a
-        slim colorbar with the range's ends, without ticks, labels or a
-        title (the pane's header says what the image is)."""
+        """The plot as a pane of a compare page shows it: the image alone
+        by default (the pane's header says what the image is, so never a
+        title), its ticks and labels when the page's Axes switch is on,
+        and with the Colorbar switch a strip under it marked with the
+        range's ends."""
         from matplotlib.ticker import FuncFormatter
 
         ax.set_title("")
-        ax.set_xlabel("")
-        ax.set_ylabel("")
-        coords = getattr(ax, "coords", None)
-        if coords is not None:
-            for coord in coords:
-                coord.set_axislabel("")
-                coord.set_ticklabel_visible(False)
-                coord.set_ticks_visible(False)
-        else:
-            ax.set_xticks([])
-            ax.set_yticks([])
+        if not self.pane_axes:
+            ax.set_xlabel("")
+            ax.set_ylabel("")
+            coords = getattr(ax, "coords", None)
+            if coords is not None:
+                for coord in coords:
+                    coord.set_axislabel("")
+                    coord.set_ticklabel_visible(False)
+                    coord.set_ticks_visible(False)
+            else:
+                ax.set_xticks([])
+                ax.set_yticks([])
+        if cb is None:
+            return
         cb.set_label("")
         cb.set_ticks([vmin_val, vmax_val])
-        cb.ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value:.4g}"))
-        cb.ax.tick_params(labelsize=max(7, self.plot_settings.get("colorbar_tick_fontsize", 10) - 2), length=0, pad=3)
+        cb.ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value:.4g}"))
+        cb.ax.tick_params(
+            labelsize=max(7, self.plot_settings.get("colorbar_tick_fontsize", 10) - 2),
+            length=0,
+            pad=2,
+        )
         cb.ax.minorticks_off()
+        # The two labels kept within the strip's width: the first starts
+        # at its left end, the last ends at its right end
+        labels = cb.ax.get_xticklabels()
+        if len(labels) == 2:
+            labels[0].set_horizontalalignment("left")
+            labels[1].set_horizontalalignment("right")
+
+    def _axes_bottom_pt(self):
+        """The room the tick labels and axis label under the axes take,
+        in points."""
+        ps = self.plot_settings
+        return ps.get("axis_tick_fontsize", 10) * 1.4 + ps.get("axis_label_fontsize", 12) * 1.6 + 9
 
     def _apply_plot_customization(self, ax, cb):
         """Apply self.plot_settings: labels, fonts, colors, ticks, borders."""
@@ -1095,15 +1141,21 @@ class RenderingMixin:
         width, height = self.figure.get_size_inches() * self.figure.dpi
         px = self.figure.dpi / 72.0  # pixels per point
         if self.compact_plot:
-            # Only the colorbar (an inset right of the axes, so no part
-            # of them) and its two labels want room, at the right
-            labels_px = ps.get("colorbar_tick_fontsize", 10) * 0.6 * 7 * px + 8
-            right = (labels_px + (COMPACT_CB_PAD + COMPACT_CB_WIDTH) * width) / max(width, 1)
+            # No title; the tick labels and axis labels only when the axes
+            # are shown; under them the colorbar strip and its two labels
+            # when it is shown
+            tick = ps.get("axis_tick_fontsize", 10)
+            label = ps.get("axis_label_fontsize", 12)
+            left_px = (tick * 0.65 * 8 + label * 2.0) * px + 12 if self.pane_axes else 6
+            bottom_px = self._axes_bottom_pt() * px + 3 if self.pane_axes else 6
+            if self.pane_colorbar:
+                cb_tick = max(7, ps.get("colorbar_tick_fontsize", 10) - 2)
+                bottom_px += (COMPACT_CB_GAP_PT + COMPACT_CB_HEIGHT_PT + cb_tick * 1.5) * px + 2
             return {
-                "pad_left": min(0.1, 6 / max(width, 1)),
-                "pad_right": max(0.6, 1 - right),
-                "pad_top": max(0.8, 1 - 6 / max(height, 1)),
-                "pad_bottom": min(0.1, 6 / max(height, 1)),
+                "pad_left": min(0.35, left_px / max(width, 1)),
+                "pad_right": max(0.6, 1 - 8 / max(width, 1)),
+                "pad_top": max(0.7, 1 - 6 / max(height, 1)),
+                "pad_bottom": min(0.4, bottom_px / max(height, 1)),
             }
         tick = ps.get("axis_tick_fontsize", 10)
         label = ps.get("axis_label_fontsize", 12)

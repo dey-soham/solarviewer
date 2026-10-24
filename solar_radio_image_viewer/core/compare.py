@@ -432,11 +432,18 @@ class ComparePanel(QWidget):
         self.full_axes_switch = QCheckBox()
         self.full_axes_switch.setObjectName("Switch")
         self.full_axes_switch.setToolTip(
-            "Show every pane's plot with its ticks, labels and title, as a "
-            "single image is shown, instead of the image and its colorbar alone"
+            "Show every pane's plot with its ticks and labels; off, each pane is "
+            "the image alone"
         )
         self.full_axes_switch.toggled.connect(page.set_full_axes)
-        block_layout.addWidget(toggle_row(self.full_axes_switch, label=QLabel("Full axes")))
+        block_layout.addWidget(toggle_row(self.full_axes_switch, label=QLabel("Axes")))
+        self.colorbar_switch = QCheckBox()
+        self.colorbar_switch.setObjectName("Switch")
+        self.colorbar_switch.setToolTip(
+            "Show a colorbar under every pane's image, marked with the ends of its range"
+        )
+        self.colorbar_switch.toggled.connect(page.set_colorbar)
+        block_layout.addWidget(toggle_row(self.colorbar_switch, label=QLabel("Colorbar")))
         apply_row = QHBoxLayout()
         apply_row.setContentsMargins(0, 0, 0, 0)
         apply_row.setSpacing(8)
@@ -711,7 +718,8 @@ class ImagePage(QWidget):
         self._active = None
         self._pane_names = {}
         self.layout_size = 1
-        self.full_axes = False  # compare panes drawn with ticks, labels, title
+        self.full_axes = False  # compare panes drawn with ticks and labels
+        self.colorbar = False  # and a colorbar under each image
         self._veil_widget = None
         self.sync = PaneSync(self)
 
@@ -1036,18 +1044,25 @@ class ImagePage(QWidget):
 
     # --------------------------------------------------------- display
     def set_full_axes(self, on):
-        """Draw the panes with ticks, labels and title (``on``) or as the
-        image and a slim colorbar alone."""
+        """Draw the panes with their ticks and labels (``on``) or as the
+        image alone."""
         self.full_axes = bool(on)
         self._apply_compact()
 
+    def set_colorbar(self, on):
+        """Draw a colorbar under each pane's image (``on``) or none."""
+        self.colorbar = bool(on)
+        self._apply_compact()
+
     def _apply_compact(self):
-        """Each pane drawn the way the layout wants: compact with more
-        than one slot, unless full axes are asked for."""
-        compact = self.layout_size > 1 and not self.full_axes
+        """Each pane drawn the way the layout wants: compact (no title)
+        with more than one slot, with the axes and the colorbar the page's
+        switches ask for."""
+        compact = self.layout_size > 1
+        wanted = (compact, compact and self.full_axes, compact and self.colorbar)
         for pane in self.panes:
-            if pane.compact_plot != compact:
-                pane.compact_plot = compact
+            if (pane.compact_plot, pane.pane_axes, pane.pane_colorbar) != wanted:
+                pane.compact_plot, pane.pane_axes, pane.pane_colorbar = wanted
                 if pane.current_image_data is not None:
                     pane.schedule_plot()
 

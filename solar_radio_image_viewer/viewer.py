@@ -262,7 +262,9 @@ class SolarRadioImageTab(
         self._last_rendered_state = {}
         self.image_plot = None
         self.plot_title = ""  # the title over the plot (also the pane's header)
-        self.compact_plot = False  # image and slim colorbar only (a compare pane)
+        self.compact_plot = False  # a pane of a compare page: no title, and
+        self.pane_axes = False  # ticks and labels, and
+        self.pane_colorbar = False  # a colorbar strip, only when asked for
         self.linked = True  # follows the other panes of its page (core/compare_sync.py)
         self.observation_time = None  # the image's time, as shown
 
