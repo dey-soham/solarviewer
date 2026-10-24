@@ -64,10 +64,19 @@ For an image `DN` with header values `OFFSET`, `EXPTIME`, `FILTER`,
    filter the stray-light ramp `C3ramp.fts` is then subtracted, and the
    occulter, pylon and edge are blanked with `c3_cl_mask_lvl1.fts`.
 
-5. **Missing telemetry.** Pixels that arrived as zero or negative (lost
+5. **Occulter.** C2 has no NRL mask file, so the occulter and the bright
+   diffraction ring around it are blanked out to 2.3 solar radii (186
+   pixels, counting 960 arcsec per solar radius) from the occulter centre.
+   NRL's own display mask stops at the occulter edge, 2.0 solar radii; the
+   ring is brightest at 2.0 to 2.1 and has faded into the corona by 2.3.
+   The radius can be changed or set to 0 (`--inner-radius`). C3 is
+   blanked by its mask file: inside 4.1 and outside 31.5 solar radii and
+   along the pylon.
+
+6. **Missing telemetry.** Pixels that arrived as zero or negative (lost
    blocks) are blanked.
 
-6. **Distortion.** The optics distort radially; a feature at radius `r`
+7. **Distortion.** The optics distort radially; a feature at radius `r`
    (in mm from the occulter centre, 0.021 mm per pixel) was recorded at
    `r + r·(c0 + c1·r² + c2·r⁴)`. The image is resampled onto the
    undistorted grid with NRL's coefficients: C2 (0.0051344125,
@@ -76,7 +85,7 @@ For an image `DN` with header values `OFFSET`, `EXPTIME`, `FILTER`,
    on a 33×33 grid and warps between the points; the port evaluates it at
    every pixel.
 
-7. **North up.** The image is rotated by the header's `CROTA` with the
+8. **North up.** The image is rotated by the header's `CROTA` with the
    Sun's centre (`CRPIX1/2`) moved to the middle of the frame, as every
    other instrument in the downloader is. SOHO was often rolled by 180°;
    that is part of the same rotation.
@@ -105,9 +114,9 @@ sky brightness near the C2 occulter is about 1e-8, a bright streamer a few
 
 ## What is not done
 
-- **Stray light and the diffraction ring.** NRL's level 1 leaves the bright
-  ring around the C2 occulter in place and so does this port. Masking it
-  is a display choice, not calibration.
+- **Stray light.** Apart from the C3 ramp, scattered light in the
+  instrument stays in the image, as in NRL level 1. The C2 occulter mask
+  hides the diffraction ring, the worst of it.
 - **Background subtraction.** No monthly minimum background or running
   difference is applied; the result is the total brightness of the corona
   plus the F corona, as in NRL level 1.
@@ -153,6 +162,8 @@ python -m solar_radio_image_viewer.solar_data_downloader.lasco_calibration FILE.
     --calib-dir DIR where the calibration files are cached
     --no-warp       skip the distortion correction
     --keep-roll     do not rotate to solar north
+    --inner-radius R  blank within R solar radii of the occulter centre
+                    (default 2.3 for C2; 0 keeps the occulter and ring)
 ```
 
 From Python:

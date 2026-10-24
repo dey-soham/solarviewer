@@ -17,9 +17,10 @@ For each image:
    polarizer (mean solar brightness per count per second),
 4. multiplied by the inverse vignetting array (C3 also has its stray-light
    ramp subtracted and its occulter, pylon and edge mask applied),
-5. the optical distortion is removed with the NRL radial polynomial,
+5. the C2 occulter and its diffraction ring are blanked (2.3 solar radii),
 6. missing telemetry blocks are blanked,
-7. the image is turned to solar north with the Sun at the image centre.
+7. the optical distortion is removed with the NRL radial polynomial,
+8. the image is turned to solar north with the Sun at the image centre.
 
 The result is written as 32-bit floats with BUNIT 'MSB' and HISTORY cards
 naming every input. Run ``python -m
@@ -62,8 +63,14 @@ DISTORTION = {
     "C3": (-0.0151657, 0.000165455, 0.0),
 }
 PIXEL_MM = 0.021
-C2_OCCULTER = (512.634, 505.293)  # occulter_center.dat, FITS 1-based... see _occulter_centre
+C2_OCCULTER = (512.634, 505.293)  # occulter_center.dat, zero-based pixels
 PLATE_SCALE = {"C2": 11.9, "C3": 56.0}  # arcsec/pixel, subtense.pro
+SUN_ARCSEC = 960.0  # the solar radius the mask radii count in
+# C2 has no NRL mask file: the occulter (2.0 solar radii, NRL's display
+# mask) and the diffraction ring around it (bright out to about 2.3) are
+# blanked within this radius of the occulter centre. C3's mask file
+# already blanks its occulter (4.1 solar radii), pylon and edge.
+C2_MASK_RADIUS = 2.3
 
 MJD_EPOCH = datetime(1858, 11, 17)
 MSB_UNIT = "MSB"
@@ -335,6 +342,21 @@ def distorted_radius(radius, detector):
     return radius + mm * (c0 + c1 * mm**2 + c2 * mm**4) / PIXEL_MM
 
 
+def occulter_mask(shape, header, radius_rsun, directory=None):
+    """True where a pixel lies within ``radius_rsun`` solar radii (of
+    SUN_ARCSEC) of the occulter centre, in the recorded image's pixels."""
+    detector = _detector(header)
+    xc, yc = _occulter_centre(header, directory)
+    sx, sy = _summing(header)
+    x1, _, y1, _ = _subfield(header)
+    ny, nx = shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    fx = (xx + x1 / sx) * sx
+    fy = (yy + y1 / sy) * sy
+    scale = float(header.get("PLATESCL", 0) or 0) or PLATE_SCALE[detector]
+    return np.hypot(fx - xc, fy - yc) < radius_rsun * SUN_ARCSEC / scale
+
+
 def undistort(image, header, directory=None, order=1):
     """``image`` resampled onto the undistorted grid: every output pixel
     takes the value found at its distorted radius from the occulter
@@ -366,11 +388,14 @@ def undistort(image, header, directory=None, order=1):
 
 
 # -------------------------------------------------------------- calibration
-def calibrate(data, header, directory=None, warp=True, blank_missing=True):
+def calibrate(data, header, directory=None, warp=True, blank_missing=True, inner_radius="auto"):
     """``data`` (counts, as recorded) calibrated to mean solar brightness.
     Returns (image, steps, cards): the calibrated float32 image, the list
     of HISTORY lines describing what was done, and the header cards to set
-    (BUNIT, EXPTIME, OFFSET, LEVEL)."""
+    (BUNIT, EXPTIME, OFFSET, LEVEL). ``inner_radius`` blanks everything
+    within that many solar radii of the occulter centre: 'auto' is
+    C2_MASK_RADIUS for C2 and nothing beyond the mask file for C3; 0 or
+    None blanks nothing."""
     detector = _detector(header)
     directory = cache_dir(directory)
     steps, cards = [], {}
@@ -405,6 +430,13 @@ def calibrate(data, header, directory=None, warp=True, blank_missing=True):
         mask = _match_array(mask, header, image.shape)
         image = np.where(mask > 0.5, image, np.nan)
         steps.append(f"Occulter, pylon and edge blanked with {os.path.basename(C3_MASK)}")
+    if inner_radius == "auto":
+        inner_radius = C2_MASK_RADIUS if detector == "C2" else None
+    if inner_radius:
+        inside = occulter_mask(image.shape, header, float(inner_radius), directory)
+        image[inside] = np.nan
+        px = float(inner_radius) * SUN_ARCSEC / (float(header.get("PLATESCL", 0) or 0) or PLATE_SCALE[detector])
+        steps.append(f"Occulter and diffraction ring blanked within {float(inner_radius):.2f} solar radii ({px:.0f} px) of the occulter centre")
     if blank_missing and missing.any():
         image[missing] = np.nan
         steps.append(f"{int(missing.sum())} pixels of missing telemetry blanked")
@@ -469,14 +501,14 @@ def _north_up(image, meta, steps):
     return np.asarray(turned.data, dtype=np.float32), out
 
 
-def calibrate_file(path, output_dir=None, suffix="_prepped", directory=None, warp=True, north_up=True, overwrite=True):
+def calibrate_file(path, output_dir=None, suffix="_prepped", directory=None, warp=True, north_up=True, overwrite=True, inner_radius="auto"):
     """Calibrate the level 0.5 file ``path`` and save the result next to it
     (or in ``output_dir``) as ``<name><suffix>.fits``. Returns the output
     path."""
     with fits.open(path) as hdul:
         hdu = next(h for h in hdul if h.data is not None and getattr(h.data, "ndim", 0) == 2)
         data, header = np.array(hdu.data), hdu.header.copy()
-    image, steps, cards = calibrate(data, header, directory, warp=warp)
+    image, steps, cards = calibrate(data, header, directory, warp=warp, inner_radius=inner_radius)
     meta = _prepared_meta(header, cards, steps)
     if north_up:
         image, meta = _north_up(image, meta, steps)
@@ -502,13 +534,21 @@ def main(argv=None):
     parser.add_argument("--calib-dir", help=f"where the calibration files are cached (default ${CACHE_ENV} or {DEFAULT_CACHE_DIR})")
     parser.add_argument("--no-warp", action="store_true", help="skip the optical distortion correction")
     parser.add_argument("--keep-roll", action="store_true", help="do not rotate to solar north (the header keeps CROTA)")
+    parser.add_argument(
+        "--inner-radius",
+        type=float,
+        default=None,
+        metavar="RSUN",
+        help=f"blank everything within this many solar radii of the occulter centre (default {C2_MASK_RADIUS} for C2, the NRL mask file alone for C3; 0 blanks nothing)",
+    )
     args = parser.parse_args(argv)
     if args.output_dir:
         os.makedirs(args.output_dir, exist_ok=True)
+    inner = "auto" if args.inner_radius is None else args.inner_radius
     failed = 0
     for path in args.files:
         try:
-            out = calibrate_file(path, args.output_dir, args.suffix, args.calib_dir, warp=not args.no_warp, north_up=not args.keep_roll)
+            out = calibrate_file(path, args.output_dir, args.suffix, args.calib_dir, warp=not args.no_warp, north_up=not args.keep_roll, inner_radius=inner)
             print(f"{os.path.basename(path)} -> {out}", flush=True)
         except Exception as e:
             failed += 1
