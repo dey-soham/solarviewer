@@ -379,15 +379,16 @@ class RenderingMixin:
                     norm_params = (fp_vmin, fp_vmax, stretch, gamma)
 
                     if hasattr(self, "colorbar") and self.colorbar:
+                        # update_normal gives the colorbar its ticks afresh,
+                        # so a compare pane's strip is styled again
                         self.colorbar.update_normal(self.image_plot)
-                        if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
+                        if self.compact_plot and self.pane_colorbar:
+                            self._style_compact_colorbar(self.colorbar, fp_vmin, fp_vmax)
+                        elif stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
                             try:
-                                ticks = self.colorbar.ax.get_yticks()
-                                valid_ticks = [
-                                    t for t in ticks if fp_vmin <= t <= fp_vmax
-                                ]
-                                if len(valid_ticks) >= 2:
-                                    self.colorbar.ax.set_yticks(valid_ticks)
+                                from ..processing.plot_style import drop_outside_ticks
+
+                                drop_outside_ticks(self.colorbar, fp_vmin, fp_vmax)
                             except Exception:
                                 pass
 
@@ -862,11 +863,16 @@ class RenderingMixin:
             else:
                 ax.set_xticks([])
                 ax.set_yticks([])
-        if cb is None:
-            return
-        # Its values over the strip: a few round ones within the range,
-        # spread along the strip (so not crowded where a stretch packs
-        # the values), in plain figures
+        if cb is not None:
+            self._style_compact_colorbar(cb, vmin_val, vmax_val)
+
+    def _style_compact_colorbar(self, cb, vmin_val, vmax_val):
+        """The strip's values over it: a few round ones within the range,
+        spread along the strip (so not crowded where a stretch packs the
+        values), in plain figures."""
+        from matplotlib.ticker import FuncFormatter
+
+        ax = self.image_plot.axes
         cb.set_label("")
         cb.ax.xaxis.set_ticks_position("top")
         cb.ax.xaxis.set_label_position("top")
