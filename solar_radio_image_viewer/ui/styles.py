@@ -194,6 +194,7 @@ DARK_PALETTE = {
     "base": "#232532",  # inputs, lists, tables
     "surface": "#232532",  # group boxes, panels, menus
     "surface_elevated": "#292b31",  # popups, tooltips
+    "canvas": "#161826",  # the empty canvas's ground
     "canvas_glow": "#1b1d2e",  # the empty canvas's centre
     "button": "#232532",
     "button_hover": "#2d2f3d",
@@ -212,10 +213,11 @@ DARK_PALETTE = {
     "disabled": "#595d6c",  # neutral-700
     "highlight": "#9184d9",  # the accent
     "highlight_hover": "#b5abfc",  # accent-400
-    "highlight_soft": "#423a6a",  # accent-800: fills behind the accent
+    "highlight_soft": "#423a6a",  # accent-800: fills behind the accent, histogram bars within the range
     "highlight_deep": "#5d5294",  # accent-700: a switch's track when on
     "highlight_knob": "#e7e5fe",  # accent-200: a switch's knob when on
     "slider_handle": "#e7e5fe",  # the gamma slider's knob, the histogram's range lines
+    "slider_groove": "#292b31",  # the part of the slider past the knob (neutral-900)
     "hist_out": "#292b31",  # histogram bars outside the range (neutral-900)
     "text_bright": "#f5f4ff",  # accent-100: the chosen segment's text
     "link": "#d2cefd",  # accent-300: link buttons
@@ -241,59 +243,59 @@ DARK_PALETTE = {
     "shadow": "rgba(0, 0, 0, 0.55)",
 }
 
-# The light theme: the dark palette mirrored on Nocturne's ramps (the
-# neutral and accent ramps share one lightness scale, so each role takes
-# the step opposite the one it holds in the dark), with the accent
-# deepened to accent-700 so it reads on the light ground.
+# The light theme: the colours of Claude Design's light suggestion
+# (design_screenshots/light_theme.png, 2026-10-24), sampled role by role.
 LIGHT_PALETTE = {
-    "window": "#f3f5fe",  # neutral-100
+    "window": "#f6f7fb",  # top bar, inspector, canvas bar, footer
     "base": "#ffffff",
-    "surface": "#ffffff",
+    "surface": "#eceef5",  # menu bar, status bar, cards, recent rows, cursor block
     "surface_elevated": "#ffffff",
-    "canvas_glow": "#fafbff",  # between white and the window
+    "canvas": "#f0f1f8",  # a shade below the window
+    "canvas_glow": "#fcfcfd",
     "button": "#ffffff",
-    "button_hover": "#f3f5fe",  # neutral-100
-    "button_pressed": "#e4e7f5",  # neutral-200
-    "border": "#cfd3e5",  # neutral-300
-    "border_light": "#e4e7f5",  # neutral-200: separators, table grid
-    "divider": "rgba(41, 43, 49, 0.16)",
-    "hover": "rgba(41, 43, 49, 0.06)",
-    "pressed": "rgba(41, 43, 49, 0.12)",
-    "row_rule": "rgba(41, 43, 49, 0.08)",
-    "text": "#292b31",  # neutral-900
-    "text_strong": "#3f424d",  # neutral-800
-    "text_dim": "#75798c",  # neutral-600
-    "text_secondary": "#75798c",  # neutral-600
-    "input_text": "#292b31",
-    "disabled": "#b2b6ca",  # neutral-400
-    "highlight": "#5d5294",  # accent-700
-    "highlight_hover": "#796cbf",  # accent-600
-    "highlight_soft": "#e7e5fe",  # accent-200
-    "highlight_deep": "#796cbf",  # accent-600
-    "highlight_knob": "#ffffff",
-    "slider_handle": "#5d5294",  # accent-700 (white would vanish on the light ground)
-    "hist_out": "#cfd3e5",  # neutral-300
-    "text_bright": "#2b2741",  # accent-900: the chosen segment's text
-    "link": "#5d5294",  # accent-700
-    "outline": "#b2b6ca",  # neutral-400
-    "accent_hover": "rgba(93, 82, 148, 0.10)",
-    "accent_pressed": "rgba(93, 82, 148, 0.20)",
+    "button_hover": "#f6f7fb",
+    "button_pressed": "#eceef5",
+    "border": "#d6d7d9",  # inputs, segmented groups
+    "border_light": "#d7d8de",  # separators, table grid
+    "divider": "rgba(29, 31, 43, 0.16)",
+    "hover": "rgba(29, 31, 43, 0.07)",
+    "pressed": "rgba(29, 31, 43, 0.14)",
+    "row_rule": "rgba(29, 31, 43, 0.08)",
+    "text": "#1d1f2b",
+    "text_strong": "#4a4e5e",  # menus, values
+    "text_dim": "#5b5f70",  # a segment's text while not chosen
+    "text_secondary": "#6f7386",  # labels, hints, placeholders
+    "input_text": "#1d1f2b",
+    "disabled": "#b2b6ca",
+    "highlight": "#6a5fb8",  # the accent: outlines, kickers, the tab underline
+    "highlight_hover": "#5d5294",
+    "highlight_soft": "#c9c3f0",  # histogram bars within the range
+    "highlight_deep": "#9184d9",  # a switch's track when on
+    "highlight_knob": "#4a4180",  # a switch's knob when on (assets/switch_on_light.svg)
+    "slider_handle": "#4a4180",  # the gamma slider's knob, the histogram's range lines
+    "slider_groove": "#d6d9e6",
+    "hist_out": "#d6d9e6",  # histogram bars outside the range
+    "text_bright": "#6a5fb8",  # the chosen segment's text
+    "link": "#5d5294",
+    "outline": "#c6c8cd",  # a bordered button's edge
+    "accent_hover": "rgba(106, 95, 184, 0.10)",
+    "accent_pressed": "rgba(106, 95, 184, 0.20)",
     "highlight_text": "#ffffff",
     "success": "#16a34a",
     "warning": "#d97706",
     "error": "#dc2626",
-    "secondary": "#5c5783",  # accent-2-700
-    "switch_track": "#cfd3e5",  # neutral-300
-    "switch_track_hover": "#b2b6ca",  # neutral-400
-    "switch_knob": "#ffffff",
+    "secondary": "#5c5783",
+    "switch_track": "#6f7386",  # a switch's track when off
+    "switch_track_hover": "#5b5f70",
+    "switch_knob": "#d6d9e6",  # a switch's knob when off (assets/switch_off_light.svg)
     "plot_bg": "#ffffff",
-    "plot_text": "#292b31",
-    "plot_grid": "#e4e7f5",
-    "toolbar_bg": "#ffffff",
-    "highlight_glow": "rgba(93, 82, 148, 0.15)",
-    "button_gradient_start": "#5d5294",
-    "button_gradient_end": "#5d5294",
-    "shadow": "rgba(41, 43, 49, 0.12)",
+    "plot_text": "#1d1f2b",
+    "plot_grid": "#d7d8de",
+    "toolbar_bg": "#f6f7fb",
+    "highlight_glow": "rgba(106, 95, 184, 0.15)",
+    "button_gradient_start": "#6a5fb8",
+    "button_gradient_end": "#6a5fb8",
+    "shadow": "rgba(29, 31, 43, 0.12)",
 }
 
 
@@ -308,7 +310,7 @@ def get_stylesheet(palette, is_dark=True):
     assets = os.path.join(PACKAGE_DIR, "assets").replace("\\", "/")
     arrow_up = f"{assets}/spinbox_up{suffix}.png"
     arrow_down = f"{assets}/spinbox_down{suffix}.png"
-    switch_on = f"{assets}/switch_on.svg"
+    switch_on = f"{assets}/switch_on{suffix}.svg"
     switch_off = f"{assets}/switch_off{suffix}.svg"
 
     p = palette
@@ -1023,7 +1025,7 @@ def get_stylesheet(palette, is_dark=True):
     }}
     QSlider::groove:horizontal {{
         height: 2px;
-        background: {p['switch_track']};
+        background: {p['slider_groove']};
         border-radius: 1px;
     }}
     QSlider::groove:horizontal:disabled {{

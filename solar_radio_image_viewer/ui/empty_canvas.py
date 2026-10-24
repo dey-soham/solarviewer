@@ -219,12 +219,12 @@ class EmptyCanvas(QWidget):
         palette = theme_manager.palette
         painter = QPainter(self)
         rect = self.rect()
-        painter.fillRect(rect, QColor(palette["window"]))
+        painter.fillRect(rect, QColor(palette["canvas"]))
         glow = QRadialGradient(
             rect.width() * 0.4, rect.height() * 0.5, max(rect.width(), rect.height()) * 0.6
         )
         glow.setColorAt(0.0, QColor(palette["canvas_glow"]))
-        glow.setColorAt(1.0, QColor(palette["window"]))
+        glow.setColorAt(1.0, QColor(palette["canvas"]))
         painter.fillRect(rect, glow)
         painter.end()
         super().paintEvent(event)

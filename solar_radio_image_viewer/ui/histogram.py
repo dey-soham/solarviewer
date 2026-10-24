@@ -193,7 +193,7 @@ class LevelsHistogram(QWidget):
             marker.set_xdata([value, value])
         inside = (self._centres >= self._vmin) & (self._centres <= self._vmax)
         for bar, within in zip(self._bars, inside):
-            bar.set_color(palette["highlight_deep"] if within else palette["hist_out"])
+            bar.set_color(palette["highlight_soft"] if within else palette["hist_out"])
         self.canvas.draw_idle()
 
     # ------------------------------------------------------------- dragging
