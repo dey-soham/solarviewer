@@ -17,6 +17,7 @@ currentWidget()`` is the current page's active pane.
 """
 
 import logging
+import math
 import os
 
 from PyQt5.QtCore import (
@@ -25,13 +26,14 @@ from PyQt5.QtCore import (
     QEvent,
     QPoint,
     QRect,
+    QRectF,
     QSize,
     Qt,
     QTimer,
     QVariantAnimation,
     pyqtSignal,
 )
-from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPalette
+from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPalette, QPen
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -56,7 +58,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ..ui.icons import launcher_icon, themed_icon
-from ..ui.styles import _qt_deleted, set_hand_cursor
+from ..ui.styles import _qt_deleted, set_hand_cursor, theme_manager
 from ..ui.widgets import kicker_row, link_button, segmented, toggle_row
 from .compare_sync import (
     FRAME_NAMES,
@@ -82,12 +84,15 @@ LAYOUTS = (
 GRID_GAP = 6
 ICON_SIZE = QSize(16, 16)
 # A change of layout happens under a picture of the image area as it
-# was: it dips to the background while the panes draw themselves into
-# their new places (held at most VEIL_HOLD_MS), then the new layout fades
-# in
+# was: a wash of the background comes over it, with a spinner, while the
+# panes draw themselves into their new places (held at most
+# VEIL_HOLD_MS), then the new layout fades in
 VEIL_DIM_MS = 200
-VEIL_REVEAL_MS = 240
+VEIL_DIM_LEVEL = 0.7  # how much of the picture the wash takes
+VEIL_REVEAL_MS = 260
 VEIL_HOLD_MS = 900
+SPINNER_SIZE = 36  # the spinner's diameter, in points
+SPINNER_TURN_MS = 1400  # one turn of its arc
 
 
 def _positions(size):
@@ -103,18 +108,23 @@ def _positions(size):
 
 class _Veil(QWidget):
     """A picture of the image area as it was, over it while the panes
-    settle into a new layout: it dips to the page's background as they
-    rebuild, and the new layout fades in once they have drawn. The change
-    reads as one movement, with nothing overlapping in between."""
+    settle into a new layout: a wash of the page's background comes over
+    it as they rebuild, a spinner turning at its centre, and the new
+    layout fades in once they have drawn."""
 
     def __init__(self, page, host):
         super().__init__(page)
         self._picture = host.grab()
         self._colour = page.palette().color(QPalette.Window)
+        colours = theme_manager.palette
+        self._accent = QColor(colours["highlight"])
+        self._track = QColor(colours["text_secondary"])
+        self._track.setAlphaF(0.25)
         self.setGeometry(QRect(host.mapTo(page, QPoint(0, 0)), host.size()))
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self._dim = 0.0  # how far the picture has gone to the background
+        self._dim = 0.0  # how far the wash has come over the picture
         self._reveal = 0.0  # how far the new layout shows through
+        self._spin = 0.0  # where the spinner's arc is in its turn
         self._waiting = set()
         self._drawn = False
         self._revealing = None
@@ -124,6 +134,7 @@ class _Veil(QWidget):
         page.installEventFilter(self)
         self._dimming = _tween(self, VEIL_DIM_MS, QEasingCurve.OutCubic, self._set_dim)
         self._dimming.finished.connect(self._dimmed)
+        self._spinning = _tween(self, SPINNER_TURN_MS, QEasingCurve.Linear, self._set_spin, loops=-1)
 
     def dimmed(self):
         return self._dimming.state() != QAbstractAnimation.Running
@@ -185,18 +196,51 @@ class _Veil(QWidget):
         self._reveal = value
         self.update()
 
+    def _set_spin(self, value):
+        self._spin = value
+        self.update()
+
     def paintEvent(self, _event):
-        # The picture under a wash of the background: the wash thickens
-        # as the veil dims (the picture is gone once it is solid), and the
-        # whole thins as the new layout is revealed
+        # The picture under a wash of the background that thickens as the
+        # veil dims, leaving the picture showing through; the whole thins
+        # as the new layout is revealed
+        showing = 1.0 - self._reveal
         painter = QPainter(self)
-        painter.setOpacity((1.0 - self._reveal) * (1.0 - self._dim))
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setOpacity(showing * showing)  # the picture goes first
         painter.drawPixmap(0, 0, self._picture)
-        painter.setOpacity(1.0 - self._reveal)
-        colour = QColor(self._colour)
-        colour.setAlphaF(self._dim)
-        painter.fillRect(self.rect(), colour)
+        painter.setOpacity(showing)
+        wash = QColor(self._colour)
+        wash.setAlphaF(self._dim * VEIL_DIM_LEVEL)
+        painter.fillRect(self.rect(), wash)
+        self._paint_spinner(painter, showing * self._dim)
         painter.end()
+
+    def _paint_spinner(self, painter, opacity):
+        """A slim ring at the centre, an arc of the accent running round
+        it, its length breathing as it goes."""
+        if opacity <= 0:
+            return
+        size = SPINNER_SIZE
+        rect = QRectF(
+            (self.width() - size) / 2, (self.height() - size) / 2, size, size
+        )
+        painter.setOpacity(opacity)
+        # A soft disc of the background behind it, so the ring reads over
+        # a bright image too
+        backing = QColor(self._colour)
+        backing.setAlphaF(0.55)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(backing)
+        painter.drawEllipse(rect.adjusted(-12, -12, 12, 12))
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(self._track, 3, Qt.SolidLine, Qt.RoundCap))
+        painter.drawEllipse(rect)
+        # Qt arcs: degrees from 3 o'clock, anticlockwise, in sixteenths
+        head = -self._spin * 360
+        span = 50 + 130 * (0.5 - 0.5 * math.cos(self._spin * 2 * math.pi * 2))
+        painter.setPen(QPen(self._accent, 3, Qt.SolidLine, Qt.RoundCap))
+        painter.drawArc(rect, int(head * 16), int(-span * 16))
 
     def _done(self):
         if _qt_deleted(self):
@@ -215,11 +259,12 @@ class _Veil(QWidget):
         return False
 
 
-def _tween(owner, duration, easing, on_value):
+def _tween(owner, duration, easing, on_value, loops=1):
     """A 0 to 1 animation of ``duration`` ms, ``on_value`` called with
-    each value, started at once."""
+    each value, started at once; ``loops`` of it (-1: until stopped)."""
     tween = QVariantAnimation(owner)
     tween.setDuration(duration)
+    tween.setLoopCount(loops)
     tween.setStartValue(0.0)
     tween.setEndValue(1.0)
     tween.setEasingCurve(easing)
