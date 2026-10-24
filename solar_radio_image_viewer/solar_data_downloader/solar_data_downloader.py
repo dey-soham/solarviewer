@@ -656,7 +656,8 @@ def _cor_groups(paths):
 def _prepare_lasco(path, output_dir, options):
     """LASCO C2 and C3 calibrated to mean solar brightness (NRL level 1:
     bias, exposure, calibration factor, vignetting, C3 ramp and mask,
-    distortion) and turned north up, by lasco_calibration.py. When the
+    distortion) and turned north up, with NRL's monthly minimum background
+    in a BACKGROUND extension, by lasco_calibration.py. When the
     calibration files cannot be fetched, the image is prepared like the
     other SOHO data (north up, counts per second) and the HISTORY says so."""
     from . import lasco_calibration
@@ -1175,7 +1176,7 @@ def download_soho(instrument, start_time, end_time, output_dir, wavelength=None,
         return files
     kind = instrument.lower()
     if kind == "lasco":
-        print("  Processing: calibrated to mean solar brightness (NRL level 1), distortion removed, north up", flush=True)
+        print("  Processing: calibrated to mean solar brightness (NRL level 1), distortion removed, north up, F corona background in a second HDU", flush=True)
     else:
         per_second = ", counts per second" if kind == "eit" else ""
         print(f"  Processing: north up, Sun centred{per_second}", flush=True)

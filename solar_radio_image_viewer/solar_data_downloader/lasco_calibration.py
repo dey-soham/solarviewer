@@ -20,7 +20,11 @@ For each image:
 5. the C2 occulter and its diffraction ring are blanked (2.3 solar radii),
 6. missing telemetry blocks are blanked,
 7. the optical distortion is removed with the NRL radial polynomial,
-8. the image is turned to solar north with the Sun at the image centre.
+8. the image is turned to solar north with the Sun at the image centre,
+9. the F corona and stray light under it, NRL's monthly minimum
+   backgrounds bracketing the date calibrated the same way and
+   interpolated to the observation time, are saved in a second HDU named
+   BACKGROUND (the image itself stays the total brightness).
 
 The result is written as 32-bit floats with BUNIT 'MSB' and HISTORY cards
 naming every input. Run ``python -m
@@ -35,9 +39,10 @@ import re
 import socket
 import sys
 import tempfile
+import time
 import urllib.request
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 from astropy.io import fits
@@ -73,6 +78,18 @@ SUN_ARCSEC = 960.0  # the solar radius the mask radii count in
 C2_MASK_RADIUS = 2.3
 
 MJD_EPOCH = datetime(1858, 11, 17)
+# NRL's monthly minimum backgrounds (the F corona, stray light and the
+# quietest K corona): one file about every week since 1996, each the
+# minimum over a month of daily medians, in DN with the bias removed, in
+# the detector's frame. The periods when SOHO flew rolled by 180 degrees
+# have their own files ('2mr_...') in rolled/, since the sky turns in the
+# detector frame but the stray light does not.
+MONTHLY_URL = "https://soho.nascom.nasa.gov/sdb/soho/lasco/monthly/"
+MONTHLY_ROLLED = "rolled/"
+MONTHLY_INDEX = "monthly/index.txt"  # cached listing of both directories
+MONTHLY_PATTERN = r"[23]mr?_[a-z]{4}_\d{6}\.fts"
+MONTHLY_MAX_GAP = 60  # days: no background when the nearest one is further from the image than this
+MONTHLY_MAX_SPAN = 120  # days: a bracketing file further than this is not interpolated with
 MSB_UNIT = "MSB"
 
 _ipv4_preferred = None
@@ -129,14 +146,20 @@ def cache_dir(path=None):
 def fetch(relpath, directory=None, required=True, quiet=False):
     """The local path of the SolarSoft file ``relpath``, downloading it into
     the cache the first time. Returns None when ``required`` is False and
-    the file is not on the server (a day without an exposure table)."""
+    the file is not on the server (a day without an exposure table). A
+    monthly background is named by its file name alone and comes from
+    MONTHLY_URL into ``monthly/``."""
     directory = cache_dir(directory)
-    local = os.path.join(directory, *relpath.split("/"))
+    if re.fullmatch(MONTHLY_PATTERN, relpath):
+        url = MONTHLY_URL + (MONTHLY_ROLLED if "r_" in relpath else "") + relpath
+        local = os.path.join(directory, "monthly", relpath)
+    else:
+        url = SSW_URL + relpath
+        local = os.path.join(directory, *relpath.split("/"))
     if os.path.isfile(local) and os.path.getsize(local) > 0:
         return local
     os.makedirs(os.path.dirname(local), exist_ok=True)
     _prefer_ipv4()
-    url = SSW_URL + relpath
     last = None
     for attempt in range(3):
         try:
@@ -388,6 +411,46 @@ def undistort(image, header, directory=None, order=1):
 
 
 # -------------------------------------------------------------- calibration
+def _correct(image, header, directory, steps, warp, inner_radius):
+    """``image`` (mean solar brightness before the instrument corrections)
+    with the vignetting undone, the C3 ramp subtracted, the distortion
+    removed, then the C3 mask applied and the C2 occulter blanked; the
+    same for an image and for the background under it."""
+    detector = _detector(header)
+    if detector == "C2":
+        vig_name = VIGNETTING["C2"]
+        vig = np.clip(fits.getdata(fetch(vig_name, directory)).astype(np.float64), 0.0, 100.0)
+        image = image * _match_array(vig, header, image.shape)
+        steps.append(f"Multiplied by the inverse vignetting array {os.path.basename(vig_name)}")
+    else:
+        vig_name = VIGNETTING["C3_PRE"] if _mjd(header) < 51000 else VIGNETTING["C3_POST"]
+        vig = fits.getdata(fetch(vig_name, directory)).astype(np.float64)
+        image = image * _match_array(vig, header, image.shape)
+        steps.append(f"Multiplied by the inverse vignetting array {os.path.basename(vig_name)}")
+        if str(header.get("FILTER", "")).strip().lower() == "clear":
+            ramp = fits.getdata(fetch(C3_RAMP, directory)).astype(np.float64)
+            image = image - _match_array(ramp, header, image.shape)
+            steps.append(f"Stray-light ramp {os.path.basename(C3_RAMP)} subtracted")
+    if warp:
+        image = undistort(image, header, directory)
+        c = DISTORTION[detector]
+        steps.append(f"Optical distortion removed (radial polynomial {c[0]:.6g}, {c[1]:.6g}, {c[2]:.6g} per mm, 0.021 mm/px)")
+    # the masks are drawn in the undistorted (level 1) frame
+    if detector == "C3":
+        mask = fits.getdata(fetch(C3_MASK, directory)).astype(np.float64)
+        mask = _match_array(mask, header, image.shape)
+        image = np.where(mask > 0.5, image, np.nan)
+        steps.append(f"Occulter, pylon and edge blanked with {os.path.basename(C3_MASK)}")
+    if inner_radius == "auto":
+        inner_radius = C2_MASK_RADIUS if detector == "C2" else None
+    if inner_radius:
+        inside = occulter_mask(image.shape, header, float(inner_radius), directory)
+        image[inside] = np.nan
+        px = float(inner_radius) * SUN_ARCSEC / (float(header.get("PLATESCL", 0) or 0) or PLATE_SCALE[detector])
+        steps.append(f"Occulter and diffraction ring blanked within {float(inner_radius):.2f} solar radii ({px:.0f} px) of the occulter centre")
+    return image
+
+
 def calibrate(data, header, directory=None, warp=True, blank_missing=True, inner_radius="auto"):
     """``data`` (counts, as recorded) calibrated to mean solar brightness.
     Returns (image, steps, cards): the calibrated float32 image, the list
@@ -411,44 +474,139 @@ def calibrate(data, header, directory=None, warp=True, blank_missing=True, inner
     steps.append(f"Divided by the exposure time {exptime:.4f} s (commanded {float(header.get('EXPTIME')):.4f} s x {factor:.6f})")
     steps.append(f"Calibration factor {calfac:.5e} MSB/(DN/s) ({header.get('FILTER', '').strip()}, {header.get('POLAR', '').strip()} polarizer)")
 
-    image = (raw - bias) / exptime
-    if detector == "C2":
-        vig_name = VIGNETTING["C2"]
-        vig = np.clip(fits.getdata(fetch(vig_name, directory)).astype(np.float64), 0.0, 100.0)
-        image = image * calfac * _match_array(vig, header, image.shape)
-        steps.append(f"Multiplied by the inverse vignetting array {os.path.basename(vig_name)}")
-    else:
-        vig_name = VIGNETTING["C3_PRE"] if _mjd(header) < 51000 else VIGNETTING["C3_POST"]
-        vig = fits.getdata(fetch(vig_name, directory)).astype(np.float64)
-        image = image * calfac * _match_array(vig, header, image.shape)
-        steps.append(f"Multiplied by the inverse vignetting array {os.path.basename(vig_name)}")
-        if str(header.get("FILTER", "")).strip().lower() == "clear":
-            ramp = fits.getdata(fetch(C3_RAMP, directory)).astype(np.float64)
-            image = image - _match_array(ramp, header, image.shape)
-            steps.append(f"Stray-light ramp {os.path.basename(C3_RAMP)} subtracted")
-        mask = fits.getdata(fetch(C3_MASK, directory)).astype(np.float64)
-        mask = _match_array(mask, header, image.shape)
-        image = np.where(mask > 0.5, image, np.nan)
-        steps.append(f"Occulter, pylon and edge blanked with {os.path.basename(C3_MASK)}")
-    if inner_radius == "auto":
-        inner_radius = C2_MASK_RADIUS if detector == "C2" else None
-    if inner_radius:
-        inside = occulter_mask(image.shape, header, float(inner_radius), directory)
-        image[inside] = np.nan
-        px = float(inner_radius) * SUN_ARCSEC / (float(header.get("PLATESCL", 0) or 0) or PLATE_SCALE[detector])
-        steps.append(f"Occulter and diffraction ring blanked within {float(inner_radius):.2f} solar radii ({px:.0f} px) of the occulter centre")
+    image = (raw - bias) / exptime * calfac
     if blank_missing and missing.any():
-        image[missing] = np.nan
+        image[missing] = np.nan  # the warp carries the blanks along
         steps.append(f"{int(missing.sum())} pixels of missing telemetry blanked")
-    if warp:
-        image = undistort(image, header, directory)
-        c = DISTORTION[detector]
-        steps.append(f"Optical distortion removed (radial polynomial {c[0]:.6g}, {c[1]:.6g}, {c[2]:.6g} per mm, 0.021 mm/px)")
+    image = _correct(image, header, directory, steps, warp, inner_radius)
     cards["BUNIT"] = (MSB_UNIT, "Mean solar brightness")
     cards["EXPTIME"] = (exptime, "Corrected exposure time (s)")
     cards["OFFSET"] = (bias, "CCD bias subtracted (DN)")
     cards["LEVEL"] = ("1.0", "Calibrated as NRL level 1 (SolarViewer port)")
     return image.astype(np.float32), steps, cards
+
+
+# ---------------------------------------------------------------- background
+def _rolled(header):
+    """Whether SOHO flew rolled by about 180 degrees for this image."""
+    roll = float(header.get("CROTA1", header.get("CROTA", 0.0)) or 0.0)
+    return abs((roll + 180.0) % 360.0 - 180.0) > 90.0
+
+
+def _monthly_series(header):
+    """The monthly background series for the image's detector, filter,
+    polarizer and roll state ('2m_orcl': C2, orange, clear, SOHO upright;
+    '2mr_orcl' when rolled by 180 degrees)."""
+    detector = _detector(header)
+    filt = (str(header.get("FILTER", "")).strip().lower() + "cl")[:2]
+    polar = (str(header.get("POLAR", "")).strip().lower() + "cl")[:2]
+    return f"{detector[1]}m{'r' if _rolled(header) else ''}_{filt}{polar}"
+
+
+def _monthly_date(name):
+    """The mid-point date of the monthly background ``name``
+    ('2m_orcl_241022.fts' is 2024-10-22, noon)."""
+    yymmdd = name.rsplit("_", 1)[1][:6]
+    year = int(yymmdd[:2])
+    year += 1900 if year >= 90 else 2000
+    return datetime(year, int(yymmdd[2:4]), int(yymmdd[4:6]), 12)
+
+
+def monthly_index(directory=None, date=None):
+    """The names of the monthly backgrounds on the server (upright and
+    rolled), from a cached copy of the directory listings; the copy is
+    refreshed when it is more than a day old and ``date`` is within a
+    month of its newest file (a later one may have appeared)."""
+    directory = cache_dir(directory)
+    local = os.path.join(directory, *MONTHLY_INDEX.split("/"))
+    names = []
+    if os.path.isfile(local):
+        with open(local) as f:
+            names = f.read().split()
+        newest = max((_monthly_date(n) for n in names), default=None)
+        fresh = time.time() - os.path.getmtime(local) < 86400
+        if names and (fresh or (date is not None and newest is not None and date < newest - timedelta(days=30))):
+            return names
+    _prefer_ipv4()
+    found = set()
+    for url in (MONTHLY_URL, MONTHLY_URL + MONTHLY_ROLLED):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                html = response.read().decode("ascii", "replace")
+        except (urllib.error.URLError, socket.timeout, OSError) as e:
+            if names:
+                return names
+            raise CalibrationError(f"could not list {url}: {e}")
+        found.update(re.findall(MONTHLY_PATTERN, html))
+    names = sorted(found)
+    if not names:
+        raise CalibrationError(f"no monthly backgrounds listed at {MONTHLY_URL}")
+    os.makedirs(os.path.dirname(local), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(local))
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(names) + "\n")
+    os.replace(tmp, local)
+    return names
+
+
+def background_files(header, directory=None, names=None):
+    """The monthly backgrounds to interpolate for the image: [(name,
+    weight)], the two of its series bracketing the observation weighted
+    by their distance in time, or the nearest alone when the other is
+    too far (the observation is after the last one, or the series has a
+    gap). ``names`` replaces the server's listing."""
+    series = _monthly_series(header)
+    when = _date_obs(header)
+    if names is None:
+        names = monthly_index(directory, when)
+    dated = sorted((_monthly_date(n), n) for n in names if n.startswith(series + "_"))
+    if not dated:
+        raise CalibrationError(f"no monthly backgrounds of the series {series} on the server")
+    span = timedelta(days=MONTHLY_MAX_SPAN)
+    before = [d for d in dated if when - span <= d[0] <= when]
+    after = [d for d in dated if when < d[0] <= when + span]
+    if before and after:
+        (t1, n1), (t2, n2) = before[-1], after[0]
+        w = (when - t1).total_seconds() / (t2 - t1).total_seconds()
+        return [(n1, 1.0 - w), (n2, w)] if w > 1e-6 else [(n1, 1.0)]
+    t, name = min(dated, key=lambda d: abs(d[0] - when))
+    gap = abs((t - when).days)
+    if gap > MONTHLY_MAX_GAP:
+        raise CalibrationError(f"the nearest monthly background, {name}, is {gap} days from the image")
+    return [(name, 1.0)]
+
+
+def _calibrated_background(name, header, shape, directory):
+    """The monthly background ``name`` as mean solar brightness in the
+    image's geometry, before the instrument corrections: the file holds DN
+    with the bias already removed for a nominal exposure time (NRL's
+    c2/c3_calibrate treat it so); its unmeasured pixels (zero) are blank."""
+    with fits.open(fetch(name, directory)) as hdul:
+        bhdr, raw = hdul[0].header, np.asarray(hdul[0].data, dtype=np.float64)
+    exptime = float(bhdr.get("EXPTIME", 0.0) or 0.0)
+    if exptime <= 0:
+        raise CalibrationError(f"{name} has no exposure time")
+    image = raw / exptime * calibration_factor(bhdr)
+    image[raw <= 0] = np.nan
+    return _match_array(image, header, shape)
+
+
+def background(header, shape, directory=None, warp=True, inner_radius="auto", names=None):
+    """The F corona and stray light under an image of ``shape`` with this
+    level 0.5 ``header``: NRL's monthly minimum backgrounds bracketing the
+    observation, calibrated and corrected exactly like the image (see
+    ``calibrate``) and interpolated linearly to the observation time, as
+    float32 mean solar brightness. Returns (image, steps)."""
+    directory = cache_dir(directory)
+    files = background_files(header, directory, names)
+    total = None
+    for name, weight in files:
+        part = _calibrated_background(name, header, shape, directory) * weight
+        total = part if total is None else total + part
+    total = _correct(total, header, directory, [], warp, inner_radius)
+    used = " + ".join(f"{weight:.3f} x {name}" for name, weight in files)
+    steps = [f"Background: monthly minimum {used}", "Background calibrated and corrected like the image, kept in the BACKGROUND extension"]
+    return total.astype(np.float32), steps
 
 
 def _prepared_meta(header, cards, steps):
@@ -501,24 +659,61 @@ def _north_up(image, meta, steps):
     return np.asarray(turned.data, dtype=np.float32), out
 
 
-def calibrate_file(path, output_dir=None, suffix="_prepped", directory=None, warp=True, north_up=True, overwrite=True, inner_radius="auto"):
+def calibrate_file(
+    path,
+    output_dir=None,
+    suffix="_prepped",
+    directory=None,
+    warp=True,
+    north_up=True,
+    overwrite=True,
+    inner_radius="auto",
+    with_background=True,
+    quiet=False,
+):
     """Calibrate the level 0.5 file ``path`` and save the result next to it
-    (or in ``output_dir``) as ``<name><suffix>.fits``. Returns the output
-    path."""
+    (or in ``output_dir``) as ``<name><suffix>.fits``: the total brightness
+    in the primary HDU and, with ``with_background``, the F corona and
+    stray light under it in an extension named BACKGROUND (the primary
+    header's BKGEXT names it). When no background can be had the file is
+    still written, and its HISTORY says why. Returns the output path."""
     with fits.open(path) as hdul:
         hdu = next(h for h in hdul if h.data is not None and getattr(h.data, "ndim", 0) == 2)
         data, header = np.array(hdu.data), hdu.header.copy()
     image, steps, cards = calibrate(data, header, directory, warp=warp, inner_radius=inner_radius)
+    bkg = None
+    if with_background:
+        try:
+            bkg, bkg_steps = background(header, data.shape, directory, warp=warp, inner_radius=inner_radius)
+            steps += bkg_steps
+            cards["BKGEXT"] = ("BACKGROUND", "Extension with the F corona and stray light")
+        except Exception as e:  # the server, or an unexpected file
+            steps.append(f"Background not available: {e}")
+            if not quiet:
+                print(f"  Warning: {os.path.basename(path)}: no background ({e})", file=sys.stderr, flush=True)
     meta = _prepared_meta(header, cards, steps)
     if north_up:
+        unrotated = meta.copy()
         image, meta = _north_up(image, meta, steps)
+        if bkg is not None:
+            bkg, _ = _north_up(bkg, unrotated, [])
     base = os.path.basename(path)
     for ending in (".fits.gz", ".fts.gz", ".fits", ".fts", ".fit"):
         if base.lower().endswith(ending):
             base = base[: -len(ending)]
             break
     out = os.path.join(output_dir or os.path.dirname(os.path.abspath(path)), f"{base}{suffix}.fits")
-    fits.PrimaryHDU(image, meta).writeto(out, overwrite=overwrite)
+    hdus = [fits.PrimaryHDU(image, meta)]
+    if bkg is not None:
+        bmeta = fits.Header()
+        for card in meta.cards:
+            if card.keyword in ("HISTORY", "COMMENT", "BKGEXT", "") or card.keyword.startswith("NAXIS") or card.keyword in ("SIMPLE", "BITPIX", "EXTEND"):
+                continue
+            bmeta[card.keyword] = (card.value, card.comment)
+        bmeta["BUNIT"] = (MSB_UNIT, "Mean solar brightness")
+        bmeta["COMMENT"] = "F corona and stray light: NRL monthly minimum backgrounds, calibrated like the image"
+        hdus.append(fits.ImageHDU(bkg, bmeta, name="BACKGROUND"))
+    fits.HDUList(hdus).writeto(out, overwrite=overwrite)
     return out
 
 
@@ -534,6 +729,7 @@ def main(argv=None):
     parser.add_argument("--calib-dir", help=f"where the calibration files are cached (default ${CACHE_ENV} or {DEFAULT_CACHE_DIR})")
     parser.add_argument("--no-warp", action="store_true", help="skip the optical distortion correction")
     parser.add_argument("--keep-roll", action="store_true", help="do not rotate to solar north (the header keeps CROTA)")
+    parser.add_argument("--no-background", action="store_true", help="do not fetch NRL's monthly minimum background for the BACKGROUND extension")
     parser.add_argument(
         "--inner-radius",
         type=float,
@@ -548,7 +744,9 @@ def main(argv=None):
     failed = 0
     for path in args.files:
         try:
-            out = calibrate_file(path, args.output_dir, args.suffix, args.calib_dir, warp=not args.no_warp, north_up=not args.keep_roll, inner_radius=inner)
+            out = calibrate_file(
+                path, args.output_dir, args.suffix, args.calib_dir, warp=not args.no_warp, north_up=not args.keep_roll, inner_radius=inner, with_background=not args.no_background
+            )
             print(f"{os.path.basename(path)} -> {out}", flush=True)
         except Exception as e:
             failed += 1

@@ -342,7 +342,7 @@ def download_soho_data():
     elif instrument == "LASCO":
         print("\nDetector:")
         detector = choose("Select detector", [("C2 (2 to 6 solar radii)", "C2"), ("C3 (3.7 to 30 solar radii)", "C3")])
-        processing = "calibrated to mean solar brightness as NRL level 1 (bias, exposure, vignetting, distortion), north up"
+        processing = "calibrated to mean solar brightness as NRL level 1 (bias, exposure, vignetting, distortion), north up, monthly background in a second HDU"
     else:
         print("\nProduct:")
         physobs = choose("Select product", [("Magnetogram (96 min, level 1.8)", "magnetogram"), ("Continuum intensity", "continuum")])

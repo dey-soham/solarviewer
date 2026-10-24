@@ -6,7 +6,8 @@ Downloads images from SDO (AIA, HMI), IRIS, SOHO (EIT, LASCO, MDI), GOES
 
 - solar_data_downloader.py: the download and preparation functions
 - lasco_calibration.py: LASCO C2/C3 level 0.5 to level 1 (mean solar
-  brightness); also a command line, see LASCO_CALIBRATION.md
+  brightness) with NRL's monthly background in a second HDU; also a
+  command line, see LASCO_CALIBRATION.md
 - solar_data_downloader_cli.py: an interactive terminal menu
 - solar_data_downloader_gui.py: the window
 """

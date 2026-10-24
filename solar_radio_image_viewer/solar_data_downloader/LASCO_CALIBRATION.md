@@ -90,6 +90,28 @@ For an image `DN` with header values `OFFSET`, `EXPTIME`, `FILTER`,
    other instrument in the downloader is. SOHO was often rolled by 180°;
    that is part of the same rotation.
 
+9. **Background.** Most of what a coronagraph records is not the
+   electron (K) corona but the F corona, sunlight scattered by
+   interplanetary dust, plus stray light in the instrument; in C3 they are
+   nine tenths of the total. NRL publishes *monthly minimum* backgrounds
+   about once a week (`sdb/soho/lasco/monthly/`): for each pixel the
+   minimum over a month of daily median images, so F corona, stray light
+   and the quietest K corona of that month, in counts with the bias
+   removed. The two files of the image's series bracketing its date are
+   calibrated with the same factors and corrections as the image (steps 2
+   to 8, without the bias; `c2_calibrate.pro` and `c3_calibrate.pro`
+   treat these files the same way), interpolated linearly in time to the
+   observation, and stored in a second HDU named `BACKGROUND`. The image
+   itself stays the total brightness; the viewer subtracts the background
+   on request (below). SOHO flew rolled by 180° for about half of each
+   year since 2003, and the sky then turns in the detector frame while
+   the stray light does not, so those periods have their own series
+   (`2mr_orcl`, `3mr_clcl` in `rolled/`); the image's `CROTA` picks the
+   series. When only one file is within four months (a gap in the series,
+   or an image less than a week old) it is used alone; with none within
+   two months, the file is written without a background and `HISTORY`
+   says so.
+
 Blanked pixels are stored as NaN, not zero, so that SolarViewer leaves them
 out of its statistics and colour stretch. NRL's level 1 files fill the C3
 mask with a constant instead.
@@ -106,20 +128,57 @@ A plain FITS file, 32-bit floats in the primary HDU, named
   11.9 (C2) or 56.0 (C3) arcsec per pixel, no roll left in the header
 - `HISTORY` lines starting with `SolarViewer:` record every step with the
   numbers used (bias, exposure factor and its source, calibration factor,
-  file names, distortion coefficients, rotation)
+  file names, distortion coefficients, rotation, background files and
+  their weights)
+- `BKGEXT = 'BACKGROUND'` when the file carries the background: an image
+  extension of that name, the same shape and unit as the image, north up
+  like it. `BKGEXT` is absent when no background could be had.
 
 Typical values are 1e-10 to 1e-7 MSB in C2 and 1e-11 to 1e-9 in C3. The
 sky brightness near the C2 occulter is about 1e-8, a bright streamer a few
 1e-9 at 3 solar radii.
+
+A calibrated image falls off about 15-fold from the occulter to the edge
+of the field, far more than the raw counts do (the vignetting hid most of
+the fall-off, which is why byte-scaled raw images such as Helioviewer's
+look flat). No colour stretch shows both ends at once, so SolarViewer's
+LASCO and COR presets draw the image through a radial filter: the
+departure from a smooth background in local standard deviations, where
+the background and the spread are fitted ring by ring as low-order
+Fourier series in position angle (the Fourier normalising radial graded
+filter of Druckmüllerová, Morgan and Habbal 2011; the Display tab also
+offers the plain radial median and the normalising radial graded filter
+of Morgan, Habbal and Woo 2006). The LASCO presets also subtract the
+`BACKGROUND` extension first, so that the K corona alone is drawn; the
+Display tab's "Background" switch and the Presets menu turn that off and
+on. Both are display choices only: the file, the statistics and the
+cursor's first value keep the total mean solar brightness, and the
+cursor shows the drawn value after it.
+
+For physics the background-subtracted image is the one to use: the K
+corona's brightness gives the electron density and a CME's mass (Vourlidas
+et al. 2000, and the LASCO Coronal Brightness Index, Battams et al. 2020,
+arXiv:2001.07596, which is built from exactly these monthly backgrounds).
+Mind that a monthly minimum also holds the quietest K corona of the
+month, so a streamer that stood still for the whole month is partly in
+the background too; NRL's level 1 archive leaves the background in for
+that reason. Subtract it from the `BACKGROUND` extension yourself for
+anything quantitative:
+
+```python
+with fits.open("22967077_prepped.fits") as hdul:
+    k_corona = hdul[0].data - hdul["BACKGROUND"].data
+```
 
 ## What is not done
 
 - **Stray light.** Apart from the C3 ramp, scattered light in the
   instrument stays in the image, as in NRL level 1. The C2 occulter mask
   hides the diffraction ring, the worst of it.
-- **Background subtraction.** No monthly minimum background or running
-  difference is applied; the result is the total brightness of the corona
-  plus the F corona, as in NRL level 1.
+- **Background subtraction in the image.** The primary HDU is the total
+  brightness, as in NRL level 1; the background rides along in its own
+  extension (step 9) rather than being taken out. No running difference
+  is made.
 - **Pointing refinement.** NRL later corrects `CRPIX` and `CROTA` with
   spacecraft tables that are not published as plain files. The level 0.5
   header values are used; they are good to a fraction of a pixel and a
@@ -148,6 +207,12 @@ once into `~/.cache/solarviewer/lasco_calib/` (about 17 MB in all):
 | `convert/c3_occltr_cntr.dat` | C3 occulter centre by date |
 | `expfac/data/YYMM/c?_expfactor_YYMMDD.dat` | per-image bias and exposure factor, one small file per day |
 
+The monthly minimum backgrounds come from
+`https://soho.nascom.nasa.gov/sdb/soho/lasco/monthly/` (and `rolled/`
+under it), 2 MB each, two per image date, into `monthly/` in the same
+cache along with a copy of the directory listing (`monthly/index.txt`,
+refreshed when it is a day old and a newer file may exist).
+
 Set the environment variable `SOLARVIEWER_LASCO_CALIB` to keep the cache
 elsewhere. Without network access and without a filled cache the
 downloader cannot calibrate; it then saves the image north up in counts
@@ -164,6 +229,7 @@ python -m solar_radio_image_viewer.solar_data_downloader.lasco_calibration FILE.
     --keep-roll     do not rotate to solar north
     --inner-radius R  blank within R solar radii of the occulter centre
                     (default 2.3 for C2; 0 keeps the occulter and ring)
+    --no-background do not fetch the monthly background (no BACKGROUND HDU)
 ```
 
 From Python:
@@ -175,6 +241,7 @@ out = lasco_calibration.calibrate_file("22967077.fts", output_dir="calibrated")
 
 # or on arrays, without saving
 image, steps, cards = lasco_calibration.calibrate(data, header)
+background, more_steps = lasco_calibration.background(header, data.shape)
 ```
 
 The inputs are level 0.5 files as the VSO or the NRL archive
