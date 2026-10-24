@@ -455,7 +455,7 @@ class SyncPopover(QFrame):
                 widget.setParent(None)
                 widget.deleteLater()
         page = self._page
-        letters = [LETTERS[page.panes.index(pane)] for pane in page.sync.in_sync()]
+        letters = [page.letter(pane) for pane in page.sync.in_sync()]
         for letter in letters:
             badge = QLabel(letter)
             badge.setObjectName("PaneBadge")
@@ -510,13 +510,14 @@ class CursorValues(QFrame):
         from .compare import pane_caption
 
         for index, pane in enumerate(self._page.panes):
+            letter = self._page.letter(pane)
             cell = QWidget()
             cell_layout = QHBoxLayout(cell)
             cell_layout.setContentsMargins(0, 0, 0, 0)
             cell_layout.setSpacing(6)
-            badge = QLabel(LETTERS[index])
+            badge = QLabel(letter)
             badge.setObjectName("PaneBadge")
-            badge.setProperty("letter", LETTERS[index])
+            badge.setProperty("letter", letter)
             cell_layout.addWidget(badge)
             caption = QLabel((pane_caption(pane).split(" · ")[0] or "")[:14])
             caption.setObjectName("Meta")
@@ -547,7 +548,7 @@ class CursorValues(QFrame):
     def _note_sync(self):
         page = self._page
         out = [
-            LETTERS[page.panes.index(pane)]
+            page.letter(pane)
             for pane in page.panes
             if pane not in page.sync.in_sync()
         ]

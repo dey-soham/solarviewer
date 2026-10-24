@@ -490,7 +490,7 @@ class ComparePanel(QWidget):
     def refresh_stats(self):
         """The tables again, a column per pane, from each pane's own tables."""
         page = self._page
-        letters = LETTERS[: len(page.panes)]
+        letters = [page.letter(pane) for pane in page.panes]
         for old in (self._region_table, self._image_table):
             if old is not None:
                 old.setParent(None)
@@ -523,15 +523,16 @@ class ComparePanel(QWidget):
                 widget.deleteLater()
         page = self._page
         self.panes_meta.setText(f"{len(page.panes)} of {page.layout_size}")
-        for index, pane in enumerate(page.panes):
+        for pane in page.panes:
+            letter = page.letter(pane)
             row = QFrame()
             row.setObjectName("Surface")
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(9, 5, 9, 5)
             row_layout.setSpacing(8)
-            badge = QLabel(LETTERS[index])
+            badge = QLabel(letter)
             badge.setObjectName("PaneBadge")
-            badge.setProperty("letter", LETTERS[index])
+            badge.setProperty("letter", letter)
             row_layout.addWidget(badge)
             name = _ElidedLabel("PaneName")
             name.setFullText(pane_name(pane) or "No image")
@@ -680,9 +681,9 @@ class PaneFrame(QFrame):
 class EmptySlot(QFrame):
     """A slot of the grid without an image: offers to add one (``addRequested``)."""
 
-    addRequested = pyqtSignal()
+    addRequested = pyqtSignal(int)  # the slot's index
 
-    def __init__(self, letter, parent=None):
+    def __init__(self, letter, index=0, parent=None):
         super().__init__(parent)
         self.setObjectName("EmptySlot")
         layout = QVBoxLayout(self)
@@ -690,13 +691,14 @@ class EmptySlot(QFrame):
         layout.setSpacing(10)
         layout.addStretch()
         self.letter = letter
+        self.index = index
         badge = QLabel(letter)
         badge.setObjectName("PaneBadge")
         badge.setProperty("letter", letter)
         layout.addWidget(badge, 0, Qt.AlignHCenter)
         self.add_button = QPushButton("Add image…")
         self.add_button.setToolTip("Open a FITS file or CASA image in this pane")
-        self.add_button.clicked.connect(self.addRequested)
+        self.add_button.clicked.connect(lambda: self.addRequested.emit(self.index))
         layout.addWidget(self.add_button, 0, Qt.AlignHCenter)
         hint = QLabel("or drop a file here")
         hint.setObjectName("Hint")
@@ -712,7 +714,7 @@ class ImagePage(QWidget):
     def __init__(self, name="", parent=None):
         super().__init__(parent)
         self.setObjectName(name)
-        self.panes = []
+        self.slots = [None]  # a pane or None per slot of the layout
         self.frames = {}  # pane -> its PaneFrame
         self._slots = []
         self._active = None
@@ -862,7 +864,7 @@ class ImagePage(QWidget):
         pane = self._active
         if pane is None:
             return
-        letter = LETTERS[self.panes.index(pane)]
+        letter = self.letter(pane)
         self._editing_badge.setText(letter)
         self._editing_badge.setProperty("letter", letter)
         _repolish(self._editing_badge)
@@ -880,45 +882,51 @@ class ImagePage(QWidget):
             (self._readouts, pane.cursor_readout),
         )
 
-    def add_pane(self, pane):
+    def add_pane(self, pane, slot=None):
         """Take ``pane`` (a SolarRadioImageTab built for this page) into
-        the next slot; the first pane added is the active one."""
+        ``slot``, or the first free one (the layout grows when none is);
+        the first pane added is the active one."""
         if len(self.panes) >= MAX_PANES:
             raise ValueError(f"a page holds at most {MAX_PANES} panes")
+        if slot is None or not (0 <= slot < len(self.slots)) or self.slots[slot] is not None:
+            slot = self.free_slot()
         pane.page = self
         pane.inspector_tabs = self.inspector_tabs
-        self.panes.append(pane)
         for stack, widget in self._chrome(pane):
             stack.addWidget(widget)
         self.frames[pane] = PaneFrame(pane, self)
         set_hand_cursor(self.frames[pane])
-        if len(self.panes) > self.layout_size:
-            self.set_layout(self._fitting_layout(len(self.panes)))
+        if slot is None:
+            self._resize_slots(self._fitting_layout(len(self.panes) + 1))
+            slot = self.free_slot()
+            self.slots[slot] = pane
+            self.set_layout(len(self.slots))
         else:
+            self.slots[slot] = pane
             self._place_panes()
         if self._active is None:
             self.set_active_pane(pane)
         return pane
 
-    def new_pane(self):
-        """A pane of this page, added to its next slot (the layout grows
-        if every slot is taken). None when the page is full."""
+    def new_pane(self, slot=None):
+        """A pane of this page, in ``slot`` or the first free one (the
+        layout grows if every slot is taken). None when the page is full."""
         if len(self.panes) >= MAX_PANES:
             return None
         from ..viewer import SolarRadioImageTab
 
         pane = SolarRadioImageTab(self, "")
-        self.add_pane(pane)
+        self.add_pane(pane, slot)
         pane.refresh_icons()
         return pane
 
     def remove_pane(self, pane):
-        """Close ``pane``; the panes after it move up a slot. The only
-        pane stays."""
+        """Close ``pane``; its slot is left empty, the other panes where
+        they are. The only pane stays."""
         if pane not in self.panes or len(self.panes) == 1:
             return
-        index = self.panes.index(pane)
-        self.panes.remove(pane)
+        index = self.slots.index(pane)
+        self.slots[index] = None
         frame = self.frames.pop(pane)
         for stack, widget in self._chrome(pane):
             stack.removeWidget(widget)
@@ -926,18 +934,21 @@ class ImagePage(QWidget):
             widget.deleteLater()
         if self._active is pane:
             self._active = None
-            self.set_active_pane(self.panes[min(index, len(self.panes) - 1)])
+            # The nearest pane after it takes over, else the nearest before
+            after = [p for p in self.slots[index:] if p is not None]
+            before = [p for p in self.slots[:index] if p is not None]
+            self.set_active_pane(after[0] if after else before[-1])
         pane.cleanup()
         self._grid.removeWidget(frame)
         frame.setParent(None)
         frame.deleteLater()
         self._place_panes()
 
-    def open_in_new_pane(self, path):
-        """Show the image at ``path`` in a new pane. Returns whether it
-        loaded (None if cancelled), as ``open_image_path``; a pane whose
-        image did not load goes again."""
-        pane = self.new_pane()
+    def open_in_new_pane(self, path, slot=None):
+        """Show the image at ``path`` in a new pane, in ``slot`` or the
+        first free one. Returns whether it loaded (None if cancelled), as
+        ``open_image_path``; a pane whose image did not load goes again."""
+        pane = self.new_pane(slot)
         if pane is None:
             return False
         self.set_active_pane(pane)
@@ -946,8 +957,8 @@ class ImagePage(QWidget):
             self.remove_pane(pane)
         return loaded
 
-    def add_image(self):
-        """Choose an image for the next slot."""
+    def add_image(self, slot=None):
+        """Choose an image for ``slot`` (the first free one otherwise)."""
         from ..ui.open_image import choose_image
         from ..ui.recent_files import last_image_folder
 
@@ -957,11 +968,24 @@ class ImagePage(QWidget):
             start = os.path.dirname(shown[-1].rstrip("/")) or start
         path = choose_image(self.window(), "Open an image to compare", directory=start)
         if path:
-            self.open_in_new_pane(path)
+            self.open_in_new_pane(path, slot)
 
     @property
     def active_pane(self):
         return self._active
+
+    @property
+    def panes(self):
+        """The panes, in the order of their slots."""
+        return [pane for pane in self.slots if pane is not None]
+
+    def letter(self, pane):
+        """The letter of ``pane``'s slot (its badge)."""
+        return LETTERS[self.slots.index(pane)]
+
+    def free_slot(self):
+        """The first slot without a pane, or None."""
+        return next((index for index, pane in enumerate(self.slots) if pane is None), None)
 
     def set_active_pane(self, pane):
         """The shared controls show and work on ``pane``."""
@@ -1017,7 +1041,7 @@ class ImagePage(QWidget):
         """The Synced button, the popover, the headers' link toggles and
         the status bar say which panes are in sync."""
         in_sync = self.sync.in_sync()
-        letters = " ".join(LETTERS[self.panes.index(pane)] for pane in in_sync)
+        letters = " ".join(self.letter(pane) for pane in in_sync)
         ways = [words for key, words, _default in SYNC_WAYS if self.sync.on[key]]
         synced = bool(ways) and len(in_sync) >= 2
         self._sync_button.setText(letters if synced else "")
@@ -1130,7 +1154,7 @@ class ImagePage(QWidget):
             if pane.current_image_data is not None:
                 pane.update_display()
         self.window().statusBar().showMessage(
-            f"Pane {LETTERS[self.panes.index(source)]}'s display applied to every pane"
+            f"Pane {self.letter(source)}'s display applied to every pane"
         )
 
     # ---------------------------------------------------------- layout
@@ -1149,7 +1173,17 @@ class ImagePage(QWidget):
             return
         self.layout_size = size
         self._layout_actions[size].setChecked(True)
+        self._resize_slots(size)
         self._place_panes()
+
+    def _resize_slots(self, size):
+        """``size`` slots: more are empty at the end; with fewer, the panes
+        keep their slots if they fit, else close up from the first."""
+        if size < len(self.slots) and any(self.slots[size:]):
+            panes = self.panes
+            self.slots = panes + [None] * (size - len(panes))
+        else:
+            self.slots = (self.slots + [None] * size)[:size]
 
     def add_slot(self):
         """One more slot: the next bigger layout."""
@@ -1203,15 +1237,15 @@ class ImagePage(QWidget):
         self._grid.setContentsMargins(gap, gap, gap, gap)
         positions = _positions(self.layout_size)
         for index, (row, column) in enumerate(positions):
-            if index < len(self.panes):
-                pane = self.panes[index]
+            pane = self.slots[index]
+            if pane is not None:
                 frame = self.frames[pane]
                 frame.set_letter(LETTERS[index])
                 frame.set_single(single)
                 frame.set_closable(len(self.panes) > 1)
                 self._grid.addWidget(frame, row, column)
             else:
-                slot = EmptySlot(LETTERS[index])
+                slot = EmptySlot(LETTERS[index], index)
                 slot.addRequested.connect(self.add_image)
                 set_hand_cursor(slot)
                 self._grid.addWidget(slot, row, column)
@@ -1270,7 +1304,7 @@ class ImagePage(QWidget):
             self.set_active_pane(target.pane)
             target.pane.open_path(first)
         else:
-            self.open_in_new_pane(first)
+            self.open_in_new_pane(first, target.index if isinstance(target, EmptySlot) else None)
         for path in rest:
             if len(self.panes) >= MAX_PANES:
                 break
