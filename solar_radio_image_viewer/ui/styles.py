@@ -94,6 +94,7 @@ TOKENS = {
 # Roles a widget takes with ``widget.setObjectName(role)``:
 #   PrimaryButton   the one main action of a window or dialog (accent outline)
 #   LinkButton      a text button in the accent, no border ("RMS box…")
+#   GhostButton     a plain text button, no border or fill until hovered ("Run in background")
 #   IconOnlyButton  a square icon button with a border
 #   IconOnlyNBGButton  a square icon button with no background
 #   NavButton       a flat text/glyph button in a toolbar row
@@ -115,6 +116,10 @@ TOKENS = {
 #   Banner          a QFrame header filled with the accent (About dialog)
 #   Card            a QFrame panel on the surface colour with a border
 #   Surface         a QFrame on the surface colour, no border (toggle rows)
+#   SidePanel       a QFrame column on the surface colour with a line on its left
+#   Field           a QFrame drawn like a read-only input, holding monospace labels
+#   Tile            a small QFrame on the window colour, no border (a figure with its name)
+#   ThinProgress    a QProgressBar drawn as a 4px bar, no border or text
 #   Rule            a QFrame drawn as a 1px horizontal line, fading at the ends
 #   VRule           a QFrame drawn as a 1px vertical line
 #   TabRow          the row holding the image tabs on macOS (a line below)
@@ -126,6 +131,8 @@ TOKENS = {
 #   Sidebar         a QFrame navigation column
 #   NavList         a QListWidget of sections in a Sidebar
 #   Console         a QPlainTextEdit of log text, monospace
+#   QuietLog        a QPlainTextEdit of small log lines, no frame or fill
+#   SmallCheck      a QCheckBox in the small type with a 14px box
 #   ImageWell       a QFrame or QScrollArea showing a picture on black
 #   Segmented       a QWidget holding a row of checkable buttons, one on
 #   HeaderSegmented the same on a filled track with no border (the header)
@@ -145,6 +152,7 @@ TOKENS = {
 ROLES = (
     "PrimaryButton",
     "LinkButton",
+    "GhostButton",
     "IconOnlyButton",
     "IconOnlyNBGButton",
     "NavButton",
@@ -167,6 +175,10 @@ ROLES = (
     "Banner",
     "Card",
     "Surface",
+    "SidePanel",
+    "Field",
+    "Tile",
+    "ThinProgress",
     "Rule",
     "VRule",
     "TabRow",
@@ -178,6 +190,8 @@ ROLES = (
     "Sidebar",
     "NavList",
     "Console",
+    "QuietLog",
+    "SmallCheck",
     "ImageWell",
     "Segmented",
     "HeaderSegmented",
@@ -493,6 +507,27 @@ def get_stylesheet(palette, is_dark=True):
         border: none;
         border-radius: {RADIUS}px;
     }}
+    QFrame#SidePanel {{
+        background-color: {p['surface']};
+        border: none;
+        border-left: 1px solid {p['divider']};
+    }}
+    QFrame#Field {{
+        background-color: {p['base']};
+        border: 1px solid {p['divider']};
+        border-radius: {RADIUS}px;
+        min-height: 26px;
+    }}
+    QFrame#Field QLabel {{
+        font-family: {MONO_FAMILY};
+        color: {p['text_strong']};
+        background-color: transparent;
+    }}
+    QFrame#Tile {{
+        background-color: {p['window']};
+        border: none;
+        border-radius: {RADIUS}px;
+    }}
     QFrame#Rule {{
         background: {fading_rule};
         border: none;
@@ -741,6 +776,24 @@ def get_stylesheet(palette, is_dark=True):
         font-family: {MONO_FAMILY};
         font-size: {FONT_SMALL}pt;
     }}
+    QPlainTextEdit#QuietLog {{
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_META}pt;
+        color: {p['text_strong']};
+        background-color: transparent;
+        border: none;
+        padding: 0px;
+    }}
+    QCheckBox#SmallCheck {{
+        font-size: {FONT_SMALL}pt;
+        color: {p['text_dim']};
+        spacing: 6px;
+    }}
+    QCheckBox#SmallCheck::indicator {{
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+    }}
     QLabel[tone="success"] {{
         color: {p['success']};
     }}
@@ -842,6 +895,23 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {p['accent_pressed']};
     }}
     QPushButton#LinkButton:disabled {{
+        color: {p['disabled']};
+        border-color: transparent;
+    }}
+    QPushButton#GhostButton {{
+        background-color: transparent;
+        color: {p['text_secondary']};
+        border: 1px solid transparent;
+        font-weight: 500;
+    }}
+    QPushButton#GhostButton:hover {{
+        background-color: {p['hover']};
+        color: {p['text']};
+    }}
+    QPushButton#GhostButton:pressed {{
+        background-color: {p['pressed']};
+    }}
+    QPushButton#GhostButton:disabled {{
         color: {p['disabled']};
         border-color: transparent;
     }}
@@ -1313,6 +1383,17 @@ def get_stylesheet(palette, is_dark=True):
     QProgressBar::chunk {{
         background-color: {p['highlight_deep']};
         border-radius: {RADIUS - 1}px;
+    }}
+    QProgressBar#ThinProgress {{
+        border: none;
+        background-color: {p['slider_groove']};
+        min-height: 4px;
+        max-height: 4px;
+        border-radius: 2px;
+    }}
+    QProgressBar#ThinProgress::chunk {{
+        background-color: {p['highlight']};
+        border-radius: 2px;
     }}
     QStatusBar {{
         background-color: {p['surface']};
