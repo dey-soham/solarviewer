@@ -557,7 +557,10 @@ class PaneFrame(QFrame):
     so."""
 
     def __init__(self, pane, page):
-        super().__init__()
+        # A child of the page's grid host from the start (the grid places
+        # it later, which may wait for a transition): the pane's window
+        # is the main window at once, as loading an image expects
+        super().__init__(page._grid_host)
         self.setObjectName("PaneFrame")
         self.pane = pane
         self._page = page
