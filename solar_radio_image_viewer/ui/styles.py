@@ -139,6 +139,7 @@ TOKENS = {
 #   PaneBadge       a QLabel with a pane's letter, on that pane's colour
 #   PaneName        a QLabel with a pane's file name, monospace
 #   EmptySlot       a dashed QFrame where a compare page's next image goes
+#   EditingRow      the inspector's row naming the pane its controls edit
 # A label or StatusButton can also take a tone with ``set_tone``:
 # "success", "warning" or "error" colour it accordingly, None clears it.
 ROLES = (
@@ -190,6 +191,7 @@ ROLES = (
     "PaneBadge",
     "PaneName",
     "EmptySlot",
+    "EditingRow",
 )
 
 # The panes of a compare page, A to D: (background, letter) of each badge
@@ -574,6 +576,16 @@ def get_stylesheet(palette, is_dark=True):
     }}
     QFrame#PaneHeader QToolButton:hover {{
         background-color: {p['hover']};
+    }}
+    QFrame#EditingRow {{
+        background-color: {p['surface']};
+        border: none;
+        border-bottom: 1px solid {p['divider']};
+        min-height: 30px;
+        max-height: 30px;
+    }}
+    QFrame#EditingRow QLabel {{
+        background-color: transparent;
     }}
     QFrame#EmptySlot {{
         background-color: {p['canvas']};

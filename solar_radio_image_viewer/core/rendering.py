@@ -68,6 +68,7 @@ class RenderingMixin:
             "show_grid": self.show_grid_checkbox.isChecked(),
             "show_solar_disk": self.show_solar_disk_checkbox.isChecked(),
             "show_contours": self.show_contours_checkbox.isChecked(),
+            "compact": self.compact_plot,
         }
 
         # Settings snapshots (identity of loaded contour data tracked separately)
@@ -187,6 +188,8 @@ class RenderingMixin:
         cb = self._add_colorbar(ax, im, stretch, vmin_val, vmax_val)
 
         self._apply_plot_customization(ax, cb)
+        if self.compact_plot:
+            self._make_compact(ax, cb, vmin_val, vmax_val)
 
         self._draw_beam(ax)
 
@@ -725,7 +728,7 @@ class RenderingMixin:
                         else "No Image"
                     )
                 self.plot_title = title
-                ax.set_title(self._fit_title(title))
+                ax.set_title("" if self.compact_plot else self._fit_title(title))
                 if hasattr(self, "show_observation_time"):
                     self.show_observation_time(image_time)
             except Exception as e:
@@ -735,11 +738,15 @@ class RenderingMixin:
                     os.path.basename(self.imagename) if self.imagename else "No Image"
                 )
                 self.plot_title = title
-                ax.set_title(self._fit_title(title))
+                ax.set_title("" if self.compact_plot else self._fit_title(title))
 
     def _add_colorbar(self, ax, im, stretch, vmin_val, vmax_val):
-        """Add the colorbar (dropping out-of-range ticks for non-linear stretches)."""
-        # Format the time and frequency as a title
+        """Add the colorbar (dropping out-of-range ticks for non-linear
+        stretches); a slim one, close to the image, for a compact plot."""
+        if self.compact_plot:
+            cb = self.figure.colorbar(im, ax=ax, fraction=0.035, pad=0.02, aspect=40)
+            self.colorbar = cb
+            return cb
         # For non-linear stretches, filter ticks to only show those within data range
         if stretch in ("power", "histeq", "sqrt", "arcsinh", "log"):
             cb = self.figure.colorbar(
@@ -759,6 +766,30 @@ class RenderingMixin:
             )
         self.colorbar = cb
         return cb
+
+    def _make_compact(self, ax, cb, vmin_val, vmax_val):
+        """The plot as a pane of a compare page shows it: the image and a
+        slim colorbar with the range's ends, without ticks, labels or a
+        title (the pane's header says what the image is)."""
+        from matplotlib.ticker import FuncFormatter
+
+        ax.set_title("")
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        coords = getattr(ax, "coords", None)
+        if coords is not None:
+            for coord in coords:
+                coord.set_axislabel("")
+                coord.set_ticklabel_visible(False)
+                coord.set_ticks_visible(False)
+        else:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        cb.set_label("")
+        cb.set_ticks([vmin_val, vmax_val])
+        cb.ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value:.4g}"))
+        cb.ax.tick_params(labelsize=max(7, self.plot_settings.get("colorbar_tick_fontsize", 10) - 2), length=0, pad=3)
+        cb.ax.minorticks_off()
 
     def _apply_plot_customization(self, ax, cb):
         """Apply self.plot_settings: labels, fonts, colors, ticks, borders."""
@@ -1048,6 +1079,15 @@ class RenderingMixin:
         ps = self.plot_settings
         width, height = self.figure.get_size_inches() * self.figure.dpi
         px = self.figure.dpi / 72.0  # pixels per point
+        if self.compact_plot:
+            # Only the colorbar's two labels want room, at the right
+            labels_px = ps.get("colorbar_tick_fontsize", 10) * 0.6 * 7 * px + 8
+            return {
+                "pad_left": min(0.1, 6 / max(width, 1)),
+                "pad_right": max(0.6, 1 - labels_px / max(width, 1)),
+                "pad_top": max(0.8, 1 - 6 / max(height, 1)),
+                "pad_bottom": min(0.1, 6 / max(height, 1)),
+            }
         tick = ps.get("axis_tick_fontsize", 10)
         label = ps.get("axis_label_fontsize", 12)
         title = ps.get("title_fontsize", 12)

@@ -24,11 +24,13 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QStackedWidget,
@@ -40,7 +42,7 @@ from PyQt5.QtWidgets import (
 
 from ..ui.icons import themed_icon
 from ..ui.styles import set_hand_cursor
-from ..ui.widgets import segmented
+from ..ui.widgets import kicker_row, link_button, segmented, toggle_row
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,104 @@ class _ElidedLabel(QLabel):
 def _repolish(widget):
     widget.style().unpolish(widget)
     widget.style().polish(widget)
+
+
+def _scroll(widget):
+    area = QScrollArea()
+    area.setWidget(widget)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    return area
+
+
+class ComparePanel(QWidget):
+    """The inspector's Compare tab: the panes of the page, and what is
+    done to all of them at once."""
+
+    def __init__(self, page, parent=None):
+        super().__init__(parent)
+        self._page = page
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 16, 14, 16)
+        layout.setSpacing(20)
+
+        # The panes
+        block = QWidget()
+        block_layout = QVBoxLayout(block)
+        block_layout.setContentsMargins(0, 0, 0, 0)
+        block_layout.setSpacing(10)
+        row, self.panes_meta = kicker_row("Panes", "")
+        block_layout.addWidget(row)
+        self._rows = QVBoxLayout()
+        self._rows.setContentsMargins(0, 0, 0, 0)
+        self._rows.setSpacing(4)
+        block_layout.addLayout(self._rows)
+        layout.addWidget(block)
+
+        # The display of every pane
+        block = QWidget()
+        block_layout = QVBoxLayout(block)
+        block_layout.setContentsMargins(0, 0, 0, 0)
+        block_layout.setSpacing(10)
+        row, _aside = kicker_row("Display", "")
+        block_layout.addWidget(row)
+        self.full_axes_switch = QCheckBox()
+        self.full_axes_switch.setObjectName("Switch")
+        self.full_axes_switch.setToolTip(
+            "Show every pane's plot with its ticks, labels and title, as a "
+            "single image is shown, instead of the image and its colorbar alone"
+        )
+        self.full_axes_switch.toggled.connect(page.set_full_axes)
+        block_layout.addWidget(toggle_row(self.full_axes_switch, label=QLabel("Full axes")))
+        apply_row = QHBoxLayout()
+        apply_row.setContentsMargins(0, 0, 0, 0)
+        apply_row.setSpacing(8)
+        self.apply_hint = QLabel("Colormap, stretch, gamma, range, overlays")
+        self.apply_hint.setObjectName("Hint")
+        apply_row.addWidget(self.apply_hint)
+        apply_row.addStretch()
+        self.apply_button = link_button("Apply to all panes", page.apply_display_to_all)
+        self.apply_button.setToolTip(
+            "Give every pane the active pane's colormap, stretch, gamma and "
+            "overlays, and its range where the units match"
+        )
+        apply_row.addWidget(self.apply_button)
+        block_layout.addLayout(apply_row)
+        layout.addWidget(block)
+        layout.addStretch()
+
+    def refresh(self):
+        """The rows follow the page's panes: letter, name, what it shows."""
+        while self._rows.count():
+            widget = self._rows.takeAt(0).widget()
+            if widget is not None:
+                widget.setParent(None)  # gone at once, not at the next event loop turn
+                widget.deleteLater()
+        page = self._page
+        self.panes_meta.setText(f"{len(page.panes)} of {page.layout_size}")
+        for index, pane in enumerate(page.panes):
+            row = QFrame()
+            row.setObjectName("Surface")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(9, 5, 9, 5)
+            row_layout.setSpacing(8)
+            badge = QLabel(LETTERS[index])
+            badge.setObjectName("PaneBadge")
+            badge.setProperty("letter", LETTERS[index])
+            row_layout.addWidget(badge)
+            name = _ElidedLabel("PaneName")
+            name.setFullText(pane_name(pane) or "No image")
+            row_layout.addWidget(name)
+            caption = _ElidedLabel("Meta", least=8)
+            caption.setFullText(pane_caption(pane))
+            row_layout.addWidget(caption)
+            row_layout.addStretch()
+            if pane is page.active_pane:
+                editing = QLabel("editing")
+                editing.setObjectName("Meta")
+                row_layout.addWidget(editing)
+            self._rows.addWidget(row)
 
 
 class PaneFrame(QFrame):
@@ -269,6 +369,7 @@ class ImagePage(QWidget):
         self._active = None
         self._pane_names = {}
         self.layout_size = 1
+        self.full_axes = False  # compare panes drawn with ticks, labels, title
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -321,6 +422,8 @@ class ImagePage(QWidget):
 
         self._headers = QStackedWidget()
         layout.addWidget(self._headers)
+        self._editing_row = self._build_editing_row()
+        layout.addWidget(self._editing_row)
 
         self.inspector_tabs = QTabWidget()
         self.inspector_tabs.setObjectName("InspectorTabs")
@@ -329,6 +432,9 @@ class ImagePage(QWidget):
         self._statistics_pages = QStackedWidget()
         self.inspector_tabs.addTab(self._display_pages, "Display")
         self.inspector_tabs.addTab(self._statistics_pages, "Statistics")
+        self._compare_panel = ComparePanel(self)
+        self.inspector_tabs.addTab(_scroll(self._compare_panel), "Compare")
+        self.inspector_tabs.setTabVisible(2, False)  # with more than one slot
         layout.addWidget(self.inspector_tabs, 1)
 
         self._readouts = QStackedWidget()
@@ -357,6 +463,44 @@ class ImagePage(QWidget):
         buttons.append(_tool_button(self._add_pane_action))
         self._layout_actions[1].setChecked(True)
         return segmented(buttons)
+
+    def _build_editing_row(self):
+        """The inspector's row over the tabs while there is more than one
+        slot: which pane the controls edit, and the way to give every
+        pane its display."""
+        row = QFrame()
+        row.setObjectName("EditingRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(14, 0, 10, 0)
+        layout.setSpacing(8)
+        self._editing_badge = QLabel("A")
+        self._editing_badge.setObjectName("PaneBadge")
+        layout.addWidget(self._editing_badge)
+        editing = QLabel("Editing")
+        editing.setObjectName("Hint")
+        layout.addWidget(editing)
+        self._editing_name = _ElidedLabel("PaneName", least=6)
+        layout.addWidget(self._editing_name)
+        layout.addStretch()
+        button = link_button("Apply to all panes", self.apply_display_to_all)
+        button.setToolTip(
+            "Give every pane this pane's colormap, stretch, gamma and overlays, "
+            "and its range where the units match"
+        )
+        layout.addWidget(button)
+        row.hide()
+        return row
+
+    def _show_editing(self):
+        """The editing row names the active pane."""
+        pane = self._active
+        if pane is None:
+            return
+        letter = LETTERS[self.panes.index(pane)]
+        self._editing_badge.setText(letter)
+        self._editing_badge.setProperty("letter", letter)
+        _repolish(self._editing_badge)
+        self._editing_name.setFullText(pane_name(pane) or "No image")
 
     # ----------------------------------------------------------- panes
     def _chrome(self, pane):
@@ -462,8 +606,10 @@ class ImagePage(QWidget):
             stack.setCurrentWidget(widget)
         # The page's controls go into the active pane's canvas bar
         pane.page_controls_slot.addWidget(self._layout_group)
+        self._show_editing()
         for other, frame in self.frames.items():
             frame.set_active(other is pane)
+        self._compare_panel.refresh()
         self.update_title()
 
     def pane_changed(self, pane):
@@ -471,7 +617,93 @@ class ImagePage(QWidget):
         frame = self.frames.get(pane)
         if frame is not None:
             frame.refresh()
+        self._compare_panel.refresh()
+        self._show_editing()
         self.update_title()
+
+    # --------------------------------------------------------- display
+    def set_full_axes(self, on):
+        """Draw the panes with ticks, labels and title (``on``) or as the
+        image and a slim colorbar alone."""
+        self.full_axes = bool(on)
+        self._apply_compact()
+
+    def _apply_compact(self):
+        """Each pane drawn the way the layout wants: compact with more
+        than one slot, unless full axes are asked for."""
+        compact = self.layout_size > 1 and not self.full_axes
+        for pane in self.panes:
+            if pane.compact_plot != compact:
+                pane.compact_plot = compact
+                if pane.current_image_data is not None:
+                    pane.schedule_plot()
+
+    def apply_display_to_all(self):
+        """Give every pane the active pane's colormap, stretch, gamma and
+        overlay switches (not its contours, which are images of their
+        own), and its range where the units match."""
+        source = self._active
+        if source is None:
+            return
+        cmap = source.cmap_combo.currentText()
+        stretch = source.stretch_combo.currentText()
+        gamma = source.gamma_entry.text()
+        unit = getattr(source, "_current_bunit", None)
+        try:
+            vmin, vmax = float(source.vmin_entry.text()), float(source.vmax_entry.text())
+        except ValueError:
+            vmin = vmax = None
+        overlays = [
+            box.isChecked()
+            for box in (
+                source.show_beam_checkbox,
+                source.show_grid_checkbox,
+                source.show_solar_disk_checkbox,
+            )
+        ]
+        for pane in self.panes:
+            if pane is source:
+                continue
+            boxes = (
+                pane.show_beam_checkbox,
+                pane.show_grid_checkbox,
+                pane.show_solar_disk_checkbox,
+            )
+            controls = (
+                pane.cmap_combo,
+                pane.stretch_combo,
+                pane.gamma_slider,
+                pane.gamma_entry,
+                pane.vmin_entry,
+                pane.vmax_entry,
+                *boxes,
+            )
+            for control in controls:
+                control.blockSignals(True)
+            try:
+                pane.cmap_combo.setCurrentText(cmap)
+                pane.stretch_combo.setCurrentText(stretch)
+                pane.gamma_entry.setText(gamma)
+                try:
+                    pane.gamma_slider.setValue(int(float(gamma) * 20))
+                except ValueError:
+                    pass
+                if vmin is not None and getattr(pane, "_current_bunit", None) == unit:
+                    pane.show_range(vmin, vmax)
+                    pane.show_range_preset(None)
+                for box, on in zip(boxes, overlays):
+                    box.setChecked(on)
+            finally:
+                for control in controls:
+                    control.blockSignals(False)
+            pane.update_gamma_slider_state()
+            for row in pane._overlay_rows:
+                row.refresh()
+            if pane.current_image_data is not None:
+                pane.update_display()
+        self.window().statusBar().showMessage(
+            f"Pane {LETTERS[self.panes.index(source)]}'s display applied to every pane"
+        )
 
     # ---------------------------------------------------------- layout
     @staticmethod
@@ -534,6 +766,11 @@ class ImagePage(QWidget):
         for column in range(2):
             self._grid.setColumnStretch(column, 1 if column < columns else 0)
         self.setAcceptDrops(not single)
+        self.inspector_tabs.setTabVisible(2, not single)
+        self._editing_row.setVisible(not single)
+        self._show_editing()
+        self._apply_compact()
+        self._compare_panel.refresh()
         for size, action in self._layout_actions.items():
             action.setEnabled(size >= len(self.panes))
             action.setToolTip(
