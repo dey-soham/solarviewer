@@ -40,7 +40,7 @@
  
 - **Remote Access (SSH/SFTP)** — Browse and open files directly from remote servers with local caching
 - **Helioviewer Browser** — Browse and download images from NASA's Helioviewer API with time-series playback
-- **Solar Data Downloader** — Download images from SDO (AIA, HMI), IRIS, SOHO (EIT, LASCO, MDI), GOES SUVI and STEREO, prepared for the viewer (north up, one image per file, counts per second or calibrated units; LASCO is calibrated to mean solar brightness as NRL level 1 with NRL's monthly background in a second HDU, see `solar_radio_image_viewer/solar_data_downloader/LASCO_CALIBRATION.md`)
+- **Solar Data Downloader** — Download images from SDO (AIA, HMI), IRIS, SOHO (EIT, LASCO, MDI), GOES SUVI, STEREO and NSO GONG, prepared for the viewer (north up, one image per file, counts per second or calibrated units; LASCO is calibrated to mean solar brightness as NRL level 1 with NRL's monthly background in a second HDU, see `solar_radio_image_viewer/solar_data_downloader/LASCO_CALIBRATION.md`; STEREO COR1 and COR2 polarizer triplets likewise to mean solar brightness as SECCHI level 1 with the team's monthly background, see `solar_radio_image_viewer/solar_data_downloader/SECCHI_CALIBRATION.md`)
 - **Radio Data Downloader** — Access solar radio observation archives
 - **Solar Activity Viewer** — Browse solar events (flares, CMEs, active regions), view context images and radio spectra, and plot GOES X-ray light curves
  

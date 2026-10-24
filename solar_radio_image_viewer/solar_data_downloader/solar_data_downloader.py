@@ -22,8 +22,12 @@ floats.
 - SOHO/MDI: north up (the level 1.8 product arrives in a tar file)
 - GOES/SUVI: level 2 composites rewritten into the primary HDU; level 1b
   rotated north up
-- STEREO/SECCHI: EUVI north up in DN/s; COR1 and COR2 polarizer triplets
-  combined into total brightness, north up, DN/s
+- STEREO/SECCHI: COR1 and COR2 polarizer triplets calibrated to mean solar
+  brightness (on-board processing undone, bias, exposure, calibration
+  factor, vignetting, Mueller combination, COR2 distortion, masks), north
+  up, with the team's monthly minimum background in a second HDU; EUVI
+  with its bias, filter and flat corrected, DN/s, north up; see
+  secchi_calibration.py and SECCHI_CALIBRATION.md
 
 Downloads go through SunPy's Fido (the VSO, NOAA) or, for SDO with an
 email address registered at JSOC, through a JSOC export. Some networks
@@ -593,23 +597,52 @@ def _prepare_iris_sji(path, output_dir, options):
     return outputs
 
 
-def _prepare_cor_group(paths, output_dir, options):
-    """A COR1/COR2 polarizer triplet (0, 120 and 240 degrees) combined into
-    total brightness, 2/3 of the sum of the three per-second images
-    (Billings 1966), north up; a lone image is prepared on its own."""
+def _prepare_secchi(paths, output_dir, options):
+    """STEREO COR1, COR2 and EUVI calibrated by secchi_calibration.py: a
+    COR polarizer triplet becomes one total-brightness image in mean solar
+    brightness with the team's monthly minimum background in a BACKGROUND
+    extension; EUVI becomes counts per second with the bias, filter and
+    flat corrected; everything north up. When the calibration files
+    cannot be fetched or the file is not one the port handles, the images
+    are prepared as before (north up, counts per second; a triplet as 2/3
+    of the sum of its images) and the HISTORY says so."""
+    from . import secchi_calibration
+
+    paths = [paths] if isinstance(paths, str) else list(paths)
+    try:
+        return secchi_calibration.calibrate_files(paths, output_dir, warp=not options.get("no_warp"))
+    except secchi_calibration.CalibrationError as e:
+        print(f"  Warning: {', '.join(os.path.basename(p) for p in paths)} not calibrated ({e}); saving counts per second instead", flush=True)
+        return _prepare_cor_group(paths, output_dir, options, note=f"Not calibrated to mean solar brightness: {e}")
+
+
+def _prepare_cor_group(paths, output_dir, options, note=None):
+    """The fallback for SECCHI files: a COR1/COR2 polarizer triplet (0, 120
+    and 240 degrees) combined into total brightness, 2/3 of the sum of the
+    three per-second images (Billings 1966), north up; a lone image is
+    prepared on its own."""
     from sunpy.map import Map
 
     paths = sorted(paths)
+    notes = [note] if note else []
     if len(paths) != 3:
-        return [out for p in paths for out in _prepare_generic(p, output_dir, options, per_second=True)]
+        outputs = []
+        for p in paths:
+            steps = list(notes)
+            smap = _read_map(p)
+            smap = _per_second(smap, steps)
+            smap = _north_up(smap, steps)
+            smap = _standard_header(smap, steps)
+            outputs.append(_save_map(smap, _out_name(p, output_dir)))
+        return outputs
     maps = [_per_second(_read_map(p), []) for p in paths]
     reference = maps[1]
     if not all(m.data.shape == reference.data.shape for m in maps):
-        return [out for p in paths for out in _prepare_generic(p, output_dir, options, per_second=True)]
+        return [out for p in paths for out in _prepare_cor_group([p], output_dir, options, note)]
     total = (2.0 / 3.0) * sum(np.asarray(m.data, dtype=np.float64) for m in maps)
     meta = dict(reference.meta)
     meta.pop("polar", None)
-    steps = [
+    steps = notes + [
         "Total brightness: 2/3 of the sum of the polarizer images at 0, 120 and 240 degrees ("
         + ", ".join(os.path.basename(p) for p in paths)
         + "), each divided by its exposure time"
@@ -626,31 +659,9 @@ def _prepare_cor_group(paths, output_dir, options):
 def _cor_groups(paths):
     """COR images grouped into polarizer triplets taken within three minutes
     of each other at 0, 120 and 240 degrees; the rest as single files."""
-    records = []
-    for p in paths:
-        try:
-            h = fits.getheader(p)
-            when = datetime.fromisoformat(str(h.get("DATE-OBS", "")).rstrip("Z"))
-            records.append((when, float(h.get("POLAR", -1)), p))
-        except Exception:
-            records.append((None, -1.0, p))
-    records.sort(key=lambda r: (r[0] or datetime.min, r[2]))
-    groups, i = [], 0
-    while i < len(records):
-        trio = records[i : i + 3]
-        angles = sorted(r[1] for r in trio)
-        if (
-            len(trio) == 3
-            and all(r[0] is not None for r in trio)
-            and angles == [0.0, 120.0, 240.0]
-            and (trio[-1][0] - trio[0][0]).total_seconds() < 180
-        ):
-            groups.append([r[2] for r in trio])
-            i += 3
-        else:
-            groups.append([records[i][2]])
-            i += 1
-    return groups
+    from .secchi_calibration import group_files
+
+    return group_files(paths)
 
 
 def _prepare_lasco(path, output_dir, options):
@@ -681,8 +692,8 @@ PREPARERS = {
     "lasco": _prepare_lasco,
     "mdi": lambda p, d, o: _prepare_generic(p, d, o, per_second=False),
     "suvi": lambda p, d, o: _prepare_generic(p, d, o, per_second=False),
-    "euvi": lambda p, d, o: _prepare_generic(p, d, o, per_second=True),
-    "cor": _prepare_cor_group,
+    "euvi": _prepare_secchi,
+    "cor": _prepare_secchi,
     "iris_sji": _prepare_iris_sji,
 }
 
@@ -1224,8 +1235,10 @@ def download_goes_suvi(start_time, end_time, output_dir, wavelength=None, level=
 # --------------------------------------------------------------------- STEREO
 def download_stereo(start_time, end_time, output_dir, spacecraft="A", instrument="EUVI", wavelength=None, skip_calibration=False, sample=None, keep_originals=False):
     """Download STEREO SECCHI data through the VSO: EUVI (``wavelength`` 171,
-    195, 284 or 304 Å) turned north up in DN/s, or COR1/COR2 whose
-    polarizer triplets become total-brightness images, north up, DN/s.
+    195, 284 or 304 Å) with its bias, filter and flat corrected, DN/s,
+    north up; or COR1/COR2 whose polarizer triplets become total-brightness
+    images in mean solar brightness, north up, with the team's monthly
+    minimum background in a second HDU (secchi_calibration.py).
     STEREO-B ended in 2014."""
     from sunpy.net import Fido, attrs as a
 
@@ -1260,27 +1273,43 @@ def download_stereo(start_time, end_time, output_dir, spacecraft="A", instrument
             print(f"Successfully downloaded {len(files)} {source}/{instrument} files.", flush=True)
         return files
     if instrument == "EUVI":
-        print("  Processing: north up, Sun centred, counts per second", flush=True)
+        print("  Processing: on-board processing undone, bias, filter and flat corrected, counts per second, north up", flush=True)
         return prepare_files("euvi", files, output_dir, {}, keep_originals)
-    print("  Processing: polarizer triplets to total brightness, north up, counts per second", flush=True)
+    print("  Processing: polarizer triplets calibrated to mean solar brightness (SECCHI level 1), north up, monthly background in a second HDU", flush=True)
     return prepare_files("cor", _cor_groups(files), output_dir, {}, keep_originals)
 
 
 # ----------------------------------------------------------------------- GONG
-def download_gong(start_time, end_time, output_dir, sample=None):
-    """Download GONG line-of-sight magnetograms from NSO. Kept for scripts;
-    the NSO server is often unreachable, so the interfaces do not offer it."""
+def download_gong(start_time, end_time, output_dir, sample=None, skip_calibration=True, keep_originals=False):
+    """Download GONG synoptic magnetograms (Carrington maps of the
+    line-of-sight field, Gauss, one about every hour) from NSO through
+    sunpy's GONG client. The files are kept as the archive sends them:
+    they are already in physical units and a synoptic map has no north to
+    turn up (``skip_calibration`` and ``keep_originals`` are accepted for
+    the interfaces and change nothing). NSO's server is not always
+    reachable."""
     from sunpy.net import Fido, attrs as a
 
     _quiet()
     prefer_ipv4()
     _ensure_dir(output_dir)
     start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
-    _print_search("GONG magnetogram", start_time, end_time, sample)
+    _print_search("GONG synoptic magnetogram", start_time, end_time, sample)
     try:
-        result = Fido.search(
-            a.Time(start_dt, end_dt), a.Instrument("GONG"), a.Physobs("LOS_magnetic_field"), *_sample_attrs(sample)
-        )
+        # sunpy's GONG client takes no Sample attribute (with one, no client
+        # answers the query): the cadence is applied to the rows instead
+        result = Fido.search(a.Time(start_dt, end_dt), a.Instrument("GONG"), a.Physobs("LOS_magnetic_field"))
+        errors = []
+        for table in result:
+            found = getattr(table, "errors", None)
+            if found:
+                errors += list(found) if isinstance(found, (list, tuple)) else [found]
+        if errors and not result.file_num:
+            # the client reports an unreachable server as an empty result
+            print(f"Error: could not reach NSO's GONG archive ({errors[0]}). The server may be down or blocked on this network.", flush=True)
+            return []
+        if sample and len(result):
+            result = result[0, _thin_rows(result[0], sample)]
         if not _found(result):
             _no_data("GONG magnetograms", start_time, end_time)
             return []
@@ -1289,7 +1318,7 @@ def download_gong(start_time, end_time, output_dir, sample=None):
         print(f"Error during Fido search/fetch: {e}")
         return []
     files = [str(p) for p in downloaded]
-    print(f"Successfully downloaded {len(files)} GONG magnetogram files.", flush=True)
+    print(f"Successfully downloaded {len(files)} GONG synoptic magnetogram files (Gauss, as the archive sends them).", flush=True)
     return files
 
 
@@ -1352,7 +1381,7 @@ def main():
             detector = args.detector.upper() if args.detector.upper() in ("EUVI", "COR1", "COR2") else "EUVI"
             files = download_stereo(spacecraft=args.spacecraft, instrument=detector, wavelength=args.wavelength, **common)
         else:
-            files = download_gong(args.start, args.end, args.output, sample=args.sample)
+            files = download_gong(**common)
     except Exception as e:
         print(f"Error: {e}")
         return 1

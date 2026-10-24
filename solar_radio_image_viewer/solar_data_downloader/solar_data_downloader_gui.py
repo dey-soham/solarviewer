@@ -61,7 +61,9 @@ except ImportError as e:
 
 # ------------------------------------------------------------------ catalog
 # Instruments served only through Fido (no JSOC export)
-FIDO_ONLY_INSTRUMENTS = ["IRIS", "SOHO", "GOES SUVI", "STEREO"]
+FIDO_ONLY_INSTRUMENTS = ["IRIS", "SOHO", "GOES SUVI", "STEREO", "GONG"]
+# Instruments whose files are kept as the archive sends them (nothing to prepare)
+UNPREPARED_INSTRUMENTS = ["GONG"]
 
 # Colour of each channel's dot: the usual rendering colours of the
 # instruments, by wavelength in Å or LASCO detector
@@ -167,11 +169,11 @@ def _stereo(craft, detector):
             _wavelengths("171", "195", "284", "304"),
             native={"171": 150, "195": 300, "284": 1200, "304": 600},
             size_mb=8.4,
-            prepared="north up",
-            description="North up · Sun-centred · counts/s",
-            output="North-up FITS, counts/s",
+            prepared="level 1",
+            description="On-board processing undone · bias, filter and flat corrected · counts/s · north up",
+            output="Level 1 FITS, counts/s",
             params=params,
-            process_seconds=1.0,
+            process_seconds=2.0,
         )
     return Source(
         label,
@@ -179,11 +181,12 @@ def _stereo(craft, detector):
         f"{detector.lower()}_{craft.lower()}",
         native=300 if detector == "COR1" else 900,
         size_mb=6.3,
-        prepared="total brightness",
-        description="Polarizer triplet → total brightness · north up · counts/s",
-        output="One total-brightness FITS per sequence",
+        prepared="level 1",
+        description="Polarizer triplet → total brightness in mean solar brightness (SECCHI level 1) · north up · monthly background in a second HDU",
+        output="One level 1 FITS per sequence, mean solar brightness, with background",
         params=params,
         unit="sequence",
+        process_seconds=4.0,
     )
 
 
@@ -292,6 +295,19 @@ SOURCES = [
     _stereo("B", "EUVI"),
     _stereo("B", "COR1"),
     _stereo("B", "COR2"),
+    Source(
+        "NSO · GONG",
+        "GONG",
+        "gong",
+        [("Synoptic magnetogram", "LOS_magnetic_field", "Carrington map · Gauss · hourly")],
+        channel_param="physobs",
+        channel_name="Product",
+        native=3600,
+        size_mb=0.2,
+        prepared="as sent",
+        description="Carrington maps of the line-of-sight field, already in Gauss · kept as the archive sends them · NSO's server is not always reachable",
+        output="Synoptic FITS, Gauss, as the archive sends them",
+    ),
 ]
 SUVI_NATIVE = {"2": 240, "1b": 20}
 THROUGHPUT_MB_S = {"vso": 1.5, "jsoc": 4.0}
@@ -507,6 +523,8 @@ class DownloadWorker(QThread):
                 instrument=str(params.get("stereo_instrument", "EUVI")),
                 wavelength=params.get("wavelength"),
             )
+        if instrument == "GONG":
+            return "download_gong", dict(common)
         raise ValueError(f"Unknown instrument: {instrument}")
 
 
@@ -793,8 +811,10 @@ class SolarDataViewerGUI(QDialog):
         block.addLayout(row)
         layout.addLayout(block)
 
-        # Processing
-        block = QVBoxLayout()
+        # Processing (hidden for the sources whose files are kept as sent)
+        self.processing_group = QWidget()
+        block = QVBoxLayout(self.processing_group)
+        block.setContentsMargins(0, 0, 0, 0)
         block.setSpacing(8)
         block.addWidget(kicker("Processing"))
         self.processing_row = QFrame()
@@ -839,7 +859,7 @@ class SolarDataViewerGUI(QDialog):
         options.setColumnStretch(2, 1)
         self.options_row.hide()
         block.addWidget(self.options_row)
-        layout.addLayout(block)
+        layout.addWidget(self.processing_group)
         layout.addStretch()
         return self.form
 
@@ -1078,6 +1098,7 @@ class SolarDataViewerGUI(QDialog):
         elif source.slug == "eit":
             self.channel_combo.setCurrentIndex(1)  # 195 Å
         self.level_group.setVisible(source.instrument == "GOES SUVI")
+        self.processing_group.setVisible(source.instrument not in UNPREPARED_INSTRUMENTS)
         fido_only = source.instrument in FIDO_ONLY_INSTRUMENTS
         self.source_group.setVisible(not fido_only)
         if fido_only:
@@ -1233,7 +1254,8 @@ class SolarDataViewerGUI(QDialog):
         cadence_text = _cadence_text(cadence) if cadence else ("every image" if not native else _cadence_text(native))
         extra = " " + _muted(f"(native {_cadence_text(native)})", secondary) if native and cadence else ""
         self.summary_values["Cadence"].setText(_escape(cadence_text) + extra)
-        output = source.output if self.calibrate_checkbox.isChecked() else "Files as the archive sends them"
+        prepared = self.calibrate_checkbox.isChecked() and source.instrument not in UNPREPARED_INSTRUMENTS
+        output = source.output if prepared else "Files as the archive sends them"
         self.summary_values["Output"].setText(_escape(output))
 
         # the timeline
@@ -1283,7 +1305,7 @@ class SolarDataViewerGUI(QDialog):
             "use_fido": use_fido,
             "email": self.email_input.text().strip() if not use_fido else None,
             "sample": self.cadence_seconds(),
-            "skip_calibration": not self.calibrate_checkbox.isChecked(),
+            "skip_calibration": not self.calibrate_checkbox.isChecked() or source.instrument in UNPREPARED_INSTRUMENTS,
             "keep_originals": self.keep_originals_checkbox.isChecked(),
             "apply_psf": self.psf_checkbox.isChecked(),
             "apply_degradation": self.degradation_checkbox.isChecked(),

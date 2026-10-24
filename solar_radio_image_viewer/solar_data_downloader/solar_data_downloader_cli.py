@@ -438,9 +438,9 @@ def download_stereo_data():
     if instrument == "EUVI":
         print("\nWavelength:")
         wavelength = choose("Select wavelength", [("171 Å", "171"), ("195 Å", "195"), ("284 Å", "284"), ("304 Å", "304")], "2")
-        processing = "north up with the Sun centred, counts per second"
+        processing = "on-board processing undone, bias, filter and flat corrected, counts per second, north up"
     else:
-        processing = "polarizer triplets combined into total brightness, north up, counts per second"
+        processing = "polarizer triplets calibrated to mean solar brightness (SECCHI level 1), north up, monthly background in a second HDU"
     start_time, end_time = get_datetime_range()
     sample = get_cadence()
     output_dir = get_output_directory(f"STEREO_{spacecraft}_{instrument}")
@@ -469,6 +469,26 @@ def download_stereo_data():
     )
 
 
+def download_gong_data():
+    print_header("NSO/GONG")
+    print("\nGONG synoptic magnetograms: Carrington maps of the line-of-sight field in Gauss,")
+    print("one about every hour, kept as the archive sends them. NSO's server is not always reachable.")
+    start_time, end_time = get_datetime_range()
+    sample = get_cadence()
+    output_dir = get_output_directory("GONG")
+    if not summary(
+        [
+            "Instrument: NSO/GONG synoptic magnetogram",
+            f"Time range: {start_time} to {end_time}",
+            f"Cadence: {cadence_label(sample)}",
+            f"Output directory: {output_dir}",
+        ]
+    ):
+        print("\nDownload cancelled.")
+        return input("\nPress Enter to return to the main menu...")
+    run(sdd.download_gong, start_time=start_time, end_time=end_time, output_dir=output_dir, sample=sample)
+
+
 def main_menu():
     actions = [
         ("SDO/AIA (Atmospheric Imaging Assembly)", download_aia_data),
@@ -477,6 +497,7 @@ def main_menu():
         ("SOHO (EIT, LASCO, MDI)", download_soho_data),
         ("GOES/SUVI (Solar Ultraviolet Imager)", download_suvi_data),
         ("STEREO/SECCHI (EUVI, COR1, COR2)", download_stereo_data),
+        ("NSO/GONG synoptic magnetograms", download_gong_data),
         ("Exit", None),
     ]
     while True:
