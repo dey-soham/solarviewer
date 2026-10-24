@@ -7,6 +7,8 @@ import os
 import weakref
 
 import matplotlib
+import re
+
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -60,6 +62,40 @@ def _plain_number(value):
         text = f"{value:.4g}"
         return text if "e" not in text else f"{value:.0f}"
     return f"{value:.2g}"
+
+
+_WCS_KEYS = re.compile(
+    r"^(CTYPE|CRPIX|CRVAL|CDELT|CUNIT|CROTA|LONPOLE|LATPOLE|PC\d_\d|CD\d_\d)"
+)
+
+
+def _pixel_rotation(header):
+    """The 2x2 PC matrix of a FITS ``header``'s first two axes (how the
+    pixel grid is turned against the sky, as LASCO's is by its roll), or
+    None when it is the identity or cannot be read. The reference pixel,
+    value and increment say nothing of it, so a display WCS built from
+    them alone needs it too. ``header`` may be a plain dict: only the
+    coordinate keywords are read, so odd values elsewhere do no harm."""
+    import warnings
+
+    try:
+        from astropy.io import fits
+        from astropy.wcs import WCS
+
+        keys = fits.Header()
+        for key, value in dict(header).items():
+            if _WCS_KEYS.match(str(key)) and isinstance(value, (int, float, str)):
+                keys[key] = value
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            pc = np.asarray(WCS(keys).sub([1, 2]).wcs.get_pc(), dtype=float)
+    except Exception:
+        return None
+    if pc.shape != (2, 2) or not np.all(np.isfinite(pc)):
+        return None
+    if np.allclose(pc, np.eye(2), atol=1e-9):
+        return None
+    return pc
 
 
 def _strip_above(ax, gap_px, height_px):
@@ -476,6 +512,12 @@ class RenderingMixin:
             elif header["CTYPE1"] == "SOLAR-X":
                 wcs_obj.wcs.crval = ref_val
                 wcs_obj.wcs.cdelt = increment
+                # The axis unit (arcsec, as a rule): a linear axis gets none
+                # by itself, and other panes need it to line up with this one
+                try:
+                    wcs_obj.wcs.cunit = [str(u) for u in csys_tool.units()[:2]]
+                except Exception:
+                    pass
                 temp_flag = True
         if not temp_flag:
             if "Right Ascension" in summary["axisnames"]:
@@ -497,6 +539,9 @@ class RenderingMixin:
                         header["CTYPE1"],
                         header["CTYPE2"],
                     ]
+                    rotation = _pixel_rotation(header)
+                    if rotation is not None:
+                        wcs_obj.wcs.pc = rotation
                 except Exception as e:
                     logger.error(f"Error getting projection: {e}")
                     self.show_status_message(

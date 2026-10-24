@@ -45,6 +45,7 @@ def transformable_wcs(display_wcs, header):
         wcs.wcs.crval = np.asarray(display_wcs.wcs.crval) / 3600.0
         wcs.wcs.cdelt = np.asarray(display_wcs.wcs.cdelt) / 3600.0
         wcs.wcs.ctype = ["HPLN-TAN", "HPLT-TAN"]
+        wcs.wcs.cunit = ["deg", "deg"]
     header = header or {}
     date_obs = header.get("DATE-OBS") or header.get("DATE_OBS")
     if date_obs:
