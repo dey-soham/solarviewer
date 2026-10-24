@@ -15,7 +15,10 @@ floats.
   pointing and exposure time, DN/s, north up
 - SOHO/EIT: the level 1 product where SDAC has it (dark, flat, degridding,
   degradation and exposure corrected), else level 0 made DN/s; north up
-- SOHO/LASCO C2 and C3: north up (the level 0.5 roll undone), DN/s
+- SOHO/LASCO C2 and C3: level 0.5 calibrated to mean solar brightness as
+  NRL's level 1 pipeline does (bias, exposure, calibration factor,
+  vignetting, C3 stray-light ramp and mask, distortion), north up; see
+  lasco_calibration.py and LASCO_CALIBRATION.md
 - SOHO/MDI: north up (the level 1.8 product arrives in a tar file)
 - GOES/SUVI: level 2 composites rewritten into the primary HDU; level 1b
   rotated north up
@@ -650,11 +653,31 @@ def _cor_groups(paths):
     return groups
 
 
+def _prepare_lasco(path, output_dir, options):
+    """LASCO C2 and C3 calibrated to mean solar brightness (NRL level 1:
+    bias, exposure, calibration factor, vignetting, C3 ramp and mask,
+    distortion) and turned north up, by lasco_calibration.py. When the
+    calibration files cannot be fetched, the image is prepared like the
+    other SOHO data (north up, counts per second) and the HISTORY says so."""
+    from . import lasco_calibration
+
+    try:
+        return [lasco_calibration.calibrate_file(path, output_dir, warp=not options.get("no_warp"))]
+    except lasco_calibration.CalibrationError as e:
+        print(f"  Warning: {os.path.basename(path)} not calibrated ({e}); saving counts per second instead", flush=True)
+        steps = [f"Not calibrated to mean solar brightness: {e}"]
+        smap = _read_map(path)
+        smap = _per_second(smap, steps)
+        smap = _north_up(smap, steps)
+        smap = _standard_header(smap, steps)
+        return [_save_map(smap, _out_name(path, output_dir))]
+
+
 PREPARERS = {
     "aia": _prepare_aia,
     "hmi": lambda p, d, o: _prepare_generic(p, d, o, per_second=False),
     "eit": lambda p, d, o: _prepare_generic(p, d, o, per_second=True),
-    "lasco": lambda p, d, o: _prepare_generic(p, d, o, per_second=True),
+    "lasco": _prepare_lasco,
     "mdi": lambda p, d, o: _prepare_generic(p, d, o, per_second=False),
     "suvi": lambda p, d, o: _prepare_generic(p, d, o, per_second=False),
     "euvi": lambda p, d, o: _prepare_generic(p, d, o, per_second=True),
@@ -1098,9 +1121,10 @@ def download_iris(start_time, end_time, output_dir, obs_type="SJI", wavelength=N
 # ----------------------------------------------------------------------- SOHO
 def download_soho(instrument, start_time, end_time, output_dir, wavelength=None, detector=None, skip_calibration=False, sample=None, physobs=None, keep_originals=False):
     """Download SOHO data through the VSO and prepare it: EIT (``wavelength``
-    171, 195, 284 or 304; the level 1 product when SDAC has it), LASCO
-    (``detector`` C2 or C3) or MDI (``physobs`` 'magnetogram' or
-    'continuum'). Everything is turned north up; counts become per second."""
+    171, 195, 284 or 304; the level 1 product when SDAC has it; counts per
+    second otherwise), LASCO (``detector`` C2 or C3; calibrated to mean
+    solar brightness) or MDI (``physobs`` 'magnetogram' or 'continuum').
+    Everything is turned north up."""
     from sunpy.net import Fido, attrs as a
 
     _quiet()
@@ -1150,8 +1174,11 @@ def download_soho(instrument, start_time, end_time, output_dir, wavelength=None,
             print(f"Successfully downloaded {len(files)} SOHO/{instrument} files.", flush=True)
         return files
     kind = instrument.lower()
-    per_second = ", counts per second" if kind in ("eit", "lasco") else ""
-    print(f"  Processing: north up, Sun centred{per_second}", flush=True)
+    if kind == "lasco":
+        print("  Processing: calibrated to mean solar brightness (NRL level 1), distortion removed, north up", flush=True)
+    else:
+        per_second = ", counts per second" if kind == "eit" else ""
+        print(f"  Processing: north up, Sun centred{per_second}", flush=True)
     return prepare_files(kind, files, output_dir, {}, keep_originals)
 
 
