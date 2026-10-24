@@ -224,6 +224,7 @@ class CanvasMixin:
         self._settle_timer.setInterval(SETTLE_MS)
         self._settle_timer.timeout.connect(self._settle_view)
         self.canvas.mpl_connect("draw_event", self._on_canvas_drawn)
+        self.canvas.mpl_connect("figure_leave_event", lambda event: self._cursor_left())
         # A resized canvas gets margins for its new size before it is drawn
         self.canvas.mpl_connect("resize_event", lambda event: self.relayout_for_size())
 
@@ -599,16 +600,29 @@ class CanvasMixin:
         return image, source
 
     def _settle_view(self):
-        """Redraw properly; the picture goes away when the drawing is done."""
+        """Redraw properly; the picture goes away when the drawing is done.
+        The page hears of the settled view (the other panes may follow)."""
         self._settle_timer.stop()
         if self._view_preview.isVisible():
             self.canvas.draw_idle()
+        page = getattr(self, "page", None)
+        if page is not None:
+            page.sync.view_settled(self)
 
     def _on_canvas_drawn(self, event):
         ax = self._nav_axes()
         self._drawn_view = (ax, ax.get_xlim(), ax.get_ylim()) if ax else None
         self._view_preview.hide()
         self._show_zoom(ax)
+        page = getattr(self, "page", None)
+        if page is not None:
+            page.sync.canvas_drawn(self)
+
+    def _cursor_left(self):
+        """The mouse left the image: no crosshair in the other panes."""
+        page = getattr(self, "page", None)
+        if page is not None:
+            page.sync.cursor_left()
 
     def _show_zoom(self, ax):
         """The toolbar's zoom readout: the image's width over the view's."""
@@ -688,11 +702,15 @@ class CanvasMixin:
         if not event.inaxes:
             self.cursor_readout.set_state(READOUT_HINT)
             self.canvas.setCursor(Qt.ArrowCursor)
+            self._cursor_left()
             return
 
         self.canvas.setCursor(Qt.OpenHandCursor if self._in_pan_mode() else Qt.CrossCursor)
 
         x, y = round(event.xdata), round(event.ydata)
+        page = getattr(self, "page", None)
+        if page is not None:
+            page.sync.cursor_moved(self, event.xdata, event.ydata)
 
         # Delegate coordinate and value formatting to Matplotlib Artists
         try:

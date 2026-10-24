@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
     QActionGroup,
     QCheckBox,
     QFrame,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -43,6 +44,15 @@ from PyQt5.QtWidgets import (
 from ..ui.icons import themed_icon
 from ..ui.styles import set_hand_cursor
 from ..ui.widgets import kicker_row, link_button, segmented, toggle_row
+from .compare_sync import (
+    FRAME_NAMES,
+    SYNC_WAYS,
+    CursorValues,
+    PaneSync,
+    SyncPopover,
+    frame_kind,
+    sync_button,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +286,14 @@ class PaneFrame(QFrame):
         self.caption = _ElidedLabel("Meta", least=12)
         row.addWidget(self.caption)
         row.addStretch()
+        self.link_button = QToolButton()
+        self.link_button.setCheckable(True)
+        self.link_button.setChecked(True)
+        self.link_button.setAccessibleName("Follow the other panes")
+        self.link_button.setIconSize(QSize(14, 14))
+        self.link_button.setAutoRaise(True)
+        self.link_button.toggled.connect(lambda on: self._page.set_linked(self.pane, on))
+        row.addWidget(self.link_button)
         self.close_button = QToolButton()
         self.close_button.setToolTip("Close this pane")
         self.close_button.setAccessibleName("Close pane")
@@ -327,6 +345,45 @@ class PaneFrame(QFrame):
 
     def refresh_icons(self):
         self.close_button.setIcon(QIcon(themed_icon("pane_close.svg")))
+        self.refresh_link()
+
+    def refresh_link(self):
+        """The link toggle: on, off, or dimmed with the reason it cannot
+        follow the active pane (another sky frame)."""
+        pane = self.pane
+        page = self._page
+        on = pane.linked
+        self.link_button.blockSignals(True)
+        self.link_button.setChecked(on)
+        self.link_button.blockSignals(False)
+        self.link_button.setIcon(QIcon(themed_icon("link.svg" if on else "link_off.svg")))
+        active = page.active_pane
+        kind = frame_kind(pane)
+        active_kind = frame_kind(active) if active is not None else None
+        foreign = (
+            on
+            and active is not None
+            and pane is not active
+            and pane.current_image_data is not None
+            and kind != active_kind
+        )
+        opacity = 0.45 if foreign else 1.0
+        if getattr(self, "_link_opacity", None) != opacity:
+            self._link_opacity = opacity
+            effect = QGraphicsOpacityEffect(self.link_button)
+            effect.setOpacity(opacity)
+            self.link_button.setGraphicsEffect(effect)
+        if foreign:
+            own = FRAME_NAMES.get(kind, "no sky frame")
+            theirs = FRAME_NAMES.get(active_kind, "no sky frame")
+            self.link_button.setToolTip(
+                f"Linked, but its own view: a {own} image cannot follow the "
+                f"{theirs} image being edited"
+            )
+        elif on:
+            self.link_button.setToolTip("Follows the other panes (click to let it go its own way)")
+        else:
+            self.link_button.setToolTip("Goes its own way (click to follow the other panes)")
 
 
 class EmptySlot(QFrame):
@@ -370,6 +427,7 @@ class ImagePage(QWidget):
         self._pane_names = {}
         self.layout_size = 1
         self.full_axes = False  # compare panes drawn with ticks, labels, title
+        self.sync = PaneSync(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -409,6 +467,9 @@ class ImagePage(QWidget):
 
         self._layout_actions = {}
         self._layout_group = self._build_layout_group()
+        self.sync_popover = SyncPopover(self)
+        self._sync_button = sync_button(self)
+        self._sync_button.hide()
 
     def _build_inspector(self):
         """The column at the right: the active pane's header, the Display
@@ -439,6 +500,8 @@ class ImagePage(QWidget):
 
         self._readouts = QStackedWidget()
         layout.addWidget(self._readouts)
+        self.cursor_values = CursorValues(self)
+        layout.addWidget(self.cursor_values)
         return inspector
 
     def _build_layout_group(self):
@@ -606,10 +669,12 @@ class ImagePage(QWidget):
             stack.setCurrentWidget(widget)
         # The page's controls go into the active pane's canvas bar
         pane.page_controls_slot.addWidget(self._layout_group)
+        pane.page_tools_slot.addWidget(self._sync_button)
         self._show_editing()
         for other, frame in self.frames.items():
             frame.set_active(other is pane)
         self._compare_panel.refresh()
+        self.refresh_sync()
         self.update_title()
 
     def pane_changed(self, pane):
@@ -619,7 +684,56 @@ class ImagePage(QWidget):
             frame.refresh()
         self._compare_panel.refresh()
         self._show_editing()
+        self.cursor_values.rebuild()
+        self.refresh_sync()
         self.update_title()
+
+    # ------------------------------------------------------------ sync
+    def set_sync(self, key, on):
+        """Turn one way of following each other on or off."""
+        self.sync.on[key] = bool(on)
+        self.refresh_sync()
+        if key == "view" and on and self._active is not None:
+            self.sync.view_settled(self._active)
+
+    def set_linked(self, pane, on):
+        """``pane`` follows the others, or goes its own way."""
+        pane.linked = bool(on)
+        self.refresh_sync()
+        if on and self._active is not None and self._active is not pane:
+            self.sync.view_settled(self._active)
+
+    def sync_all(self):
+        for pane in self.panes:
+            pane.linked = True
+        self.refresh_sync()
+        if self._active is not None:
+            self.sync.view_settled(self._active)
+
+    def refresh_sync(self):
+        """The Synced button, the popover, the headers' link toggles and
+        the status bar say which panes are in sync."""
+        in_sync = self.sync.in_sync()
+        letters = " ".join(LETTERS[self.panes.index(pane)] for pane in in_sync)
+        ways = [words for key, words, _default in SYNC_WAYS if self.sync.on[key]]
+        synced = bool(ways) and len(in_sync) >= 2
+        self._sync_button.setText(letters if synced else "")
+        self._sync_button.setIcon(QIcon(themed_icon("link.svg" if synced else "link_off.svg")))
+        self._sync_button.setToolTip(
+            (f"Panes {letters} follow each other on {', '.join(ways).lower()}" if synced
+             else "The panes go their own way") + "\nClick for how the panes follow each other"
+        )
+        for frame in self.frames.values():
+            frame.refresh_link()
+        if self.sync_popover.isVisible():
+            self.sync_popover.refresh()
+        self.cursor_values.clear()
+        if self.layout_size > 1:
+            count = len([pane for pane in self.panes if pane.current_image_data is not None])
+            said = f"{count} image{'s' if count != 1 else ''}"
+            if len(in_sync) >= 2 and ways:
+                said += f" · {', '.join(ways).lower()} synced on {letters}"
+            self.window().statusBar().showMessage(said)
 
     # --------------------------------------------------------- display
     def set_full_axes(self, on):
@@ -768,9 +882,13 @@ class ImagePage(QWidget):
         self.setAcceptDrops(not single)
         self.inspector_tabs.setTabVisible(2, not single)
         self._editing_row.setVisible(not single)
+        self._sync_button.setVisible(not single)
+        self.cursor_values.setVisible(not single)
+        self.cursor_values.rebuild()
         self._show_editing()
         self._apply_compact()
         self._compare_panel.refresh()
+        self.refresh_sync()
         for size, action in self._layout_actions.items():
             action.setEnabled(size >= len(self.panes))
             action.setToolTip(
@@ -857,6 +975,7 @@ class ImagePage(QWidget):
         for (size, icon, _tip) in LAYOUTS:
             self._layout_actions[size].setIcon(QIcon(themed_icon(icon)))
         self._add_pane_action.setIcon(QIcon(themed_icon("pane_add.svg")))
+        self.refresh_sync()
 
     def cleanup(self):
         """Release what the panes hold once the tab is closed."""
