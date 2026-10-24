@@ -152,11 +152,12 @@ def value_at(pane, x, y):
     return None
 
 
-def format_value(value, unit):
+def format_value(value):
+    """The value under the cursor, with no unit: the row is a glance across
+    the panes, and the unit is at the top of the inspector."""
     if value is None or not math.isfinite(value):
         return "—"
-    text = f"{value:.4g}"
-    return f"{text} {unit}" if unit else text
+    return f"{value:.4g}"
 
 
 def _snap(value, within=1e-3):
@@ -532,7 +533,7 @@ class CursorValues(QFrame):
         """``values``: pane -> value (None off that image or out of sync)."""
         for pane, label in self._cells.items():
             label.setText(
-                format_value(values.get(pane), getattr(pane, "_current_bunit", "") or "")
+                format_value(values.get(pane))
             )
         self._note_sync()
 
