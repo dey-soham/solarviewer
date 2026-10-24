@@ -8,8 +8,9 @@ its mixins use (``addTab``, ``currentWidget``, ``tabText``...); its
 """
 
 from PyQt5.QtCore import QEvent, QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QResizeEvent
 from PyQt5.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QInputDialog,
     QMenuBar,
@@ -136,7 +137,10 @@ class DocumentTabs(QStackedWidget):
             self._watched = parent
         self._fit_strip(parent)
         if isinstance(parent, QMenuBar):
-            parent.adjustSize()
+            # A resize event makes the bar place its corner widgets; not
+            # adjustSize, which shrank the bar to its hint for a frame
+            # and sent the strip left until the window laid it out again
+            QApplication.sendEvent(parent, QResizeEvent(parent.size(), parent.size()))
         else:
             parent.updateGeometry()
 
@@ -178,6 +182,8 @@ class DocumentTabs(QStackedWidget):
         return self._bar.tabText(index)
 
     def setTabText(self, index, text):
+        if text == self._bar.tabText(index):
+            return
         self._bar.setTabText(index, text)
         self._relayout()
 
