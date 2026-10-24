@@ -159,6 +159,12 @@ def format_value(value, unit):
     return f"{text} {unit}" if unit else text
 
 
+def _snap(value, within=1e-3):
+    """``value`` as the integer it is within ``within`` of, else itself."""
+    nearest = round(value)
+    return float(nearest) if abs(value - nearest) < within else value
+
+
 class _Point:
     """A mouse event's data position, for the region handlers."""
 
@@ -325,6 +331,9 @@ class PaneSync:
                         p1, p2 = to_pixel(pane, *first), to_pixel(pane, *second)
                         if p1 is None or p2 is None:
                             continue
+                        # The sky round trip lands a hair off a pixel; the
+                        # handlers truncate, so land on it
+                        p1, p2 = tuple(map(_snap, p1)), tuple(map(_snap, p2))
                         self._draw_mirror(pane, shape, p1, p2)
                         handler = pane.on_rectangle if shape == "rect" else pane.on_ellipse
                         handler(_Point(*p1), _Point(*p2))
