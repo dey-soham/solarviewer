@@ -1171,6 +1171,10 @@ class ImagePage(QWidget):
         if veil is not None and not now:
             veil.when_dimmed(lambda: self._place_panes(now=True))
             return
+        # The plots first: a pane with a plot scheduled skips the draw its
+        # resize would ask for, so it draws once, by its plot, at its new
+        # size
+        self._apply_compact()
         while self._grid.count():
             item = self._grid.takeAt(0)
             widget = item.widget()
@@ -1210,7 +1214,6 @@ class ImagePage(QWidget):
         self.cursor_values.setVisible(not single)
         self.cursor_values.rebuild()
         self._show_editing()
-        self._apply_compact()
         self._compare_panel.refresh()
         self.refresh_sync()
         for size, action in self._layout_actions.items():

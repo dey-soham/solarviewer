@@ -109,10 +109,20 @@ class _ImageCanvas(FigureCanvas):
     keys keep working while the image has focus.
     """
 
-    def __init__(self, figure, view_key_handler):
+    def __init__(self, figure, view_key_handler, plot_pending=None):
         super().__init__(figure)
         self._view_key_handler = view_key_handler
+        self._plot_pending = plot_pending or (lambda: False)
         self.setFocusPolicy(Qt.WheelFocus)
+
+    def draw_idle(self):
+        # No draw of the old plot at a new size while a plot is scheduled
+        # (a pane changing to or from compact as its layout changes): the
+        # plot draws, and a draw of this image costs a good fraction of a
+        # second on the window's thread
+        if self._plot_pending():
+            return
+        super().draw_idle()
 
     def keyPressEvent(self, event):
         if self._view_key_handler(event):
@@ -184,7 +194,7 @@ class CanvasMixin:
 
     def setup_canvas(self, parent_layout):
         self.figure = Figure(figsize=(5, 5), dpi=100)
-        self.canvas = _ImageCanvas(self.figure, self.handle_view_key)
+        self.canvas = _ImageCanvas(self.figure, self.handle_view_key, self._plot_pending)
 
         # No style sheet on the canvas: one makes Qt drop Matplotlib's
         # WA_OpaquePaintEvent, and then every cursor readout update repaints
@@ -352,6 +362,11 @@ class CanvasMixin:
 
         if show_status_message:
             self.show_status_message("View reset")
+
+    def _plot_pending(self):
+        """Whether a plot is scheduled (``schedule_plot``) and not yet drawn."""
+        timer = getattr(self, "_plot_timer", None)
+        return timer is not None and timer.isActive()
 
     def handle_view_key(self, event):
         """Act on a view key (R, 1, +/-, arrows). True if it was one."""
