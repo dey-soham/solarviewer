@@ -243,8 +243,8 @@ class PaneSync:
 
     # --------------------------------------------------------- cursor
     def cursor_moved(self, leader, x, y):
-        """The mouse is at pixel (x, y) of ``leader``: the crosshair in the
-        panes following it, and the value under it in each pane."""
+        """The mouse is at pixel (x, y) of ``leader``: a crosshair there in
+        the panes following it, and the value under it in each pane."""
         page = self.page
         world = to_world(leader, x, y)
         values = {}
@@ -259,7 +259,9 @@ class PaneSync:
                 self._hide_crosshair(pane)
                 values[pane] = None
                 continue
-            if self.on["cursor"] and leader.linked and (pane is leader or pane.linked):
+            # No crosshair under the pointer itself: it is in the way of
+            # what the mouse draws there (a region, say) and says nothing
+            if pane is not leader and self.on["cursor"] and leader.linked and pane.linked:
                 self._show_crosshair(pane, *position)
             else:
                 self._hide_crosshair(pane)
