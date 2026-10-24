@@ -43,7 +43,7 @@ from ..ui.widgets import kicker, kicker_row, link_button, rule, toggle_row
 
 logger = logging.getLogger(__name__)
 
-LETTERS = "ABCD"
+LETTERS = "ABCDEF"
 FRAME_NAMES = {"radec": "RA/Dec", "solar": "Solar XY"}
 # The ways panes follow each other: key, the popover's words, on at first
 SYNC_WAYS = (
@@ -556,7 +556,7 @@ def sync_button(page):
     button = QPushButton()
     button.setObjectName("NavButton")
     button.setToolTip("How the panes follow each other, and which do")
-    # Never squeezed to a sliver in a crowded bar: room for the icon and A B C D
-    button.setMinimumWidth(button.fontMetrics().horizontalAdvance("A B C D") + 40)
+    # Never squeezed to a sliver in a crowded bar: room for the icon and A B C D E F
+    button.setMinimumWidth(button.fontMetrics().horizontalAdvance("A B C D E F") + 40)
     button.clicked.connect(lambda: page.sync_popover.show_above(button))
     return button

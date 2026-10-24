@@ -59,13 +59,14 @@ from .compare_sync import (
 
 logger = logging.getLogger(__name__)
 
-MAX_PANES = 4
-LETTERS = "ABCD"
+MAX_PANES = 6
+LETTERS = "ABCDEF"
 # The layouts: slots, icon, what the button says
 LAYOUTS = (
     (1, "layout_single.svg", "One image"),
     (2, "layout_two.svg", "Two images side by side"),
     (4, "layout_grid.svg", "Up to four images in a grid"),
+    (6, "layout_six.svg", "Up to six images in two rows of three"),
 )
 GRID_GAP = 6
 ICON_SIZE = QSize(16, 16)
@@ -77,7 +78,9 @@ def _positions(size):
         return [(0, 0)]
     if size == 2:
         return [(0, 0), (0, 1)]
-    return [(0, 0), (0, 1), (1, 0), (1, 1)]
+    if size == 4:
+        return [(0, 0), (0, 1), (1, 0), (1, 1)]
+    return [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
 
 
 def _tool_button(action):
@@ -489,6 +492,7 @@ class EmptySlot(QFrame):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
         layout.addStretch()
+        self.letter = letter
         badge = QLabel(letter)
         badge.setObjectName("PaneBadge")
         badge.setProperty("letter", letter)
@@ -610,8 +614,8 @@ class ImagePage(QWidget):
         return inspector
 
     def _build_layout_group(self):
-        """The layout buttons for the canvas bar: one, two or four slots,
-        and one more slot."""
+        """The layout buttons for the canvas bar: one, two, four or six
+        slots."""
         group = QActionGroup(self)
         group.setExclusive(True)
         buttons = []
@@ -624,11 +628,6 @@ class ImagePage(QWidget):
             group.addAction(action)
             self._layout_actions[size] = action
             buttons.append(_tool_button(action))
-        self._add_pane_action = QAction(QIcon(themed_icon("pane_add.svg")), "", self)
-        self._add_pane_action.setToolTip("Add a pane for another image")
-        self._add_pane_action.setText("Add a pane")
-        self._add_pane_action.triggered.connect(self.add_slot)
-        buttons.append(_tool_button(self._add_pane_action))
         self._layout_actions[1].setChecked(True)
         return segmented(buttons)
 
@@ -938,7 +937,7 @@ class ImagePage(QWidget):
         return MAX_PANES
 
     def set_layout(self, size):
-        """Show ``size`` slots (1, 2 or 4); not fewer than there are panes."""
+        """Show ``size`` slots (1, 2, 4 or 6); not fewer than there are panes."""
         if size not in self._layout_actions or size < len(self.panes):
             self._layout_actions[self.layout_size].setChecked(True)
             return
@@ -982,11 +981,11 @@ class ImagePage(QWidget):
                 set_hand_cursor(slot)
                 self._grid.addWidget(slot, row, column)
                 self._slots.append(slot)
-        rows = 1 if self.layout_size <= 2 else 2
-        columns = 1 if single else 2
+        rows = 1 + max(row for row, _column in positions)
+        columns = 1 + max(column for _row, column in positions)
         for row in range(2):
             self._grid.setRowStretch(row, 1 if row < rows else 0)
-        for column in range(2):
+        for column in range(3):
             self._grid.setColumnStretch(column, 1 if column < columns else 0)
         self.setAcceptDrops(not single)
         self.inspector_tabs.setTabVisible(2, not single)
@@ -1005,7 +1004,6 @@ class ImagePage(QWidget):
                 if size >= len(self.panes)
                 else "Close a pane first"
             )
-        self._add_pane_action.setEnabled(self.layout_size < MAX_PANES)
         self.update_title()
 
     # ----------------------------------------------------------- drops
@@ -1083,7 +1081,6 @@ class ImagePage(QWidget):
             frame.refresh_icons()
         for (size, icon, _tip) in LAYOUTS:
             self._layout_actions[size].setIcon(QIcon(themed_icon(icon)))
-        self._add_pane_action.setIcon(QIcon(themed_icon("pane_add.svg")))
         self.refresh_sync()
 
     def cleanup(self):

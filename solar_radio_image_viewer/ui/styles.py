@@ -194,21 +194,25 @@ ROLES = (
     "EditingRow",
 )
 
-# The panes of a compare page, A to D: (background, letter) of each badge
-# and the colour of its crosshair. Four hues at four brightnesses, from
-# the lightest to the darkest, so the panes tell apart by brightness as
-# well as hue, with the letter always there.
+# The panes of a compare page, A to F: (background, letter) of each badge.
+# Six hues at six brightnesses, from the lightest to the darkest, so the
+# panes tell apart by brightness as well as hue, with the letter always
+# there.
 PANE_COLORS_DARK = (
     ("#e8c547", "#161826"),
+    ("#c9a0dc", "#161826"),
     ("#7aa2ff", "#161826"),
     ("#d9603b", "#f5f4ff"),
     ("#3d8a5c", "#f5f4ff"),
+    ("#5a4a9c", "#f5f4ff"),
 )
 PANE_COLORS_LIGHT = (
     ("#d4a712", "#1d1f2b"),
+    ("#9a6bc2", "#ffffff"),
     ("#4d7be0", "#ffffff"),
     ("#bf4a28", "#ffffff"),
     ("#2b6d45", "#ffffff"),
+    ("#443683", "#ffffff"),
 )
 
 # ===== Palettes =====
@@ -341,7 +345,7 @@ def get_stylesheet(palette, is_dark=True):
     assets = os.path.join(PACKAGE_DIR, "assets").replace("\\", "/")
     pane_badges = "\n".join(
         f'QLabel#PaneBadge[letter="{letter}"] {{ background-color: {bg}; color: {fg}; }}'
-        for letter, (bg, fg) in zip("ABCD", palette["pane_colors"])
+        for letter, (bg, fg) in zip("ABCDEF", palette["pane_colors"])
     )
     arrow_up = f"{assets}/spinbox_up{suffix}.png"
     arrow_down = f"{assets}/spinbox_down{suffix}.png"
