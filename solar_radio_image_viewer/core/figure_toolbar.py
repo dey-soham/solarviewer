@@ -109,6 +109,12 @@ class FigureToolbarMixin:
         for action in tools:
             action_group.addAction(action)
         layout.addWidget(segmented([self._tool_button(action) for action in tools]))
+        # Room for the page's controls that go with the tools (see
+        # core.compare.ImagePage, which moves them into the active pane's bar)
+        self.page_tools_slot = QHBoxLayout()
+        self.page_tools_slot.setContentsMargins(0, 0, 0, 0)
+        self.page_tools_slot.setSpacing(10)
+        layout.addLayout(self.page_tools_slot)
         layout.addStretch()
 
         # File navigation, in the middle
@@ -191,4 +197,9 @@ class FigureToolbarMixin:
             self._tool_button(self.zoom_60arcmin_action),
         ]
         layout.addWidget(segmented(zoom_buttons))
+        # Room at the right end for the page's layout controls
+        self.page_controls_slot = QHBoxLayout()
+        self.page_controls_slot.setContentsMargins(0, 0, 0, 0)
+        self.page_controls_slot.setSpacing(10)
+        layout.addLayout(self.page_controls_slot)
         return bar

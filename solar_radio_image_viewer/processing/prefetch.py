@@ -76,12 +76,18 @@ class ImagePrefetcher:
             for key, future in futures:
                 if future.cancel():
                     del self._jobs[key]
-        for _key, future in futures:
+        for key, future in futures:
             if not future.cancelled():
-                if wait is not None:
-                    wait(future)
-                # Readers of the header and coordsys run before take()
-                self._result(future, imagename)
+                try:
+                    if wait is not None:
+                        wait(future)
+                    # Readers of the header and coordsys run before take()
+                    self._result(future, imagename)
+                except BrokenProcessPool:
+                    # The read went with its worker: the caller reads the file
+                    with self._lock:
+                        self._jobs.pop(key, None)
+                    self._executor = None
 
     def take(self, imagename, stokes, threshold, rms_box, target_size):
         """The :class:`ImageRead` read in the background for exactly these

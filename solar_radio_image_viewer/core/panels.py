@@ -366,6 +366,9 @@ class PanelsMixin:
         self.plot_button.setEnabled(loaded)
         if not loaded:
             self.show_image_summary(None)
+        self.observation_time = time if loaded else None
+        if getattr(self, "page", None) is not None:
+            self.page.pane_changed(self)
 
     def show_observation_time(self, time):
         self.show_image_context(time)

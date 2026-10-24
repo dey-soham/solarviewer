@@ -134,6 +134,11 @@ TOKENS = {
 #   KeyValue        a QTableWidget of label/value rows, no frame or header
 #   DocumentTabs    the QTabBar of the main window's image tabs
 #   RecentRow       a clickable QFrame row of the empty canvas's recent files
+#   PaneFrame       a QFrame round one pane of a compare page (accent when active)
+#   PaneHeader      the row over a pane: its badge, name, meta and buttons
+#   PaneBadge       a QLabel with a pane's letter, on that pane's colour
+#   PaneName        a QLabel with a pane's file name, monospace
+#   EmptySlot       a dashed QFrame where a compare page's next image goes
 # A label or StatusButton can also take a tone with ``set_tone``:
 # "success", "warning" or "error" colour it accordingly, None clears it.
 ROLES = (
@@ -180,6 +185,28 @@ ROLES = (
     "KeyValue",
     "DocumentTabs",
     "RecentRow",
+    "PaneFrame",
+    "PaneHeader",
+    "PaneBadge",
+    "PaneName",
+    "EmptySlot",
+)
+
+# The panes of a compare page, A to D: (background, letter) of each badge
+# and the colour of its crosshair. Four hues at four brightnesses, from
+# the lightest to the darkest, so the panes tell apart by brightness as
+# well as hue, with the letter always there.
+PANE_COLORS_DARK = (
+    ("#e8c547", "#161826"),
+    ("#7aa2ff", "#161826"),
+    ("#d9603b", "#f5f4ff"),
+    ("#3d8a5c", "#f5f4ff"),
+)
+PANE_COLORS_LIGHT = (
+    ("#d4a712", "#1d1f2b"),
+    ("#4d7be0", "#ffffff"),
+    ("#bf4a28", "#ffffff"),
+    ("#2b6d45", "#ffffff"),
 )
 
 # ===== Palettes =====
@@ -241,6 +268,7 @@ DARK_PALETTE = {
     "button_gradient_start": "#9184d9",
     "button_gradient_end": "#9184d9",
     "shadow": "rgba(0, 0, 0, 0.55)",
+    "pane_colors": PANE_COLORS_DARK,
 }
 
 # The light theme: the colours of Claude Design's light suggestion
@@ -296,6 +324,7 @@ LIGHT_PALETTE = {
     "button_gradient_start": "#6a5fb8",
     "button_gradient_end": "#6a5fb8",
     "shadow": "rgba(29, 31, 43, 0.12)",
+    "pane_colors": PANE_COLORS_LIGHT,
 }
 
 
@@ -308,6 +337,10 @@ def get_stylesheet(palette, is_dark=True):
     """The application stylesheet for ``palette``."""
     suffix = "" if is_dark else "_light"
     assets = os.path.join(PACKAGE_DIR, "assets").replace("\\", "/")
+    pane_badges = "\n".join(
+        f'QLabel#PaneBadge[letter="{letter}"] {{ background-color: {bg}; color: {fg}; }}'
+        for letter, (bg, fg) in zip("ABCD", palette["pane_colors"])
+    )
     arrow_up = f"{assets}/spinbox_up{suffix}.png"
     arrow_down = f"{assets}/spinbox_down{suffix}.png"
     switch_on = f"{assets}/switch_on{suffix}.svg"
@@ -492,6 +525,63 @@ def get_stylesheet(palette, is_dark=True):
         border-bottom: 1px solid {p['divider']};
         min-height: 40px;
         max-height: 40px;
+    }}
+    QFrame#PaneFrame {{
+        background-color: {p['window']};
+        border: 1px solid {p['divider']};
+        border-radius: {RADIUS}px;
+    }}
+    QFrame#PaneFrame[active="true"] {{
+        border-color: {p['highlight']};
+    }}
+    QFrame#PaneFrame[single="true"] {{
+        border: none;
+        border-radius: 0px;
+    }}
+    QFrame#PaneHeader {{
+        background-color: {p['surface']};
+        border: none;
+        border-bottom: 1px solid {p['divider']};
+        border-top-left-radius: {RADIUS - 1}px;
+        border-top-right-radius: {RADIUS - 1}px;
+        min-height: 30px;
+        max-height: 30px;
+    }}
+    QFrame#PaneHeader QLabel {{
+        background-color: transparent;
+    }}
+    QLabel#PaneBadge {{
+        font-size: {FONT_META}pt;
+        font-weight: 600;
+        min-width: 18px;
+        max-width: 18px;
+        min-height: 18px;
+        max-height: 18px;
+        border-radius: 4px;
+        qproperty-alignment: AlignCenter;
+    }}
+    {pane_badges}
+    QLabel#PaneName {{
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_SMALL}pt;
+        color: {p['text']};
+    }}
+    QFrame#PaneHeader QToolButton {{
+        border: none;
+        background-color: transparent;
+        padding: 2px;
+        border-radius: 4px;
+    }}
+    QFrame#PaneHeader QToolButton:hover {{
+        background-color: {p['hover']};
+    }}
+    QFrame#EmptySlot {{
+        background-color: {p['canvas']};
+        border: 1px dashed {p['border_light']};
+        border-radius: {RADIUS}px;
+    }}
+    QFrame#EmptySlot QLabel {{
+        background-color: transparent;
     }}
     QFrame#Pinned {{
         background-color: {p['surface']};

@@ -261,6 +261,8 @@ class SolarRadioImageTab(
         # Rendering optimization state
         self._last_rendered_state = {}
         self.image_plot = None
+        self.plot_title = ""  # the title over the plot (also the pane's header)
+        self.observation_time = None  # the image's time, as shown
 
         # View navigation: zoom/pan glides, drag panning
         self._zoom_timer = QTimer(self)

@@ -724,6 +724,7 @@ class RenderingMixin:
                         if self.imagename
                         else "No Image"
                     )
+                self.plot_title = title
                 ax.set_title(self._fit_title(title))
                 if hasattr(self, "show_observation_time"):
                     self.show_observation_time(image_time)
@@ -733,6 +734,7 @@ class RenderingMixin:
                 title = (
                     os.path.basename(self.imagename) if self.imagename else "No Image"
                 )
+                self.plot_title = title
                 ax.set_title(self._fit_title(title))
 
     def _add_colorbar(self, ax, im, stretch, vmin_val, vmax_val):
