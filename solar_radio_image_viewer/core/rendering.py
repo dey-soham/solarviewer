@@ -217,6 +217,11 @@ class RenderingMixin:
         ):
             return
 
+        # The state this drawing is of, taken now: a setting can change
+        # while it is drawn (loading hands the event loop a turn, and a
+        # compare page may set the pane compact then), and a drawing
+        # recorded as what it is not would never be done again
+        state = self._get_render_state(tight_layout=tight_layout)
         self.figure.clear()
         # Fresh norm for the new image (the one above may be attached to the old one)
         norm = self._make_norm(stretch, vmin_val, vmax_val, gamma)
@@ -286,7 +291,7 @@ class RenderingMixin:
             self.cursor_readout.set_state(READOUT_HINT)
 
         # Save state for next update
-        self._last_rendered_state = self._get_render_state(tight_layout=tight_layout)
+        self._last_rendered_state = state
 
         self._last_norm_params = (vmin_val, vmax_val, stretch, gamma)
 
