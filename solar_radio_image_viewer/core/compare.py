@@ -20,15 +20,18 @@ import logging
 import os
 
 from PyQt5.QtCore import (
+    QAbstractAnimation,
     QEasingCurve,
     QEvent,
-    QPropertyAnimation,
+    QPoint,
+    QRect,
     QSize,
     Qt,
     QTimer,
+    QVariantAnimation,
     pyqtSignal,
 )
-from PyQt5.QtGui import QIcon, QKeySequence
+from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPalette
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -78,11 +81,13 @@ LAYOUTS = (
 )
 GRID_GAP = 6
 ICON_SIZE = QSize(16, 16)
-# A change of layout is covered by a picture of the page as it was, held
-# while the panes draw themselves into their new places (at most this
-# long) and then faded away
+# A change of layout happens under a picture of the image area as it
+# was: it dips to the background while the panes draw themselves into
+# their new places (held at most VEIL_HOLD_MS), then the new layout fades
+# in
+VEIL_DIM_MS = 200
+VEIL_REVEAL_MS = 240
 VEIL_HOLD_MS = 900
-VEIL_FADE_MS = 260
 
 
 def _positions(size):
@@ -96,31 +101,53 @@ def _positions(size):
     return [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
 
 
-class _Veil(QLabel):
-    """A picture of the page as it was, over it while the panes settle
-    into a new layout, faded away once they have drawn: the change reads
-    as one cross-fade rather than widgets shifting about."""
+class _Veil(QWidget):
+    """A picture of the image area as it was, over it while the panes
+    settle into a new layout: it dips to the page's background as they
+    rebuild, and the new layout fades in once they have drawn. The change
+    reads as one movement, with nothing overlapping in between."""
 
-    def __init__(self, page):
+    def __init__(self, page, host):
         super().__init__(page)
-        self.setPixmap(page.grab())
-        self.setGeometry(page.rect())
+        self._picture = host.grab()
+        self._colour = page.palette().color(QPalette.Window)
+        self.setGeometry(QRect(host.mapTo(page, QPoint(0, 0)), host.size()))
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self._effect = QGraphicsOpacityEffect(self)
-        self._effect.setOpacity(1.0)
-        self.setGraphicsEffect(self._effect)
+        self._dim = 0.0  # how far the picture has gone to the background
+        self._reveal = 0.0  # how far the new layout shows through
         self._waiting = set()
-        self._fade = None
+        self._drawn = False
+        self._revealing = None
+        self._then = None  # what to do once dimmed
         self.raise_()
         self.show()
         page.installEventFilter(self)
-        QTimer.singleShot(VEIL_HOLD_MS, self.fade)
+        self._dimming = _tween(self, VEIL_DIM_MS, QEasingCurve.OutCubic, self._set_dim)
+        self._dimming.finished.connect(self._dimmed)
+
+    def dimmed(self):
+        return self._dimming.state() != QAbstractAnimation.Running
+
+    def when_dimmed(self, callback):
+        """Call ``callback`` once the picture has gone to the background
+        (the change can then happen with nothing moving in view)."""
+        self._then = callback
+        if self.dimmed():
+            self._dimmed()
+
+    def _dimmed(self):
+        then, self._then = self._then, None
+        if then is not None:
+            then()
+        self._maybe_reveal()
 
     def wait_for(self, panes):
         """Hold until each of ``panes`` has drawn (or the hold runs out)."""
         self._waiting = set(panes)
         if not self._waiting:
-            QTimer.singleShot(0, self.fade)
+            self.fade()
+        else:
+            QTimer.singleShot(VEIL_HOLD_MS, self.fade)
 
     def drawn(self, pane):
         # A pane with a plot scheduled (drawn compact, say) is not there
@@ -133,18 +160,43 @@ class _Veil(QLabel):
             self.fade()
 
     def fading(self):
-        return self._fade is not None
+        return self._drawn
 
     def fade(self):
-        if self._fade is not None or _qt_deleted(self):
+        """The panes are in place: show them once the dip is complete."""
+        if _qt_deleted(self):
             return
-        self._fade = QPropertyAnimation(self._effect, b"opacity", self)
-        self._fade.setDuration(VEIL_FADE_MS)
-        self._fade.setStartValue(1.0)
-        self._fade.setEndValue(0.0)
-        self._fade.setEasingCurve(QEasingCurve.InOutSine)
-        self._fade.finished.connect(self._done)
-        self._fade.start()
+        self._drawn = True
+        self._maybe_reveal()
+
+    def _maybe_reveal(self):
+        if not self._drawn or self._revealing is not None or _qt_deleted(self):
+            return
+        if not self.dimmed():
+            return  # finished() brings us back
+        self._revealing = _tween(self, VEIL_REVEAL_MS, QEasingCurve.InOutSine, self._set_reveal)
+        self._revealing.finished.connect(self._done)
+
+    def _set_dim(self, value):
+        self._dim = value
+        self.update()
+
+    def _set_reveal(self, value):
+        self._reveal = value
+        self.update()
+
+    def paintEvent(self, _event):
+        # The picture under a wash of the background: the wash thickens
+        # as the veil dims (the picture is gone once it is solid), and the
+        # whole thins as the new layout is revealed
+        painter = QPainter(self)
+        painter.setOpacity((1.0 - self._reveal) * (1.0 - self._dim))
+        painter.drawPixmap(0, 0, self._picture)
+        painter.setOpacity(1.0 - self._reveal)
+        colour = QColor(self._colour)
+        colour.setAlphaF(self._dim)
+        painter.fillRect(self.rect(), colour)
+        painter.end()
 
     def _done(self):
         if _qt_deleted(self):
@@ -152,12 +204,28 @@ class _Veil(QLabel):
         self.hide()
         self.setParent(None)
         self.deleteLater()
+        then, self._then = self._then, None
+        if then is not None:
+            then()  # gone early: the change still happens
 
     def eventFilter(self, watched, event):
         # The page resized under the picture: it no longer fits, so go
         if event.type() == QEvent.Resize:
             self._done()
         return False
+
+
+def _tween(owner, duration, easing, on_value):
+    """A 0 to 1 animation of ``duration`` ms, ``on_value`` called with
+    each value, started at once."""
+    tween = QVariantAnimation(owner)
+    tween.setDuration(duration)
+    tween.setStartValue(0.0)
+    tween.setEndValue(1.0)
+    tween.setEasingCurve(easing)
+    tween.valueChanged.connect(on_value)
+    tween.start()
+    return tween
 
 
 def _tool_button(action):
@@ -1031,13 +1099,14 @@ class ImagePage(QWidget):
                 return
 
     def _veil(self):
-        """The picture that covers the change of layout about to happen,
-        if the page is on screen to see it; None otherwise."""
+        """The picture of the image area that covers the change of layout
+        about to happen, if the page is on screen to see it; None
+        otherwise."""
         veil = self._veil_widget
         if veil is not None and (_qt_deleted(veil) or veil.fading()):
             veil = self._veil_widget = None
         if veil is None and self.isVisible() and not self.rect().isEmpty():
-            veil = self._veil_widget = _Veil(self)
+            veil = self._veil_widget = _Veil(self, self._grid_host)
         return veil
 
     def pane_drawn(self, pane):
@@ -1047,12 +1116,16 @@ class ImagePage(QWidget):
         if veil is not None and not _qt_deleted(veil):
             veil.drawn(pane)
 
-    def _place_panes(self):
+    def _place_panes(self, now=False):
         """Lay the panes out in the grid, a slot offering an image where
-        there is none; alone, a pane fills the grid without a header. The
-        change happens under a picture of the page as it was, which fades
-        once the panes have drawn in their new places."""
+        there is none; alone, a pane fills the grid without a header. On
+        screen, the change happens under a picture of the image area as
+        it was: once that has dipped to the background the panes move,
+        and the new layout fades in once they have drawn."""
         veil = self._veil()
+        if veil is not None and not now:
+            veil.when_dimmed(lambda: self._place_panes(now=True))
+            return
         while self._grid.count():
             item = self._grid.takeAt(0)
             widget = item.widget()
