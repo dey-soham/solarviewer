@@ -178,9 +178,10 @@ class EmptyCanvas(QWidget):
         """Show the recent files as they are now."""
         layout = self._recent_layout
         while layout.count():
-            item = layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+            widget = layout.takeAt(0).widget()
+            if widget is not None:
+                widget.setParent(None)  # gone at once, not at the next event loop turn
+                widget.deleteLater()
         # (the link row is a widget of its own: a nested layout's widgets
         # would be left behind, and the link shown twice)
         paths = recent_images()
