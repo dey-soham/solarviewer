@@ -41,6 +41,126 @@ from ..ui.widgets import button_bar
 from ..ui.geometry import fit_to_screen
 
 
+class _NoDataImage:
+    """An image whose NODATA samples (the header's value for a missing
+    sample, as e-CALLISTO and Yamagawa files mark their gaps) read as NaN.
+    Reads are float32 copies of the array (memory-mapped or not)."""
+
+    def __init__(self, data, nodata):
+        self._data = data
+        self._nodata = float(nodata)
+        self.shape, self.ndim, self.size = data.shape, data.ndim, data.size
+        self.dtype = np.dtype(np.float32)
+
+    def __getitem__(self, key):
+        x = np.array(self._data[key], dtype=np.float32)
+        x[x == self._nodata] = np.nan
+        return x
+
+    @property
+    def T(self):
+        return self[...].T
+
+
+def open_local_spectrum(path):
+    """The HDUs of the FITS file ``path``, memory-mapped (only what is
+    shown is read), unless an image of its is scaled (BSCALE, BZERO or
+    BLANK, as 16-bit e-CALLISTO and Yamagawa files are): astropy cannot
+    map those, so the file is read whole."""
+    hdul = fits.open(path, memmap=True)
+    for hdu in hdul:
+        header = hdu.header
+        if getattr(hdu, "is_image", False) and (
+            header.get("BSCALE", 1) != 1
+            or header.get("BZERO", 0) != 0
+            or "BLANK" in header
+        ):
+            hdul.close()
+            return fits.open(path, memmap=False)
+    return hdul
+
+
+_SECONDS_PER = {"d": 86400.0, "h": 3600.0, "min": 60.0, "ms": 0.001}
+_SECOND_NAMES = ("s", "sec", "second", "seconds")
+
+
+def observation_start(header):
+    """DATE-OBS as an astropy Time, completed by TIME-OBS when DATE-OBS is
+    the date alone (as e-CALLISTO and Yamagawa files write them), or None.
+    Returns (time, whether it is a date only)."""
+    from astropy.time import Time as AstroTime
+
+    date_obs = header.get("DATE-OBS")
+    if not date_obs:
+        return None, True
+    text = str(date_obs).strip().replace("/", "-")
+    date_only = "T" not in text and " " not in text
+    if date_only and header.get("TIME-OBS"):
+        text += "T" + str(header["TIME-OBS"]).strip()
+        date_only = False
+    try:
+        return AstroTime(text, scale="utc"), date_only
+    except Exception:
+        return None, True
+
+
+def axes_from_header(header, naxis1, naxis2):
+    """(time axis in MJD seconds, frequency axis in MHz) of a spectrum
+    described by its header's CTYPE, CRVAL, CDELT, CRPIX and CUNIT (either
+    None if the header does not describe that axis).
+
+    A CRPIX of 0 is taken as 0-based (pixel 0 at CRVAL: e-CALLISTO and
+    Yamagawa files). A time CRVAL is Unix seconds, a JD or an MJD in days,
+    or seconds: of the day of DATE-OBS (the instant TIME-OBS or DATE-OBS
+    itself names, when it equals it) or from DATE-OBS.
+    """
+    time_axis = freq_axis = None
+    for ax_idx, naxis in ((1, naxis1), (2, naxis2)):
+        ctype = str(header.get(f"CTYPE{ax_idx}", "")).upper()
+        cunit = str(header.get(f"CUNIT{ax_idx}", "")).strip().lower()
+        crval = float(header.get(f"CRVAL{ax_idx}", 0))
+        cdelt = float(header.get(f"CDELT{ax_idx}", 1))
+        crpix = float(header.get(f"CRPIX{ax_idx}", 1))
+        offsets = np.arange(naxis) - (crpix - 1 if crpix != 0 else 0)
+        if "FREQ" in ctype:
+            freqs = crval + offsets * cdelt
+            if cunit == "hz":
+                freqs /= 1e6
+            elif cunit == "khz":
+                freqs /= 1000.0
+            elif cunit == "ghz":
+                freqs *= 1000.0
+            freq_axis = freqs
+        elif "TIME" in ctype:
+            per_second = _SECONDS_PER.get(cunit, 1.0)
+            in_seconds = cunit in _SECOND_NAMES
+            start, date_only = observation_start(header)
+            if crval > 1000000000:
+                from astropy.time import Time as AstroTime
+
+                ref_s = AstroTime(crval, format="unix").mjd * 86400.0
+            elif crval > 2400000.5 and not in_seconds:
+                ref_s = (crval - 2400000.5) * 86400.0
+            elif (
+                30000 < crval < 100000
+                and not in_seconds
+                and (start is None or abs(crval - start.mjd) < 1.5)
+            ):
+                ref_s = crval * 86400.0
+            elif start is None:
+                ref_s = crval * per_second
+            else:
+                start_s = start.mjd * 86400.0
+                day_s = np.floor(start.mjd) * 86400.0
+                crval_s = crval * per_second
+                if abs(day_s + crval_s - start_s) <= max(1.0, abs(cdelt) * per_second):
+                    ref_s = start_s  # the seconds of the day DATE-OBS/TIME-OBS name
+                else:
+                    ref_s = (day_s if date_only else start_s) + crval_s
+            time_axis = ref_s + offsets * cdelt * per_second
+    return time_axis, freq_axis
+
+
 class SpectraFilesMixin:
     """Opens files (local or on a server) and reads their axes and metadata.
 
@@ -68,7 +188,15 @@ class SpectraFilesMixin:
             return None
         while data.ndim > 2 and data.shape[0] == 1:
             data = data[0]
-        return data if data.ndim == 2 else None
+        if data.ndim != 2:
+            return None
+        nodata = hdu.header.get("NODATA")
+        if nodata is not None and isinstance(data, np.ndarray):
+            try:
+                return _NoDataImage(data, nodata)
+            except (TypeError, ValueError):
+                pass
+        return data
 
     def _find_spectrum(self):
         """Index of the file's first 2-D image (None if it has none)."""
@@ -443,7 +571,7 @@ class SpectraFilesMixin:
                 # (opened first: a file that can't be read leaves the one
                 # shown, its masks and its undo history as they are)
                 try:
-                    new_hdul = fits.open(fileName, memmap=True)
+                    new_hdul = open_local_spectrum(fileName)
                 except Exception as e:
                     self.logger.error(f"Failed to open FITS file: {e}")
                     QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{e}")
@@ -520,51 +648,13 @@ class SpectraFilesMixin:
                             data_ref.shape[1] if len(data_ref.shape) > 1 else 0,
                         )
                         naxis2 = header.get("NAXIS2", data_ref.shape[0])
-                        for ax_idx in [1, 2]:
-                            ctype = str(header.get(f"CTYPE{ax_idx}", "")).upper()
-                            cunit = str(header.get(f"CUNIT{ax_idx}", "")).lower()
-                            crval = header.get(f"CRVAL{ax_idx}", 0)
-                            cdelt = header.get(f"CDELT{ax_idx}", 1)
-                            crpix = header.get(f"CRPIX{ax_idx}", 1)
-                            naxis = naxis1 if ax_idx == 1 else naxis2
-                            if "FREQ" in ctype:
-                                freqs = crval + (np.arange(naxis) - (crpix - 1)) * cdelt
-                                if cunit == "hz":
-                                    freqs /= 1e6
-                                elif cunit == "khz":
-                                    freqs /= 1000.0
-                                elif cunit == "ghz":
-                                    freqs *= 1000.0
-                                freq_axis = freqs
-                            elif "TIME" in ctype:
-                                start_mjd = 0
-                                if crval > 1000000000:
-                                    from astropy.time import Time as AstroTime
-                                    start_mjd = AstroTime(crval, format="unix").mjd
-                                elif crval > 2400000.5:
-                                    start_mjd = crval - 2400000.5
-                                elif 30000 < crval < 100000:
-                                    start_mjd = crval
-                                else:
-                                    date_obs = header.get("DATE-OBS", None)
-                                    if date_obs:
-                                        from astropy.time import Time as AstroTime
-
-                                        start_mjd = AstroTime(date_obs).mjd
-                                cdelt_s = cdelt * (
-                                    86400.0
-                                    if cunit == "d"
-                                    else 3600.0
-                                    if cunit == "h"
-                                    else 60.0
-                                    if cunit == "min"
-                                    else 0.001
-                                    if cunit == "ms"
-                                    else 1.0
-                                )
-                                time_axis = (start_mjd * 86400.0) + (
-                                    np.arange(naxis) - (crpix - 1)
-                                ) * cdelt_s
+                        header_time, header_freq = axes_from_header(
+                            header, int(naxis1), int(naxis2)
+                        )
+                        if time_axis is None:
+                            time_axis = header_time
+                        if freq_axis is None:
+                            freq_axis = header_freq
                     except Exception as wcs_err:
                         self.logger.warning(f"Axis extraction error: {wcs_err}")
 
