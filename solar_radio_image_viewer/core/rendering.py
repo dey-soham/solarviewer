@@ -703,7 +703,8 @@ class RenderingMixin:
                             or header.get("DATE_OBS")
                             or header.get("STARTOBS")
                         )
-                        if header.get("TELESCOP") == "SOHO" and header.get("TIME-OBS"):
+                        # SOHO level 0 splits the date and the time
+                        if header.get("TIME-OBS") and image_time and "T" not in str(image_time):
                             image_time = f"{image_time}T{header['TIME-OBS']}"
                         # Keep upto one decimal place if image_time seconds have more than one decimal place
                         if image_time and "T" in str(image_time):
