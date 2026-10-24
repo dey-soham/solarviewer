@@ -122,6 +122,8 @@ class Preset:
     cmap: str  # preferred colormap
     fallback_cmap: Optional[str]  # used if cmap is missing; None keeps current
     gamma: Optional[float] = 1.0  # None keeps the current gamma
+    radial: str = "off"  # radial filter for display (core/radial_filter.py)
+    background: bool = False  # draw the image less the background plane it carries, if any
 
 
 @dataclass(frozen=True)
@@ -184,7 +186,11 @@ INSTRUMENTS = {
     "LASCO": Instrument(
         "SOHO/LASCO Presets",
         {
-            d: Preset(f"SOHO LASCO {d}", "minmax", "sqrt", f"soholasco{d[1]}", "afmhot")
+            # Coronagraph images are shown as the departure from a smooth
+            # background in units of the local spread (FNRGF): the corona
+            # falls off 15-fold across the field, more than a stretch can
+            # show, and the streamer belt would otherwise swamp the rays
+            d: Preset(f"SOHO LASCO {d}", (-1.5, 4.0), "linear", f"soholasco{d[1]}", "afmhot", radial="fnrgf", background=True)
             for d in ("C2", "C3")
         },
         default_variant="C2",
@@ -212,8 +218,8 @@ INSTRUMENTS = {
         "STEREO Presets",
         {
             "EUVI": Preset("STEREO EUVI", "minmax", "sqrt", "sdoaia171", "inferno"),
-            "COR1": Preset("STEREO COR1", "p1_99", "sqrt", "soholasco2", "afmhot"),
-            "COR2": Preset("STEREO COR2", "p1_99", "sqrt", "soholasco2", "afmhot"),
+            "COR1": Preset("STEREO COR1", (-1.5, 4.0), "linear", "soholasco2", "afmhot", radial="fnrgf"),
+            "COR2": Preset("STEREO COR2", (-1.5, 4.0), "linear", "soholasco2", "afmhot", radial="fnrgf"),
         },
         unknown_variant=Preset("STEREO", "minmax", "linear", "viridis", "viridis"),
         variant_label="{}",
@@ -358,7 +364,7 @@ class PresetsMixin:
         if self.current_image_data is None:
             return
 
-        vmin, vmax = compute_range(self.current_image_data, mode)
+        vmin, vmax = compute_range(self.display_data(), mode)
         self.set_range(vmin, vmax)
         if hasattr(self, "show_range_preset"):
             self.show_range_preset(mode)
@@ -384,7 +390,9 @@ class PresetsMixin:
             return
 
         preset = get_preset(instrument, variant)
-        vmin, vmax = compute_range(self.current_image_data, preset.range)
+        self.set_background_subtraction(preset.background, redraw=False)
+        self.set_radial_filter(preset.radial, redraw=False)
+        vmin, vmax = compute_range(self.display_data(), preset.range)
         self.set_range(vmin, vmax)
 
         gamma = self._current_gamma() if preset.gamma is None else preset.gamma
@@ -497,3 +505,50 @@ class PresetMenuMixin:
                     variant,
                 )
             preset_menu.addMenu(submenu)
+
+        # The radial filter (core/radial_filter.py): made for coronagraph
+        # images, whose presets turn it on, offered here for any image
+        from PyQt5.QtWidgets import QActionGroup
+
+        from .radial_filter import MODES
+
+        preset_menu.addSeparator()
+        radial_menu = QMenu("Radial Filter", self)
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self.radial_filter_actions = {}
+        for mode, (name, _) in MODES.items():
+            action = QAction(name, self, checkable=True)
+            action.setStatusTip(
+                "Draw the image as it is"
+                if mode == "off"
+                else "Flatten the radial fall-off for display: divide by the median brightness at each distance from the Sun"
+                if mode == "ratio"
+                else "Flatten the radial fall-off for display: standard deviations from the median at each distance from the Sun"
+            )
+            action.triggered.connect(lambda checked=False, m=mode: self._apply_to_current_tab("set_radial_filter", m))
+            group.addAction(action)
+            radial_menu.addAction(action)
+            self.radial_filter_actions[mode] = action
+        self.radial_filter_actions["off"].setChecked(True)
+        radial_menu.addSeparator()
+        self.background_action = QAction("Subtract Background", self, checkable=True)
+        self.background_action.setStatusTip(
+            "Draw a prepared LASCO image less the F corona and stray light stored with it, leaving the K corona"
+        )
+        self.background_action.triggered.connect(lambda checked=False: self._apply_to_current_tab("set_background_subtraction", checked))
+        radial_menu.addAction(self.background_action)
+        radial_menu.aboutToShow.connect(self._check_radial_filter_action)
+        preset_menu.addMenu(radial_menu)
+
+    def _check_radial_filter_action(self):
+        """The Radial Filter submenu marks the current tab's choices; the
+        background entry is offered only for a file that carries one."""
+        tab = self.tab_widget.currentWidget()
+        mode = getattr(tab, "radial_filter", "off") if tab else "off"
+        action = self.radial_filter_actions.get(mode)
+        if action is not None:
+            action.setChecked(True)
+        has = bool(tab is not None and hasattr(tab, "has_background") and tab.has_background())
+        self.background_action.setEnabled(has)
+        self.background_action.setChecked(has and tab.background_subtracted)

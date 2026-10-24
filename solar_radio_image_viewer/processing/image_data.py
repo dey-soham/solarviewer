@@ -230,6 +230,25 @@ def read_fits_stokes(imagename, stokes, thres, rms_box=(0, 200, 0, 130)):
     return stokes_product(stokes, planes, thres, rms_box)
 
 
+def read_background(imagename, downsample=1):
+    """The background plane a prepared coronagraph image carries (the
+    extension its primary header's BKGEXT names: the F corona and stray
+    light under a LASCO image, see solar_data_downloader/
+    LASCO_CALIBRATION.md), as [x, y] float32 sampled every ``downsample``th
+    pixel like the image; None when the file has none."""
+    from astropy.io import fits
+
+    with fits.open(readable_image_path(imagename), memmap=True) as hdul:
+        name = str(hdul[0].header.get("BKGEXT", "")).strip()
+        if not name or name not in hdul or hdul[name].data is None:
+            return None
+        plane = np.array(hdul[name].data, dtype=np.float32)
+    if plane.ndim != 2:
+        return None
+    step = max(int(downsample or 1), 1)
+    return np.ascontiguousarray(plane.T[::step, ::step])
+
+
 def read_image(
     imagename, stokes, threshold, rms_box, target_size, fallback_stokes=None
 ):

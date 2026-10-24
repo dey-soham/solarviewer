@@ -508,6 +508,10 @@ class SolarRadioImageTab(
                 )
                 is_preset_matched = False
 
+                # A new image starts unfiltered, with its background kept;
+                # its preset may change both
+                self.set_background_subtraction(False, redraw=False)
+                self.set_radial_filter("off", redraw=False)
                 if auto_presets:
                     is_preset_matched = self._auto_apply_instrument_preset()
 
@@ -530,8 +534,8 @@ class SolarRadioImageTab(
                         stretch = "linear"
                         gamma = 1.0
 
-                    vmin_val = float(np.nanmin(self.current_image_data))
-                    vmax_val = float(np.nanmax(self.current_image_data))
+                    vmin_val = float(np.nanmin(self.display_data()))
+                    vmax_val = float(np.nanmax(self.display_data()))
                     self.set_range(vmin_val, vmax_val)
                     # Only call plot_image here - preset methods already call it internally
                     self.plot_image(

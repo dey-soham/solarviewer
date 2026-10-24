@@ -359,9 +359,8 @@ class PanelsMixin:
             f"Solar activity{when} — NOAA events, active regions, CMEs"
         )
         self.helioviewer_btn.setToolTip(f"SDO/SOHO images{when}")
-        self.range_unit_label.setText(
-            (getattr(self, "_current_bunit", "") or "") if loaded else ""
-        )
+        self.range_unit_label.setText(self.display_unit() if loaded else "")
+        self.show_radial_row()
         self.cursor_readout.set_frame_name(self.hpc_btn.current_label() if loaded else "")
         self.plot_button.setEnabled(loaded)
         if not loaded:
@@ -545,6 +544,52 @@ class PanelsMixin:
         gamma_layout.addWidget(self.gamma_slider, 1)
         gamma_layout.addWidget(self.gamma_entry)
         layout.addLayout(gamma_layout)
+
+        # Radial filter: coronagraph images drawn relative to the median
+        # at each distance from the Sun (core/radial_filter.py)
+        from .radial_filter import MODES
+
+        self.radial_row = QWidget()
+        radial_layout = QHBoxLayout(self.radial_row)
+        radial_layout.setContentsMargins(0, 0, 0, 0)
+        radial_layout.setSpacing(10)
+        radial_label = QLabel("Radial filter")
+        radial_label.setObjectName("Hint")
+        self.radial_combo = QComboBox()
+        self.radial_combo.addItems([name for name, _ in MODES.values()])
+        self.radial_combo.setToolTip(
+            "Flatten the radial fall-off of a coronagraph image for display: divide by "
+            "the median brightness at each distance from the Sun, or show the departure "
+            "from it in standard deviations. Values and statistics keep the image's unit."
+        )
+        self.radial_combo.currentIndexChanged.connect(self.on_radial_filter_changed)
+        radial_layout.addWidget(radial_label)
+        radial_layout.addWidget(self.radial_combo, 1)
+        # Shown for coronagraph images, or while a filter is on (the
+        # Presets menu offers it for any image)
+        self.radial_row.hide()
+        layout.addWidget(self.radial_row)
+
+        # The background plane a prepared LASCO image carries (the F
+        # corona and stray light) can be taken away; shown for such files
+        self.background_row = QWidget()
+        background_layout = QHBoxLayout(self.background_row)
+        background_layout.setContentsMargins(0, 0, 0, 0)
+        background_layout.setSpacing(10)
+        background_label = QLabel("Background")
+        background_label.setObjectName("Hint")
+        self.background_checkbox = QCheckBox("Subtract the F corona and stray light")
+        self.background_checkbox.setObjectName("Switch")
+        self.background_checkbox.setToolTip(
+            "Draw the image less the background stored with it (NRL's monthly minimum: "
+            "F corona, stray light and the quietest K corona), leaving the K corona. "
+            "Values and statistics keep the total brightness."
+        )
+        self.background_checkbox.toggled.connect(self.on_background_toggled)
+        background_layout.addWidget(background_label)
+        background_layout.addWidget(self.background_checkbox, 1)
+        self.background_row.hide()
+        layout.addWidget(self.background_row)
 
         # The presets, the one last applied outlined
         self._preset_group = QButtonGroup(self)

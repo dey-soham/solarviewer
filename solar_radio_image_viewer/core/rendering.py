@@ -160,6 +160,7 @@ class RenderingMixin:
             "compact": self.compact_plot,
             "pane_axes": self.pane_axes,
             "pane_colorbar": self.pane_colorbar,
+            "radial_filter": self.radial_filter,
         }
 
         # Settings snapshots (identity of loaded contour data tracked separately)
@@ -179,6 +180,205 @@ class RenderingMixin:
         state["arrow_annotations"] = str(self.arrow_annotations)
 
         return state
+
+    # ------------------------------------------------------ radial filter
+    @property
+    def radial_filter(self):
+        """How the drawn image is normalised radially: 'off', 'ratio',
+        'nrgf' or 'fnrgf' (core/radial_filter.py). The data keep their
+        values."""
+        return getattr(self, "_radial_filter", "off")
+
+    def _radial_centre(self):
+        """The Sun's centre in the image's pixels (x, y): the reference
+        pixel of the loaded coordinate system, else the middle."""
+        data = self.current_image_data
+        try:
+            ref = self.current_wcs.referencepixel()["numeric"][0:2]
+            cx, cy = float(ref[0]), float(ref[1])
+            if 0 <= cx < data.shape[0] and 0 <= cy < data.shape[1]:
+                return cx, cy
+        except Exception:
+            pass
+        return (data.shape[0] - 1) / 2, (data.shape[1] - 1) / 2
+
+    # The background plane a prepared coronagraph image carries (the F
+    # corona and stray light under it, LASCO_CALIBRATION.md) can be taken
+    # away from what is drawn, leaving the K corona
+    @property
+    def background_subtracted(self):
+        return bool(getattr(self, "_subtract_background", False))
+
+    def has_background(self):
+        """Whether the file carries a background plane (BKGEXT in its
+        header names the extension)."""
+        header = getattr(self, "current_header", None) or {}
+        return self.current_image_data is not None and bool(str(header.get("BKGEXT", "") or "").strip())
+
+    def background_data(self):
+        """The background plane sampled like the image, read once per
+        file; None when there is none or it does not fit the image."""
+        if not self.has_background():
+            return None
+        key = (self.imagename, getattr(self, "_downsample", 1) or 1, self.current_image_data.shape)
+        cached = getattr(self, "_background", None)
+        if cached is None or cached[0] != key:
+            from ..processing.image_data import read_background
+
+            try:
+                plane = read_background(self.imagename, key[1])
+            except Exception as e:
+                logger.warning(f"Background plane of {self.imagename} not read: {e}")
+                plane = None
+            if plane is not None and plane.shape != key[2]:
+                logger.warning(f"Background plane {plane.shape} does not fit the image {key[2]}")
+                plane = None
+            cached = self._background = (key, plane)
+        return cached[1]
+
+    def _unfiltered_display_data(self):
+        """The image, or the image less its background."""
+        data = self.current_image_data
+        if data is None or not self.background_subtracted:
+            return data
+        plane = self.background_data()
+        if plane is None:
+            return data
+        cached = getattr(self, "_subtracted", None)
+        if cached is None or cached[0]() is not data or cached[1] is not plane:
+            cached = self._subtracted = (weakref.ref(data), plane, (data - plane).astype(np.float32))
+        return cached[2]
+
+    def display_data(self):
+        """The array drawn: the image, less its background when that is
+        subtracted, radially filtered when a filter is on."""
+        data = self._unfiltered_display_data()
+        if data is None or self.radial_filter == "off":
+            return data
+        from .radial_filter import RadialFilterCache
+
+        cache = getattr(self, "_radial_cache", None)
+        if cache is None:
+            cache = self._radial_cache = RadialFilterCache()
+        return cache.get(data, self.radial_filter, self._radial_centre())
+
+    def display_unit(self):
+        """The unit of what is drawn: the image's (less the background),
+        or the filter's."""
+        from .radial_filter import MODES
+
+        if self.radial_filter != "off":
+            return MODES[self.radial_filter][1]
+        unit = getattr(self, "_current_bunit", "") or ""
+        if self.background_subtracted and self.background_data() is not None:
+            return f"{unit} less background" if unit else "less background"
+        return unit
+
+    def set_background_subtraction(self, on, redraw=True):
+        """Draw the image less the background plane it carries (``on``),
+        or as it is. Nothing happens to a file without one. The range is
+        chosen afresh for what is now drawn. ``redraw`` False only records
+        the choice (a preset draws itself)."""
+        from .presets import compute_range
+
+        on = bool(on) and self.has_background()
+        changed = on != self.background_subtracted
+        self._subtract_background = on
+        box = getattr(self, "background_checkbox", None)
+        if box is not None:
+            box.blockSignals(True)
+            box.setChecked(on)
+            box.blockSignals(False)
+        label = getattr(self, "range_unit_label", None)
+        if label is not None and self.current_image_data is not None:
+            label.setText(self.display_unit())
+        self.show_radial_row()
+        if not redraw or not changed or self.current_image_data is None:
+            return
+        data = self.display_data()
+        if self.radial_filter == "off":
+            vmin, vmax = compute_range(data, "p1_99")
+        else:
+            vmin, vmax = compute_range(data, {"ratio": "p1_99"}.get(self.radial_filter, (-1.5, 4.0)))
+        self.set_range(vmin, vmax)
+        if hasattr(self, "show_range_preset"):
+            self.show_range_preset(None)
+        stretch = self.stretch_combo.currentText() if hasattr(self, "stretch_combo") else "linear"
+        cmap = self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+        self.plot_image(vmin, vmax, stretch, cmap, self._current_gamma())
+        if self.window():
+            self.show_status_message("Background subtracted: the K corona is drawn" if on else "Background kept: the total brightness is drawn")
+
+    def on_background_toggled(self, checked):
+        """The Display tab's background switch."""
+        self.set_background_subtraction(checked)
+
+    def set_radial_filter(self, mode, redraw=True):
+        """Draw the image normalised radially in ``mode`` (or not, 'off').
+        The range is chosen afresh for what is now drawn, since the old
+        one was in another unit. ``redraw`` False only records the choice
+        (a preset draws itself)."""
+        from .presets import compute_range
+        from .radial_filter import MODES
+
+        if mode not in MODES:
+            raise ValueError(f"unknown radial filter {mode!r}")
+        changed = mode != self.radial_filter
+        self._radial_filter = mode
+        combo = getattr(self, "radial_combo", None)
+        if combo is not None:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(list(MODES).index(mode))
+            combo.blockSignals(False)
+        label = getattr(self, "range_unit_label", None)
+        if label is not None and self.current_image_data is not None:
+            label.setText(self.display_unit())
+        self.show_radial_row()
+        if not redraw or not changed or self.current_image_data is None:
+            return
+        data = self.display_data()
+        # the sigma modes have a natural range; the ratio takes the data's
+        vmin, vmax = compute_range(data, {"off": "minmax", "ratio": "p1_99"}.get(mode, (-1.5, 4.0)))
+        self.set_range(vmin, vmax)
+        if hasattr(self, "show_range_preset"):
+            self.show_range_preset(None)
+        stretch = self.stretch_combo.currentText() if hasattr(self, "stretch_combo") else "linear"
+        cmap = self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+        self.plot_image(vmin, vmax, stretch, cmap, self._current_gamma())
+        if self.window():
+            name = MODES[mode][0]
+            self.show_status_message(f"Radial filter: {name.lower() if mode != 'off' else 'off'}")
+
+    def on_radial_filter_changed(self, index):
+        """The Display tab's radial filter choice."""
+        from .radial_filter import MODES
+
+        self.set_radial_filter(list(MODES)[index])
+
+    def is_coronagraph(self):
+        """Whether the image shown is a coronagraph's (LASCO, COR), the
+        images the radial filter is made for."""
+        from .presets import detect_instrument
+
+        if self.current_image_data is None:
+            return False
+        match = detect_instrument(getattr(self, "current_header", {}) or {}, getattr(self, "imagename", "") or "")
+        if match is None:
+            return False
+        instrument, variant = match
+        return instrument == "LASCO" or (instrument == "STEREO" and str(variant).upper().startswith("COR"))
+
+    def show_radial_row(self):
+        """The Display tab's radial filter row: shown for coronagraph
+        images and while a filter is on, hidden otherwise (the Presets
+        menu offers the filter for any image)."""
+        row = getattr(self, "radial_row", None)
+        if row is None:
+            return
+        row.setVisible(self.current_image_data is not None and (self.radial_filter != "off" or self.is_coronagraph()))
+        background_row = getattr(self, "background_row", None)
+        if background_row is not None:
+            background_row.setVisible(self.has_background())
 
     def plot_image(self, *args, **kwargs):
         """Draw the image (see _plot_image), with the wait cursor until it
@@ -223,7 +423,7 @@ class RenderingMixin:
         if self.current_image_data is None:
             return
 
-        data = self.current_image_data
+        data = self.display_data()
 
         self._update_transposed_cache(data)
         transposed_data = self._cached_transposed
@@ -981,7 +1181,7 @@ class RenderingMixin:
             self.plot_settings,
             self.figure,
             dark=theme_manager.is_dark,
-            bunit=getattr(self, "_current_bunit", None),
+            bunit=self.display_unit() or None,
             on_error=on_error,
         )
 

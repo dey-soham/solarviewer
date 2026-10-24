@@ -298,13 +298,13 @@ class PaneSync:
         same unit take it."""
         if not self.on["range"] or self._busy or not leader.linked:
             return
-        unit = getattr(leader, "_current_bunit", None)
+        unit = leader.display_unit()
         self._busy = True
         try:
             for pane in self.page.panes:
                 if pane is leader or not pane.linked or pane.current_image_data is None:
                     continue
-                if getattr(pane, "_current_bunit", None) != unit:
+                if pane.display_unit() != unit:
                     continue
                 shown = getattr(pane, "_last_norm_params", None)
                 if shown is not None and np.allclose(shown[:2], (vmin, vmax), rtol=1e-9, atol=0):

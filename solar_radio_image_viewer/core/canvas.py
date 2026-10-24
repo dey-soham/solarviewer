@@ -741,13 +741,24 @@ class CanvasMixin:
                 re.sub(r"\s*\[.*?\]$", "", world_str).replace("(world)", "").strip()
             )
 
-            # 2. The pixel value, with the image's unit
+            # 2. The pixel value, with the image's unit; when a radial
+            # filter is drawn or the background taken away, the image's
+            # own value comes first and the drawn value after it
             cursor_data = im.get_cursor_data(event)
-            val_str = (
-                _format_value(cursor_data, getattr(self, "_current_bunit", "") or "")
-                if cursor_data is not None
-                else ""
-            )
+            unit = getattr(self, "_current_bunit", "") or ""
+            if cursor_data is None:
+                val_str = ""
+            elif self.radial_filter != "off" or self.display_data() is not self.current_image_data:
+                from .compare_sync import value_at
+
+                raw = value_at(self, event.xdata, event.ydata)
+                shown = _format_value(cursor_data, "")
+                mark = (
+                    "× median" if self.radial_filter == "ratio" else "σ" if self.radial_filter != "off" else "less background"
+                )
+                val_str = f"{_format_value(raw if raw is not None else np.nan, unit)}  ({shown} {mark})"
+            else:
+                val_str = _format_value(cursor_data, unit)
             self.cursor_readout.show_cursor(f"{x}, {y}", world_str, val_str)
             return
 
