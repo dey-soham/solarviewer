@@ -175,10 +175,12 @@ def robust_fido_fetch(
     timeout=DEFAULT_TIMEOUT,
     progress=True,
 ):
-    """Fido.fetch with retries of the files that failed, each retry with
-    fewer connections. Returns the parfive Results (``.errors`` lists what
-    still failed)."""
+    """Fido.fetch of a search ``result`` (or a list of them) with retries
+    of the files that failed, each retry with fewer connections. Returns
+    the parfive Results (``.errors`` lists what still failed)."""
     from sunpy.net import Fido
+
+    results = result if isinstance(result, list) else [result]
 
     print(
         f"Starting download with settings: max_conn={max_conn}, retries={max_retries}, "
@@ -186,7 +188,7 @@ def robust_fido_fetch(
         flush=True,
     )
     downloaded = Fido.fetch(
-        result,
+        *results,
         path=os.path.join(output_dir, "{file}"),
         downloader=_downloader(max_conn, max_splits, timeout, progress),
     )
@@ -864,25 +866,117 @@ def _unreachable(result, label):
     return True
 
 
+def _search_by_hour(attrs, start_dt, end_dt, label):
+    """Fido searches for ``attrs`` over each hour of the range: the results
+    that found something, or None when no search reached the provider. The
+    VSO's MDI provider (SHA) answers a search longer than about an hour
+    with an arbitrary slice of it (00:00 to 06:00 lists one magnetogram,
+    00:00 to 01:00 alone lists 45)."""
+    from sunpy.net import Fido, attrs as a
+
+    hours, begin = [], start_dt
+    while begin < end_dt:
+        hours.append((begin, min(begin + timedelta(hours=1), end_dt)))
+        begin += timedelta(hours=1)
+    results, failed = [], 0
+    for i, (begin, stop) in enumerate(hours):
+        if len(hours) > 1:
+            print(f"  Searching hour {i + 1} of {len(hours)}", flush=True)
+        if i < len(hours) - 1:
+            stop -= timedelta(seconds=1)  # the next hour lists its first image
+        result = Fido.search(a.Time(begin, stop), *attrs)
+        if result.file_num:
+            results.append(result)
+        elif not len(result) or _search_errors(result):
+            failed += 1
+    if hours and failed == len(hours):
+        print("\n" + "=" * 60 + "\nSEARCH FAILED\n" + "=" * 60)
+        print(f"  {label}: the data provider could not be searched.")
+        print("\nThe server may be down or blocked on this network; try again later.", flush=True)
+        return None
+    if failed:
+        print(f"  Warning: {failed} of {len(hours)} hours could not be searched", flush=True)
+    return results
+
+
 def _found(result):
-    """Print and return how many files a Fido result (or one of its tables) lists."""
-    total = result.file_num if hasattr(result, "file_num") else len(result)
+    """Print and return how many files a Fido result (or one of its tables, or a count) lists."""
+    total = result if isinstance(result, int) else result.file_num if hasattr(result, "file_num") else len(result)
     if total:
-        print(f"Found {total} files. Downloading...", flush=True)
+        print(f"Found {total} files.", flush=True)
     return total
+
+
+def _thin_times(times, sample, hold=0):
+    """Indices of ``times`` (datetimes in any order) keeping one image (or
+    one sequence of up to ``hold`` seconds) in each ``sample`` second slot
+    counted from the first image, in time order. Slots, rather than the
+    time since the last image kept, keep the count at one per interval when
+    the cadence is not a multiple of the instrument's (15 min of 4 min
+    composites: 00:00, 00:16, 00:32, 00:48, 01:00, ...). A result can list
+    its rows out of time order, one provider or satellite after another,
+    so they are sorted first."""
+    keep, first, last_slot, sequence = [], None, None, None
+    for i in sorted(range(len(times)), key=times.__getitem__):
+        when = times[i]
+        first = first or when
+        slot = int((when - first).total_seconds() // float(sample))
+        if sequence is not None and (when - sequence).total_seconds() <= hold:
+            keep.append(i)  # the rest of the sequence kept
+            last_slot = slot
+        elif slot != last_slot:
+            keep.append(i)
+            last_slot, sequence = slot, when
+    return keep
+
+
+def _table(result):
+    """The table of a Fido result of one provider (a table stays itself)."""
+    if hasattr(result, "file_num"):
+        return result[0] if len(result) else []
+    return result
+
+
+def _row_times(table):
+    return [row["Start Time"].to_datetime() for row in _table(table)]
 
 
 def _thin_rows(table, sample, hold=0):
     """Row indices of a Fido result ``table`` keeping one image (or one
     sequence of up to ``hold`` seconds) every ``sample`` seconds."""
-    keep, last = [], None
-    for i, row in enumerate(table):
-        when = row["Start Time"].to_datetime()
-        if last is None or (when - last).total_seconds() >= float(sample) - 0.5:
+    return _thin_times(_row_times(table), sample, hold)
+
+
+def _listed(found, hold=0):
+    """What a dry run returns: the ISO times of the images a search found
+    (a Fido result, a table or datetimes), one per sequence of up to
+    ``hold`` seconds, in time order."""
+    found = _table(found)
+    if len(found) and not isinstance(found[0], datetime):
+        found = _row_times(found)
+    times, last = [], None
+    for when in sorted(found):
+        if last is None or (when - last).total_seconds() > hold:
+            times.append(when.strftime("%Y-%m-%dT%H:%M:%S"))
             last = when
-        if (when - last).total_seconds() <= hold:
-            keep.append(i)
-    return keep
+    return times
+
+
+def _jsoc_times(record):
+    """The record times a JSOC record set holds (a dry run of an export;
+    no email needed), or None when JSOC cannot be asked."""
+    import drms
+
+    prefer_ipv4()
+    try:
+        keys = drms.Client().query(record, key="T_REC")
+    except Exception as e:
+        print(f"JSOC could not be searched: {e}")
+        return None
+    # '2024-05-01T00:00:09Z' (AIA) or '2024.05.01_00:00:00_TAI' (HMI)
+    stamps = [str(t)[:19].replace(".", "-", 2).replace("_", "T") for t in keys["T_REC"]]
+    times = [datetime.fromisoformat(t) for t in stamps if t[:4].isdigit()]
+    return _listed(times)
 
 
 # ------------------------------------------------------------------ SDO / AIA
@@ -945,15 +1039,19 @@ def download_aia_with_fido(
     apply_exposure_norm=True,
     sample=None,
     keep_originals=False,
+    dry_run=False,
 ):
     """Download AIA ``wavelength`` images through the VSO (no email needed)
     and prepare them to level 1.5. ``sample`` is the cadence in seconds
-    (every image when None). Returns the output paths."""
+    (every image when None). Returns the output paths; with ``dry_run``
+    only searches and returns the image times (None when the search
+    failed), as every download function here does."""
     from sunpy.net import Fido, attrs as a
 
     _quiet()
     prefer_ipv4()
-    _ensure_dir(output_dir)
+    if not dry_run:
+        _ensure_dir(output_dir)
     start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
     label = f"AIA {wavelength}Å"
     _print_search(label, start_time, end_time, sample)
@@ -965,14 +1063,16 @@ def download_aia_with_fido(
             *_sample_attrs(sample),
         )
         if _unreachable(result, label):
-            return []
+            return None if dry_run else []
         if not _found(result):
             _no_data(label, start_time, end_time)
             return []
+        if dry_run:
+            return _listed(result)
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {e}")
-        return []
+        return None if dry_run else []
     if downloaded.errors and len(downloaded) == 0:
         print("The VSO's AIA export is not answering; the JSOC method (an email registered at JSOC) is the alternative.")
     return _finish_aia(downloaded, output_dir, start_dt, end_dt, skip_calibration, apply_psf, apply_degradation, apply_exposure_norm, keep_originals)
@@ -1025,19 +1125,23 @@ def download_aia(
     apply_degradation=True,
     apply_exposure_norm=True,
     keep_originals=False,
+    dry_run=False,
 ):
     """Download AIA ``wavelength`` images with a JSOC export (``email`` must
     be registered at JSOC) and prepare them to level 1.5. ``cadence`` is
     the series ('12s', '24s', '1h'), found from the wavelength when None;
     ``sample`` the cadence in seconds. Returns the output paths."""
     _quiet()
-    _ensure_dir(output_dir)
+    if not dry_run:
+        _ensure_dir(output_dir)
     cadence = cadence or aia_cadence(wavelength)
     if sample is None and interval_seconds:
         sample = interval_seconds
     record = aiaexport(wavelength, cadence, start_time, end_time, sample)
     if record is None:
         return []
+    if dry_run:
+        return _jsoc_times(record)
     files = _jsoc_export(record, email, output_dir, segment="image")
     start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
     return _finish_aia(files, output_dir, start_dt, end_dt, skip_calibration, apply_psf, apply_degradation, apply_exposure_norm, keep_originals)
@@ -1054,7 +1158,7 @@ def _finish_hmi(files, output_dir, skip_calibration, keep_originals):
     return prepare_files("hmi", files, output_dir, {"workers": 2}, keep_originals)
 
 
-def download_hmi_with_fido(series, start_time, end_time, output_dir, skip_calibration=False, sample=None, keep_originals=False):
+def download_hmi_with_fido(series, start_time, end_time, output_dir, skip_calibration=False, sample=None, keep_originals=False, dry_run=False):
     """Download an HMI 45 s ``series`` ('M_45s', 'Ic_45s', 'V_45s') through
     the VSO and turn the images north up. The 720 s series are not at the
     VSO; use download_hmi (JSOC) for them."""
@@ -1062,7 +1166,8 @@ def download_hmi_with_fido(series, start_time, end_time, output_dir, skip_calibr
 
     _quiet()
     prefer_ipv4()
-    _ensure_dir(output_dir)
+    if not dry_run:
+        _ensure_dir(output_dir)
     series = str(series)
     if "720" in series:
         print(f"Error: the VSO serves only the 45 s HMI series; {series} needs the JSOC method (an email).")
@@ -1076,27 +1181,32 @@ def download_hmi_with_fido(series, start_time, end_time, output_dir, skip_calibr
             a.Time(start_dt, end_dt), a.Instrument("HMI"), a.Physobs(physobs), *_sample_attrs(sample)
         )
         if _unreachable(result, label):
-            return []
+            return None if dry_run else []
         if not _found(result):
             _no_data(label, start_time, end_time)
             return []
+        if dry_run:
+            return _listed(result)
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {e}")
-        return []
+        return None if dry_run else []
     return _finish_hmi(downloaded, output_dir, skip_calibration, keep_originals)
 
 
-def download_hmi(series, start_time, end_time, output_dir, email=None, interval_seconds=None, skip_calibration=False, sample=None, keep_originals=False):
+def download_hmi(series, start_time, end_time, output_dir, email=None, interval_seconds=None, skip_calibration=False, sample=None, keep_originals=False, dry_run=False):
     """Download an HMI ``series`` (a key of HMI_SERIES) with a JSOC export and
     turn the images north up."""
     _quiet()
-    _ensure_dir(output_dir)
+    if not dry_run:
+        _ensure_dir(output_dir)
     if sample is None and interval_seconds:
         sample = interval_seconds
     record = hmiexport(series, start_time, end_time, sample)
     if record is None:
         return []
+    if dry_run:
+        return _jsoc_times(record)
     files = _jsoc_export(record, email, output_dir)
     return _finish_hmi(files, output_dir, skip_calibration, keep_originals)
 
@@ -1117,7 +1227,7 @@ def _row_wavelength(row):
         return None
 
 
-def download_iris(start_time, end_time, output_dir, obs_type="SJI", wavelength=None, skip_calibration=False, sample=None, keep_originals=False):
+def download_iris(start_time, end_time, output_dir, obs_type="SJI", wavelength=None, skip_calibration=False, sample=None, keep_originals=False, dry_run=False):
     """Download IRIS level 2 slit-jaw cubes (``wavelength`` 1330, 1400, 2796
     or 2832 Å, any when None) and split them into one north-up image per
     exposure. Rasters are spectra, which SolarViewer does not show, so only
@@ -1127,7 +1237,8 @@ def download_iris(start_time, end_time, output_dir, obs_type="SJI", wavelength=N
 
     _quiet()
     prefer_ipv4()
-    _ensure_dir(output_dir)
+    if not dry_run:
+        _ensure_dir(output_dir)
     if str(obs_type).lower() != "sji":
         print("Only IRIS slit-jaw images (SJI) are supported: rasters are spectra, not images.")
         return []
@@ -1140,7 +1251,7 @@ def download_iris(start_time, end_time, output_dir, obs_type="SJI", wavelength=N
             query.append(a.Wavelength(int(wavelength) * u.angstrom))
         result = Fido.search(*query)
         if _unreachable(result, label):
-            return []
+            return None if dry_run else []
         if not len(result):
             _no_data(label, start_time, end_time)
             return []
@@ -1152,11 +1263,13 @@ def download_iris(start_time, end_time, output_dir, obs_type="SJI", wavelength=N
         if not rows:
             _no_data(label, start_time, end_time)
             return []
+        if dry_run:  # one time per observation (a cube of exposures)
+            return _listed(table[rows])
         print(f"Found {len(rows)} files. Downloading...", flush=True)
         downloaded = robust_fido_fetch(result[0, rows], output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {e}")
-        return []
+        return None if dry_run else []
     files = [str(p) for p in downloaded]
     if skip_calibration or not files:
         if files:
@@ -1167,7 +1280,7 @@ def download_iris(start_time, end_time, output_dir, obs_type="SJI", wavelength=N
 
 
 # ----------------------------------------------------------------------- SOHO
-def download_soho(instrument, start_time, end_time, output_dir, wavelength=None, detector=None, skip_calibration=False, sample=None, physobs=None, keep_originals=False):
+def download_soho(instrument, start_time, end_time, output_dir, wavelength=None, detector=None, skip_calibration=False, sample=None, physobs=None, keep_originals=False, dry_run=False):
     """Download SOHO data through the VSO and prepare it: EIT (``wavelength``
     171, 195, 284 or 304; the level 1 product when SDAC has it; counts per
     second otherwise), LASCO (``detector`` C2 or C3; calibrated to mean
@@ -1177,7 +1290,8 @@ def download_soho(instrument, start_time, end_time, output_dir, wavelength=None,
 
     _quiet()
     prefer_ipv4()
-    _ensure_dir(output_dir)
+    if not dry_run:
+        _ensure_dir(output_dir)
     instrument = str(instrument).upper()
     if instrument not in ("EIT", "LASCO", "MDI"):
         print(f"Error: Invalid SOHO instrument '{instrument}'. Use 'EIT', 'LASCO', or 'MDI'.")
@@ -1200,24 +1314,40 @@ def download_soho(instrument, start_time, end_time, output_dir, wavelength=None,
         label += " continuum" if continuum else " magnetogram"
     _print_search(label, start_time, end_time, sample)
     try:
-        result = Fido.search(*query)
-        if _unreachable(result, label):
-            return []
-        if instrument == "EIT" and len(result):
-            # SDAC lists level 0 (lz) and level 1 (l1) of each image: take
-            # the calibrated level 1 where it exists
-            table = result[0]
-            l1 = [i for i, row in enumerate(table) if "/l1/" in str(row["fileid"])]
-            if l1:
-                print(f"  Taking the {len(l1)} EIT level 1 files (calibrated) of {len(table)} listed", flush=True)
-                result = result[0, l1]
-        if not _found(result):
+        if instrument == "MDI":
+            # the cadence is applied here, across the hours, not by the VSO
+            attrs = [attr for attr in query[1:] if not isinstance(attr, a.Sample)]
+            results = _search_by_hour(attrs, start_dt, end_dt, label)
+            if results is None:
+                return None if dry_run else []
+            if sample and results:
+                rows = [(k, i, when) for k, result in enumerate(results) for i, when in enumerate(_row_times(result))]
+                chosen = {}
+                for j in _thin_times([row[2] for row in rows], sample):
+                    chosen.setdefault(rows[j][0], []).append(rows[j][1])
+                results = [_table(results[k])[sorted(rows_kept)] for k, rows_kept in sorted(chosen.items())]
+        else:
+            result = Fido.search(*query)
+            if _unreachable(result, label):
+                return None if dry_run else []
+            if instrument == "EIT" and len(result):
+                # SDAC lists level 0 (lz) and level 1 (l1) of each image: take
+                # the calibrated level 1 where it exists
+                table = result[0]
+                l1 = [i for i, row in enumerate(table) if "/l1/" in str(row["fileid"])]
+                if l1:
+                    print(f"  Taking the {len(l1)} EIT level 1 files (calibrated) of {len(table)} listed", flush=True)
+                    result = result[0, l1]
+            results = [result]
+        if not _found(sum(len(_table(result)) for result in results)):
             _no_data(label, start_time, end_time)
             return []
-        downloaded = robust_fido_fetch(result, output_dir)
+        if dry_run:
+            return _listed([when for result in results for when in _row_times(result)])
+        downloaded = robust_fido_fetch(results, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {e}")
-        return []
+        return None if dry_run else []
     files = _unpack_archives(_fits_extension([str(p) for p in downloaded]), output_dir)
     if skip_calibration or not files:
         if files:
@@ -1233,37 +1363,102 @@ def download_soho(instrument, start_time, end_time, output_dir, wavelength=None,
 
 
 # ------------------------------------------------------------------ GOES SUVI
-def download_goes_suvi(start_time, end_time, output_dir, wavelength=None, level="2", skip_calibration=False, sample=None, keep_originals=False):
-    """Download GOES SUVI images from NOAA (``wavelength`` 94, 131, 171, 195,
-    284 or 304 Å; ``level`` '2' composites or '1b' single exposures) and
-    prepare them: level 2 goes into the primary HDU as it is, level 1b is
-    turned north up."""
-    from sunpy.net import Fido, attrs as a
+# NOAA's SUVI archive. sunpy's client knows neither GOES-19 nor the level 2
+# files named dn_ (not dr_) since 2025, so its directory pages are read here
+SUVI_ARCHIVE = "https://data.ngdc.noaa.gov/platforms/solar-space-observing-satellites/goes"
+SUVI_SATELLITES = (19, 16, 18, 17)  # the order that settles a tie: GOES-East first
+SUVI_WAVELENGTHS = ("94", "131", "171", "195", "284", "304")
+_SUVI_FILES = {
+    "2": (re.compile(r'href="(d[a-z]_suvi-l2-ci\d{3}_g(\d{2})_s(\d{8}T\d{6})Z_e[^"]*\.fits)"'), "%Y%m%dT%H%M%S"),
+    "1b": (re.compile(r'href="(OR_SUVI-L1b-(?:Fe|He)\d{3}_G(\d{2})_s(\d{13})\d_e[^"]*\.fits(?:\.gz)?)"'), "%Y%j%H%M%S"),
+}
 
-    _quiet()
+
+def _suvi_folder(satellite, level, wavelength, day):
+    if level == "2":
+        path = f"l2/data/suvi-l2-ci{int(wavelength):03d}"
+    else:
+        path = f"l1b/suvi-l1b-{'he' if str(wavelength) == '304' else 'fe'}{int(wavelength):03d}"
+    return f"{SUVI_ARCHIVE}/goes{satellite}/{path}/{day:%Y/%m/%d}/"
+
+
+def _suvi_files(start_dt, end_dt, wavelength=None, level="2"):
+    """The SUVI files NOAA holds in the time range as (time, wavelength,
+    satellite, url), in time order, all from one satellite (the one with
+    the most files, GOES-East on a tie) so that no image comes twice.
+    Raises OSError when no directory page could be read."""
+    from concurrent.futures import ThreadPoolExecutor
+    from urllib.error import HTTPError
+    from urllib.request import urlopen
+
     prefer_ipv4()
-    _ensure_dir(output_dir)
+    level = "2" if str(level) == "2" else "1b"
+    pattern, stamp = _SUVI_FILES[level]
+    waves = [str(int(wavelength))] if wavelength else list(SUVI_WAVELENGTHS)
+    days, day = [], start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    while day <= end_dt:
+        days.append(day)
+        day += timedelta(days=1)
+
+    def read(job):
+        url = _suvi_folder(job[0], level, job[1], job[2])
+        try:
+            with urlopen(url, timeout=60) as response:
+                return job, url, response.read().decode("utf-8", "replace"), None
+        except HTTPError as e:  # 404: that satellite has no such day
+            return job, url, "", None if e.code == 404 else e
+        except Exception as e:
+            return job, url, "", e
+
+    jobs = [(sat, wave, day) for sat in SUVI_SATELLITES for wave in waves for day in days]
+    with ThreadPoolExecutor(8) as pool:
+        pages = list(pool.map(read, jobs))
+    errors = [error for *_, error in pages if error is not None]
+    if errors and len(errors) == len(pages):
+        raise OSError(str(errors[0]))
+    by_satellite = {}
+    for (sat, wave, _), url, page, _ in pages:
+        for match in pattern.finditer(page):
+            when = datetime.strptime(match.group(3), stamp)
+            if start_dt <= when <= end_dt:
+                by_satellite.setdefault(sat, []).append((when, wave, sat, url + match.group(1)))
+    if not by_satellite:
+        return []
+    best = max(by_satellite, key=lambda sat: (len(by_satellite[sat]), -SUVI_SATELLITES.index(sat)))
+    return sorted(by_satellite[best])
+
+
+def download_goes_suvi(start_time, end_time, output_dir, wavelength=None, level="2", skip_calibration=False, sample=None, keep_originals=False, dry_run=False):
+    """Download GOES SUVI images from NOAA (``wavelength`` 94, 131, 171, 195,
+    284 or 304 Å, all six when None; ``level`` '2' composites or '1b'
+    single exposures) from one satellite, and prepare them: level 2 goes
+    into the primary HDU as it is, level 1b is turned north up."""
+    _quiet()
+    if not dry_run:
+        _ensure_dir(output_dir)
     start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
     label = f"GOES SUVI level {level}" + (f" {wavelength}Å" if wavelength else "")
     _print_search(label, start_time, end_time, sample)
     try:
-        query = [a.Time(start_dt, end_dt), a.Instrument("SUVI"), a.Level(str(level))]
-        if wavelength:
-            wl = int(wavelength)
-            query.append(a.Wavelength((wl - 1) * u.angstrom, (wl + 1) * u.angstrom))
-        result = Fido.search(*query)
-        if _unreachable(result, label):
-            return []
-        if sample and len(result):  # NOAA's client has no cadence attribute
-            result = result[0, _thin_rows(result[0], sample)]
-        if not _found(result):
-            _no_data(label, start_time, end_time)
-            return []
-        downloaded = robust_fido_fetch(result, output_dir)
-    except Exception as e:
-        print(f"Error during Fido search/fetch: {e}")
+        found = _suvi_files(start_dt, end_dt, wavelength, level)
+    except OSError as e:
+        print("\n" + "=" * 60 + "\nSEARCH FAILED\n" + "=" * 60)
+        print(f"  {label}: NOAA's archive could not be read ({e}).")
+        print("\nThe server may be down or blocked on this network; try again later.", flush=True)
+        return None if dry_run else []
+    if sample and found:  # one image per interval in each channel
+        keep = []
+        for wave in sorted({row[1] for row in found}):
+            rows = [row for row in found if row[1] == wave]
+            keep += [rows[i] for i in _thin_times([row[0] for row in rows], sample)]
+        found = sorted(keep)
+    if not found:
+        _no_data(label, start_time, end_time)
         return []
-    files = [str(p) for p in downloaded]
+    if dry_run:
+        return _listed([row[0] for row in found])
+    print(f"Found {len(found)} files from GOES-{found[0][2]}. Downloading...", flush=True)
+    files = _fetch_urls([row[3] for row in found], output_dir)
     if skip_calibration or not files:
         if files:
             print(f"Successfully downloaded {len(files)} GOES SUVI files.", flush=True)
@@ -1273,7 +1468,7 @@ def download_goes_suvi(start_time, end_time, output_dir, wavelength=None, level=
 
 
 # --------------------------------------------------------------------- STEREO
-def download_stereo(start_time, end_time, output_dir, spacecraft="A", instrument="EUVI", wavelength=None, skip_calibration=False, sample=None, keep_originals=False):
+def download_stereo(start_time, end_time, output_dir, spacecraft="A", instrument="EUVI", wavelength=None, skip_calibration=False, sample=None, keep_originals=False, dry_run=False):
     """Download STEREO SECCHI data through the VSO: EUVI (``wavelength`` 171,
     195, 284 or 304 Å) with its bias, filter and flat corrected, DN/s,
     north up; or COR1/COR2 whose polarizer triplets become total-brightness
@@ -1284,7 +1479,8 @@ def download_stereo(start_time, end_time, output_dir, spacecraft="A", instrument
 
     _quiet()
     prefer_ipv4()
-    _ensure_dir(output_dir)
+    if not dry_run:
+        _ensure_dir(output_dir)
     start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
     spacecraft, instrument = str(spacecraft).upper(), str(instrument).upper()
     source = f"STEREO_{spacecraft}"
@@ -1298,17 +1494,19 @@ def download_stereo(start_time, end_time, output_dir, spacecraft="A", instrument
             query += _sample_attrs(sample)
         result = Fido.search(*query)
         if _unreachable(result, label):
-            return []
+            return None if dry_run else []
         if instrument != "EUVI" and sample and len(result):
             # keep whole polarizer sequences (three images within three minutes)
             result = result[0, _thin_rows(result[0], sample, hold=180)]
         if not _found(result):
             _no_data(label, start_time, end_time)
             return []
+        if dry_run:  # one time per COR sequence
+            return _listed(result, hold=0 if instrument == "EUVI" else 180)
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {e}")
-        return []
+        return None if dry_run else []
     files = [str(p) for p in downloaded]
     if skip_calibration or not files:
         if files:
@@ -1322,7 +1520,7 @@ def download_stereo(start_time, end_time, output_dir, spacecraft="A", instrument
 
 
 # ----------------------------------------------------------------------- GONG
-def download_gong(start_time, end_time, output_dir, sample=None, skip_calibration=True, keep_originals=False):
+def download_gong(start_time, end_time, output_dir, sample=None, skip_calibration=True, keep_originals=False, dry_run=False):
     """Download GONG synoptic magnetograms (Carrington maps of the
     line-of-sight field, Gauss, one about every hour) from NSO through
     sunpy's GONG client. The files are kept as the archive sends them:
@@ -1334,7 +1532,8 @@ def download_gong(start_time, end_time, output_dir, sample=None, skip_calibratio
 
     _quiet()
     prefer_ipv4()
-    _ensure_dir(output_dir)
+    if not dry_run:
+        _ensure_dir(output_dir)
     start_dt, end_dt = _parse_time(start_time), _parse_time(end_time)
     _print_search("GONG synoptic magnetogram", start_time, end_time, sample)
     try:
@@ -1342,16 +1541,18 @@ def download_gong(start_time, end_time, output_dir, sample=None, skip_calibratio
         # answers the query): the cadence is applied to the rows instead
         result = Fido.search(a.Time(start_dt, end_dt), a.Instrument("GONG"), a.Physobs("LOS_magnetic_field"))
         if _unreachable(result, "GONG synoptic magnetograms (NSO)"):
-            return []
+            return None if dry_run else []
         if sample and len(result):
             result = result[0, _thin_rows(result[0], sample)]
         if not _found(result):
             _no_data("GONG magnetograms", start_time, end_time)
             return []
+        if dry_run:
+            return _listed(result)
         downloaded = robust_fido_fetch(result, output_dir)
     except Exception as e:
         print(f"Error during Fido search/fetch: {e}")
-        return []
+        return None if dry_run else []
     files = [str(p) for p in downloaded]
     print(f"Successfully downloaded {len(files)} GONG synoptic magnetogram files (Gauss, as the archive sends them).", flush=True)
     return files

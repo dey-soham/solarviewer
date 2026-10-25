@@ -341,11 +341,11 @@ def download_soho_data():
         processing = "the level 1 product where SDAC has it (dark, flat, degridding, degradation and exposure corrected), north up"
     elif instrument == "LASCO":
         print("\nDetector:")
-        detector = choose("Select detector", [("C2 (2 to 6 solar radii)", "C2"), ("C3 (3.7 to 30 solar radii)", "C3")])
+        detector = choose("Select detector", [("C2 (1.5 to 6 solar radii)", "C2"), ("C3 (3.7 to 30 solar radii)", "C3")])
         processing = "calibrated to mean solar brightness as NRL level 1 (bias, exposure, vignetting, distortion), north up, monthly background in a second HDU"
     else:
         print("\nProduct:")
-        physobs = choose("Select product", [("Magnetogram (96 min, level 1.8)", "magnetogram"), ("Continuum intensity", "continuum")])
+        physobs = choose("Select product", [("Magnetogram (1 min where the VSO has it)", "magnetogram"), ("Continuum intensity (12 min)", "continuum")])
         processing = "north up with the Sun centred"
     start_time, end_time = get_datetime_range()
     sample = get_cadence()
@@ -437,7 +437,7 @@ def download_stereo_data():
     wavelength = None
     if instrument == "EUVI":
         print("\nWavelength:")
-        wavelength = choose("Select wavelength", [("171 Å", "171"), ("195 Å", "195"), ("284 Å", "284"), ("304 Å", "304")], "2")
+        wavelength = choose("Select wavelength", [("171 Å (Fe IX)", "171"), ("195 Å (Fe XII)", "195"), ("284 Å (Fe XV)", "284"), ("304 Å (He II)", "304")], "2")
         processing = "on-board processing undone, bias, filter and flat corrected, counts per second, north up"
     else:
         processing = "polarizer triplets calibrated to mean solar brightness (SECCHI level 1), north up, monthly background in a second HDU"

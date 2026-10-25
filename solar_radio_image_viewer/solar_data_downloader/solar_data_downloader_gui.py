@@ -88,9 +88,8 @@ CHANNEL_COLORS = {
     "C3": "#5a86d6",
 }
 
-# The cadence segments: label, seconds (None = every image; the label then
-# names the instrument's native cadence)
-CADENCE_SEGMENTS = [(None, None), ("1 min", 60), ("5 min", 300), ("15 min", 900), ("1 h", 3600)]
+# The cadence segments: label, seconds (None = every image the archive has)
+CADENCE_SEGMENTS = [("Every image", None), ("1 min", 60), ("5 min", 300), ("15 min", 900), ("1 h", 3600)]
 CADENCE_VALUES = [seconds for _, seconds in CADENCE_SEGMENTS]
 
 
@@ -115,6 +114,7 @@ class Source:
         default_cadence=None,
         process_seconds=0.5,
         unit="file",
+        variable=False,
     ):
         self.label = label  # "SDO · AIA"
         self.instrument = instrument  # the backend's instrument name
@@ -130,7 +130,8 @@ class Source:
         self.params = params or {}
         self.default_cadence = default_cadence
         self.process_seconds = process_seconds
-        self.unit = unit  # what is counted: a file or a sequence
+        self.unit = unit  # what is counted: a file, a sequence or an observation
+        self.variable = variable  # the native cadence changed over the mission: typical, not fixed
 
     def native_seconds(self, channel):
         if isinstance(self.native, dict):
@@ -138,19 +139,21 @@ class Source:
         return self.native
 
 
+# The main ion of each EUV/UV passband and the temperature it shows
+# (Lemen et al. 2012, Table 1; 195 and 284 Å from the EIT and EUVI papers)
 EUV_IONS = {
-    "94": "Fe XVIII",
-    "131": "Fe VIII, XXI",
-    "171": "Fe IX",
-    "193": "Fe XII, XXIV",
-    "195": "Fe XII",
-    "211": "Fe XIV",
-    "284": "Fe XV",
-    "304": "He II",
-    "335": "Fe XVI",
-    "1600": "C IV",
-    "1700": "continuum",
-    "4500": "continuum",
+    "94": "Fe XVIII · 6.3 MK",
+    "131": "Fe VIII, XXI · 0.4, 10 MK",
+    "171": "Fe IX · 0.6 MK",
+    "193": "Fe XII, XXIV · 1.6, 20 MK",
+    "195": "Fe XII · 1.6 MK",
+    "211": "Fe XIV · 2 MK",
+    "284": "Fe XV · 2 MK",
+    "304": "He II · 0.05 MK",
+    "335": "Fe XVI · 2.5 MK",
+    "1600": "C IV + continuum · 0.1 MK",
+    "1700": "continuum · 5000 K",
+    "4500": "continuum · 5000 K",
 }
 
 
@@ -167,14 +170,17 @@ def _stereo(craft, detector):
             "STEREO",
             f"euvi_{craft.lower()}",
             _wavelengths("171", "195", "284", "304"),
-            native={"171": 150, "195": 300, "284": 1200, "304": 600},
+            # as in 2024 (A) and 2012 (B); the programme changed many times
+            native={"171": 150, "195": 150, "284": 600, "304": 150} if craft == "A" else {"171": 7200, "195": 300, "284": 7200, "304": 600},
             size_mb=8.4,
             prepared="level 1",
-            description="On-board processing undone · bias, filter and flat corrected · counts/s · north up",
+            description="On-board processing undone · bias, filter and flat corrected · counts/s · north up · the cadence changed over the mission",
             output="Level 1 FITS, counts/s",
             params=params,
             process_seconds=2.0,
+            variable=True,
         )
+    field = "1.4–4 R☉" if detector == "COR1" else "2.5–15 R☉"
     return Source(
         label,
         "STEREO",
@@ -182,7 +188,7 @@ def _stereo(craft, detector):
         native=300 if detector == "COR1" else 900,
         size_mb=6.3,
         prepared="level 1",
-        description="Polarizer triplet → total brightness in mean solar brightness (SECCHI level 1) · north up · monthly background in a second HDU",
+        description=f"{field} · polarizer triplet → total brightness in mean solar brightness (SECCHI level 1) · north up · monthly background in a second HDU",
         output="One level 1 FITS per sequence, mean solar brightness, with background",
         params=params,
         unit="sequence",
@@ -222,7 +228,7 @@ SOURCES = [
         native={"M_45s": 45, "Ic_45s": 45, "V_45s": 45, "M_720s": 720, "Ic_720s": 720, "Ic_noLimbDark_720s": 720, "V_720s": 720},
         size_mb=16,
         prepared="north up",
-        description="North up · Sun-centred · native 0.504″/px",
+        description="Fe I 6173 Å · north up · Sun-centred · native 0.504″/px",
         output="North-up FITS, ready to open",
         default_cadence=300,
         process_seconds=3.0,
@@ -236,27 +242,29 @@ SOURCES = [
         prepared="one file per exposure",
         description="One file per exposure · its own time and pointing · counts/s · north up",
         output="One FITS per exposure",
+        unit="observation",
     ),
     Source(
         "SOHO · EIT",
         "SOHO",
         "eit",
         _wavelengths("171", "195", "284", "304"),
-        native=720,
+        native=21600,
         size_mb=2.1,
         prepared="level 1",
-        description="Level 1 where SDAC has it (dark, flat, degrid, degradation, exposure) · north up",
+        description="Level 1 where SDAC has it (dark, flat, degrid, degradation, exposure) · north up · SDAC has about four images a day per channel",
         output="Level 1 FITS, ready to open",
         params={"soho_instrument": "EIT"},
+        variable=True,
     ),
     Source(
         "SOHO · LASCO",
         "SOHO",
         "lasco",
-        [("C2", "C2", "2–6 R☉"), ("C3", "C3", "3.7–30 R☉")],
+        [("C2", "C2", "1.5–6 R☉"), ("C3", "C3", "3.7–30 R☉")],
         channel_param="detector",
         channel_name="Detector",
-        native={"C2": 720, "C3": 1200},
+        native={"C2": 720, "C3": 720},
         size_mb=2.1,
         prepared="level 1",
         description="Calibrated to mean solar brightness (NRL level 1) · distortion removed · north up · F corona background in a second HDU",
@@ -268,15 +276,16 @@ SOURCES = [
         "SOHO · MDI",
         "SOHO",
         "mdi",
-        [("Magnetogram", "magnetogram", "96 min · level 1.8"), ("Continuum", "continuum", "")],
+        [("Magnetogram", "magnetogram", "1 min"), ("Continuum", "continuum", "12 min")],
         channel_param="physobs",
         channel_name="Product",
-        native=5760,
+        native={"magnetogram": 60, "continuum": 720},
         size_mb=2.1,
         prepared="north up",
-        description="North up · Sun-centred · MDI ended in 2011",
+        description="Ni I 6768 Å · north up · Sun-centred · the VSO is searched hour by hour, so long windows take a while · MDI ended in 2011",
         output="North-up FITS, ready to open",
         params={"soho_instrument": "MDI"},
+        variable=True,
     ),
     Source(
         "GOES · SUVI",
@@ -311,7 +320,11 @@ SOURCES = [
     #     output="Synoptic FITS, Gauss, as the archive sends them",
     # ),
 ]
-SUVI_NATIVE = {"2": 240, "1b": 20}
+# Seconds between SUVI images from one satellite: level 2 composites, and the
+# level 1b exposures of each channel (on average; they come in pairs)
+SUVI_NATIVE = {"2": 240, "1b": {"94": 40, "131": 80, "171": 120, "195": 35, "284": 120, "304": 60}}
+COUNT_DELAY_MS = 700  # the form settles this long before the archive is asked
+COUNT_TIMEOUT_S = 600  # an MDI day is searched hour by hour
 THROUGHPUT_MB_S = {"vso": 1.5, "jsoc": 4.0}
 JSOC_STAGING_S = 60
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -328,7 +341,8 @@ request = json.loads(sys.argv[2])
 try:
     files = getattr(sdd, request["function"])(**request["kwargs"])
     sys.stdout.flush()
-    print("DOWNLOADED_FILES:" + json.dumps(files or []))
+    dry_run = request["kwargs"].get("dry_run")
+    print("DOWNLOADED_FILES:" + json.dumps(files if dry_run else (files or [])))
     sys.stdout.flush()
 except Exception:
     import traceback
@@ -369,18 +383,13 @@ class DownloadWorker(QThread):
             # as an argument, never as Python source
             function, kwargs = self._download_request()
             request = json.dumps({"function": function, "kwargs": kwargs})
-            package_parent = os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            )
             self.progress.emit("Starting download...")
-
-            launch_cwd = os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
             process = subprocess.Popen(
-                [sys.executable, "-u", "-c", _DOWNLOAD_SCRIPT, package_parent, request],
+                [sys.executable, "-u", "-c", _DOWNLOAD_SCRIPT, _package_parent(), request],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 bufsize=0,
-                cwd=launch_cwd,
+                cwd=_launch_cwd(),
             )
 
             # One thread per pipe hands over what arrives (works on every
@@ -476,58 +485,117 @@ class DownloadWorker(QThread):
             self.error.emit(str(e))
 
     def _download_request(self):
-        """The downloader function to call and its keyword arguments."""
-        params = self.params
-        instrument = params.get("instrument")
-        common = dict(
-            start_time=params["start_time"],
-            end_time=params["end_time"],
-            output_dir=params["output_dir"],
-            skip_calibration=params.get("skip_calibration", False),
-            sample=params.get("sample"),
-            keep_originals=params.get("keep_originals", False),
-        )
+        return download_request(self.params)
 
-        if instrument == "AIA":
-            aia = dict(
-                common,
-                wavelength=str(params["wavelength"]),
-                apply_psf=params.get("apply_psf", False),
-                apply_degradation=params.get("apply_degradation", True),
-                apply_exposure_norm=params.get("apply_exposure_norm", True),
+
+def _launch_cwd():
+    return os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~")
+
+
+def _package_parent():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+class ArchiveCount(QThread):
+    """Asks the archive which images the form would download: the download
+    function's dry run (the search alone, nothing fetched) in a separate
+    process, like the download itself."""
+
+    answered = pyqtSignal(str, object)  # the request key; the ISO times, None when the archive did not answer
+
+    def __init__(self, key, params, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.params = params
+        self.process = None
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+        if self.process is not None and self.process.poll() is None:
+            self.process.kill()
+
+    def run(self):
+        import json
+        import subprocess
+
+        times = None
+        try:
+            function, kwargs = download_request(self.params)
+            request = json.dumps({"function": function, "kwargs": dict(kwargs, dry_run=True)})
+            self.process = subprocess.Popen(
+                [sys.executable, "-u", "-c", _DOWNLOAD_SCRIPT, _package_parent(), request],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                cwd=_launch_cwd(),
             )
-            if params.get("use_fido", True):
-                return "download_aia_with_fido", aia
-            return "download_aia", dict(aia, email=params.get("email") or None)
-        if instrument == "HMI":
-            hmi = dict(common, series=str(params["series"]))
-            if params.get("use_fido", True) and "720" not in hmi["series"]:
-                return "download_hmi_with_fido", hmi
-            return "download_hmi", dict(hmi, email=params.get("email") or None)
-        if instrument == "IRIS":
-            return "download_iris", dict(common, obs_type="SJI", wavelength=params.get("wavelength"))
-        if instrument == "SOHO":
-            return "download_soho", dict(
-                common,
-                instrument=str(params["soho_instrument"]),
-                wavelength=params.get("wavelength"),
-                detector=params.get("detector"),
-                physobs=params.get("physobs"),
-            )
-        if instrument == "GOES SUVI":
-            return "download_goes_suvi", dict(
-                common, wavelength=params.get("wavelength"), level=str(params.get("level", "2"))
-            )
-        if instrument == "STEREO":
-            return "download_stereo", dict(
-                common,
-                spacecraft=str(params.get("spacecraft", "A")),
-                instrument=str(params.get("stereo_instrument", "EUVI")),
-                wavelength=params.get("wavelength"),
-            )
-        if instrument == "GONG":
-            return "download_gong", dict(common)
-        raise ValueError(f"Unknown instrument: {instrument}")
+            if self.stopped:
+                self.process.kill()
+            out, _ = self.process.communicate(timeout=COUNT_TIMEOUT_S)
+            for line in out.decode("utf-8", errors="replace").splitlines():
+                if line.startswith("DOWNLOADED_FILES:"):
+                    times = json.loads(line[len("DOWNLOADED_FILES:"):])
+        except Exception:  # a timeout, or the process could not start
+            if self.process is not None and self.process.poll() is None:
+                self.process.kill()
+            times = None
+        if not self.stopped:
+            self.answered.emit(self.key, times)
+
+
+def download_request(params):
+    """The downloader function to call for the form's ``params`` and its
+    keyword arguments."""
+    instrument = params.get("instrument")
+    common = dict(
+        start_time=params["start_time"],
+        end_time=params["end_time"],
+        output_dir=params["output_dir"],
+        skip_calibration=params.get("skip_calibration", False),
+        sample=params.get("sample"),
+        keep_originals=params.get("keep_originals", False),
+    )
+
+    if instrument == "AIA":
+        aia = dict(
+            common,
+            wavelength=str(params["wavelength"]),
+            apply_psf=params.get("apply_psf", False),
+            apply_degradation=params.get("apply_degradation", True),
+            apply_exposure_norm=params.get("apply_exposure_norm", True),
+        )
+        if params.get("use_fido", True):
+            return "download_aia_with_fido", aia
+        return "download_aia", dict(aia, email=params.get("email") or None)
+    if instrument == "HMI":
+        hmi = dict(common, series=str(params["series"]))
+        if params.get("use_fido", True) and "720" not in hmi["series"]:
+            return "download_hmi_with_fido", hmi
+        return "download_hmi", dict(hmi, email=params.get("email") or None)
+    if instrument == "IRIS":
+        return "download_iris", dict(common, obs_type="SJI", wavelength=params.get("wavelength"))
+    if instrument == "SOHO":
+        return "download_soho", dict(
+            common,
+            instrument=str(params["soho_instrument"]),
+            wavelength=params.get("wavelength"),
+            detector=params.get("detector"),
+            physobs=params.get("physobs"),
+        )
+    if instrument == "GOES SUVI":
+        return "download_goes_suvi", dict(
+            common, wavelength=params.get("wavelength"), level=str(params.get("level", "2"))
+        )
+    if instrument == "STEREO":
+        return "download_stereo", dict(
+            common,
+            spacecraft=str(params.get("spacecraft", "A")),
+            instrument=str(params.get("stereo_instrument", "EUVI")),
+            wavelength=params.get("wavelength"),
+        )
+    if instrument == "GONG":
+        return "download_gong", dict(common)
+    raise ValueError(f"Unknown instrument: {instrument}")
 
 
 # ------------------------------------------------------------------ helpers
@@ -625,17 +693,26 @@ def _muted(text, color):
 
 
 class Timeline(QWidget):
-    """One pill per expected file across the window; a solid bar when there
-    are too many to tell apart."""
+    """One pill per expected file across the window, a solid bar when there
+    are too many to tell apart; once the archive has answered, a tick
+    where each file it holds falls (gaps show)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.count = 0
+        self.positions = None
         self.setFixedHeight(12)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def set_count(self, count):
         self.count = count or 0
+        self.positions = None
+        self.update()
+
+    def set_positions(self, positions):
+        """Ticks at ``positions``, fractions (0 to 1) of the window."""
+        self.positions = [min(max(p, 0.0), 1.0) for p in positions]
+        self.count = len(self.positions)
         self.update()
 
     def paintEvent(self, event):
@@ -646,7 +723,10 @@ class Timeline(QWidget):
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(theme_manager.palette["highlight_deep"]))
         width, y, h, gap = self.width(), 3, 6, 3
-        if self.count * (gap + 4) > width:  # too many to tell apart: one bar
+        if self.positions is not None:
+            for p in self.positions:
+                painter.drawRoundedRect(int(round(p * (width - 4))), y, 4, h, 2, 2)
+        elif self.count * (gap + 4) > width:  # too many to tell apart: one bar
             painter.drawRoundedRect(0, y, width, h, 3, 3)
         else:
             pill = (width - gap * (self.count - 1)) / float(self.count)
@@ -675,6 +755,9 @@ class SolarDataViewerGUI(QDialog):
         self._fetched = self._processed = self._total = 0
         self._log_lines = []
         self._estimate = {}
+        self._found = None  # (request key, ISO times) once the archive has answered
+        self._count_key = None  # the request the archive is being asked about
+        self._count_worker = None
         self._updating = False
         self._window_seconds = 3600
         self.base_dir = os.path.join(os.path.expanduser("~"), "solar_data")
@@ -693,6 +776,10 @@ class SolarDataViewerGUI(QDialog):
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
+        self._count_timer = QTimer(self)
+        self._count_timer.setSingleShot(True)
+        self._count_timer.setInterval(COUNT_DELAY_MS)
+        self._count_timer.timeout.connect(self._ask_archive)
 
         self.on_instrument_changed(0)
         try:
@@ -760,7 +847,7 @@ class SolarDataViewerGUI(QDialog):
         label = _label("Cadence", "Hint")
         label.setFixedWidth(60)
         row.addWidget(label)
-        self.cadence_group, self.cadence_buttons = _segments([text or "All" for text, _ in CADENCE_SEGMENTS])
+        self.cadence_group, self.cadence_buttons = _segments([text for text, _ in CADENCE_SEGMENTS])
         for button in self.cadence_buttons:
             button.clicked.connect(lambda _=False, b=button: self._pick(self.cadence_buttons, b, self.update_summary))
         row.addWidget(self.cadence_group)
@@ -1048,7 +1135,8 @@ class SolarDataViewerGUI(QDialog):
 
     def native_seconds(self):
         if self.source.instrument == "GOES SUVI":
-            return SUVI_NATIVE[self.suvi_level()]
+            native = SUVI_NATIVE[self.suvi_level()]
+            return native.get(str(self.channel())) if isinstance(native, dict) else native
         return self.source.native_seconds(self.channel())
 
     def use_jsoc(self):
@@ -1119,12 +1207,16 @@ class SolarDataViewerGUI(QDialog):
         self.source_buttons[0].setEnabled(not jsoc_only)
         if jsoc_only:
             self._pick(self.source_buttons, self.source_buttons[1])
-        # cadence segments finer than the native cadence change nothing
+        # cadence segments no coarser than a fixed native cadence change nothing
         native = self.native_seconds()
-        self.cadence_buttons[0].setText(_cadence_text(native) if native else "All")
-        self.cadence_buttons[0].setToolTip("Every image" + (f", one every {_cadence_text(native)}" if native else ""))
+        about = "typically " if source.variable else ""
+        self.cadence_buttons[0].setToolTip(
+            f"Every image the archive has: {about}one every {_cadence_text(native)}" if native else "Every image the archive has"
+        )
         for button, seconds in zip(self.cadence_buttons[1:], CADENCE_VALUES[1:]):
-            button.setEnabled(not native or seconds > native)
+            usable = not native or source.variable or seconds > native
+            button.setEnabled(usable)
+            button.setToolTip("" if usable else f"{source.label.split(' · ')[-1]} takes one every {_cadence_text(native)}: use Every image")
         chosen = [b for b in self.cadence_buttons if b.isChecked()]
         if not chosen or not chosen[0].isEnabled():
             self._pick(self.cadence_buttons, self.cadence_buttons[0])
@@ -1171,9 +1263,11 @@ class SolarDataViewerGUI(QDialog):
             self.update_summary()
 
     # ------------------------------------------------------------ summary
-    def estimate(self):
+    def estimate(self, found=None):
         """What the form asks for: count, size and time, None where it
-        cannot be known (IRIS: one cube per observation)."""
+        cannot be known (IRIS: one cube per observation). ``found``, the
+        times the archive holds, replaces the count worked out from the
+        cadence."""
         source = self.source
         start, end = self.times()
         window = (end - start).total_seconds() if start and end else None
@@ -1183,6 +1277,9 @@ class SolarDataViewerGUI(QDialog):
         count = size = seconds = None
         if window is not None and window > 0 and step and source.size_mb is not None:
             count = int(window // step) + 1
+        if found is not None and window is not None and window > 0:
+            count = len(found)
+        if count is not None and source.size_mb is not None:
             size = count * source.size_mb
             rate = THROUGHPUT_MB_S["jsoc" if self.use_jsoc() else "vso"]
             seconds = size / rate + (JSOC_STAGING_S if self.use_jsoc() else 0)
@@ -1191,8 +1288,10 @@ class SolarDataViewerGUI(QDialog):
                 if source.instrument == "AIA" and self.psf_checkbox.isChecked():
                     per_file *= 20
                 seconds += count * per_file / 2.0  # two at a time
+        elif count is not None:  # IRIS: the size of a cube varies
+            size = None
         native_count = native_size = None
-        if count is not None and native and cadence and cadence > native:
+        if count is not None and source.size_mb is not None and native and cadence and cadence > native:
             native_count = int(window // native) + 1
             native_size = native_count * source.size_mb
         return dict(
@@ -1204,7 +1303,15 @@ class SolarDataViewerGUI(QDialog):
         source = self.source
         palette = theme_manager.palette
         secondary, muted, link = palette["text_secondary"], palette["disabled"], palette["link"]
-        est = self._estimate = self.estimate()
+        key = self._request_key()
+        if key != self._count_key:  # a new question for the archive
+            self._stop_count()
+            self._count_key, self._found = key, None
+            if key is not None:
+                self._count_timer.start()
+        found = self._found[1] if self._found and self._found[0] == key else None
+        archive_failed = bool(self._found) and self._found[0] == key and found is None
+        est = self._estimate = self.estimate(found)
         start, end = est["start"], est["end"]
         bad_window = start is None or end is None or end <= start
         set_tone(self.start_edit, None if start is not None else "error")
@@ -1222,20 +1329,37 @@ class SolarDataViewerGUI(QDialog):
         for box in (self.psf_checkbox, self.degradation_checkbox, self.exposure_norm_checkbox):
             box.setVisible(is_aia)
 
-        # the big number
+        # the big number: the archive's count once it has answered, the
+        # count the cadence gives until then
         count = est["count"]
         unit = source.unit
-        set_tone(self.size_label, None)
-        if source.size_mb is None:
-            self.count_label.setText("IRIS cubes")
-            self.size_label.setText("one per observation in the window · size varies")
-        elif count is None:
-            self.count_label.setText("—")
-            self.size_label.setText("Set a start time and a later end time")
+        plural = lambda n: f"{n} {unit}{'s' if n != 1 else ''}"  # noqa: E731
+        where = "JSOC" if self.use_jsoc() else ("NOAA" if source.instrument == "GOES SUVI" else "VSO")
+        if bad_window:
+            state = ""
+        elif found is not None:
+            state = f"in the {where} archive"
+        elif archive_failed:
+            state = f"estimate · the {where} archive did not answer"
         else:
-            self.count_label.setText(f"{count} {unit}{'s' if count != 1 else ''}")
-            where = "JSOC" if self.use_jsoc() else "VSO"
-            self.size_label.setText(f"≈ {_size_text(est['size_mb'])} · about {_duration_text(est['seconds'])} on {where}")
+            state = "checking the archive…"
+        set_tone(self.size_label, "warning" if archive_failed else None)
+        if count is None:
+            self.count_label.setText("IRIS observations" if source.size_mb is None and not bad_window else "—")
+            self.size_label.setText(
+                "Set a start time and a later end time" if bad_window else f"one cube per observation · size varies · {state}"
+            )
+        elif found is not None and count == 0:
+            self.count_label.setText("Nothing found")
+            set_tone(self.size_label, "warning")
+            self.size_label.setText(f"The {where} archive has no images for this window and channel")
+        else:
+            prefix = "" if found is not None else "≈ "
+            self.count_label.setText(prefix + plural(count))
+            if est["size_mb"] is None:
+                self.size_label.setText(f"size varies · {state}")
+            else:
+                self.size_label.setText(f"≈ {_size_text(est['size_mb'])} · about {_duration_text(est['seconds'])} · {state}")
 
         # the key/value list
         channel_text = ""
@@ -1253,35 +1377,48 @@ class SolarDataViewerGUI(QDialog):
             window_text = "—"
         self.summary_values["Window"].setText(_escape(window_text))
         cadence, native = self.cadence_seconds(), est["native"]
-        cadence_text = _cadence_text(cadence) if cadence else ("every image" if not native else _cadence_text(native))
-        extra = " " + _muted(f"(native {_cadence_text(native)})", secondary) if native and cadence else ""
+        cadence_text = f"one every {_cadence_text(cadence)}" if cadence else "every image"
+        native_word = "typically" if source.variable else "native"
+        extra = " " + _muted(f"({native_word} {_cadence_text(native)})", secondary) if native else ""
+        if found and len(found) > 1 and not cadence:  # what the archive holds here
+            stamps = sorted(datetime.strptime(t, "%Y-%m-%dT%H:%M:%S") for t in found)
+            gaps = sorted((b - a).total_seconds() for a, b in zip(stamps, stamps[1:]))
+            extra = " " + _muted(f"(about {_cadence_text(round(gaps[len(gaps) // 2]))} apart here)", secondary)
         self.summary_values["Cadence"].setText(_escape(cadence_text) + extra)
         prepared = self.calibrate_checkbox.isChecked() and source.instrument not in UNPREPARED_INSTRUMENTS
         output = source.output if prepared else "Files as the archive sends them"
         self.summary_values["Output"].setText(_escape(output))
 
         # the timeline
-        self.timeline.set_count(count or 0)
+        if found is not None and not bad_window:
+            window = est["window"]
+            self.timeline.set_positions(
+                [(datetime.strptime(t, "%Y-%m-%dT%H:%M:%S") - start).total_seconds() / window for t in found]
+            )
+        else:
+            self.timeline.set_count(count or 0)
         self.timeline_start.setText(f"{start:%H:%M}" if start else "")
         self.timeline_end.setText(f"{end:%H:%M}" if end else "")
 
         # the native-cadence note
-        if est["native_count"]:
+        if est["native_count"] and found is None:
             span = "this hour" if abs(est["window"] - 3600) < 1 else "this window"
             self.native_note.setText(
-                f"At native {_escape(_cadence_text(native))} {span} would be ~{est['native_count']} files / "
-                f"{_escape(_size_text(est['native_size_mb']))}. "
-                f"<a href='native' style='color:{link};text-decoration:none'>Use {_escape(_cadence_text(native))}</a>"
+                f"Every image ({_escape(_cadence_text(native))} apart) {span} would be ~{est['native_count']} "
+                f"{unit}{'s' if est['native_count'] != 1 else ''} / {_escape(_size_text(est['native_size_mb']))}. "
+                f"<a href='native' style='color:{link};text-decoration:none'>Use every image</a>"
             )
             self.native_note.show()
         else:
             self.native_note.hide()
 
         # the download button
-        self.download_button.setText(f"Download {count} {unit}{'s' if count != 1 else ''}" if count else "Download")
+        self.download_button.setText(f"Download {plural(count)}" if count else "Download")
         reason = None
         if bad_window:
             reason = "Set a start time and a later end time (YYYY-MM-DD HH:MM:SS)"
+        elif found is not None and not found:
+            reason = "The archive has no images for this window; try another time or channel"
         elif self.use_jsoc() and not self.email_input.text().strip():
             reason = "A JSOC export needs an email address registered at JSOC"
         else:
@@ -1292,6 +1429,47 @@ class SolarDataViewerGUI(QDialog):
                 reason = f"Cannot write to {_short_home(self.base_dir)}"
         self.download_button.setEnabled(reason is None)
         self.download_button.setToolTip(reason or "")
+
+    # ------------------------------------------------------ archive count
+    def _request_key(self):
+        """What decides which images the archive returns, as a string; None
+        while the time range does not parse."""
+        import json
+
+        start, end = self.times()
+        if start is None or end is None or end <= start:
+            return None
+        function, kwargs = download_request(self.get_download_parameters())
+        for name in ("output_dir", "skip_calibration", "keep_originals", "apply_psf", "apply_degradation", "apply_exposure_norm", "email"):
+            kwargs.pop(name, None)
+        return json.dumps([function, kwargs], sort_keys=True, default=str)
+
+    def _ask_archive(self):
+        key = self._request_key()
+        if key is None or key != self._count_key or not self.isVisible():
+            return
+        self._stop_count()
+        self._count_worker = ArchiveCount(key, self.get_download_parameters(), self)
+        self._count_worker.answered.connect(self._archive_answered)
+        self._count_worker.start()
+
+    def _archive_answered(self, key, times):
+        if key != self._count_key:
+            return
+        self._found = (key, times)
+        self.update_summary()
+
+    def _stop_count(self):
+        self._count_timer.stop()
+        if self._count_worker is not None:
+            self._count_worker.answered.disconnect()
+            self._count_worker.stop()
+            self._count_worker = None
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._count_key is not None and self._found is None and self._count_worker is None:
+            self._count_timer.start()
 
     # ----------------------------------------------------------- download
     def get_download_parameters(self) -> dict:
@@ -1324,6 +1502,7 @@ class SolarDataViewerGUI(QDialog):
         self.update_summary()
         if not self.download_button.isEnabled():
             return
+        self._stop_count()
         params = self.get_download_parameters()
         try:
             os.makedirs(params["output_dir"], exist_ok=True)
@@ -1532,6 +1711,7 @@ class SolarDataViewerGUI(QDialog):
 
     def closeEvent(self, event):
         """Stop a running download when the window is closed."""
+        self._stop_count()
         if self.download_worker is not None and self.download_worker.isRunning():
             self.download_worker.cancel()
             self.download_worker.quit()
