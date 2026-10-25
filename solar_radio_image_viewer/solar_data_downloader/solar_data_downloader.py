@@ -273,13 +273,59 @@ def _sample_attrs(sample):
 def _jsoc_record(series, start_dt, end_dt, sample=None, wavelength=None):
     """A JSOC record set string for ``series`` over the time range, every
     ``sample`` seconds (the series' own cadence when None), e.g.
-    aia.lev1_euv_12s[2022.05.19_12:00:00_UTC/3600s@60s][171]."""
-    seconds = max(1, int(round((end_dt - start_dt).total_seconds())))
+    aia.lev1_euv_12s[2022.05.19_12:00:00_UTC-2022.05.19_13:00:00_UTC@60s][171].
+    JSOC rounds each end to the nearest record slot, so the set can reach a
+    slot past either end: _jsoc_resolve trims it to the window. (A
+    start/duration range counts whole slots instead, rounded down: 3 h of
+    the 96 min MDI series is one record.)"""
     cadence = f"@{int(round(float(sample)))}s" if sample else ""
-    record = f"{series}[{start_dt.strftime('%Y.%m.%d_%H:%M:%S')}_UTC/{seconds}s{cadence}]"
+    stamp = "%Y.%m.%d_%H:%M:%S"
+    record = f"{series}[{start_dt.strftime(stamp)}_UTC-{end_dt.strftime(stamp)}_UTC{cadence}]"
     if wavelength is not None:
         record += f"[{int(wavelength)}]"
     return record
+
+
+def _trec_utc(t_rec):
+    """A JSOC T_REC ('2005.03.02_00:00:00_TAI' or '2024-05-01T00:00:09Z')
+    as a UTC datetime, or None."""
+    from astropy.time import Time
+
+    text = str(t_rec).strip()
+    if not text[:4].isdigit():
+        return None
+    scale = "tai" if text.endswith("_TAI") else "utc"
+    iso = text[:19].replace(".", "-", 2).replace("_", "T")
+    try:
+        return Time(iso, scale=scale).utc.to_datetime()
+    except ValueError:
+        return None
+
+
+def _jsoc_resolve(record, start_dt, end_dt):
+    """``record`` (from _jsoc_record) with its range set to the first and
+    last record inside the window, so that what is counted and what is
+    exported are the same records; '' when the window holds none, None
+    when JSOC cannot be asked."""
+    import drms
+
+    prefer_ipv4()
+    try:
+        keys = drms.Client().query(record, key="T_REC")
+    except Exception as e:
+        print(f"JSOC could not be searched: {e}")
+        return None
+    stamped = [(t, when) for t in keys["T_REC"] if (when := _trec_utc(t)) is not None]
+    # a slot stamped in TAI (MDI, HMI) sits 32 to 37 s before the UTC hour it
+    # is named for: allow half the spacing of the records, up to 40 s
+    gaps = sorted((b[1] - a[1]).total_seconds() for a, b in zip(stamped, stamped[1:]))
+    slack = timedelta(seconds=min(40.0, gaps[len(gaps) // 2] / 2 if gaps else 40.0))
+    inside = [t for t, when in stamped if start_dt - slack <= when <= end_dt + slack]
+    if not inside:
+        return ""
+    series, rest = record.split("[", 1)
+    cadence = re.search(r"@[^\]]+", rest.split("]", 1)[0])
+    return f"{series}[{inside[0]}-{inside[-1]}{cadence.group(0) if cadence else ''}]" + rest.split("]", 1)[1]
 
 
 def aiaexport(wavelength, cadence, start_time, end_time, sample=None):
@@ -966,6 +1012,15 @@ def _listed(found, hold=0):
     return times
 
 
+def _jsoc_window(record, start_time, end_time):
+    """``record`` resolved to the window (_jsoc_resolve), saying so when
+    the window holds nothing."""
+    resolved = _jsoc_resolve(record, _parse_time(start_time), _parse_time(end_time))
+    if resolved == "":
+        _no_data(record.split("[")[0], start_time, end_time)
+    return resolved
+
+
 def _jsoc_times(record):
     """The record times a JSOC record set holds images for (a dry run of an
     export; no email needed), or None when JSOC cannot be asked. A record
@@ -979,9 +1034,7 @@ def _jsoc_times(record):
         print(f"JSOC could not be searched: {e}")
         return None
     taken = ~keys["DATE__OBS"].astype(str).str.strip().isin(["", "nan", "None", "MISSING"])
-    # '2024-05-01T00:00:09Z' (AIA) or '2024.05.01_00:00:00_TAI' (HMI)
-    stamps = [str(t)[:19].replace(".", "-", 2).replace("_", "T") for t in keys["T_REC"][taken]]
-    times = [datetime.fromisoformat(t) for t in stamps if t[:4].isdigit()]
+    times = [when for t in keys["T_REC"][taken] if (when := _trec_utc(t)) is not None]
     return _listed(times)
 
 
@@ -1146,6 +1199,9 @@ def download_aia(
     record = aiaexport(wavelength, cadence, start_time, end_time, sample)
     if record is None:
         return []
+    record = _jsoc_window(record, start_time, end_time)
+    if not record:
+        return None if dry_run and record is None else []
     if dry_run:
         return _jsoc_times(record)
     files = _jsoc_export(record, email, output_dir, segment="image")
@@ -1211,6 +1267,9 @@ def download_hmi(series, start_time, end_time, output_dir, email=None, interval_
     record = hmiexport(series, start_time, end_time, sample)
     if record is None:
         return []
+    record = _jsoc_window(record, start_time, end_time)
+    if not record:
+        return None if dry_run and record is None else []
     if dry_run:
         return _jsoc_times(record)
     files = _jsoc_export(record, email, output_dir)
@@ -1228,6 +1287,9 @@ def download_mdi(series, start_time, end_time, output_dir, email=None, skip_cali
         print(f"Error: Invalid MDI series '{series}'. Use one of: {', '.join(MDI_SERIES)}")
         return None if dry_run else []
     record = _jsoc_record(MDI_SERIES[series], _parse_time(start_time), _parse_time(end_time), sample)
+    record = _jsoc_window(record, start_time, end_time)
+    if not record:
+        return None if dry_run and record is None else []
     if dry_run:
         return _jsoc_times(record)
     files = [str(p) for p in _jsoc_export(record, email, output_dir)]
