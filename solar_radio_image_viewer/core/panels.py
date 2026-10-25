@@ -41,7 +41,16 @@ from ..ui.searchable_combobox import ColormapSelector
 from ..ui.icons import get_resource_path, launcher_icon, themed_icon
 from ..ui.stokes_picker import StokesPicker
 from ..ui.styles import set_tone
-from ..ui.widgets import kicker, kicker_row, link_button, rule, segmented, toggle_row, vrule
+from ..ui.widgets import (
+    inline_unit,
+    kicker,
+    kicker_row,
+    link_button,
+    rule,
+    segmented,
+    toggle_row,
+    vrule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -206,14 +215,12 @@ class PanelsMixin:
         )
         thresh_label.setToolTip(threshold_tip)
         self.threshold_entry = QLineEdit("10")
-        fit_width_to_text(self.threshold_entry, "0000")
+        fit_width_to_text(self.threshold_entry, "000σ")
         self.threshold_entry.setToolTip(threshold_tip)
         self.threshold_entry.editingFinished.connect(self._on_threshold_edited)
-        sigma = QLabel("σ")
-        sigma.setObjectName("Hint")
+        inline_unit(self.threshold_entry, "σ")
         layout.addWidget(thresh_label)
         layout.addWidget(self.threshold_entry)
-        layout.addWidget(sigma)
         layout.addWidget(vrule())
 
         # Colormap and stretch

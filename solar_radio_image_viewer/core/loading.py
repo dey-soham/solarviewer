@@ -425,25 +425,7 @@ class LoadingMixin:
         if picker is not None:
             picker.offer_correlations(available_stokes)
 
-        from PyQt5.QtGui import QBrush, QColor
-
-        # Get theme-aware colors for disabled state - use palette for consistency
-        try:
-            from ..ui.styles import theme_manager
-
-            palette = theme_manager.palette
-            is_dark = theme_manager.is_dark
-            # Use the same disabled color from palette as contour dialog
-            disabled_color = QColor(palette.get("disabled", "#cccccc"))
-            enabled_color = QColor(
-                palette.get("text", "#ffffff" if is_dark else "#000000")
-            )
-        except ImportError:
-            # Fallback colors
-            disabled_color = QColor("#cccccc")
-            enabled_color = QColor("#000000")
-
-        # Changing the current item's flags/colour makes QComboBox emit
+        # Changing the current item's flags makes QComboBox emit
         # currentTextChanged, which would reload and replot the image twice.
         # Nothing is selected here, so keep the combo quiet while updating.
         was_blocked = self.stokes_combo.blockSignals(True)
@@ -454,18 +436,17 @@ class LoadingMixin:
                 # Enabled when the image has the planes it is computed from
                 enabled = not missing_planes(self.stokes_combo.itemText(i), available_stokes)
 
-                # Set item enabled/disabled using model flags AND foreground color
+                # The flags alone: the item delegate greys a disabled item in
+                # the theme of the moment (a colour set here would keep the
+                # theme of the load through a theme switch)
                 item = model.item(i)
                 if item:
                     if enabled:
                         item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                        item.setData(QBrush(enabled_color), Qt.ForegroundRole)
                     else:
-                        # Remove both enabled and selectable flags
                         item.setFlags(
                             item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable
                         )
-                        item.setData(QBrush(disabled_color), Qt.ForegroundRole)
         finally:
             self.stokes_combo.blockSignals(was_blocked)
 

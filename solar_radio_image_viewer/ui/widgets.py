@@ -12,7 +12,7 @@ Pieces every window is built from, so they all read the same way.
 - ``vrule``: a short vertical line between groups in a bar
 """
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, QObject, Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QDialogButtonBox,
@@ -182,3 +182,39 @@ def vrule(height=20, parent=None):
     line.setFrameShape(QFrame.NoFrame)
     line.setFixedHeight(height)
     return line
+
+
+class _UnitPlacer(QObject):
+    """Keeps an inline unit at the right end of its entry as it resizes."""
+
+    def __init__(self, entry, label):
+        super().__init__(entry)
+        self._label = label
+        entry.installEventFilter(self)
+        self.place(entry)
+
+    def place(self, entry):
+        hint = self._label.sizeHint()
+        self._label.setGeometry(
+            entry.width() - hint.width() - 7, (entry.height() - hint.height()) // 2,
+            hint.width(), hint.height(),
+        )
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Resize:
+            self.place(watched)
+        return False
+
+
+def inline_unit(entry, unit):
+    """Show ``unit`` (say "σ") in muted text inside the right end of the
+    line edit ``entry``; what is typed stays clear of it. Returns the label."""
+    label = QLabel(unit, entry)
+    label.setObjectName("Hint")
+    label.setAttribute(Qt.WA_TransparentForMouseEvents)  # clicks reach the entry
+    margins = entry.textMargins()
+    entry.setTextMargins(
+        margins.left(), margins.top(), label.sizeHint().width() + 3, margins.bottom()
+    )
+    _UnitPlacer(entry, label)
+    return label
