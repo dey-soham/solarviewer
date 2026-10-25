@@ -88,20 +88,21 @@ class FileNavigationMixin:
         self.invalidate_contours()
         # Clear figure to prevent restoring old view limits
         self.figure.clear()
-        # In a page, the image opens to the view of the panes it follows
+        # In a page, the image opens to the frame and view of the panes it
+        # follows (once its folder is scanned: a conversion renames it)
         page = getattr(self, "page", None)
         with page.sync.joining(self) if page is not None else nullcontext():
             loaded = self.on_visualization_changed(dir_load=True)
-        self.update_tab_name_from_path(path)  # Update tab name
-        if loaded:
-            remember_image(path)
-            self.show_status_message(
-                f"Loaded {path} in {time.time() - start_time:.2f} seconds"
-            )
-        elif loaded is False:  # unreadable (None: the user cancelled)
-            forget_image(path)
-        # Scan directory for file navigation
-        self._scan_directory_files()
+            self.update_tab_name_from_path(path)  # Update tab name
+            if loaded:
+                remember_image(path)
+                self.show_status_message(
+                    f"Loaded {path} in {time.time() - start_time:.2f} seconds"
+                )
+            elif loaded is False:  # unreadable (None: the user cancelled)
+                forget_image(path)
+            # Scan directory for file navigation
+            self._scan_directory_files()
         return loaded
 
     def _select_remote_file(self, main_window):

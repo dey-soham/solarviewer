@@ -267,13 +267,15 @@ class PaneSync:
             self.joined(pane)
 
     def joined(self, pane):
-        """``pane`` has a new image: it shows what the panes it follows
-        show (the active one first)."""
+        """``pane`` has a new image: it is reprojected to the sky frame of
+        the panes it follows if it is in the other one, then shows what
+        they show (the active one first)."""
         others = [p for p in self.page.panes if p is not pane]
         active = self.page.active_pane
         if active in others:
             others.remove(active)
             others.insert(0, active)
+        self._take_frame(pane, others)
         viewer = next((p for p in others if self.can_follow(pane, p)), None)
         if viewer is not None:
             self._give_view(viewer, [pane])
@@ -287,6 +289,26 @@ class PaneSync:
         if ranger is not None:
             vmin, vmax = ranger._last_norm_params[:2]
             self._give_range(vmin, vmax, unit, [pane])
+
+    def _take_frame(self, pane, others):
+        """``pane`` goes into the sky frame of the first linked pane of
+        ``others`` with one, reprojected as the RA/Dec | Solar XY control
+        would (meanwhile it still leads nobody)."""
+        kind = frame_kind(pane)
+        wanted = next(
+            (frame_kind(p) for p in others
+             if p.linked and p.current_image_data is not None and frame_kind(p) is not None),
+            None,
+        )
+        if kind is None or wanted is None or kind == wanted or not pane.hpc_btn.isEnabled():
+            return
+        outer, self._joining = self._joining, pane
+        pane._quiet_conversion = True
+        try:
+            pane.launch_helioprojective_viewer()
+        finally:
+            pane._quiet_conversion = False
+            self._joining = outer
 
     # --------------------------------------------------------- cursor
     def cursor_moved(self, leader, x, y):

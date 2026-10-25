@@ -59,7 +59,7 @@ class HpcViewMixin:
             import tempfile
 
             from PyQt5.QtCore import QEventLoop
-            from PyQt5.QtWidgets import QApplication, QMessageBox
+            from PyQt5.QtWidgets import QApplication
 
             # Check if image is already in helioprojective coordinates (Solar-X/Y)
             # If so, convert TO RA/Dec instead of showing error
@@ -109,8 +109,7 @@ class HpcViewMixin:
             if not success or not os.path.exists(temp_hpc_file):
                 end_busy()
                 self._original_imagename = None  # Reset since conversion failed
-                QMessageBox.warning(
-                    self,
+                self._conversion_failed(
                     "Conversion Failed",
                     "Failed to convert to helioprojective coordinates.\n\n"
                     "Please ensure the image has valid RA/DEC coordinate information.",
@@ -157,8 +156,7 @@ class HpcViewMixin:
             self._original_imagename = None  # Reset on error
             import traceback
 
-            show_error(
-                self,
+            self._conversion_failed(
                 "Conversion Failed",
                 f"Could not convert the image to helioprojective coordinates: {e}"
                 "\n\nThe conversion needs the observation time and the observatory "
@@ -166,14 +164,28 @@ class HpcViewMixin:
                 traceback.format_exc(),
             )
 
+    def _conversion_failed(self, title, text, details=None):
+        """Say the conversion failed: in a dialog, or in the status bar
+        while ``_quiet_conversion`` (a compare pane converting on its own
+        to match the others)."""
+        if getattr(self, "_quiet_conversion", False):
+            self.show_status_message(
+                "Could not reproject the image to the other panes' coordinates: "
+                + text.split("\n")[0]
+            )
+        elif details is None:
+            from PyQt5.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, title, text)
+        else:
+            show_error(self, title, text, details)
+
     def _revert_to_radec_view(self):
         """Revert from HPC view back to RA/DEC view"""
         import os
         import tempfile
 
         try:
-            from PyQt5.QtWidgets import QMessageBox
-
             begin_busy()
             self.show_status_message("Converting to RA/DEC view...")
 
@@ -227,9 +239,7 @@ class HpcViewMixin:
 
                 if not success:
                     end_busy()
-                    QMessageBox.warning(
-                        self, "Error", "Failed to convert HPC to RA/Dec"
-                    )
+                    self._conversion_failed("Error", "Failed to convert HPC to RA/Dec")
                     return
 
                 self.imagename = self._radec_temp_file
