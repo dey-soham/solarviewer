@@ -14,6 +14,8 @@ from typing import Optional, Dict, Any
 import requests
 from threading import Lock
 
+from ..version import __version__
+
 
 class RateLimitedSession:
     """
@@ -35,12 +37,9 @@ class RateLimitedSession:
         self.last_request_time: Dict[str, float] = {}
         self.lock = Lock()
 
-        # Set a browser-like User-Agent to avoid simple bot detection
-        self.session.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-        )
+        # Say who is asking: solarmonitor.org answers an old browser's
+        # User-Agent with a JavaScript bot check instead of the file
+        self.session.headers.update({"User-Agent": f"SolarViewer/{__version__} (python-requests)"})
 
     def _get_domain(self, url: str) -> str:
         """Extract domain from URL."""
@@ -167,6 +166,8 @@ class CachedSession(RateLimitedSession):
 
     def _save_to_cache(self, cache_path: Path, url: str, response: requests.Response):
         """Save response to cache."""
+        if _is_bot_check(response.text):
+            return
         try:
             cache_data = {
                 "timestamp": datetime.now().isoformat(),
@@ -200,7 +201,7 @@ class CachedSession(RateLimitedSession):
         # Try to load from cache
         if use_cache:
             cached = self._load_from_cache(cache_path)
-            if cached:
+            if cached and not _is_bot_check(cached.get("content", "")):
                 # Create a mock response object from cached data
                 response = requests.Response()
                 response.status_code = cached["status_code"]
@@ -236,6 +237,13 @@ class CachedSession(RateLimitedSession):
                     cache_file.unlink()
                 except OSError:
                     pass
+
+
+def _is_bot_check(text):
+    """True for a page that asks the browser to prove itself (a JavaScript
+    challenge) instead of the file asked for."""
+    head = text[:500]
+    return head.lstrip().startswith("<script") and "sha512" in head
 
 
 # Global cached session instance for reuse across modules
