@@ -193,7 +193,18 @@ def archive_question(key):
     files; e-CALLISTO, every station's files in the window."""
     if key[0] == "rstn":
         _, station, start, end, whole_day = key
-        return lambda: rdd.find_rstn(station, start, end, whole_day)
+
+        def rstn():
+            files = rdd.find_rstn(station, start, end, whole_day)
+            latest = None
+            if not files:  # not published yet, or a gap?
+                try:
+                    latest = rdd.rstn_latest(station)
+                except rdd.ArchiveUnreachable:
+                    pass
+            return files, latest
+
+        return rstn
     _, start, end = key
     return lambda: rdd.ecallisto_files(start, end)
 
@@ -235,6 +246,7 @@ class RadioDataDownloaderGUI(QDialog):
         self._burst_worker = None
         self._burst_days = None
         self._show_all_bursts = False
+        self._latest = None  # the last day an RSTN station's archive holds, when the request found none
         self._wanted_station = None  # an e-CALLISTO station to pick once listed
         self._burst_stations = []  # or one of these (a burst picked from the list saw them)
         self._updating = False
@@ -1065,7 +1077,7 @@ class RadioDataDownloaderGUI(QDialog):
         if answer is None:
             return out
         if self.network() == "rstn":
-            files = answer
+            files, self._latest = answer
             out["files"] = len(files)
             out["spectra"] = 1 if files else 0
             out["size_mb"] = len(files) * rdd.RSTN_FILE_MB
@@ -1215,6 +1227,9 @@ class RadioDataDownloaderGUI(QDialog):
             return f"{station} does not observe in this window (about {_hours_text(site['hours'])})"
         if year < site["first_year"] or (site["last_year"] and year > site["last_year"]):
             return f"{station}'s archive covers {_years_text(site)}"
+        if self._latest is not None and (self.day() if self.whole_day() else end.date()) > self._latest:
+            return (f"Not published yet: {station}'s archive ends on {self._latest:%Y-%m-%d}. NOAA's burst "
+                    "reports come in real time; the spectra follow weeks later")
         return f"The archive has no {station} file for this day (the station may have been down)"
 
     def showEvent(self, event):

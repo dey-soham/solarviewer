@@ -261,6 +261,43 @@ def rstn_day_file(site, day):
     return None
 
 
+def _latest_in(folder, pattern):
+    """The latest date (YYMMDD in the first group of ``pattern``) among the
+    names in ``folder``."""
+    days = []
+    for name in _listing(folder):
+        m = pattern.match(name)
+        if m:
+            try:
+                days.append(datetime.strptime(m.group(1), "%y%m%d").date())
+            except ValueError:
+                pass
+    return max(days) if days else None
+
+
+def rstn_latest(site):
+    """The last day the archive holds a file for (the archives publish weeks
+    after the observation), None when it has none."""
+    config = RSTN_SITES[site]
+    if config.get("bom"):
+        try:
+            years = sorted(n for n in _listing(f"{BOM_LEARMONTH}/") if re.fullmatch(r"\d{2}", n))
+            for year in reversed(years):
+                latest = _latest_in(f"{BOM_LEARMONTH}/{year}/", re.compile(r"^LM(\d{6})\.srs$", re.IGNORECASE))
+                if latest:
+                    return latest
+        except ArchiveUnreachable:
+            pass
+    base = f"{NOAA_RSTN}/{config['folder']}/"
+    pattern = re.compile(r"^[a-z0-9]{2}(\d{6})\.srs(?:\.gz)?$", re.IGNORECASE)
+    for year in sorted((n for n in _listing(base) if re.fullmatch(r"\d{4}", n)), reverse=True):
+        for month in sorted((n for n in _listing(f"{base}{year}/") if re.fullmatch(r"\d{2}", n)), reverse=True):
+            latest = _latest_in(f"{base}{year}/{month}/", pattern)
+            if latest:
+                return latest
+    return None
+
+
 def find_rstn(site, start, end, whole_day=None):
     """The station's files for the window (or for ``whole_day``, a date):
     a list of dicts with day, url and name."""
