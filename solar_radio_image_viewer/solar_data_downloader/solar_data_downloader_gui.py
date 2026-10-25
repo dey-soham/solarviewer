@@ -16,8 +16,18 @@ import time
 from datetime import datetime, timedelta
 
 try:
-    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize, QRectF, QVariantAnimation
-    from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+    from PyQt5.QtCore import Qt, QEvent, QObject, QTimer, pyqtSignal, QThread, QSize, QRectF, QVariantAnimation
+    from PyQt5.QtGui import (
+        QColor,
+        QFont,
+        QIcon,
+        QPainter,
+        QPen,
+        QPixmap,
+        QTextBlockFormat,
+        QTextCharFormat,
+        QTextCursor,
+    )
     from PyQt5.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -30,11 +40,11 @@ try:
         QHBoxLayout,
         QLabel,
         QLineEdit,
-        QPlainTextEdit,
         QProgressBar,
         QPushButton,
         QSizePolicy,
         QStackedWidget,
+        QTextEdit,
         QVBoxLayout,
         QWidget,
     )
@@ -345,6 +355,7 @@ SOURCES = [
 # Seconds between SUVI images from one satellite: level 2 composites, and the
 # level 1b exposures of each channel (on average; they come in pairs)
 SUVI_NATIVE = {"2": 240, "1b": {"94": 40, "131": 80, "171": 120, "195": 35, "284": 120, "304": 60}}
+LOG_LINES_SHOWN = 500  # the full log is in the log file
 COUNT_DELAY_MS = 700  # the form settles this long before the archive is asked
 SPINNER_TURN_MS = 1400  # one turn of the checking spinner's arc, as in the compare view
 COUNT_TIMEOUT_S = 600  # an MDI day is searched hour by hour
@@ -813,10 +824,13 @@ class SolarDataViewerGUI(QDialog):
     """The Solar Data Downloader window."""
 
     def __init__(self, parent=None, initial_datetime=None):
-        super().__init__(parent)
+        # A window of its own, not owned by the viewer, so either can be in
+        # front and it shows in the task switcher
+        super().__init__(None)
         self.setWindowTitle("Download solar data")
-        self.setWindowFlags((self.windowFlags() & ~Qt.WindowContextHelpButtonHint) | Qt.WindowMinimizeButtonHint)
-        self.setFixedSize(820, 600)
+        self.setWindowFlags(Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
+        self.setMinimumSize(820, 600)
+        self.resize(820, 600)
         self.setModal(False)
         self.viewer = parent if hasattr(parent, "open_path") else None
         self.initial_datetime = initial_datetime
@@ -840,8 +854,8 @@ class SolarDataViewerGUI(QDialog):
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
-        body.addWidget(self._build_form(), 1)
-        body.addWidget(self._build_side(), 0)
+        body.addWidget(self._build_form(), 5)
+        body.addWidget(self._build_side(), 3)
         outer.addLayout(body, 1)
         outer.addWidget(self._build_footer(), 0)
 
@@ -1028,7 +1042,7 @@ class SolarDataViewerGUI(QDialog):
     def _build_side(self):
         side = QFrame()
         side.setObjectName("SidePanel")
-        side.setFixedWidth(300)
+        side.setMinimumWidth(300)
         layout = QVBoxLayout(side)
         layout.setContentsMargins(0, 0, 0, 0)
         self.side_pages = QStackedWidget()
@@ -1137,11 +1151,11 @@ class SolarDataViewerGUI(QDialog):
             tiles.addWidget(tile, 1)
         layout.addLayout(tiles)
         layout.addWidget(rule())
-        self.log_view = QPlainTextEdit()
+        self.log_view = QTextEdit()
         self.log_view.setObjectName("QuietLog")
         self.log_view.setReadOnly(True)
         self.log_view.setFrameShape(QFrame.NoFrame)
-        self.log_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.log_view.setLineWrapMode(QTextEdit.WidgetWidth)
         self.log_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         layout.addWidget(self.log_view, 1)
         self.log_path_label = _label("", "Meta")
@@ -1708,29 +1722,39 @@ class SolarDataViewerGUI(QDialog):
     def _log(self, message, status=""):
         """Add a line on top of the log: the time, the message and a short
         status at the right."""
-        self._log_lines.insert(0, (datetime.utcnow().strftime("%H:%M"), message, status))
+        entry = (datetime.utcnow().strftime("%H:%M"), message, status)
+        self._log_lines.insert(0, entry)
+        del self._log_lines[LOG_LINES_SHOWN:]
         self._render_log()
 
     def _render_log(self):
-        """The log lines, each elided in the middle to the column's width."""
-        metrics = self.log_view.fontMetrics()
-        total = self.log_view.viewport().width() - 4
-        lines = []
-        for stamp, message, status in self._log_lines:
-            tail = f"  {status}" if status else ""
-            width = total - metrics.horizontalAdvance(f"{stamp}  {tail}")
-            lines.append(f"{stamp}  {metrics.elidedText(message, Qt.ElideMiddle, max(40, width))}{tail}")
-        self.log_view.setPlainText("\n".join(lines))
+        """The log lines, newest on top. A long line wraps under its message
+        (a hanging indent past the time), and file names may break after
+        _ . - and /, so nothing is cut off."""
+        palette = theme_manager.palette
+        muted = QTextCharFormat()
+        muted.setForeground(QColor(palette["text_secondary"]))
+        plain = QTextCharFormat()
+        plain.setForeground(QColor(palette["text_strong"]))
+        indent = self.log_view.fontMetrics().horizontalAdvance("00:00  ")
+        block = QTextBlockFormat()
+        block.setLeftMargin(indent)
+        block.setTextIndent(-indent)
+        block.setBottomMargin(2)
+        self.log_view.clear()
+        cursor = QTextCursor(self.log_view.document())
+        for i, (stamp, message, status) in enumerate(self._log_lines):
+            if i:
+                cursor.insertBlock()
+            cursor.setBlockFormat(block)
+            cursor.insertText(stamp + "  ", muted)
+            cursor.insertText(re.sub(r"([_./-])", "\\1\u200b", str(message)), plain)
+            if status:
+                cursor.insertText("  " + status, muted)
+        self.log_view.moveCursor(QTextCursor.Start)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self._log_lines:
-            self._render_log()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        if self._log_lines:
-            QTimer.singleShot(0, self._render_log)
+    def is_downloading(self):
+        return self.download_worker is not None and self.download_worker.isRunning()
 
     def cancel_download(self):
         if self.download_worker is not None and self.download_worker.isRunning():
@@ -1810,12 +1834,40 @@ class SolarDataViewerGUI(QDialog):
         super().closeEvent(event)
 
 
+class _CloseWithViewer(QObject):
+    """Closes the downloader when the viewer that opened it closes (the
+    downloader is a window of its own, so Qt does not do it)."""
+
+    def __init__(self, window, viewer):
+        super().__init__(window)
+        self.window = window
+        viewer.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Close and event.isAccepted():
+            self.window.close()
+        return False
+
+
 def launch_gui(parent=None, initial_datetime=None) -> SolarDataViewerGUI:
     """Show the Solar Data Downloader window (its own application when run
-    without a parent)."""
+    without a parent). A viewer keeps one window: opening it again brings
+    that one to the front."""
     app = QApplication.instance() or QApplication(sys.argv)
-    window = SolarDataViewerGUI(parent, initial_datetime=initial_datetime)
+    window = getattr(parent, "_solar_downloader", None) if parent is not None else None
+    if window is not None and not window.isVisible() and not window.is_downloading():
+        window.deleteLater()  # closed earlier: start afresh from the current image's date
+        window = None
+    if window is None:
+        window = SolarDataViewerGUI(parent, initial_datetime=initial_datetime)
+        if parent is not None:
+            parent._solar_downloader = window
+            _CloseWithViewer(window, parent)
+    if window.isMinimized():
+        window.showNormal()
     window.show()
+    window.raise_()
+    window.activateWindow()
     if parent is None:
         sys.exit(app.exec_())
     return window

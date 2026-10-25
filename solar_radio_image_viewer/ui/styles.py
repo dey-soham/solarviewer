@@ -131,7 +131,7 @@ TOKENS = {
 #   Sidebar         a QFrame navigation column
 #   NavList         a QListWidget of sections in a Sidebar
 #   Console         a QPlainTextEdit of log text, monospace
-#   QuietLog        a QPlainTextEdit of small log lines, no frame or fill
+#   QuietLog        a QTextEdit of small log lines, no frame or fill
 #   SmallCheck      a QCheckBox in the small type with a 14px box
 #   ImageWell       a QFrame or QScrollArea showing a picture on black
 #   Segmented       a QWidget holding a row of checkable buttons, one on
@@ -776,7 +776,7 @@ def get_stylesheet(palette, is_dark=True):
         font-family: {MONO_FAMILY};
         font-size: {FONT_SMALL}pt;
     }}
-    QPlainTextEdit#QuietLog {{
+    QTextEdit#QuietLog {{
         font-family: {MONO_FAMILY};
         font-size: {FONT_META}pt;
         color: {p['text_strong']};
