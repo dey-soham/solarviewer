@@ -202,6 +202,16 @@ def rms_in_box(plane, box):
     return np.sqrt(np.mean(region**2))
 
 
+def product_unit(stokes, unit):
+    """The unit of the ``stokes`` product of an image in ``unit``: none for
+    the ratios, degrees for the polarization angle, the image's otherwise."""
+    if stokes == "PANG":
+        return "deg"
+    if uses_rms(stokes):
+        return ""
+    return unit
+
+
 def uses_rms(stokes):
     """Whether the ``stokes`` product is thresholded against the RMS box."""
     return stokes not in STANDARD_STOKES and stokes not in CORRELATIONS and stokes != "L"

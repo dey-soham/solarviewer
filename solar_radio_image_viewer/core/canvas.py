@@ -745,7 +745,7 @@ class CanvasMixin:
             # filter is drawn or the background taken away, the image's
             # own value comes first and the drawn value after it
             cursor_data = im.get_cursor_data(event)
-            unit = getattr(self, "_current_bunit", "") or ""
+            unit = self.value_unit()
             if cursor_data is None:
                 val_str = ""
             elif self.radial_filter != "off" or self.display_data() is not self.current_image_data:

@@ -1213,7 +1213,7 @@ class ImagePage(QWidget):
         cmap = source.cmap_combo.currentText()
         stretch = source.stretch_combo.currentText()
         gamma = source.gamma_entry.text()
-        unit = getattr(source, "_current_bunit", None)
+        unit = source.display_unit()
         try:
             vmin, vmax = float(source.vmin_entry.text()), float(source.vmax_entry.text())
         except ValueError:
@@ -1253,7 +1253,7 @@ class ImagePage(QWidget):
                     pane.gamma_slider.setValue(int(float(gamma) * 20))
                 except ValueError:
                     pass
-                if vmin is not None and getattr(pane, "_current_bunit", None) == unit:
+                if vmin is not None and pane.display_unit() == unit:
                     pane.show_range(vmin, vmax)
                     pane.show_range_preset(None)
                 for box, on in zip(boxes, overlays):

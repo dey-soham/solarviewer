@@ -263,6 +263,15 @@ class RenderingMixin:
             cache = self._radial_cache = RadialFilterCache()
         return cache.get(data, self.radial_filter, self._radial_centre())
 
+    def value_unit(self):
+        """The unit of the image's values: the file's for a Stokes plane,
+        none for a ratio (Vfrac, Q/I...), degrees for PANG."""
+        from ..processing.stokes import product_unit
+
+        unit = getattr(self, "_current_bunit", "") or ""
+        combo = getattr(self, "stokes_combo", None)
+        return product_unit(combo.currentText(), unit) if combo is not None else unit
+
     def display_unit(self):
         """The unit of what is drawn: the image's (less the background),
         or the filter's."""
@@ -270,7 +279,7 @@ class RenderingMixin:
 
         if self.radial_filter != "off":
             return MODES[self.radial_filter][1]
-        unit = getattr(self, "_current_bunit", "") or ""
+        unit = self.value_unit()
         if self.background_subtracted and self.background_data() is not None:
             return f"{unit} less background" if unit else "less background"
         return unit
@@ -389,6 +398,11 @@ class RenderingMixin:
         may take it, core/compare_sync.py)."""
         with busy():
             self._plot_image(*args, **kwargs)
+        # The unit by the range boxes is that of what is drawn (the Stokes
+        # product chosen, a filter)
+        label = getattr(self, "range_unit_label", None)
+        if label is not None and self.current_image_data is not None:
+            label.setText(self.display_unit())
         page = getattr(self, "page", None)
         params = getattr(self, "_last_norm_params", None)
         if page is not None and params is not None and self.current_image_data is not None:

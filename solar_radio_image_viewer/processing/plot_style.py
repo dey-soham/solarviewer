@@ -154,12 +154,12 @@ def apply_plot_settings(ax, cb, ps, figure, dark=False, bunit=None, on_error=Non
         cb.ax.tick_params(**cb_tick_params)
 
         # Set colorbar label - use custom label or BUNIT from image
-        colorbar_label = ps.get("colorbar_label", "") or bunit
-        if colorbar_label:
-            cb_label_kwargs = {"fontsize": ps.get("colorbar_label_fontsize", 10)}
-            if text_color:
-                cb_label_kwargs["color"] = text_color
-            cb.set_label(colorbar_label, **cb_label_kwargs)
+        # (none for a quantity without a unit: a ratio's colorbar is bare)
+        colorbar_label = ps.get("colorbar_label", "") or bunit or ""
+        cb_label_kwargs = {"fontsize": ps.get("colorbar_label_fontsize", 10)}
+        if text_color:
+            cb_label_kwargs["color"] = text_color
+        cb.set_label(colorbar_label, **cb_label_kwargs)
 
     # Apply text color to labels and title
     if text_color:
