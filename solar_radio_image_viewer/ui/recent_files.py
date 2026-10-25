@@ -7,7 +7,7 @@ import os
 
 from PyQt5.QtCore import QSettings
 
-MAX_RECENT = 10
+MAX_RECENT = 30
 
 
 def _settings():
@@ -30,7 +30,8 @@ def remember_image(path):
     """Put the local image ``path`` (FITS file or CASA image folder) first in
     the recent list, and remember its folder."""
     path = os.path.abspath(path.rstrip("/\\") or path)
-    paths = [path] + [p for p in _stored() if p != path]
+    # (files gone since are dropped first, so they do not take up the slots)
+    paths = [path] + [p for p in _stored() if p != path and os.path.exists(p)]
     settings = _settings()
     settings.setValue("recent_images", paths[:MAX_RECENT])
     settings.setValue("last_image_folder", os.path.dirname(path))
