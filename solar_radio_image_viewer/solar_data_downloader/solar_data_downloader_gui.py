@@ -54,6 +54,7 @@ except ImportError:
     sys.exit(1)
 
 from . import solar_data_downloader as sdd  # noqa: F401 (the backend; the worker names its functions)
+from ..ui.date_picker import attach_date_picker
 from ..ui.styles import set_hand_cursor, set_tone, theme_manager
 from ..ui.widgets import kicker, kicker_row, link_button, rule, segmented
 
@@ -927,6 +928,8 @@ class SolarDataViewerGUI(QDialog):
         self.end_edit.setText((start + timedelta(hours=1)).strftime(TIME_FORMAT))
         self.start_edit.textEdited.connect(self._start_edited)
         self.end_edit.textEdited.connect(self._end_edited)
+        attach_date_picker(self.start_edit, self._start_edited, band=lambda: self.times()[1])
+        attach_date_picker(self.end_edit, self._end_edited, band=lambda: self.times()[0])
         block.addLayout(grid)
         row = QHBoxLayout()
         row.setSpacing(8)

@@ -132,6 +132,10 @@ TOKENS = {
 #   NavList         a QListWidget of sections in a Sidebar
 #   Console         a QPlainTextEdit of log text, monospace
 #   QuietLog        a QTextEdit of small log lines, no frame or fill
+#   PickerPopup     the date picker's popup (ui/date_picker.py paints its ground)
+#   PickerTitle     its month / year title, a flat button
+#   PickerArrow     its earlier / later buttons
+#   PickerRule      the line above its time row
 #   SmallCheck      a QCheckBox in the small type with a 14px box
 #   ImageWell       a QFrame or QScrollArea showing a picture on black
 #   Segmented       a QWidget holding a row of checkable buttons, one on
@@ -191,6 +195,10 @@ ROLES = (
     "NavList",
     "Console",
     "QuietLog",
+    "PickerPopup",
+    "PickerTitle",
+    "PickerArrow",
+    "PickerRule",
     "SmallCheck",
     "ImageWell",
     "Segmented",
@@ -775,6 +783,44 @@ def get_stylesheet(palette, is_dark=True):
     QPlainTextEdit#Console {{
         font-family: {MONO_FAMILY};
         font-size: {FONT_SMALL}pt;
+    }}
+    QFrame#PickerPopup {{
+        background-color: transparent;
+        border: none;
+    }}
+    QPushButton#PickerTitle {{
+        background-color: transparent;
+        border: none;
+        border-radius: {RADIUS}px;
+        color: {p['text']};
+        font-size: {FONT_BODY}pt;
+        font-weight: 600;
+        padding: 4px 8px;
+        text-align: left;
+    }}
+    QPushButton#PickerTitle:hover {{
+        background-color: {p['hover']};
+    }}
+    QPushButton#PickerTitle:disabled {{
+        color: {p['text']};
+    }}
+    QPushButton#PickerArrow {{
+        background-color: transparent;
+        border: none;
+        border-radius: {RADIUS}px;
+        color: {p['text_strong']};
+        font-size: {FONT_SECTION + 2}pt;
+        padding: 0px 0px 2px 0px;
+    }}
+    QPushButton#PickerArrow:hover {{
+        background-color: {p['hover']};
+    }}
+    QPushButton#PickerArrow:disabled {{
+        color: {p['disabled']};
+    }}
+    QFrame#PickerRule {{
+        background-color: {p['row_rule']};
+        border: none;
     }}
     QTextEdit#QuietLog {{
         font-family: {MONO_FAMILY};
