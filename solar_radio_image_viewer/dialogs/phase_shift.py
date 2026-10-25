@@ -1,910 +1,459 @@
-from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QGroupBox,
-    QRadioButton,
-    QLineEdit,
-    QLabel,
-    QPushButton,
-    QSpinBox,
-    QDoubleSpinBox,
-    QComboBox,
-    QCheckBox,
-    QFileDialog,
-    QMessageBox,
-    QPlainTextEdit,
-    QWidget,
-    QFrame,
-    QTabWidget,
-    QProgressBar,
-)
+"""
+Solar phase center shift: moves an image's coordinates so the Sun's disc is
+where the Sun really was, for one image or a folder of them (all shifted
+by what one reference image shows).
+"""
+
 import os
+import time
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..processing.fits_io import is_fits
-from ..ui.batch import BatchDialogMixin
+from ..ui.batch import BatchWindow, _escape, _short_home, output_name
 from ..ui.busy import busy
 from ..ui.errors import show_error
 from ..ui.open_image import choose_image
-from ..ui.icons import themed_icon
-from ..ui.widgets import button_bar, section
-from ..ui.styles import set_hand_cursor, set_tone
+from ..ui.widgets import kicker
 
-import multiprocessing
-import glob
-import time
-
-from ..ui.geometry import fit_to_screen
+STOKES = ("I", "Q", "U", "V", "All four")
 
 
-class PhaseShiftDialog(BatchDialogMixin, QDialog):
-    """Dialog for configuring and executing solar phase center shifting."""
+def _stem(path):
+    """An image's name without .fits, or a CASA image's without .image."""
+    name = os.path.basename(path.rstrip("/\\"))
+    if os.path.isdir(path):
+        for ext in (".image", ".im"):
+            if name.endswith(ext):
+                return name[: -len(ext)]
+        return name
+    return os.path.splitext(name)[0]
+
+
+class PhaseShiftDialog(BatchWindow):
+    """Shifts one image, or a folder of images, to the true solar center."""
+
+    VERB = "Apply Shift"
+    RUNNING = "Shifting"
+    NOUN = ("image", "images")
+    SUMMARY_ROWS = ("Image", "Reference", "From", "Method", "Stokes", "Output", "Speed")
 
     def __init__(self, parent=None, imagename=None, batch_mode=False):
-        super().__init__(parent)
-        self.setWindowTitle("Solar Phase Center Shift")
-        self.setMinimumSize(550, 600)
-        fit_to_screen(self, 650, 650)
+        super().__init__(parent, "Solar Phase Center Shift")
         self.imagename = imagename
+        folder = os.path.dirname(imagename) if imagename else ""
 
-        # Set the dialog size to match the parent window if available
-        """if parent and parent.size().isValid():
-            self.resize(parent.size())
-            # Center the dialog relative to the parent
-            self.move(
-                parent.frameGeometry().topLeft()
-                + parent.rect().center()
-                - self.rect().center()
-            )"""
-
-        self.setup_ui()
-        if batch_mode:
-            self.batch_mode_radio.setChecked(True)
-        set_hand_cursor(self)
-
-    def setup_ui(self):
-
-        # Theme setup
-        try:
-            from ..ui.styles import theme_manager
-        except ImportError:
-            from ..ui.styles import theme_manager
-
-        palette = theme_manager.palette
-        text_secondary = palette.get("text_secondary", palette["disabled"])
-
-        main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(15)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-
-        # Header description
-        description = QLabel(
-            "This tool relocates the quiet Sun disk to the actual solar center."
+        # Images
+        layout, self.files_count_label = self.block("Images", "")
+        row, self.mode_buttons, _ = self.choice_row(
+            "Shift",
+            ("One image", "A folder"),
+            ("", "Every matching image in a folder, by the offset one reference image shows"),
+            then=self.update_mode_ui,
         )
-        description.setWordWrap(True)
-        description.setObjectName("Hint")
-        main_layout.addWidget(description)
-
-        # ========== TAB WIDGET ==========
-        self.tab_widget = QTabWidget()
-        from PyQt5.QtWidgets import QScrollArea
-
-        # ========== TAB 1: FILES ==========
-        files_tab = QWidget()
-        files_layout = QVBoxLayout(files_tab)
-        files_layout.setSpacing(16)
-        files_layout.setContentsMargins(16, 16, 16, 16)
-
-        # Mode Selection
-        mode_group, mode_column = section("Processing Mode")
-        mode_layout = QHBoxLayout()
-        mode_column.addLayout(mode_layout)
-        mode_layout.setSpacing(20)
-
-        self.single_mode_radio = QRadioButton("Single File")
-        self.batch_mode_radio = QRadioButton("Batch Processing")
-        self.single_mode_radio.setChecked(True)
-
-        mode_layout.addWidget(self.single_mode_radio)
-        mode_layout.addWidget(self.batch_mode_radio)
-        mode_layout.addStretch()
-        files_layout.addWidget(mode_group)
-
-        # Connect mode radios
-        self.single_mode_radio.toggled.connect(self.update_mode_ui)
-        self.batch_mode_radio.toggled.connect(self.update_mode_ui)
-
-        # Input Settings Group
-        self.input_group, input_group_layout = section("Input Location")
-        input_group_layout.setSpacing(12)
-
-        # SINGLE MODE: Image Selection
+        layout.addLayout(row)
         self.single_file_widget = QWidget()
-        single_file_layout = QHBoxLayout(self.single_file_widget)
-        single_file_layout.setContentsMargins(0, 0, 0, 0)
-
-        img_label = QLabel("Image:")
-        img_label.setMinimumWidth(70)
-        single_file_layout.addWidget(img_label)
-
-        self.image_path_edit = QLineEdit(self.imagename or "")
-        self.image_path_edit.setPlaceholderText("Select input image (FITS/CASA)...")
-        single_file_layout.addWidget(self.image_path_edit, 1)
-
-        self.browse_button = QPushButton("Browse...")
-        self.browse_button.clicked.connect(self.browse_image)
-        single_file_layout.addWidget(self.browse_button)
-
-        input_group_layout.addWidget(self.single_file_widget)
-
-        # BATCH MODE: Reference & Pattern
+        single = QVBoxLayout(self.single_file_widget)
+        single.setContentsMargins(0, 0, 0, 0)
+        self.image_path_edit = QLineEdit(imagename or "")
+        self.image_path_edit.setPlaceholderText("A FITS file or CASA image")
+        single.addLayout(self.path_row(self.image_path_edit, self.browse_image, "Image"))
+        layout.addWidget(self.single_file_widget)
         self.batch_file_widget = QWidget()
-        batch_file_layout = QVBoxLayout(self.batch_file_widget)
-        batch_file_layout.setContentsMargins(0, 0, 0, 0)
-        batch_file_layout.setSpacing(12)
-
-        # Reference Image
-        ref_row = QHBoxLayout()
-        ref_label = QLabel("Ref Image:")
-        ref_label.setMinimumWidth(70)
-        ref_row.addWidget(ref_label)
-
+        batch = QVBoxLayout(self.batch_file_widget)
+        batch.setContentsMargins(0, 0, 0, 0)
+        batch.setSpacing(10)
         self.reference_image_edit = QLineEdit("")
-        self.reference_image_edit.setPlaceholderText(
-            "Reference image for phase center calculation"
+        self.reference_image_edit.setPlaceholderText("The image the shift is worked out from")
+        batch.addLayout(self.path_row(self.reference_image_edit, self.browse_reference_image, "Reference"))
+        self.dir_edit = QLineEdit(folder)
+        self.dir_edit.setPlaceholderText("The folder the images are in")
+        batch.addLayout(self.path_row(self.dir_edit, self.browse_directory, "Folder"))
+        self.dir_edit.editingFinished.connect(lambda: self.input_folder_chosen(self.dir_edit.text()))
+        self.pattern_edit = QLineEdit("*.fits")
+        self.pattern_edit.setToolTip("The images to shift: * stands for any part of a name")
+        self.input_pattern_edit = self.pattern_edit
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self.row_label("Matching"))
+        self.pattern_edit.setMinimumHeight(30)
+        self.pattern_edit.textChanged.connect(self.schedule_summary)
+        row.addWidget(self.pattern_edit, 1)
+        batch.addLayout(row)
+        layout.addWidget(self.batch_file_widget)
+
+        # Method
+        layout, _ = self.block("Method")
+        row, self.method_buttons, _ = self.choice_row(
+            "Find Sun by",
+            ("Gaussian fit", "Centre of mass"),
+            ("Fit a 2-D Gaussian to the disc", "The centroid of the emission above a threshold"),
+            then=self._update_method_options,
         )
-        ref_row.addWidget(self.reference_image_edit, 1)
-
-        self.reference_browse_button = QPushButton("Browse...")
-        self.reference_browse_button.clicked.connect(self.browse_reference_image)
-        ref_row.addWidget(self.reference_browse_button)
-        batch_file_layout.addLayout(ref_row)
-
-        # Input Pattern
-        pat_row = QHBoxLayout()
-        pat_label = QLabel("Pattern:")
-        pat_label.setMinimumWidth(70)
-        pat_row.addWidget(pat_label)
-
-        self.input_pattern_edit = QLineEdit("")
-        self.input_pattern_edit.setPlaceholderText("e.g., /path/to/images/*.fits")
-        pat_row.addWidget(self.input_pattern_edit, 1)
-
-        # Scan button
-        scan_btn = QPushButton()
-        scan_btn.setIcon(QIcon(themed_icon("search.png")))
-        scan_btn.setObjectName("IconOnlyButton")
-        scan_btn.setToolTip("Scan for matching files")
-        scan_btn.clicked.connect(self.scan_files)
-        pat_row.addWidget(scan_btn)
-
-        self.input_pattern_button = QPushButton("Browse...")
-        self.input_pattern_button.clicked.connect(self.browse_input_pattern)
-        pat_row.addWidget(self.input_pattern_button)
-        batch_file_layout.addLayout(pat_row)
-
-        # File count label
-        self.files_count_label = QLabel("")
-        self.files_count_label.setObjectName("Hint")
-        batch_file_layout.addWidget(self.files_count_label)
-
-        input_group_layout.addWidget(self.batch_file_widget)
-        files_layout.addWidget(self.input_group)
-        files_layout.addStretch()
-
-        # Wrap Files Tab in Scroll Area
-        files_scroll = QScrollArea()
-        files_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
-        files_scroll.setWidgetResizable(True)
-        files_scroll.setFrameShape(QFrame.NoFrame)
-        files_scroll.setWidget(files_tab)
-        self.tab_widget.addTab(files_scroll, "Files")
-
-        # ========== TAB 2: OPTIONS ==========
-        options_tab = QWidget()
-        options_layout = QVBoxLayout(options_tab)
-        options_layout.setSpacing(16)
-        options_layout.setContentsMargins(16, 16, 16, 16)
-
-        # Stokes Settings
-        stokes_group, stokes_layout = section("Stokes Parameters")
-        stokes_layout.setSpacing(12)
-
-        # Mode
-        stokes_mode_row = QHBoxLayout()
-        stokes_mode_row.setSpacing(20)
-        st_mode_label = QLabel("Mode:")
-        stokes_mode_row.addWidget(st_mode_label)
-
-        self.single_stokes_radio = QRadioButton("Single Stokes")
-        self.full_stokes_radio = QRadioButton("Full Stokes")
-        self.single_stokes_radio.setChecked(True)
-        stokes_mode_row.addWidget(self.single_stokes_radio)
-        stokes_mode_row.addWidget(self.full_stokes_radio)
-        stokes_mode_row.addStretch()
-        stokes_layout.addLayout(stokes_mode_row)
-
-        # Parameter selection
-        param_row = QHBoxLayout()
-        param_row.setSpacing(20)
-        self.stokes_label = QLabel("Parameter:")
-        param_row.addWidget(self.stokes_label)
-
-        self.stokes_combo = QComboBox()
-        self.stokes_combo.addItems(["I", "Q", "U", "V"])
-        self.stokes_combo.setMinimumWidth(100)
-        param_row.addWidget(self.stokes_combo)
-        param_row.addStretch()
-        stokes_layout.addLayout(param_row)
-
-        # Connect stokes radios
-        self.single_stokes_radio.toggled.connect(self.update_stokes_mode)
-        self.full_stokes_radio.toggled.connect(self.update_stokes_mode)
-
-        options_layout.addWidget(stokes_group)
-
-        # Method Settings
-        method_group, method_layout = section("Detection Method")
-        method_layout.setSpacing(12)
-
-        # Method selection
-        met_sel_row = QHBoxLayout()
-        met_sel_row.setSpacing(20)
-        met_label = QLabel("Method:")
-        met_sel_row.addWidget(met_label)
-
-        self.gaussian_method_radio = QRadioButton("Gaussian Fitting")
-        self.com_method_radio = QRadioButton("Center of Mass")
-        self.gaussian_method_radio.setChecked(True)
-        met_sel_row.addWidget(self.gaussian_method_radio)
-        met_sel_row.addWidget(self.com_method_radio)
-        met_sel_row.addStretch()
-        method_layout.addLayout(met_sel_row)
-
-        # Sigma threshold
-        sigma_row = QHBoxLayout()
-        sigma_row.setSpacing(20)
-        self.sigma_label = QLabel("Sigma:")
-        sigma_row.addWidget(self.sigma_label)
-
+        layout.addLayout(row)
+        self.sigma_widget = QWidget()
+        sigma_row = QHBoxLayout(self.sigma_widget)
+        sigma_row.setContentsMargins(0, 0, 0, 0)
+        sigma_row.setSpacing(10)
+        sigma_row.addWidget(self.row_label("Threshold"))
         self.sigma_spinbox = QDoubleSpinBox()
         self.sigma_spinbox.setRange(1.0, 20.0)
         self.sigma_spinbox.setValue(10.0)
         self.sigma_spinbox.setSingleStep(0.5)
-        self.sigma_spinbox.setToolTip(
-            "Threshold multiplier for center-of-mass detection"
-        )
+        self.sigma_spinbox.setSuffix(" × RMS")
+        self.sigma_spinbox.setToolTip("Only emission above this is taken into the centre of mass")
+        self.sigma_spinbox.valueChanged.connect(self.update_summary)
         sigma_row.addWidget(self.sigma_spinbox)
         sigma_row.addStretch()
-        method_layout.addLayout(sigma_row)
-
-        # Initially hide sigma
-        self.sigma_label.setVisible(False)
-        self.sigma_spinbox.setVisible(False)
-
-        # Connect method radios
-        self.gaussian_method_radio.toggled.connect(self._update_method_options)
-        self.com_method_radio.toggled.connect(self._update_method_options)
-
-        # Visual centering option
-        self.visual_center_check = QCheckBox("Create visually centered image")
+        layout.addWidget(self.sigma_widget)
+        row, self.stokes_buttons, _ = self.choice_row(
+            "Stokes", STOKES, ("", "", "", "", "Each image's I, Q, U and V, in four files")
+        )
+        layout.addLayout(row)
+        centre = QFrame()
+        centre.setObjectName("Surface")
+        centre_row = QHBoxLayout(centre)
+        centre_row.setContentsMargins(10, 8, 10, 8)
+        centre_row.setSpacing(8)
+        self.visual_center_check = QCheckBox()
+        self.visual_center_check.setObjectName("Switch")
         self.visual_center_check.setChecked(True)
-        self.visual_center_check.setToolTip(
-            "Shifts pixel data so Sun appears at image center"
-        )
-        method_layout.addWidget(self.visual_center_check)
+        self.visual_center_check.toggled.connect(self.update_summary)
+        centre_row.addWidget(self.visual_center_check, 0, Qt.AlignVCenter)
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        text.addWidget(QLabel("Move the Sun to the image centre"))
+        desc = QLabel("Shifts the pixels too, so the disc sits in the middle of the image")
+        desc.setObjectName("Meta")
+        desc.setWordWrap(True)
+        text.addWidget(desc)
+        centre_row.addLayout(text, 1)
+        layout.addWidget(centre)
 
-        options_layout.addWidget(method_group)
-
-        # Multiprocessing Options (Batch Only)
-        self.multiprocessing_widget = QWidget()
-        mp_layout = QVBoxLayout(self.multiprocessing_widget)
-        mp_layout.setContentsMargins(0, 0, 0, 0)
-
-        mp_group, mp_group_layout = section("Performance")
-
-        self.multiprocessing_check = QCheckBox("Use multiprocessing")
-        self.multiprocessing_check.setChecked(True)
-        mp_group_layout.addWidget(self.multiprocessing_check)
-
-        cores_row = QHBoxLayout()
-        cores_row.setSpacing(20)
-        cores_label = QLabel("CPU cores:")
-        cores_row.addWidget(cores_label)
-
-        self.cores_spinbox = QSpinBox()
-        self.cores_spinbox.setRange(1, multiprocessing.cpu_count())
-        self.cores_spinbox.setValue(max(1, multiprocessing.cpu_count() - 1))
-        self.cores_spinbox.setSingleStep(1)
-        cores_row.addWidget(self.cores_spinbox)
-        cores_row.addStretch()
-        mp_group_layout.addLayout(cores_row)
-
-        mp_layout.addWidget(mp_group)
-
-        # Connect MP check
-        self.multiprocessing_check.toggled.connect(self.cores_spinbox.setEnabled)
-
-        options_layout.addWidget(self.multiprocessing_widget)
-        options_layout.addStretch()
-
-        # Wrap Options Tab in Scroll Area
-        options_scroll = QScrollArea()
-        options_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
-        options_scroll.setWidgetResizable(True)
-        options_scroll.setFrameShape(QFrame.NoFrame)
-        options_scroll.setWidget(options_tab)
-        self.tab_widget.addTab(options_scroll, "Options")
-
-        # ========== TAB 3: OUTPUT ==========
-        output_tab = QWidget()
-        output_layout = QVBoxLayout(output_tab)
-        output_layout.setSpacing(16)
-        output_layout.setContentsMargins(16, 16, 16, 16)
-
-        out_group, out_layout = section("Output Settings")
-        out_layout.setSpacing(12)
-
-        # SINGLE OUTPUT
+        # Save to
+        layout, _ = self.block("Save to")
         self.single_output_widget = QWidget()
-        single_out_layout = QHBoxLayout(self.single_output_widget)
-        single_out_layout.setContentsMargins(0, 0, 0, 0)
-
-        out_label = QLabel("File:")
-        out_label.setMinimumWidth(70)
-        single_out_layout.addWidget(out_label)
-
+        single = QVBoxLayout(self.single_output_widget)
+        single.setContentsMargins(0, 0, 0, 0)
         self.output_path_edit = QLineEdit("")
-        self.output_path_edit.setPlaceholderText("Default: centered_{input_name}.fits")
-        single_out_layout.addWidget(self.output_path_edit, 1)
-
-        self.output_browse_button = QPushButton("Browse...")
-        self.output_browse_button.clicked.connect(self.browse_output)
-        single_out_layout.addWidget(self.output_browse_button)
-        out_layout.addWidget(self.single_output_widget)
-
-        # BATCH OUTPUT
+        self.output_path_edit.setPlaceholderText("centered_<name>.fits next to the image")
+        single.addLayout(self.path_row(self.output_path_edit, self.browse_output, "File"))
+        layout.addWidget(self.single_output_widget)
         self.batch_output_widget = QWidget()
-        batch_out_layout = QHBoxLayout(self.batch_output_widget)
-        batch_out_layout.setContentsMargins(0, 0, 0, 0)
+        batch = QVBoxLayout(self.batch_output_widget)
+        batch.setContentsMargins(0, 0, 0, 0)
+        batch.setSpacing(10)
+        self.out_dir_edit = QLineEdit(os.path.join(folder, "centered") if folder else "")
+        self.out_dir_edit.setPlaceholderText("A folder, or a name for one inside the input folder")
+        batch.addLayout(self.path_row(self.out_dir_edit, self.browse_output_directory, "Folder"))
+        self.output_pattern_edit = QLineEdit("centered_*.fits")
+        self.output_pattern_edit.setToolTip("* stands for each input image's name")
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self.row_label("Names"))
+        self.output_pattern_edit.setMinimumHeight(30)
+        self.output_pattern_edit.textChanged.connect(self.schedule_summary)
+        row.addWidget(self.output_pattern_edit, 1)
+        hint = QLabel("* is the input's name")
+        hint.setObjectName("Meta")
+        row.addWidget(hint)
+        batch.addLayout(row)
+        layout.addWidget(self.batch_output_widget)
 
-        out_pat_label = QLabel("Pattern:")
-        out_pat_label.setMinimumWidth(70)
-        batch_out_layout.addWidget(out_pat_label)
+        # Speed (a folder only)
+        self.multiprocessing_widget = QWidget()
+        speed = QVBoxLayout(self.multiprocessing_widget)
+        speed.setContentsMargins(0, 0, 0, 0)
+        speed.setSpacing(10)
+        speed.addWidget(kicker("Speed"))
+        self.parallel_block(speed)
+        self.form_layout.addWidget(self.multiprocessing_widget)
 
-        self.output_pattern_edit = QLineEdit("")
-        self.output_pattern_edit.setPlaceholderText("e.g., centered/centered_*.fits")
-        batch_out_layout.addWidget(self.output_pattern_edit, 1)
-
-        self.output_pattern_button = QPushButton("Browse Dir...")
-        self.output_pattern_button.clicked.connect(self.browse_output_dir)
-        batch_out_layout.addWidget(self.output_pattern_button)
-        out_layout.addWidget(self.batch_output_widget)
-
-        output_layout.addWidget(out_group)
-
-        # Pattern help
-        help_group, help_layout = section("Pattern Help")
-        help_text = QLabel(
-            "Use <b>*</b> as a placeholder for the original filename.\n\n"
-            "<b>Example:</b> Input <code>sun_2024.fits</code> with pattern <code>centered_*.fits</code>\n"
-            "→ Output: <code>centered_sun_2024.fits</code>"
-        )
-        help_text.setWordWrap(True)
-        help_text.setObjectName("Hint")
-        help_layout.addWidget(help_text)
-        output_layout.addWidget(help_group)
-        output_layout.addStretch()
-
-        # Wrap Output Tab in Scroll Area
-        output_scroll = QScrollArea()
-        output_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
-        output_scroll.setWidgetResizable(True)
-        output_scroll.setFrameShape(QFrame.NoFrame)
-        output_scroll.setWidget(output_tab)
-        self.tab_widget.addTab(output_scroll, "Output")
-
-        main_layout.addWidget(self.tab_widget)
-
-        # ========== STATUS PANEL ==========
-        status_group = QGroupBox("Status / Results")
-        status_layout = QVBoxLayout(status_group)
-        status_layout.setContentsMargins(10, 12, 10, 10)
-
-        self.status_text = QPlainTextEdit()
-        self.status_text.setReadOnly(True)
-        self.status_text.setPlaceholderText("Status and results will appear here")
-        self.status_text.setMinimumHeight(self.status_text.fontMetrics().lineSpacing() * 4 + 12)
-        status_layout.addWidget(self.status_text, 1)
-
-        main_layout.addWidget(status_group, 1)
-
-        # Progress Bar (initially hidden)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setVisible(False)
-        main_layout.addWidget(self.progress_bar)
-
-        box, buttons = button_bar(
-            primary=("Apply Shift", self.apply_phase_shift),
-            secondary=("Cancel", self.cancel_or_abort),  # aborts while shifting
-        )
-        self.ok_button = buttons["Apply Shift"]
-        self.cancel_button = buttons["Cancel"]
-        main_layout.addWidget(box)
-
-        # Initialize UI state
+        self.footer_note.setText("Writes FITS")
+        if batch_mode:
+            self.set_chosen(self.mode_buttons, 1)
         self.update_mode_ui()
+        self._update_method_options()
+        self.finish_form()
+
+    # ------------------------------------------------------------ the form
+    def batch_mode(self):
+        return self.chosen(self.mode_buttons) == 1
+
+    def full_stokes(self):
+        return self.chosen(self.stokes_buttons) == 4
+
+    def stokes_list(self):
+        index = self.chosen(self.stokes_buttons)
+        return ["I", "Q", "U", "V"] if index == 4 else [STOKES[index]]
+
+    def use_gaussian(self):
+        return self.chosen(self.method_buttons) == 0
 
     def update_mode_ui(self):
-        """Update UI components based on the selected mode"""
-        single_mode = self.single_mode_radio.isChecked()
-
-        # Update visibility of widgets
-        self.single_file_widget.setVisible(single_mode)
-        self.batch_file_widget.setVisible(not single_mode)
-        self.single_output_widget.setVisible(single_mode)
-        self.batch_output_widget.setVisible(not single_mode)
-
-        # Multiprocessing options only visible in batch mode
-        self.multiprocessing_widget.setVisible(not single_mode)
-
-        # Update button text
-        if single_mode:
-            self.ok_button.setText("Apply Shift")
-        else:
-            self.ok_button.setText("Apply Batch Shift")
-
-    def update_stokes_mode(self):
-        """Update UI based on selected Stokes mode"""
-        single_stokes = self.single_stokes_radio.isChecked()
-        self.stokes_label.setVisible(single_stokes)
-        self.stokes_combo.setVisible(single_stokes)
+        batch = self.batch_mode()
+        self.single_file_widget.setVisible(not batch)
+        self.batch_file_widget.setVisible(batch)
+        self.single_output_widget.setVisible(not batch)
+        self.batch_output_widget.setVisible(batch)
+        self.multiprocessing_widget.setVisible(batch)
+        self.files_count_label.setVisible(batch)
 
     def _update_method_options(self):
-        """Enable/disable sigma threshold based on detection method selection"""
-        use_com = self.com_method_radio.isChecked()
-        self.sigma_label.setVisible(use_com)
-        self.sigma_spinbox.setVisible(use_com)
+        self.sigma_widget.setVisible(not self.use_gaussian())
 
     def browse_image(self):
-        """Browse for input image file (FITS or CASA image directory)"""
-        file_path = choose_image(self, "Select Input Image")
-
-        if file_path:
-            self.image_path_edit.setText(file_path)
-            self.imagename = file_path
-
-            # Set default output filename: centered_{input_basename}.fits
-            file_dir = os.path.dirname(file_path)
-            file_name = os.path.basename(file_path)
-            # Remove extension and add centered_ prefix
-            base_name = os.path.splitext(file_name)[0]
-            # Handle CASA image directories - strip .image or .im suffix
-            if os.path.isdir(file_path):
-                base_name = file_name
-                # Remove common CASA extensions
-                for ext in [".image", ".im"]:
-                    if base_name.endswith(ext):
-                        base_name = base_name[: -len(ext)]
-                        break
-            output_path = os.path.join(file_dir, f"centered_{base_name}.fits")
-            self.output_path_edit.setText(output_path)
-
-    def browse_input_pattern(self):
-        """Browse for directory and help set input pattern"""
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "Select Directory for Input Files"
-        )
-        if dir_path:
-            # Set a default pattern in the selected directory
-            self.input_pattern_edit.setText(os.path.join(dir_path, "*.fits"))
-
-            # Set a default output pattern in a 'centered' subdirectory
-            output_dir = os.path.join(dir_path, "centered")
-            self.output_pattern_edit.setText(
-                os.path.join(output_dir, "centered_*.fits")
-            )
-
-    def browse_output_dir(self):
-        """Browse for output directory for batch processing"""
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "Select Directory for Output Files"
-        )
-        if dir_path:
-            # Preserve the filename pattern but update the directory
-            pattern = os.path.basename(self.output_pattern_edit.text())
-            if not pattern:
-                pattern = "shifted_*.fits"
-            self.output_pattern_edit.setText(os.path.join(dir_path, pattern))
-
-    def browse_ms(self):
-        """Browse for MS file"""
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "Select Measurement Set Directory"
-        )
-        if dir_path:
-            self.ms_path_edit.setText(dir_path)
-
-    def browse_output(self):
-        """Browse for output file location (FITS only)"""
-        # Get suggested filename from input if available
-        suggested = ""
-        if self.image_path_edit.text():
-            input_name = os.path.basename(self.image_path_edit.text())
-            base_name = os.path.splitext(input_name)[0]
-            if os.path.isdir(self.image_path_edit.text()):
-                base_name = input_name
-                # Remove common CASA extensions
-                for ext in [".image", ".im"]:
-                    if base_name.endswith(ext):
-                        base_name = base_name[: -len(ext)]
-                        break
-            suggested = f"centered_{base_name}.fits"
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Output As", suggested, "FITS Files (*.fits)"
-        )
-        if file_path:
-            # Ensure .fits extension
-            if not file_path.endswith(".fits"):
-                file_path = file_path + ".fits"
-            self.output_path_edit.setText(file_path)
+        path = choose_image(self, "Select Input Image")
+        if path:
+            self.image_path_edit.setText(path)
+            self.imagename = path
 
     def browse_reference_image(self):
-        """Browse for reference image file for batch processing"""
-        file_path = choose_image(self, "Select Reference Image")
+        path = choose_image(self, "Select Reference Image")
+        if path:
+            self.reference_image_edit.setText(path)
+            if not self.dir_edit.text():
+                self.dir_edit.setText(os.path.dirname(path))
+                self.pattern_edit.setText("*.image" if os.path.isdir(path) else "*.fits")
+                self.input_folder_chosen(self.dir_edit.text())
 
-        if file_path:
-            self.reference_image_edit.setText(file_path)
+    def input_folder_chosen(self, folder):
+        current = self.out_dir_edit.text().strip().rstrip("/\\")
+        if folder and (not current or os.path.basename(current) == "centered"):
+            self.out_dir_edit.setText(os.path.join(folder, "centered"))
 
-            # Set default input pattern in the same directory
-            if not self.input_pattern_edit.text():
-                file_dir = os.path.dirname(file_path)
-                if os.path.isdir(file_path):  # a CASA image
-                    self.input_pattern_edit.setText(os.path.join(file_dir, "*.image"))
-                else:
-                    self.input_pattern_edit.setText(os.path.join(file_dir, "*.fits"))
+    def browse_output(self):
+        source = self.image_path_edit.text()
+        suggested = self._single_output(source) if source else ""
+        path, _ = QFileDialog.getSaveFileName(self, "Save Output As", suggested, "FITS Files (*.fits)")
+        if path:
+            self.output_path_edit.setText(path if path.endswith(".fits") else path + ".fits")
 
-            # Update default output pattern if needed
-            if not self.output_pattern_edit.text():
-                file_dir = os.path.dirname(file_path)
-                output_dir = os.path.join(file_dir, "centered")
-                self.output_pattern_edit.setText(
-                    os.path.join(output_dir, "centered_*.fits")
-                )
+    # ------------------------------------------------------------- outputs
+    def _single_output(self, source):
+        path = self.output_path_edit.text().strip()
+        if not path:
+            path = os.path.join(os.path.dirname(source), f"centered_{_stem(source)}.fits")
+        return path if path.endswith(".fits") else path + ".fits"
 
-    def scan_files(self):
-        """Scan for matched files and display count inline"""
-        input_pattern = self.input_pattern_edit.text()
-        if not input_pattern:
-            self.files_count_label.setText("Please enter a pattern")
-            return
+    def _output_pattern(self, source):
+        """The output pattern a task is given: a path, * for the image's name."""
+        if self.batch_mode():
+            folder = self.output_dir_for(source)
+            pattern = os.path.join(folder, self.output_pattern_edit.text().strip())
+        else:
+            pattern = self._single_output(source)
+        return pattern
 
-        try:
-            matched_files = sorted(glob.glob(input_pattern))
-            count = len(matched_files)
+    def _outputs(self, source):
+        """(stokes, output pattern) for ``source``: one file per Stokes."""
+        pattern = self._output_pattern(source)
+        stokes = self.stokes_list()
+        if len(stokes) == 1:
+            return [(stokes[0], pattern)]
+        root, ext = os.path.splitext(pattern)
+        return [(s, f"{root}_{s}{ext or '.fits'}") for s in stokes]
 
-            # Format text
-            if count == 0:
-                self.files_count_label.setText("No files found")
-                set_tone(self.files_count_label, "error")
-            else:
-                self.files_count_label.setText(f"Found {count} files")
-                set_tone(self.files_count_label, "success")
+    def _sources(self):
+        if self.batch_mode():
+            return self.matching_files()
+        path = self.image_path_edit.text().strip()
+        return [path] if path else []
 
-        except Exception as e:
-            self.files_count_label.setText(f"Error: {str(e)}")
-            set_tone(self.files_count_label, "error")
+    # ------------------------------------------------------------- summary
+    def summary(self):
+        sources = self._sources()
+        n = len(sources)
+        stokes = self.stokes_list()
+        method = "Gaussian fit" if self.use_gaussian() else f"centre of mass above {self.sigma_spinbox.value():g} × RMS"
+        info = {
+            "count": (n, "image" if n == 1 else "images"),
+            "sub": "with the Sun at its true position"
+            + (", moved to the centre" if self.visual_center_check.isChecked() else ""),
+            "rows": {
+                "Method": _escape(method[0].upper() + method[1:]),
+                "Stokes": "I, Q, U and V, a file each" if len(stokes) > 1 else stokes[0],
+            },
+        }
+        if self.batch_mode():
+            reference = self.reference_image_edit.text().strip()
+            info["files"] = sources
+            self.files_count_label.setText(f"{n} found" if self.dir_edit.text() else "")
+            if reference:
+                info["rows"]["Reference"] = _escape(os.path.basename(reference.rstrip("/")))
+            if self.dir_edit.text():
+                info["rows"]["From"] = _escape(_short_home(self.dir_edit.text())) + " · " + _escape(self.pattern_edit.text())
+            processes = self.processes()
+            info["rows"]["Speed"] = "one at a time" if processes == 1 else f"{processes} at once"
+            info["verb"] = f"Shift {n} image{'s' if n != 1 else ''}" if n else "Shift"
+            if not reference:
+                info["problem"] = "Choose the reference image the shift is worked out from"
+            elif not os.path.exists(reference):
+                info["problem"] = "The reference image does not exist"
+            elif not self.dir_edit.text().strip():
+                info["problem"] = "Choose the folder the images are in"
+            elif not sources:
+                info["problem"] = "No image in the folder matches"
+            elif not self.out_dir_edit.text().strip() or not self.output_pattern_edit.text().strip():
+                info["problem"] = "Choose a folder and names to save to"
+        else:
+            info["verb"] = "Apply Shift"
+            if sources:
+                info["rows"]["Image"] = _escape(os.path.basename(sources[0].rstrip("/")))
+            if not sources:
+                info["problem"] = "Choose the image to shift"
+            elif not os.path.exists(sources[0]):
+                info["problem"] = "The image does not exist"
+        if sources and "problem" not in info:
+            out = self._outputs(sources[0])[0][1]
+            info["rows"]["Output"] = _escape(_short_home(output_name(out, sources[0]) if "*" in out else out))
+        return info
 
-    def _get_matching_files(self):
-        """Helper to get files matching the input pattern"""
-        pattern = self.input_pattern_edit.text()
-        if not pattern:
-            return []
-        return sorted(glob.glob(pattern))
-
+    # ------------------------------------------------------------- running
     def apply_phase_shift(self):
-        """Apply the phase shift to the image(s)"""
-        import os
+        self.run()
+
+    def run(self):
+        """Work out the shift from the reference image, then shift each image
+        in worker processes."""
         from ..coordinates.move_phasecenter import SolarPhaseCenter
 
-        # Check if we're in batch mode or single file mode
-        batch_mode = self.batch_mode_radio.isChecked()
-
-        # Check if we're processing full Stokes
-        full_stokes = self.full_stokes_radio.isChecked()
-
-        # Validate inputs
-        if batch_mode:
-            if not self.reference_image_edit.text():
-                QMessageBox.warning(
-                    self,
-                    "Input Error",
-                    "Please select a reference image for phase center calculation",
-                )
-                return
-            if not self.input_pattern_edit.text():
-                QMessageBox.warning(
-                    self, "Input Error", "Please specify a pattern for files to process"
-                )
-                return
-        else:
-            if not self.image_path_edit.text():
-                QMessageBox.warning(self, "Input Error", "Please select an input image")
-                return
-
+        if not self.ready():
+            return
+        batch = self.batch_mode()
+        sources = self._sources()
+        reference = self.reference_image_edit.text().strip() if batch else sources[0]
+        self.start_log()
         try:
-            # Create SolarPhaseCenter instance
-            spc = SolarPhaseCenter(msname=None)
-
-            # Determine common parameters based on mode
-            if batch_mode:
-                reference_image = self.reference_image_edit.text()
-                input_pattern = self.input_pattern_edit.text()
-                output_pattern = self.output_pattern_edit.text() or None
-                matching_files = glob.glob(input_pattern)
-
-                if not matching_files:
-                    QMessageBox.warning(
-                        self, "Input Error", f"No files match: {input_pattern}"
-                    )
-                    return
-
-                self.status_text.appendPlainText(f"Found {len(matching_files)} files.")
-            else:
-                reference_image = self.image_path_edit.text()
-                # Single mode input list
-                matching_files = [reference_image]
-                # Default output pattern for single file
-                output_pattern = self.output_path_edit.text() or None
-
-            # 1. Coordinate check and Phase Result Calculation
-            is_hpc = self._is_helioprojective(reference_image)
-
-            use_gaussian = self.gaussian_method_radio.isChecked()
-            try:
-                self.status_text.appendPlainText(
-                    f"Calculating phase shift from: {reference_image}..."
+            with busy():
+                phase_result = SolarPhaseCenter(msname=None).cal_solar_phaseshift(
+                    imagename=reference,
+                    fit_gaussian=self.use_gaussian(),
+                    sigma=self.sigma_spinbox.value(),
                 )
-                with busy():
-                    phase_result = spc.cal_solar_phaseshift(
-                        imagename=reference_image,
-                        fit_gaussian=use_gaussian,
-                        sigma=self.sigma_spinbox.value(),
-                    )
-            except Exception as e:
-                import traceback
+        except Exception as e:
+            import traceback
 
-                show_error(
+            show_error(
+                self,
+                "Calculation Error",
+                f"Could not work out the phase shift from "
+                f"{os.path.basename(reference)}: {e}\n\nThe reference "
+                "image must show the Sun and have an observation date.",
+                traceback.format_exc(),
+            )
+            return
+
+        if self._is_helioprojective(reference):
+            phase_result.update(true_ra=0.0, true_dec=0.0, is_hpc=True)
+            self.log("Helioprojective image: the Sun goes to (0, 0)")
+        else:
+            phase_result["is_hpc"] = False
+            self.log(
+                f"Sun at RA {phase_result.get('true_ra', 0):.4f}°, Dec {phase_result.get('true_dec', 0):.4f}°"
+            )
+        if not phase_result.get("needs_shift", False):
+            self.log("No significant shift needed")
+            if (
+                QMessageBox.question(
                     self,
-                    "Calculation Error",
-                    f"Could not work out the phase shift from "
-                    f"{os.path.basename(reference_image)}: {e}\n\nThe reference "
-                    "image must show the Sun and have an observation date.",
-                    traceback.format_exc(),
+                    "No Shift Needed",
+                    "The Sun already looks centred. Shift anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
                 )
+                == QMessageBox.No
+            ):
                 return
 
-            # Handle HPC override or display info
-            if is_hpc:
-                phase_result["true_ra"] = 0.0
-                phase_result["true_dec"] = 0.0
-                phase_result["is_hpc"] = True
-                self.status_text.appendPlainText(
-                    "Detected HPC. Target: (0, 0) Solar-X/Y"
-                )
-            else:
-                phase_result["is_hpc"] = False
-                self.status_text.appendPlainText(
-                    f"True Position: RA={phase_result.get('true_ra', 'N/A'):.4f}, DEC={phase_result.get('true_dec', 'N/A'):.4f}"
-                )
-
-            # Check if shift needed
-            if not phase_result.get("needs_shift", False):
-                self.status_text.appendPlainText("No significant phase shift needed.")
-                if (
-                    QMessageBox.question(
-                        self,
-                        "No Shift Needed",
-                        "Solar center appears aligned. Process anyway?",
-                        QMessageBox.Yes | QMessageBox.No,
-                    )
-                    == QMessageBox.No
-                ):
-                    return
-
-            # 2. Check Overwrite (Single Mode only, for safety)
-            if not batch_mode and output_pattern:
-                if not output_pattern.endswith(".fits"):
-                    output_pattern += ".fits"
-                files_to_check = []
-                stokes_params = (
-                    ["I", "Q", "U", "V"] if full_stokes else ["I"]
-                )  # Simplified check
-
-                for s in stokes_params:
-                    # Rough check logic, assuming output_pattern is full path
-                    fname = output_pattern
-                    if full_stokes:
-                        root, ext = os.path.splitext(output_pattern)
-                        fname = f"{root}_{s}{ext}"
-                    files_to_check.append(fname)
-
-                existing = [f for f in files_to_check if os.path.exists(f)]
-                if existing:
-                    msg = "Overwrite existing files?\n\n" + "\n".join(existing[:5])
-                    if len(existing) > 5:
-                        msg += "\n..."
-                    if (
-                        QMessageBox.question(
-                            self, "Overwrite?", msg, QMessageBox.Yes | QMessageBox.No
-                        )
-                        == QMessageBox.No
-                    ):
-                        return
-
-            # 3. Prepare Tasks
-            visual_center = self.visual_center_check.isChecked()
-            use_multiprocessing = self.multiprocessing_check.isChecked() and batch_mode
-            if not batch_mode:
-                use_multiprocessing = False  # Force synchronous for single file
-
-            stokes_list = (
-                ["I", "Q", "U", "V"]
-                if full_stokes
-                else [self.stokes_combo.currentText()]
-            )
-            if full_stokes:
-                self.status_text.appendPlainText("Processing Full Stokes (I,Q,U,V)")
-
-            tasks = []
-            for fpath in matching_files:
-                for stokes in stokes_list:
-                    # Construct task tuple matching process_single_file_phase_shift wrapper
-                    task = (
-                        fpath,
+        tasks = []
+        for source in sources:
+            for stokes, pattern in self._outputs(source):
+                tasks.append(
+                    (
+                        source,
                         phase_result.get("true_ra"),
                         phase_result.get("true_dec"),
                         stokes,
-                        output_pattern,
-                        visual_center,
+                        pattern,
+                        self.visual_center_check.isChecked(),
                         phase_result,
                     )
-                    tasks.append(task)
-
-            total_tasks = len(tasks)
-            self.status_text.appendPlainText(
-                f"Prepared {total_tasks} processing tasks."
-            )
-
-            # 4. Run them in worker processes (the window stays responsive)
-            processes = 1
-            if use_multiprocessing and len(matching_files) > 1:
-                processes = self.cores_spinbox.value()
-                self.status_text.appendPlainText(
-                    f"Using Multiprocessing ({processes} cores)"
                 )
-            self._results = []
-            self._stokes_list = stokes_list
-            self._batch_start = time.time()
-            self.start_batch(
-                process_single_file_phase_shift,
-                tasks,
-                processes=processes,
-                disable=[self.input_group, self.tab_widget],
-            )
-
-        except Exception as e:
-            self.status_text.appendPlainText(f"Detailed Error: {str(e)}")
-            import traceback
-
-            traceback.print_exc()
+        if not batch:
+            existing = [t[4] for t in tasks if os.path.exists(t[4])]
+            if existing and (
+                QMessageBox.question(
+                    self,
+                    "Overwrite?",
+                    "Overwrite existing files?\n\n" + "\n".join(existing),
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                == QMessageBox.No
+            ):
+                return
+        self._stokes_list = self.stokes_list()
+        self.start_batch(
+            process_single_file_phase_shift,
+            tasks,
+            processes=self.processes() if batch else 1,
+            output_folder=os.path.dirname(tasks[0][4]),
+        )
 
     def batch_result(self, task, value):
-        self._results.append(value)
         success, path, message = value
-        name = os.path.basename(path)
+        name = os.path.basename(path.rstrip("/"))
         if len(self._stokes_list) > 1:
             name = f"{name}, Stokes {task[3]}"
         if success:
-            note = f" ({message})" if message else ""
-            self.status_text.appendPlainText(f"  - {name}: shifted{note}")
-        else:
-            self.status_text.appendPlainText(f"  - {name}: {message}")
-
-    def batch_error(self, task, message):
-        self._results.append((False, task[0], message))
-        self.status_text.appendPlainText(f"  - {os.path.basename(task[0])}: {message}")
+            self.log(f"{name}" + (f": {message}" if message else ""), "shifted")
+            return True
+        self.log(f"{name}: {message}", "failed")
+        return False
 
     def batch_finished(self, aborted):
-        if aborted:
-            return
-        results = self._results
-        total_tasks = self.progress_bar.maximum()
-        elapsed = time.time() - self._batch_start
-        success_count = sum(1 for r in results if r[0])
-        error_count = len(results) - success_count
-
-        self.status_text.appendPlainText("-" * 20)
-        self.status_text.appendPlainText(f"Completed in {elapsed:.1f}s")
-        self.status_text.appendPlainText(f"Success: {success_count}/{total_tasks}")
-
-        if error_count:
-            QMessageBox.warning(
-                self,
-                "Partial Success",
-                f"Done with {error_count} errors. Check log.",
-            )
-        elif success_count > 0:
-            QMessageBox.information(
-                self, "Done", f"Successfully processed {success_count} files."
-            )
-        else:
-            self.status_text.appendPlainText("No files processed.")
+        if not aborted:
+            self.log(f"Shifted {self._done} of {self._done + self._failed}")
 
     def _is_helioprojective(self, imagepath):
-        """Check if image is in helioprojective coordinates (Solar-X/Y)"""
-        import os
-
+        """Whether the image is in helioprojective coordinates (Solar-X/Y)."""
         if not imagepath or not os.path.exists(imagepath):
             return False
-
         try:
-            # For FITS files, check the header
             if is_fits(imagepath):
                 from astropy.io import fits
 
                 header = fits.getheader(imagepath)
                 ctype1 = header.get("CTYPE1", "").upper()
                 ctype2 = header.get("CTYPE2", "").upper()
-
-                # Check for HPC (Helioprojective)
-                if (
-                    "HPLN" in ctype1
-                    or "HPLT" in ctype2
-                    or "SOLAR" in ctype1
-                    or "SOLAR" in ctype2
-                ):
+                if "HPLN" in ctype1 or "HPLT" in ctype2 or "SOLAR" in ctype1 or "SOLAR" in ctype2:
                     return True
-
-            # For CASA images, check coordinate system
             if os.path.isdir(imagepath):
                 try:
                     from casatools import image as IA
 
                     ia_tool = IA()
                     ia_tool.open(imagepath)
-                    csys = ia_tool.coordsys()
-                    dimension_names = [n.upper() for n in csys.names()]
+                    names = [n.upper() for n in ia_tool.coordsys().names()]
                     ia_tool.close()
-
-                    if "SOLAR-X" in dimension_names or "SOLAR-Y" in dimension_names:
-                        return True
-                    if "HPLN-TAN" in dimension_names or "HPLT-TAN" in dimension_names:
+                    if {"SOLAR-X", "SOLAR-Y", "HPLN-TAN", "HPLT-TAN"} & set(names):
                         return True
                 except Exception:
                     pass
-
             return False
         except Exception:
             return False
-
-    def showEvent(self, event):
-        """Handle the show event to ensure correct sizing"""
-        super().showEvent(event)
-
-        # Ensure the dialog size matches the parent when shown
-        if self.parent() and self.parent().size().isValid():
-            # Center relative to parent
-            self.move(
-                self.parent().frameGeometry().topLeft()
-                + self.parent().rect().center()
-                - self.rect().center()
-            )
-
-
 
 
 def process_single_file_phase_shift(args):
@@ -934,5 +483,3 @@ def process_single_file_phase_shift(args):
         # Try to extract filename from args if possible
         filename = args[0] if args and len(args) > 0 else "Unknown"
         return (False, filename, f"Process Error: {str(e)}")
-
-

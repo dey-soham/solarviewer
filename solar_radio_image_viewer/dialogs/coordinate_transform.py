@@ -1,40 +1,18 @@
-from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QGroupBox,
-    QRadioButton,
-    QLineEdit,
-    QLabel,
-    QPushButton,
-    QSpinBox,
-    QComboBox,
-    QCheckBox,
-    QFileDialog,
-    QMessageBox,
-    QListWidget,
-    QListWidgetItem,
-    QPlainTextEdit,
-    QWidget,
-    QFrame,
-    QTabWidget,
-    QProgressBar,
-)
+"""
+Batch coordinate transformation: images between RA/Dec and helioprojective
+(HPC) coordinates.
+"""
+
+import glob
 import os
+import traceback
+import uuid
 
 from ..processing.fits_io import is_fits
-from ..ui.batch import BatchDialogMixin
-from ..ui.icons import themed_icon
-from ..ui.widgets import button_bar, section
-from ..ui.styles import set_hand_cursor
+from ..ui.batch import BatchWindow, _escape, _short_home, output_name
 
-import multiprocessing
-import glob
-import uuid
-import traceback
-
-from ..ui.geometry import fit_to_screen
+SYSTEMS = (("Helioprojective", "HPC", "hpc"), ("RA/Dec", "RADEC", "radec"))
+STOKES = ("I", "Q", "U", "V", "All four")
 
 
 def process_single_file_coordsys(args):
@@ -193,595 +171,132 @@ def is_already_hpc(imagepath):
 
 
 
-class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
-    """Dialog for batch coordinate transformation of images (RA/DEC <-> HPC)."""
+class CoordinateTransformationDialog(BatchWindow):
+    """Converts a folder of images to helioprojective or RA/Dec coordinates."""
+
+    VERB = "Convert"
+    RUNNING = "Converting"
+    NOUN = ("image", "images")
+    SUMMARY_ROWS = ("From", "To", "Stokes", "Output", "Speed")
 
     def __init__(self, parent=None, current_file=None):
-        super().__init__(parent)
-        self.setWindowTitle("Batch Coordinate Transformation")
-        self.setMinimumSize(600, 550)
-        fit_to_screen(self, 750, 650)
-        self.parent = parent
+        super().__init__(parent, "Transform Coordinates")
         self.current_file = current_file
-
-        # Import theme manager for theme-aware styling
-        try:
-            from ..ui.styles import theme_manager
-        except ImportError:
-            from ..ui.styles import theme_manager
-
-        # Get colors directly from the palette for consistency
-        palette = theme_manager.palette
-
-        border_color = palette["border"]
-        surface_color = palette["surface"]
-        base_color = palette["base"]
-        disabled_color = palette["disabled"]
-        text_color = palette["text"]
-        highlight_color = palette["highlight"]
-        text_secondary = palette.get("text_secondary", disabled_color)
-
-        # Store theme colors for later use
-        self._highlight_color = highlight_color
-        self._text_secondary = text_secondary
-
-        self.setup_ui()
-        set_hand_cursor(self)
-
-    def setup_ui(self):
-        """Set up the dialog UI with a modern tabbed layout."""
-        try:
-            from ..ui.styles import theme_manager
-        except ImportError:
-            from ..ui.styles import theme_manager
-
-        palette = theme_manager.palette
-        text_secondary = palette.get("text_secondary", palette["disabled"])
-        border_color = palette["border"]
-
-        main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-
-        # Header description
-        header = QLabel(
-            "Convert multiple FITS/CASA images between RA/DEC and Helioprojective (HPC) coordinates."
+        folder = os.path.dirname(current_file) if current_file else ""
+        pattern = f"*{os.path.splitext(current_file)[1]}" if current_file and os.path.splitext(current_file)[1] else "*.fits"
+        self.input_block(folder, pattern)
+        layout, _ = self.block("Convert to")
+        row, self.system_buttons, _ = self.choice_row(
+            "System",
+            [f"{name} · {short}" for name, short, _ in SYSTEMS[:1]] + [SYSTEMS[1][0]],
+            ("Solar-X / Solar-Y, as seen from the observatory", "Celestial right ascension and declination"),
+            then=self._system_changed,
         )
-        header.setWordWrap(True)
-        header.setObjectName("Hint")
-        main_layout.addWidget(header)
-
-        # ========== TAB WIDGET ==========
-        self.tab_widget = QTabWidget()
-
-        # Import QScrollArea for scrollable tabs
-        from PyQt5.QtWidgets import QScrollArea
-
-        # ========== TAB 1: FILES ==========
-        files_tab = QWidget()
-        files_layout = QVBoxLayout(files_tab)
-        files_layout.setSpacing(16)
-        files_layout.setContentsMargins(16, 16, 16, 16)
-
-        # Input directory row
-        dir_group, dir_group_layout = section("Input Location")
-        dir_group_layout.setSpacing(12)
-
-        dir_row = QHBoxLayout()
-        dir_row.setSpacing(12)
-        dir_label = QLabel("Directory:")
-        dir_label.setMinimumWidth(70)
-        dir_row.addWidget(dir_label)
-
-        self.dir_edit = QLineEdit()
-        if self.current_file:
-            self.dir_edit.setText(os.path.dirname(self.current_file))
-        self.dir_edit.setPlaceholderText("Select input directory...")
-        dir_row.addWidget(self.dir_edit, 1)
-
-        self.dir_browse_btn = QPushButton("Browse...")
-        self.dir_browse_btn.clicked.connect(self.browse_directory)
-        dir_row.addWidget(self.dir_browse_btn)
-        dir_group_layout.addLayout(dir_row)
-
-        # File pattern row
-        pattern_row = QHBoxLayout()
-        pattern_row.setSpacing(12)
-        pattern_label = QLabel("Pattern:")
-        pattern_label.setMinimumWidth(70)
-        pattern_row.addWidget(pattern_label)
-
-        self.pattern_edit = QLineEdit()
-        if self.current_file:
-            file_ext = os.path.splitext(self.current_file)[1]
-            self.pattern_edit.setText(f"*{file_ext}")
-        else:
-            self.pattern_edit.setText("*.fits")
-        self.pattern_edit.setPlaceholderText("e.g., *.fits, sun_*.fits")
-        pattern_row.addWidget(self.pattern_edit, 1)
-
-        # Scan button - scans and shows count without opening preview
-        scan_btn = QPushButton()
-        scan_btn.setIcon(QIcon(themed_icon("search.png")))
-        scan_btn.setObjectName("IconOnlyButton")
-        scan_btn.setToolTip("Scan for matching files")
-        scan_btn.clicked.connect(self.scan_files)
-        pattern_row.addWidget(scan_btn)
-
-        preview_btn = QPushButton("Preview")
-        preview_btn.setToolTip("Show list of files matching the pattern")
-        preview_btn.clicked.connect(self.preview_files)
-        pattern_row.addWidget(preview_btn)
-        dir_group_layout.addLayout(pattern_row)
-
-        # File count label (shown after scanning)
-        self.files_count_label = QLabel("")
-        self.files_count_label.setObjectName("Hint")
-        dir_group_layout.addWidget(self.files_count_label)
-
-        files_layout.addWidget(dir_group)
-        files_layout.addStretch()
-
-        # Wrap in scroll area
-        files_scroll = QScrollArea()
-        files_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
-        files_scroll.setWidgetResizable(True)
-        files_scroll.setFrameShape(QFrame.NoFrame)
-        files_scroll.setWidget(files_tab)
-        self.tab_widget.addTab(files_scroll, "Files")
-
-        # ========== TAB 2: OPTIONS ==========
-        options_tab = QWidget()
-        options_layout = QVBoxLayout(options_tab)
-        options_layout.setSpacing(16)
-        options_layout.setContentsMargins(16, 16, 16, 16)
-
-        # Target System Group
-        sys_group, sys_layout = section("Target Coordinate System")
-        sys_layout.setSpacing(12)
-
-        sys_row = QHBoxLayout()
-        sys_label = QLabel("Target System:")
-        sys_label.setMinimumWidth(100)
-        sys_row.addWidget(sys_label)
-
-        self.target_system_combo = QComboBox()
-        self.target_system_combo.addItems([
-            "Helioprojective (HPC)",
-            "Celestial (RA/DEC)"
-        ])
-        self.target_system_combo.currentIndexChanged.connect(self._update_default_output_dir)
-        sys_row.addWidget(self.target_system_combo, 1)
-        sys_layout.addLayout(sys_row)
-        options_layout.addWidget(sys_group)
-
-        # Stokes Settings
-        stokes_group, stokes_layout = section("Stokes Parameters")
-        stokes_layout.setSpacing(12)
-
-        # Mode selection
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(20)
-        mode_label = QLabel("Mode:")
-        mode_row.addWidget(mode_label)
-
-        self.single_stokes_radio = QRadioButton("Single Stokes")
-        self.single_stokes_radio.setToolTip(
-            "Convert only one Stokes parameter per file"
+        layout.addLayout(row)
+        row, self.stokes_buttons, _ = self.choice_row(
+            "Stokes",
+            STOKES,
+            ("", "", "", "", "Each image's I, Q, U and V, in four files"),
         )
-        self.full_stokes_radio = QRadioButton("Full Stokes (I, Q, U, V)")
-        self.full_stokes_radio.setToolTip("Convert all Stokes parameters for each file")
-        self.single_stokes_radio.setChecked(True)
-        mode_row.addWidget(self.single_stokes_radio)
-        mode_row.addWidget(self.full_stokes_radio)
-        mode_row.addStretch()
-        stokes_layout.addLayout(mode_row)
+        layout.addLayout(row)
+        self.output_block(os.path.join(folder, "hpc") if folder else "", "hpc_*.fits")
+        self.output_dir_edit = self.out_dir_edit  # its old name
+        self.parallel_block()
+        self.footer_note.setText("Images already in the system are copied")
+        self.finish_form()
 
-        # Stokes selection
-        param_row = QHBoxLayout()
-        param_row.setSpacing(20)
-        param_label = QLabel("Parameter:")
-        param_row.addWidget(param_label)
+    def target_mode(self):
+        return SYSTEMS[self.chosen(self.system_buttons)][1]
 
-        self.stokes_combo = QComboBox()
-        self.stokes_combo.addItems(["I", "Q", "U", "V"])
-        self.stokes_combo.setMinimumWidth(80)
-        param_row.addWidget(self.stokes_combo)
-        param_row.addStretch()
-        stokes_layout.addLayout(param_row)
+    def stokes_list(self):
+        index = self.chosen(self.stokes_buttons)
+        return ["I", "Q", "U", "V"] if index == 4 else [STOKES[index]]
 
-        # Connect mode radios
-        self.single_stokes_radio.toggled.connect(self.update_stokes_mode)
-        self.full_stokes_radio.toggled.connect(self.update_stokes_mode)
+    def _system_changed(self):
+        sub = SYSTEMS[self.chosen(self.system_buttons)][2]
+        folder = self.out_dir_edit.text().strip().rstrip("/\\")
+        source = self.dir_edit.text().strip()
+        if source and (not folder or os.path.basename(folder) in ("hpc", "radec")):
+            self.out_dir_edit.setText(os.path.join(source, sub))
+        if self.output_pattern_edit.text() in ("", "hpc_*.fits", "radec_*.fits"):
+            self.output_pattern_edit.setText(f"{sub}_*.fits")
 
-        options_layout.addWidget(stokes_group)
-
-        # Separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setObjectName("Rule")
-        options_layout.addWidget(sep)
-
-        # Performance Settings
-        perf_group, perf_layout = section("Performance")
-        perf_layout.setSpacing(12)
-
-        self.multiprocessing_check = QCheckBox(
-            "Use multiprocessing for faster conversion"
-        )
-        self.multiprocessing_check.setChecked(True)
-        perf_layout.addWidget(self.multiprocessing_check)
-
-        cores_row = QHBoxLayout()
-        cores_row.setSpacing(12)
-        cores_label = QLabel("CPU Cores:")
-        cores_row.addWidget(cores_label)
-
-        self.cores_spinbox = QSpinBox()
-        self.cores_spinbox.setRange(1, multiprocessing.cpu_count())
-        self.cores_spinbox.setValue(max(1, multiprocessing.cpu_count() - 1))
-        self.cores_spinbox.setMinimumWidth(70)
-        cores_row.addWidget(self.cores_spinbox)
-
-        cores_hint = QLabel(f"(max: {multiprocessing.cpu_count()})")
-        cores_hint.setObjectName("Hint")
-        cores_row.addWidget(cores_hint)
-        cores_row.addStretch()
-        perf_layout.addLayout(cores_row)
-
-        self.multiprocessing_check.toggled.connect(self.cores_spinbox.setEnabled)
-
-        options_layout.addWidget(perf_group)
-        options_layout.addStretch()
-
-        # Wrap in scroll area
-        options_scroll = QScrollArea()
-        options_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
-        options_scroll.setWidgetResizable(True)
-        options_scroll.setFrameShape(QFrame.NoFrame)
-        options_scroll.setWidget(options_tab)
-        self.tab_widget.addTab(options_scroll, "Options")
-
-        # ========== TAB 3: OUTPUT ==========
-        output_tab = QWidget()
-        output_layout = QVBoxLayout(output_tab)
-        output_layout.setSpacing(16)
-        output_layout.setContentsMargins(16, 16, 16, 16)
-
-        # Output location
-        out_group, out_group_layout = section("Output Location")
-        out_group_layout.setSpacing(12)
-
-        out_dir_row = QHBoxLayout()
-        out_dir_row.setSpacing(12)
-        out_dir_label = QLabel("Directory:")
-        out_dir_label.setMinimumWidth(70)
-        out_dir_row.addWidget(out_dir_label)
-
-        self.output_dir_edit = QLineEdit()
-        if self.current_file:
-            # Default to input_dir/hpc/
-            self.output_dir_edit.setText(
-                os.path.join(os.path.dirname(self.current_file), "hpc")
-            )
-        self.output_dir_edit.setPlaceholderText("Select output directory...")
-        out_dir_row.addWidget(self.output_dir_edit, 1)
-
-        self.output_dir_btn = QPushButton("Browse...")
-        self.output_dir_btn.clicked.connect(self.browse_output_directory)
-        out_dir_row.addWidget(self.output_dir_btn)
-        out_group_layout.addLayout(out_dir_row)
-
-        # Output pattern row
-        out_pattern_row = QHBoxLayout()
-        out_pattern_row.setSpacing(12)
-        out_pattern_label = QLabel("Pattern:")
-        out_pattern_label.setMinimumWidth(70)
-        out_pattern_row.addWidget(out_pattern_label)
-
-        self.output_pattern_edit = QLineEdit("hpc_*.fits")
-        self.output_pattern_edit.setPlaceholderText("e.g., hpc_*.fits")
-        out_pattern_row.addWidget(self.output_pattern_edit, 1)
-        out_group_layout.addLayout(out_pattern_row)
-
-        output_layout.addWidget(out_group)
-
-        # Pattern help
-        help_group, help_layout = section("Pattern Help")
-
-        help_text = QLabel(
-            "Use <b>*</b> as a placeholder for the original filename.\n\n"
-            "<b>Example:</b> Input <code>sun_2024.fits</code> with pattern <code>hpc_*.fits</code>\n"
-            "→ Output: <code>hpc_sun_2024.fits</code>"
-        )
-        help_text.setWordWrap(True)
-        help_text.setObjectName("Hint")
-        help_layout.addWidget(help_text)
-
-        output_layout.addWidget(help_group)
-        output_layout.addStretch()
-
-        # Wrap in scroll area
-        output_scroll = QScrollArea()
-        output_scroll.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
-        output_scroll.setWidgetResizable(True)
-        output_scroll.setFrameShape(QFrame.NoFrame)
-        output_scroll.setWidget(output_tab)
-        self.tab_widget.addTab(output_scroll, "Output")
-
-        main_layout.addWidget(self.tab_widget)
-
-        # ========== STATUS PANEL (ALWAYS VISIBLE) ==========
-        status_group = QGroupBox("Status")
-        status_layout = QVBoxLayout(status_group)
-        status_layout.setContentsMargins(10, 12, 10, 10)
-
-        self.status_text = QPlainTextEdit()
-        self.status_text.setReadOnly(True)
-        self.status_text.setPlaceholderText(
-            "Conversion status and results will appear here..."
-        )
-        self.status_text.setMinimumHeight(self.status_text.fontMetrics().lineSpacing() * 4 + 12)
-        status_layout.addWidget(self.status_text, 1)
-
-        # Progress Bar (initially hidden)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setTextVisible(True)
-        status_layout.addWidget(self.progress_bar)
-
-        main_layout.addWidget(status_group, 1)
-
-        box, buttons = button_bar(
-            primary=("Convert", self.convert_files),
-            secondary=("Cancel", self.cancel_or_abort),  # aborts while converting
-        )
-        self.ok_button = buttons["Convert"]
-        self.cancel_button = buttons["Cancel"]
-        main_layout.addWidget(box)
-
-    def _update_default_output_dir(self):
-        """Update default output directory based on transformation direction"""
-        input_dir = self.dir_edit.text()
-        if not input_dir:
-            return
-            
-        if self.target_system_combo.currentText() == "Helioprojective (HPC)":
-            target_sub = "hpc"
-            pattern = "hpc_*.fits"
-        else:
-            target_sub = "radec"
-            pattern = "radec_*.fits"
-            
-        # Update output directory if it matches previous default or is empty
-        current_out = self.output_dir_edit.text()
-        if not current_out or current_out.endswith("/hpc") or current_out.endswith("/radec"):
-            self.output_dir_edit.setText(os.path.join(input_dir, target_sub))
-            self.output_pattern_edit.setText(pattern)
-
-    def browse_directory(self):
-        """Browse for input directory"""
-        current_dir = self.dir_edit.text()
-        if not current_dir and self.current_file:
-            current_dir = os.path.dirname(self.current_file)
-        if not current_dir:
-            current_dir = os.path.expanduser("~")
-
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Input Directory", current_dir
-        )
-
-        if directory:
-            self.dir_edit.setText(directory)
-            self._update_default_output_dir()
-
-            # Preview files if pattern is already set
-            self.preview_files()
-
-    def browse_output_directory(self):
-        """Browse for output directory"""
-        current_dir = self.output_dir_edit.text()
-        if not current_dir:
-            current_dir = self.dir_edit.text()
-        if not current_dir and self.current_file:
-            current_dir = os.path.dirname(self.current_file)
-        if not current_dir:
-            current_dir = os.path.expanduser("~")
-
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Output Directory", current_dir
-        )
-
-        if directory:
-            self.output_dir_edit.setText(directory)
-
-    def update_stokes_mode(self):
-        """Update UI based on selected Stokes mode"""
-        single_stokes = self.single_stokes_radio.isChecked()
-        self.stokes_combo.setEnabled(single_stokes)
-
-    def scan_files(self):
-        """Scan for matching files and show count (without opening preview)"""
-        input_dir = self.dir_edit.text()
-        pattern = self.pattern_edit.text()
-
-        if not input_dir:
-            self.files_count_label.setText("Select a directory first")
-            return
-
-        try:
-            input_pattern = os.path.join(input_dir, pattern)
-            matching_files = glob.glob(input_pattern)
-            count = len(matching_files)
-
-            if count == 0:
-                self.files_count_label.setText("No files found")
-                self.status_text.setPlainText(f"No files found matching: {pattern}")
-            else:
-                self.files_count_label.setText(
-                    f"{count} file{'s' if count != 1 else ''} found"
-                )
-                self.status_text.setPlainText(
-                    f"Found {count} files matching the pattern."
-                )
-        except Exception as e:
-            self.files_count_label.setText(f"Error: {str(e)}")
-
-    def preview_files(self):
-        """Show files that match the pattern in a popup dialog"""
-        input_dir = self.dir_edit.text()
-        pattern = self.pattern_edit.text()
-
-        if not input_dir:
-            QMessageBox.warning(
-                self, "No Directory", "Please select an input directory first."
-            )
-            return
-
-        try:
-            # Get matching files
-            input_pattern = os.path.join(input_dir, pattern)
-            matching_files = sorted(glob.glob(input_pattern))
-
-            if not matching_files:
-                QMessageBox.information(
-                    self,
-                    "No Files Found",
-                    f"No files found matching pattern:\n{input_pattern}",
-                )
-                return
-
-            # Show files in a popup dialog
-            preview_dialog = QDialog(self)
-            preview_dialog.setWindowTitle(f"Preview: {len(matching_files)} files")
-            preview_dialog.setMinimumSize(500, 400)
-
-            layout = QVBoxLayout(preview_dialog)
-            layout.setSpacing(12)
-            layout.setContentsMargins(16, 16, 16, 16)
-
-            info_label = QLabel(
-                f"Found <b>{len(matching_files)}</b> files matching <code>{pattern}</code>"
-            )
-            layout.addWidget(info_label)
-
-            file_list = QListWidget()
-            file_list.setAlternatingRowColors(True)
-            for file_path in matching_files:
-                basename = os.path.basename(file_path)
-                item = QListWidgetItem(basename)
-                item.setToolTip(file_path)
-                file_list.addItem(item)
-            layout.addWidget(file_list, 1)
-
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(preview_dialog.accept)
-            btn_layout = QHBoxLayout()
-            btn_layout.addStretch()
-            btn_layout.addWidget(close_btn)
-            layout.addLayout(btn_layout)
-
-            preview_dialog.exec_()
-
-            self.status_text.setPlainText(
-                f"Found {len(matching_files)} files matching the pattern."
-            )
-
-        except Exception as e:
-            self.status_text.setPlainText(f"Error previewing files: {str(e)}")
-            traceback.print_exc()
+    def input_folder_chosen(self, folder):
+        self._system_changed()
 
     def _get_matching_files(self):
-        """Get list of files matching the current pattern"""
-        input_dir = self.dir_edit.text()
-        pattern = self.pattern_edit.text()
+        return self.matching_files()
 
-        if not input_dir:
-            return []
+    def _outputs(self, input_file):
+        """(stokes, output path) for ``input_file``: one file per Stokes."""
+        name = output_name(self.output_pattern_edit.text().strip(), input_file)
+        path = os.path.join(self.output_dir_for(input_file), name)
+        stokes = self.stokes_list()
+        if len(stokes) == 1:
+            return [(stokes[0], path)]
+        root, ext = os.path.splitext(path)
+        return [(s, f"{root}_{s}{ext}") for s in stokes]
 
-        input_pattern = os.path.join(input_dir, pattern)
-        return sorted(glob.glob(input_pattern))
+    def summary(self):
+        files = self._get_matching_files()
+        pattern = self.output_pattern_edit.text().strip()
+        name, short, _ = SYSTEMS[self.chosen(self.system_buttons)]
+        n = len(files)
+        stokes = self.stokes_list()
+        info = {
+            "count": (n, "image" if n == 1 else "images"),
+            "sub": f"in {name.lower() if short == 'HPC' else name} coordinates"
+            + (f", {n * 4} files (I, Q, U, V)" if len(stokes) > 1 and n else ""),
+            "files": files,
+            "rows": {
+                "To": f"{_escape(name)}" + (" · HPC" if short == "HPC" else ""),
+                "Stokes": "I, Q, U and V, a file each" if len(stokes) > 1 else stokes[0],
+            },
+            "verb": f"Convert {n} image{'s' if n != 1 else ''}" if files else "Convert",
+        }
+        self.files_count_label.setText(f"{n} found" if self.dir_edit.text() else "")
+        if self.dir_edit.text():
+            info["rows"]["From"] = _escape(_short_home(self.dir_edit.text())) + " · " + _escape(self.pattern_edit.text())
+        if files and pattern:
+            info["rows"]["Output"] = _escape(_short_home(_fits(self._outputs(files[0])[0][1])))
+        processes = self.processes()
+        info["rows"]["Speed"] = "one at a time" if processes == 1 else f"{processes} at once"
+        if not files and not self.dir_edit.text().strip():
+            info["problem"] = "Choose the folder the images are in"
+        elif not files:
+            info["problem"] = "No image in the folder matches"
+        elif not self.out_dir_edit.text().strip():
+            info["problem"] = "Choose a folder to save to"
+        elif not pattern:
+            info["problem"] = "Give the output names a pattern"
+        return info
 
     def convert_files(self):
-        """Convert the selected files to helioprojective coordinates"""
-        # Get input files from pattern
-        files_to_process = self._get_matching_files()
+        self.run()
 
-        if not files_to_process:
-            QMessageBox.warning(
-                self,
-                "No Files Found",
-                "No files match the pattern. Please check your input settings.",
-            )
+    def run(self):
+        if not self.ready():
             return
-
-        self.status_text.appendPlainText(f"Processing {len(files_to_process)} files.")
-
-        # Get output directory and pattern
-        output_dir = self.output_dir_edit.text()
-        output_pattern = self.output_pattern_edit.text()
-
-        if not output_dir:
-            QMessageBox.warning(
-                self,
-                "Output Directory Missing",
-                "Please specify an output directory.",
-            )
-            return
-
-        # Create output directory if it doesn't exist
-        if not os.path.exists(output_dir):
-            try:
-                os.makedirs(output_dir)
-                self.status_text.appendPlainText(
-                    f"Created output directory: {output_dir}"
-                )
-            except OSError as e:
-                QMessageBox.critical(
-                    self,
-                    "Cannot Create Directory",
-                    f"Failed to create output directory:\n{output_dir}\n\nError: {e}",
-                )
-                return
-
-        # Get processing options
-        use_multiprocessing = self.multiprocessing_check.isChecked()
-        max_cores = self.cores_spinbox.value() if use_multiprocessing else 1
-        full_stokes = self.full_stokes_radio.isChecked()
-        stokes_list = (
-            ["I", "Q", "U", "V"] if full_stokes else [self.stokes_combo.currentText()]
-        )
-        target_mode = "HPC" if self.target_system_combo.currentText() == "Helioprojective (HPC)" else "RADEC"
-
-        # One task per file and Stokes: (input_file, output_path, stokes, process_id, target_mode)
+        files = self._get_matching_files()
+        target = self.target_mode()
+        self.start_log()
         tasks = []
-        for i, input_file in enumerate(files_to_process):
-            base_filename = os.path.splitext(os.path.basename(input_file))[0]
-            if "*" in output_pattern:
-                output_filename = output_pattern.replace("*", base_filename)
-            else:
-                output_filename = f"{base_filename}_{output_pattern}"
-            output_path = os.path.join(output_dir, output_filename)
-            for stokes in stokes_list:
-                if full_stokes:
-                    root, ext = os.path.splitext(output_path)
-                    stokes_output = f"{root}_{stokes}{ext}"
-                else:
-                    stokes_output = output_path
-                tasks.append((input_file, stokes_output, stokes, f"{i}_{stokes}", target_mode))
-
-        self.status_text.appendPlainText("Starting batch conversion...")
-        if use_multiprocessing and len(files_to_process) > 1:
-            self.status_text.appendPlainText(
-                f"Using multiprocessing with {max_cores} cores"
-            )
-        self._stokes_per_file = len(stokes_list)
-        self._results = {input_file: [] for input_file in files_to_process}
+        for i, input_file in enumerate(files):
+            for stokes, path in self._outputs(input_file):
+                folder = os.path.dirname(path)
+                try:
+                    os.makedirs(folder, exist_ok=True)
+                except OSError as e:
+                    self.log(f"Cannot create {folder}: {e}", "failed")
+                    return
+                tasks.append((input_file, path, stokes, f"{i}_{stokes}", target))
+        self._stokes_per_file = len(self.stokes_list())
+        self.log(f"{len(files)} images to {SYSTEMS[self.chosen(self.system_buttons)][0]}")
         self.start_batch(
             process_single_file_coordsys,
             tasks,
-            processes=max_cores,
-            disable=[self.tab_widget],
+            processes=self.processes(),
+            output_folder=os.path.dirname(tasks[0][1]),
         )
 
     def _task_name(self, input_file, stokes):
@@ -789,40 +304,23 @@ class CoordinateTransformationDialog(BatchDialogMixin, QDialog):
         return f"{name}, Stokes {stokes}" if self._stokes_per_file > 1 else name
 
     def batch_result(self, task, result):
-        self._results[task[0]].append(result["success"])
         name = self._task_name(task[0], task[2])
         if result["success"]:
             if result.get("skipped"):
-                self.status_text.appendPlainText(
-                    f"  - {name}: already in the target coordinates, copied"
-                )
+                self.log(f"{name}: already in these coordinates, copied", "copied")
             else:
-                self.status_text.appendPlainText(f"  - {name}: Converted successfully")
-        else:
-            error = result["error"] or "Unknown error"
-            self.status_text.appendPlainText(f"  - {name}: Error: {error}")
+                self.log(f"{name} → {os.path.basename(result['output_path'])}", "✓")
+            return True
+        self.log(f"{name}: {result['error'] or 'unknown error'}", "failed")
+        return False
 
     def batch_error(self, task, message):
-        self._results[task[0]].append(False)
-        self.status_text.appendPlainText(
-            f"  - {self._task_name(task[0], task[2])}: Error: {message}"
-        )
+        self.log(f"{self._task_name(task[0], task[2])}: {message}", "failed")
 
     def batch_finished(self, aborted):
-        if aborted:
-            return
-        converted = sum(
-            1
-            for done in self._results.values()
-            if len(done) == self._stokes_per_file and all(done)
-        )
-        partly = sum(1 for done in self._results.values() if any(done) and not all(done))
-        summary = (
-            f"Batch conversion completed:\n"
-            f"Total files: {len(self._results)}\n"
-            f"Successfully converted: {converted}\n"
-            + (f"Partly converted: {partly}\n" if partly else "")
-            + f"Failed: {len(self._results) - converted - partly}"
-        )
-        self.status_text.appendPlainText("\n" + summary)
-        QMessageBox.information(self, "Conversion Complete", summary)
+        if not aborted:
+            self.log(f"Converted {self._done} of {self._done + self._failed}")
+
+
+def _fits(path):
+    return path if os.path.splitext(path)[1] else path + ".fits"
