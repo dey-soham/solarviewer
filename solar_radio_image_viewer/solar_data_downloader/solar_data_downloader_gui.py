@@ -8,6 +8,7 @@ once the download runs. The download itself and the preparation of the
 files are solar_data_downloader's; this module only drives them.
 """
 
+import math
 import os
 import re
 import sys
@@ -15,8 +16,8 @@ import time
 from datetime import datetime, timedelta
 
 try:
-    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
-    from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize, QRectF, QVariantAnimation
+    from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
     from PyQt5.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -345,6 +346,7 @@ SOURCES = [
 # level 1b exposures of each channel (on average; they come in pairs)
 SUVI_NATIVE = {"2": 240, "1b": {"94": 40, "131": 80, "171": 120, "195": 35, "284": 120, "304": 60}}
 COUNT_DELAY_MS = 700  # the form settles this long before the archive is asked
+SPINNER_TURN_MS = 1400  # one turn of the checking spinner's arc, as in the compare view
 COUNT_TIMEOUT_S = 600  # an MDI day is searched hour by hour
 THROUGHPUT_MB_S = {"vso": 1.5, "jsoc": 4.0}
 JSOC_STAGING_S = 60
@@ -715,6 +717,53 @@ def _muted(text, color):
     return f"<span style='color:{color}'>{_escape(text)}</span>"
 
 
+class Spinner(QWidget):
+    """A slim ring with an arc of the accent running round it, its length
+    breathing as it goes (the compare view's busy look): shown while the
+    archive is being asked. It turns only while visible."""
+
+    def __init__(self, diameter, parent=None):
+        super().__init__(parent)
+        self.diameter = diameter
+        self.setFixedSize(diameter + 4, diameter + 4)
+        self._spin = 0.0
+        self._turn = QVariantAnimation(self)
+        self._turn.setDuration(SPINNER_TURN_MS)
+        self._turn.setLoopCount(-1)
+        self._turn.setStartValue(0.0)
+        self._turn.setEndValue(1.0)
+        self._turn.valueChanged.connect(self._set_spin)
+        self.hide()
+
+    def setVisible(self, visible):
+        super().setVisible(visible)
+        if visible and self._turn.state() != QVariantAnimation.Running:
+            self._turn.start()
+        elif not visible:
+            self._turn.stop()
+
+    def _set_spin(self, value):
+        self._spin = value
+        self.update()
+
+    def paintEvent(self, event):
+        palette = theme_manager.palette
+        track = QColor(palette["text_secondary"])
+        track.setAlphaF(0.25)
+        rect = QRectF(2, 2, self.diameter, self.diameter)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        width = max(2.0, self.diameter / 9.0)
+        painter.setPen(QPen(track, width, Qt.SolidLine, Qt.RoundCap))
+        painter.drawEllipse(rect)
+        # Qt arcs: degrees from 3 o'clock, anticlockwise, in sixteenths
+        head = -self._spin * 360
+        span = 50 + 130 * (0.5 - 0.5 * math.cos(self._spin * 2 * math.pi * 2))
+        painter.setPen(QPen(QColor(palette["highlight"]), width, Qt.SolidLine, Qt.RoundCap))
+        painter.drawArc(rect, int(head * 16), int(-span * 16))
+        painter.end()
+
+
 class Timeline(QWidget):
     """One pill per expected file across the window, a solid bar when there
     are too many to tell apart; once the archive has answered, a tick
@@ -999,7 +1048,16 @@ class SolarDataViewerGUI(QDialog):
         self.count_label = _label("", "DialogTitle")
         self.size_label = _label("", "Hint")
         self.size_label.setWordWrap(True)
-        head.addWidget(self.count_label)
+        count_row = QHBoxLayout()
+        count_row.setSpacing(10)
+        count_row.addWidget(self.count_label)
+        # sized to the count's capitals in the font the stylesheet gives it
+        self.count_label.ensurePolished()
+        self.archive_spinner = Spinner(max(12, int(self.count_label.fontMetrics().capHeight() * 0.9)))
+        self.archive_spinner.setToolTip("Asking the archive which images it holds")
+        count_row.addWidget(self.archive_spinner, 0, Qt.AlignVCenter)
+        count_row.addStretch()
+        head.addLayout(count_row)
         head.addWidget(self.size_label)
         layout.addLayout(head)
         grid = QGridLayout()
@@ -1370,6 +1428,7 @@ class SolarDataViewerGUI(QDialog):
         else:
             state = "checking the archive…"
         set_tone(self.size_label, "warning" if archive_failed else None)
+        self.archive_spinner.setVisible(not bad_window and found is None and not archive_failed)
         if count is None:
             self.count_label.setText("IRIS observations" if source.size_mb is None and not bad_window else "—")
             self.size_label.setText(
