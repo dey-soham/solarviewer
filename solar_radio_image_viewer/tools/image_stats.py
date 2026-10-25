@@ -2,6 +2,8 @@
 Whole-image statistics and the RMS box settings dialog.
 """
 
+import warnings
+
 import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIntValidator
@@ -18,6 +20,41 @@ from PyQt5.QtWidgets import (
 )
 
 from ..ui.styles import set_hand_cursor
+
+
+MIN_BOX_PIXELS = 25  # a noise box with fewer measured pixels than this is not used
+
+
+def _edge_bands(shape):
+    """Bands along the four edges of an image indexed [x, y], as
+    [x1, x2, y1, y2]: the bottom one is the box a new image gets
+    (core/loading.py), then the top, left and right."""
+    nx, ny = shape
+    return [
+        ("bottom band", [int(0.05 * nx), int(0.95 * nx), int(0.02 * ny), int(0.20 * ny)]),
+        ("top band", [int(0.05 * nx), int(0.95 * nx), int(0.80 * ny), int(0.98 * ny)]),
+        ("left band", [int(0.02 * nx), int(0.20 * nx), int(0.05 * ny), int(0.95 * ny)]),
+        ("right band", [int(0.80 * nx), int(0.98 * nx), int(0.05 * ny), int(0.95 * ny)]),
+    ]
+
+
+def _measured(data, box):
+    x1, x2, y1, y2 = (int(v) for v in box)
+    return int(np.isfinite(data[max(x1, 0) : max(x2, 0), max(y1, 0) : max(y2, 0)]).sum())
+
+
+def noise_box(data, rms_box):
+    """The box to measure the noise in, and a note when it is not the one
+    asked for: ``rms_box`` when it holds at least MIN_BOX_PIXELS measured
+    pixels; else the edge band holding the most (an image turned north up
+    or a coronagraph's mask can leave the asked-for box blank); else
+    (None, note)."""
+    if _measured(data, rms_box) >= MIN_BOX_PIXELS:
+        return list(rms_box), ""
+    name, band = max(_edge_bands(data.shape), key=lambda item: _measured(data, item[1]))
+    if _measured(data, band) >= MIN_BOX_PIXELS:
+        return band, f"the set box is blank, measured in the {name}"
+    return None, "no measured pixels near the edges"
 
 
 class ImageStatsMixin:
@@ -42,16 +79,22 @@ class ImageStatsMixin:
             rms_box = self.current_rms_box
 
         data = self.current_image_data
-        dmax = float(np.nanmax(data))
-        dmin = float(np.nanmin(data))
-        drms = np.sqrt(
-            np.nanmean(data[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]] ** 2)
-        )
-        dmean_rms_box = np.nanmean(
-            data[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
-        )
-        # Avoid divide-by-zero for splash images or uniform data
-        if drms > 1e-10:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # all-blank images
+            dmax = float(np.nanmax(data))
+            dmin = float(np.nanmin(data))
+        box, note = noise_box(data, rms_box)
+        if box is None:
+            drms = dmean_rms_box = np.nan
+        else:
+            region = np.asarray(data[box[0] : box[1], box[2] : box[3]], dtype=np.float64)
+            drms = float(np.sqrt(np.nanmean(region**2)))
+            dmean_rms_box = float(np.nanmean(region))
+        # The dynamic range needs a noise level: not on a blank or uniform
+        # zero image, and not one lost in the rounding of the brightest value
+        # (relative, so that images in tiny units, MSB ~1e-10, keep theirs)
+        peak = max(abs(dmax), abs(dmin)) if np.isfinite(dmax) else 0.0
+        if np.isfinite(drms) and drms > 0 and drms > 1e-12 * peak:
             positive_DR = dmax / drms
             negative_DR = dmin / drms
         else:
@@ -61,16 +104,17 @@ class ImageStatsMixin:
         # Update the image stats table
         stats_values = [dmax, dmin, drms, dmean_rms_box, positive_DR, negative_DR]
         for i, val in enumerate(stats_values):
-            self.image_stats_table.setItem(i, 1, QTableWidgetItem(f"{val:.6g}"))
+            self.image_stats_table.setItem(i, 1, QTableWidgetItem(f"{val:.6g}" if np.isfinite(val) else "—"))
         self.image_stats_table.show()  # (hidden until there is an image)
 
         # Update the RMS box info in the label
         h, w = data.shape
+        shown = box or rms_box
         rms_box_percent = (
-            (rms_box[1] - rms_box[0]) * (rms_box[3] - rms_box[2]) / (h * w)
+            (shown[1] - shown[0]) * (shown[3] - shown[2]) / (h * w)
         ) * 100
         self.image_info_label.setText(
-            f"Image: {h}x{w} px - RMS box: {rms_box_percent:.1f}%"
+            f"Image: {h}x{w} px - RMS box: {rms_box_percent:.1f}%" + (f" ({note})" if note else "")
         )
         if hasattr(self, "show_image_summary"):
             self.show_image_summary((h, w, rms_box_percent, dmax, drms, positive_DR))

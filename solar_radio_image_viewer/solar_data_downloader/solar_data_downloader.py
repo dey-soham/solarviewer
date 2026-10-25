@@ -834,6 +834,36 @@ def _no_data(label, start_time, end_time):
         print("  - NOTE: End time is in the future!")
 
 
+def _search_errors(result):
+    """The errors the data providers reported for a Fido search: sunpy keeps
+    a provider that could not be reached as an empty result with the error
+    attached, on the response or on the provider's table."""
+    errors = []
+    for holder in [result, *list(result or [])]:
+        found = getattr(holder, "errors", None)
+        if found:
+            errors += list(found) if isinstance(found, (list, tuple)) else [found]
+    unique = {}
+    for error in errors:  # the same error can sit on the response and on its table
+        unique.setdefault(str(error), error)
+    return list(unique.values())
+
+
+def _unreachable(result, label):
+    """Whether the search found nothing because a provider failed; if so,
+    say so (instead of reporting that there is no data)."""
+    total = result.file_num if hasattr(result, "file_num") else len(result)
+    errors = _search_errors(result)
+    if total or not errors:
+        return False
+    print("\n" + "=" * 60 + "\nSEARCH FAILED\n" + "=" * 60)
+    print(f"  {label}: the data provider could not be searched.")
+    for error in errors[:3]:
+        print(f"  - {error}")
+    print("\nThe server may be down or blocked on this network; try again later.", flush=True)
+    return True
+
+
 def _found(result):
     """Print and return how many files a Fido result (or one of its tables) lists."""
     total = result.file_num if hasattr(result, "file_num") else len(result)
@@ -934,6 +964,8 @@ def download_aia_with_fido(
             a.Wavelength(int(wavelength) * u.angstrom),
             *_sample_attrs(sample),
         )
+        if _unreachable(result, label):
+            return []
         if not _found(result):
             _no_data(label, start_time, end_time)
             return []
@@ -1043,6 +1075,8 @@ def download_hmi_with_fido(series, start_time, end_time, output_dir, skip_calibr
         result = Fido.search(
             a.Time(start_dt, end_dt), a.Instrument("HMI"), a.Physobs(physobs), *_sample_attrs(sample)
         )
+        if _unreachable(result, label):
+            return []
         if not _found(result):
             _no_data(label, start_time, end_time)
             return []
@@ -1105,6 +1139,8 @@ def download_iris(start_time, end_time, output_dir, obs_type="SJI", wavelength=N
         if wavelength:
             query.append(a.Wavelength(int(wavelength) * u.angstrom))
         result = Fido.search(*query)
+        if _unreachable(result, label):
+            return []
         if not len(result):
             _no_data(label, start_time, end_time)
             return []
@@ -1165,6 +1201,8 @@ def download_soho(instrument, start_time, end_time, output_dir, wavelength=None,
     _print_search(label, start_time, end_time, sample)
     try:
         result = Fido.search(*query)
+        if _unreachable(result, label):
+            return []
         if instrument == "EIT" and len(result):
             # SDAC lists level 0 (lz) and level 1 (l1) of each image: take
             # the calibrated level 1 where it exists
@@ -1214,6 +1252,8 @@ def download_goes_suvi(start_time, end_time, output_dir, wavelength=None, level=
             wl = int(wavelength)
             query.append(a.Wavelength((wl - 1) * u.angstrom, (wl + 1) * u.angstrom))
         result = Fido.search(*query)
+        if _unreachable(result, label):
+            return []
         if sample and len(result):  # NOAA's client has no cadence attribute
             result = result[0, _thin_rows(result[0], sample)]
         if not _found(result):
@@ -1257,6 +1297,8 @@ def download_stereo(start_time, end_time, output_dir, spacecraft="A", instrument
                 query.append(a.Wavelength(int(wavelength) * u.angstrom))
             query += _sample_attrs(sample)
         result = Fido.search(*query)
+        if _unreachable(result, label):
+            return []
         if instrument != "EUVI" and sample and len(result):
             # keep whole polarizer sequences (three images within three minutes)
             result = result[0, _thin_rows(result[0], sample, hold=180)]
@@ -1299,14 +1341,7 @@ def download_gong(start_time, end_time, output_dir, sample=None, skip_calibratio
         # sunpy's GONG client takes no Sample attribute (with one, no client
         # answers the query): the cadence is applied to the rows instead
         result = Fido.search(a.Time(start_dt, end_dt), a.Instrument("GONG"), a.Physobs("LOS_magnetic_field"))
-        errors = []
-        for table in result:
-            found = getattr(table, "errors", None)
-            if found:
-                errors += list(found) if isinstance(found, (list, tuple)) else [found]
-        if errors and not result.file_num:
-            # the client reports an unreachable server as an empty result
-            print(f"Error: could not reach NSO's GONG archive ({errors[0]}). The server may be down or blocked on this network.", flush=True)
+        if _unreachable(result, "GONG synoptic magnetograms (NSO)"):
             return []
         if sample and len(result):
             result = result[0, _thin_rows(result[0], sample)]

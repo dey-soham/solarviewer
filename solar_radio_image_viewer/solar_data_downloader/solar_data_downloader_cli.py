@@ -497,7 +497,7 @@ def main_menu():
         ("SOHO (EIT, LASCO, MDI)", download_soho_data),
         ("GOES/SUVI (Solar Ultraviolet Imager)", download_suvi_data),
         ("STEREO/SECCHI (EUVI, COR1, COR2)", download_stereo_data),
-        ("NSO/GONG synoptic magnetograms", download_gong_data),
+        # ("NSO/GONG synoptic magnetograms", download_gong_data),  # hidden: NSO's server could not be reached to verify it
         ("Exit", None),
     ]
     while True:

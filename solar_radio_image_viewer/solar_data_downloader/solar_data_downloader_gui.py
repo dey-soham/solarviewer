@@ -295,19 +295,21 @@ SOURCES = [
     _stereo("B", "EUVI"),
     _stereo("B", "COR1"),
     _stereo("B", "COR2"),
-    Source(
-        "NSO · GONG",
-        "GONG",
-        "gong",
-        [("Synoptic magnetogram", "LOS_magnetic_field", "Carrington map · Gauss · hourly")],
-        channel_param="physobs",
-        channel_name="Product",
-        native=3600,
-        size_mb=0.2,
-        prepared="as sent",
-        description="Carrington maps of the line-of-sight field, already in Gauss · kept as the archive sends them · NSO's server is not always reachable",
-        output="Synoptic FITS, Gauss, as the archive sends them",
-    ),
+    # GONG is hidden for now: NSO's server could not be reached to verify it.
+    # download_gong and the GONG handling below are kept; uncomment to offer it.
+    # Source(
+    #     "NSO · GONG",
+    #     "GONG",
+    #     "gong",
+    #     [("Synoptic magnetogram", "LOS_magnetic_field", "Carrington map · Gauss · hourly")],
+    #     channel_param="physobs",
+    #     channel_name="Product",
+    #     native=3600,
+    #     size_mb=0.2,
+    #     prepared="as sent",
+    #     description="Carrington maps of the line-of-sight field, already in Gauss · kept as the archive sends them · NSO's server is not always reachable",
+    #     output="Synoptic FITS, Gauss, as the archive sends them",
+    # ),
 ]
 SUVI_NATIVE = {"2": 240, "1b": 20}
 THROUGHPUT_MB_S = {"vso": 1.5, "jsoc": 4.0}
@@ -1499,8 +1501,12 @@ class SolarDataViewerGUI(QDialog):
         if self.calibrate_checkbox.isChecked():
             self._processed = max(self._processed, len(files))
         self._render_progress(done=True)
-        self._finish("Done" if files else "Nothing downloaded")
-        if not files:
+        search_failed = not files and any("SEARCH FAILED" in str(line[1]) for line in self._log_lines)
+        self._finish("Done" if files else ("Search failed" if search_failed else "Nothing downloaded"))
+        if search_failed:
+            self.update_progress("The data provider could not be reached; try again later.")
+            self.download_button.setText("Try again")
+        elif not files:
             self.update_progress("No files were downloaded.")
         elif self.viewer is not None:
             self.open_button.show()

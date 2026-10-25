@@ -6,6 +6,7 @@ Display and Statistics tabs, the cursor readout pinned at its foot) and
 the empty canvas shown before an image.
 """
 
+import math
 import logging
 import matplotlib.pyplot as plt
 from PyQt5.QtWidgets import (
@@ -441,7 +442,7 @@ class PanelsMixin:
         h, w, box_percent, dmax, drms, pos_dr = summary
         self.image_summary_meta.setText(f"{w}×{h} px · RMS box {box_percent:.1f}%")
         for name, value in (("Max", dmax), ("RMS", drms), ("Pos. DR", pos_dr)):
-            self.image_summary_values[name].setText(f"{value:.4g}")
+            self.image_summary_values[name].setText(f"{value:.4g}" if value is not None and math.isfinite(value) else "—")
 
     def _overlays_block(self):
         block, layout, _ = _block("Overlays")
