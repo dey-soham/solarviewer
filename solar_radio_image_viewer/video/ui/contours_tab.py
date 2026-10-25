@@ -133,8 +133,12 @@ class ContoursTabMixin:
         )
         box = dialog.findChild(QDialogButtonBox)
         if box is not None:
-            box.button(QDialogButtonBox.Ok).setText("OK")
-            box.button(QDialogButtonBox.Cancel).setText("Cancel")
+            # Modal here: its Apply / Close (custom buttons) are OK / Cancel
+            labels = {QDialogButtonBox.AcceptRole: "OK", QDialogButtonBox.RejectRole: "Cancel"}
+            for button in box.buttons():
+                text = labels.get(box.buttonRole(button))
+                if text:
+                    button.setText(text)
         if dialog.exec_() == QDialog.Accepted:
             self._set_contour_layers(dialog.get_layers(), dialog.get_options())
 
