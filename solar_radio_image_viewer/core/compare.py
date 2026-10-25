@@ -58,7 +58,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ..ui.icons import launcher_icon, themed_icon
-from ..ui.styles import _qt_deleted, set_hand_cursor, theme_manager
+from ..ui.styles import _qt_deleted, set_hand_cursor, set_tone, theme_manager
 from ..ui.widgets import kicker_row, link_button, segmented, toggle_row
 from .compare_sync import (
     FRAME_NAMES,
@@ -66,6 +66,8 @@ from .compare_sync import (
     CursorValues,
     PaneSync,
     SyncPopover,
+    apart,
+    format_angle,
     frame_kind,
     sync_button,
 )
@@ -281,6 +283,11 @@ def _tool_button(action):
     return button
 
 
+def overlay_box(pane, name):
+    """``pane``'s own switch for the overlay ``name`` ("solar_disk", "grid")."""
+    return getattr(pane, f"show_{name}_checkbox")
+
+
 def pane_name(pane):
     """The file name of the image ``pane`` shows, or ""."""
     path = getattr(pane, "imagename", None) or ""
@@ -436,14 +443,38 @@ class ComparePanel(QWidget):
             "the image alone"
         )
         self.full_axes_switch.toggled.connect(page.set_full_axes)
-        block_layout.addWidget(toggle_row(self.full_axes_switch, label=QLabel("Axes")))
         self.colorbar_switch = QCheckBox()
         self.colorbar_switch.setObjectName("Switch")
         self.colorbar_switch.setToolTip(
             "Show a colorbar under every pane's image, marked with the ends of its range"
         )
         self.colorbar_switch.toggled.connect(page.set_colorbar)
-        block_layout.addWidget(toggle_row(self.colorbar_switch, label=QLabel("Colorbar")))
+        # Every pane's own overlay switches at once; on while all panes have it
+        self.overlay_switches = {}
+        self._following = False
+        for name, tip in (
+            ("solar_disk", "Draw the solar disk on every pane"),
+            ("grid", "Draw the coordinate grid on every pane"),
+        ):
+            switch = QCheckBox()
+            switch.setObjectName("Switch")
+            switch.setToolTip(tip)
+            switch.toggled.connect(
+                lambda on, name=name: self._following or page.set_overlay(name, on)
+            )
+            self.overlay_switches[name] = switch
+        switches = QGridLayout()
+        switches.setContentsMargins(0, 0, 0, 0)
+        switches.setHorizontalSpacing(6)
+        switches.setVerticalSpacing(6)
+        for index, (switch, label) in enumerate((
+            (self.full_axes_switch, "Axes"),
+            (self.colorbar_switch, "Colorbar"),
+            (self.overlay_switches["solar_disk"], "Solar disk"),
+            (self.overlay_switches["grid"], "Grid"),
+        )):
+            switches.addWidget(toggle_row(switch, label=QLabel(label)), index // 2, index % 2)
+        block_layout.addLayout(switches)
         apply_row = QHBoxLayout()
         apply_row.setContentsMargins(0, 0, 0, 0)
         apply_row.setSpacing(8)
@@ -546,7 +577,21 @@ class ComparePanel(QWidget):
                 editing.setObjectName("Meta")
                 row_layout.addWidget(editing)
             self._rows.addWidget(row)
+        self.refresh_overlays()
         self.refresh_stats()
+
+    def refresh_overlays(self):
+        """The overlay switches are on while every pane has the overlay."""
+        panes = self._page.panes
+        for name, switch in self.overlay_switches.items():
+            on = bool(panes) and all(overlay_box(pane, name).isChecked() for pane in panes)
+            if switch.isChecked() != on:
+                # (the row's look follows; the panes are not told)
+                self._following = True
+                try:
+                    switch.setChecked(on)
+                finally:
+                    self._following = False
 
 
 class PaneFrame(QFrame):
@@ -584,6 +629,13 @@ class PaneFrame(QFrame):
         self.caption = _ElidedLabel("Meta", least=12)
         row.addWidget(self.caption)
         row.addStretch()
+        # Why a linked pane does not follow the image being edited
+        self.notice = QLabel()
+        self.notice.setObjectName("Badge")
+        set_tone(self.notice, "warning")
+        self.notice.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.notice.hide()
+        row.addWidget(self.notice)
         self.link_button = QToolButton()
         self.link_button.setCheckable(True)
         self.link_button.setChecked(True)
@@ -647,7 +699,8 @@ class PaneFrame(QFrame):
 
     def refresh_link(self):
         """The link toggle: on, off, or dimmed with the reason it cannot
-        follow the active pane (another sky frame)."""
+        follow the active pane (another sky frame, or no sky in common),
+        the reason also in a badge beside it."""
         pane = self.pane
         page = self._page
         on = pane.linked
@@ -655,33 +708,59 @@ class PaneFrame(QFrame):
         self.link_button.setChecked(on)
         self.link_button.blockSignals(False)
         self.link_button.setIcon(QIcon(themed_icon("link.svg" if on else "link_off.svg")))
-        active = page.active_pane
-        kind = frame_kind(pane)
-        active_kind = frame_kind(active) if active is not None else None
-        foreign = (
-            on
-            and active is not None
-            and pane is not active
-            and pane.current_image_data is not None
-            and kind != active_kind
-        )
-        opacity = 0.45 if foreign else 1.0
+        reason, badge = unfollowed(pane, page)
+        opacity = 0.45 if reason else 1.0
         if getattr(self, "_link_opacity", None) != opacity:
             self._link_opacity = opacity
             effect = QGraphicsOpacityEffect(self.link_button)
             effect.setOpacity(opacity)
             self.link_button.setGraphicsEffect(effect)
-        if foreign:
-            own = FRAME_NAMES.get(kind, "no sky frame")
-            theirs = FRAME_NAMES.get(active_kind, "no sky frame")
-            self.link_button.setToolTip(
-                f"Linked, but its own view: a {own} image cannot follow the "
-                f"{theirs} image being edited"
-            )
+        self.notice.setText(badge or "")
+        self.notice.setToolTip(reason or "")
+        self.notice.setVisible(bool(badge))
+        # The badge takes the caption's room (the Compare tab lists it), not the name's
+        self.caption.setVisible(not badge)
+        if reason:
+            self.link_button.setToolTip(reason)
         elif on:
             self.link_button.setToolTip("Follows the other panes (click to let it go its own way)")
         else:
             self.link_button.setToolTip("Goes its own way (click to follow the other panes)")
+
+
+def unfollowed(pane, page):
+    """(why, badge) when linked ``pane`` cannot follow the active pane:
+    its image is in another sky frame, or shares no sky with the active
+    one; (None, None) otherwise."""
+    active = page.active_pane
+    if (
+        not pane.linked
+        or active is None
+        or pane is active
+        or pane.current_image_data is None
+        or active.current_image_data is None
+    ):
+        return None, None
+    letter = page.letter(active)
+    kind, active_kind = frame_kind(pane), frame_kind(active)
+    if kind != active_kind:
+        own = FRAME_NAMES.get(kind, "no sky frame")
+        theirs = FRAME_NAMES.get(active_kind, "no sky frame")
+        return (
+            f"Linked, but its own view: a {own} image cannot follow the "
+            f"{theirs} image in pane {letter}",
+            "Other frame",
+        )
+    distance = apart(pane, active)
+    if distance is not None:
+        return (
+            f"Linked, but its own view: this image and pane {letter}'s share no "
+            f"sky ({format_angle(distance)} apart, centre to centre), so zoom, pan, "
+            "the crosshair and regions do not reach it. Open an image of the "
+            "same part of the sky to compare them.",
+            "No overlap",
+        )
+    return None, None
 
 
 class EmptySlot(QFrame):
@@ -911,6 +990,13 @@ class ImagePage(QWidget):
         else:
             self.slots[slot] = pane
             self._place_panes()
+        # The overlays every pane draws, the new one draws too
+        for name in self._compare_panel.overlay_switches:
+            box = overlay_box(pane, name)
+            others = [p for p in self.panes if p is not pane]
+            if others and all(overlay_box(p, name).isChecked() for p in others):
+                box.setChecked(True)
+            box.toggled.connect(lambda _on: self._compare_panel.refresh_overlays())
         if self._active is None:
             self.set_active_pane(pane)
         return pane
@@ -1067,7 +1153,21 @@ class ImagePage(QWidget):
             said = f"{count} image{'s' if count != 1 else ''}"
             if len(in_sync) >= 2 and ways:
                 said += f" · {', '.join(ways).lower()} synced on {letters}"
+            stray = self.unfollowed_note()
+            if stray:
+                said += f" · {stray}"
             self.window().statusBar().showMessage(said)
+
+    def unfollowed_note(self):
+        """Which linked panes cannot follow the active one, for the status
+        bar; "" when every one can."""
+        stray = [pane for pane in self.panes if unfollowed(pane, self)[1]]
+        if not stray or self._active is None:
+            return ""
+        return (
+            f"{' '.join(self.letter(pane) for pane in stray)} cannot follow "
+            f"{self.letter(self._active)}: see the pane header"
+        )
 
     def regions_changed(self):
         """A region drawn (or mirrored): the Compare tab's tables follow."""
@@ -1084,6 +1184,12 @@ class ImagePage(QWidget):
         """Draw a colorbar under each pane's image (``on``) or none."""
         self.colorbar = bool(on)
         self._apply_compact()
+
+    def set_overlay(self, name, on):
+        """Every pane draws the overlay ``name`` ("solar_disk", "grid") or not."""
+        for pane in self.panes:
+            overlay_box(pane, name).setChecked(bool(on))
+        self._compare_panel.refresh_overlays()
 
     def _apply_compact(self):
         """Each pane drawn the way the layout wants: compact (no title)
@@ -1160,6 +1266,7 @@ class ImagePage(QWidget):
                 row.refresh()
             if pane.current_image_data is not None:
                 pane.update_display()
+        self._compare_panel.refresh_overlays()
         self.window().statusBar().showMessage(
             f"Pane {self.letter(source)}'s display applied to every pane"
         )

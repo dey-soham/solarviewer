@@ -141,6 +141,89 @@ def pixel_scales(pane):
         return None
 
 
+def _image_key(pane):
+    """What identifies the image ``pane`` draws and its WCS, or None."""
+    _ax, wcs = _axes_wcs(pane)
+    data = pane.current_image_data
+    if wcs is None or data is None:
+        return None
+    return (id(wcs), data.shape[0], data.shape[1], tuple(np.asarray(wcs.wcs.crval, dtype=float)[:2]))
+
+
+def _outline(pane, per_edge=16):
+    """Sky positions (lon, lat arrays in degrees, NaN off the sphere) along
+    the border of ``pane``'s image and at its centre."""
+    _ax, wcs = _axes_wcs(pane)
+    width, height = pane.current_image_data.shape[:2]
+    xs = np.linspace(-0.5, width - 0.5, per_edge)
+    ys = np.linspace(-0.5, height - 0.5, per_edge)
+    x = np.concatenate([xs, xs, np.full(per_edge, -0.5), np.full(per_edge, width - 0.5), [(width - 1) / 2]])
+    y = np.concatenate([np.full(per_edge, -0.5), np.full(per_edge, height - 0.5), ys, ys, [(height - 1) / 2]])
+    sx, sy = _unit_scales(wcs)
+    with np.errstate(all="ignore"):
+        lon, lat = wcs.pixel_to_world_values(x, y)
+    return np.asarray(lon, dtype=float) * sx, np.asarray(lat, dtype=float) * sy
+
+
+def _lands_in(source, target):
+    """Whether any point of ``source``'s outline falls on ``target``'s image."""
+    lon, lat = _outline(source)
+    _ax, wcs = _axes_wcs(target)
+    width, height = target.current_image_data.shape[:2]
+    sx, sy = _unit_scales(wcs)
+    with np.errstate(all="ignore"):
+        x, y = wcs.world_to_pixel_values(lon / sx, lat / sy)
+        inside = (x >= -0.5) & (x <= width - 0.5) & (y >= -0.5) & (y <= height - 0.5)
+    return bool(np.any(inside))
+
+
+def separation(first, second):
+    """The angle in degrees between two sky positions (lon, lat) in degrees."""
+    lon1, lat1, lon2, lat2 = map(math.radians, (*first, *second))
+    a = (math.sin((lat2 - lat1) / 2) ** 2
+         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
+    return math.degrees(2 * math.asin(min(1.0, math.sqrt(a))))
+
+
+_APART = {}  # (image key, image key) -> degrees apart or None
+
+
+def apart(pane, other):
+    """How far apart (degrees, centre to centre) the images of two panes
+    in the same frame are when they share no sky: no part of either's
+    border lands on the other. None when they overlap, or either has no
+    sky frame."""
+    keys = (_image_key(pane), _image_key(other))
+    if None in keys:
+        return None
+    if keys in _APART:
+        return _APART[keys]
+    found = None
+    try:
+        if not (_lands_in(pane, other) or _lands_in(other, pane)):
+            centres = []
+            for p in (pane, other):
+                width, height = p.current_image_data.shape[:2]
+                centres.append(to_world(p, (width - 1) / 2, (height - 1) / 2))
+            if None not in centres:
+                found = separation(*centres)
+    except Exception:
+        logger.debug("Could not tell whether two panes overlap", exc_info=True)
+    if len(_APART) > 256:
+        _APART.clear()
+    _APART[keys] = found
+    return found
+
+
+def format_angle(degrees):
+    """An angle the way a person says it: 35.2°, 12.5′ or 40″."""
+    if degrees >= 1:
+        return f"{degrees:.1f}°"
+    if degrees * 60 >= 1:
+        return f"{degrees * 60:.1f}′"
+    return f"{degrees * 3600:.0f}″"
+
+
 def value_at(pane, x, y):
     """The image's value at pixel (x, y), or None off the image."""
     data = pane.current_image_data
@@ -188,13 +271,15 @@ class PaneSync:
     # ------------------------------------------------------------ who
     def can_follow(self, pane, leader):
         """Whether ``pane`` follows ``leader``: both linked, with images in
-        the same sky frame."""
+        the same sky frame that share some sky."""
         if pane is leader or not (pane.linked and leader.linked):
             return False
         if pane.current_image_data is None or leader.current_image_data is None:
             return False
         kind = frame_kind(leader)
-        return kind is not None and frame_kind(pane) == kind
+        if kind is None or frame_kind(pane) != kind:
+            return False
+        return apart(pane, leader) is None  # no sky in common: nothing to follow
 
     def followers(self, leader):
         return [pane for pane in self.page.panes if self.can_follow(pane, leader)]
@@ -265,6 +350,11 @@ class PaneSync:
             self._joining = outer
         if outer is None and pane.current_image_data is not None and pane.linked:
             self.joined(pane)
+        if outer is None:
+            # After "Loaded …": the image may have no sky in common with the rest
+            note = self.page.unfollowed_note()
+            if note:
+                pane.show_status_message(note)
 
     def joined(self, pane):
         """``pane`` has a new image: it is reprojected to the sky frame of
