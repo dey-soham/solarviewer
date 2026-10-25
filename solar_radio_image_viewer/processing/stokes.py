@@ -191,12 +191,20 @@ def plane_index(labels, stokes):
 
 
 def rms_in_box(plane, box):
-    """RMS of ``plane`` inside ``box`` = (x1, x2, y1, y2); 0 for an empty box."""
+    """RMS of ``plane`` inside ``box`` = (x1, x2, y1, y2), over its finite
+    pixels (a reprojected image is blank round its edge); 0 for a box
+    without any."""
     x1, x2, y1, y2 = box
     region = plane[x1:x2, y1:y2]
+    region = region[np.isfinite(region)]
     if region.size == 0:
         return 0.0
     return np.sqrt(np.mean(region**2))
+
+
+def uses_rms(stokes):
+    """Whether the ``stokes`` product is thresholded against the RMS box."""
+    return stokes not in STANDARD_STOKES and stokes not in CORRELATIONS and stokes != "L"
 
 
 def stokes_product(stokes, planes, thres, rms_box, csys=None, sun_radius_arcmin=55):

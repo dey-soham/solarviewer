@@ -22,10 +22,17 @@ from ..processing.fits_io import is_fits
 from ..processing.image_meta import casa_info, coordsys_from_record, fits_header
 from ..processing.prefetch import image_prefetcher
 from ..processing.image_data import read_image
-from ..processing.stokes import StokesUnavailable, missing_planes
+from ..processing.stokes import StokesUnavailable, missing_planes, uses_rms
 from ..ui.errors import show_error
 
 logger = logging.getLogger(__name__)
+
+
+def default_rms_box(shape):
+    """The RMS box of a newly opened [x, y] image: a band along the
+    bottom, inset from the sides."""
+    nx, ny = shape[:2]
+    return [int(0.05 * nx), int(0.95 * nx), int(0.02 * ny), int(0.20 * ny)]
 
 
 class LoadingMixin:
@@ -121,6 +128,23 @@ class LoadingMixin:
             target_size,
             fallback_stokes,
         )
+        if (
+            auto_adjust_rms
+            and read.pix is not None
+            and uses_rms(read.stokes)
+            and default_rms_box(read.pix.shape) != list(self.current_rms_box)
+        ):
+            # A new image's ratios are measured against its own RMS box, not
+            # the previous image's
+            self.current_rms_box = default_rms_box(read.pix.shape)
+            read = self._read_image(
+                imagename,
+                read.stokes,
+                threshold,
+                tuple(self.current_rms_box),
+                target_size,
+                None,
+            )._replace(available=read.available)
         if fallback_stokes is not None:
             self._offer_available_stokes(read.available, stokes, read.stokes)
 
@@ -147,11 +171,7 @@ class LoadingMixin:
             # Only auto adjust RMS box dimensions when loading a new image:
             # a band along the bottom, inset from the sides
             if auto_adjust_rms:
-                x1 = int(0.05 * nx)
-                x2 = int(0.95 * nx)
-                y1 = int(0.02 * ny)
-                y2 = int(0.20 * ny)
-                self.current_rms_box = [x1, x2, y1, y2]
+                self.current_rms_box = default_rms_box(pix.shape)
                 for layer in self.contour_layers:
                     if layer["source"] == "same":
                         layer["rms_box"] = tuple(self.current_rms_box)
