@@ -257,20 +257,22 @@ class CalendarGrid(QWidget):
             painter.drawText(QRect(i * w, 0, w, h), Qt.AlignCenter, name)
         painter.setFont(font)
         today = date.today()
-        low, high = sorted((self.band, self.selected)) if self.band else (None, None)
+        # The window's band and the outline of its other end are off for now
+        # (the user found them confusing); uncomment these lines to bring them back
+        # low, high = sorted((self.band, self.selected)) if self.band else (None, None)
         for day, rect in self._days():
             inner = QRectF(rect).adjusted(2, 2, -2, -2)
             in_month = day.month == self.shown.month
-            if low is not None and low <= day <= high and low != high:
-                # the window, as a band joining the two ends
-                band = QRectF(rect).adjusted(0, 3, 0, -3)
-                if day == low:
-                    band.setLeft(inner.center().x())
-                if day == high:
-                    band.setRight(inner.center().x())
-                painter.fillRect(band, _band())
+            # if low is not None and low <= day <= high and low != high:
+                # # the window, as a band joining the two ends
+                # band = QRectF(rect).adjusted(0, 3, 0, -3)
+                # if day == low:
+                    # band.setLeft(inner.center().x())
+                # if day == high:
+                    # band.setRight(inner.center().x())
+                # painter.fillRect(band, _band())
             selected = day == self.selected
-            end = self.band is not None and day == self.band
+            # end = self.band is not None and day == self.band
             painter.setPen(Qt.NoPen)
             if selected:
                 painter.setBrush(_chosen()[0])
@@ -278,10 +280,10 @@ class CalendarGrid(QWidget):
             elif day == self._hover:
                 painter.setBrush(_color("highlight", 0.18))
                 painter.drawRoundedRect(inner, RADIUS, RADIUS)
-            if end and not selected:
-                painter.setBrush(Qt.NoBrush)
-                painter.setPen(QPen(_color("highlight"), 1))
-                painter.drawRoundedRect(inner.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
+            # if end and not selected:
+                # painter.setBrush(Qt.NoBrush)
+                # painter.setPen(QPen(_color("highlight"), 1))
+                # painter.drawRoundedRect(inner.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
             if day == today and not selected:
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(_color("highlight"))
