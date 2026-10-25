@@ -345,11 +345,20 @@ def download_soho_data():
         processing = "calibrated to mean solar brightness as NRL level 1 (bias, exposure, vignetting, distortion), north up, monthly background in a second HDU"
     else:
         print("\nProduct:")
-        physobs = choose("Select product", [("Magnetogram (1 min where the VSO has it)", "magnetogram"), ("Continuum intensity (12 min)", "continuum")])
+        physobs = choose(
+            "Select product",
+            [
+                ("Magnetogram, 96 min (JSOC export, email registered at JSOC)", "M_96m"),
+                ("Continuum, 6 h (JSOC export, email registered at JSOC)", "Ic_6h"),
+                ("Magnetogram, 1 min where taken (VSO, searched hour by hour)", "magnetogram"),
+                ("Continuum, 12 min where taken (VSO, searched hour by hour)", "continuum"),
+            ],
+        )
         processing = "north up with the Sun centred"
     start_time, end_time = get_datetime_range()
     sample = get_cadence()
     output_dir = get_output_directory(f"SOHO_{instrument}")
+    email = get_jsoc_email() if physobs in sdd.MDI_SERIES else None
     options = get_processing(processing)
     if not summary(
         [
@@ -362,6 +371,10 @@ def download_soho_data():
     ):
         print("\nDownload cancelled.")
         return input("\nPress Enter to return to the main menu...")
+    if physobs in sdd.MDI_SERIES:
+        return run(
+            sdd.download_mdi, series=physobs, start_time=start_time, end_time=end_time, output_dir=output_dir, email=email, sample=sample, **options
+        )
     run(
         sdd.download_soho,
         instrument=instrument,

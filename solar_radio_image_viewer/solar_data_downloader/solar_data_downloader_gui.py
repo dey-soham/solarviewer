@@ -115,6 +115,7 @@ class Source:
         process_seconds=0.5,
         unit="file",
         variable=False,
+        routes=None,
     ):
         self.label = label  # "SDO · AIA"
         self.instrument = instrument  # the backend's instrument name
@@ -131,7 +132,18 @@ class Source:
         self.default_cadence = default_cadence
         self.process_seconds = process_seconds
         self.unit = unit  # what is counted: a file, a sequence or an observation
-        self.variable = variable  # the native cadence changed over the mission: typical, not fixed
+        self.variable = variable  # True, or the channels whose native cadence changed over the mission
+        self.routes = routes or {}  # channel -> "jsoc" or "vso" where only one of them has it
+
+    def is_variable(self, channel):
+        return self.variable is True or (isinstance(self.variable, (tuple, list, set)) and channel in self.variable)
+
+    def route(self, channel):
+        """'vso' or 'jsoc' when only one of them serves ``channel``, None
+        when the form chooses."""
+        if channel in self.routes:
+            return self.routes[channel]
+        return "vso" if self.instrument in FIDO_ONLY_INSTRUMENTS else None
 
     def native_seconds(self, channel):
         if isinstance(self.native, dict):
@@ -226,6 +238,7 @@ SOURCES = [
         channel_param="series",
         channel_name="Series",
         native={"M_45s": 45, "Ic_45s": 45, "V_45s": 45, "M_720s": 720, "Ic_720s": 720, "Ic_noLimbDark_720s": 720, "V_720s": 720},
+        routes={series: "jsoc" for series in ("M_720s", "Ic_720s", "Ic_noLimbDark_720s", "V_720s")},
         size_mb=16,
         prepared="north up",
         description="Fe I 6173 Å · north up · Sun-centred · native 0.504″/px",
@@ -249,10 +262,12 @@ SOURCES = [
         "SOHO",
         "eit",
         _wavelengths("171", "195", "284", "304"),
-        native=21600,
+        # 195 Å every 12 min (CME watch) until mid-2010, four a day in the
+        # other channels; two a day in each after that
+        native={"171": 21600, "195": 720, "284": 21600, "304": 21600},
         size_mb=2.1,
         prepared="level 1",
-        description="Level 1 where SDAC has it (dark, flat, degrid, degradation, exposure) · north up · SDAC has about four images a day per channel",
+        description="Level 1 where SDAC has it (dark, flat, degrid, degradation, exposure) · north up · 195 Å every 12 min until mid-2010, the other channels a few a day",
         output="Level 1 FITS, ready to open",
         params={"soho_instrument": "EIT"},
         variable=True,
@@ -276,16 +291,22 @@ SOURCES = [
         "SOHO · MDI",
         "SOHO",
         "mdi",
-        [("Magnetogram", "magnetogram", "1 min"), ("Continuum", "continuum", "12 min")],
+        [
+            ("Magnetogram", "M_96m", "96 min · JSOC"),
+            ("Continuum", "Ic_6h", "6 h · JSOC"),
+            ("Magnetogram", "magnetogram", "1 min where taken · VSO"),
+            ("Continuum", "continuum", "12 min where taken · VSO"),
+        ],
         channel_param="physobs",
         channel_name="Product",
-        native={"magnetogram": 60, "continuum": 720},
+        native={"M_96m": 5760, "Ic_6h": 21600, "magnetogram": 60, "continuum": 720},
         size_mb=2.1,
         prepared="north up",
-        description="Ni I 6768 Å · north up · Sun-centred · the VSO is searched hour by hour, so long windows take a while · MDI ended in 2011",
+        description="Ni I 6768 Å · level 1.8.2 · north up · Sun-centred · the VSO is searched hour by hour, so long windows take a while · MDI ended in 2011",
         output="North-up FITS, ready to open",
         params={"soho_instrument": "MDI"},
-        variable=True,
+        variable=("magnetogram", "continuum"),
+        routes={"M_96m": "jsoc", "Ic_6h": "jsoc", "magnetogram": "vso", "continuum": "vso"},
     ),
     Source(
         "GOES · SUVI",
@@ -574,6 +595,8 @@ def download_request(params):
         return "download_hmi", dict(hmi, email=params.get("email") or None)
     if instrument == "IRIS":
         return "download_iris", dict(common, obs_type="SJI", wavelength=params.get("wavelength"))
+    if instrument == "SOHO" and params.get("soho_instrument") == "MDI" and params.get("physobs") in sdd.MDI_SERIES:
+        return "download_mdi", dict(common, series=params["physobs"], email=params.get("email") or None)
     if instrument == "SOHO":
         return "download_soho", dict(
             common,
@@ -884,7 +907,7 @@ class SolarDataViewerGUI(QDialog):
         self.source_buttons[0].setChecked(True)
         self.source_buttons[1].setToolTip(
             "Export from JSOC with an email address registered there: the only source\n"
-            "of the HMI 720 s series, and the alternative when the VSO's SDO export is down"
+            "of the HMI 720 s and MDI 96 min series, and the alternative when the VSO's SDO export is down"
         )
         for button in self.source_buttons:
             button.clicked.connect(lambda _=False, b=button: self._pick(self.source_buttons, b, self.on_source_changed))
@@ -1140,7 +1163,8 @@ class SolarDataViewerGUI(QDialog):
         return self.source.native_seconds(self.channel())
 
     def use_jsoc(self):
-        return self.source_buttons[1].isChecked() and self.source.instrument not in FIDO_ONLY_INSTRUMENTS
+        route = self.source.route(self.channel())
+        return route == "jsoc" or (route is None and self.source_buttons[1].isChecked())
 
     def times(self):
         """(start, end) as datetimes, None where a field does not parse."""
@@ -1189,10 +1213,10 @@ class SolarDataViewerGUI(QDialog):
             self.channel_combo.setCurrentIndex(1)  # 195 Å
         self.level_group.setVisible(source.instrument == "GOES SUVI")
         self.processing_group.setVisible(source.instrument not in UNPREPARED_INSTRUMENTS)
-        fido_only = source.instrument in FIDO_ONLY_INSTRUMENTS
-        self.source_group.setVisible(not fido_only)
-        if fido_only:
-            self._pick(self.source_buttons, self.source_buttons[0])
+        # the VSO/JSOC choice shows for instruments JSOC serves
+        jsoc_anywhere = source.instrument not in FIDO_ONLY_INSTRUMENTS or "jsoc" in source.routes.values()
+        self.source_group.setVisible(jsoc_anywhere)
+        self._pick(self.source_buttons, self.source_buttons[0])  # each instrument starts on the VSO
         index = CADENCE_VALUES.index(source.default_cadence) if source.default_cadence in CADENCE_VALUES else 0
         self._pick(self.cadence_buttons, self.cadence_buttons[index])
         self._updating = False
@@ -1202,19 +1226,21 @@ class SolarDataViewerGUI(QDialog):
         if self._updating:
             return
         source = self.source
-        # the 720 s HMI series exist only at JSOC
-        jsoc_only = source.instrument == "HMI" and "720" in str(self.channel())
-        self.source_buttons[0].setEnabled(not jsoc_only)
-        if jsoc_only:
-            self._pick(self.source_buttons, self.source_buttons[1])
+        # a series only one of the VSO and JSOC serves (HMI 720 s, MDI 96 min: JSOC)
+        route = source.route(self.channel())
+        self.source_buttons[0].setEnabled(route != "jsoc")
+        self.source_buttons[1].setEnabled(route != "vso")
+        if route is not None:
+            self._pick(self.source_buttons, self.source_buttons[1 if route == "jsoc" else 0])
         # cadence segments no coarser than a fixed native cadence change nothing
         native = self.native_seconds()
-        about = "typically " if source.variable else ""
+        variable = source.is_variable(self.channel())
+        about = "typically " if variable else ""
         self.cadence_buttons[0].setToolTip(
             f"Every image the archive has: {about}one every {_cadence_text(native)}" if native else "Every image the archive has"
         )
         for button, seconds in zip(self.cadence_buttons[1:], CADENCE_VALUES[1:]):
-            usable = not native or source.variable or seconds > native
+            usable = not native or variable or seconds > native
             button.setEnabled(usable)
             button.setToolTip("" if usable else f"{source.label.split(' · ')[-1]} takes one every {_cadence_text(native)}: use Every image")
         chosen = [b for b in self.cadence_buttons if b.isChecked()]
@@ -1224,7 +1250,7 @@ class SolarDataViewerGUI(QDialog):
 
     def on_source_changed(self):
         jsoc = self.use_jsoc()
-        fido_only = self.source.instrument in FIDO_ONLY_INSTRUMENTS
+        fido_only = not self.source_group.isVisibleTo(self)
         self.source_hint.setText("VSO · no account needed" if fido_only else "No account needed")
         self.source_hint.setVisible(not jsoc)
         self.email_input.setVisible(jsoc)
@@ -1378,7 +1404,7 @@ class SolarDataViewerGUI(QDialog):
         self.summary_values["Window"].setText(_escape(window_text))
         cadence, native = self.cadence_seconds(), est["native"]
         cadence_text = f"one every {_cadence_text(cadence)}" if cadence else "every image"
-        native_word = "typically" if source.variable else "native"
+        native_word = "typically" if source.is_variable(self.channel()) else "native"
         extra = " " + _muted(f"({native_word} {_cadence_text(native)})", secondary) if native else ""
         if found and len(found) > 1 and not cadence:  # what the archive holds here
             stamps = sorted(datetime.strptime(t, "%Y-%m-%dT%H:%M:%S") for t in found)

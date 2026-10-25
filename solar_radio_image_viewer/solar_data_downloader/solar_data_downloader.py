@@ -85,6 +85,10 @@ HMI_SERIES = {
     "V_720s": "hmi.V_720s",
 }
 HMI_PHYSOBS = {"M": "LOS_magnetic_field", "Ic": "intensity", "V": "LOS_velocity"}
+# The MDI series JSOC keeps for good (a JSOC export, an email): the level 1.8.2
+# magnetograms every 96 min and the continuum every 6 h. The VSO serves the
+# 1 min magnetograms and 12 min continuum where they were taken.
+MDI_SERIES = {"M_96m": "mdi.fd_M_96m_lev182", "Ic_6h": "mdi.fd_ic_06h"}
 
 
 def _quiet():
@@ -963,18 +967,20 @@ def _listed(found, hold=0):
 
 
 def _jsoc_times(record):
-    """The record times a JSOC record set holds (a dry run of an export;
-    no email needed), or None when JSOC cannot be asked."""
+    """The record times a JSOC record set holds images for (a dry run of an
+    export; no email needed), or None when JSOC cannot be asked. A record
+    without DATE-OBS is an empty slot (no image taken) and is left out."""
     import drms
 
     prefer_ipv4()
     try:
-        keys = drms.Client().query(record, key="T_REC")
+        keys = drms.Client().query(record, key="T_REC,DATE__OBS")
     except Exception as e:
         print(f"JSOC could not be searched: {e}")
         return None
+    taken = ~keys["DATE__OBS"].astype(str).str.strip().isin(["", "nan", "None", "MISSING"])
     # '2024-05-01T00:00:09Z' (AIA) or '2024.05.01_00:00:00_TAI' (HMI)
-    stamps = [str(t)[:19].replace(".", "-", 2).replace("_", "T") for t in keys["T_REC"]]
+    stamps = [str(t)[:19].replace(".", "-", 2).replace("_", "T") for t in keys["T_REC"][taken]]
     times = [datetime.fromisoformat(t) for t in stamps if t[:4].isdigit()]
     return _listed(times)
 
@@ -1211,6 +1217,28 @@ def download_hmi(series, start_time, end_time, output_dir, email=None, interval_
     return _finish_hmi(files, output_dir, skip_calibration, keep_originals)
 
 
+def download_mdi(series, start_time, end_time, output_dir, email=None, skip_calibration=False, sample=None, keep_originals=False, dry_run=False):
+    """Download an MDI ``series`` (a key of MDI_SERIES: 'M_96m' or 'Ic_6h')
+    with a JSOC export (``email`` registered at JSOC) and turn the images
+    north up with the Sun centred."""
+    _quiet()
+    if not dry_run:
+        _ensure_dir(output_dir)
+    if series not in MDI_SERIES:
+        print(f"Error: Invalid MDI series '{series}'. Use one of: {', '.join(MDI_SERIES)}")
+        return None if dry_run else []
+    record = _jsoc_record(MDI_SERIES[series], _parse_time(start_time), _parse_time(end_time), sample)
+    if dry_run:
+        return _jsoc_times(record)
+    files = [str(p) for p in _jsoc_export(record, email, output_dir)]
+    if skip_calibration or not files:
+        if files:
+            print(f"Successfully downloaded {len(files)} MDI files.", flush=True)
+        return files
+    print("  Processing: north up, Sun centred", flush=True)
+    return prepare_files("mdi", files, output_dir, {}, keep_originals)
+
+
 def update_hmi_pointing(hmi_map):
     """An HMI map turned north up with the Sun centred (the old name)."""
     return _north_up(hmi_map, [])
@@ -1327,6 +1355,10 @@ def download_soho(instrument, start_time, end_time, output_dir, wavelength=None,
                     chosen.setdefault(rows[j][0], []).append(rows[j][1])
                 results = [_table(results[k])[sorted(rows_kept)] for k, rows_kept in sorted(chosen.items())]
         else:
+            if instrument == "EIT":
+                # SDAC lists each image twice (level 0 and 1) and the VSO's
+                # cadence samples both: the cadence is applied here instead
+                query = [attr for attr in query if not isinstance(attr, a.Sample)]
             result = Fido.search(*query)
             if _unreachable(result, label):
                 return None if dry_run else []
@@ -1338,6 +1370,8 @@ def download_soho(instrument, start_time, end_time, output_dir, wavelength=None,
                 if l1:
                     print(f"  Taking the {len(l1)} EIT level 1 files (calibrated) of {len(table)} listed", flush=True)
                     result = result[0, l1]
+                if sample:
+                    result = _table(result)[_thin_rows(result, sample)]
             results = [result]
         if not _found(sum(len(_table(result)) for result in results)):
             _no_data(label, start_time, end_time)
@@ -1573,7 +1607,7 @@ def main():
     parser.add_argument("--soho-instrument", default="EIT", choices=["EIT", "LASCO", "MDI"])
     parser.add_argument("--detector", default="C2", help="LASCO detector (C2, C3) or STEREO instrument (EUVI, COR1, COR2)")
     parser.add_argument("--spacecraft", default="A", choices=["A", "B"], help="STEREO spacecraft")
-    parser.add_argument("--physobs", default="magnetogram", help="MDI product: magnetogram or continuum")
+    parser.add_argument("--physobs", default="magnetogram", help="MDI product: magnetogram or continuum (VSO), M_96m or Ic_6h (JSOC, needs --email)")
     parser.add_argument("--level", default="2", help="SUVI level: 2 or 1b")
     parser.add_argument("--sample", type=float, help="cadence in seconds (every image when omitted)")
     parser.add_argument("--email", help="email registered at JSOC (JSOC exports of AIA/HMI)")
@@ -1610,7 +1644,10 @@ def main():
         elif args.instrument == "iris":
             files = download_iris(wavelength=args.wavelength, **common)
         elif args.instrument == "soho":
-            files = download_soho(args.soho_instrument, wavelength=args.wavelength, detector=args.detector, physobs=args.physobs, **common)
+            if args.soho_instrument == "MDI" and args.physobs in MDI_SERIES:
+                files = download_mdi(args.physobs, email=args.email, **common)
+            else:
+                files = download_soho(args.soho_instrument, wavelength=args.wavelength, detector=args.detector, physobs=args.physobs, **common)
         elif args.instrument == "suvi":
             files = download_goes_suvi(wavelength=args.wavelength, level=args.level, **common)
         elif args.instrument == "stereo":
