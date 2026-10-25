@@ -22,6 +22,7 @@ other frame keeps its own view):
 
 import logging
 import math
+from contextlib import contextmanager
 
 import numpy as np
 from PyQt5.QtCore import QPoint, Qt
@@ -182,6 +183,7 @@ class PaneSync:
         self.page = page
         self.on = {key: default for key, _words, default in SYNC_WAYS}
         self._busy = False
+        self._joining = None
 
     # ------------------------------------------------------------ who
     def can_follow(self, pane, leader):
@@ -208,15 +210,24 @@ class PaneSync:
     def view_settled(self, leader):
         """``leader``'s view is still: the panes following it show the same
         sky area."""
-        if not self.on["view"] or self._busy or not getattr(leader, "linked", False):
+        if leader is self._joining or not getattr(leader, "linked", False):
+            return
+        ax = leader._nav_axes()
+        if ax is None:
+            return
+        synced = getattr(leader, "_synced_view", None)
+        if synced is not None and np.allclose(synced, (ax.get_xlim(), ax.get_ylim()), rtol=0, atol=1e-6):
+            return  # the view this pane was given: an echo, not a move
+        self._give_view(leader, self.followers(leader))
+
+    def _give_view(self, leader, panes):
+        """``panes`` show the sky area ``leader`` shows."""
+        if not self.on["view"] or self._busy:
             return
         ax = leader._nav_axes()
         if ax is None:
             return
         xlim, ylim = ax.get_xlim(), ax.get_ylim()
-        synced = getattr(leader, "_synced_view", None)
-        if synced is not None and np.allclose(synced, (xlim, ylim), rtol=0, atol=1e-6):
-            return  # the view this pane was given: an echo, not a move
         world = to_world(leader, (xlim[0] + xlim[1]) / 2, (ylim[0] + ylim[1]) / 2)
         scales = pixel_scales(leader)
         if world is None or scales is None:
@@ -225,7 +236,7 @@ class PaneSync:
         half_h = abs(ylim[1] - ylim[0]) * scales[1] / 2
         self._busy = True
         try:
-            for pane in self.followers(leader):
+            for pane in panes:
                 centre = to_pixel(pane, *world)
                 pane_scales = pixel_scales(pane)
                 pane_ax = pane._nav_axes()
@@ -240,6 +251,42 @@ class PaneSync:
                 pane._synced_view = (pane_ax.get_xlim(), pane_ax.get_ylim())
         finally:
             self._busy = False
+
+    # ---------------------------------------------------------- joins
+    @contextmanager
+    def joining(self, pane):
+        """``pane`` opens an image: meanwhile it does not lead (its first
+        view and range are no move of the user's), and once open it takes
+        the view and range of the linked panes it can follow."""
+        outer, self._joining = self._joining, pane
+        try:
+            yield
+        finally:
+            self._joining = outer
+        if outer is None and pane.current_image_data is not None and pane.linked:
+            self.joined(pane)
+
+    def joined(self, pane):
+        """``pane`` has a new image: it shows what the panes it follows
+        show (the active one first)."""
+        others = [p for p in self.page.panes if p is not pane]
+        active = self.page.active_pane
+        if active in others:
+            others.remove(active)
+            others.insert(0, active)
+        viewer = next((p for p in others if self.can_follow(pane, p)), None)
+        if viewer is not None:
+            self._give_view(viewer, [pane])
+        unit = pane.display_unit()
+        ranger = next(
+            (p for p in others if p.linked and p.current_image_data is not None
+             and getattr(p, "_last_norm_params", None) is not None
+             and p.display_unit() == unit),
+            None,
+        )
+        if ranger is not None:
+            vmin, vmax = ranger._last_norm_params[:2]
+            self._give_range(vmin, vmax, unit, [pane])
 
     # --------------------------------------------------------- cursor
     def cursor_moved(self, leader, x, y):
@@ -296,15 +343,19 @@ class PaneSync:
     def range_changed(self, leader, vmin, vmax):
         """``leader`` is shown with this range: the linked panes in the
         same unit take it."""
-        if not self.on["range"] or self._busy or not leader.linked:
+        if leader is self._joining or not leader.linked:
             return
-        unit = leader.display_unit()
+        panes = [pane for pane in self.page.panes if pane is not leader and pane.linked]
+        self._give_range(vmin, vmax, leader.display_unit(), panes)
+
+    def _give_range(self, vmin, vmax, unit, panes):
+        """``panes`` with images in ``unit`` are shown from vmin to vmax."""
+        if not self.on["range"] or self._busy:
+            return
         self._busy = True
         try:
-            for pane in self.page.panes:
-                if pane is leader or not pane.linked or pane.current_image_data is None:
-                    continue
-                if pane.display_unit() != unit:
+            for pane in panes:
+                if pane.current_image_data is None or pane.display_unit() != unit:
                     continue
                 shown = getattr(pane, "_last_norm_params", None)
                 if shown is not None and np.allclose(shown[:2], (vmin, vmax), rtol=1e-9, atol=0):

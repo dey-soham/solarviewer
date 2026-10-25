@@ -3,6 +3,7 @@ Opening files and stepping through a directory (local or remote).
 """
 
 import logging
+from contextlib import nullcontext
 import os
 
 from PyQt5.QtCore import Qt, QTimer
@@ -87,7 +88,10 @@ class FileNavigationMixin:
         self.invalidate_contours()
         # Clear figure to prevent restoring old view limits
         self.figure.clear()
-        loaded = self.on_visualization_changed(dir_load=True)
+        # In a page, the image opens to the view of the panes it follows
+        page = getattr(self, "page", None)
+        with page.sync.joining(self) if page is not None else nullcontext():
+            loaded = self.on_visualization_changed(dir_load=True)
         self.update_tab_name_from_path(path)  # Update tab name
         if loaded:
             remember_image(path)
