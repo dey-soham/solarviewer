@@ -16,12 +16,11 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from .styles import FONT_BODY, FONT_META, FONT_SMALL, RADIUS, RADIUS_LG, theme_manager
+from .styles import FONT_META, FONT_SMALL, RADIUS, RADIUS_LG, theme_manager
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 FIRST_YEAR = 1990  # before any of the archives
@@ -379,8 +378,9 @@ class DateTimePopup(QFrame):
 
     changed = pyqtSignal(object)  # a datetime
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, with_time=True):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        self.with_time = with_time
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setObjectName("PickerPopup")
         layout = QVBoxLayout(self)
@@ -425,10 +425,12 @@ class DateTimePopup(QFrame):
         utc.setObjectName("Meta")
         foot.addWidget(utc)
         foot.addStretch()
-        self.now_button = QPushButton("Now")
+        self.now_button = QPushButton("Now" if with_time else "Today")
         self.now_button.setObjectName("LinkButton")
         self.now_button.setCursor(Qt.PointingHandCursor)
-        self.now_button.setToolTip("The current time, UTC")
+        self.now_button.setToolTip("The current time, UTC" if with_time else "Today, UTC")
+        for widget in (label, self.time_edit, utc):
+            widget.setVisible(with_time)
         self.done_button = QPushButton("Done")
         self.done_button.setObjectName("PrimaryButton")
         self.done_button.setCursor(Qt.PointingHandCursor)
@@ -441,7 +443,7 @@ class DateTimePopup(QFrame):
         self.prev_button.clicked.connect(lambda: self.grid.step(-1))
         self.next_button.clicked.connect(lambda: self.grid.step(1))
         self.grid.title_changed.connect(self._update_head)
-        self.grid.picked.connect(lambda _: self._emit())
+        self.grid.picked.connect(self._day_picked)
         self.time_edit.textEdited.connect(lambda _: self._emit())
         self.now_button.clicked.connect(self._now)
         self.done_button.clicked.connect(self.close)
@@ -457,6 +459,11 @@ class DateTimePopup(QFrame):
     def value(self):
         clock = self.time_edit.value()
         return None if clock is None else datetime.combine(self.grid.selected, clock)
+
+    def _day_picked(self, day):
+        self._emit()
+        if not self.with_time:  # a date alone: one click picks it
+            self.close()
 
     def _emit(self):
         value = self.value()
@@ -514,14 +521,17 @@ class _Picker(QObject):
     """Keeps a field's calendar button: opens the popup, writes the picks
     into the field and redraws the icon when the theme changes."""
 
-    def __init__(self, field, on_change, band):
+    def __init__(self, field, on_change, band, fmt=TIME_FORMAT):
         super().__init__(field)
+        self.fmt = fmt
+        self.with_time = "%H" in fmt
         self.field = field
         self.on_change = on_change
         self.band = band
         self.popup = None
-        self.action = QAction(calendar_icon(), "Pick a date and time", field)
-        self.action.setToolTip("Pick a date and time (Alt+Down)")
+        what = "a date and time" if self.with_time else "a date"
+        self.action = QAction(calendar_icon(), f"Pick {what}", field)
+        self.action.setToolTip(f"Pick {what} (Alt+Down)")
         self.action.triggered.connect(self.open)
         field.addAction(self.action, QLineEdit.TrailingPosition)
         field.installEventFilter(self)
@@ -536,25 +546,27 @@ class _Picker(QObject):
 
     def open(self):
         if self.popup is None:
-            self.popup = DateTimePopup(self.field)
+            self.popup = DateTimePopup(self.field, with_time=self.with_time)
             self.popup.changed.connect(self._picked)
         try:
-            value = datetime.strptime(self.field.text().strip(), TIME_FORMAT)
+            value = datetime.strptime(self.field.text().strip(), self.fmt)
         except ValueError:
             value = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
         self.popup.set_value(value, self.band() if self.band else None)
         self.popup.show_under(self.field)
 
     def _picked(self, value):
-        text = value.strftime(TIME_FORMAT)
+        text = value.strftime(self.fmt)
         if text != self.field.text():
             self.field.setText(text)
             self.on_change(text)
 
 
-def attach_date_picker(field, on_change, band=None):
-    """Give ``field`` (a QLineEdit of TIME_FORMAT text) a calendar button.
+def attach_date_picker(field, on_change, band=None, fmt=TIME_FORMAT):
+    """Give ``field`` (a QLineEdit of ``fmt`` text, a date and time unless
+    ``fmt`` has no hours: then a date, picked with one click) a calendar
+    button.
     Each pick sets its text and calls ``on_change(text)``, as typing calls
     a textEdited slot. ``band()`` returns the other end of the window (a
     datetime or None), shaded in the calendar."""
-    return _Picker(field, on_change, band)
+    return _Picker(field, on_change, band, fmt)

@@ -1,8 +1,10 @@
 """
 Radio Data Downloader Package
 
-This package provides tools for downloading and processing radio solar data from various observatories:
-- Learmonth Solar Observatory (Australia)
+Downloads solar radio dynamic spectra and writes them as FITS files for the
+Dynamic Spectrum Viewer:
+- RSTN spectrographs: Learmonth, San Vito, Palehua, Sagamore Hill, Holloman
+- the e-CALLISTO network of spectrometers
 
 The package includes:
 - Core downloader module (radio_data_downloader.py)
