@@ -1042,8 +1042,7 @@ class MainWindow(
         layout = QVBoxLayout(block)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
-        header, _aside = kicker_row("Clean", "applied in order")
-        layout.addWidget(header)
+        layout.addWidget(kicker("Clean"))
 
         # 1. Masks
         card, head, body = self._step_card(1, "Masks")
