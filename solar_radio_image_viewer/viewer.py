@@ -162,7 +162,6 @@ class SolarRadioImageTab(
         self.current_wcs = None
         self.psf = None
         self.current_roi = None
-        self.roi_selector = None
         self.imagename = None
         self.solar_disk_center = None
         self.solar_disk_diameter_arcmin = 32.0

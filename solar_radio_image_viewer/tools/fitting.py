@@ -54,23 +54,8 @@ class FittingMixin:
             QMessageBox.warning(self, "No Image", "Please load an image first.")
             return
 
-        # Require ROI selection - check if selector exists and is visible
-        has_visible_roi = False
-        if (
-            current_tab.current_roi
-            and isinstance(current_tab.current_roi, tuple)
-            and current_tab.roi_selector
-        ):
-
-            # Check if selector's artist is visible
-            # Both RectangleSelector and EllipseSelector have 'to_draw' artist
-            if hasattr(current_tab.roi_selector, "to_draw"):
-                has_visible_roi = current_tab.roi_selector.to_draw.get_visible()
-            # Fallback for older matplotlib versions or if to_draw is missing
-            elif hasattr(current_tab.roi_selector, "artists"):
-                has_visible_roi = any(
-                    a.get_visible() for a in current_tab.roi_selector.artists
-                )
+        # A region selected (and on the image) to fit in
+        has_visible_roi = current_tab.selected_region is not None and bool(current_tab.current_roi)
 
         if not has_visible_roi:
             QMessageBox.warning(

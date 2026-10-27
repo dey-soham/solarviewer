@@ -151,6 +151,9 @@ class MeasurePreview(QWidget):
             self.show()
             self.raise_()
             self.update()
+            regions = getattr(canvas, "region_layer", None)
+            if regions is not None:
+                regions.raise_()  # (the regions stay in sight)
         else:
             self.update(previous.united(area))
 

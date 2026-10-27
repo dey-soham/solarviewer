@@ -35,7 +35,7 @@ class ProfileMixin:
     Host attributes/methods used:
 
     ``canvas``, ``current_image_data``, ``current_wcs``, ``figure``,
-    ``profile_action``, ``roi_selector``, ``show_status_message``
+    ``profile_action``, ``show_status_message``
     """
 
     def _toggle_profile_mode(self, checked):
@@ -46,9 +46,6 @@ class ProfileMixin:
             self._show_profile_mode_dialog()
         else:
             self.show_status_message("Profile mode off")
-            # Reconnect ROI selector
-            if self.roi_selector:
-                self.roi_selector.set_active(True)
             # Disconnect all profile events
             for attr in ["_profile_click_cid", "_profile_motion_cid"]:
                 if hasattr(self, attr):
@@ -146,9 +143,6 @@ class ProfileMixin:
 
     def _activate_profile_mode(self):
         """Activate profile mode with selected method"""
-        # Disconnect ROI selector
-        if self.roi_selector:
-            self.roi_selector.set_active(False)
 
         if self._profile_method == "line":
             self.show_status_message(

@@ -2,10 +2,13 @@
 ROI statistics tool for SolarViewer.
 """
 
+import itertools
+
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt
+from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -16,18 +19,128 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
-from ..ui.styles import set_hand_cursor
-
-
-# For region selection modes
 from ..ui.geometry import fit_to_screen
+from ..ui.styles import set_hand_cursor
+from .preview import contrast_colors
+
+NO_REGION_HINT = "No selection. Draw a rectangle or ellipse on the image."
+# A drag shorter than this (screen pixels) either way is a click
+CLICK_PX = 3
+_keys = itertools.count(1)
+
 
 class RegionMode:
     RECTANGLE = 0
     ELLIPSE = 1
     PAN = 2
+
+
+class Region:
+    """A rectangle or ellipse on a pane: ``shape`` ("rect" or "ellipse") in
+    the box with ``corners`` (x1, y1, x2, y2), in pixels of the image. Its
+    copies in linked panes share its ``key``."""
+
+    __slots__ = ("shape", "corners", "key")
+
+    def __init__(self, shape, corners, key=None):
+        x1, y1, x2, y2 = (float(v) for v in corners)
+        self.shape = shape
+        self.corners = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        self.key = key if key is not None else next(_keys)
+
+    def outline(self):
+        """The outline as points (pixels of the image), closed."""
+        return region_outline(self.shape, self.corners)
+
+    def contains(self, x, y):
+        x1, y1, x2, y2 = self.corners
+        if self.shape == "rect":
+            return x1 <= x <= x2 and y1 <= y <= y2
+        a, b = (x2 - x1) / 2, (y2 - y1) / 2
+        return a > 0 and b > 0 and (
+            ((x - (x1 + x2) / 2) / a) ** 2 + ((y - (y1 + y2) / 2) / b) ** 2 <= 1
+        )
+
+
+def region_outline(shape, corners):
+    x1, y1, x2, y2 = corners
+    if shape == "rect":
+        return [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
+    t = np.linspace(0, 2 * np.pi, 73)
+    cx, cy, a, b = (x1 + x2) / 2, (y1 + y2) / 2, abs(x2 - x1) / 2, abs(y2 - y1) / 2
+    return list(zip(cx + a * np.cos(t), cy + b * np.sin(t)))
+
+
+class RegionLayer(QWidget):
+    """A pane's regions, drawn in Qt over its canvas.
+
+    Drawing, selecting or deleting a region, or moving the view, repaints
+    this layer alone; the Matplotlib figure is never redrawn for it. The
+    selected region is drawn solid and thicker, the others dashed (they
+    differ in weight, not colour), over a halo that contrasts with the image.
+    """
+
+    def __init__(self, tab):
+        super().__init__(tab.canvas)
+        self._tab = tab
+        self.preview = None  # (shape, corners) of a region being dragged out
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        tab.canvas.region_layer = self  # (the canvas's other overlays raise it)
+        tab.canvas.installEventFilter(self)
+        self.setGeometry(tab.canvas.rect())
+        self.show()
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Resize:
+            self.setGeometry(watched.rect())
+        return False
+
+    def refresh(self):
+        """Paint again (the regions, the view or the image changed)."""
+        self.raise_()
+        self.update()  # (the whole layer: a part would repaint a part of the canvas)
+
+    def paintEvent(self, event):
+        tab = self._tab
+        ax = tab._nav_axes()
+        if ax is None or (not tab.regions and self.preview is None):
+            return
+        canvas = tab.canvas
+        dpr = canvas.device_pixel_ratio
+        fig_h = canvas.figure.bbox.height
+
+        def to_widget(points):
+            return [QPointF(px / dpr, (fig_h - py) / dpr) for px, py in ax.transData.transform(points)]
+
+        x0, y0, w, h = ax.bbox.bounds
+        clip = QRectF(QPointF(x0 / dpr, (fig_h - y0 - h) / dpr), QPointF((x0 + w) / dpr, (fig_h - y0) / dpr))
+        line, halo = (QColor(c) for c in contrast_colors(tab))
+        halo.setAlphaF(0.8)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setClipRect(clip)
+
+        def draw(points, selected):
+            path = QPainterPath()
+            path.addPolygon(QPolygonF(to_widget(points)))
+            width = 2.0 if selected else 1.3
+            painter.strokePath(path, QPen(halo, width + 1.8, Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin))
+            pen = QPen(line, width, Qt.SolidLine if selected else Qt.CustomDashLine, Qt.FlatCap, Qt.MiterJoin)
+            if not selected:
+                pen.setDashPattern([4, 3])
+            painter.strokePath(path, pen)
+
+        for region in tab.regions:
+            if region is not tab.selected_region:
+                draw(region.outline(), False)
+        if tab.selected_region is not None:
+            draw(tab.selected_region.outline(), True)
+        if self.preview is not None:
+            draw(region_outline(*self.preview), True)
+        painter.end()
 
 
 class RoiStatsMixin:
@@ -38,12 +151,15 @@ class RoiStatsMixin:
     Host attributes/methods used:
 
     ``canvas``, ``current_image_data``, ``current_wcs``, ``info_label``,
-    ``on_mouse_move``, ``pan_action``, ``parent``, ``region_mode``,
+    ``_in_measurement_mode``, ``_nav_axes``, ``parent``, ``region_mode``,
+    ``_region_layer``, ``regions``, ``selected_region``,
     ``show_status_message``, ``stats_table``
     """
 
     def show_roi_stats(self, roi, ra_dec_info=""):
-        if roi.size == 0:
+        if roi.size == 0:  # (a region off the image)
+            self.current_roi = None
+            self._hide_roi_stats()
             return
 
         rmin = np.nanmin(roi)
@@ -62,6 +178,8 @@ class RoiStatsMixin:
         self.histogram_btn.show()
         self.fit_gaussian_btn.show()
         self.export_region_btn.show()
+        self.delete_region_btn.show()
+        self.clear_regions_btn.setVisible(len(self.regions) > 1)
 
         if self.window():
             self.show_status_message(
@@ -342,40 +460,199 @@ class RoiStatsMixin:
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
 
-    def init_region_editor(self, ax):
-        from matplotlib.widgets import EllipseSelector, RectangleSelector
-
-        if self.roi_selector:
-            self.roi_selector.set_visible(False)
-            self.roi_selector.disconnect_events()
-            self.roi_selector = None
-            self.canvas.draw_idle()
-
-        if hasattr(self, "region_mode") and self.region_mode == RegionMode.PAN:
-            # Checkable actions state sync (if not already handled)
-            if hasattr(self, "pan_action"):
-                self.pan_action.setChecked(True)
-            self.show_status_message("Pan Tool Active")
-            return
-
-        # Choose selector based on region mode
-        if hasattr(self, "region_mode") and self.region_mode == RegionMode.ELLIPSE:
-            self.roi_selector = EllipseSelector(
-                ax, self.on_ellipse, useblit=True, button=[1], interactive=True
-            )
-        else:
-            self.roi_selector = RectangleSelector(
-                ax, self.on_rectangle, useblit=True, button=[1], interactive=True
-            )
+    # ------------------------------------------------------------------
+    # The regions: drawn with the Rectangle and Ellipse tools, kept until
+    # deleted; the selected one's statistics are shown
+    # ------------------------------------------------------------------
 
     def on_rectangle(self, eclick, erelease):
-        if self.current_image_data is None:
+        """A rectangle from ``eclick`` to ``erelease`` (anything with
+        ``xdata`` and ``ydata``) is added as a region."""
+        self.add_region("rect", (eclick.xdata, eclick.ydata, erelease.xdata, erelease.ydata))
+
+    def on_ellipse(self, eclick, erelease):
+        """The ellipse in the box from ``eclick`` to ``erelease`` is added as a region."""
+        self.add_region("ellipse", (eclick.xdata, eclick.ydata, erelease.xdata, erelease.ydata))
+
+    def add_region(self, shape, corners, key=None, follow=True):
+        """Add a ``shape`` region in the box with ``corners`` and select it;
+        with ``follow``, the panes following this one get a copy."""
+        if self.current_image_data is None or None in corners:
+            return None
+        region = Region(shape, corners, key)
+        self.regions.append(region)
+        self.select_region(region, follow=False)
+        page = getattr(self, "page", None)
+        if follow and page is not None:
+            page.sync.region_added(self, region)
+        return region
+
+    def select_region(self, region, follow=True):
+        """Select ``region`` (or nothing, None): its statistics are shown,
+        and (with ``follow``) its copies are selected in the panes
+        following this one."""
+        self.selected_region = region
+        self._measure_selected()
+        self._region_layer.refresh()
+        page = getattr(self, "page", None)
+        if follow and page is not None:
+            page.sync.region_selected(self, region)
+
+    def delete_region(self, region=None, follow=True):
+        """Delete ``region`` (the selected one by default), and with
+        ``follow`` its copies in the panes following this one."""
+        region = region or self.selected_region
+        if region is None or region not in self.regions:
             return
-        try:
-            x1, x2 = int(eclick.xdata), int(erelease.xdata)
-            y1, y2 = int(eclick.ydata), int(erelease.ydata)
-        except Exception:
+        self.regions.remove(region)
+        if region is self.selected_region:
+            self.select_region(None, follow=False)
+        else:
+            self._region_layer.refresh()
+            self._show_region_hint()
+        page = getattr(self, "page", None)
+        if follow:
+            if page is not None:
+                page.sync.region_deleted(self, region.key)
+            self.show_status_message("Region deleted")
+
+    def clear_regions(self, follow=True):
+        """Delete every region (and with ``follow`` their copies)."""
+        for region in list(self.regions):
+            self.delete_region(region, follow=follow)
+        if follow:
+            self.show_status_message("Regions cleared")
+
+    def region_by_key(self, key):
+        return next((region for region in self.regions if region.key == key), None)
+
+    def _measure_selected(self):
+        """The selected region's statistics, from the image as it is now."""
+        self._measured_data = self.current_image_data
+        region = self.selected_region
+        if region is None or self.current_image_data is None:
+            self.current_roi = None
+            self._hide_roi_stats()
+        elif region.shape == "rect":
+            self._rect_stats(*region.corners)
+        else:
+            self._ellipse_stats(*region.corners)
+        page = getattr(self, "page", None)
+        if page is not None:
+            page.regions_changed()
+
+    def _hide_roi_stats(self):
+        for widget in (self.stats_table, self.histogram_btn, self.fit_gaussian_btn,
+                       self.export_region_btn, self.delete_region_btn):
+            widget.hide()
+        self._show_region_hint()
+
+    def _show_region_hint(self):
+        """Without a selected region, the Region block says what there is."""
+        self.clear_regions_btn.setVisible(len(self.regions) > 1)
+        if self.selected_region is not None:
+            self.info_label.setText("The selected region is off the image.")
             return
+        count = len(self.regions)
+        self.info_label.setText(
+            f"{count} region{'s' * (count != 1)}. Click one with the Rectangle or "
+            "Ellipse tool to select it." if count else NO_REGION_HINT
+        )
+
+    def init_region_editor(self, ax):
+        """After a plot or a change of tool: the regions painted again, and
+        measured again if the image changed under them (those no longer on
+        the image go)."""
+        data = self.current_image_data
+        if self.regions and self._measured_data is not data:
+            for region in list(self.regions):
+                x1, y1, x2, y2 = region.corners
+                # Display x runs along the data's first axis, y along its second
+                if data is None or x2 < 0 or x1 > data.shape[0] or y2 < 0 or y1 > data.shape[1]:
+                    self.delete_region(region, follow=False)
+            self._measure_selected()
+        self._region_layer.refresh()
+
+    def _region_tool(self):
+        """Whether the Rectangle or Ellipse tool is the one in use."""
+        return (
+            getattr(self, "region_mode", RegionMode.PAN) in (RegionMode.RECTANGLE, RegionMode.ELLIPSE)
+            and not self._in_measurement_mode()
+        )
+
+    def _region_press(self, event):
+        """A left press with the Rectangle or Ellipse tool: a drag draws a
+        region, a click selects the region under it (or none)."""
+        ax = self._nav_axes()
+        if event.button != 1 or ax is None or event.inaxes is not ax or not self._region_tool():
+            return
+        self._region_press_at = (event.x, event.y, event.xdata, event.ydata)
+
+    def _region_motion(self, event):
+        press = self._region_press_at
+        if press is None or event.x is None:
+            return
+        x0, y0, xdata0, ydata0 = press
+        layer = self._region_layer
+        if layer.preview is None and max(abs(event.x - x0), abs(event.y - y0)) <= CLICK_PX:
+            return
+        x, y = self._data_in_axes(event)
+        if "shift" in (event.key or ""):  # a square or a circle
+            side = max(abs(x - xdata0), abs(y - ydata0))
+            x = xdata0 + np.copysign(side, x - xdata0)
+            y = ydata0 + np.copysign(side, y - ydata0)
+        shape = "rect" if self.region_mode == RegionMode.RECTANGLE else "ellipse"
+        layer.preview = (shape, (xdata0, ydata0, x, y))
+        layer.refresh()
+
+    def _data_in_axes(self, event):
+        """The mouse's position in pixels of the image, kept to the axes."""
+        ax = self._nav_axes()
+        box = ax.bbox
+        px = min(max(event.x, box.x0), box.x1)
+        py = min(max(event.y, box.y0), box.y1)
+        return ax.transData.inverted().transform((px, py))
+
+    def _region_release(self, event):
+        press, self._region_press_at = self._region_press_at, None
+        if press is None or event.button != 1:
+            return
+        layer = self._region_layer
+        preview, layer.preview = layer.preview, None
+        if preview is not None:
+            ax = self._nav_axes()
+            corners = preview[1]
+            (px1, py1), (px2, py2) = ax.transData.transform([corners[:2], corners[2:]])
+            if min(abs(px2 - px1), abs(py2 - py1)) > CLICK_PX:
+                self.add_region(*preview)
+                return
+            layer.refresh()  # (too thin to be a region)
+            return
+        # A click: the most recent region under it, or none
+        x, y = press[2], press[3]
+        hits = [region for region in self.regions if region.contains(x, y)]
+        self.select_region(hits[-1] if hits else None)
+        if hits:
+            self.show_status_message("Region selected: Delete removes it, Esc deselects")
+
+    def _on_region_key(self, event):
+        """Delete or Backspace deletes the selected region; Esc deselects it
+        (or drops a region being drawn)."""
+        if self._in_measurement_mode():
+            return
+        if event.key == "escape":
+            if self._region_layer.preview is not None:
+                self._region_press_at = self._region_layer.preview = None
+                self._region_layer.refresh()
+            elif self.selected_region is not None:
+                self.select_region(None)
+        elif event.key in ("delete", "backspace") and self.selected_region is not None:
+            self.delete_region()
+
+    def _rect_stats(self, x1, y1, x2, y2):
+        """Show the statistics of the rectangle from (x1, y1) to (x2, y2)."""
+        # (a hair under a whole pixel, as the mouse lands, is that pixel)
+        x1, x2, y1, y2 = (int(np.floor(v + 1e-6)) for v in (x1, x2, y1, y2))
 
         xlow, xhigh = sorted([x1, x2])
         ylow, yhigh = sorted([y1, y2])
@@ -460,26 +737,9 @@ class RoiStatsMixin:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
 
         self.show_roi_stats(roi, ra_dec_info)
-        self._region_drawn("rect", eclick, erelease)
 
-    def _region_drawn(self, shape, eclick, erelease):
-        """The page hears of the region (the panes following this one get
-        it too, core/compare_sync.py)."""
-        page = getattr(self, "page", None)
-        if page is not None:
-            page.sync.region_drawn(
-                self, shape, (eclick.xdata, eclick.ydata, erelease.xdata, erelease.ydata)
-            )
-
-    def on_ellipse(self, eclick, erelease):
-        """Handle ellipse selection for ROI statistics"""
-        if self.current_image_data is None:
-            return
-        try:
-            x1, x2 = eclick.xdata, erelease.xdata
-            y1, y2 = eclick.ydata, erelease.ydata
-        except Exception:
-            return
+    def _ellipse_stats(self, x1, y1, x2, y2):
+        """Show the statistics of the ellipse in the box from (x1, y1) to (x2, y2)."""
 
         # Calculate ellipse parameters in display coordinates
         center_x = (x1 + x2) / 2
@@ -488,6 +748,8 @@ class RoiStatsMixin:
         height = abs(y2 - y1)
 
         if width < 1 or height < 1:
+            self.current_roi = None
+            self._hide_roi_stats()
             return
 
         # The displayed image is transposed from current_image_data.
@@ -514,6 +776,8 @@ class RoiStatsMixin:
         roi_data = self.current_image_data[mask]
 
         if roi_data.size == 0:
+            self.current_roi = None
+            self._hide_roi_stats()
             return
 
         # Store ellipse ROI info as bounding box for compatibility
@@ -600,4 +864,3 @@ class RoiStatsMixin:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"
 
         self.show_roi_stats(roi_data, ra_dec_info)
-        self._region_drawn("ellipse", eclick, erelease)

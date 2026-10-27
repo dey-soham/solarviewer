@@ -19,7 +19,7 @@ class RulerMixin:
 
     Host attributes/methods used:
 
-    ``canvas``, ``current_wcs``, ``roi_selector``, ``show_status_message``
+    ``canvas``, ``current_wcs``, ``show_status_message``
 
     A measurement is drawn as a right-angled triangle: the measured line is
     the hypotenuse, and the legs show its horizontal and vertical parts, each
@@ -34,9 +34,6 @@ class RulerMixin:
             self.show_status_message(
                 "Ruler mode: Click first point, then click second point to measure (Shift for H/V snap)"
             )
-            # Disconnect ROI selector temporarily
-            if self.roi_selector:
-                self.roi_selector.set_active(False)
 
             self.canvas.setCursor(Qt.CrossCursor)
             # Connect mouse events for ruler
@@ -45,9 +42,6 @@ class RulerMixin:
             )
         else:
             self.show_status_message("Ruler mode off")
-            # Reconnect ROI selector
-            if self.roi_selector:
-                self.roi_selector.set_active(True)
             # Disconnect ruler events
             if hasattr(self, "_ruler_click_cid"):
                 self.canvas.mpl_disconnect(self._ruler_click_cid)

@@ -39,7 +39,6 @@ from PyQt5.QtWidgets import (
 )
 
 from ..tools.preview import contrast_colors, halo_pen, measure_preview
-from ..tools.preview import halo as halo_effects
 from ..ui.widgets import kicker, kicker_row, link_button, rule, toggle_row
 
 logger = logging.getLogger(__name__)
@@ -479,73 +478,54 @@ class PaneSync:
             self._busy = False
 
     # -------------------------------------------------------- regions
-    def region_drawn(self, leader, shape, corners):
-        """A ``shape`` ("rect" or "ellipse") spanning ``corners`` (x1, y1,
-        x2, y2) of ``leader``: drawn at the same sky position in the panes
-        following it, each taking its statistics; the page's tables follow."""
-        page = self.page
-        if self._busy:
+    def region_added(self, leader, region):
+        """``region`` was drawn on ``leader``: the panes following it get a
+        copy at the same sky position (sharing its key), each measuring its
+        own image; the page's tables follow."""
+        if self._busy or not leader.linked:
             return
-        self._remove_mirror(leader)
-        if leader.linked and None not in corners:
-            x1, y1, x2, y2 = corners
-            first, second = to_world(leader, x1, y1), to_world(leader, x2, y2)
-            if first is not None and second is not None:
-                self._busy = True
-                try:
-                    for pane in self.followers(leader):
-                        p1, p2 = to_pixel(pane, *first), to_pixel(pane, *second)
-                        if p1 is None or p2 is None:
-                            continue
-                        # The sky round trip lands a hair off a pixel; the
-                        # handlers truncate, so land on it
-                        p1, p2 = tuple(map(_snap, p1)), tuple(map(_snap, p2))
-                        self._draw_mirror(pane, shape, p1, p2)
-                        handler = pane.on_rectangle if shape == "rect" else pane.on_ellipse
-                        handler(_Point(*p1), _Point(*p2))
-                finally:
-                    self._busy = False
-        page.regions_changed()
-
-    def _draw_mirror(self, pane, shape, p1, p2):
-        """The region as a dashed outline on ``pane`` (its own selector,
-        if any, goes out of sight)."""
-        from matplotlib.patches import Ellipse, Rectangle
-
-        ax = pane._nav_axes()
-        if ax is None:
+        x1, y1, x2, y2 = region.corners
+        first, second = to_world(leader, x1, y1), to_world(leader, x2, y2)
+        if first is None or second is None:
             return
-        self._remove_mirror(pane)
-        (x1, y1), (x2, y2) = p1, p2
-        line, halo = contrast_colors(pane)
-        style = dict(
-            fill=False,
-            edgecolor=line,
-            linewidth=1.2,
-            linestyle="--",
-            path_effects=halo_effects(halo, 1.2),
-        )
-        if shape == "rect":
-            patch = Rectangle((min(x1, x2), min(y1, y2)), abs(x2 - x1), abs(y2 - y1), **style)
-        else:
-            patch = Ellipse(((x1 + x2) / 2, (y1 + y2) / 2), abs(x2 - x1), abs(y2 - y1), **style)
-        ax.add_patch(patch)
-        pane._mirror_patch = patch
-        selector = getattr(pane, "roi_selector", None)
-        if selector is not None:
-            selector.set_visible(False)
-        pane.canvas.draw_idle()
+        self._busy = True
+        try:
+            for pane in self.followers(leader):
+                p1, p2 = to_pixel(pane, *first), to_pixel(pane, *second)
+                if p1 is None or p2 is None:
+                    continue
+                # The sky round trip lands a hair off a pixel; the
+                # statistics truncate, so land on it
+                p1, p2 = tuple(map(_snap, p1)), tuple(map(_snap, p2))
+                pane.add_region(region.shape, (*p1, *p2), key=region.key, follow=False)
+        finally:
+            self._busy = False
 
-    @staticmethod
-    def _remove_mirror(pane):
-        patch = getattr(pane, "_mirror_patch", None)
-        pane._mirror_patch = None
-        if patch is not None:
-            try:
-                patch.remove()
-                pane.canvas.draw_idle()
-            except Exception:
-                pass  # (the figure was cleared since)
+    def region_selected(self, leader, region):
+        """``region`` (or none) was selected on ``leader``: the panes
+        following it select their copy of it (or none)."""
+        if self._busy or not leader.linked:
+            return
+        self._busy = True
+        try:
+            for pane in self.followers(leader):
+                pane.select_region(pane.region_by_key(region.key) if region else None, follow=False)
+        finally:
+            self._busy = False
+
+    def region_deleted(self, leader, key):
+        """The region ``key`` was deleted on ``leader``: so are its copies
+        in the panes following it."""
+        if self._busy or not leader.linked:
+            return
+        self._busy = True
+        try:
+            for pane in self.followers(leader):
+                copy = pane.region_by_key(key)
+                if copy is not None:
+                    pane.delete_region(copy, follow=False)
+        finally:
+            self._busy = False
 
     def _show_crosshair(self, pane, x, y):
         if pane._in_measurement_mode():

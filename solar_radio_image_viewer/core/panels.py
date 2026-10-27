@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QGraphicsOpacityEffect
+from ..tools.roi_stats import NO_REGION_HINT
 from ..ui.conversion_control import ConversionControl
 from ..ui.cursor_readout import CursorReadout
 from ..ui.empty_canvas import EmptyCanvas
@@ -728,7 +729,7 @@ class PanelsMixin:
 
         # The region: its statistics appear with the first region drawn
         block, block_layout, _ = _block("Region")
-        self.info_label = QLabel("No selection. Draw a rectangle or ellipse on the image.")
+        self.info_label = QLabel(NO_REGION_HINT)
         self.info_label.setObjectName("Hint")
         self.info_label.setWordWrap(True)
         block_layout.addWidget(self.info_label)
@@ -751,11 +752,26 @@ class PanelsMixin:
         export_menu.addAction("ROI as region file…", self._export_region)
         self.export_region_btn.setMenu(export_menu)
         self.export_region_btn.hide()
+        self.delete_region_btn = QPushButton("Delete")
+        self.delete_region_btn.setToolTip("Delete the selected region (Delete key)")
+        self.delete_region_btn.clicked.connect(lambda: self.delete_region())
+        self.delete_region_btn.hide()
+        self.clear_regions_btn = QPushButton("Clear all")
+        self.clear_regions_btn.setToolTip("Delete every region on this image")
+        self.clear_regions_btn.clicked.connect(lambda: self.clear_regions())
+        self.clear_regions_btn.hide()
         row = QHBoxLayout()
         row.setSpacing(6)
         row.addWidget(self.histogram_btn)
         row.addWidget(self.fit_gaussian_btn)
         row.addWidget(self.export_region_btn)
+        row.addStretch()
+        block_layout.addLayout(row)
+        # The regions themselves (the spectra viewer's masks work the same way)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(self.delete_region_btn)
+        row.addWidget(self.clear_regions_btn)
         row.addStretch()
         block_layout.addLayout(row)
         layout.addWidget(block)

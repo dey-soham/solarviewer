@@ -14,6 +14,7 @@ from PyQt5.QtGui import QColor, QCursor, QImage, QPainter, QPalette
 from PyQt5.QtWidgets import QWidget
 
 from ..tools import RegionMode
+from ..tools.roi_stats import RegionLayer
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,10 @@ class CanvasMixin:
         self.current_wcs = None
         self.psf = None
         self.current_roi = None
-        self.roi_selector = None
+        self.regions = []  # see tools/roi_stats.py
+        self.selected_region = None
+        self._measured_data = None
+        self._region_press_at = None
         self.imagename = None
 
         self.solar_disk_center = None
@@ -220,12 +224,18 @@ class CanvasMixin:
         self.canvas.mpl_connect("scroll_event", self._on_mouse_scroll)
         self.canvas.mpl_connect("button_press_event", self._on_mouse_press)
         self.canvas.mpl_connect("button_release_event", self._on_mouse_release)
+        self.canvas.mpl_connect("button_press_event", self._region_press)
+        self.canvas.mpl_connect("motion_notify_event", self._region_motion)
+        self.canvas.mpl_connect("button_release_event", self._region_release)
+        self.canvas.mpl_connect("key_press_event", self._on_region_key)
 
         self._pinch_filter = _PinchFilter(self)
         self.canvas.installEventFilter(self._pinch_filter)
 
         # Moving views show a picture until they settle; see _ViewPreview
         self._view_preview = _ViewPreview(self.canvas)
+        # The regions, over everything else on the canvas
+        self._region_layer = RegionLayer(self)
         self._drawn_view = None
         self._preview_source = None
         self._overview_source = None
@@ -509,6 +519,7 @@ class CanvasMixin:
         if hasattr(self, "show_beam_checkbox") and self.show_beam_checkbox.isChecked():
             self._update_beam_position(ax)
         self._preview_view(ax)
+        self._region_layer.refresh()
 
     def _preview_view(self, ax):
         """Show the new view as the last drawn picture, redrawing once it settles."""
@@ -553,8 +564,11 @@ class CanvasMixin:
         if rect.width() <= 0 or rect.height() <= 0:
             return False
 
-        # Grabbing finishes any pending draw first, which updates _drawn_view
+        # Grabbing finishes any pending draw first, which updates _drawn_view;
+        # the regions stay out of the picture (they follow the view themselves)
+        self._region_layer.hide()
         pixmap = self.canvas.grab(rect)
+        self._region_layer.show()
         drawn = self._drawn_view
         if drawn is None or drawn[0] is not ax:
             return False
@@ -576,6 +590,7 @@ class CanvasMixin:
         self._view_preview.show_picture(
             pixmap, rect, QColor.fromRgbF(*ax.get_facecolor()), overview
         )
+        self._region_layer.refresh()
         return True
 
     def _overview_picture(self, ax):
@@ -628,6 +643,7 @@ class CanvasMixin:
         ax = self._nav_axes()
         self._drawn_view = (ax, ax.get_xlim(), ax.get_ylim()) if ax else None
         self._view_preview.hide()
+        self._region_layer.refresh()
         self._show_zoom(ax)
         page = getattr(self, "page", None)
         if page is not None:
