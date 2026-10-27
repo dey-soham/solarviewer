@@ -1,6 +1,7 @@
 """
 The dynamic spectrum viewer's plots: the spectrum itself (PyQtGraph, with
-its time axis, selections and overlays) and the minimap of the whole file.
+its time axis, selections and overlays) and the overview strip of the
+whole file.
 """
 
 import logging
@@ -26,9 +27,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, Normalize, PowerNorm
 from ..ui.styles import palette_for as get_palette
-from matplotlib.backends.backend_qt5agg import (
-    FigureCanvasQTAgg as FigureCanvas,
-)
 import pyqtgraph as pg
 from pyqtgraph import ColorMap
 
@@ -183,6 +181,13 @@ class PyQtGraphSpectrumCanvas(QWidget):
     # Time-pick mode: the time (MJD seconds) and frequency (MHz, NaN if
     # unknown) of the sample clicked
     timePicked = pyqtSignal(float, float)
+    # The sample under the cursor: its time (MJD seconds) and frequency (MHz)
+    cursorSample = pyqtSignal(float, float)
+    # A click (not a drag) on the data: the sample's time and frequency
+    samplePicked = pyqtSignal(float, float)
+
+    AXIS_WIDTH = 52  # of the frequency axis (the time bar lines up with it)
+    AXIS_HEIGHT = 30  # of the time axis
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -227,7 +232,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._boxes = []  # outlines (Keep regions)
         self._extra_items = []  # images of further stretches (uneven axes)
         self._auto_downsample = True  # data extent the view was last fitted to
-        self.hover_info_enabled = False
+        self._image_is_light = False  # the crosshair dark on it if so
 
         # Setup PyQtGraph
         self._setup_pyqtgraph()
@@ -250,16 +255,27 @@ class PyQtGraphSpectrumCanvas(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Create graphics layout widget for plot + colorbar
+        # The plot, then a 12px gap and the colorbar: a 6px strip beside the
+        # image with its tick values (a plot of its own with a bottom axis
+        # as tall as the spectrum's, so the two are level), then the flagged
+        # share of each channel when the automatic flags are on
         self.graphics_widget = pg.GraphicsLayoutWidget()
-        self.graphics_widget.setBackground("#1e1e2e")  # Dark theme bg
+        self.graphics_widget.setFocusPolicy(Qt.StrongFocus)  # (for the arrow keys)
+        self.graphics_widget.setBackground("#161826")
+        grid = self.graphics_widget.ci.layout
+        # (room above for the top tick labels, half of each sticking out)
+        grid.setContentsMargins(0, 8, 0, 0)
+        grid.setHorizontalSpacing(0)
+        grid.setVerticalSpacing(0)
 
-        # Main plot with custom time axis
+        # Main plot with custom time axis; no title (the file's name is in
+        # the menu bar) and no autoscale button (Reset view in the toolbar)
         self.plot_item = self.graphics_widget.addPlot(row=0, col=0)
-        self.plot_item.setLabel("bottom", "Time (UTC)")
-        self.plot_item.setLabel("left", "Frequency (MHz)")
-        self.plot_item.showGrid(x=True, y=True, alpha=0.3)
-        # self.plot_item.setClipToView(True)  # Optimize rendering
+        self.plot_item.hideButtons()
+        self.plot_item.setMenuEnabled(False)
+        self.plot_item.setLabel("left", "MHz")
+        self.plot_item.getAxis("left").setWidth(self.AXIS_WIDTH)
+        self.plot_item.getAxis("bottom").setHeight(self.AXIS_HEIGHT)
 
         # Image item for the spectrum data
         self.image_item = pg.ImageItem()
@@ -272,11 +288,19 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._transparent_lut = None
         self._build_lut(self._cmap)
 
-        # Add colorbar as a separate ViewBox in column 1
-        self.colorbar_vb = self.graphics_widget.addViewBox(row=0, col=1)
-        self.colorbar_vb.setMaximumWidth(20)
-        self.colorbar_vb.setMinimumWidth(15)
+        grid.setColumnSpacing(0, 12)
+        self.colorbar_plot = self.graphics_widget.addPlot(row=0, col=1)
+        self.colorbar_plot.hideButtons()
+        self.colorbar_plot.setMenuEnabled(False)
+        self.colorbar_plot.hideAxis("left")
+        self.colorbar_plot.showAxis("right")
+        self.colorbar_plot.getAxis("bottom").setHeight(self.AXIS_HEIGHT)
+        self.colorbar_plot.getAxis("bottom").setStyle(showValues=False, tickLength=0)
+        self.colorbar_plot.getAxis("right").setWidth(44)
+        self.colorbar_plot.setFixedWidth(6 + 44)
+        self.colorbar_vb = self.colorbar_plot.vb
         self.colorbar_vb.setMouseEnabled(x=False, y=False)
+        self.colorbar_vb.setXRange(0, 1, padding=0)
 
         # Create vertical gradient image for colorbar
         self.colorbar_image = pg.ImageItem()
@@ -288,43 +312,43 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self.colorbar_image.setImage(gradient_data, autoLevels=False)
         self.colorbar_image.setLookupTable(self._current_lut)
         self.colorbar_image.setLevels([0, 255])
-
-        # Set initial auto range
-        self.colorbar_vb.autoRange()
+        self.colorbar_image.setRect(pg.QtCore.QRectF(0, 0, 1, 255))
+        self.colorbar_vb.setYRange(0, 255, padding=0)
 
         # Colorbar axis labels
-        self.colorbar_axis = pg.AxisItem("right")
-        self.graphics_widget.addItem(self.colorbar_axis, row=0, col=2)
-        self.colorbar_axis.linkToView(self.colorbar_vb)
+        self.colorbar_axis = self.colorbar_plot.getAxis("right")
 
         # The flagged share of each channel (automatic RFI flags), when on
-        self.flag_plot = self.graphics_widget.addPlot(row=0, col=3)
+        self.flag_plot = self.graphics_widget.addPlot(row=0, col=2)
+        self.flag_plot.hideButtons()
         self.flag_plot.setYLink(self.plot_item)
         self.flag_plot.hideAxis("left")
-        self.flag_plot.setLabel("bottom", "flagged %")
+        self.flag_plot.getAxis("bottom").setHeight(self.AXIS_HEIGHT)
         self.flag_plot.setXRange(0, 100, padding=0)
         # (90 px wide: only the ends labelled)
-        self.flag_plot.getAxis("bottom").setTicks([[(0, "0"), (100, "100")], []])
+        self.flag_plot.getAxis("bottom").setTicks([[(0, "0"), (100, "100% flagged")], []])
         self.flag_plot.getAxis("bottom").setStyle(hideOverlappingLabels=False)
-        # (room for "100" at the right edge)
-        left, top, right, bottom = self.graphics_widget.ci.layout.getContentsMargins()
-        self.graphics_widget.ci.layout.setContentsMargins(left, top, max(right, 16), bottom)
         self.flag_plot.setMouseEnabled(x=False, y=False)
         self.flag_plot.setMaximumWidth(0)
         self.flag_plot.hide()
 
+        # The date under the time ticks, at the right ("UTC · 2022-03-28")
+        self.date_label = pg.LabelItem("", justify="right")
+        self.date_label.setMaximumHeight(18)
+        self.graphics_widget.addItem(self.date_label, row=1, col=0)
+
         # ROI for masking
         self.roi_rect = None
 
-        # Hover text
-        self.hover_label = pg.TextItem(anchor=(1, 0), color="white")
-        self.hover_label.setParentItem(self.plot_item.getViewBox())
-        self.hover_label.hide()
-
-        # Mode overlay text
-        self.mode_label = pg.TextItem(anchor=(0.5, 0), color="#ff6b6b")
-        self.mode_label.setParentItem(self.plot_item.getViewBox())
-        self.mode_label.hide()
+        # The crosshair at the cursor and a chip beside it with the time,
+        # frequency and value there
+        self.cross_v = pg.InfiniteLine(angle=90, movable=False)
+        self.cross_h = pg.InfiniteLine(angle=0, movable=False)
+        self.chip = pg.TextItem(anchor=(0, 0))
+        for item in (self.cross_v, self.cross_h, self.chip):
+            item.setZValue(50)
+            self.plot_item.addItem(item, ignoreBounds=True)
+            item.hide()
 
         # Connect mouse events
         self.image_item.scene().sigMouseMoved.connect(self._on_mouse_move)
@@ -472,6 +496,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 self.main_window.vmaxEntry.setText(f"{self._vmax:.4g}")
 
         image = self._to_lut_indices(self._data)
+        self._image_is_light = self._mostly_light(image)
         time_layout, freq_layout = self._layouts
         blocks = [(t, f) for t in time_layout.parts() for f in freq_layout.parts()]
         items = self._image_items(len(blocks))
@@ -519,11 +544,6 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._update_colorbar()
         self._update_colorbar_labels()
 
-        # Update title and apply theme colors
-        title = (
-            os.path.basename(self._filename) if self._filename else "Dynamic Spectrum"
-        )
-        self.plot_item.setTitle(title)
         self._apply_canvas_theme_colors()
         self._align_share_plot()
 
@@ -574,6 +594,22 @@ class PyQtGraphSpectrumCanvas(QWidget):
             indices[nan] = 0
             out[start : start + self.CHUNK] = indices
         return out.reshape(data.shape)
+
+    def _mostly_light(self, indices):
+        """Whether the image as shown is mostly light (its mean luminance
+        over half): the crosshair is then dark, else light, so it differs
+        from the image in brightness on any colormap and with any colour
+        vision (as tools.preview.contrast_colors does for images)."""
+        lut = self._current_lut
+        if lut is None or indices.size == 0:
+            return False
+        step = max(1, int(np.ceil(max(indices.shape) / 128)))
+        sample = indices[::step, ::step].reshape(-1)
+        sample = sample[sample > 0]  # (0: NaN, not drawn)
+        if sample.size == 0:
+            return False
+        rgb = np.asarray(lut, np.float64)[sample, :3] / 255.0
+        return float((rgb @ [0.2126, 0.7152, 0.0722]).mean()) > 0.5
 
     @staticmethod
     def _take(image, selector, axis):
@@ -642,16 +678,10 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._align_share_plot()
 
     def _align_share_plot(self):
-        """The strip's plot area level with the spectrum's: an (empty) title
-        and a bottom axis of the same heights, so a frequency is at the same
-        height in both."""
-        plot = self.flag_plot
-        if not plot.isVisible():
-            return
-        plot.setTitle(" ")
-        plot.titleLabel.setMaximumHeight(self.plot_item.titleLabel.height())
-        plot.titleLabel.setMinimumHeight(self.plot_item.titleLabel.height())
-        plot.getAxis("bottom").setHeight(self.plot_item.getAxis("bottom").height())
+        """The strip's plot area level with the spectrum's: a bottom axis
+        of the same height, so a frequency is at the same height in both."""
+        if self.flag_plot.isVisible():
+            self.flag_plot.getAxis("bottom").setHeight(self.AXIS_HEIGHT)
 
     def set_boxes(self, boxes, color="#3ddc84"):
         """Dashed outlines of view rectangles (x0, x1, y0, y1)."""
@@ -755,8 +785,10 @@ class PyQtGraphSpectrumCanvas(QWidget):
             dt = datetime(1858, 11, 17) + timedelta(seconds=float(self._time_axis[0]))
             start_date = dt.strftime("%Y-%m-%d")
 
-            ax.setLabel(f"Time (UTC) [{start_date}]")
+            ax.setHeight(self.AXIS_HEIGHT)
             ax.enableAutoSIPrefix(False)
+            self._date_text = f"UTC · {start_date}"
+            self._style_date_label()
 
         except Exception as e:
             self.logger.warning(f"Failed to setup time axis: {e}")
@@ -814,7 +846,6 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         if enable:
             self.setCursor(Qt.CrossCursor)
-            self._update_mode_overlay(f"MODE: {label} (drag: add; click: select, Delete: remove)")
 
             # Disable default pan/zoom so drag creates ROI instead
             self.plot_item.vb.setMouseEnabled(x=False, y=False)
@@ -841,7 +872,6 @@ class PyQtGraphSpectrumCanvas(QWidget):
             self.plot_item.vb.mouseDragEvent = self._roi_drag_event
         else:
             self.setCursor(Qt.ArrowCursor)
-            self._update_mode_overlay("")
 
             # Re-enable pan/zoom
             self.plot_item.vb.setMouseEnabled(x=True, y=True)
@@ -993,10 +1023,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         if enable:
             self.setCursor(Qt.CrossCursor)
-            self._update_mode_overlay("MODE: CROSS SECTION")
         else:
             self.setCursor(Qt.ArrowCursor)
-            self._update_mode_overlay("")
 
     # --------------------- Drift Rate / Time Marker -----------------------------
     def enable_drift(self, enable):
@@ -1005,10 +1033,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._drift_points = []
         if enable:
             self.setCursor(Qt.CrossCursor)
-            self._update_mode_overlay("MODE: DRIFT RATE")
         else:
             self.setCursor(Qt.ArrowCursor)
-            self._update_mode_overlay("")
             self._clear_drift()
 
     def _clear_drift(self):
@@ -1064,10 +1090,21 @@ class PyQtGraphSpectrumCanvas(QWidget):
         """Time-pick mode: a click gives the time of the sample under it."""
         self.time_pick_active = enable
         self.setCursor(Qt.CrossCursor if enable else Qt.ArrowCursor)
-        self._update_mode_overlay("MODE: SHOW IMAGE AT TIME" if enable else "")
 
     def _on_mouse_click(self, event):
         """Handle mouse clicks for cross-section, drift-rate and time-pick modes."""
+        if (
+            event.button() == Qt.LeftButton
+            and self._data is not None
+            and self._time_axis is not None
+            and self._freq_axis is not None
+        ):
+            point = self.plot_item.vb.mapSceneToView(event.scenePos())
+            sample = self._index_at(point.x(), point.y())
+            if sample is not None:
+                self.samplePicked.emit(
+                    float(self._time_axis[sample[0]]), float(self._freq_axis[sample[1]])
+                )
         if self.drift_active and self._data is not None:
             self._drift_click(event)
             return
@@ -1252,7 +1289,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
     # ------------------ Mouse Hover: Display Amplitude --------------------------
     def _on_mouse_move(self, pos):
-        """Handle mouse movement for hover info."""
+        """The crosshair and its chip at the sample under the cursor; the
+        readout (hoverChanged) and its time and frequency (cursorSample)."""
         if self._data is None:
             return
 
@@ -1261,7 +1299,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
             x, y = mouse_point.x(), mouse_point.y()
 
             sample = self._index_at(x, y)
-            if sample is None:
+            if sample is None or not self.plot_item.vb.sceneBoundingRect().contains(pos):
+                self._hide_crosshair()
                 self.hoverChanged.emit("", "", float("nan"))
                 return
             time_idx, freq_idx = sample
@@ -1271,31 +1310,79 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
             # Emit signal for UI update
             self.hoverChanged.emit(time_str, freq_str, val)
-
-            # Update internal text item if enabled
-            if self.hover_info_enabled:
-                if np.isnan(val):
-                    msg = f"T: {time_str} | F: {freq_str} | I: NaN"
-                else:
-                    msg = f"T: {time_str} | F: {freq_str} | I: {val:.4g}"
-                self.hover_label.setText(msg)
-                self.hover_label.setPos(x, y)
-                self.hover_label.show()
-            else:
-                self.hover_label.hide()
+            if self._time_axis is not None and self._freq_axis is not None:
+                self.cursorSample.emit(
+                    float(self._time_axis[time_idx]), float(self._freq_axis[freq_idx])
+                )
+            self._show_crosshair(x, y, time_str, freq_str, val)
 
         except Exception:
             pass  # (e.g. the mouse left while data changed)
 
-    def _update_mode_overlay(self, text):
-        """Update the mode indicator text."""
-        if text:
-            self.mode_label.setText(text)
-            vb = self.plot_item.getViewBox()
-            self.mode_label.setPos(vb.viewRect().center().x(), vb.viewRect().top())
-            self.mode_label.show()
-        else:
-            self.mode_label.hide()
+    def _show_crosshair(self, x, y, time_str, freq_str, val):
+        """1px lines through (x, y) and, 8px down and right of it (left of
+        it near the right edge), the chip: 11:35:36 · 120.20 MHz · 0.791."""
+        value = "NaN" if val is None or not np.isfinite(val) else f"{val:.3g}"
+        freq = freq_str.replace(" MHz", "")
+        try:
+            freq = f"{float(freq):.2f}"
+        except ValueError:
+            pass
+        self.chip.setText(f"{time_str.split('.')[0]} · {freq} MHz · {value}")
+        self.cross_v.setPos(x)
+        self.cross_h.setPos(y)
+        vb = self.plot_item.vb
+        (x0, x1), _ = vb.viewRange()
+        px, py = vb.viewPixelSize()
+        right = x > x0 + 0.7 * (x1 - x0)
+        self.chip.setAnchor((1, 0) if right else (0, 0))
+        self.chip.setPos(x - 8 * px if right else x + 8 * px, y - 8 * py)
+        for item in (self.cross_v, self.cross_h, self.chip):
+            item.show()
+
+    def _hide_crosshair(self):
+        for item in (self.cross_v, self.cross_h, self.chip):
+            item.hide()
+
+    def leaveEvent(self, event):
+        self._hide_crosshair()
+        self.hoverChanged.emit("", "", float("nan"))
+        super().leaveEvent(event)
+
+    def release_gl(self):
+        """Drop the OpenGL viewport (on closing, while the application is
+        alive): the font engines' glyph caches made in its context are
+        freed now, not when the application is destroyed, where freeing
+        them crashes."""
+        try:
+            self.graphics_widget.useOpenGL(False)
+        except Exception:
+            pass
+
+    def keyPressEvent(self, event):
+        """Arrow keys move the view a tenth of its width or height (as in
+        SolarViewer), once the plot has the focus."""
+        steps = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0), Qt.Key_Up: (0, 1), Qt.Key_Down: (0, -1)}
+        step = steps.get(event.key())
+        if step is None or self._data is None:
+            super().keyPressEvent(event)
+            return
+        (x0, x1), (y0, y1) = self.plot_item.vb.viewRange()
+        self.plot_item.vb.translateBy(x=step[0] * 0.1 * (x1 - x0), y=step[1] * 0.1 * (y1 - y0))
+        event.accept()
+
+    def zoom_by(self, factor):
+        """Zoom the view about its centre: ``factor`` < 1 in, > 1 out."""
+        if self._data is not None:
+            self.plot_item.vb.scaleBy((factor, factor))
+
+    def reset_view(self):
+        """All of the data shown (the page, the range or the file)."""
+        if self._extent is not None:
+            x_low, width, y_low, height = self._extent
+            self.plot_item.vb.setRange(
+                xRange=(x_low, x_low + width), yRange=(y_low, y_low + height), padding=0
+            )
 
     # Compatibility methods for MainWindow
     def clear_plot(self):
@@ -1305,7 +1392,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._filename = None
         self.set_boxes([])
         self.set_selected_box(None)
-        self.plot_item.setTitle("Dynamic Spectrum")
+        self._hide_crosshair()
+        self.date_label.setText("")
 
     def draw_idle(self):
         """Compatibility method - PyQtGraph updates automatically."""
@@ -1315,286 +1403,223 @@ class PyQtGraphSpectrumCanvas(QWidget):
         """Compatibility method - PyQtGraph updates automatically."""
         pass
 
-    def _apply_canvas_theme_colors(self):
-        """Apply theme colors to the canvas."""
+    def _theme_palette(self):
         parent = self.parent()
         while parent is not None and not hasattr(parent, "current_theme"):
             parent = parent.parent()
+        return get_palette(getattr(parent, "current_theme", "dark"))
 
-        theme_name = getattr(parent, "current_theme", "dark")
-        palette = get_palette(theme_name)
+    def _style_date_label(self):
+        p = self._theme_palette()
+        self.date_label.setText(
+            getattr(self, "_date_text", ""), color=p["text_secondary"], size="8pt"
+        )
 
-        bg_color = palette.get("base", "#1e1e2e")
-        text_color = palette.get("text", "white")
+    def _apply_canvas_theme_colors(self):
+        """Ticks in monospace (text_dim), axis titles muted, no axis lines:
+        the image's only frame is a 1px edge."""
+        from PyQt5.QtGui import QColor
 
-        # Background
-        self.graphics_widget.setBackground(bg_color)
+        p = self._theme_palette()
+        self.graphics_widget.setBackground(p["window"])
 
-        # Define font size for axis labels (slightly larger)
-        axis_label_style = {"color": text_color, "font-size": "11pt"}
-        tick_font = QFont()
-        tick_font.setPointSize(11)
-
-        # Apply to main plot axes
-        for axis_name in ["bottom", "left"]:
-            axis = self.plot_item.getAxis(axis_name)
-            axis.setPen(text_color)
-            axis.setTextPen(text_color)
+        tick_font = QFont("monospace")
+        tick_font.setStyleHint(QFont.TypeWriter)
+        tick_font.setPointSize(8)
+        edge = p["border_light"]
+        for axis in (
+            self.plot_item.getAxis("left"),
+            self.plot_item.getAxis("bottom"),
+            self.colorbar_axis,
+            self.flag_plot.getAxis("bottom"),
+        ):
+            axis.setPen(pg.mkPen(QColor(0, 0, 0, 0)))
+            axis.setTextPen(p["text_dim"])
             axis.setTickFont(tick_font)
-            # Update label with new style
-            current_label = axis.labelText
-            current_units = axis.labelUnits
-            if current_label:
-                axis.setLabel(
-                    text=current_label, units=current_units, **axis_label_style
-                )
+            axis.setStyle(tickLength=0, tickTextOffset=8)
+        self.colorbar_plot.getAxis("bottom").setPen(pg.mkPen(QColor(0, 0, 0, 0)))
+        left = self.plot_item.getAxis("left")
+        left.setLabel(text="MHz", color=p["text_secondary"], **{"font-size": "8pt"})
+        self.plot_item.vb.setBorder(pg.mkPen(edge, width=1))
+        self.flag_plot.vb.setBorder(pg.mkPen(edge, width=1))
+        self._style_date_label()
 
-        # Apply to title
-        title_label = self.plot_item.titleLabel
-        if title_label and title_label.text:
-            self.plot_item.setTitle(title_label.text, color=text_color, size="11pt")
+        # The crosshair: text at 55%; the chip on the ground at 86% (the
+        # dark theme's colours over a dark image, the light theme's over
+        # a light one, whatever the theme)
+        ink, ground = ("#1d1f2b", "#ffffff") if self._image_is_light else ("#e9e9ed", "#161826")
+        line = QColor(ink)
+        line.setAlphaF(0.55)
+        for item in (self.cross_v, self.cross_h):
+            item.setPen(pg.mkPen(line, width=1))
+        ground = QColor(ground)
+        ground.setAlphaF(0.86)
+        self.chip.fill = pg.mkBrush(ground)
+        self.chip.border = pg.mkPen(None)
+        self.chip.setColor(ink)
+        self.chip.setFont(QFont(tick_font))
 
-        # Apply to colorbar axis
-        if hasattr(self, "colorbar_axis") and self.colorbar_axis is not None:
-            self.colorbar_axis.setPen(text_color)
-            self.colorbar_axis.setTextPen(text_color)
-            self.colorbar_axis.setTickFont(tick_font)
 
+class OverviewStrip(QWidget):
+    """The whole file in a strip under the spectrum: veiled, but for the
+    part shown, outlined. A click or a drag moves the outline; on release
+    it asks for that time (seekRequested, the fraction of the file).
 
-class MinimapCanvas(FigureCanvas):
-    """A thin Matplotlib canvas for displaying the full-spectrum overview."""
+    Painted with QPainter (never a Matplotlib blit, which misplaces
+    sub-rectangles at fractional display scales)."""
 
-    seekRequested = pyqtSignal(float)  # Emits the target MJD offset / index
+    seekRequested = pyqtSignal(float)  # fraction of the file, 0..1
+
+    VEIL = 0.55  # the ground's opacity over the parts not shown
 
     def __init__(self, parent=None):
-        self.fig, self.ax = plt.subplots(figsize=(10, 0.8))
-        super(MinimapCanvas, self).__init__(self.fig)
-        self.setParent(parent)
+        super().__init__(parent)
+        self._image = None  # QImage of the file (columns: time, low frequency at the bottom)
+        self._view = (0.0, 1.0)  # the part shown, as fractions of the file
+        self._drag = None  # the outline's start while dragging
+        self._span = ""  # "12.5 h"
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Click or drag to go to a time")
 
-        # Ensure canvas background matches theme to avoid white gaps when scaling
-        self.setStyleSheet("background-color: transparent;")
-
-        self.ax.set_axis_off()
-        self.fig.subplots_adjust(left=0.01, right=0.99, top=0.9, bottom=0.1)
-
-        # Apply initial theme
-        self._apply_theme()
-
-        self._current_rect = None
-        self._total_samples = 0
-        self._view_width_pct = 1.0  # Current width of the highlight in percent
-        self._bg_cache = None  # Background cache for blitting
-        self._last_cursor_is_hand = False
-        self._page_markers = []  # Store dashed line markers
-
-        # Connect events
-        self.mpl_connect("button_press_event", self._on_click)
-        self.mpl_connect("motion_notify_event", self._on_drag)
-        self.mpl_connect("button_release_event", self._on_release)
-        self.mpl_connect("draw_event", self._on_draw)
-
-    def _apply_theme(self):
-        """Apply theme colors to the minimap."""
+    def _palette(self):
         parent = self.parent()
         while parent is not None and not hasattr(parent, "current_theme"):
             parent = parent.parent()
+        return get_palette(getattr(parent, "current_theme", "dark"))
 
-        theme_name = getattr(parent, "current_theme", "dark")
-        palette = get_palette(theme_name)
+    def _apply_theme(self):
+        self.update()
 
-        # Use figure facecolor for background consistency
-        bg_color = palette.get("base", "#2d2d4a")
-        # bg_color = params["figure.facecolor"]
-        self.fig.patch.set_facecolor(bg_color)
-        self.ax.set_facecolor(bg_color)
+    def draw(self):
+        self.update()
+
+    def set_span(self, seconds):
+        """The file's length, for the kicker ("WHOLE FILE · 12.5 h")."""
+        if seconds is None or not np.isfinite(seconds) or seconds <= 0:
+            self._span = ""
+        elif seconds >= 3600:
+            self._span = f"{seconds / 3600:.1f} h"
+        elif seconds >= 60:
+            self._span = f"{seconds / 60:.0f} min"
+        else:
+            self._span = f"{seconds:.0f} s"
+        self.update()
 
     def set_full_data(self, data_downsampled):
-        """Render the downsampled full spectrum with linear scale, 1-99 percentile, and bandpass normalization."""
-        self.ax.clear()
-        self.ax.set_axis_off()
-
-        if data_downsampled is not None:
-            # 1. Bandpass normalization (normalize by median of each channel across time)
-            # data_downsampled is typically (freq, time)
+        """The file's overview, (freq, time): each channel divided by its
+        median, 1-99 percentile limits, linear, in inferno; no more columns
+        than 2000, each the maximum of those it stands for (so short bursts
+        stay)."""
+        self._image = None
+        if data_downsampled is not None and data_downsampled.size:
             med = _channel_medians(data_downsampled.T)[:, None]
             med[np.isnan(med)] = 1e-20
             med[med == 0] = 1e-20
-            data_normed = data_downsampled / med
-
-            # 2. 1-99 percentile scaling on normalized data
-            data_ma = ma.masked_invalid(data_normed)
-            data_flat = data_ma.compressed()
-            if len(data_flat) > 0:
-                vmin = np.percentile(data_flat, 1)
-                vmax = np.percentile(data_flat, 99)
-            else:
-                vmin, vmax = 0, 1
-
-            # 3. Always use Linear Scale for minimap
-            norm = Normalize(vmin=vmin, vmax=vmax)
-
-            # No more columns than the strip has pixels, each the maximum of
-            # those it stands for: drawing drops columns otherwise (and with
-            # them short bursts). Coordinates stay those of the columns.
-            n, nf = data_normed.shape[1], data_normed.shape[0]
-            width = max(1000, self.width())
-            shown = data_normed
-            if n > width:
-                starts = np.arange(0, n, -(-n // width))
+            data = data_downsampled / med
+            n = data.shape[1]
+            if n > 2000:
+                starts = np.arange(0, n, -(-n // 2000))
                 with np.errstate(invalid="ignore"):
-                    shown = np.fmax.reduceat(data_normed, starts, axis=1)
-            self.ax.imshow(
-                shown,
-                aspect="auto",
-                cmap="inferno",
-                interpolation="nearest",
-                origin="lower",
-                norm=norm,
-                extent=(-0.5, n - 0.5, -0.5, nf - 0.5),
-            )
-            self._total_samples = data_downsampled.shape[1]
+                    data = np.fmax.reduceat(data, starts, axis=1)
+            finite = data[np.isfinite(data)]
+            vmin, vmax = (np.percentile(finite, [1, 99]) if finite.size else (0.0, 1.0))
+            if vmax <= vmin:
+                vmax = vmin + 1e-9
+            with np.errstate(invalid="ignore"):
+                norm = np.clip((data - vmin) / (vmax - vmin), 0, 1)
+            norm = np.nan_to_num(norm, nan=0.0)
+            lut = (plt.get_cmap("inferno")(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
+            rgb = np.ascontiguousarray(lut[(norm[::-1] * 255).astype(np.uint8)])
+            from PyQt5.QtGui import QImage
 
-        self._current_rect = matplotlib.patches.Rectangle(
-            (0, 0),
-            0,
-            1,
-            transform=self.ax.get_xaxis_transform(),
-            facecolor="red",
-            alpha=0.3,
-            edgecolor="red",
-            animated=True,
-        )
-        self.ax.add_patch(self._current_rect)
-
-        # Clear existing markers on data reset
-        self._page_markers = []
-
-    def draw_page_markers(self, total_samples, window_samples):
-        """Draw vertical dashed lines at page boundaries using absolute sample indices."""
-        # 1. Clear existing marker artists
-        for line in self._page_markers:
-            try:
-                line.remove()
-            except Exception:
-                pass
-        self._page_markers = []
-
-        # 2. Don't draw if mode is Full or data not loaded
-        if window_samples >= total_samples or total_samples == 0:
-            self.draw_idle()
-            return
-
-        # 3. Calculate boundary positions
-        xlim = self.ax.get_xlim()
-        width = xlim[1] - xlim[0]
-
-        total_pages = int(np.ceil(total_samples / window_samples))
-        max_markers = 80
-        step_pages = 1
-        if total_pages > max_markers:
-            step_pages = int(np.ceil(total_pages / max_markers))
-
-        # Start from first boundary
-        for i in range(step_pages, total_pages, step_pages):
-            sample_idx = i * window_samples
-            if sample_idx >= total_samples:
-                break
-
-            x = xlim[0] + (sample_idx / total_samples) * width
-            line = self.ax.axvline(
-                x=x, color="white", linestyle="--", alpha=0.4, linewidth=0.8
-            )
-            self._page_markers.append(line)
-
-        self.draw_idle()
-        self.draw()
-        # Capture background after initial draw
-        self._bg_cache = self.fig.canvas.copy_from_bbox(self.ax.bbox)
-
-    def update_view_window(self, start_idx, end_idx):
-        """Update the position of the highlight rectangle."""
-        if self._current_rect is None or self._total_samples == 0:
-            return
-
-        pass
+            h, w = rgb.shape[:2]
+            self._image = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        self.update()
 
     def update_view_percent(self, start_pct, end_pct):
-        """Update highlight using 0.0-1.0 range."""
-        if self._current_rect is None:
-            return
+        """Outline the part shown (fractions of the file)."""
+        self._view = (max(0.0, start_pct), min(1.0, end_pct))
+        self.update()
 
-        xlim = self.ax.get_xlim()
-        width = xlim[1] - xlim[0]
-        x = xlim[0] + start_pct * width
-        w = (end_pct - start_pct) * width
+    def paintEvent(self, event):
+        from PyQt5.QtCore import QRectF
+        from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
 
-        self._view_width_pct = end_pct - start_pct
-        self._current_rect.set_xy((x, 0))
-        self._current_rect.set_width(w)
+        p = self._palette()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, 4, 4)
+        painter.setClipPath(clip)
+        painter.fillRect(rect, QColor(p["surface"]))
+        if self._image is not None:
+            painter.drawImage(rect, self._image)
 
-        # Trigger a full redraw which will call _on_draw and refresh the cache
-        self.draw_idle()
+        # The veil, but over the part shown
+        veil = QColor(p["window"])
+        veil.setAlphaF(self.VEIL)
+        x0 = rect.left() + self._view[0] * rect.width()
+        x1 = rect.left() + self._view[1] * rect.width()
+        whole = self._view[1] - self._view[0] >= 0.999
+        if whole:
+            painter.fillRect(rect, veil)
+        else:
+            painter.fillRect(QRectF(rect.left(), rect.top(), x0 - rect.left(), rect.height()), veil)
+            painter.fillRect(QRectF(x1, rect.top(), rect.right() - x1, rect.height()), veil)
+            # The outline, 2px inside the part (at least 4px wide)
+            if x1 - x0 < 4:
+                x0, x1 = (x0 + x1) / 2 - 2, (x0 + x1) / 2 + 2
+            painter.setClipping(False)
+            painter.setPen(QPen(QColor("#e7e5fe"), 2))  # (accent-200: over the image in both themes)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(QRectF(x0 + 1, rect.top() + 1, x1 - x0 - 2, rect.height() - 2))
+            painter.setClipPath(clip)
 
-    def _on_draw(self, event):
-        """Handle standard redraws by refreshing bg cache and manually drawing animated artist."""
-        if self._current_rect is None:
-            return
+        # The kicker
+        if self._image is not None:
+            font = QFont(self.font())
+            font.setPointSize(7)
+            font.setLetterSpacing(QFont.PercentageSpacing, 110)
+            painter.setFont(font)
+            text = ("Whole file" + (f" · {self._span}" if self._span else "")).upper()
+            box = painter.fontMetrics().boundingRect(text)
+            backing = QColor(p["window"])
+            backing.setAlphaF(0.7)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(backing)
+            painter.drawRoundedRect(QRectF(rect.left() + 3, rect.top() + 3, box.width() + 8, box.height() + 2), 3, 3)
+            painter.setPen(QColor(p["text_strong"]))
+            painter.drawText(QRectF(rect.left() + 7, rect.top() + 4, rect.width() - 12, box.height()),
+                             Qt.AlignLeft | Qt.AlignVCenter, text)
 
-        # 1. Capture background BEFORE drawing the animated artist
-        self._bg_cache = self.fig.canvas.copy_from_bbox(self.ax.bbox)
+        # The edge
+        painter.setClipping(False)
+        painter.setPen(QPen(QColor(p["border_light"]), 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, 4, 4)
+        painter.end()
 
-        # 2. Manually draw the animated artist so it appears in standard draws
-        self.ax.draw_artist(self._current_rect)
+    def _fraction(self, x):
+        return min(1.0, max(0.0, x / max(1, self.width())))
 
-    def _on_click(self, event):
-        if event.inaxes != self.ax:
-            return
-        # Move rectangle immediately
-        self._on_drag(event)
+    def _centre_outline(self, x):
+        width = self._view[1] - self._view[0]
+        start = min(1.0 - width, max(0.0, self._fraction(x) - width / 2))
+        self._view = (start, start + width)
+        self.update()
 
-    def _on_release(self, event):
-        if event.button == 1 and event.inaxes == self.ax:
-            # Emit seek signal ONLY on release for final update
-            self.seekRequested.emit(event.xdata)
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._image is not None:
+            self._drag = True
+            self._centre_outline(event.pos().x())
 
-    def _on_drag(self, event):
-        if event.inaxes != self.ax or event.xdata is None:
-            if self._last_cursor_is_hand:
-                self.setCursor(Qt.ArrowCursor)
-                self._last_cursor_is_hand = False
-            return
+    def mouseMoveEvent(self, event):
+        if self._drag:
+            self._centre_outline(event.pos().x())
 
-        # Show hand cursor over the draggable rectangle (efficiently)
-        rect_x = self._current_rect.get_x()
-        rect_w = self._current_rect.get_width()
-        is_over_rect = rect_x <= event.xdata <= rect_x + rect_w
-
-        if is_over_rect != self._last_cursor_is_hand:
-            self.setCursor(Qt.PointingHandCursor if is_over_rect else Qt.ArrowCursor)
-            self._last_cursor_is_hand = is_over_rect
-
-        if event.button == 1:
-            if self._bg_cache is None:
-                return
-
-            # Move the rectangle locally for instant visual feedback
-            xlim = self.ax.get_xlim()
-            width = xlim[1] - xlim[0]
-
-            # Center the window on the mouse
-            center_pct = (event.xdata - xlim[0]) / width
-            start_pct = max(
-                0,
-                min(1.0 - self._view_width_pct, center_pct - self._view_width_pct / 2),
-            )
-
-            x = xlim[0] + start_pct * width
-            w = self._view_width_pct * width
-
-            self._current_rect.set_xy((x, 0))
-            self._current_rect.set_width(w)
-
-            # BLITTING: Restore bg, redraw artist only, blit to screen
-            self.fig.canvas.restore_region(self._bg_cache)
-            self.ax.draw_artist(self._current_rect)
-            self.fig.canvas.blit(self.ax.bbox)
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._drag:
+            self._drag = None
+            self.seekRequested.emit(self._fraction(event.pos().x()))

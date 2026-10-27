@@ -1,6 +1,7 @@
 """
 The images opened recently (File > Open Recent), and the folder the last one
-came from, kept in the application's settings between sessions.
+came from, kept in the application's settings between sessions; and, in a
+list of their own, the dynamic spectra opened in the spectrum viewer.
 """
 
 import os
@@ -14,8 +15,8 @@ def _settings():
     return QSettings("SolarViewer", "SolarViewer")
 
 
-def _stored():
-    value = _settings().value("recent_images", [])
+def _stored(key="recent_images"):
+    value = _settings().value(key, [])
     if isinstance(value, str):  # QSettings returns a one-item list as a string
         value = [value]
     return [str(path) for path in value or []]
@@ -45,6 +46,29 @@ def forget_image(path):
 
 def clear_recent_images():
     _settings().remove("recent_images")
+
+
+def recent_spectra():
+    """The dynamic spectra opened recently that still exist, most recent first."""
+    return [path for path in _stored("recent_spectra") if os.path.exists(path)]
+
+
+def remember_spectrum(path):
+    """Put the local dynamic spectrum ``path`` first in its recent list."""
+    path = os.path.abspath(path)
+    stored = _stored("recent_spectra")
+    paths = [path] + [p for p in stored if p != path and os.path.exists(p)]
+    _settings().setValue("recent_spectra", paths[:MAX_RECENT])
+
+
+def forget_spectrum(path):
+    """Take ``path`` off the recent spectra (it could not be opened)."""
+    path = os.path.abspath(path)
+    _settings().setValue("recent_spectra", [p for p in _stored("recent_spectra") if p != path])
+
+
+def clear_recent_spectra():
+    _settings().remove("recent_spectra")
 
 
 def last_image_folder():

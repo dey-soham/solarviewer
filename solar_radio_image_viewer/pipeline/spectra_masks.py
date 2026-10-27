@@ -40,8 +40,8 @@ class SpectraMasksMixin:
     ``_shown_raw``, ``_spectrum_index``, ``_time_dim``, ``canvas``,
     ``clearMaskBtn``, ``crossBtn``, ``current_filename``, ``deleteRegionAct``,
     ``driftBtn``, ``extendAllAct``, ``extendMaskBtn``, ``extendSelectedAct``,
-    ``hdul``, ``imageAtTimeBtn``, ``keepBtn``, ``logger``, ``maskSummary``,
-    ``revertToOriginal``, ``rfiSlider``, ``roiButton``
+    ``hdul``, ``keepBtn``, ``logger``, ``maskSummary``,
+    ``revertToOriginal``, ``rfiSlider``, ``roiButton``, ``_update_status_summary``
     """
 
     def _masks_file(self):
@@ -200,16 +200,17 @@ class SpectraMasksMixin:
         regions, channels = len(self._masks), len(self._global_masked_freq_indices)
         parts = []
         if regions:
-            parts.append(f"{regions} region{'s' * (regions != 1)}")
+            parts.append(f"{regions} mask{'s' * (regions != 1)}")
         if channels:
             parts.append(f"{channels} channel{'s' * (channels != 1)}")
         if self._keeps:
             parts.append(f"{len(self._keeps)} kept")
-        self.maskSummary.setText(", ".join(parts) if parts else "None yet: use the Mask tool")
+        self.maskSummary.setText(" · ".join(parts) if parts else "none yet")
         self.maskSummary.setToolTip("Masks hold for the whole file")
         self.extendMaskBtn.setEnabled(bool(regions))
         self._update_extend_button()
         self.clearMaskBtn.setEnabled(bool(regions or channels or self._keeps))
+        self._update_status_summary()
 
     def _rfi_settings(self):
         """The automatic flagging's settings (rfi_flagging.RfiSettings)."""
@@ -537,12 +538,12 @@ class SpectraMasksMixin:
             self.keepBtn.setChecked(False)
             return
         if checked:
-            for other in (self.roiButton, self.crossBtn, self.driftBtn, self.imageAtTimeBtn):
+            for other in (self.roiButton, self.crossBtn, self.driftBtn):
                 if other.isChecked():
                     other.setChecked(False)
             if not self._rfi_enabled:
                 self.statusBar().showMessage(
-                    "Keep regions apply to the automatic RFI flags (Auto-flag RFI)", 6000
+                    "Keep regions apply to the automatic RFI flags (Clean, step 2)", 6000
                 )
             self.canvas.enable_roi_selector(True, self._keep_roi_values, "KEEP")
         else:
@@ -605,6 +606,7 @@ class SpectraMasksMixin:
     def onRfiToggled(self, checked):
         self._rfi_enabled = checked
         self._redisplay()
+        self._update_status_summary()
         if not checked:
             self.statusBar().showMessage("RFI flags off", 3000)
 
@@ -660,7 +662,7 @@ class SpectraMasksMixin:
         if not hasattr(self, "extendMaskBtn"):
             return
         selected = self._selected_mask() is not None
-        self.extendMaskBtn.setText("↔️ Extend selected" if selected else "↔️ Extend all")
+        self.extendMaskBtn.setText("Extend selected to all pages" if selected else "Extend to all pages")
         self.extendSelectedAct.setEnabled(selected)
         self.extendAllAct.setEnabled(bool(self._masks))
 

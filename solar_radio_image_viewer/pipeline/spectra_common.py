@@ -1,78 +1,14 @@
 """
-Small pieces shared by the dynamic spectrum viewer: collapsible sections,
-the background reader of a server's file, rebinning and noise statistics,
-and drift rates (with the Newkirk density model).
+Small pieces shared by the dynamic spectrum viewer: the background reader
+of a server's file, rebinning and noise statistics, and drift rates (with
+the Newkirk density model).
 """
 
 import logging
 import numpy as np
-from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QToolButton,
-    QFrame,
-)
-from PyQt5.QtCore import Qt, pyqtSignal, QThread
+from PyQt5.QtCore import pyqtSignal, QThread
 
 logger = logging.getLogger(__name__)
-
-
-class _Section(QFrame):
-    """A titled section of the side panel: click its title to fold it (the
-    state is remembered)."""
-
-    def __init__(self, title, key, palette, parent=None):
-        super().__init__(parent)
-        from PyQt5.QtCore import QSettings
-
-        self._settings = QSettings("SolarViewer", "DynamicSpectrumViewer")
-        self._key = f"panel/{key}"
-        self._title = title
-        self.setObjectName("Section")
-        self.setStyleSheet(self.style(palette))
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 14)
-        layout.setSpacing(12)
-        self.title = QToolButton()
-        self.title.setObjectName("SectionTitle")
-        self.title.setCursor(Qt.PointingHandCursor)
-        self.title.setCheckable(True)
-        self.title.setToolTip("Click to fold or unfold")
-        layout.addWidget(self.title)
-        self.body = QWidget()
-        layout.addWidget(self.body)
-        self.title.toggled.connect(self._fold)
-        opened = self._settings.value(self._key, True, type=bool)
-        self.title.setChecked(opened)
-        self._fold(opened)
-
-    @staticmethod
-    def style(palette):
-        """The style sheet for a section in the theme of ``palette``."""
-        border = palette.get("border", "#3a3a5a")
-        return f"""
-            QFrame#Section {{
-                background-color: {palette["surface"]};
-                border: 1px solid {border};
-                border-radius: 10px;
-            }}
-            QToolButton#SectionTitle {{
-                border: none;
-                background: transparent;
-                color: {palette["highlight"]};
-                font-weight: 600;
-                padding: 0px;
-                text-align: left;
-            }}
-        """
-
-    def _fold(self, opened):
-        self.title.setText(("▾  " if opened else "▸  ") + self._title)
-        self.body.setVisible(opened)
-        self._settings.setValue(self._key, opened)
-
-    def unfold(self):
-        self.title.setChecked(True)
 
 
 class _RemoteRead(QThread):

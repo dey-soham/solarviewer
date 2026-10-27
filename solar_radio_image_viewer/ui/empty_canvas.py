@@ -117,14 +117,29 @@ class _RecentRow(QFrame):
 class EmptyCanvas(QWidget):
     """The canvas's empty state. ``openRequested`` asks for the file
     dialog, ``pathRequested(path)`` to open that path, ``allRecentRequested``
-    for the whole recent list."""
+    for the whole recent list.
+
+    The dynamic spectrum viewer shows one too, with its own words
+    (``kicker_text``, ``headline``, ``note``, ``open_tip``), its own
+    recent list (``recent``: a function returning the paths) and further
+    buttons after Paste path (``extra_buttons``: [(text, slot, tip)])."""
 
     openRequested = pyqtSignal()
     pathRequested = pyqtSignal(str)
     allRecentRequested = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        parent=None,
+        kicker_text="No image",
+        headline=HEADLINE,
+        note=NOTE,
+        open_tip="Open a FITS file or CASA image (Ctrl+O)",
+        recent=recent_images,
+        extra_buttons=(),
+    ):
         super().__init__(parent)
+        self._recent = recent
         self.setAcceptDrops(False)  # drops fall through to the window
         outer = QHBoxLayout(self)
         outer.setContentsMargins(60, 40, 60, 40)
@@ -138,12 +153,12 @@ class EmptyCanvas(QWidget):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(12)
         column.addStretch()
-        column.addWidget(kicker("No image"))
-        headline = QLabel(HEADLINE)
+        column.addWidget(kicker(kicker_text))
+        headline = QLabel(headline)
         headline.setObjectName("Headline")
         headline.setWordWrap(True)
         column.addWidget(headline)
-        note = QLabel(NOTE)
+        note = QLabel(note)
         note.setObjectName("Hint")
         note.setWordWrap(True)
         column.addWidget(note)
@@ -151,13 +166,18 @@ class EmptyCanvas(QWidget):
         buttons.setSpacing(8)
         self.open_button = QPushButton("Open file…")
         self.open_button.setObjectName("PrimaryButton")
-        self.open_button.setToolTip("Open a FITS file or CASA image (Ctrl+O)")
+        self.open_button.setToolTip(open_tip)
         self.open_button.clicked.connect(self.openRequested)
         self.paste_button = QPushButton("Paste path")
         self.paste_button.setToolTip("Open the path on the clipboard")
         self.paste_button.clicked.connect(self._paste_path)
         buttons.addWidget(self.open_button)
         buttons.addWidget(self.paste_button)
+        for text, slot, tip in extra_buttons:
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
         buttons.addStretch()
         column.addSpacing(2)
         column.addLayout(buttons)
@@ -184,7 +204,7 @@ class EmptyCanvas(QWidget):
                 widget.deleteLater()
         # (the link row is a widget of its own: a nested layout's widgets
         # would be left behind, and the link shown twice)
-        paths = recent_images()
+        paths = self._recent()
         self.recent.setVisible(bool(paths))
         if not paths:
             return

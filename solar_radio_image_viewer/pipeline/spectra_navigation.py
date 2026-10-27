@@ -26,11 +26,11 @@ class SpectraNavigationMixin:
     ``_full_freq_axis``, ``_full_lowres_data``, ``_full_time_axis``,
     ``_image``, ``_is_large_file``, ``_lowres_skip``, ``_modeButtons``,
     ``_read_page``, ``_remote``, ``_server_work``, ``_shown_raw``,
-    ``_stop_remote_reads``, ``_time_dim``, ``canvas``, ``controlScroll``,
-    ``firstBtn``, ``gotoEdit``, ``hdul``, ``lastBtn``, ``logger``,
-    ``minimap``, ``navGroup``, ``navModeCombo``, ``nextBtn``, ``pageLabel``,
-    ``pagesWidget``, ``prevBtn``, ``rangeFromEdit``, ``rangeToEdit``,
-    ``rangeWidget``, ``wait_cursor``
+    ``_stop_remote_reads``, ``_time_dim``, ``_update_status_summary``,
+    ``canvas``, ``firstBtn``, ``gotoEdit``, ``hdul``, ``lastBtn``,
+    ``logger``, ``minimap``, ``navGroup``, ``navModeCombo``, ``nextBtn``,
+    ``pageLabel``, ``pagesWidget``, ``prevBtn``, ``rangeFromEdit``,
+    ``rangeToEdit``, ``rangeWidget``, ``wait_cursor``
     """
 
     def _page_bounds(self, page_idx):
@@ -81,13 +81,15 @@ class SpectraNavigationMixin:
         """Calculate total pages and update UI labels."""
         if self._full_time_axis is None:
             self.navGroup.setEnabled(True)
-            self.pageLabel.setText("1/1")
+            self._set_page_label(1, 1)
             self.firstBtn.setEnabled(False)
             self.prevBtn.setEnabled(False)
             self.nextBtn.setEnabled(False)
             self.lastBtn.setEnabled(False)
 
             self._show_nav_mode()
+            self.minimap.set_span(None)
+            self._update_status_summary()
             return
 
         total_samples = len(self._full_time_axis)
@@ -101,7 +103,7 @@ class SpectraNavigationMixin:
         if self._current_page >= self._total_pages:
             self._current_page = self._total_pages - 1
 
-        self.pageLabel.setText(f"{self._current_page + 1}/{self._total_pages}")
+        self._set_page_label(self._current_page + 1, self._total_pages)
 
         # Keep navGroup enabled even for 1 page, so user can switch View Mode
         self.navGroup.setEnabled(True)
@@ -113,28 +115,12 @@ class SpectraNavigationMixin:
 
         self._show_nav_mode()
 
-        # Feature 2: Update Minimap Highlight & Markers
-        if self._full_time_axis is not None:
-            total_samples = len(self._full_time_axis)
-            window_samples = self._calculate_window_samples()
-
-            if self._nav_mode == "Windowed":
-                start_idx = self._current_page * window_samples
-                end_idx = min(start_idx + window_samples, total_samples)
-
-                start_pct = start_idx / total_samples
-                end_pct = end_idx / total_samples
-                self.minimap.update_view_percent(start_pct, end_pct)
-                self.minimap.draw_page_markers(total_samples, window_samples)
-            elif self._nav_mode == "Range" and self._range is not None:
-                start_idx, end_idx = self._range
-                self.minimap.update_view_percent(
-                    start_idx / total_samples, end_idx / total_samples
-                )
-                self.minimap.draw_page_markers(total_samples, total_samples)
-            else:
-                self.minimap.update_view_percent(0, 1)
-                self.minimap.draw_page_markers(total_samples, total_samples)
+        # The overview: the file's length, and the part shown outlined
+        times = self._full_time_axis
+        self.minimap.set_span(float(times[-1] - times[0]) if len(times) > 1 else None)
+        start_idx, end_idx = self._page_bounds(self._current_page)
+        self.minimap.update_view_percent(start_idx / total_samples, end_idx / total_samples)
+        self._update_status_summary()
 
     def _get_slice_data(self, page_idx, downsample=1):
         """Helper to extract a data slice from the FITS handle."""
@@ -394,8 +380,6 @@ class SpectraNavigationMixin:
         self._reveal_range_controls()
 
     def _reveal_range_controls(self):
-        self.navGroup.unfold()
-        QTimer.singleShot(0, lambda: self.controlScroll.ensureWidgetVisible(self.rangeWidget))
         self.rangeFromEdit.setFocus()
         self.rangeFromEdit.selectAll()
 
@@ -505,18 +489,15 @@ class SpectraNavigationMixin:
             with self.wait_cursor():
                 self.loadSlice()
 
-    def onMinimapSeek(self, x_data):
-        """Handle seek request from minimap click/drag."""
+    def onMinimapSeek(self, fraction):
+        """Show the part of the file at ``fraction`` of it (a click or drag
+        on the overview)."""
         if self._full_time_axis is None:
             return
 
         with self.wait_cursor():
             total_samples = len(self._full_time_axis)
-
-            # x_data is coordinate in the axes
-            xlim = self.minimap.ax.get_xlim()
-            pct = (x_data - xlim[0]) / (xlim[1] - xlim[0])
-            pct = max(0, min(0.999, pct))
+            pct = max(0, min(0.999, fraction))
 
             # Map percentage directly to sample index
             target_idx = int(pct * total_samples)

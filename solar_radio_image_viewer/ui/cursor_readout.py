@@ -13,20 +13,22 @@ BLANK = "—"
 
 class CursorReadout(QFrame):
     """``set_state("no image")`` clears the lines and names the state;
-    ``show_cursor(pixel, world, value)`` fills them."""
+    ``show_cursor(pixel, world, value)`` fills them. ``rows`` names the
+    lines (the dynamic spectrum viewer's: Time, Frequency, Intensity)."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, rows=("Pixel", "World", "Value"), state="no image"):
         super().__init__(parent)
         self.setObjectName("Pinned")
         grid = QGridLayout(self)
         grid.setContentsMargins(14, 10, 14, 10)
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(4)
-        header, self.state_label = kicker_row("Cursor", "no image")
+        header, self.state_label = kicker_row("Cursor", state)
         grid.addWidget(header, 0, 0, 1, 2)
         self._values = {}
         self._labels = {}
-        for row, name in enumerate(("Pixel", "World", "Value"), start=1):
+        self._rows = tuple(rows)
+        for row, name in enumerate(self._rows, start=1):
             label = QLabel(name)
             label.setObjectName("Hint")
             label.setMinimumWidth(label.fontMetrics().horizontalAdvance("Solar XY"))
@@ -51,8 +53,8 @@ class CursorReadout(QFrame):
         for value in self._values.values():
             value.setText(BLANK)
 
-    def show_cursor(self, pixel, world, value):
-        self.state_label.setText("")
-        self._values["Pixel"].setText(pixel or BLANK)
-        self._values["World"].setText(world or BLANK)
-        self._values["Value"].setText(value or BLANK)
+    def show_cursor(self, *values, state=""):
+        """The lines' values, in the order of ``rows`` (rich text allowed)."""
+        self.state_label.setText(state)
+        for name, value in zip(self._rows, values):
+            self._values[name].setText(value or BLANK)

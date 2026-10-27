@@ -37,6 +37,7 @@ from .spectra_common import _RemoteRead, _local_block_stats, _size_text
 logger = logging.getLogger(__name__)
 
 
+from ..ui.recent_files import forget_spectrum, remember_spectrum
 from ..ui.widgets import button_bar
 from ..ui.geometry import fit_to_screen
 
@@ -574,6 +575,7 @@ class SpectraFilesMixin:
                     new_hdul = open_local_spectrum(fileName)
                 except Exception as e:
                     self.logger.error(f"Failed to open FITS file: {e}")
+                    forget_spectrum(fileName)
                     QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{e}")
                     return
             self.current_filename = fileName
@@ -673,6 +675,8 @@ class SpectraFilesMixin:
                 self.statusBar().showMessage(
                     f"Loaded {os.path.basename(fileName)}", 5000
                 )
+                if remote is None:
+                    remember_spectrum(fileName)
 
             except Exception as e:
                 if remote and type(e).__name__ == "Cancelled":
@@ -937,6 +941,7 @@ class SpectraFilesMixin:
         self.redo_stack.clear()
         self._update_mask_summary()
         self._update_undo_actions()
+        self._update_status_summary()  # (the empty canvas again)
 
     # --------------------- View Metadata Dialog ---------------------------------
     def viewMetadata(self):
