@@ -30,7 +30,6 @@
 
 - **Statistical Analysis** — Detailed statistics for images and selected regions
 - **2D Gaussian Fitting** — Fit Gaussian profiles to radio sources
-- **Elliptical Ring Fitting** — Model ring-shaped emission features
 - **Region Selection** — Rectangle and ellipse tools for region-of-interest analysis
 - **Multiple Colormaps** — Choose from scientific colormaps with linear, log, sqrt, and custom stretches
 - **Contour Overlays** — Overlay multi-wavelength contours (e.g., radio on EUV) with automatic coordinate reprojection
@@ -257,7 +256,7 @@ Options:
 
 #### File Controls
 - **Open Image** (Ctrl+O) — Open a FITS file, or a CASA image by opening its folder
-- **Open Recent** — Reopen one of the last ten images; the Open dialog starts in the last image's folder
+- **Open Recent** — Reopen one of the last thirty images; the Open dialog starts in the last image's folder
 - **Drag and drop** — Drop FITS files or CASA images onto the window
 - **[ and ]** — Previous / next image in the same folder ({ and } for the first / last)
 - **Export Figure** — Save current view as image
@@ -285,7 +284,6 @@ Options:
 
 #### Analysis Tools
 - **Fit 2D Gaussian** — Gaussian source fitting
-- **Fit Elliptical Ring** — Ring model fitting
 - **Image Statistics** — Full image statistics
 - **Region Statistics** — Selected region statistics
 

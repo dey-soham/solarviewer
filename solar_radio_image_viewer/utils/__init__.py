@@ -25,7 +25,6 @@ _MOVED_TO_PROCESSING = {
     "get_image_metadata": "metadata",
     "format_metadata_text": "metadata",
     "twoD_gaussian": "models",
-    "twoD_elliptical_ring": "models",
     "generate_tb_map": "maps",
     "generate_flux_map": "maps",
 }

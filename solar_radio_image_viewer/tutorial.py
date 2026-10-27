@@ -229,7 +229,7 @@ class TutorialDialog(QDialog):
                     "A visualization tool for solar radio astronomy images",
                     "Supports CASA image format (.im, .image) and FITS files",
                     "Multi-frequency and multi-Stokes (I, Q, U, V) support",
-                    "2D Gaussian and elliptical ring model fitting",
+                    "2D Gaussian model fitting",
                     "Remote file access via SSH/SFTP",
                     "Video creation from image sequences",
                 ],
@@ -587,21 +587,9 @@ class TutorialDialog(QDialog):
                 1,
                 "2D Gaussian Fitting (Ctrl+G)",
                 "Fit a 2D elliptical Gaussian to point sources. "
-                "Via Fitting → Fit 2D Gaussian. Select a region containing the source. "
+                "Via Image → Fit 2D Gaussian. Select a region containing the source. "
                 "Results include: position, FWHM (major/minor), position angle, peak and integrated flux.",
                 "Best for isolated, roughly Gaussian-shaped sources",
-            )
-        )
-
-        # Ring fitting
-        layout.addWidget(
-            self._create_step(
-                2,
-                "Elliptical Ring Fitting (Ctrl+L)",
-                "Fit a thin ring model to circular features. "
-                "Via Fitting → Fit Elliptical Ring. Provide initial guesses for "
-                "center, inner and outer radii.",
-                "Useful for CME fronts and limb brightenings",
             )
         )
 

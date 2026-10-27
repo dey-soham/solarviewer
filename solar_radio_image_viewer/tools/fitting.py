@@ -1,5 +1,5 @@
 """
-2D Gaussian / ring fitting tool for SolarViewer.
+2D Gaussian fitting tool for SolarViewer.
 """
 
 import logging
@@ -10,8 +10,6 @@ from ..ui.errors import show_error
 
 from ..processing.fits_io import readable_image_path
 from ..ui.busy import begin_busy, end_busy
-
-from ..processing.models import twoD_elliptical_ring
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +38,7 @@ def imfit_box(roi, shape=None):
 
 
 class FittingMixin:
-    """2D Gaussian and elliptical ring fitting on the current tab's ROI.
+    """2D Gaussian fitting on the current tab's ROI.
 
     Mixed into :class:`SolarRadioImageViewerApp`; relies on its attributes via ``self``.
 
@@ -457,184 +455,5 @@ class FittingMixin:
                 "Gaussian Fit Failed",
                 f"The Gaussian fit failed: {e}\n\nTry a box drawn around a single, "
                 "isolated source, a little larger than it.",
-                traceback.format_exc(),
-            )
-
-    def fit_2d_ring(self):
-        from scipy.optimize import curve_fit
-
-        current_tab = self.tab_widget.currentWidget()
-        if not current_tab or current_tab.current_image_data is None:
-            QMessageBox.warning(self, "No Data", "Load data first.")
-            return
-
-        data = current_tab.current_image_data
-
-        # Check for visible ROI
-        has_visible_roi = False
-        if (
-            current_tab.current_roi
-            and isinstance(current_tab.current_roi, tuple)
-            and current_tab.roi_selector
-        ):
-            if hasattr(current_tab.roi_selector, "to_draw"):
-                has_visible_roi = current_tab.roi_selector.to_draw.get_visible()
-            elif hasattr(current_tab.roi_selector, "artists"):
-                has_visible_roi = any(
-                    a.get_visible() for a in current_tab.roi_selector.artists
-                )
-
-        if not has_visible_roi:
-            QMessageBox.warning(
-                self,
-                "No ROI",
-                "Please select a region of interest (ROI) first.\n\nUse the ROI tool to draw a box around the source.",
-            )
-            return
-
-        xlow, xhigh, ylow, yhigh = current_tab.current_roi
-        data = data[xlow:xhigh, ylow:yhigh]
-        if data.size == 0:
-            QMessageBox.warning(self, "Invalid ROI", "ROI contains no data")
-            return
-
-        nx, ny = data.shape  # the ROI is indexed [x, y], like the image
-        xmesh, ymesh = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
-        coords = np.vstack((xmesh.ravel(), ymesh.ravel()))
-        data_flat = data.ravel()
-
-        # Start from the brightness-weighted centre of the ROI
-        weights = np.clip(np.nan_to_num(data - np.nanmedian(data)), 0, None)
-        if weights.sum() > 0:
-            x_guess = float((weights * xmesh).sum() / weights.sum())
-            y_guess = float((weights * ymesh).sum() / weights.sum())
-        else:
-            x_guess, y_guess = nx / 2, ny / 2
-        guess = [np.nanmax(data), x_guess, y_guess, nx / 6, nx / 3, np.nanmedian(data)]
-
-        try:
-            popt, pcov = curve_fit(twoD_elliptical_ring, coords, data_flat, p0=guess)
-            perr = np.sqrt(np.diag(pcov))
-
-            # Get absolute pixel coordinates (accounting for ROI offset)
-            x0_px = popt[1] + xlow
-            y0_px = popt[2] + ylow
-            inner_r_px = abs(popt[3])
-            outer_r_px = abs(popt[4])
-
-            # Try WCS conversion
-            use_wcs = False
-            wcs_info = ""
-            if current_tab.current_wcs:
-                try:
-                    # Get pixel scale from WCS (radians -> arcsec)
-                    increment = current_tab.current_wcs.increment()["numeric"][0:2]
-                    # Check if image uses SOLAR-X/Y (increment is already in arcsec)
-                    _hdr = getattr(current_tab, "_cached_fits_header", None) or {}
-                    _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-                    if _is_solar:
-                        scale_x = abs(increment[0])  # already arcsec/pixel
-                        scale_y = abs(increment[1])
-                    else:
-                        scale_x = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
-                        scale_y = abs(increment[1]) * 180 / np.pi * 3600  # arcsec/pixel
-                    avg_scale = (scale_x + scale_y) / 2
-
-                    # Convert to world coordinates
-                    world = current_tab.current_wcs.toworld([x0_px, y0_px, 0, 0])[
-                        "numeric"
-                    ]
-                    if _is_solar:
-                        ra_deg = world[0] / 3600.0 if world[0] else None
-                        dec_deg = world[1] / 3600.0 if world[1] else None
-                    else:
-                        ra_deg = world[0] * 180 / np.pi if world[0] else None
-                        dec_deg = world[1] * 180 / np.pi if world[1] else None
-
-                    # Convert radii to arcsec
-                    inner_r_arcsec = inner_r_px * avg_scale
-                    outer_r_arcsec = outer_r_px * avg_scale
-                    width_arcsec = outer_r_arcsec - inner_r_arcsec
-
-                    use_wcs = True
-                    wcs_info = f'WCS (scale: {avg_scale:.4f}"/px)'
-                except Exception as wcs_err:
-                    print(
-                        f"[INFO] WCS conversion failed, using pixel coordinates: {wcs_err}"
-                    )
-
-            # Professional terminal output
-            print("\n" + "=" * 60)
-            print("           2D ELLIPTICAL RING FIT RESULTS")
-            print("=" * 60)
-            if use_wcs:
-                print(f"  Coordinate System: {wcs_info}")
-                print("-" * 60)
-                print(f"  {'Parameter':<20} {'Value':>15} {'Error':>15}")
-                print("-" * 60)
-                print(f"  {'Amplitude':<20} {popt[0]:>15.4g} {perr[0]:>15.4g}")
-                if ra_deg is not None and dec_deg is not None:
-                    _ctype1_rf = str(_hdr.get("CTYPE1", "")).upper()
-                    if "SOLAR" in _ctype1_rf:
-                        print(f"  {'SOLAR-X (arcsec)':<20} {ra_deg * 3600.0:>15.2f}")
-                        print(f"  {'SOLAR-Y (arcsec)':<20} {dec_deg * 3600.0:>15.2f}")
-                    elif "HPLN" in _ctype1_rf:
-                        # Unwrap helioprojective degrees to [-180, 180] then to arcsec
-                        hpln_as = ((ra_deg + 180.0) % 360.0 - 180.0) * 3600.0
-                        hplt_as = ((dec_deg + 180.0) % 360.0 - 180.0) * 3600.0
-                        print(f"  {'HPLN (arcsec)':<20} {hpln_as:>15.2f}")
-                        print(f"  {'HPLT (arcsec)':<20} {hplt_as:>15.2f}")
-                    else:
-                        print(f"  {'RA (deg)':<20} {ra_deg:>15.6f}")
-                        print(f"  {'Dec (deg)':<20} {dec_deg:>15.6f}")
-                print(f"  {'X0 (pixel)':<20} {x0_px:>15.2f} {perr[1]:>15.2f}")
-                print(f"  {'Y0 (pixel)':<20} {y0_px:>15.2f} {perr[2]:>15.2f}")
-                print(f"  {'Inner R (arcsec)':<20} {inner_r_arcsec:>15.3f}")
-                print(f"  {'Outer R (arcsec)':<20} {outer_r_arcsec:>15.3f}")
-                print(f"  {'Ring Width (arcsec)':<20} {width_arcsec:>15.3f}")
-                print(f"  {'Inner R (pixel)':<20} {inner_r_px:>15.2f} {perr[3]:>15.2f}")
-                print(f"  {'Outer R (pixel)':<20} {outer_r_px:>15.2f} {perr[4]:>15.2f}")
-                print(f"  {'Offset':<20} {popt[5]:>15.4g} {perr[5]:>15.4g}")
-            else:
-                print("  Coordinate System: Pixel")
-                print("-" * 60)
-                print(f"  {'Parameter':<20} {'Value':>15} {'Error':>15}")
-                print("-" * 60)
-                print(f"  {'Amplitude':<20} {popt[0]:>15.4g} {perr[0]:>15.4g}")
-                print(f"  {'X0 (pixel)':<20} {x0_px:>15.2f} {perr[1]:>15.2f}")
-                print(f"  {'Y0 (pixel)':<20} {y0_px:>15.2f} {perr[2]:>15.2f}")
-                print(f"  {'Inner R (pixel)':<20} {inner_r_px:>15.2f} {perr[3]:>15.2f}")
-                print(f"  {'Outer R (pixel)':<20} {outer_r_px:>15.2f} {perr[4]:>15.2f}")
-                print(f"  {'Ring Width (pixel)':<20} {outer_r_px - inner_r_px:>15.2f}")
-                print(f"  {'Offset':<20} {popt[5]:>15.4g} {perr[5]:>15.4g}")
-            print("=" * 60 + "\n")
-
-            # GUI message (compact version)
-            if use_wcs:
-                msg = (
-                    f"2D Ring Fit (WCS):\n"
-                    f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
-                    f"Center: ({x0_px:.1f}, {y0_px:.1f}) px\n"
-                    f'Inner R={inner_r_arcsec:.2f}", Outer R={outer_r_arcsec:.2f}"\n'
-                    f'Ring Width={width_arcsec:.2f}"'
-                )
-            else:
-                msg = (
-                    f"2D Ring Fit (Pixel):\n"
-                    f"Amp={popt[0]:.4g}±{perr[0]:.4g}\n"
-                    f"X0={x0_px:.2f}±{perr[1]:.2f}, Y0={y0_px:.2f}±{perr[2]:.2f}\n"
-                    f"Inner R={inner_r_px:.2f}±{perr[3]:.2f}, Outer R={outer_r_px:.2f}±{perr[4]:.2f}"
-                )
-
-            QMessageBox.information(self, "Fit Result", msg)
-
-        except Exception as e:
-            import traceback
-
-            show_error(
-                self,
-                "Ring Fit Failed",
-                f"The ring fit failed: {e}\n\nTry a box that holds the whole ring, "
-                "with some background around it.",
                 traceback.format_exc(),
             )

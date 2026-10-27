@@ -25,7 +25,7 @@ class MenusMixin:
     ``add_new_tab``, ``close_current_tab``, ``disconnect_remote``,
     ``export_as_casa_image``, ``export_as_fits``, ``export_as_hpc_fits``,
     ``export_casa_region``, ``export_data``, ``fit_2d_gaussian``,
-    ``fit_2d_ring``, ``handle_add_tab``, ``launch_data_downloader_gui``,
+    ``handle_add_tab``, ``launch_data_downloader_gui``,
     ``launch_radio_data_downloader_gui``, ``open_helioviewer_browser``,
     ``save_sub_image``, ``save_tb_map_as_fits``, ``show_about_dialog``,
     ``show_add_arrow_annotation_dialog``, ``show_add_text_annotation_dialog``,
@@ -167,8 +167,6 @@ class MenusMixin:
         menu.addSeparator()
         self._action(menu, "Fit 2D Gaussian", self.fit_2d_gaussian,
                      "Fit a 2D Gaussian to the selected region", "Ctrl+G")
-        self._action(menu, "Fit Elliptical Ring", self.fit_2d_ring,
-                     "Fit an elliptical ring to the selected region")
 
         menu.addSeparator()
         self._action(menu, "Export Region as Sub-Image...", self.save_sub_image,
@@ -199,15 +197,14 @@ class MenusMixin:
                      "Download solar images (SDO, SOHO, STEREO, GOES, IRIS) and prepare them")
         self._action(menu, "Radio Spectra...", self.launch_radio_data_downloader_gui,
                      "Download radio spectra (RSTN, e-CALLISTO) as FITS")
-        menu.addSeparator()
-        self._action(menu, "Helioviewer Browser...", self.open_helioviewer_browser,
-                     "Browse and save solar images from Helioviewer")
 
     def _create_apps_menu(self, menubar):
         """Apps: the other windows SolarViewer ships."""
         menu = menubar.addMenu("&Apps")
         self._action(menu, "Solar Activity Viewer", self.show_noaa_events_viewer,
                      "Flares, active regions and other solar activity of a day")
+        self._action(menu, "Helioviewer Browser", self.open_helioviewer_browser,
+                     "Browse solar images from Helioviewer")
         menu.addSeparator()
         self._action(menu, "Dynamic Spectrum Viewer",
                      lambda: self._launch_pipeline_tool("dynamic_spectrum_viewer", "Dynamic Spectrum Viewer"),
