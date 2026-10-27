@@ -70,32 +70,32 @@ class FigureToolbarMixin:
         # The tools: pan (the default), regions, the ruler and the profile
         self.pan_action = self._tool_action(
             get_resource_path("assets/pan.png"),
-            "Pan: drag, or middle-drag in any mode. Scroll to zoom, arrows to move",
+            "Pan (H): drag, or middle-drag in any mode. Scroll to zoom, arrows to move",
             lambda: self.set_region_mode(RegionMode.PAN),
             checkable=True,
         )
         self.pan_action.setChecked(True)
         self.rect_action = self._tool_action(
             get_resource_path("assets/rectangle_selection.png"),
-            "Rectangle Select",
+            "Rectangle (B): drag to draw a region (Shift: a square)",
             lambda: self.set_region_mode(RegionMode.RECTANGLE),
             checkable=True,
         )
         self.ellipse_action = self._tool_action(
             get_resource_path("assets/ellipse_selection.png"),
-            "Ellipse Select",
+            "Ellipse (E): drag to draw a region (Shift: a circle)",
             lambda: self.set_region_mode(RegionMode.ELLIPSE),
             checkable=True,
         )
         self.ruler_action = self._tool_action(
             themed_icon("ruler.png"),
-            "Measure Angular Distance (Select two points on the map)",
+            "Ruler (L): measure the angular distance between two points",
             checkable=True,
         )
         self.ruler_action.toggled.connect(self._toggle_ruler_mode)
         self.profile_action = self._tool_action(
             themed_icon("profile.png"),
-            "Plot Flux Profile along a line cut",
+            "Profile (P): plot the flux along a line cut",
             checkable=True,
         )
         self.profile_action.toggled.connect(self._toggle_profile_mode)

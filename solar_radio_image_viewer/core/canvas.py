@@ -50,6 +50,15 @@ _ARROW_PAN_STEPS = {
     Qt.Key_Up: (0, 1),
     Qt.Key_Down: (0, -1),
 }
+# Tool key -> the canvas bar's tool it chooses: H the hand (Pan), B a box
+# (Rectangle; R resets the view), E Ellipse, L a line (the Ruler), P Profile
+TOOL_KEYS = {
+    Qt.Key_H: "pan_action",
+    Qt.Key_B: "rect_action",
+    Qt.Key_E: "ellipse_action",
+    Qt.Key_L: "ruler_action",
+    Qt.Key_P: "profile_action",
+}
 # Redraw properly once the view has been still this long, in milliseconds
 SETTLE_MS = 200
 # Size of the coarse picture under the preview's newly exposed edges
@@ -188,7 +197,8 @@ class CanvasMixin:
     Host attributes/methods used:
 
     ``cursor_readout``, ``image_plot``, ``init_region_editor``, ``_is_panning``,
-    ``_profile_mode``, ``ruler_action``, ``_ruler_mode``,
+    ``_profile_method``, ``_profile_mode``, ``profile_action``, ``ruler_action``,
+    ``_ruler_mode``, ``_ruler_start``, ``_profile_start``,
     ``show_beam_checkbox``, ``show_status_message``, ``_toggle_ruler_mode``,
     ``_update_beam_position``, ``_view_anim``, ``window``, ``_zoom_timer``
     """
@@ -283,25 +293,69 @@ class CanvasMixin:
             gid=EMPTY_HINT_GID,
         )
 
-    def set_region_mode(self, mode_id):
+    def set_region_mode(self, mode_id, everywhere=True):
+        """Pan, Rectangle or Ellipse. On a compare page the tool is the
+        page's (``everywhere``): every pane takes it, so a drag means the
+        same in each and the regions look the same in each."""
         self.region_mode = mode_id
+        action = {
+            RegionMode.PAN: "pan_action",
+            RegionMode.RECTANGLE: "rect_action",
+            RegionMode.ELLIPSE: "ellipse_action",
+        }[mode_id]
+        if hasattr(self, action):
+            # (the Ruler or Profile, if checked, goes off with it)
+            getattr(self, action).setChecked(True)
         # Disable ruler mode when switching to ROI/Pan
         if hasattr(self, "_ruler_mode") and self._ruler_mode:
             self._toggle_ruler_mode(False)
             if hasattr(self, "ruler_action"):
                 self.ruler_action.setChecked(False)
 
-        # Status feedback
-        if mode_id == RegionMode.PAN:
-            self.show_status_message("Mode: Pan")
-        elif mode_id == RegionMode.RECTANGLE:
-            self.show_status_message("Mode: Rectangle Select")
-        elif mode_id == RegionMode.ELLIPSE:
-            self.show_status_message("Mode: Ellipse Select")
-
         # Re-init region editor if we have an axis
         if hasattr(self, "figure") and self.figure.axes:
             self.init_region_editor(self.figure.axes[0])
+        else:
+            self.region_tool_changed()
+
+        if everywhere:
+            self.share_tool()
+            # Status feedback (after the other panes' own)
+            if mode_id == RegionMode.PAN:
+                self.show_status_message("Mode: Pan")
+            else:
+                shape, even = ("rectangle", "square") if mode_id == RegionMode.RECTANGLE else ("ellipse", "circle")
+                self.show_status_message(
+                    f"Mode: {shape.capitalize()}: drag to draw a {shape} (Shift: a {even}); "
+                    "click a region to select it, then drag it or its handles"
+                )
+
+    def share_tool(self):
+        """On a compare page the tool is the page's, whichever pane is
+        active: the other panes take this pane's."""
+        page = getattr(self, "page", None)
+        if page is None or page.sharing_tool:
+            return
+        page.sharing_tool = True
+        try:
+            for pane in page.panes:
+                if pane is not self:
+                    pane.take_tool(self)
+        finally:
+            page.sharing_tool = False
+
+    def take_tool(self, other):
+        """Use ``other``'s tool: Pan, Rectangle, Ellipse, the Ruler, or the
+        Profile in its way (line or radial)."""
+        if other._ruler_mode:
+            if not self._ruler_mode:
+                self.ruler_action.setChecked(True)
+        elif other._profile_mode:
+            self._profile_method = other._profile_method
+            if not self._profile_mode:
+                self.profile_action.setChecked(True)  # (no dialog: see _toggle_profile_mode)
+        elif self.region_mode != other.region_mode or self._in_measurement_mode():
+            self.set_region_mode(other.region_mode, everywhere=False)
 
     # ------------------------------------------------------------------
     # Zoom and pan commands (buttons, menus, keys)
@@ -379,7 +433,8 @@ class CanvasMixin:
         return timer is not None and timer.isActive()
 
     def handle_view_key(self, event):
-        """Act on a view key (R, 1, +/-, arrows). True if it was one."""
+        """Act on a view key (R, 1, +/-, arrows) or a tool key (TOOL_KEYS).
+        True if it was one."""
         if event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
             return False
         key = event.key()
@@ -393,6 +448,10 @@ class CanvasMixin:
             self.zoom_out()
         elif key in _ARROW_PAN_STEPS:
             self.pan_view(*_ARROW_PAN_STEPS[key])
+        elif key in TOOL_KEYS:
+            # As its button: on a compare page, every pane's (a chosen tool
+            # stays chosen)
+            getattr(self, TOOL_KEYS[key]).trigger()
         else:
             return False
         return True
@@ -715,6 +774,14 @@ class CanvasMixin:
             hasattr(self, "_profile_mode") and self._profile_mode
         )
 
+    def _measuring_now(self):
+        """Whether a ruler or profile line is being drawn: from its first
+        click to its second its preview is over the canvas."""
+        return self._in_measurement_mode() and (
+            getattr(self, "_ruler_start", None) is not None
+            or getattr(self, "_profile_start", None) is not None
+        )
+
     def _in_pan_mode(self):
         return (
             getattr(self, "region_mode", None) == RegionMode.PAN
@@ -736,7 +803,10 @@ class CanvasMixin:
             self._cursor_left()
             return
 
-        self.canvas.setCursor(Qt.OpenHandCursor if self._in_pan_mode() else Qt.CrossCursor)
+        cursor = self.region_cursor(event)
+        if cursor is None:
+            cursor = Qt.OpenHandCursor if self._in_pan_mode() else Qt.CrossCursor
+        self.canvas.setCursor(cursor)
 
         x, y = round(event.xdata), round(event.ydata)
         page = getattr(self, "page", None)

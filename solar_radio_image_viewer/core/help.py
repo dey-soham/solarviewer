@@ -213,7 +213,8 @@ class HelpMixin:
         dialog.show()
 
     # Keys and mouse gestures of the image, which no menu shows. Handled by
-    # handle_view_key (R, 1, +, -, arrows), keyPressEvent below (Space,
+    # handle_view_key (R, 1, +, -, arrows, the tools' keys), the regions'
+    # keys (roi_stats.py _on_region_key), keyPressEvent below (Space,
     # Enter, Esc), the file navigation shortcuts ([ ] { }) and the tab bar
     # (Ctrl+Tab); keep this list in step with them.
     IMAGE_KEYS = [
@@ -222,8 +223,14 @@ class HelpMixin:
         ("+  or  =", "Zoom in"),
         ("-", "Zoom out"),
         ("Arrow keys", "Pan"),
+        ("H", "Pan tool"),
+        ("B", "Rectangle tool"),
+        ("E", "Ellipse tool"),
+        ("L", "Ruler tool (measure a distance)"),
+        ("P", "Profile tool (the flux along a line cut)"),
+        ("Delete  or  Backspace", "Delete the selected region (Rectangle or Ellipse tool)"),
         ("Space  or  Enter", "Redraw the image"),
-        ("Esc", "Leave a text field (the keys above then work again)"),
+        ("Esc", "Leave a text field (the keys above then work again); deselect the region"),
         ("[  or  ]", "Previous / next file in the folder"),
         ("{  or  }", "First / last file in the folder"),
         ("Ctrl+Tab  or  Ctrl+Shift+Tab", "Next / previous tab"),
@@ -234,6 +241,7 @@ class HelpMixin:
         ("Middle-drag", "Pan (left-drag too, with the Pan tool)"),
         ("Right-drag", "Zoom to the box drawn"),
         ("Double-click", "Zoom in (with the Pan tool); Shift: zoom out"),
+        ("Shift-drag", "A square or circle (Rectangle, Ellipse); 15° steps when rotating a region"),
     ]
 
     def _shortcut_sections(self):

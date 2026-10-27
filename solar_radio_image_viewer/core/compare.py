@@ -810,6 +810,7 @@ class ImagePage(QWidget):
         self.colorbar = False  # and a colorbar under each image
         self._veil_widget = None
         self.sync = PaneSync(self)
+        self.sharing_tool = False  # (a pane is giving the others its tool)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -999,6 +1000,8 @@ class ImagePage(QWidget):
             box.toggled.connect(lambda _on: self._compare_panel.refresh_overlays())
         if self._active is None:
             self.set_active_pane(pane)
+        else:
+            self._active.share_tool()  # (the page's tool)
         return pane
 
     def new_pane(self, slot=None):
@@ -1117,11 +1120,14 @@ class ImagePage(QWidget):
             self.sync.view_settled(self._active)
 
     def set_linked(self, pane, on):
-        """``pane`` follows the others, or goes its own way."""
+        """``pane`` follows the others (taking the active pane's view, and
+        sharing regions with them), or goes its own way."""
         pane.linked = bool(on)
         self.refresh_sync()
-        if on and self._active is not None and self._active is not pane:
-            self.sync.view_settled(self._active)
+        if on:
+            if self._active is not None and self._active is not pane:
+                self.sync.view_settled(self._active)
+            self.sync.linked(pane)
 
     def sync_all(self):
         for pane in self.panes:
@@ -1129,6 +1135,9 @@ class ImagePage(QWidget):
         self.refresh_sync()
         if self._active is not None:
             self.sync.view_settled(self._active)
+        for pane in self.panes:
+            if pane is not self._active:
+                self.sync.linked(pane)
 
     def refresh_sync(self):
         """The Synced button, the popover, the headers' link toggles and

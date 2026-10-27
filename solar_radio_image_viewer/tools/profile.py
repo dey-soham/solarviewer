@@ -35,15 +35,21 @@ class ProfileMixin:
     Host attributes/methods used:
 
     ``canvas``, ``current_image_data``, ``current_wcs``, ``figure``,
-    ``profile_action``, ``show_status_message``
+    ``profile_action``, ``region_mode``, ``region_tool_changed``,
+    ``set_region_mode``, ``share_tool``, ``show_status_message``
     """
 
     def _toggle_profile_mode(self, checked):
         """Toggle profile mode for flux profile cut"""
         self._profile_mode = checked
+        self.region_tool_changed()  # (the regions are left be while measuring)
         if checked:
             self.canvas.setCursor(Qt.CrossCursor)
-            self._show_profile_mode_dialog()
+            page = getattr(self, "page", None)
+            if page is not None and page.sharing_tool:
+                self._activate_profile_mode()  # (chosen in another pane, in its way)
+            else:
+                self._show_profile_mode_dialog()
         else:
             self.show_status_message("Profile mode off")
             # Disconnect all profile events
@@ -133,6 +139,7 @@ class ProfileMixin:
         def on_cancel():
             self.profile_action.setChecked(False)
             self._profile_mode = False
+            self.set_region_mode(self.region_mode)  # (back to Pan, Rectangle or Ellipse)
 
         ok_btn.clicked.connect(on_ok)
         cancel_btn.clicked.connect(dialog.reject)
@@ -160,6 +167,7 @@ class ProfileMixin:
             self._profile_click_cid = self.canvas.mpl_connect(
                 "button_press_event", self._profile_radial_on_click
             )
+        self.share_tool()  # (on a compare page, every pane's)
 
     def _clear_profile(self):
         """Clear profile line from plot"""

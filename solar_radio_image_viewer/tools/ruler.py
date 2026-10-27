@@ -19,7 +19,8 @@ class RulerMixin:
 
     Host attributes/methods used:
 
-    ``canvas``, ``current_wcs``, ``show_status_message``
+    ``canvas``, ``current_wcs``, ``region_tool_changed``, ``share_tool``,
+    ``show_status_message``
 
     A measurement is drawn as a right-angled triangle: the measured line is
     the hypotenuse, and the legs show its horizontal and vertical parts, each
@@ -30,6 +31,7 @@ class RulerMixin:
     def _toggle_ruler_mode(self, checked):
         """Toggle ruler mode for distance measurement"""
         self._ruler_mode = checked
+        self.region_tool_changed()  # (the regions are left be while measuring)
         if checked:
             self.show_status_message(
                 "Ruler mode: Click first point, then click second point to measure (Shift for H/V snap)"
@@ -40,6 +42,7 @@ class RulerMixin:
             self._ruler_click_cid = self.canvas.mpl_connect(
                 "button_press_event", self._ruler_on_click
             )
+            self.share_tool()  # (on a compare page, every pane's)
         else:
             self.show_status_message("Ruler mode off")
             # Disconnect ruler events

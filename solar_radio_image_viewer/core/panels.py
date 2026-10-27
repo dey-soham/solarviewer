@@ -120,14 +120,25 @@ def _clock(time):
     return text[:5] if len(text) >= 5 and text[2] == ":" else str(time)
 
 
-def _block(title, aside=None):
-    """A block of the inspector: a kicker over a layout to fill. Returns
-    (widget, layout, aside label or None)."""
+def _block(title, aside=None, actions=()):
+    """A block of the inspector: a kicker over a layout to fill, with
+    ``actions`` (link buttons) at the right end of the kicker's line.
+    Returns (widget, layout, aside label or None)."""
     widget = QWidget()
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(10)
-    if aside is None:
+    if actions:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(kicker(title))
+        row.addStretch()
+        for action in actions:
+            row.addWidget(action)
+        layout.addLayout(row)
+        label = None
+    elif aside is None:
         layout.addWidget(kicker(title))
         label = None
     else:
@@ -728,7 +739,22 @@ class PanelsMixin:
         layout.setSpacing(18)
 
         # The region: its statistics appear with the first region drawn
-        block, block_layout, _ = _block("Region")
+        # Delete and Clear all beside the heading, shown with the Rectangle
+        # and Ellipse tools only (see roi_stats.py)
+        self.delete_region_btn = link_button("Delete", lambda: self.delete_region())
+        self.delete_region_btn.setToolTip("Delete the selected region (Delete key)")
+        self.region_links_dot = QLabel("·")
+        self.region_links_dot.setObjectName("Meta")
+        self.clear_regions_btn = link_button("Clear all", self._confirm_clear_regions)
+        self.clear_regions_btn.setToolTip("Delete every region on this image")
+        links = (self.delete_region_btn, self.region_links_dot, self.clear_regions_btn)
+        for widget in links:
+            # Their room is kept while they are hidden, so the heading stays put
+            policy = widget.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            widget.setSizePolicy(policy)
+            widget.hide()
+        block, block_layout, _ = _block("Region", actions=links)
         self.info_label = QLabel(NO_REGION_HINT)
         self.info_label.setObjectName("Hint")
         self.info_label.setWordWrap(True)
@@ -752,26 +778,11 @@ class PanelsMixin:
         export_menu.addAction("ROI as region file…", self._export_region)
         self.export_region_btn.setMenu(export_menu)
         self.export_region_btn.hide()
-        self.delete_region_btn = QPushButton("Delete")
-        self.delete_region_btn.setToolTip("Delete the selected region (Delete key)")
-        self.delete_region_btn.clicked.connect(lambda: self.delete_region())
-        self.delete_region_btn.hide()
-        self.clear_regions_btn = QPushButton("Clear all")
-        self.clear_regions_btn.setToolTip("Delete every region on this image")
-        self.clear_regions_btn.clicked.connect(lambda: self.clear_regions())
-        self.clear_regions_btn.hide()
         row = QHBoxLayout()
         row.setSpacing(6)
         row.addWidget(self.histogram_btn)
         row.addWidget(self.fit_gaussian_btn)
         row.addWidget(self.export_region_btn)
-        row.addStretch()
-        block_layout.addLayout(row)
-        # The regions themselves (the spectra viewer's masks work the same way)
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        row.addWidget(self.delete_region_btn)
-        row.addWidget(self.clear_regions_btn)
         row.addStretch()
         block_layout.addLayout(row)
         layout.addWidget(block)

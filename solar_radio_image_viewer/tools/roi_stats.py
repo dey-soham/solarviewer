@@ -3,12 +3,13 @@ ROI statistics tool for SolarViewer.
 """
 
 import itertools
+import math
 
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt
-from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
+from PyQt5.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -29,7 +30,20 @@ from .preview import contrast_colors
 NO_REGION_HINT = "No selection. Draw a rectangle or ellipse on the image."
 # A drag shorter than this (screen pixels) either way is a click
 CLICK_PX = 3
+# The selected region's handles: their size, and how near the mouse must be
+# to grab one (screen pixels)
+HANDLE_PX = 7
+GRAB_PX = 6
+# Which sides of the region's box each handle moves, (x side, y side) with
+# 0 the low side, 1 the high side and None neither; the corners first
+HANDLES = ((0, 0), (1, 0), (1, 1), (0, 1), (None, 0), (1, None), (None, 1), (0, None))
+# The selected ellipse's round handle, which turns it: how far out from its
+# box it is and its radius (screen pixels), and the steps Shift turns it by
+TURN_PX = 22
+TURN_RADIUS = 4.5
+TURN_STEP = 15
 _keys = itertools.count(1)
+_turn_cursors = {}
 
 
 class RegionMode:
@@ -38,55 +52,165 @@ class RegionMode:
     PAN = 2
 
 
+def _box(corners):
+    """``corners`` (x1, y1, x2, y2) in order: low x and y first."""
+    x1, y1, x2, y2 = (float(v) for v in corners)
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+
+def _centre(corners):
+    x1, y1, x2, y2 = corners
+    return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+
+def _turned(points, centre, angle):
+    """``points`` turned ``angle`` degrees anticlockwise (in pixels of the
+    image) about ``centre``."""
+    if not angle:
+        return [(float(x), float(y)) for x, y in points]
+    t = math.radians(angle)
+    c, s = math.cos(t), math.sin(t)
+    cx, cy = centre
+    return [(cx + (x - cx) * c - (y - cy) * s, cy + (x - cx) * s + (y - cy) * c) for x, y in points]
+
+
 class Region:
     """A rectangle or ellipse on a pane: ``shape`` ("rect" or "ellipse") in
-    the box with ``corners`` (x1, y1, x2, y2), in pixels of the image. Its
+    the box with ``corners`` (x1, y1, x2, y2), in pixels of the image,
+    turned ``angle`` degrees anticlockwise about the box's centre. Its
     copies in linked panes share its ``key``."""
 
-    __slots__ = ("shape", "corners", "key")
+    __slots__ = ("shape", "corners", "key", "angle")
 
-    def __init__(self, shape, corners, key=None):
-        x1, y1, x2, y2 = (float(v) for v in corners)
+    def __init__(self, shape, corners, key=None, angle=0.0):
         self.shape = shape
-        self.corners = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        self.corners = _box(corners)
         self.key = key if key is not None else next(_keys)
+        self.angle = float(angle)
 
-    def outline(self):
-        """The outline as points (pixels of the image), closed."""
-        return region_outline(self.shape, self.corners)
+    def outline(self, corners=None, angle=None):
+        """The outline as points (pixels of the image), closed; in the box
+        ``corners`` turned by ``angle`` instead of its own if given (while
+        it is dragged)."""
+        return region_outline(self.shape, corners or self.corners, self.angle if angle is None else angle)
 
     def contains(self, x, y):
         x1, y1, x2, y2 = self.corners
+        cx, cy = _centre(self.corners)
+        ((x, y),) = _turned([(x, y)], (cx, cy), -self.angle)  # (into its own frame)
         if self.shape == "rect":
             return x1 <= x <= x2 and y1 <= y <= y2
         a, b = (x2 - x1) / 2, (y2 - y1) / 2
-        return a > 0 and b > 0 and (
-            ((x - (x1 + x2) / 2) / a) ** 2 + ((y - (y1 + y2) / 2) / b) ** 2 <= 1
-        )
+        return a > 0 and b > 0 and ((x - cx) / a) ** 2 + ((y - cy) / b) ** 2 <= 1
+
+    def area(self):
+        x1, y1, x2, y2 = self.corners
+        return (x2 - x1) * (y2 - y1)
 
 
-def region_outline(shape, corners):
+def region_outline(shape, corners, angle=0.0):
     x1, y1, x2, y2 = corners
     if shape == "rect":
-        return [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
-    t = np.linspace(0, 2 * np.pi, 73)
-    cx, cy, a, b = (x1 + x2) / 2, (y1 + y2) / 2, abs(x2 - x1) / 2, abs(y2 - y1) / 2
-    return list(zip(cx + a * np.cos(t), cy + b * np.sin(t)))
+        points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    else:
+        t = np.linspace(0, 2 * np.pi, 120, endpoint=False)
+        cx, cy, a, b = (x1 + x2) / 2, (y1 + y2) / 2, abs(x2 - x1) / 2, abs(y2 - y1) / 2
+        points = list(zip(cx + a * np.cos(t), cy + b * np.sin(t)))
+    return _turned(points, _centre(corners), angle)
+
+
+def handle_points(corners, angle=0.0):
+    """Where the handles of a region in the box ``corners`` turned by
+    ``angle`` are (pixels of the image), in the order of HANDLES."""
+    x1, y1, x2, y2 = corners
+    xs, ys = (x1, x2, (x1 + x2) / 2), (y1, y2, (y1 + y2) / 2)
+    points = [(xs[2 if hx is None else hx], ys[2 if hy is None else hy]) for hx, hy in HANDLES]
+    return _turned(points, (xs[2], ys[2]), angle)
+
+
+def resized(corners, handle, x, y, angle=0.0):
+    """The box ``corners`` (of a region turned by ``angle``) with the sides
+    that ``handle`` moves taken to (x, y) and the others where they are; it
+    may turn over."""
+    x1, y1, x2, y2 = corners
+    centre = _centre(corners)
+    # In the region's own frame, where its box is upright
+    ((x, y),) = _turned([(x, y)], centre, -angle)
+    xs, ys = [x1, x2], [y1, y2]
+    hx, hy = HANDLES[handle]
+    if hx is not None:
+        xs[hx] = x
+    if hy is not None:
+        ys[hy] = y
+    if not angle:
+        return (xs[0], ys[0], xs[1], ys[1])
+    # The box's new centre, back in the image, turned about the old one
+    ((cx, cy),) = _turned([((xs[0] + xs[1]) / 2, (ys[0] + ys[1]) / 2)], centre, angle)
+    half_w, half_h = abs(xs[1] - xs[0]) / 2, abs(ys[1] - ys[0]) / 2
+    return (cx - half_w, cy - half_h, cx + half_w, cy + half_h)
+
+
+def turned_to(region, start, now, snap=False):
+    """``region``'s angle once its round handle is dragged from ``start``
+    to ``now`` (pixels of the image), in TURN_STEP steps with ``snap``; in
+    (-180, 180]."""
+    cx, cy = _centre(region.corners)
+    angle = region.angle + math.degrees(
+        math.atan2(now[1] - cy, now[0] - cx) - math.atan2(start[1] - cy, start[0] - cx)
+    )
+    if snap:
+        angle = round(angle / TURN_STEP) * TURN_STEP
+    angle = -((-angle + 180) % 360 - 180)  # (-180, 180]
+    return 0.0 if abs(angle) < 1e-9 else angle
+
+
+def turn_cursor(dpr):
+    """The cursor over the round handle: a curved arrow, light over dark."""
+    key = round(dpr * 100)
+    cursor = _turn_cursors.get(key)
+    if cursor is not None:
+        return cursor
+    size = 24
+    pixmap = QPixmap(round(size * dpr), round(size * dpr))
+    pixmap.setDevicePixelRatio(dpr)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    # Three quarters of a circle, from the top round to the left, clockwise
+    arc = QPainterPath()
+    box = QRectF(5.5, 5.5, 13, 13)
+    arc.arcMoveTo(box, 90)
+    arc.arcTo(box, 90, -270)
+    # Its head at the left, pointing up
+    head = QPolygonF([QPointF(5.5, 7.5), QPointF(2.0, 12.5), QPointF(9.0, 12.5)])
+    for colour, width in ((QColor(0, 0, 0, 200), 3.6), (QColor(255, 255, 255), 1.6)):
+        painter.setPen(QPen(colour, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(arc)
+        painter.setBrush(colour)
+        painter.drawPolygon(head)
+    painter.end()
+    cursor = _turn_cursors[key] = QCursor(pixmap)  # (the hot spot in the middle)
+    return cursor
 
 
 class RegionLayer(QWidget):
     """A pane's regions, drawn in Qt over its canvas.
 
-    Drawing, selecting or deleting a region, or moving the view, repaints
-    this layer alone; the Matplotlib figure is never redrawn for it. The
-    selected region is drawn solid and thicker, the others dashed (they
-    differ in weight, not colour), over a halo that contrasts with the image.
+    Drawing, selecting, moving or deleting a region, or moving the view,
+    repaints this layer alone; the Matplotlib figure is never redrawn for
+    it. Each region is a thin line over a soft halo, in the colours that
+    contrast with the image. With the Rectangle or Ellipse tool, the
+    selected region is drawn stronger, faintly filled, with handles to
+    resize it and a round one to turn it; with the other tools every region
+    looks the same.
     """
 
     def __init__(self, tab):
         super().__init__(tab.canvas)
         self._tab = tab
-        self.preview = None  # (shape, corners) of a region being dragged out
+        self.preview = None  # (shape, corners) of a region being drawn
+        self.edited = None  # (region, corners, angle) of a region being moved, resized or turned
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         tab.canvas.region_layer = self  # (the canvas's other overlays raise it)
         tab.canvas.installEventFilter(self)
@@ -103,44 +227,115 @@ class RegionLayer(QWidget):
         self.raise_()
         self.update()  # (the whole layer: a part would repaint a part of the canvas)
 
+    def to_widget(self, points):
+        """Points in pixels of the image to this layer's (logical) pixels."""
+        tab = self._tab
+        ax = tab._nav_axes()
+        dpr = tab.canvas.device_pixel_ratio
+        fig_h = tab.canvas.figure.bbox.height
+        return [QPointF(px / dpr, (fig_h - py) / dpr) for px, py in ax.transData.transform(points)]
+
+    def shown_handles(self, corners, angle=0.0):
+        """The handles shown on a region in the box ``corners`` turned by
+        ``angle``, as (index, point in this layer); the side handles only
+        when the region is long enough on screen for them."""
+        points = self.to_widget(handle_points(corners, angle))
+        width = math.hypot(points[1].x() - points[0].x(), points[1].y() - points[0].y())
+        height = math.hypot(points[3].x() - points[0].x(), points[3].y() - points[0].y())
+        room = 4 * HANDLE_PX
+        shown = []
+        for index, point in enumerate(points):
+            hx, hy = HANDLES[index]
+            if (hx is None and width < room) or (hy is None and height < room):
+                continue
+            shown.append((index, point))
+        return shown
+
+    def turn_handle(self, corners, angle):
+        """Where a region's round handle is in this layer, and the middle of
+        the side of its box it stands out from: the side at the top when
+        the region is upright."""
+        cx, cy = _centre(corners)
+        x1, y1, x2, y2 = corners
+        low, high = self.to_widget([(cx, y1), (cx, y2)])
+        top = y2 if high.y() <= low.y() else y1  # (an axis may run either way)
+        centre, foot = self.to_widget(_turned([(cx, cy), (cx, top)], (cx, cy), angle))
+        dx, dy = foot.x() - centre.x(), foot.y() - centre.y()
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            dx, dy, length = 0.0, -1.0, 1.0
+        return QPointF(foot.x() + dx / length * TURN_PX, foot.y() + dy / length * TURN_PX), foot
+
     def paintEvent(self, event):
         tab = self._tab
         ax = tab._nav_axes()
-        if ax is None or (not tab.regions and self.preview is None):
+        if ax is None or not (tab.regions or self.preview):
             return
-        canvas = tab.canvas
-        dpr = canvas.device_pixel_ratio
-        fig_h = canvas.figure.bbox.height
-
-        def to_widget(points):
-            return [QPointF(px / dpr, (fig_h - py) / dpr) for px, py in ax.transData.transform(points)]
-
+        dpr = tab.canvas.device_pixel_ratio
+        fig_h = tab.canvas.figure.bbox.height
         x0, y0, w, h = ax.bbox.bounds
         clip = QRectF(QPointF(x0 / dpr, (fig_h - y0 - h) / dpr), QPointF((x0 + w) / dpr, (fig_h - y0) / dpr))
         line, halo = (QColor(c) for c in contrast_colors(tab))
-        halo.setAlphaF(0.8)
+        selected = tab.selected_region if tab._region_tool() else None
+        edited, edited_corners, edited_angle = self.edited or (None, None, None)
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setClipRect(clip)
-
-        def draw(points, selected):
-            path = QPainterPath()
-            path.addPolygon(QPolygonF(to_widget(points)))
-            width = 2.0 if selected else 1.3
-            painter.strokePath(path, QPen(halo, width + 1.8, Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin))
-            pen = QPen(line, width, Qt.SolidLine if selected else Qt.CustomDashLine, Qt.FlatCap, Qt.MiterJoin)
-            if not selected:
-                pen.setDashPattern([4, 3])
-            painter.strokePath(path, pen)
-
         for region in tab.regions:
-            if region is not tab.selected_region:
-                draw(region.outline(), False)
-        if tab.selected_region is not None:
-            draw(tab.selected_region.outline(), True)
+            if region is not selected:
+                if region is edited:
+                    points = region.outline(edited_corners, edited_angle)
+                else:
+                    points = region.outline()
+                self._outline(painter, points, line, halo, strong=False)
+        if selected is not None:
+            if selected is edited:
+                corners, angle = edited_corners, edited_angle
+            else:
+                corners, angle = selected.corners, selected.angle
+            self._outline(painter, selected.outline(corners, angle), line, halo, strong=True)
+            if selected.shape == "ellipse":
+                # The box the handles are on, faintly
+                faint = QColor(line)
+                faint.setAlphaF(0.35)
+                painter.setPen(QPen(faint, 1.0))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawPolygon(QPolygonF(self.to_widget(region_outline("rect", corners, angle))))
+            # The round handle that turns it, on a stalk from its box
+            knob, foot = self.turn_handle(corners, angle)
+            painter.setPen(QPen(halo, 3.0, Qt.SolidLine, Qt.FlatCap))
+            painter.drawLine(foot, knob)
+            painter.setPen(QPen(line, 1.0, Qt.SolidLine, Qt.FlatCap))
+            painter.drawLine(foot, knob)
+            painter.setPen(QPen(halo, 1.0))
+            painter.setBrush(line)
+            half = HANDLE_PX / 2
+            for _index, point in self.shown_handles(corners, angle):
+                painter.drawRect(QRectF(point.x() - half, point.y() - half, HANDLE_PX, HANDLE_PX))
+            painter.drawEllipse(knob, TURN_RADIUS, TURN_RADIUS)
         if self.preview is not None:
-            draw(region_outline(*self.preview), True)
+            self._outline(painter, region_outline(*self.preview), line, halo, strong=True)
         painter.end()
+
+    def _outline(self, painter, points, line, halo, strong):
+        """A region's outline: a thin line over a soft halo; ``strong`` (the
+        selected region, or one being drawn) is a little heavier and
+        faintly filled."""
+        path = QPainterPath()
+        path.addPolygon(QPolygonF(self.to_widget(points)))
+        path.closeSubpath()
+        width = 1.6 if strong else 1.2
+        if strong:
+            fill = QColor(line)
+            fill.setAlphaF(0.1)
+            painter.fillPath(path, fill)
+        shadow = QColor(halo)
+        shadow.setAlphaF(0.55)
+        painter.strokePath(path, QPen(shadow, width + 2.0, Qt.SolidLine, Qt.RoundCap, Qt.MiterJoin))
+        colour = QColor(line)
+        colour.setAlphaF(1.0 if strong else 0.85)
+        painter.strokePath(path, QPen(colour, width, Qt.SolidLine, Qt.RoundCap, Qt.MiterJoin))
 
 
 class RoiStatsMixin:
@@ -152,7 +347,7 @@ class RoiStatsMixin:
 
     ``canvas``, ``current_image_data``, ``current_wcs``, ``info_label``,
     ``_in_measurement_mode``, ``_nav_axes``, ``parent``, ``region_mode``,
-    ``_region_layer``, ``regions``, ``selected_region``,
+    ``_region_layer``, ``region_links_dot``, ``regions``, ``selected_region``,
     ``show_status_message``, ``stats_table``
     """
 
@@ -162,6 +357,7 @@ class RoiStatsMixin:
             self._hide_roi_stats()
             return
 
+        self._roi_values = roi  # (for the histogram: an ellipse's pixels, not its box's)
         rmin = np.nanmin(roi)
         rmax = np.nanmax(roi)
         rmean = np.nanmean(roi)
@@ -178,8 +374,6 @@ class RoiStatsMixin:
         self.histogram_btn.show()
         self.fit_gaussian_btn.show()
         self.export_region_btn.show()
-        self.delete_region_btn.show()
-        self.clear_regions_btn.setVisible(len(self.regions) > 1)
 
         if self.window():
             self.show_status_message(
@@ -195,9 +389,8 @@ class RoiStatsMixin:
             QMessageBox.warning(self, "No ROI", "Please select a region first")
             return
 
-        xlow, xhigh, ylow, yhigh = self.current_roi
-        roi_data = self.current_image_data[xlow:xhigh, ylow:yhigh]
-        roi_flat = roi_data.flatten()
+        # The pixels the statistics are of
+        roi_flat = np.asarray(self._roi_values, dtype=float).ravel()
         roi_flat = roi_flat[~np.isnan(roi_flat)]  # Remove NaNs
 
         if roi_flat.size == 0:
@@ -474,18 +667,37 @@ class RoiStatsMixin:
         """The ellipse in the box from ``eclick`` to ``erelease`` is added as a region."""
         self.add_region("ellipse", (eclick.xdata, eclick.ydata, erelease.xdata, erelease.ydata))
 
-    def add_region(self, shape, corners, key=None, follow=True):
-        """Add a ``shape`` region in the box with ``corners`` and select it;
-        with ``follow``, the panes following this one get a copy."""
+    def add_region(self, shape, corners, key=None, angle=0.0, follow=True, select=True):
+        """Add a ``shape`` region in the box with ``corners``, turned by
+        ``angle``, and with ``select`` select it; with ``follow``, the panes
+        following this one get a copy."""
         if self.current_image_data is None or None in corners:
             return None
-        region = Region(shape, corners, key)
+        region = Region(shape, corners, key, angle)
         self.regions.append(region)
-        self.select_region(region, follow=False)
+        if select:
+            self.select_region(region, follow=False)
+        else:
+            self._region_layer.refresh()
+            self._refresh_region_controls()
         page = getattr(self, "page", None)
         if follow and page is not None:
             page.sync.region_added(self, region)
         return region
+
+    def edit_region(self, region, corners, angle=None, follow=True):
+        """``region`` moved or resized to the box ``corners`` (and turned to
+        ``angle``, if given): measured again, and with ``follow`` its copies
+        in the panes following this one move with it."""
+        region.corners = _box(corners)
+        if angle is not None:
+            region.angle = float(angle)
+        if region is self.selected_region:
+            self._measure_selected()
+        self._region_layer.refresh()
+        page = getattr(self, "page", None)
+        if follow and page is not None:
+            page.sync.region_changed(self, region)
 
     def select_region(self, region, follow=True):
         """Select ``region`` (or nothing, None): its statistics are shown,
@@ -509,7 +721,7 @@ class RoiStatsMixin:
             self.select_region(None, follow=False)
         else:
             self._region_layer.refresh()
-            self._show_region_hint()
+            self._refresh_region_controls()
         page = getattr(self, "page", None)
         if follow:
             if page is not None:
@@ -523,6 +735,17 @@ class RoiStatsMixin:
         if follow:
             self.show_status_message("Regions cleared")
 
+    def _confirm_clear_regions(self):
+        count = len(self.regions)
+        if count and QMessageBox.question(
+            self,
+            "Clear Regions",
+            f"Delete all {count} region{'s' * (count != 1)} on this image?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) == QMessageBox.Yes:
+            self.clear_regions()
+
     def region_by_key(self, key):
         return next((region for region in self.regions if region.key == key), None)
 
@@ -533,31 +756,49 @@ class RoiStatsMixin:
         if region is None or self.current_image_data is None:
             self.current_roi = None
             self._hide_roi_stats()
-        elif region.shape == "rect":
-            self._rect_stats(*region.corners)
+        elif region.shape == "rect" and region.angle % 90 == 0:
+            # Upright, or turned by quarters: the pixels of its box
+            xs, ys = zip(*region.outline())
+            self._rect_stats(min(xs), min(ys), max(xs), max(ys))
         else:
-            self._ellipse_stats(*region.corners)
+            self._masked_stats(region.shape, *region.corners, angle=region.angle)
+        self._refresh_region_controls()
         page = getattr(self, "page", None)
         if page is not None:
             page.regions_changed()
 
     def _hide_roi_stats(self):
         for widget in (self.stats_table, self.histogram_btn, self.fit_gaussian_btn,
-                       self.export_region_btn, self.delete_region_btn):
+                       self.export_region_btn):
             widget.hide()
-        self._show_region_hint()
-
-    def _show_region_hint(self):
-        """Without a selected region, the Region block says what there is."""
-        self.clear_regions_btn.setVisible(len(self.regions) > 1)
         if self.selected_region is not None:
             self.info_label.setText("The selected region is off the image.")
             return
         count = len(self.regions)
         self.info_label.setText(
-            f"{count} region{'s' * (count != 1)}. Click one with the Rectangle or "
-            "Ellipse tool to select it." if count else NO_REGION_HINT
+            f"{count} region{'s' * (count != 1)}. Select one with the Rectangle or "
+            "Ellipse tool." if count else NO_REGION_HINT
         )
+
+    def _refresh_region_controls(self):
+        """Delete and Clear all, beside the Region heading, with the
+        Rectangle or Ellipse tool only: the other tools leave the regions be."""
+        editing = self._region_tool()
+        delete = editing and self.selected_region is not None
+        clear = editing and bool(self.regions)
+        self.delete_region_btn.setVisible(delete)
+        self.region_links_dot.setVisible(delete and clear)
+        self.clear_regions_btn.setVisible(clear)
+
+    def region_tool_changed(self):
+        """Another tool: the regions are drawn (and offered for editing)
+        as it wants."""
+        if not hasattr(self, "_region_layer"):
+            return  # (still being built)
+        self._region_press_at = None
+        self._region_layer.preview = self._region_layer.edited = None
+        self._region_layer.refresh()
+        self._refresh_region_controls()
 
     def init_region_editor(self, ax):
         """After a plot or a change of tool: the regions painted again, and
@@ -571,7 +812,7 @@ class RoiStatsMixin:
                 if data is None or x2 < 0 or x1 > data.shape[0] or y2 < 0 or y1 > data.shape[1]:
                     self.delete_region(region, follow=False)
             self._measure_selected()
-        self._region_layer.refresh()
+        self.region_tool_changed()
 
     def _region_tool(self):
         """Whether the Rectangle or Ellipse tool is the one in use."""
@@ -580,29 +821,100 @@ class RoiStatsMixin:
             and not self._in_measurement_mode()
         )
 
+    # ------------------------------------------------------------------
+    # The mouse, with the Rectangle or Ellipse tool: a drag draws a region,
+    # a click selects one; the selected one is dragged to move it, by its
+    # handles to resize it and by its round handle to turn it
+    # ------------------------------------------------------------------
+
+    def _grab_at(self, event):
+        """What of the selected region the mouse at ``event`` would take:
+        ("turn", None), ("handle", index), ("move", None), or None."""
+        region = self.selected_region
+        ax = self._nav_axes()
+        if region is None or ax is None or event.x is None:
+            return None
+        dpr = self.canvas.device_pixel_ratio
+        fig_h = self.canvas.figure.bbox.height
+        mouse = QPointF(event.x / dpr, (fig_h - event.y) / dpr)
+        layer = self._region_layer
+        knob, _foot = layer.turn_handle(region.corners, region.angle)
+        if math.hypot(knob.x() - mouse.x(), knob.y() - mouse.y()) <= GRAB_PX + 2:
+            return ("turn", None)
+        near = [
+            (math.hypot(point.x() - mouse.x(), point.y() - mouse.y()), index)
+            for index, point in layer.shown_handles(region.corners, region.angle)
+        ]
+        if near and min(near)[0] <= GRAB_PX:
+            return ("handle", min(near)[1])
+        if event.xdata is not None and region.contains(event.xdata, event.ydata):
+            return ("move", None)
+        return None
+
+    def region_cursor(self, event):
+        """The cursor for the mouse at ``event``: a move, resize or turn
+        cursor over the selected region, else None (the tool's own)."""
+        if not self._region_tool():
+            return None
+        press = self._region_press_at
+        grab = press["grab"] if press is not None else self._grab_at(event)
+        if grab is None:
+            return None
+        if grab[0] == "move":
+            return Qt.SizeAllCursor
+        if grab[0] == "turn":
+            return turn_cursor(self.canvas.device_pixel_ratio)
+        # The way the handle pulls on screen: out from the middle along the
+        # region's own axes, the corners at 45° (an axis may run backwards)
+        region = self.selected_region
+        hx, hy = HANDLES[grab[1]]
+        pull = (0 if hx is None else 2 * hx - 1, 0 if hy is None else 2 * hy - 1)
+        ((dx, dy),) = _turned([pull], (0.0, 0.0), region.angle)
+        cx, cy = _centre(region.corners)
+        (px0, py0), (px1, py1) = self._nav_axes().transData.transform([(cx, cy), (cx + dx, cy + dy)])
+        way = math.degrees(math.atan2(py1 - py0, px1 - px0)) % 180  # (display y runs up)
+        return (Qt.SizeHorCursor, Qt.SizeBDiagCursor, Qt.SizeVerCursor, Qt.SizeFDiagCursor)[int((way + 22.5) // 45) % 4]
+
     def _region_press(self, event):
-        """A left press with the Rectangle or Ellipse tool: a drag draws a
-        region, a click selects the region under it (or none)."""
         ax = self._nav_axes()
         if event.button != 1 or ax is None or event.inaxes is not ax or not self._region_tool():
             return
-        self._region_press_at = (event.x, event.y, event.xdata, event.ydata)
+        self._region_press_at = dict(
+            x=event.x, y=event.y, data=(event.xdata, event.ydata), grab=self._grab_at(event), dragging=False
+        )
 
     def _region_motion(self, event):
         press = self._region_press_at
         if press is None or event.x is None:
             return
-        x0, y0, xdata0, ydata0 = press
-        layer = self._region_layer
-        if layer.preview is None and max(abs(event.x - x0), abs(event.y - y0)) <= CLICK_PX:
-            return
+        if not press["dragging"]:
+            if max(abs(event.x - press["x"]), abs(event.y - press["y"])) <= CLICK_PX:
+                return
+            press["dragging"] = True
         x, y = self._data_in_axes(event)
-        if "shift" in (event.key or ""):  # a square or a circle
-            side = max(abs(x - xdata0), abs(y - ydata0))
-            x = xdata0 + np.copysign(side, x - xdata0)
-            y = ydata0 + np.copysign(side, y - ydata0)
-        shape = "rect" if self.region_mode == RegionMode.RECTANGLE else "ellipse"
-        layer.preview = (shape, (xdata0, ydata0, x, y))
+        x0, y0 = press["data"]
+        layer = self._region_layer
+        grab = press["grab"]
+        if grab is None:
+            if "shift" in (event.key or ""):  # a square or a circle
+                side = max(abs(x - x0), abs(y - y0))
+                x = x0 + np.copysign(side, x - x0)
+                y = y0 + np.copysign(side, y - y0)
+            shape = "rect" if self.region_mode == RegionMode.RECTANGLE else "ellipse"
+            layer.preview = (shape, (x0, y0, x, y))
+        else:
+            region = self.selected_region
+            if region is None:
+                return  # (deleted meanwhile, with the Delete key)
+            corners, angle = region.corners, region.angle
+            if grab[0] == "move":
+                x1, y1, x2, y2 = corners
+                corners = (x1 + x - x0, y1 + y - y0, x2 + x - x0, y2 + y - y0)
+            elif grab[0] == "turn":
+                angle = turned_to(region, (x0, y0), (x, y), snap="shift" in (event.key or ""))
+            else:
+                corners = resized(corners, grab[1], x, y, angle)
+            layer.edited = (region, corners, angle)
         layer.refresh()
 
     def _data_in_axes(self, event):
@@ -613,37 +925,52 @@ class RoiStatsMixin:
         py = min(max(event.y, box.y0), box.y1)
         return ax.transData.inverted().transform((px, py))
 
+    def _big_enough(self, corners):
+        """Whether a box is more than a click across on screen."""
+        ax = self._nav_axes()
+        (px1, py1), (px2, py2) = ax.transData.transform([corners[:2], corners[2:]])
+        return min(abs(px2 - px1), abs(py2 - py1)) > CLICK_PX
+
     def _region_release(self, event):
         press, self._region_press_at = self._region_press_at, None
         if press is None or event.button != 1:
             return
         layer = self._region_layer
         preview, layer.preview = layer.preview, None
-        if preview is not None:
-            ax = self._nav_axes()
-            corners = preview[1]
-            (px1, py1), (px2, py2) = ax.transData.transform([corners[:2], corners[2:]])
-            if min(abs(px2 - px1), abs(py2 - py1)) > CLICK_PX:
+        edited, layer.edited = layer.edited, None
+        if press["dragging"]:
+            if preview is not None and self._big_enough(preview[1]):
                 self.add_region(*preview)
-                return
-            layer.refresh()  # (too thin to be a region)
+            elif edited is not None and (press["grab"][0] != "handle" or self._big_enough(edited[1])):
+                self.edit_region(*edited)
+            else:
+                layer.refresh()  # (too thin to be a region)
             return
-        # A click: the most recent region under it, or none
-        x, y = press[2], press[3]
-        hits = [region for region in self.regions if region.contains(x, y)]
-        self.select_region(hits[-1] if hits else None)
-        if hits:
-            self.show_status_message("Region selected: Delete removes it, Esc deselects")
+        if press["grab"] is not None and press["grab"][0] in ("handle", "turn"):
+            return  # (a click on a handle)
+        # A click: the region under it (the smallest, if they overlap), or none
+        x, y = press["data"]
+        hits = [region for region in reversed(self.regions) if region.contains(x, y)]
+        region = min(hits, key=Region.area) if hits else None
+        if region is not self.selected_region:
+            self.select_region(region)
+        if region is not None:
+            self.show_status_message(
+                f"{'Ellipse' if region.shape == 'ellipse' else 'Rectangle'} selected: drag it to "
+                "move it, its handles to resize it and the round one to rotate it "
+                f"(Shift: {TURN_STEP}° steps); Delete removes it, Esc deselects"
+            )
 
     def _on_region_key(self, event):
-        """Delete or Backspace deletes the selected region; Esc deselects it
-        (or drops a region being drawn)."""
-        if self._in_measurement_mode():
+        """With the Rectangle or Ellipse tool, Delete or Backspace deletes
+        the selected region and Esc deselects it (or drops a drag)."""
+        if not self._region_tool():
             return
+        layer = self._region_layer
         if event.key == "escape":
-            if self._region_layer.preview is not None:
-                self._region_press_at = self._region_layer.preview = None
-                self._region_layer.refresh()
+            if layer.preview is not None or layer.edited is not None:
+                self._region_press_at = layer.preview = layer.edited = None
+                layer.refresh()
             elif self.selected_region is not None:
                 self.select_region(None)
         elif event.key in ("delete", "backspace") and self.selected_region is not None:
@@ -738,8 +1065,10 @@ class RoiStatsMixin:
 
         self.show_roi_stats(roi, ra_dec_info)
 
-    def _ellipse_stats(self, x1, y1, x2, y2):
-        """Show the statistics of the ellipse in the box from (x1, y1) to (x2, y2)."""
+    def _masked_stats(self, shape, x1, y1, x2, y2, angle=0.0):
+        """Show the statistics of the ellipse (or rectangle, ``shape``) in
+        the box from (x1, y1) to (x2, y2), turned ``angle`` degrees
+        anticlockwise about its centre: of the pixels whose middles are in it."""
 
         # Calculate ellipse parameters in display coordinates
         center_x = (x1 + x2) / 2
@@ -752,43 +1081,50 @@ class RoiStatsMixin:
             self._hide_roi_stats()
             return
 
-        # The displayed image is transposed from current_image_data.
-        # Display: transposed_data[x_display, y_display] = current_image_data[y_display, x_display]
-        # So matplotlib's xdata corresponds to axis 0 (rows) and ydata to axis 1 (cols) in current_image_data.
-        # We need to swap coordinates for the mask.
-        data_center_row = center_x  # display x -> data row (axis 0)
-        data_center_col = center_y  # display y -> data col (axis 1)
-        data_height = width  # display width -> data height (axis 0 extent)
-        data_width = height  # display height -> data width (axis 1 extent)
+        # The displayed image is transposed from current_image_data:
+        # display x runs along the data's rows (axis 0), y along its columns
+        # (axis 1). The region's half-axes, and how far it reaches along x
+        # and y once turned
+        t = np.radians(angle)
+        cos_t, sin_t = np.cos(t), np.sin(t)
+        half_w, half_h = width / 2, height / 2
+        if shape == "ellipse":
+            reach_x = np.hypot(half_w * cos_t, half_h * sin_t)
+            reach_y = np.hypot(half_w * sin_t, half_h * cos_t)
+        else:
+            reach_x = half_w * abs(cos_t) + half_h * abs(sin_t)
+            reach_y = half_w * abs(sin_t) + half_h * abs(cos_t)
 
-        # Create ellipse mask on current_image_data
+        # The mask, over the box the region reaches (no pixel outside it is in)
         h, w = self.current_image_data.shape  # h = rows (axis 0), w = cols (axis 1)
-        row_coords, col_coords = np.ogrid[:h, :w]
+        row_low = max(0, int(np.floor(center_x - reach_x)))
+        row_high = min(h, int(np.ceil(center_x + reach_x)) + 1)
+        col_low = max(0, int(np.floor(center_y - reach_y)))
+        col_high = min(w, int(np.ceil(center_y + reach_y)) + 1)
+        rows, cols = np.ogrid[row_low:row_high, col_low:col_high]
+        dx, dy = rows - center_x, cols - center_y
+        along = dx * cos_t + dy * sin_t  # along the region's first axis
+        across = dy * cos_t - dx * sin_t
+        if shape == "ellipse":
+            mask = (along / half_w) ** 2 + (across / half_h) ** 2 <= 1
+        else:
+            mask = (np.abs(along) <= half_w) & (np.abs(across) <= half_h)
 
-        # Ellipse equation: ((col - center_col) / a)^2 + ((row - center_row) / b)^2 <= 1
-        a = data_width / 2  # semi-axis along columns (axis 1)
-        b = data_height / 2  # semi-axis along rows (axis 0)
-        mask = ((col_coords - data_center_col) / a) ** 2 + (
-            (row_coords - data_center_row) / b
-        ) ** 2 <= 1
-
-        # Get pixels within ellipse
-        roi_data = self.current_image_data[mask]
+        # Get pixels within the region
+        roi_data = self.current_image_data[row_low:row_high, col_low:col_high][mask]
 
         if roi_data.size == 0:
             self.current_roi = None
             self._hide_roi_stats()
             return
 
-        # Store ellipse ROI info as bounding box for compatibility
+        # Store the ROI as its bounding box for compatibility
         # current_roi uses data coordinates: (row_low, row_high, col_low, col_high)
-        row_low, row_high = int(data_center_row - b), int(data_center_row + b)
-        col_low, col_high = int(data_center_col - a), int(data_center_col + a)
         self.current_roi = (
-            max(0, row_low),
-            min(h, row_high),
-            max(0, col_low),
-            min(w, col_high),
+            max(0, int(center_x - reach_x)),
+            min(h, int(center_x + reach_x)),
+            max(0, int(center_y - reach_y)),
+            min(w, int(center_y + reach_y)),
         )
 
         ra_dec_info = ""
@@ -823,17 +1159,14 @@ class RoiStatsMixin:
                 # center_x, center_y are in display coordinates (used for WCS)
                 wx_c, wy_c = wcs.wcs_pix2world(center_x, center_y, 0)
 
-                # Angular size of ellipse (display width/height)
-                if _is_solar:
-                    angular_width = abs(width * increment[0])  # already arcsec
-                    angular_height = abs(height * increment[1])  # already arcsec
-                else:
-                    angular_width = (
-                        abs(width * increment[0] * 180 / np.pi) * 3600
-                    )  # arcsec
-                    angular_height = (
-                        abs(height * increment[1] * 180 / np.pi) * 3600
-                    )  # arcsec
+                # Angular size of the region (along its own axes, as turned)
+                per_x, per_y = abs(increment[0]), abs(increment[1])
+                if not _is_solar:
+                    per_x, per_y = (v * 180 / np.pi * 3600 for v in (per_x, per_y))  # arcsec
+                angular_width = width * np.hypot(per_x * cos_t, per_y * sin_t)
+                angular_height = height * np.hypot(per_x * sin_t, per_y * cos_t)
+                # (turned half a turn, either shape is the same)
+                turn = f", rotated {(angle + 90) % 180 - 90:.1f}°" if angle else ""
 
                 ctype1_ell = str(_hdr.get("CTYPE1", "")).upper()
                 if "SOLAR" in ctype1_ell:
@@ -841,7 +1174,7 @@ class RoiStatsMixin:
                     sy = wy_c * 3600.0
                     ra_dec_info = (
                         f'Center: SOLAR-X={sx:.1f}", SOLAR-Y={sy:.1f}"'
-                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
+                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"{turn}'
                     )
                 elif "HPLN" in ctype1_ell:
                     # Unwrap helioprojective to [-180, 180]
@@ -851,14 +1184,14 @@ class RoiStatsMixin:
                     hy = wy_c * 3600.0
                     ra_dec_info = (
                         f'Center: HPLN={hx:.1f}", HPLT={hy:.1f}"'
-                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
+                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"{turn}'
                     )
                 else:
                     center_coord = SkyCoord(ra=wx_c * u.degree, dec=wy_c * u.degree)
                     ra_dec_info = (
                         f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
                         f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
-                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"'
+                        f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"{turn}'
                     )
             except Exception as e:
                 ra_dec_info = f"\nRA/Dec conversion error: {str(e)}"

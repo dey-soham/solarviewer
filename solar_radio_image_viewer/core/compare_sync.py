@@ -249,6 +249,31 @@ def _snap(value, within=1e-3):
     return float(nearest) if abs(value - nearest) < within else value
 
 
+def region_in(leader, region, pane):
+    """Where ``leader``'s ``region`` is in ``pane``, by way of the sky:
+    (corners, angle) in ``pane``'s pixels, or None. It turns as the
+    pixels do."""
+    # Its centre and the ends of its two half-axes
+    x1, y1, x2, y2 = region.corners
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    t = math.radians(region.angle)
+    a, b = (x2 - x1) / 2, (y2 - y1) / 2
+    points = [(cx, cy), (cx + a * math.cos(t), cy + a * math.sin(t)), (cx - b * math.sin(t), cy + b * math.cos(t))]
+    pixels = []
+    for x, y in points:
+        world = to_world(leader, x, y)
+        pixel = to_pixel(pane, *world) if world is not None else None
+        if pixel is None:
+            return None
+        pixels.append(pixel)
+    (cx, cy), (ax, ay), (bx, by) = pixels
+    half_w, half_h = math.hypot(ax - cx, ay - cy), math.hypot(bx - cx, by - cy)
+    # The sky round trip lands a hair off a pixel (and a whole degree); the
+    # statistics truncate, so land on it
+    corners = tuple(map(_snap, (cx - half_w, cy - half_h, cx + half_w, cy + half_h)))
+    return corners, _snap(math.degrees(math.atan2(ay - cy, ax - cx)))
+
+
 class _Point:
     """A mouse event's data position, for the region handlers."""
 
@@ -368,6 +393,7 @@ class PaneSync:
         viewer = next((p for p in others if self.can_follow(pane, p)), None)
         if viewer is not None:
             self._give_view(viewer, [pane])
+            self.give_regions(viewer, pane)
         unit = pane.display_unit()
         ranger = next(
             (p for p in others if p.linked and p.current_image_data is not None
@@ -478,28 +504,79 @@ class PaneSync:
             self._busy = False
 
     # -------------------------------------------------------- regions
-    def region_added(self, leader, region):
+    def region_added(self, leader, region, select=True):
         """``region`` was drawn on ``leader``: the panes following it get a
-        copy at the same sky position (sharing its key), each measuring its
-        own image; the page's tables follow."""
+        copy at the same sky position (sharing its key; with ``select``,
+        selected), each measuring its own image; the page's tables follow."""
         if self._busy or not leader.linked:
-            return
-        x1, y1, x2, y2 = region.corners
-        first, second = to_world(leader, x1, y1), to_world(leader, x2, y2)
-        if first is None or second is None:
             return
         self._busy = True
         try:
             for pane in self.followers(leader):
-                p1, p2 = to_pixel(pane, *first), to_pixel(pane, *second)
-                if p1 is None or p2 is None:
-                    continue
-                # The sky round trip lands a hair off a pixel; the
-                # statistics truncate, so land on it
-                p1, p2 = tuple(map(_snap, p1)), tuple(map(_snap, p2))
-                pane.add_region(region.shape, (*p1, *p2), key=region.key, follow=False)
+                if pane.region_by_key(region.key) is not None:
+                    continue  # (it has its copy)
+                place = region_in(leader, region, pane)
+                if place is not None:
+                    corners, angle = place
+                    pane.add_region(region.shape, corners, key=region.key, angle=angle, follow=False, select=select)
         finally:
             self._busy = False
+
+    def region_changed(self, leader, region):
+        """``region`` was moved, resized or turned on ``leader``: its copies
+        in the panes following it follow, each measured again."""
+        if self._busy or not leader.linked:
+            return
+        self._busy = True
+        try:
+            for pane in self.followers(leader):
+                copy = pane.region_by_key(region.key)
+                place = region_in(leader, region, pane) if copy is not None else None
+                if place is not None:
+                    pane.edit_region(copy, *place, follow=False)
+        finally:
+            self._busy = False
+
+    def give_regions(self, source, pane):
+        """``pane`` (following ``source``) shows ``source``'s regions: its
+        copies of them go where they are on the sky, those it lacks are
+        copied, and it selects what ``source`` selects. Its own regions,
+        drawn while it went its own way, stay."""
+        if self._busy or not source.regions or not self.can_follow(pane, source):
+            return
+        self._busy = True
+        try:
+            for region in source.regions:
+                place = region_in(source, region, pane)
+                if place is None:
+                    continue
+                corners, angle = place
+                copy = pane.region_by_key(region.key)
+                if copy is None:
+                    pane.add_region(region.shape, corners, key=region.key, angle=angle, follow=False, select=False)
+                else:
+                    pane.edit_region(copy, corners, angle, follow=False)
+            chosen = source.selected_region
+            pane.select_region(pane.region_by_key(chosen.key) if chosen else None, follow=False)
+        finally:
+            self._busy = False
+
+    def linked(self, pane):
+        """``pane`` was linked: it and the panes it follows show the same
+        regions. It takes theirs (the active pane's, or if it is the active
+        one the first pane's it follows), and they take those only it has."""
+        active = self.page.active_pane
+        if active is not None and active is not pane and self.can_follow(pane, active):
+            source = active
+        else:
+            source = next((p for p in self.page.panes if self.can_follow(pane, p)), None)
+        if source is None:
+            return
+        self.give_regions(source, pane)
+        theirs = {region.key for region in source.regions}
+        for region in pane.regions:
+            if region.key not in theirs:
+                self.region_added(pane, region, select=False)
 
     def region_selected(self, leader, region):
         """``region`` (or none) was selected on ``leader``: the panes
@@ -528,7 +605,7 @@ class PaneSync:
             self._busy = False
 
     def _show_crosshair(self, pane, x, y):
-        if pane._in_measurement_mode():
+        if pane._measuring_now():
             return  # the ruler or profile draws there
         ax = pane._nav_axes()
         if ax is None:
@@ -549,7 +626,7 @@ class PaneSync:
     def _hide_crosshair(self, pane):
         if getattr(pane, "_crosshair_shown", False):
             pane._crosshair_shown = False
-            if not pane._in_measurement_mode():
+            if not pane._measuring_now():
                 measure_preview(pane).end()
 
 
