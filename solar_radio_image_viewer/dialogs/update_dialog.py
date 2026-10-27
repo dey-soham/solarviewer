@@ -203,7 +203,7 @@ class UpdateDialog(QDialog):
         else:
             self._update_failed(
                 f"pip stopped with exit code {exit_code}. Its output is in the "
-                "log (View > Show Log Console)."
+                "log (View > Log Console)."
             )
 
     def _on_update_error(self, error):

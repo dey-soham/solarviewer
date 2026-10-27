@@ -262,7 +262,7 @@ class HelpMixin:
                 rows = rows_of(top.menu())
                 if rows:
                     sections.append((top.text().replace("&", ""), rows))
-        sections.append(("Image", self.IMAGE_KEYS))
+        sections.append(("On the Image", self.IMAGE_KEYS))
         sections.append(("Mouse", self.MOUSE_GESTURES))
         return sections
 

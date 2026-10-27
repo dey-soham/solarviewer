@@ -4,10 +4,7 @@ The main window's menu bar, and opening images from it (Open, Open Recent).
 
 import logging
 import os
-from PyQt5.QtWidgets import (
-    QAction,
-    QMenu,
-)
+from PyQt5.QtWidgets import QAction
 from ..ui.styles import (
     theme_manager,
 )
@@ -42,368 +39,199 @@ class MenusMixin:
     """
 
     def create_menus(self):
+        """File · View · Image · Tools · Download · Apps · Help."""
         menubar = self.menuBar()
         self._create_file_menu(menubar)
         self._create_view_menu(menubar)
-        tools_menu = self._create_tools_menu(menubar)
-        self._create_region_menu(menubar)
-        self._create_fitting_menu(menubar)
-        self._create_annotations_menu(menubar)
-        self._create_presets_menu(menubar)
-        self._create_tabs_menu(menubar)
+        self._create_image_menu(menubar)
+        self._create_tools_menu(menubar)
+        self._create_download_menu(menubar)
         self._create_apps_menu(menubar)
         self._create_help_menu(menubar)
 
+    def _action(self, menu, text, slot, tip, shortcut=None):
+        """Add an action to ``menu``; ``shortcut`` is a key or a list of them."""
+        act = QAction(text, self)
+        if shortcut:
+            if isinstance(shortcut, (list, tuple)):
+                act.setShortcuts(list(shortcut))
+            else:
+                act.setShortcut(shortcut)
+        act.setStatusTip(tip)
+        act.triggered.connect(slot)
+        menu.addAction(act)
+        return act
+
     def _create_file_menu(self, menubar):
-        """File menu: open, remote, export, quit."""
-        file_menu = menubar.addMenu("&File")
-
-        open_act = QAction("Open Image...", self)
+        """File: open, tabs, remote server, export, preferences, quit."""
+        menu = menubar.addMenu("&File")
         # Ctrl+Shift+O opened FITS files when they had their own item
-        open_act.setShortcuts(["Ctrl+O", "Ctrl+Shift+O"])
-        open_act.setStatusTip(
-            "Open a FITS file or CASA image (a dynamic spectrum opens in its viewer)"
-        )
-        open_act.triggered.connect(self.open_image)
-        file_menu.addAction(open_act)
-
+        self._action(menu, "Open Image...", self.open_image,
+                     "Open a FITS file or CASA image (a dynamic spectrum opens in its viewer)",
+                     ["Ctrl+O", "Ctrl+Shift+O"])
         # The same opening, under a name that says spectra are welcome
-        open_spectrum_act = QAction("Open Dynamic Spectrum...", self)
-        open_spectrum_act.setStatusTip(
-            "Open a dynamic spectrum FITS file in the Dynamic Spectrum Viewer"
-        )
-        open_spectrum_act.triggered.connect(self.open_dynamic_spectrum)
-        file_menu.addAction(open_spectrum_act)
-
-        self.recent_menu = file_menu.addMenu("Open Recent")
+        self._action(menu, "Open Dynamic Spectrum...", self.open_dynamic_spectrum,
+                     "Open a dynamic spectrum FITS file in the Dynamic Spectrum Viewer")
+        self.recent_menu = menu.addMenu("Open Recent")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
 
-        file_menu.addSeparator()
+        menu.addSeparator()
+        self._action(menu, "New Tab", self.handle_add_tab, "Open a new image tab", "Ctrl+N")
+        self._action(menu, "Close Tab", self.close_current_tab, "Close the current tab", "Ctrl+W")
 
-        # Remote mode actions
-        self.connect_remote_act = QAction("Connect to Remote Server...", self)
-        self.connect_remote_act.setShortcut("Ctrl+Shift+R")
-        self.connect_remote_act.setStatusTip("Connect to a remote server via SSH")
-        self.connect_remote_act.triggered.connect(self.show_remote_connection_dialog)
-        file_menu.addAction(self.connect_remote_act)
+        menu.addSeparator()
+        remote = menu.addMenu("Remote Server")
+        self.connect_remote_act = self._action(
+            remote, "Connect...", self.show_remote_connection_dialog,
+            "Connect to a remote server via SSH", "Ctrl+Shift+R")
+        self.browse_remote_act = self._action(
+            remote, "Open Remote Image...", self.show_remote_file_browser,
+            "Open a FITS file or CASA image from the connected server")
+        self.browse_remote_act.setVisible(False)  # until connected
+        self.disconnect_remote_act = self._action(
+            remote, "Disconnect", self.disconnect_remote, "Disconnect from the remote server")
+        self.disconnect_remote_act.setVisible(False)  # until connected
+        self.clear_cache_act = self._action(
+            menu, "Manage Cache...", self.show_cache_manager,
+            "View and manage cached data (remote files, NOAA events, etc.)")
+        menu.aboutToShow.connect(self._update_cache_menu_item)
 
-        self.browse_remote_act = QAction("Open Remote FITS File...", self)
-        self.browse_remote_act.setStatusTip(
-            "Open a FITS file from the connected remote server"
-        )
-        self.browse_remote_act.triggered.connect(self.show_remote_file_browser)
-        self.browse_remote_act.setVisible(False)  # Hidden until connected
-        file_menu.addAction(self.browse_remote_act)
-
-        self.disconnect_remote_act = QAction("Disconnect from Remote", self)
-        self.disconnect_remote_act.setStatusTip("Disconnect from the remote server")
-        self.disconnect_remote_act.triggered.connect(self.disconnect_remote)
-        self.disconnect_remote_act.setVisible(False)  # Hidden until connected
-        file_menu.addAction(self.disconnect_remote_act)
-
-        self.clear_cache_act = QAction("Manage Cache...", self)
-        self.clear_cache_act.setStatusTip(
-            "View and manage cached data (remote files, NOAA events, etc.)"
-        )
-        self.clear_cache_act.triggered.connect(self.show_cache_manager)
-        file_menu.addAction(self.clear_cache_act)
-
-        # Update cache size when menu shows
-        file_menu.aboutToShow.connect(self._update_cache_menu_item)
-
-        file_menu.addSeparator()
-
-        export_act = QAction("Export Figure", self)
+        menu.addSeparator()
         # Ctrl+S saves, as in most applications; Ctrl+E as before
-        export_act.setShortcuts(["Ctrl+S", "Ctrl+E"])
-        export_act.setStatusTip("Export current figure as image file")
-        export_act.triggered.connect(self.export_data)
-        file_menu.addAction(export_act)
+        self._action(menu, "Export Figure...", self.export_data,
+                     "Save the figure as an image (PNG, PDF, SVG...)", ["Ctrl+S", "Ctrl+E"])
+        export = menu.addMenu("Export Image As")
+        self._action(export, "FITS...", self.export_as_fits,
+                     "Save the image's data as a FITS file", "Ctrl+Shift+F")
+        self._action(export, "CASA Image...", self.export_as_casa_image,
+                     "Save the image's data as a CASA image")
+        self._action(export, "Helioprojective FITS...", self.export_as_hpc_fits,
+                     "Save the image in helioprojective coordinates as FITS", "Ctrl+H")
+        self._action(export, "Brightness Temperature FITS...", self.save_tb_map_as_fits,
+                     "Convert the image to brightness temperature (K) and save it as FITS")
 
-        export_data_act = QAction("Export as FITS", self)
-        export_data_act.setShortcut("Ctrl+Shift+F")
-        export_data_act.setStatusTip("Export current data as FITS file")
-        export_data_act.triggered.connect(self.export_as_fits)
-        file_menu.addAction(export_data_act)
-
-        export_casa_act = QAction("Export as CASA Image", self)
-        export_casa_act.setStatusTip("Export/convert current data to CASA image format")
-        export_casa_act.triggered.connect(self.export_as_casa_image)
-        file_menu.addAction(export_casa_act)
-
-        export_tb_act = QAction("Export TB Map as FITS", self)
-        export_tb_act.setStatusTip(
-            "Convert and save brightness temperature map as FITS file"
-        )
-        export_tb_act.triggered.connect(self.save_tb_map_as_fits)
-        file_menu.addAction(export_tb_act)
-
-        export_hpc_fits_act = QAction("Export as HPC FITS", self)
-        export_hpc_fits_act.setShortcut("Ctrl+H")
-        export_hpc_fits_act.setStatusTip(
-            "Export current image as helioprojective FITS file"
-        )
-        export_hpc_fits_act.triggered.connect(self.export_as_hpc_fits)
-        file_menu.addAction(export_hpc_fits_act)
-
-        file_menu.addSeparator()
-        exit_act = QAction("Exit", self)
-        exit_act.setShortcut("Ctrl+Q")
-        exit_act.setStatusTip("Exit the application")
-        exit_act.triggered.connect(self.close)
-        file_menu.addAction(exit_act)
+        menu.addSeparator()
+        self._action(menu, "Preferences...", self._open_preferences_dialog,
+                     "Application preferences (UI scale, etc.)", "Ctrl+,")
+        menu.addSeparator()
+        self._action(menu, "Exit", self.close, "Exit the application", "Ctrl+Q")
 
     def _create_view_menu(self, menubar):
-        """View menu: theme, fullscreen, metadata, scroll zoom."""
-        # View menu with theme toggle
-        view_menu = menubar.addMenu("&View")
-
-        # Theme toggle action
-        self.theme_action = QAction("Switch to Light Mode", self)
-        self.theme_action.setShortcut("Ctrl+D")
-        self.theme_action.setStatusTip("Toggle between dark and light themes")
-        self.theme_action.triggered.connect(self.toggle_theme)
-        view_menu.addAction(self.theme_action)
-
-        # Fullscreen toggle action
-        self.fullscreen_action = QAction("Toggle Fullscreen", self)
-        self.fullscreen_action.setShortcut("F11")
-        self.fullscreen_action.setStatusTip("Toggle fullscreen mode")
-        self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
-        view_menu.addAction(self.fullscreen_action)
-
-        # Log Console action
-        self.log_console_action = QAction("Show Log Console", self)
-        self.log_console_action.setShortcut("Ctrl+L")
-        self.log_console_action.setStatusTip("Show application log console")
-        self.log_console_action.triggered.connect(self.show_log_console)
-        view_menu.addAction(self.log_console_action)
-
-        metadata_act = QAction("Image Metadata", self)
-        metadata_act.setShortcut("Ctrl+M")
-        metadata_act.setStatusTip("View detailed metadata for the current image")
-        metadata_act.triggered.connect(self.show_metadata)
-        view_menu.addAction(metadata_act)
-
-        # Interactive Scroll Zoom toggle action
-        self.scroll_zoom_action = QAction(
-            "Interactive Scroll Zoom", self, checkable=True
-        )
+        """View: theme, fullscreen, scroll zoom, log console."""
+        menu = menubar.addMenu("&View")
+        self.theme_action = self._action(
+            menu, "Switch to Light Mode", self.toggle_theme,
+            "Toggle between dark and light themes", "Ctrl+D")
+        self.fullscreen_action = self._action(
+            menu, "Toggle Fullscreen", self._toggle_fullscreen, "Toggle fullscreen mode", "F11")
+        self.scroll_zoom_action = QAction("Interactive Scroll Zoom", self, checkable=True)
         self.scroll_zoom_action.setChecked(True)
-        self.scroll_zoom_action.setStatusTip(
-            "Enable/disable zooming with the mouse wheel"
-        )
-        view_menu.addAction(self.scroll_zoom_action)
+        self.scroll_zoom_action.setStatusTip("Enable/disable zooming with the mouse wheel")
+        menu.addAction(self.scroll_zoom_action)
+        menu.addSeparator()
+        self.log_console_action = self._action(
+            menu, "Log Console", self.show_log_console, "Show the application's log", "Ctrl+L")
 
-        view_menu.addSeparator()
-
-        # Preferences action
-        preferences_action = QAction("Preferences...", self)
-        preferences_action.setStatusTip("Open application preferences (UI scale, etc.)")
-        preferences_action.triggered.connect(self._open_preferences_dialog)
-        view_menu.addAction(preferences_action)
-
-        # Update action text based on current theme
         self._update_theme_action_text()
-
-        # Register for theme changes
         theme_manager.register_callback(self._on_theme_changed)
 
-    def _create_tools_menu(self, menubar):
-        """Tools menu: what works on the image or a batch of images."""
-        tools_menu = menubar.addMenu("&Tools")
+    def _create_image_menu(self, menubar):
+        """Image: what works on the image in the current tab: its details,
+        display presets, annotations, fits and the selected region."""
+        menu = menubar.addMenu("&Image")
+        self._action(menu, "Image Metadata...", self.show_metadata,
+                     "The current image's header and details", "Ctrl+M")
 
-        # Add Solar Phase Shift option
-
-        phase_shift_act = QAction("Solar Phase Center Shift", self)
-        phase_shift_act.setShortcut("Ctrl+P")
-        phase_shift_act.setStatusTip("Shift solar center to phase center")
-        phase_shift_act.triggered.connect(self.show_phase_shift_dialog)
-        tools_menu.addAction(phase_shift_act)
-
-        # Batch Processing Submenu
-        batch_process_submenu = QMenu("Batch Processing", self)
-        tools_menu.addMenu(batch_process_submenu)
-
-        # Add Coordinate Transformation option to submenu
-
-        batch_transform_act = QAction("Coordinate Transformation", self)
-        batch_transform_act.setStatusTip(
-            "Transform multiple files between RA/DEC and helioprojective coordinates"
-        )
-        batch_transform_act.triggered.connect(
-            self.show_coordinate_transformation_dialog
-        )
-        batch_process_submenu.addAction(batch_transform_act)
-
-        # Add Solar Phase Center Shift option to batch processing submenu
-        batch_phase_shift_act = QAction("Solar Phase Center Shift", self)
-        batch_phase_shift_act.setStatusTip("Batch shift solar center to phase center")
-        batch_phase_shift_act.triggered.connect(
-            lambda: self.show_phase_shift_dialog(batch_mode=True)
-        )
-        batch_process_submenu.addAction(batch_phase_shift_act)
-
-        # Add Unit Conversion option to batch processing submenu
-        batch_unit_conv_act = QAction("Unit Conversion", self)
-        batch_unit_conv_act.setStatusTip(
-            "Batch convert units between Flux Density and Brightness Temperature"
-        )
-        batch_unit_conv_act.triggered.connect(self.show_unit_conversion_dialog)
-        batch_process_submenu.addAction(batch_unit_conv_act)
-
-        # Add Format Conversion option to batch processing submenu
-
-        batch_format_conv_act = QAction("Format Conversion", self)
-        batch_format_conv_act.setStatusTip(
-            "Batch convert between CASA Images and FITS files"
-        )
-        batch_format_conv_act.triggered.connect(self.show_format_conversion_dialog)
-        batch_process_submenu.addAction(batch_format_conv_act)
-
-        # Add Create Video action
-        create_video_act = QAction("Create &Video", self)
-        create_video_act.setStatusTip("Create video from sequence of FITS files")
-        create_video_act.triggered.connect(self.show_create_video_dialog)
-        tools_menu.addAction(create_video_act)
-
-        return tools_menu
-
-    def _create_region_menu(self, menubar):
-        """Region menu."""
-        region_menu = menubar.addMenu("&Region")
-        subimg_act = QAction("Export Sub-Image (ROI)", self)
-        subimg_act.setShortcut("Ctrl+Shift+S")
-        subimg_act.setStatusTip("Export the selected region as a new CASA image")
-        subimg_act.triggered.connect(self.save_sub_image)
-        region_menu.addAction(subimg_act)
-
-        export_roi_act = QAction("Export ROI as Region", self)
-        export_roi_act.setShortcut("Ctrl+R")
-        export_roi_act.setStatusTip("Export the selected region as a CASA region file")
-        export_roi_act.triggered.connect(self.export_casa_region)
-        region_menu.addAction(export_roi_act)
-
-    def _create_fitting_menu(self, menubar):
-        """Fitting menu."""
-        fitting_menu = menubar.addMenu("F&itting")
-        gauss_act = QAction("Fit 2D Gaussian", self)
-        gauss_act.setShortcut("Ctrl+G")
-        gauss_act.setStatusTip("Fit a 2D Gaussian to the selected region")
-        gauss_act.triggered.connect(self.fit_2d_gaussian)
-        fitting_menu.addAction(gauss_act)
-        ring_act = QAction("Fit Elliptical Ring", self)
-        ring_act.setStatusTip("Fit an elliptical ring to the selected region")
-        ring_act.triggered.connect(self.fit_2d_ring)
-        fitting_menu.addAction(ring_act)
-
-    def _create_annotations_menu(self, menubar):
-        """Annotations menu (text, arrows, shapes)."""
-        annot_menu = menubar.addMenu("&Annotations")
-        text_act = QAction("Add Text Annotation", self)
-        text_act.setShortcut("Ctrl+T")
-        text_act.setStatusTip("Add text annotation to the image")
-        text_act.triggered.connect(self.show_add_text_annotation_dialog)
-        annot_menu.addAction(text_act)
-
-        arrow_act = QAction("Add Arrow Annotation", self)
-        arrow_act.setShortcut("Ctrl+Shift+A")
-        arrow_act.setStatusTip("Add arrow annotation to the image")
-        arrow_act.triggered.connect(self.show_add_arrow_annotation_dialog)
-        annot_menu.addAction(arrow_act)
-
-        # Shape annotations (circle, ellipse, square, rectangle) + solar radii presets
-        from ..shape_annotations import setup_shape_menu
-
-        setup_shape_menu(self, annot_menu)
-
-    def _create_presets_menu(self, menubar):
-        """Presets menu; entries come from core/presets.py."""
-        preset_menu = menubar.addMenu("Presets")
-
-        self.auto_preset_act = QAction(
-            "Auto-apply Instrument Presets", self, checkable=True
-        )
+        menu.addSeparator()
+        # Presets: entries come from core/presets.py
+        presets = menu.addMenu("Display Presets")
+        self.auto_preset_act = QAction("Auto-apply Instrument Presets", self, checkable=True)
         self.auto_preset_act.setChecked(True)
         self.auto_preset_act.setStatusTip(
             "Automatically apply colormaps and limits for known instruments (AIA, LASCO, etc.)"
         )
-        preset_menu.addAction(self.auto_preset_act)
-        preset_menu.addSeparator()
+        presets.addAction(self.auto_preset_act)
+        presets.addSeparator()
+        self._add_preset_actions(presets)
 
-        self._add_preset_actions(preset_menu)
+        annotate = menu.addMenu("Annotate")
+        self._action(annotate, "Add Text...", self.show_add_text_annotation_dialog,
+                     "Add a text annotation to the image", "Ctrl+T")
+        self._action(annotate, "Add Arrow...", self.show_add_arrow_annotation_dialog,
+                     "Add an arrow annotation to the image", "Ctrl+Shift+A")
+        # Shapes (circle, ellipse, square, rectangle), solar radii, remove / clear
+        from ..shape_annotations import setup_shape_menu
 
-    def _create_tabs_menu(self, menubar):
-        """Tabs menu."""
-        tabs_menu = menubar.addMenu("&Tabs")
-        new_tab_act = QAction("Add New Tab", self)
-        new_tab_act.setShortcut("Ctrl+N")
-        new_tab_act.setStatusTip("Add a new tab for comparing images")
-        new_tab_act.triggered.connect(self.handle_add_tab)
-        tabs_menu.addAction(new_tab_act)
-        close_tab_act = QAction("Close Current Tab", self)
-        close_tab_act.setShortcut("Ctrl+W")
-        close_tab_act.setStatusTip("Close the current tab")
-        close_tab_act.triggered.connect(self.close_current_tab)
-        tabs_menu.addAction(close_tab_act)
+        setup_shape_menu(self, annotate)
 
-    def _create_help_menu(self, menubar):
-        """Help menu."""
-        help_menu = menubar.addMenu("&Help")
+        menu.addSeparator()
+        self._action(menu, "Fit 2D Gaussian", self.fit_2d_gaussian,
+                     "Fit a 2D Gaussian to the selected region", "Ctrl+G")
+        self._action(menu, "Fit Elliptical Ring", self.fit_2d_ring,
+                     "Fit an elliptical ring to the selected region")
 
-        """tutorial_act = QAction("Tutorial", self)
-        tutorial_act.setStatusTip("Open comprehensive tutorial and user guide")
-        tutorial_act.triggered.connect(self.show_tutorial)
-        help_menu.addAction(tutorial_act)"""
+        menu.addSeparator()
+        self._action(menu, "Export Region as Sub-Image...", self.save_sub_image,
+                     "Save the selected region as a new CASA image", "Ctrl+Shift+S")
+        self._action(menu, "Export Region as CASA Region...", self.export_casa_region,
+                     "Save the selected region as a CASA region file", "Ctrl+R")
 
-        shortcuts_act = QAction("Keyboard Shortcuts", self)
-        shortcuts_act.setShortcut("F1")
-        shortcuts_act.setStatusTip("Show keyboard shortcuts")
-        shortcuts_act.triggered.connect(self.show_keyboard_shortcuts)
-        help_menu.addAction(shortcuts_act)
+    def _create_tools_menu(self, menubar):
+        """Tools: making new images from images, one or a folder of them."""
+        menu = menubar.addMenu("&Tools")
+        self._action(menu, "Solar Phase Center Shift...", self.show_phase_shift_dialog,
+                     "Move an image, or a folder of images, to the true solar center", "Ctrl+P")
+        self._action(menu, "Transform Coordinates...", self.show_coordinate_transformation_dialog,
+                     "Convert images between RA/Dec and helioprojective coordinates")
+        self._action(menu, "Convert Units...", self.show_unit_conversion_dialog,
+                     "Convert images between flux density (Jy/beam) and brightness temperature (K)")
+        self._action(menu, "Convert Image Format...", self.show_format_conversion_dialog,
+                     "Convert images between CASA image and FITS")
+        menu.addSeparator()
+        self._action(menu, "Create Video...", self.show_create_video_dialog,
+                     "Make a video from a sequence of images")
+        return menu
 
-        update_act = QAction("Check for Updates...", self)
-        update_act.setStatusTip("Check for application updates")
-        update_act.triggered.connect(self.show_update_dialog)
-        help_menu.addAction(update_act)
-
-        about_act = QAction("About", self)
-        about_act.setStatusTip("Show information about this application")
-        about_act.triggered.connect(self.show_about_dialog)
-        help_menu.addAction(about_act)
+    def _create_download_menu(self, menubar):
+        """Download: data from the archives."""
+        menu = menubar.addMenu("&Download")
+        self._action(menu, "Solar Data...", self.launch_data_downloader_gui,
+                     "Download solar images (SDO, SOHO, STEREO, GOES, IRIS) and prepare them")
+        self._action(menu, "Radio Spectra...", self.launch_radio_data_downloader_gui,
+                     "Download radio spectra (RSTN, e-CALLISTO) as FITS")
+        menu.addSeparator()
+        self._action(menu, "Helioviewer Browser...", self.open_helioviewer_browser,
+                     "Browse and save solar images from Helioviewer")
 
     def _create_apps_menu(self, menubar):
-        """Apps menu: the other windows and tools SolarViewer ships."""
-        apps_menu = menubar.addMenu("&Apps")
+        """Apps: the other windows SolarViewer ships."""
+        menu = menubar.addMenu("&Apps")
+        self._action(menu, "Solar Activity Viewer", self.show_noaa_events_viewer,
+                     "Flares, active regions and other solar activity of a day")
+        menu.addSeparator()
+        self._action(menu, "Dynamic Spectrum Viewer",
+                     lambda: self._launch_pipeline_tool("dynamic_spectrum_viewer", "Dynamic Spectrum Viewer"),
+                     "View and clean dynamic spectra FITS files")
+        self._action(menu, "Create Dynamic Spectra...",
+                     lambda: self._launch_pipeline_tool("create_dynamic_spectra", "Dynamic Spectra Creator"),
+                     "Create dynamic spectra FITS from MS files")
+        self._action(menu, "Calibration Table Visualizer",
+                     lambda: self._launch_pipeline_tool("caltable_visualizer", "Calibration Table Visualizer"),
+                     "Visualize bandpass, selfcal, and crossphase calibration tables")
+        self._action(menu, "Log Viewer",
+                     lambda: self._launch_pipeline_tool("log_viewer", "Log Viewer"),
+                     "View and filter pipeline log files")
 
-        def app(text, slot, tip):
-            act = QAction(text, self)
-            act.setStatusTip(tip)
-            act.triggered.connect(slot)
-            apps_menu.addAction(act)
-            return act
-
-        app("Solar Activity Viewer", self.show_noaa_events_viewer,
-            "View solar activity for a specific date")
-        app("Helioviewer Browser", self.open_helioviewer_browser,
-            "Browse solar images from Helioviewer")
-        apps_menu.addSeparator()
-        app("Dynamic Spectrum Viewer",
-            lambda: self._launch_pipeline_tool("dynamic_spectrum_viewer", "Dynamic Spectrum Viewer"),
-            "View and clean dynamic spectra FITS files")
-        app("Create Dynamic Spectra...",
-            lambda: self._launch_pipeline_tool("create_dynamic_spectra", "Dynamic Spectra Creator"),
-            "Create dynamic spectra FITS from MS files")
-        app("Calibration Table Visualizer",
-            lambda: self._launch_pipeline_tool("caltable_visualizer", "Calibration Table Visualizer"),
-            "Visualize bandpass, selfcal, and crossphase calibration tables")
-        app("Log Viewer", lambda: self._launch_pipeline_tool("log_viewer", "Log Viewer"),
-            "View and filter pipeline log files")
-        apps_menu.addSeparator()
-        app("Solar Data Downloader", self.launch_data_downloader_gui,
-            "Download non-radio solar data (SDO, SOHO, STEREO, GOES, IRIS)")
-        app("Radio Data Downloader", self.launch_radio_data_downloader_gui,
-            "Download radio solar data (Learmonth, e-CALLISTO...) and convert to FITS")
+    def _create_help_menu(self, menubar):
+        """Help: shortcuts, updates, about."""
+        menu = menubar.addMenu("&Help")
+        self._action(menu, "Keyboard Shortcuts", self.show_keyboard_shortcuts,
+                     "Show keyboard shortcuts", "F1")
+        self._action(menu, "Check for Updates...", self.show_update_dialog,
+                     "Check for application updates")
+        menu.addSeparator()
+        self._action(menu, "About SolarViewer", self.show_about_dialog,
+                     "Show information about this application")
 
     def open_image(self):
         """Open a FITS file or CASA image in the current tab (File menu)."""

@@ -597,7 +597,7 @@ class SolarRadioImageTab(
             else:
                 message = (
                     f"Something went wrong loading or drawing {name}:\n\n{e}\n\n"
-                    "The details below, and the log (View > Show Log Console), "
+                    "The details below, and the log (View > Log Console), "
                     "say more."
                 )
             show_error(self, "Could Not Show Image", message, traceback.format_exc())

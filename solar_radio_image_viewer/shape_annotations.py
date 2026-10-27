@@ -539,7 +539,7 @@ class ShapeAnnotationDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 def setup_shape_menu(app, annot_menu):
-    """Add shape/text/arrow annotation management actions to the Annotations menu.
+    """Add shape/text/arrow annotation management actions to the Image > Annotate menu.
 
     *app* is the SolarRadioImageViewerApp instance (QMainWindow).
     """

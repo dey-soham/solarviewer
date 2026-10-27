@@ -793,19 +793,19 @@ class PanelsMixin:
         return self.empty_canvas
 
     def _export_sub_image(self):
-        """Region > Export Sub-Image (ROI)."""
+        """Image > Export Region as Sub-Image."""
         window = self.window()
         if hasattr(window, "save_sub_image"):
             window.save_sub_image()
 
     def _export_region(self):
-        """Region > Export ROI as Region."""
+        """Image > Export Region as CASA Region."""
         window = self.window()
         if hasattr(window, "export_casa_region"):
             window.export_casa_region()
 
     def _fit_gaussian(self):
-        """Fitting > Fit 2D Gaussian, on this tab's region."""
+        """Image > Fit 2D Gaussian, on this tab's region."""
         window = self.window()
         if hasattr(window, "fit_2d_gaussian"):
             window.fit_2d_gaussian()
