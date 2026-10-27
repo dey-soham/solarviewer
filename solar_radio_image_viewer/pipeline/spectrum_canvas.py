@@ -494,6 +494,9 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 self.main_window.vminEntry.setText(f"{self._vmin:.4g}")
             if not self.main_window.vmaxEntry.hasFocus():
                 self.main_window.vmaxEntry.setText(f"{self._vmax:.4g}")
+        levels = getattr(self.main_window, "levels", None)
+        if levels is not None:
+            levels.set_range(self._vmin, self._vmax)
 
         image = self._to_lut_indices(self._data)
         self._image_is_light = self._mostly_light(image)
@@ -1589,7 +1592,9 @@ class OverviewStrip(QWidget):
             backing.setAlphaF(0.7)
             painter.setPen(Qt.NoPen)
             painter.setBrush(backing)
-            painter.drawRoundedRect(QRectF(rect.left() + 3, rect.top() + 3, box.width() + 8, box.height() + 2), 3, 3)
+            # (the advance counts the letter spacing; the bounding box does not)
+            advance = painter.fontMetrics().horizontalAdvance(text)
+            painter.drawRoundedRect(QRectF(rect.left() + 3, rect.top() + 3, advance + 10, box.height() + 2), 3, 3)
             painter.setPen(QColor(p["text_strong"]))
             painter.drawText(QRectF(rect.left() + 7, rect.top() + 4, rect.width() - 12, box.height()),
                              Qt.AlignLeft | Qt.AlignVCenter, text)

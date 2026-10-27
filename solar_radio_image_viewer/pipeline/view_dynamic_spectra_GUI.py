@@ -93,6 +93,7 @@ from ..ui.app import apply_theme
 from ..ui.styles import palette_for as get_palette, theme_manager
 from ..ui.cursor_readout import CursorReadout
 from ..ui.empty_canvas import EmptyCanvas
+from ..ui.histogram import LevelsHistogram
 from ..ui.recent_files import clear_recent_spectra, recent_spectra
 from ..ui.widgets import kicker, kicker_row, link_button, segmented, vrule
 from .spectra_common import _channel_medians, drift_rate, rebin
@@ -819,8 +820,8 @@ class MainWindow(
         controlPanel = QWidget()
         controlPanel.setObjectName("PanelBody")
         rightLayout = QVBoxLayout(controlPanel)
-        rightLayout.setContentsMargins(14, 20, 14, 20)
-        rightLayout.setSpacing(30)
+        rightLayout.setContentsMargins(14, 16, 14, 16)
+        rightLayout.setSpacing(24)
         rightLayout.addWidget(self._display_block())
         rightLayout.addWidget(self._clean_block())
         rightLayout.addStretch()
@@ -869,7 +870,7 @@ class MainWindow(
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(12)
+        grid.setVerticalSpacing(10)
         grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
 
@@ -950,6 +951,19 @@ class MainWindow(
         self._limitsButtons["pct"].setText(self._dash(self._percentile))
         self._limitsButtons["pct"].setChecked(True)
         addRow("Limits", segmented(list(self._limitsButtons.values()), stretch=True, role="HeaderSegmented"))
+
+        # The values' histogram with the range on it, its markers dragged
+        # to set the range by eye (as in SolarViewer's inspector); the
+        # spectrum follows a drag every so often, and in full on release
+        self.levels = LevelsHistogram()
+        self.levels.rangeEdited.connect(self._on_levels_dragged)
+        self.levels.rangeChanged.connect(self._on_levels_set)
+        self._levels_range = None
+        self._levels_timer = QTimer(self)
+        self._levels_timer.setSingleShot(True)
+        self._levels_timer.setInterval(60)
+        self._levels_timer.timeout.connect(self._apply_levels)
+        grid.addWidget(self.levels, grid.rowCount(), 0, 1, 2)
 
         self.vminEntry = QLineEdit()
         self.vminEntry.setMinimumWidth(50)
@@ -1295,6 +1309,7 @@ class MainWindow(
         self.viewStack.setCurrentIndex(0 if self.hdul is None else 1)
         if self.hdul is None:
             self.emptyCanvas.refresh()
+            self.levels.set_data(None)
         for widget in self.toolBar.findChildren(QFrame, "Segmented"):
             widget.setEnabled(self.hdul is not None)
 
@@ -1527,6 +1542,7 @@ class MainWindow(
             filename=self.current_filename + (" (loading full resolution...)" if fast else ""),
         )
         self.canvas.draw_spectrum(fast=fast)
+        self.levels.set_data(self._original_data, self.canvas._vmin, self.canvas._vmax)
         self._updateNavigationStats()
         if self._goto_time is not None and not fast:
             target, self._goto_time = self._goto_time, None
@@ -1769,6 +1785,35 @@ class MainWindow(
         """Handle changes to the scale range dropdown."""
         self._show_row(self.manualLimitsLabel, self.manualLimitsWidget, scale_option == "Manual")
         self.canvas.set_smart_scale(scale_option)
+
+    def _on_levels_dragged(self, vmin, vmax):
+        """A histogram marker dragged: the Min and Max fields follow at
+        once, the spectrum shortly after."""
+        self._levels_range = (vmin, vmax)
+        self.vminEntry.setText(f"{vmin:.4g}")
+        self.vmaxEntry.setText(f"{vmax:.4g}")
+        if not self._levels_timer.isActive():
+            self._levels_timer.start()
+
+    def _on_levels_set(self, vmin, vmax):
+        """The marker let go: the spectrum takes the range now."""
+        self._levels_timer.stop()
+        self._levels_range = (vmin, vmax)
+        self._apply_levels()
+        self._levels_range = None
+
+    def _apply_levels(self):
+        """Draw the spectrum with the range dragged to (Limits: Custom)."""
+        if self._levels_range is None or self._original_data is None:
+            return
+        vmin, vmax = self._levels_range
+        if not vmax > vmin:
+            return
+        self.canvas.set_manual_range(vmin, vmax)  # (draws if already Custom)
+        if self._limits_choice != "custom":
+            self._limits_choice = "custom"
+            self._limitsButtons["custom"].setChecked(True)
+            self.onScaleRangeChanged("Manual")
 
     @pyqtSlot()
     def onManualRangeChanged(self):
