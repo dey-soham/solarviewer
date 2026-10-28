@@ -77,6 +77,7 @@ FONT_TITLE = 18  # a window's or dialog's one title
 FONT_HEADLINE = 21  # the empty canvas's one line
 # Spacing steps, in pixels (scaled by Qt with the display)
 SPACE_XS, SPACE_S, SPACE_M, SPACE_L = 4, 8, 12, 16
+STATUS_DOT = 7  # the diameter of a status bar button's dot, in pixels
 RADIUS = 6  # of every rounded corner (controls)
 RADIUS_LG = 8  # of containers: segmented groups, cards, menus
 FONT_FAMILY = "'Inter', 'Noto Emoji', 'Segoe UI', -apple-system, Arial, sans-serif"
@@ -107,7 +108,8 @@ TOKENS = {
 #   SecondaryText   a QLabel hint in muted text (alias: Hint)
 #   Meta            a QLabel of the smallest muted text (dates, sizes)
 #   StatusLabel     a QLabel framed as a status line
-#   StatusButton    a flat outlined button in the status bar
+#   StatusButton    a flat outlined button in the status bar (with a dot
+#                   before its text: ui.widgets.StatusDotButton)
 #   Badge           a QLabel pill with a short fact ("12 files")
 #   Key             a QLabel drawn as a keyboard key
 #   Mono            a QLabel in the monospace font (coordinates, values)
@@ -1029,6 +1031,9 @@ def get_stylesheet(palette, is_dark=True):
     }}
     QPushButton#StatusButton[tone="error"] {{
         color: {p['error']};
+    }}
+    QPushButton#StatusButton[dot="true"] {{
+        padding-left: {SPACE_S + STATUS_DOT + 6}px;  /* its dot, then 6px */
     }}
     QPushButton[tone="error"] {{
         color: {p['error']};

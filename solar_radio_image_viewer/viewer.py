@@ -38,6 +38,7 @@ from .ui.app import apply_theme
 from .ui.geometry import fit_to_screen
 from .ui.icons import get_resource_path, launcher_icon, themed_icon
 from .ui.document_tabs import DocumentTabs
+from .ui.widgets import StatusDotButton
 from .utils.update_checker import check_for_updates
 from .version import __version__
 from .tools import (
@@ -1070,9 +1071,9 @@ class SolarRadioImageViewerApp(
         self.remote_connection = None  # SSHConnection when connected
         self.remote_cache = None  # RemoteFileCache for downloaded files
 
-        # Remote connection status indicator in status bar (clickable)
-        self.remote_status_btn = QPushButton("Not connected")
-        self.remote_status_btn.setObjectName("StatusButton")
+        # Remote connection status indicator in status bar (clickable),
+        # its dot green while connected and red while not
+        self.remote_status_btn = StatusDotButton("Not connected")
         self.remote_status_btn.setCursor(Qt.PointingHandCursor)
         self.remote_status_btn.setToolTip("Click to connect to a remote server")
         self.remote_status_btn.clicked.connect(self._on_remote_status_clicked)

@@ -10,10 +10,11 @@ Pieces every window is built from, so they all read the same way.
 - ``link_button``: a text button in the accent with no border
 - ``toggle_row``: a switch with its name and settings button on a surface
 - ``vrule``: a short vertical line between groups in a bar
+- ``StatusDotButton``: a status bar button led by a green or red dot
 """
 
-from PyQt5.QtCore import QEvent, QObject, Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import QEvent, QObject, QPointF, Qt
+from PyQt5.QtGui import QColor, QFont, QPainter
 from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QFrame,
@@ -24,6 +25,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from .styles import SPACE_S, STATUS_DOT, theme_manager
 
 
 def button_bar(primary=None, secondary=None, extras=(), parent=None):
@@ -218,3 +221,33 @@ def inline_unit(entry, unit):
     )
     _UnitPlacer(entry, label)
     return label
+
+
+class StatusDotButton(QPushButton):
+    """A StatusButton led by a round dot, as modern status bars show a
+    connection: in the success colour while ``on`` (``set_on``), the
+    error colour while off. Its text still names the state, so the dot's
+    colour is never the only sign of it."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("StatusButton")
+        self.setProperty("dot", "true")  # (the stylesheet leaves room for it)
+        self._on = False
+
+    def set_on(self, on):
+        self._on = bool(on)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(theme_manager.palette["success" if self._on else "error"]))
+        radius = STATUS_DOT / 2
+        # Where the text would begin without it (inside the 1px border),
+        # level with the middle of the capitals
+        centre = QPointF(1 + SPACE_S + radius, self.height() / 2)
+        painter.drawEllipse(centre, radius, radius)
+        painter.end()

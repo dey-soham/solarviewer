@@ -210,7 +210,7 @@ class RemoteModeMixin:
             else:
                 self.remote_status_btn.setText("Not connected")
                 self.remote_status_btn.setToolTip("Click to connect to a remote server")
-            set_tone(self.remote_status_btn, "success" if connected else None)
+            self.remote_status_btn.set_on(connected)
 
     def _on_remote_status_clicked(self):
         """Handle click on the remote status button."""
