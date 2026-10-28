@@ -115,8 +115,19 @@ class FileNavigationMixin:
         Open the remote file browser when in remote mode.
         This is called by select_file_or_directory when connected to a remote server.
         """
-        import time
+        self.browse_remote(
+            main_window,
+            lambda local_path, is_remote, folder: self.show_remote_image(
+                main_window, local_path, is_remote, folder
+            ),
+            parent=self,
+        )
 
+    @staticmethod
+    def browse_remote(main_window, on_image, parent=None):
+        """The remote file browser: ``on_image(local_path, is_remote,
+        folder)`` with the image chosen (downloaded); a dynamic spectrum goes
+        to the Dynamic Spectrum Viewer."""
         try:
             from ..remote import RemoteFileBrowser
 
@@ -124,59 +135,20 @@ class FileNavigationMixin:
             browser = RemoteFileBrowser(
                 main_window.remote_connection,
                 cache=main_window.remote_cache,
-                parent=self,
+                parent=parent or main_window,
                 casa_mode=None,
                 can_switch_server=hasattr(main_window, "_on_remote_server_changed"),
             )
             if hasattr(main_window, "_on_remote_server_changed"):
                 browser.serverChanged.connect(main_window._on_remote_server_changed)
 
-            # Connect to handle the selected file
             def on_file_selected(local_path, is_remote):
                 if not local_path or not os.path.exists(local_path):
                     return
                 if fits_kind(local_path) == SPECTRUM:
                     main_window.open_spectrum(local_path)
                     return
-
-                start_time = time.time()
-                self._reset_hpc_state()
-                self.imagename = local_path
-                self.dir_entry.setText(local_path)
-                self.invalidate_contours()
-                self.figure.clear()
-                self.on_visualization_changed(dir_load=True)
-                self.update_tab_name_from_path(local_path)
-
-                # Set mode based on what was selected
-                self._is_remote_mode = is_remote
-
-                if is_remote:
-                    casa_mode = os.path.isdir(local_path)
-                    self._remote_base_dir = browser.current_path
-                    # Populate remote file list for navigation
-                    self._populate_remote_file_list(
-                        main_window, browser.current_path, casa_mode, local_path
-                    )
-
-                    elapsed = time.time() - start_time
-                    basename = os.path.basename(local_path)
-                    self.show_status_message(
-                        f"Loaded remote file: {basename} ({elapsed:.2f}s)"
-                    )
-                else:
-                    # Clear remote state if we selected a local file
-                    self._remote_base_dir = None
-                    self._remote_file_list = []
-
-                    # Scan local directory for navigation
-                    self._scan_directory_files()
-
-                    elapsed = time.time() - start_time
-                    basename = os.path.basename(local_path)
-                    self.show_status_message(
-                        f"Loaded local file: {basename} ({elapsed:.2f}s)"
-                    )
+                on_image(local_path, is_remote, browser.current_path)
 
             browser.fileSelected.connect(on_file_selected)
             browser.exec_()
@@ -189,8 +161,49 @@ class FileNavigationMixin:
             from PyQt5.QtWidgets import QMessageBox
 
             QMessageBox.critical(
-                self, "Remote Error", f"Failed to open remote browser: {e}"
+                parent or main_window, "Remote Error", f"Failed to open remote browser: {e}"
             )
+
+    def show_remote_image(self, main_window, local_path, is_remote, folder):
+        """Show ``local_path``, downloaded from the server's ``folder`` (or a
+        local file picked in the remote browser, ``is_remote`` False), then
+        step through that folder. Returns what on_visualization_changed
+        does (True once shown)."""
+        import time
+
+        start_time = time.time()
+        self._reset_hpc_state()
+        self.imagename = local_path
+        self.dir_entry.setText(local_path)
+        self.invalidate_contours()
+        self.figure.clear()
+        # In a page, the image opens to the frame and view of the panes it
+        # follows
+        page = getattr(self, "page", None)
+        with page.sync.joining(self) if page is not None else nullcontext():
+            loaded = self.on_visualization_changed(dir_load=True)
+            self.update_tab_name_from_path(local_path)
+
+        # Set mode based on what was selected
+        self._is_remote_mode = is_remote
+        elapsed = time.time() - start_time
+        basename = os.path.basename(local_path)
+        if is_remote:
+            self._remote_base_dir = folder
+            # Populate remote file list for navigation
+            self._populate_remote_file_list(
+                main_window, folder, os.path.isdir(local_path), local_path
+            )
+            self.show_status_message(f"Loaded remote file: {basename} ({elapsed:.2f}s)")
+        else:
+            # Clear remote state if we selected a local file
+            self._remote_base_dir = None
+            self._remote_file_list = []
+
+            # Scan local directory for navigation
+            self._scan_directory_files()
+            self.show_status_message(f"Loaded local file: {basename} ({elapsed:.2f}s)")
+        return loaded
 
     def _scan_directory_files(self, rescan_only=False):
         """Scan the base directory for FITS/image files matching the filter pattern

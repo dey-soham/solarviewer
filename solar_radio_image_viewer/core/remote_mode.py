@@ -145,36 +145,11 @@ class RemoteModeMixin:
             self.open_spectrum(local_path)
             return
 
-        # Get the current tab and load the file
+        # Into the active pane (as its own Open)
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
-            import time
-
-            start_time = time.time()
-
-            current_tab._reset_hpc_state()
-            current_tab.imagename = local_path
-            current_tab.dir_entry.setText(local_path)
-            current_tab.invalidate_contours()
-            current_tab.figure.clear()
-            current_tab.on_visualization_changed(dir_load=True)
-            current_tab.update_tab_name_from_path(local_path)
-
-            elapsed = time.time() - start_time
-            basename = os.path.basename(local_path)
-            self.statusBar().showMessage(
-                f"Loaded remote file: {basename} ({elapsed:.2f}s)", 5000
-            )
-
-            if is_remote and browser is not None:
-                # Step through the server's folder (not the cached copies)
-                current_tab._is_remote_mode = True
-                current_tab._remote_base_dir = browser.current_path
-                current_tab._populate_remote_file_list(
-                    self, browser.current_path, os.path.isdir(local_path), local_path
-                )
-            else:
-                current_tab._scan_directory_files()
+            folder = browser.current_path if browser is not None else None
+            current_tab.show_remote_image(self, local_path, is_remote and browser is not None, folder)
 
     def disconnect_remote(self):
         """Disconnect from the remote server."""

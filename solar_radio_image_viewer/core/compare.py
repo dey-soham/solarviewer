@@ -1054,9 +1054,16 @@ class ImagePage(QWidget):
         return loaded
 
     def add_image(self, slot=None):
-        """Choose an image for ``slot`` (the first free one otherwise)."""
+        """Choose an image for ``slot`` (the first free one otherwise): on
+        the server when connected to one."""
         from ..ui.open_image import choose_image
         from ..ui.recent_files import last_image_folder
+
+        window = self.window()
+        connection = getattr(window, "remote_connection", None)
+        if connection is not None and connection.is_connected():
+            self._add_remote_image(window, slot)
+            return
 
         start = last_image_folder()
         shown = [pane.imagename for pane in self.panes if pane.imagename]
@@ -1065,6 +1072,21 @@ class ImagePage(QWidget):
         path = choose_image(self.window(), "Open an image to compare", directory=start)
         if path:
             self.open_in_new_pane(path, slot)
+
+    def _add_remote_image(self, window, slot):
+        """An image from the server's remote file browser into ``slot``."""
+        from .file_navigation import FileNavigationMixin
+
+        def on_image(local_path, is_remote, folder):
+            pane = self.new_pane(slot)
+            if pane is None:
+                return
+            self.set_active_pane(pane)
+            loaded = pane.show_remote_image(window, local_path, is_remote, folder)
+            if not loaded or pane.current_image_data is None:
+                self.remove_pane(pane)
+
+        FileNavigationMixin.browse_remote(window, on_image)
 
     @property
     def active_pane(self):
