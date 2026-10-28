@@ -37,6 +37,11 @@ class FileNavigationMixin:
     ``update_tab_name_from_path``, ``window``
     """
 
+    # Remote folder listings still running (one replaced by a newer listing
+    # runs on to its end), kept from the garbage collector until they end:
+    # a QThread dropped while it runs aborts the app
+    _remote_listings: set = set()
+
     def _stepped(self, kind):
         """The page hears of a step ("prev", "next", "first", "last"): the
         panes following this one step too (core/compare_sync.py). The
@@ -344,7 +349,7 @@ class FileNavigationMixin:
         from PyQt5.QtCore import QThread, pyqtSignal
 
         class PopulateThread(QThread):
-            finished = pyqtSignal(list, int)  # entries, current_index
+            listed = pyqtSignal(list, int)  # entries, current_index
             error = pyqtSignal(str)
 
             def __init__(self, connection, remote_dir, casa_mode, current_basename):
@@ -485,7 +490,7 @@ except Exception:
                             current_idx = i
                             break
 
-                    self.finished.emit(entries, current_idx)
+                    self.listed.emit(entries, current_idx)
 
                 except Exception as e:
                     self.error.emit(str(e))
@@ -505,12 +510,19 @@ except Exception:
 
             current_basename = os.path.basename(current_local_path)
 
-            # Store reference to thread to prevent garbage collection
-            self._populate_thread = PopulateThread(
+            thread = PopulateThread(
                 main_window.remote_connection, remote_dir, casa_mode, current_basename
             )
+            self._populate_thread = thread
 
-            def on_finished(entries, current_idx):
+            def current():
+                """Whether this is the newest listing (an older one may end
+                after it), of the folder the tab still steps through."""
+                return thread is self._populate_thread and self._remote_base_dir == remote_dir
+
+            def on_listed(entries, current_idx):
+                if not current():
+                    return
                 try:
                     self._remote_file_list = entries
                     self._file_list = [e.path for e in entries]
@@ -520,6 +532,8 @@ except Exception:
                     pass  # Widget deleted
 
             def on_error(msg):
+                if not current():
+                    return
                 logger.warning(f"Failed to populate remote file list: {msg}")
                 self._remote_file_list = []
                 self._file_list = []
@@ -529,9 +543,13 @@ except Exception:
                 except RuntimeError:
                     pass
 
-            self._populate_thread.finished.connect(on_finished)
-            self._populate_thread.error.connect(on_error)
-            self._populate_thread.start()
+            thread.listed.connect(on_listed)
+            thread.error.connect(on_error)
+            FileNavigationMixin._remote_listings.add(thread)
+            thread.finished.connect(
+                lambda t=thread: FileNavigationMixin._remote_listings.discard(t)
+            )
+            thread.start()
 
         except Exception as e:
             logger.warning(f"Failed to start remote file list population: {e}")
