@@ -404,10 +404,13 @@ except Exception:
 
                     # Try python3 first, then python
                     cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.remote_dir)}"
-                    stdin, stdout, stderr = self.connection.exec_command(cmd)
+                    try:
+                        stdin, stdout, stderr = self.connection.exec_command(cmd)
 
-                    # Read output
-                    out_data = stdout.read().decode("utf-8").strip()
+                        # Read output
+                        out_data = stdout.read().decode("utf-8").strip()
+                    except Exception:
+                        out_data = ""  # (a server that runs no commands: SFTP only)
 
                     entries = []
                     success = False
