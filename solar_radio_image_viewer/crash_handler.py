@@ -119,9 +119,12 @@ def get_environment_info():
 
 def scrub(text):
     """``text`` with the home folder (which names the user) written as ~, and
-    user@host addresses (SSH servers, e-mail) as <user>@<host>."""
+    user@host addresses (SSH servers, e-mail) as <user>@<host>; not
+    name@version (Homebrew's python@3.13 folder)."""
     text = text.replace(str(Path.home()), "~")
-    return re.sub(r"\b[\w.-]+@[\w-]+(\.[\w-]+)*\b", "<user>@<host>", text)
+    return re.sub(
+        r"\b[\w.-]+@(?!\d+(\.\d+){0,2}\b(?!\.))[\w-]+(\.[\w-]+)*\b", "<user>@<host>", text
+    )
 
 
 def generate_crash_report(exctype, value, tb, fatal=True):
