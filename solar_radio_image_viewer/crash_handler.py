@@ -132,8 +132,34 @@ def generate_crash_report(exctype, value, tb, fatal=True):
 
     ``fatal`` records whether the application exited because of the error.
     """
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report_filename = f"crash_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    now = datetime.now()
+    report_path = _new_report_path(now)
+
+    # Get traceback
+    traceback_details = "".join(traceback.format_exception(exctype, value, tb))
+
+    try:
+        _write_report(
+            report_path,
+            now,
+            "Yes" if fatal else "No (the application kept running)",
+            traceback_details,
+        )
+        if fatal:
+            print("\nCRITICAL: SolarViewer encountered an unhandled exception.")
+        else:
+            print("\n[ERROR] SolarViewer encountered an unhandled exception (continuing).")
+        print(f"A detailed crash report has been saved to: {report_path}")
+    except Exception as e:
+        print(f"CRITICAL: Application crashed and failed to save report: {e}")
+        print(traceback_details)
+
+    return report_path
+
+
+def _new_report_path(when):
+    """The path for a new report of an error at ``when``."""
+    report_filename = f"crash_report_{when.strftime('%Y%m%d_%H%M%S')}.md"
 
     CRASH_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = CRASH_REPORTS_DIR / report_filename
@@ -142,9 +168,18 @@ def generate_crash_report(exctype, value, tb, fatal=True):
     while report_path.exists():
         report_path = CRASH_REPORTS_DIR / report_filename.replace(".md", f"_{n}.md")
         n += 1
+    return report_path
 
-    # Get traceback
-    traceback_details = "".join(traceback.format_exception(exctype, value, tb))
+
+def _write_report(report_path, when, fatal, details, notes=(), language="python",
+                  modules=None, version=__version__):
+    """Write a crash report of an error at ``when`` to ``report_path``.
+
+    ``fatal`` is the report's Fatal line and ``notes`` lines after it;
+    ``details`` (in ``language``) is what went wrong, a traceback; ``modules``
+    replaces the list of the modules loaded (this process's).
+    """
+    timestamp = when.strftime("%Y-%m-%d %H:%M:%S")
 
     # The application's recent output, from its log file (the log window's
     # text must not be read here: the error may come from another thread)
@@ -163,11 +198,12 @@ def generate_crash_report(exctype, value, tb, fatal=True):
     report_lines = [
         "# SolarViewer Crash Report",
         f"\n**Timestamp:** {timestamp}",
-        f"**App Version:** {__version__}",
-        f"**Fatal:** {'Yes' if fatal else 'No (the application kept running)'}",
+        f"**App Version:** {version}",
+        f"**Fatal:** {fatal}",
+        *notes,
         "\n## 1. Exception Details",
-        "```python",
-        f"{traceback_details}",
+        f"```{language}",
+        f"{details}",
         "```",
         "\n## 2. System Information",
         "| Field | Value |",
@@ -207,8 +243,10 @@ def generate_crash_report(exctype, value, tb, fatal=True):
         report_lines.append(f"| {k} | {v} |")
 
     report_lines.append("\n## 5. Loaded Modules")
-    modules = sorted(list(set(name.split(".")[0] for name in sys.modules.keys())))
-    report_lines.append("`" + ", ".join(modules) + "`")
+    if modules is None:
+        modules = sorted(list(set(name.split(".")[0] for name in sys.modules.keys())))
+        modules = "`" + ", ".join(modules) + "`"
+    report_lines.append(modules)
 
     report_lines.append("\n## 6. Application Logs")
     report_lines.append("```")
@@ -219,19 +257,120 @@ def generate_crash_report(exctype, value, tb, fatal=True):
     # Paths, the user name and host names are left out of what users share
     report_content = scrub("\n".join(report_lines))
 
-    try:
-        with open(report_path, "w") as f:
-            f.write(report_content)
-        if fatal:
-            print("\nCRITICAL: SolarViewer encountered an unhandled exception.")
-        else:
-            print("\n[ERROR] SolarViewer encountered an unhandled exception (continuing).")
-        print(f"A detailed crash report has been saved to: {report_path}")
-    except Exception as e:
-        print(f"CRITICAL: Application crashed and failed to save report: {e}")
-        print(traceback_details)
+    with open(report_path, "w") as f:
+        f.write(report_content)
 
-    return report_path
+
+# A native crash (a segfault, or Qt aborting) ends the process before Python
+# can report it. faulthandler then writes the stack of each thread into the
+# session's trace file, of which the next start makes a crash report.
+NATIVE_TRACE_PREFIX = ".native_trace_"
+_native_trace = None  # (this session's, open while it runs)
+
+
+def watch_for_native_crashes():
+    """Report the native crashes of earlier sessions, and have this
+    session's written down should it crash.
+
+    Call once at start up, before the log file is written to (its end is
+    then the crashed session's). Returns the paths of the reports written.
+    """
+    global _native_trace
+    try:
+        import fcntl
+    except ImportError:
+        return []  # (Windows)
+    import atexit
+    import faulthandler
+
+    if _native_trace is not None:
+        return []
+    reports = []
+    try:
+        CRASH_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        for path in sorted(CRASH_REPORTS_DIR.glob(NATIVE_TRACE_PREFIX + "*.txt")):
+            report = _report_native_crash(path, fcntl)
+            if report is not None:
+                reports.append(report)
+
+        path = CRASH_REPORTS_DIR / f"{NATIVE_TRACE_PREFIX}{os.getpid()}.txt"
+        trace = open(path, "a", encoding="utf-8")
+        try:
+            # Held while the session runs: a trace file nobody holds is that
+            # of a session that has ended
+            fcntl.flock(trace, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            trace.truncate(0)
+            trace.write(f"SolarViewer {__version__}, started {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+            trace.flush()
+        except OSError:
+            trace.close()
+            raise
+        faulthandler.enable(file=trace, all_threads=True)
+        _native_trace = trace
+        atexit.register(_end_native_trace, path)
+    except Exception as e:
+        print(f"[WARNING] A native crash would leave no crash report: {e}")
+    return reports
+
+
+def _end_native_trace(path):
+    """At exit: no crash to report."""
+    global _native_trace
+    import faulthandler
+
+    faulthandler.disable()
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    _native_trace.close()
+    _native_trace = None
+
+
+def _report_native_crash(path, fcntl):
+    """The crash report of an ended session's trace file ``path``, if that
+    session crashed (else None); the file is then removed. That of a session
+    still running is left alone."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as trace:
+            try:
+                fcntl.flock(trace, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None  # its session is running
+            if os.fstat(trace.fileno()).st_nlink == 0:
+                return None  # (removed meanwhile, by its session or another start)
+            header, _, details = trace.read().partition("\n")
+            report_path = None
+            if details.strip():
+                when = datetime.fromtimestamp(os.fstat(trace.fileno()).st_mtime)
+                started = re.match(r"SolarViewer (\S+), started (.+)", header)
+                version, started = started.groups() if started else ("unknown", "unknown")
+                error = re.search(r"Fatal Python error: (.+)", details)
+                modules = re.search(r"^Extension modules: (.+)\n?", details, re.M)
+                if modules:
+                    details = details.replace(modules.group(0), "")
+                report_path = _new_report_path(when)
+                _write_report(
+                    report_path,
+                    when,
+                    f"Yes ({error.group(1) if error else 'a native crash'})",
+                    details.strip(),
+                    notes=(
+                        f"**Session Started:** {started}",
+                        f"**Reported:** {datetime.now():%Y-%m-%d %H:%M:%S}, at the "
+                        "next start (sections 2 to 4 describe that one)",
+                    ),
+                    language="",
+                    modules="Those with native code, besides Python's own: "
+                    + (f"`{modules.group(1).strip()}`" if modules else "none."),
+                    version=version,
+                )
+                print(f"SolarViewer crashed in an earlier session; a crash report has been saved to: {report_path}")
+            os.remove(path)
+            return report_path
+    except Exception as e:
+        print(f"[WARNING] Could not report the crash recorded in {path}: {e}")
+        return None
 
 
 # Once the main window is up (see set_main_window), unhandled exceptions are
@@ -291,6 +430,29 @@ def _restore_cursor():
 
 def _notify_user(exctype, value, tb, report_path):
     """Show a non-blocking message about the error (one at a time)."""
+    _show_message(
+        "Unexpected Error",
+        "Something went wrong. SolarViewer is still running, but the last "
+        "action may not have completed.",
+        f"{exctype.__name__}: {value}\n\nA crash report was saved to:\n{report_path}",
+        "".join(traceback.format_exception(exctype, value, tb)),
+    )
+
+
+def show_native_crash_reports(reports):
+    """Tell the user an earlier session crashed, where ``reports`` (from
+    :func:`watch_for_native_crashes`) are. Call once the main window is up."""
+    if not reports:
+        return
+    if len(reports) == 1:
+        where = f"A crash report was saved to:\n{reports[0]}"
+    else:
+        where = f"{len(reports)} crash reports were saved to:\n{CRASH_REPORTS_DIR}"
+    _show_message("SolarViewer Crashed", "SolarViewer stopped unexpectedly the last time it ran.", where)
+
+
+def _show_message(title, text, informative, detailed=None):
+    """A non-blocking warning over the main window (one at a time)."""
     global _error_dialog
     if _error_dialog is not None:
         return  # Already showing one; the report is saved regardless
@@ -300,15 +462,11 @@ def _notify_user(exctype, value, tb, report_path):
 
     dialog = QMessageBox(_main_window)
     dialog.setIcon(QMessageBox.Warning)
-    dialog.setWindowTitle("Unexpected Error")
-    dialog.setText(
-        "Something went wrong. SolarViewer is still running, but the last "
-        "action may not have completed."
-    )
-    dialog.setInformativeText(
-        f"{exctype.__name__}: {value}\n\nA crash report was saved to:\n{report_path}"
-    )
-    dialog.setDetailedText("".join(traceback.format_exception(exctype, value, tb)))
+    dialog.setWindowTitle(title)
+    dialog.setText(text)
+    dialog.setInformativeText(informative)
+    if detailed:
+        dialog.setDetailedText(detailed)
     dialog.setTextInteractionFlags(Qt.TextSelectableByMouse)
     dialog.setStandardButtons(QMessageBox.Ok)
     dialog.setWindowModality(Qt.NonModal)

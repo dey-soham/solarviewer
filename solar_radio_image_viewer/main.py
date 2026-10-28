@@ -25,6 +25,8 @@ import warnings
 from .crash_handler import (
     install_crash_handler,
     set_main_window,
+    show_native_crash_reports,
+    watch_for_native_crashes,
 )
 
 logger = logging.getLogger(__name__)
@@ -176,6 +178,11 @@ Examples:
         print("Please provide a valid path to an image file.")
         sys.exit(1)
 
+    # Crash reports of earlier sessions that crashed in native code (a
+    # segfault, an abort), made before this session writes to the log; and
+    # this session's stacks written down should it crash so
+    native_crash_reports = watch_for_native_crashes()
+
     # The application: scaled for the display, themed (the saved theme, or
     # light with --light) and fonted, before the viewer is imported so
     # Matplotlib's colours are right from the start
@@ -292,6 +299,7 @@ Examples:
 
             # From now on, unhandled exceptions are reported but not fatal
             set_main_window(win)
+            show_native_crash_reports(native_crash_reports)
 
             # sunpy's solar colormaps take ~1 s to import; load them in the
             # background now that the window is up (they load on first use
