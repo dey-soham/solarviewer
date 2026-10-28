@@ -9,7 +9,10 @@ Other platforms keep their default ('spawn' on macOS and Windows).
 """
 
 import multiprocessing
+import multiprocessing.connection
+import os
 import sys
+import threading
 from concurrent.futures import ProcessPoolExecutor
 
 
@@ -42,11 +45,25 @@ def process_pool_executor(max_workers, preload=()):
 
 
 def start_worker():
-    """Run first in each worker of these pools: astropy uses the time
-    tables it has (see astropy_tables), as in the window's process."""
+    """Run first in each worker of these pools: the worker ends when the
+    process that started it does, and astropy uses the time tables it has
+    (see astropy_tables), as in the window's process.
+
+    (A worker waits for work for ever: after a crash of the window's process
+    it stayed, and with it the forkserver and resource tracker it holds.)"""
+    parent = multiprocessing.parent_process()
+    if parent is not None:
+        threading.Thread(
+            target=_exit_when_ended, args=(parent.sentinel,), name="exit-with-parent", daemon=True
+        ).start()
     from .astropy_tables import use_local_tables
 
     use_local_tables()
+
+
+def _exit_when_ended(sentinel):
+    multiprocessing.connection.wait([sentinel])
+    os._exit(1)
 
 
 def import_modules(names):
