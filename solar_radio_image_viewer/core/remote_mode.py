@@ -90,8 +90,9 @@ class RemoteModeMixin:
         self._start_connection_health_timer()
 
     def show_remote_file_browser(self):
-        """Show the remote file browser dialog."""
-        if not self.remote_connection or not self.remote_connection.is_connected():
+        """Show the remote file browser dialog (a connection lost since can
+        be made again from it)."""
+        if not self.remote_connection:
             QMessageBox.warning(
                 self, "Not Connected", "Please connect to a remote server first."
             )
@@ -100,20 +101,39 @@ class RemoteModeMixin:
         try:
             from ..remote import RemoteFileBrowser
 
+            # Either kind of image: a FITS file or a CASA image folder
             browser = RemoteFileBrowser(
                 self.remote_connection,
                 cache=self.remote_cache,
                 parent=self,
+                casa_mode=None,
+                can_switch_server=True,
             )
             browser.fileSelected.connect(
                 lambda local_path, is_remote: self._on_remote_file_selected(
                     local_path, is_remote, browser
                 )
             )
+            browser.serverChanged.connect(self._on_remote_server_changed)
             browser.exec_()
+            # (it may have reconnected)
+            self._update_remote_menu_state()
+            self._update_remote_status_indicator()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open remote browser: {e}")
+
+    def _on_remote_server_changed(self, connection):
+        """The remote browser connected to another server: it replaces the
+        one connected to."""
+        old = self.remote_connection
+        if old is not None and old is not connection:
+            self._stop_connection_health_timer()
+            try:
+                old.disconnect()
+            except Exception as e:
+                logger.warning(f"Error disconnecting: {e}")
+        self._on_remote_connected(connection)
 
     def _on_remote_file_selected(self, local_path: str, is_remote=False, browser=None):
         """Handle file selected from remote browser (now downloaded locally)."""
@@ -151,7 +171,7 @@ class RemoteModeMixin:
                 current_tab._is_remote_mode = True
                 current_tab._remote_base_dir = browser.current_path
                 current_tab._populate_remote_file_list(
-                    self, browser.current_path, browser.casa_mode, local_path
+                    self, browser.current_path, os.path.isdir(local_path), local_path
                 )
             else:
                 current_tab._scan_directory_files()

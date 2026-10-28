@@ -153,6 +153,17 @@ TOKENS = {
 #   PaneName        a QLabel with a pane's file name, monospace
 #   EmptySlot       a dashed QFrame where a compare page's next image goes
 #   EditingRow      the inspector's row naming the pane its controls edit
+#   PathBar         the remote browser's path: a QFrame on the surface, outlined
+#                   (editing="true": in the accent, while a path is typed)
+#   PathSegment     a folder in it, a flat monospace button (current="true": the last)
+#   PathSeparator   the muted › between them
+#   PathEdit        the QLineEdit the path bar turns into, no frame of its own
+#   PlaceRow        a flat row button of a places column (current="true": the folder shown)
+#   FileList        a QTreeView of files, rows painted by their delegate, no frame
+#   SmallLink       a link in the smallest type, no border ("Clear cache")
+#   DetailName      a QLabel naming the selected file, monospace
+#   DetailValue     a QLabel value in a details column
+#   DetailMono      the same in monospace, smaller (dates, paths; muted="true")
 # A label or StatusButton can also take a tone with ``set_tone``:
 # "success", "warning" or "error" colour it accordingly, None clears it.
 ROLES = (
@@ -216,6 +227,16 @@ ROLES = (
     "PaneName",
     "EmptySlot",
     "EditingRow",
+    "PathBar",
+    "PathSegment",
+    "PathSeparator",
+    "PathEdit",
+    "PlaceRow",
+    "FileList",
+    "SmallLink",
+    "DetailName",
+    "DetailValue",
+    "DetailMono",
 )
 
 # The panes of a compare page, A to F: (background, letter) of each badge.
@@ -266,6 +287,7 @@ DARK_PALETTE = {
     "text_strong": "#cfd3e5",  # neutral-300: menus, values
     "text_dim": "#b2b6ca",  # neutral-400: a switch's label while off
     "text_secondary": "#9397ab",  # neutral-500: labels, hints
+    "text_faint": "#75798c",  # neutral-600: folder icons, the path bar's separators, "—"
     "input_text": "#e9e9ed",
     "disabled": "#595d6c",  # neutral-700
     "highlight": "#9184d9",  # the accent
@@ -285,6 +307,10 @@ DARK_PALETTE = {
     "success": "#4ade80",
     "warning": "#fbbf24",
     "error": "#f87171",
+    # A connection's dot, a cached file's check: on (green) and off (red),
+    # the green the brighter so they differ without hue
+    "status_on": "#6fbf8a",
+    "status_off": "#d96a5a",
     "secondary": "#a7a1db",
     "switch_track": "#292b31",  # neutral-900
     "switch_track_hover": "#3f424d",  # neutral-800
@@ -323,6 +349,7 @@ LIGHT_PALETTE = {
     "text_strong": "#4a4e5e",  # menus, values
     "text_dim": "#5b5f70",  # a segment's text while not chosen
     "text_secondary": "#6f7386",  # labels, hints, placeholders
+    "text_faint": "#8f93a6",
     "input_text": "#1d1f2b",
     "disabled": "#b2b6ca",
     "highlight": "#6a5fb8",  # the accent: outlines, kickers, the tab underline
@@ -342,6 +369,8 @@ LIGHT_PALETTE = {
     "success": "#16a34a",
     "warning": "#d97706",
     "error": "#dc2626",
+    "status_on": "#2f8f5b",
+    "status_off": "#c84b3c",
     "secondary": "#5c5783",
     "switch_track": "#6f7386",  # a switch's track when off
     "switch_track_hover": "#5b5f70",
@@ -681,6 +710,114 @@ def get_stylesheet(palette, is_dark=True):
     }}
     QFrame#RecentRow QLabel {{
         background-color: transparent;
+    }}
+
+    /* The remote browser: its path bar, places column, file list, details */
+    QFrame#PathBar {{
+        background-color: {p['surface']};
+        border: 1px solid {p['border_light']};
+        border-radius: {RADIUS_LG}px;
+    }}
+    QFrame#PathBar[editing="true"] {{
+        border-color: {p['highlight']};
+    }}
+    QPushButton#PathSegment {{
+        background-color: transparent;
+        color: {p['text_dim']};
+        border: none;
+        border-radius: 4px;
+        padding: 2px 5px;
+        min-height: 0px;
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_SMALL}pt;
+        font-weight: 400;
+    }}
+    QPushButton#PathSegment:hover {{
+        color: {p['text']};
+        background-color: {p['hover']};
+    }}
+    QPushButton#PathSegment[current="true"] {{
+        color: {p['text']};
+        background-color: {p['surface_elevated']};
+    }}
+    QLabel#PathSeparator {{
+        color: {p['text_faint']};
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_SMALL}pt;
+    }}
+    QLineEdit#PathEdit {{
+        background-color: transparent;
+        border: none;
+        padding: 0px 4px;
+        min-height: 0px;
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_SMALL}pt;
+    }}
+    QPushButton#PlaceRow {{
+        background-color: transparent;
+        color: {p['text_strong']};
+        border: none;
+        border-left: 2px solid transparent;
+        border-radius: {RADIUS}px;
+        padding: 6px 6px 6px 4px;
+        min-height: 0px;
+        text-align: left;
+        font-size: {FONT_SMALL}pt;
+        font-weight: 400;
+    }}
+    QPushButton#PlaceRow:hover {{
+        background-color: {p['hover']};
+    }}
+    QPushButton#PlaceRow[current="true"] {{
+        color: {p['text']};
+        background-color: {p['window']};
+        border-left-color: {p['highlight']};
+    }}
+    QTreeView#FileList {{
+        background-color: transparent;
+        border: none;
+        border-radius: 0px;
+    }}
+    QTreeView#FileList::item, QTreeView#FileList::item:selected,
+    QTreeView#FileList::item:hover {{
+        background-color: transparent;
+        border: none;
+        padding: 0px;
+    }}
+    QTreeView#FileList QHeaderView {{
+        background-color: transparent;
+        border: none;
+    }}
+    QPushButton#SmallLink {{
+        background-color: transparent;
+        color: {p['link']};
+        border: none;
+        border-radius: 3px;
+        padding: 1px 2px;
+        min-height: 0px;
+        text-align: left;
+        font-size: {FONT_META}pt;
+        font-weight: 400;
+    }}
+    QPushButton#SmallLink:hover {{
+        background-color: {p['accent_hover']};
+    }}
+    QPushButton#SmallLink:disabled {{
+        color: {p['disabled']};
+    }}
+    QLabel#DetailName {{
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_SMALL}pt;
+    }}
+    QLabel#DetailValue {{
+        font-size: {FONT_SMALL}pt;
+    }}
+    QLabel#DetailMono {{
+        font-family: {MONO_FAMILY};
+        font-size: {FONT_META}pt;
+    }}
+    QLabel#DetailMono[muted="true"] {{
+        color: {p['text_dim']};
     }}
 
     /* A row of choices, one on: the group has the border, the one chosen

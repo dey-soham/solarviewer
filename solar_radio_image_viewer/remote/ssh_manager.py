@@ -110,6 +110,9 @@ class RemoteFileInfo:
     is_dir: bool
     size: int
     mtime: float
+    # For a folder: the type of CASA table it holds ("Image", "Measurement
+    # Set"...), "" if none, None if not looked at (listed over SFTP)
+    table_type: Optional[str] = None
 
     @property
     def is_fits(self) -> bool:
@@ -150,6 +153,7 @@ class SSHConnection:
         self._connected: bool = False
         self._ssh_config: Optional[SSHConfig] = None
         self._last_home: str = ""  # Cached home directory for non-blocking access
+        self.last_error: str = ""  # why the last reconnect() failed
 
         # Store connection parameters for auto-reconnect
         self._connect_params: dict = {}
@@ -350,6 +354,7 @@ class SSHConnection:
             True if reconnection succeeded, False otherwise
         """
         if not self._connect_params:
+            self.last_error = "No connection to repeat"
             return False
 
         try:
@@ -358,12 +363,15 @@ class SSHConnection:
 
             # Reconnect with stored params
             self.connect(**self._connect_params)
+            self.last_error = ""
             return True
         except SSHConnectionError as e:
             logger.warning(f"[SSH] Reconnection failed: {e}")
+            self.last_error = str(e)
             return False
         except Exception as e:
             logger.warning(f"[SSH] Reconnection error: {e}")
+            self.last_error = str(e)
             return False
 
     def is_connected(self) -> bool:
@@ -521,6 +529,20 @@ class SSHConnection:
     def host(self) -> str:
         """The server's host name (an ~/.ssh/config alias resolved), or ""."""
         return self._host
+
+    @property
+    def username(self) -> str:
+        """The user logged in as (kept while the connection is lost), or ""."""
+        return self._username
+
+    @property
+    def port(self) -> int:
+        return self._port
+
+    @property
+    def timeout(self) -> float:
+        """Seconds a connection attempt waits for the server."""
+        return self._connect_params.get("timeout") or 30.0
 
     @property
     def last_home(self) -> str:

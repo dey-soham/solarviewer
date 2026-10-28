@@ -225,9 +225,10 @@ def inline_unit(entry, unit):
 
 class StatusDotButton(QPushButton):
     """A StatusButton led by a round dot, as modern status bars show a
-    connection: in the success colour while ``on`` (``set_on``), the
-    error colour while off. Its text still names the state, so the dot's
-    colour is never the only sign of it."""
+    connection: green while ``on`` (``set_on``), red while off (the
+    palette's status_on and status_off, as the remote browser's). Its
+    text still names the state, so the dot's colour is never the only
+    sign of it."""
 
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
@@ -244,7 +245,7 @@ class StatusDotButton(QPushButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(theme_manager.palette["success" if self._on else "error"]))
+        painter.setBrush(QColor(theme_manager.palette["status_on" if self._on else "status_off"]))
         radius = STATUS_DOT / 2
         # Where the text would begin without it (inside the 1px border),
         # level with the middle of the capitals

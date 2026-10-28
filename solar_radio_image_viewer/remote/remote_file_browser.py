@@ -1,45 +1,96 @@
 """
-Remote File Browser Dialog for SolarViewer.
+The file browser of SolarViewer's remote mode: a folder of the SSH server,
+or of this computer, to open an image from.
 
-Provides a file browser interface for navigating remote directories
-via SFTP and selecting FITS files to open.
+One path bar to click or type in; the connection, places and recent
+folders on the left; the folder's files in the middle; the selected file's
+details on the right, its FITS header read only when asked; and an Open
+button that names what it opens. A server's files are fetched into the
+RemoteFileCache before they are opened. The pieces are in browser_parts.
 """
 
 import os
+import posixpath
+import sys
+import time
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
+from PyQt5.QtCore import QSettings, QSize, QStringListModel, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtWidgets import (
-    QStyle,
+    QApplication,
+    QButtonGroup,
+    QCheckBox,
+    QCompleter,
     QDialog,
-    QVBoxLayout,
+    QFrame,
     QHBoxLayout,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QPushButton,
     QLabel,
     QLineEdit,
-    QProgressBar,
+    QMenu,
     QMessageBox,
-    QCheckBox,
-    QFrame,
-    QHeaderView,
-    QAbstractItemView,
+    QProgressBar,
+    QPushButton,
+    QShortcut,
+    QStackedLayout,
+    QToolButton,
+    QVBoxLayout,
     QWidget,
-    QCompleter,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer, QStringListModel
 
-from .ssh_manager import SSHConnection, SSHConnectionError, RemoteFileInfo
-from .file_cache import RemoteFileCache
-
-
+from .browser_parts import (
+    CASA,
+    ENTRY_ROLE,
+    FITS,
+    FOLDERS,
+    IMAGES,
+    KIND_ROLE,
+    MODIFIED,
+    SPECTRUM,
+    DetailsPanel,
+    FileListModel,
+    FileListView,
+    HeaderDialog,
+    PathBar,
+    PlacesPanel,
+    casa_named,
+    count_text,
+    fits_named,
+    header_kind,
+    header_rows,
+    icon,
+    pixmap,
+    progress_text,
+)
 from .download_thread import DownloadThread
-from ..ui.open_image import choose_image
-
-
+from .file_cache import RemoteFileCache
+from .ssh_manager import RemoteFileInfo, SSHConnection, SSHConnectionError
 from ..ui.geometry import fit_to_screen
-from ..ui.styles import set_tone
+from ..ui.styles import set_hand_cursor, theme_manager
+from ..ui.widgets import segmented
+
+
+def _base_finished(thread):
+    """QThread's own finished signal of ``thread``, whose class may have
+    a ``finished`` of its own (with its result)."""
+    return QThread.finished.__get__(thread, QThread)
+
+
+def _silence(thread):
+    """Disconnect ``thread``'s own result signals (not QThread's finished)."""
+    for name in ("finished", "error", "done", "failed", "result", "progress"):
+        if name in type(thread).__dict__:
+            try:
+                getattr(thread, name).disconnect()
+            except (TypeError, RuntimeError):
+                pass
+
+
+def _deleted(obj):
+    from PyQt5 import sip
+
+    return sip.isdeleted(obj)
 
 
 class ListDirectoryThread(QThread):
@@ -81,7 +132,9 @@ class ListDirectoryThread(QThread):
                 import shlex
 
                 # Uses os.scandir (Python 3.5+, faster) with os.listdir fallback (Python 3.4)
-                # Uses "OK:" prefix to distinguish success from script failure
+                # Uses "OK:" prefix to distinguish success from script failure.
+                # A folder holding a CASA table gets its type ('t', from its
+                # table.info), a CASA image the size of its whole folder.
                 py_script = """
 import os, json, sys, stat
 path = sys.argv[1]
@@ -89,13 +142,38 @@ entries = []
 show_hidden = %s
 fits_only = %s
 
+def table_type(folder):
+    try:
+        with open(os.path.join(folder, 'table.info')) as f:
+            line = f.readline()
+    except (IOError, OSError, UnicodeError):
+        return ''
+    key, _, value = line.partition('=')
+    return value.strip() if key.strip() == 'Type' else ''
+
+def tree_size(folder):
+    total = 0
+    for root, dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
+
 def add_entry(name, is_dir, size, mtime):
     if not show_hidden and name.startswith('.'):
         return
     if fits_only and not is_dir:
         if not name.lower().endswith(('.fits', '.fts', '.fit')):
             return
-    entries.append({'n': name, 'd': is_dir, 's': size, 'm': mtime})
+    entry = {'n': name, 'd': is_dir, 's': size, 'm': mtime}
+    if is_dir:
+        full = os.path.join(path, name)
+        entry['t'] = table_type(full)
+        if entry['t'] == 'Image':
+            entry['s'] = tree_size(full)
+    entries.append(entry)
 
 try:
     # Fast path: os.scandir (Python 3.5+) - single syscall per entry
@@ -105,10 +183,12 @@ try:
         scanner = None
 
     if scanner is not None:
-        with scanner as it:
-            for e in it:
+        for e in scanner:
+            try:
                 s = e.stat()
                 add_entry(e.name, e.is_dir(), s.st_size, s.st_mtime)
+            except OSError:
+                continue  # (a broken link)
     else:
         # Fallback: os.listdir + os.stat (Python 3.4)
         for name in os.listdir(path):
@@ -140,9 +220,6 @@ except Exception as exc:
                 stderr.read()
                 exit_status = stdout.channel.recv_exit_status()
 
-                # print(f"[SSH-List] Fast path result: exit={exit_status}, "
-                #       f"stdout_len={len(out_data)}, stderr={err_data[:200] if err_data else '(none)'}")
-
                 if exit_status == 0 and out_data.startswith("OK:"):
                     try:
                         json_str = out_data[3:]  # Strip "OK:" prefix
@@ -152,13 +229,14 @@ except Exception as exc:
                             if self._cancelled:
                                 return
 
-                            full_path = os.path.join(self.path, item["n"])
+                            full_path = posixpath.join(self.path, item["n"])
                             info = RemoteFileInfo(
                                 name=item["n"],
                                 path=full_path,
                                 is_dir=item["d"],
                                 size=item["s"],
                                 mtime=item["m"],
+                                table_type=item.get("t") if item["d"] else None,
                             )
                             entries.append(info)
 
@@ -198,7 +276,7 @@ except Exception as exc:
                     continue
 
                 is_dir = stat.S_ISDIR(attr.st_mode)
-                full_path = os.path.join(self.path, name)
+                full_path = posixpath.join(self.path, name)
 
                 info = RemoteFileInfo(
                     name=name,
@@ -311,17 +389,163 @@ class AutocompleteThread(QThread):
                 self._sftp = None
 
 
+def _table_type(folder):
+    """The type of CASA table the local ``folder`` holds ("Image"...), or ""."""
+    try:
+        with open(os.path.join(folder, "table.info"), errors="replace") as f:
+            line = f.readline()
+    except OSError:
+        return ""
+    key, _, value = line.partition("=")
+    return value.strip() if key.strip() == "Type" else ""
+
+
+def _tree_size(folder):
+    total = 0
+    for root, _dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def list_local(path, cancelled=lambda: False):
+    """The entries of the local folder ``path``, as a server's are listed:
+    a folder holding a CASA table has its type, a CASA image the size of
+    its whole folder."""
+    entries = []
+    with os.scandir(path) as scanner:
+        for item in scanner:
+            if cancelled():
+                break
+            try:
+                is_dir = item.is_dir()
+                info = item.stat()
+            except OSError:
+                continue  # (a broken link)
+            table, size = None, info.st_size
+            if is_dir:
+                table = _table_type(item.path)
+                if table == "Image":
+                    size = _tree_size(item.path)
+            entries.append(RemoteFileInfo(item.name, item.path, is_dir, size, info.st_mtime, table))
+    return entries
+
+
+class LocalListThread(QThread):
+    """Lists a folder of this computer (a network mount can be slow)."""
+
+    finished = pyqtSignal(list)  # list of RemoteFileInfo
+    error = pyqtSignal(str)
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            entries = list_local(self.path, lambda: self._cancelled)
+        except OSError as e:
+            if not self._cancelled:
+                self.error.emit(e.strerror or str(e))
+            return
+        if not self._cancelled:
+            self.finished.emit(entries)
+
+
+class HeaderThread(QThread):
+    """Reads the FITS header at the start of a file (of the server with
+    ``connection``, else of this computer), 2880-byte block by block to
+    its END card: never the image."""
+
+    done = pyqtSignal(str)  # the header's text
+    failed = pyqtSignal(str)
+
+    def __init__(self, path, connection=None):
+        super().__init__()
+        self.path = path
+        self.connection = connection
+
+    def run(self):
+        from .remote_files import read_header
+
+        gzipped = self.path.lower().endswith(".gz")
+        try:
+            if self.connection is None:
+                with open(self.path, "rb") as raw:
+                    text = read_header(raw, gzipped=gzipped)
+            else:
+                sftp = self.connection.open_sftp()
+                try:
+                    with sftp.open(self.path, "rb") as raw:
+                        text = read_header(raw, gzipped=gzipped)
+                finally:
+                    sftp.close()
+        except Exception as e:
+            self.failed.emit(str(e) or type(e).__name__)
+            return
+        self.done.emit(text)
+
+
+class ReconnectThread(QThread):
+    """Connects again with the parameters the connection was made with."""
+
+    done = pyqtSignal(bool)
+
+    def __init__(self, connection):
+        super().__init__()
+        self.connection = connection
+
+    def run(self):
+        try:
+            ok = self.connection.reconnect()
+        except Exception as e:
+            self.connection.last_error = str(e)
+            ok = False
+        self.done.emit(bool(ok))
+
+
+class HomeThread(QThread):
+    """Finds the server's home folder."""
+
+    result = pyqtSignal(str)
+
+    def __init__(self, connection):
+        super().__init__()
+        self.connection = connection
+
+    def run(self):
+        try:
+            home = self.connection.get_home_directory()
+        except Exception:
+            home = ""
+        self.result.emit(home or "/")
+
+
 class RemoteFileBrowser(QDialog):
     """
     File browser dialog for navigating remote directories via SFTP.
 
     Signals:
-        fileSelected(str): Emitted with local path when a file is downloaded and ready
+        fileSelected(str, bool): the local path of the image chosen (a
+            server's fetched into the cache first) and whether it came
+            from the server
+        pathPicked(str): with pick="folder" / "file", the server path
+            chosen; nothing is fetched
+        serverChanged(object): the SSHConnection made with "Switch server…"
+            (only offered with ``can_switch_server``)
     """
 
     fileSelected = pyqtSignal(str, bool)  # (local_path, is_remote)
     # With pick="folder" / "file": the server path chosen, nothing downloaded
     pathPicked = pyqtSignal(str)
+    serverChanged = pyqtSignal(object)
 
     # Class-level variable to remember last browsed directory per host
     _last_paths: dict = {}  # {host: last_path}
@@ -329,12 +553,23 @@ class RemoteFileBrowser(QDialog):
     # Class-level flag to track if there's a pending operation that may be blocking
     _has_pending_operation: bool = False
 
-    # Class-level cache for directory listings: {(host, path): (entries, timestamp)}
+    # Class-level cache for directory listings: {(user@host:port, path): (entries, timestamp)}
     _listing_cache: dict = {}
     _cache_ttl: int = 60  # Cache TTL in seconds
 
     # Class-level list to keep track of active download threads to prevent garbage collection
     _active_downloads: List[QThread] = []
+    # The other threads still running, kept from the garbage collector
+    _running: set = set()
+
+    # For the session: headers read and what they showed a file to be,
+    # {(source, path, mtime, size): header text / kind}
+    _headers: dict = {}
+    _kinds: dict = {}
+    _order = (MODIFIED, Qt.DescendingOrder)  # the list's sort
+    _last_local = ""  # the local folder last shown
+
+    RECENT = 6  # recent folders kept, per server and for this computer
 
     @classmethod
     def _remove_active_thread(cls, thread):
@@ -347,621 +582,1187 @@ class RemoteFileBrowser(QDialog):
         connection: SSHConnection,
         cache: Optional[RemoteFileCache] = None,
         parent=None,
-        casa_mode: Optional[bool] = False,
+        casa_mode: Optional[bool] = None,
         pick: Optional[str] = None,
+        can_switch_server: bool = False,
     ):
         super().__init__(parent)
         # "folder": choose a folder; "file": choose an image (a FITS file or
         # a CASA image folder); both emit pathPicked with the server path
         # instead of downloading anything
         self.pick = pick
-
-        # CASA mode selects directories, FITS mode selects files, None either
+        # What opens: True CASA images, False FITS files, None any image
         self.casa_mode = casa_mode
-        mode_str = {None: "Images", True: "CASA Images"}.get(casa_mode, "FITS Files")
-        if pick == "folder":
-            mode_str = "Folder"
-        elif pick == "file":
-            mode_str = "Image"
-        self.setWindowTitle(f"Browse Remote {mode_str} - {connection.connection_info}")
-        self.setMinimumSize(500, 500)
-        fit_to_screen(self, 800, 600)
-        self.setModal(True)
-
+        self.can_switch_server = can_switch_server
         self.connection = connection
         self.cache = cache or RemoteFileCache()
-        self.current_path = "/"
+        self.source = "remote"  # or "local"
+        self.current_path = "/"  # the server folder shown
+        self._local_path = ""  # this computer's
+        self._back = {"remote": [], "local": []}
+        self._select_after = None  # a path to select once its folder is listed
+        self._list_token = 0
+        self._list_thread = None
+        self._list_failed = False
+        self._fallback_home = False
         self._download_thread: Optional[DownloadThread] = None
-        self._list_thread: Optional[ListDirectoryThread] = None
+        self._download_entry = None
+        self._download_target = None
+        self._reading = None  # the key of the header being read
+        self._header_errors = {}
+        self._reconnect_thread = None
+        self._home_thread = None
         self._autocomplete_thread: Optional[AutocompleteThread] = None
-        self._autocomplete_timer: Optional[QTimer] = None
+        self._mine = []  # the threads started here
+        self._connected_seen = connection.is_connected()
 
-        self._setup_ui()
-        
-        try:
-            from ..ui.styles import set_hand_cursor
-            set_hand_cursor(self)
-        except ImportError:
-            pass
-# Load initial directory - use last path if available
-        QTimer.singleShot(100, self._load_initial_directory)
+        self.setModal(True)
+        self.setMinimumSize(760, 480)
+        fit_to_screen(self, 1040, 660)
+        self._build()
+        self._update_title()
+        self._apply_icons()
+        theme_manager.register_callback(self._on_theme_changed, self)
+        set_hand_cursor(self)
 
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
-
-        # Header with title and connection info
-        header_layout = QHBoxLayout()
-        header_layout.setSpacing(12)
-
-        title_label = QLabel("Remote Browser")
-        title_label.setObjectName("DialogTitle")
-        header_layout.addWidget(title_label)
-
-        header_layout.addStretch()
-
-        connection_label = QLabel(self.connection.connection_info)
-        connection_label.setObjectName("Hint")
-        header_layout.addWidget(connection_label)
-
-        layout.addLayout(header_layout)
-
-        # Breadcrumb navigation
-        self.breadcrumb_layout = QHBoxLayout()
-        self.breadcrumb_layout.setSpacing(0)
-        self.breadcrumb_layout.setContentsMargins(8, 2, 8, 2)
-        self.breadcrumb_widget = QWidget()
-        self.breadcrumb_widget.setObjectName("BreadcrumbWidget")
-        self.breadcrumb_widget.setLayout(self.breadcrumb_layout)
-        layout.addWidget(self.breadcrumb_widget)
-
-        # Navigation toolbar
-        nav_layout = QHBoxLayout()
-        nav_layout.setSpacing(8)
-
-        self.home_btn = QPushButton("Home")
-        self.home_btn.setObjectName("NavButton")
-        self.home_btn.setToolTip("Go to home directory")
-        self.home_btn.setCursor(Qt.PointingHandCursor)
-        self.home_btn.clicked.connect(self._load_home_directory)
-        nav_layout.addWidget(self.home_btn)
-
-        self.up_btn = QPushButton("Up")
-        self.up_btn.setObjectName("NavButton")
-        self.up_btn.setToolTip("Go up one directory")
-        self.up_btn.setCursor(Qt.PointingHandCursor)
-        self.up_btn.clicked.connect(self._go_up)
-        nav_layout.addWidget(self.up_btn)
-
-        self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("Enter path...")
-        self.path_edit.returnPressed.connect(self._on_path_entered)
-
-        # Setup autocomplete
-        self._autocomplete_model = QStringListModel()
-        self._path_completer = QCompleter(self._autocomplete_model, self)
-        self._path_completer.setCaseSensitivity(Qt.CaseInsensitive)
-        self._path_completer.setCompletionMode(QCompleter.PopupCompletion)
-        self._path_completer.setMaxVisibleItems(10)
-
-        self.path_edit.setCompleter(self._path_completer)
-        self.path_edit.textChanged.connect(self._on_path_text_changed)
-
-        # Debounce timer for autocomplete
-        self._autocomplete_timer = QTimer()
+        self._auto_timer = QTimer(self)  # reads a header once the selection rests
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.timeout.connect(self._read_header)
+        self._autocomplete_timer = QTimer(self)
         self._autocomplete_timer.setSingleShot(True)
-        self._autocomplete_timer.timeout.connect(self._fetch_autocomplete)
+        self._autocomplete_timer.timeout.connect(self._complete)
+        self._status_timer = QTimer(self)  # notices a connection lost or back
+        self._status_timer.timeout.connect(self._poll_connection)
+        self._status_timer.start(3000)
 
-        nav_layout.addWidget(self.path_edit)
+        self._update_connection()
+        self._update_cache()
+        QTimer.singleShot(0, self._load_initial_directory)
 
-        self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.setObjectName("NavButton")
-        self.refresh_btn.setToolTip("Refresh directory (bypass cache)")
-        self.refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.refresh_btn.clicked.connect(lambda: self._refresh(force_refresh=True))
-        nav_layout.addWidget(self.refresh_btn)
+    # ------------------------------------------------------------ layout ----
 
-        layout.addLayout(nav_layout)
-
-        # File tree
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Name", "Size", "Modified"])
-        self.tree.setRootIsDecorated(False)
-        self.tree.setAlternatingRowColors(True)
-        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        self.tree.itemSelectionChanged.connect(self._on_selection_changed)
-
-        # Configure column sizes
-        header = self.tree.header()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Interactive)
-        header.setSectionResizeMode(2, QHeaderView.Interactive)
-        self.tree.setColumnWidth(1, 100)
-        self.tree.setColumnWidth(2, 150)
-
-        layout.addWidget(self.tree, stretch=1)
-
-        # Options bar
-        options_frame = QFrame()
-        options_frame.setObjectName("Card")
-        options_layout = QHBoxLayout(options_frame)
-        options_layout.setContentsMargins(12, 8, 12, 8)
-        options_layout.setSpacing(16)
-
-        self.show_hidden_cb = QCheckBox("Show hidden files")
-        self.show_hidden_cb.setCursor(Qt.PointingHandCursor)
-        self.show_hidden_cb.stateChanged.connect(self._refresh)
-        options_layout.addWidget(self.show_hidden_cb)
-
-        self.fits_only_cb = QCheckBox("FITS files only")
-        self.fits_only_cb.setChecked(True)
-        self.fits_only_cb.setCursor(Qt.PointingHandCursor)
-        self.fits_only_cb.stateChanged.connect(self._refresh)
-        options_layout.addWidget(self.fits_only_cb)
-
-        options_layout.addStretch()
-
-        layout.addWidget(options_frame)
-
-        # Progress area (hidden by default)
-        self.progress_frame = QFrame()
-        self.progress_frame.setObjectName("Card")
-        progress_layout = QVBoxLayout(self.progress_frame)
-        progress_layout.setContentsMargins(12, 12, 12, 12)
-        progress_layout.setSpacing(8)
-
-        self.progress_label = QLabel("Downloading...")
-        self.progress_label.setObjectName("Hint")
-        progress_layout.addWidget(self.progress_label)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setTextVisible(True)
-        progress_layout.addWidget(self.progress_bar)
-
-        self.progress_frame.hide()
-        layout.addWidget(self.progress_frame)
-
-        # Status bar
-        status_layout = QHBoxLayout()
-        status_layout.setSpacing(8)
-
-        self.status_label = QLabel("")
-        self.status_label.setObjectName("Hint")
-        status_layout.addWidget(self.status_label)
-
-        status_layout.addStretch()
-
-        self.cache_info_label = QLabel("")
-        self.cache_info_label.setObjectName("Hint")
-        status_layout.addWidget(self.cache_info_label)
-        self._update_cache_info()
-
-        layout.addLayout(status_layout)
-
-        # Action buttons
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
-
-        # Loading cancel button (hidden by default)
-        self.loading_cancel_btn = QPushButton("Cancel Loading")
-        set_tone(self.loading_cancel_btn, "error")
-        self.loading_cancel_btn.setToolTip("Cancel the current directory listing")
-        self.loading_cancel_btn.setCursor(Qt.PointingHandCursor)
-        self.loading_cancel_btn.clicked.connect(self._cancel_listing)
-        self.loading_cancel_btn.setVisible(False)
-        button_layout.addWidget(self.loading_cancel_btn)
-
-        # Browse Local button - allow selecting local files
-        self.browse_local_btn = QPushButton("Browse Local")
-        self.browse_local_btn.setToolTip("Browse local filesystem instead")
-        self.browse_local_btn.setCursor(Qt.PointingHandCursor)
-        self.browse_local_btn.clicked.connect(self._browse_local)
-        button_layout.addWidget(self.browse_local_btn)
-        self.browse_local_btn.setVisible(self.pick is None)
-
-        button_layout.addStretch()
-
-        # Go Into button - for navigating into directories in CASA mode
-        self.go_into_btn = QPushButton("Go Into")
-        self.go_into_btn.setToolTip("Navigate into the selected directory")
-        self.go_into_btn.setEnabled(False)
-        self.go_into_btn.setCursor(Qt.PointingHandCursor)
-        self.go_into_btn.clicked.connect(self._go_into_selected)
-        if self.casa_mode is not False:
-            button_layout.addWidget(self.go_into_btn)
-
-        self.cancel_btn = QPushButton("Close")
-        self.cancel_btn.setCursor(Qt.PointingHandCursor)
-        self.cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(self.cancel_btn)
-
-        self.open_btn = QPushButton(
-            {"folder": "Use This Folder", "file": "Choose"}.get(
-                self.pick, "Select" if self.casa_mode else "Open"
-            )
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._build_toolbar())
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        self.places = PlacesPanel()
+        self.places.placeChosen.connect(self._on_place)
+        self.places.unpinRequested.connect(self._toggle_pin)
+        self.places.reconnectRequested.connect(self._reconnect)
+        self.places.switchRequested.connect(self._switch_server)
+        self.places.clearCacheRequested.connect(self._clear_cache)
+        body.addWidget(self.places)
+        body.addWidget(self._build_list(), 1)
+        self.details = DetailsPanel()
+        self.details.readRequested.connect(self._read_header)
+        self.details.fullHeaderRequested.connect(self._show_full_header)
+        self.details.auto_switch.setChecked(
+            QSettings("SolarViewer", "SolarViewer").value("remote_browser/auto_header", False, type=bool)
         )
-        self.open_btn.setObjectName("PrimaryButton")
-        self.open_btn.setEnabled(False)
-        self.open_btn.setDefault(True)
-        self.open_btn.setCursor(Qt.PointingHandCursor)
-        self.open_btn.clicked.connect(self._open_selected)
-        button_layout.addWidget(self.open_btn)
+        self.details.auto_switch.toggled.connect(self._on_auto_toggled)
+        body.addWidget(self.details)
+        layout.addLayout(body, 1)
+        layout.addWidget(self._build_footer())
 
-        layout.addLayout(button_layout)
+    def _tool(self, name, tip, slot):
+        button = QToolButton()
+        button.setAutoRaise(True)
+        button.setFixedSize(28, 28)
+        button.setIconSize(QSize(15, 15))
+        button.setToolTip(tip)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFocusPolicy(Qt.NoFocus)
+        button.clicked.connect(slot)
+        self._icons.append((button, name))
+        return button
 
-    def _update_cache_info(self):
-        """Update cache size display."""
-        size, count = self.cache.get_cache_size()
-        if count > 0:
-            if size > 1024 * 1024 * 1024:
-                size_str = f"{size / (1024**3):.1f} GB"
-            elif size > 1024 * 1024:
-                size_str = f"{size / (1024**2):.1f} MB"
-            else:
-                size_str = f"{size / 1024:.1f} KB"
-            self.cache_info_label.setText(f"Cache: {count} files, {size_str}")
+    def _build_toolbar(self):
+        self._icons = []
+        bar = QFrame()
+        bar.setObjectName("TopBar")
+        bar.setFixedHeight(48)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(14, 0, 14, 0)
+        row.setSpacing(10)
+
+        # The same dialog on the server's files or this computer's
+        self.remote_button = QPushButton("Remote")
+        self.local_button = QPushButton("Local")
+        group = QButtonGroup(self)
+        for button, source in ((self.remote_button, "remote"), (self.local_button, "local")):
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            button.setFocusPolicy(Qt.NoFocus)
+            group.addButton(button)
+            button.clicked.connect(lambda _checked, s=source: self._set_source(s))
+        self.remote_button.setChecked(True)
+        self.remote_button.setToolTip("The server's files")
+        self.local_button.setToolTip("This computer's files")
+        self.source_switch = segmented([self.remote_button, self.local_button], role="HeaderSegmented")
+        # (picking a server path, there is nothing to take from here)
+        self.source_switch.setVisible(self.pick is None)
+        row.addWidget(self.source_switch)
+
+        nav = QHBoxLayout()
+        nav.setSpacing(2)
+        self.back_button = self._tool("back", "Back (Alt+Left)", self._go_back)
+        self.up_button = self._tool("up", "Up one level (Alt+Up)", self._go_up)
+        self.home_button = self._tool("home", "Home", self._go_home)
+        for button in (self.back_button, self.up_button, self.home_button):
+            nav.addWidget(button)
+        row.addLayout(nav)
+
+        self.path_bar = PathBar()
+        self.path_bar.pathChosen.connect(self._on_path_chosen)
+        self.path_bar.edit.textEdited.connect(lambda _text: self._autocomplete_timer.start(250))
+        self._completions = QStringListModel(self)
+        self._completer = QCompleter(self._completions, self)
+        self._completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._completer.setCompletionMode(QCompleter.PopupCompletion)
+        self._completer.setMaxVisibleItems(10)
+        self._completer.activated[str].connect(self._on_path_chosen)
+        self.path_bar.edit.setCompleter(self._completer)
+        row.addWidget(self.path_bar, 1)
+
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filter this folder")
+        self.filter_edit.setFixedWidth(170)
+        self.filter_edit.setClearButtonEnabled(True)
+        self._search_action = self.filter_edit.addAction(QIcon(), QLineEdit.LeadingPosition)
+        self.filter_edit.textChanged.connect(self._on_filter)
+        self.filter_edit.installEventFilter(self)
+        row.addWidget(self.filter_edit)
+        self.refresh_button = self._tool("refresh", "Refresh (F5)", lambda: self._refresh(force=True))
+        row.addWidget(self.refresh_button)
+        self.toolbar = bar
+
+        for keys, slot in (
+            ("Ctrl+L", self.path_bar.start_editing),
+            ("Alt+Left", self._go_back),
+            ("Alt+Up", self._go_up),
+            ("F5", lambda: self._refresh(force=True)),
+            ("Ctrl+F", self._focus_filter),
+        ):
+            QShortcut(QKeySequence(keys), self, slot)
+        return bar
+
+    def _build_list(self):
+        column = QWidget()
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.model = FileListModel(self)
+        self.view = FileListView()
+        self.view.setModel(self.model)
+        sort_column, order = RemoteFileBrowser._order
+        self.model.order = (sort_column, order)
+        self.view.header().setSortIndicator(sort_column, order)
+        self.view.setSortingEnabled(True)
+        self.view.header().sortIndicatorChanged.connect(self._on_sorted)
+        self.view.selectionModel().selectionChanged.connect(lambda *_: self._on_selection_changed())
+        self.view.openRequested.connect(self._open_index)
+        self.view.upRequested.connect(self._go_up)
+        self.view.customContextMenuRequested.connect(self._list_menu)
+        layout.addWidget(self.view, 1)
+
+        strip = QFrame()
+        strip.setObjectName("CanvasBar")
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(16, 8, 16, 8)
+        row.setSpacing(16)
+        self.images_only = QCheckBox("Images only")
+        self.images_only.setObjectName("Switch")
+        self.images_only.setToolTip("Show only folders and the images SolarViewer opens: FITS files, CASA images and spectra")
+        self.images_only.setChecked(True)
+        self.images_only.toggled.connect(self._on_filter_switches)
+        row.addWidget(self.images_only)
+        self.show_hidden = QCheckBox("Hidden files")
+        self.show_hidden.setObjectName("Switch")
+        self.show_hidden.setToolTip("Show files and folders whose names start with a dot")
+        self.show_hidden.toggled.connect(self._on_filter_switches)
+        row.addWidget(self.show_hidden)
+        row.addStretch()
+        self.count_label = QLabel()
+        self.count_label.setObjectName("Meta")
+        row.addWidget(self.count_label)
+        layout.addWidget(strip)
+        self.list_column = column
+        return column
+
+    def _build_footer(self):
+        footer = QFrame()
+        footer.setObjectName("CanvasBar")
+        footer.setFixedHeight(52)
+        self.footer_pages = QStackedLayout(footer)
+        self.footer_pages.setContentsMargins(0, 0, 0, 0)
+
+        page = QWidget()
+        row = QHBoxLayout(page)
+        row.setContentsMargins(16, 0, 16, 0)
+        row.setSpacing(8)
+        key = "⌘L" if sys.platform == "darwin" else "Ctrl+L"
+        self._hint = f"Double-click a folder to open it · {key} to type a path"
+        self.hint_label = QLabel(self._hint)
+        self.hint_label.setObjectName("Meta")
+        row.addWidget(self.hint_label, 1)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setObjectName("GhostButton")
+        self.cancel_button.setAutoDefault(False)
+        self.cancel_button.clicked.connect(self.reject)
+        row.addWidget(self.cancel_button)
+        self.open_button = QPushButton("Open")
+        self.open_button.setObjectName("PrimaryButton")
+        self.open_button.setDefault(True)
+        self.open_button.clicked.connect(self._open_selected)
+        row.addWidget(self.open_button)
+        self.footer_pages.addWidget(page)
+
+        # While a file is fetched
+        page = QWidget()
+        row = QHBoxLayout(page)
+        row.setContentsMargins(16, 0, 16, 0)
+        row.setSpacing(10)
+        progress = QVBoxLayout()
+        progress.setSpacing(5)
+        progress.addStretch()
+        line = QHBoxLayout()
+        line.setSpacing(8)
+        self.download_label = QLabel()
+        self.download_label.setObjectName("Meta")
+        line.addWidget(self.download_label, 1)
+        self.download_amount = QLabel()
+        self.download_amount.setObjectName("DetailMono")
+        self.download_amount.setProperty("muted", "true")
+        line.addWidget(self.download_amount)
+        progress.addLayout(line)
+        self.download_bar = QProgressBar()
+        self.download_bar.setObjectName("ThinProgress")
+        self.download_bar.setTextVisible(False)
+        progress.addWidget(self.download_bar)
+        progress.addStretch()
+        row.addLayout(progress, 1)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setAutoDefault(False)
+        self.stop_button.clicked.connect(self._stop_download)
+        row.addWidget(self.stop_button)
+        self.footer_pages.addWidget(page)
+        return footer
+
+    def _apply_icons(self):
+        palette = theme_manager.palette
+        for button, name in self._icons:
+            button.setIcon(icon(name, palette))
+        search = QIcon()
+        for ratio in (1, 2):
+            search.addPixmap(pixmap("search", palette["text_secondary"], 13, ratio))
+        self._search_action.setIcon(search)
+
+    def _on_theme_changed(self, _theme=None):
+        self._apply_icons()
+        self._refresh_details()
+        self.view.viewport().update()
+
+    def _update_title(self):
+        if self.pick == "folder":
+            title = "Choose a folder on the server"
+        elif self.pick == "file":
+            title = "Choose an image on the server"
         else:
-            self.cache_info_label.setText("")
+            title = "Open remote image" if self.source == "remote" else "Open local image"
+        self.setWindowTitle(title)
 
-    def _update_breadcrumbs(self):
-        """Update the breadcrumb navigation bar with clickable path segments."""
-        # Clear existing breadcrumbs
-        while self.breadcrumb_layout.count():
-            item = self.breadcrumb_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+    # ------------------------------------------------------- where we are ----
 
-        # Split path into segments
-        path = self.current_path.rstrip("/")
-        if not path:
-            path = "/"
+    def _folder(self):
+        return self.current_path if self.source == "remote" else self._local_path
 
-        segments = path.split("/")
+    def _set_folder(self, path):
+        if self.source == "remote":
+            self.current_path = path
+        else:
+            self._local_path = path
 
-        # Build cumulative paths for each segment
-        cumulative_path = ""
-        for i, segment in enumerate(segments):
-            if i == 0:
-                # Root
-                cumulative_path = "/"
-                display_name = "/"
-            else:
-                cumulative_path = f"{cumulative_path.rstrip('/')}/{segment}"
-                display_name = segment
+    def _paths(self):
+        """posixpath on the server, os.path here."""
+        return posixpath if self.source == "remote" else os.path
 
-            # Create clickable button
-            btn = QPushButton(display_name)
-            btn.setObjectName("NavButton")
-            btn.setCursor(Qt.PointingHandCursor)
+    def _source_key(self):
+        """Whose files are shown, for the places, recent folders and headers
+        kept: "local", or the server's host (and port, if not 22: a tunnel's)."""
+        if self.source == "local":
+            return "local"
+        port = self.connection.port
+        return f"remote-{self.connection.host}" + ("" if port in (22, None) else f"-{port}")
 
-            # Store path for this button
-            target_path = cumulative_path
-            btn.clicked.connect(lambda checked, p=target_path: self._navigate_to(p))
+    def _server_key(self):
+        """The server, for the listing cache (a host may serve as several)."""
+        connection = self.connection
+        return f"{connection.username}@{connection.host}:{connection.port}"
 
-            self.breadcrumb_layout.addWidget(btn)
-
-            # Add separator (except for last item)
-            if i < len(segments) - 1:
-                sep = QLabel(" › ")
-                sep.setObjectName("Hint")
-                self.breadcrumb_layout.addWidget(sep)
-
-        # Add stretch to push everything left
-        self.breadcrumb_layout.addStretch()
+    def _normalise(self, path):
+        if self.source == "local":
+            return os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+        return posixpath.normpath("/" + path.lstrip("/"))
 
     def _load_initial_directory(self):
-        """Navigate to last used directory or home if not available."""
-        host = self.connection.host
-
-        # Use last path if available
-        if host in RemoteFileBrowser._last_paths:
-            self._navigate_to(RemoteFileBrowser._last_paths[host])
+        """The folder last shown on this server (its home folder if that
+        is gone), else its home folder."""
+        last = RemoteFileBrowser._last_paths.get(self.connection.host)
+        if last:
+            self._navigate(last, remember=False, fallback=True)
+        elif self.connection.last_home:
+            self._navigate(self.connection.last_home, remember=False)
+        elif self.connection.is_connected():
+            self.view.set_empty_text("Loading…")
+            self._fetch_home(remember=False)
         else:
-            # Use cached home directory if available, otherwise start at root
-            # This avoids a blocking get_home_directory() call
-            if self.connection.last_home:
-                self._navigate_to(self.connection.last_home)
-            else:
-                # Start at root - non-blocking
-                self._navigate_to("/")
+            self._navigate("/", remember=False)
 
-    def _load_home_directory(self):
-        """Navigate to home directory."""
-        # Use cached home if available for instant navigation
-        if self.connection.last_home:
-            self._navigate_to(self.connection.last_home)
+    def _navigate(self, path, remember=True, select=None, fallback=False):
+        """Show the folder ``path`` (of the server or of this computer, as
+        shown), with ``select`` selected once it is listed; ``fallback``:
+        the home folder instead if it cannot be listed."""
+        path = self._normalise(path)
+        self._fallback_home = fallback
+        previous = self._folder()
+        if remember and previous and previous != path:
+            stack = self._back[self.source]
+            stack.append(previous)
+            del stack[:-50]
+        self._set_folder(path)
+        if self.source == "remote":
+            RemoteFileBrowser._last_paths[self.connection.host] = path
         else:
-            # Fetch home directory in background thread
-            self._fetch_home_async()
-
-    def _fetch_home_async(self):
-        """Fetch home directory asynchronously."""
-        from PyQt5.QtCore import QThread, pyqtSignal
-
-        class HomeThread(QThread):
-            result = pyqtSignal(str)
-
-            def __init__(self, connection):
-                super().__init__()
-                self.connection = connection
-
-            def run(self):
-                try:
-                    home = self.connection.get_home_directory()
-                    self.result.emit(home)
-                except Exception:
-                    self.result.emit("/")
-
-        def on_home_fetched(home_path):
-            self._navigate_to(home_path)
-
-        self._home_thread = HomeThread(self.connection)
-        self._home_thread.result.connect(on_home_fetched)
-        self._home_thread.start()
-
-    def _navigate_to(self, path: str):
-        """Navigate to a specific directory."""
-        self.current_path = path
-
-        # Set flag to prevent autocomplete from triggering
-        self._navigating = True
-        self.path_edit.setText(path)
-        self._navigating = False
-
-        # Remember this path for next time
-        host = self.connection.host
-        RemoteFileBrowser._last_paths[host] = path
-
-        # Update breadcrumb navigation
-        self._update_breadcrumbs()
-
+            RemoteFileBrowser._last_local = path
+        self._select_after = select
+        self.path_bar.set_path(path, self._paths().split)
+        self.filter_edit.blockSignals(True)
+        self.filter_edit.clear()
+        self.filter_edit.blockSignals(False)
+        self.model.text = ""
+        self.model.set_entries([])  # (the last folder's files go at once)
+        self._on_selection_changed()
+        self._update_nav()
+        self._update_places()
         self._refresh()
 
+    def _on_path_chosen(self, text):
+        """A folder clicked in the path bar, or a path typed there: a FITS
+        file's opens its folder with it selected."""
+        paths = self._paths()
+        text = text.strip()
+        if self.source == "remote" and text.startswith("~") and self.connection.last_home:
+            text = self.connection.last_home + text[1:]
+        if not paths.isabs(os.path.expanduser(text) if self.source == "local" else text):
+            text = paths.join(self._folder(), text)
+        path = self._normalise(text)
+        folder, name = paths.split(path)
+        if name and fits_named(name):
+            self._navigate(folder, select=path)
+            return
+        # Up to a folder above: the one come from, in it, selected
+        current, separator = self._folder(), paths.sep
+        child = None
+        prefix = path.rstrip(separator) + separator
+        if current != path and current.startswith(prefix):
+            child = prefix + current[len(prefix):].split(separator)[0]
+        self._navigate(path, select=child)
+
+    def _update_nav(self):
+        folder = self._folder()
+        self.back_button.setEnabled(bool(self._back[self.source]))
+        self.up_button.setEnabled(bool(folder) and self._paths().split(folder)[0] != folder)
+
+    def _go_back(self):
+        stack = self._back[self.source]
+        if stack:
+            self._navigate(stack.pop(), remember=False)
+
     def _go_up(self):
-        """Navigate to parent directory."""
-        parent = os.path.dirname(self.current_path.rstrip("/"))
-        if not parent:
-            parent = "/"
-        self._navigate_to(parent)
+        folder = self._folder()
+        parent = self._paths().split(folder)[0]
+        if parent and parent != folder:
+            self._navigate(parent, select=folder)
 
-    def _on_path_entered(self):
-        """Handle manual path entry."""
-        path = self.path_edit.text().strip()
-        if path:
-            self._navigate_to(path)
+    def _go_home(self):
+        if self.source == "local":
+            self._navigate(os.path.expanduser("~"))
+        elif self.connection.last_home:
+            self._navigate(self.connection.last_home)
+        elif self.connection.is_connected():
+            self._fetch_home()
 
-    def _on_path_text_changed(self, text: str):
-        """Handle path text changes - trigger autocomplete with debounce."""
-        # Don't autocomplete if text is empty or doesn't contain /
-        if not text or "/" not in text:
+    def _fetch_home(self, remember=True):
+        """Find the server's home folder and go there (``remember``: with
+        the folder shown kept for Back)."""
+        if self._home_thread is not None:
             return
+        thread = HomeThread(self.connection)
+        thread.result.connect(lambda home: self._on_home(home, remember))
+        self._home_thread = thread
+        self._start(thread)
 
-        # Don't trigger during path navigation (when we programmatically set the text)
-        if hasattr(self, "_navigating") and self._navigating:
+    def _on_home(self, home, remember):
+        if _deleted(self):
             return
+        self._home_thread = None
+        if self.source == "remote":
+            self._navigate(home, remember=remember)
 
-        # Start/restart debounce timer
-        if self._autocomplete_timer:
-            self._autocomplete_timer.start(300)  # 300ms debounce
-
-    def _fetch_autocomplete(self):
-        """Fetch autocomplete suggestions from remote server."""
-        text = self.path_edit.text().strip()
-        if not text or not self.connection or not self.connection.is_connected():
+    def _set_source(self, source):
+        """Browse the server's files ("remote") or this computer's ("local")."""
+        self.remote_button.setChecked(source == "remote")
+        self.local_button.setChecked(source == "local")
+        if source == self.source:
             return
-
-        # Parse text into parent directory and partial name
-        if text.endswith("/"):
-            parent_path = text.rstrip("/") or "/"
-            partial_name = ""
+        self._cancel_listing()
+        self._auto_timer.stop()
+        self.source = source
+        self._update_title()
+        if source == "local":
+            start = self._local_path or RemoteFileBrowser._last_local
+            if not start or not os.path.isdir(start):
+                last = QSettings("SolarViewer", "SolarViewer").value("last_image_folder", "")
+                start = last if last and os.path.isdir(str(last)) else os.path.expanduser("~")
+            self._navigate(str(start), remember=False)
         else:
-            parent_path = os.path.dirname(text)
-            partial_name = os.path.basename(text)
-            if not parent_path:
-                parent_path = "/"
+            self._navigate(self.current_path, remember=False)
 
-        # Check cache first - use the existing _listing_cache
-        cache_key = (
-            self.connection.host,
-            parent_path,
-            True,
-            False,
-        )  # show_hidden=True, fits_only=False
-        if cache_key in RemoteFileBrowser._listing_cache:
-            import time
+    def _focus_filter(self):
+        self.filter_edit.setFocus(Qt.ShortcutFocusReason)
+        self.filter_edit.selectAll()
 
-            entries, timestamp = RemoteFileBrowser._listing_cache[cache_key]
-            if time.time() - timestamp < RemoteFileBrowser._cache_ttl:
-                # Filter entries locally
-                suggestions = []
-                for entry in entries:
-                    if entry.is_dir:
-                        if not partial_name or entry.name.lower().startswith(
-                            partial_name.lower()
-                        ):
-                            suggestions.append(entry.path)
-                self._on_autocomplete_finished(suggestions)
-                return
+    def eventFilter(self, watched, event):
+        from PyQt5.QtCore import QEvent
 
-        # Cancel any existing autocomplete thread and wait for it
-        if self._autocomplete_thread is not None:
-            if self._autocomplete_thread.isRunning():
-                try:
-                    self._autocomplete_thread.finished.disconnect()
-                except Exception:
-                    pass
-                self._autocomplete_thread.cancel()
-                # Wait briefly for thread to finish (non-blocking timeout)
-                self._autocomplete_thread.wait(100)  # 100ms max wait
-                # If still running after wait, let it finish in background
-                # but don't start a new thread this cycle
-                if self._autocomplete_thread.isRunning():
-                    return
-            # Clean up finished thread
-            self._autocomplete_thread = None
+        if watched is self.filter_edit and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Down):
+                # Into the list, at its first match
+                if self.model.rowCount():
+                    self.view.setFocus()
+                    if not self.view.selectionModel().selectedRows():
+                        self.view.setCurrentIndex(self.model.index(0, 0))
+                return True
+            if event.key() == Qt.Key_Escape and self.filter_edit.text():
+                self.filter_edit.clear()
+                return True  # (not closing the dialog)
+        return super().eventFilter(watched, event)
 
-        # Start new autocomplete thread
-        self._autocomplete_thread = AutocompleteThread(
-            self.connection,
-            parent_path,
-            partial_name,
-        )
-        self._autocomplete_thread.finished.connect(self._on_autocomplete_finished)
-        self._autocomplete_thread.start()
+    # ----------------------------------------------------------- listing ----
 
-    def _on_autocomplete_finished(self, suggestions: list):
-        """Handle autocomplete results."""
-        if not suggestions:
-            return
-
-        # Update the completer model
-        self._autocomplete_model.setStringList(suggestions)
-
-        # Show the completer popup if we have suggestions
-        if len(suggestions) > 0 and self.path_edit.hasFocus():
-            self._path_completer.complete()
-
-    def _refresh(self, force_refresh: bool = False):
-        """Refresh current directory listing asynchronously.
-
-        Args:
-            force_refresh: If True, bypass cache and fetch fresh data
-        """
-        # Check connection before attempting operations
-        if not self.connection or not self.connection.is_connected():
-            self.status_label.setText("Not connected")
-            return
-
-        # Cancel any existing listing operation (don't wait - just mark cancelled)
-        if self._list_thread and self._list_thread.isRunning():
-            try:
-                self._list_thread.finished.disconnect()
-                self._list_thread.error.disconnect()
-            except Exception:
-                pass
-            self._list_thread.cancel()
-            # Mark that we have a pending operation
-            RemoteFileBrowser._has_pending_operation = True
-
-        # If there was a pending operation from before and thread is done, refresh SFTP
-        if RemoteFileBrowser._has_pending_operation:
-            if self._list_thread is None or not self._list_thread.isRunning():
-                try:
-                    self.connection.refresh_sftp()
-                    RemoteFileBrowser._has_pending_operation = False
-                except Exception:
-                    pass  # Will try again next time
-
-        # Check cache first (unless force refresh)
-        if not force_refresh:
-            cache_key = (
-                self.connection.host,
-                self.current_path,
-                self.show_hidden_cb.isChecked(),
-                self.fits_only_cb.isChecked(),
-            )
-            if cache_key in RemoteFileBrowser._listing_cache:
-                entries, timestamp = RemoteFileBrowser._listing_cache[cache_key]
-                import time
-
-                if time.time() - timestamp < RemoteFileBrowser._cache_ttl:
-                    # Use cached entries
-                    self.tree.clear()
-                    self._on_list_finished(entries, from_cache=True)
-                    return
-
-        self.tree.clear()
-        self.status_label.setText("⏳ Loading...")
-
-        # Disable UI during loading
-        self._set_loading_state(True)
-
-        # Start async listing
-        self._list_thread = ListDirectoryThread(
-            self.connection,
-            self.current_path,
-            show_hidden=self.show_hidden_cb.isChecked(),
-            fits_only=self.fits_only_cb.isChecked(),
-        )
-        self._list_thread.finished.connect(self._on_list_finished)
-        self._list_thread.error.connect(self._on_list_error)
-        self._list_thread.start()
-
-    def _set_loading_state(self, loading: bool):
-        """Enable/disable UI elements during loading."""
-        self.up_btn.setEnabled(not loading)
-        self.home_btn.setEnabled(not loading)
-        self.refresh_btn.setEnabled(not loading)
-        self.path_edit.setEnabled(not loading)
-        self.show_hidden_cb.setEnabled(not loading)
-        self.fits_only_cb.setEnabled(not loading)
-        self.open_btn.setEnabled(not loading and False)  # Also check selection
-
-        # Show/update loading cancel button
-        if loading:
-            self.loading_cancel_btn.setVisible(True)
-            self.status_label.setText("⏳ Loading... (click Cancel to abort)")
-        else:
-            self.loading_cancel_btn.setVisible(False)
+    def _start(self, thread):
+        """Start ``thread``, kept alive until it ends (closing the dialog
+        does not wait for it)."""
+        RemoteFileBrowser._running.add(thread)
+        _base_finished(thread).connect(lambda t=thread: RemoteFileBrowser._running.discard(t))
+        self._mine = [t for t in self._mine if t.isRunning()] + [thread]
+        thread.start()
 
     def _cancel_listing(self):
-        """Cancel the current directory listing operation."""
-        if self._list_thread and self._list_thread.isRunning():
-            self._list_thread.cancel()
-            self._list_thread.wait(1000)
-            self._set_loading_state(False)
-            self.status_label.setText("Cancelled")
+        thread = self._list_thread
+        self._list_thread = None
+        self._list_token += 1
+        if thread is not None and thread.isRunning():
+            _silence(thread)
+            thread.cancel()
+
+    def _refresh(self, force: bool = False):
+        """List the folder shown (a server's from the listing cache, unless
+        ``force``d or older than a minute)."""
+        self._cancel_listing()
+        token = self._list_token
+        folder = self._folder()
+        if self.source == "remote":
+            if not self.connection.is_connected():
+                self._listing_failed(token, "", disconnected=True)
+                return
+            cached = RemoteFileBrowser._listing_cache.get((self._server_key(), folder))
+            if cached is not None and not force and time.time() - cached[1] < self._cache_ttl:
+                self._listed(token, cached[0], fresh=False)
+                return
+            thread = ListDirectoryThread(self.connection, folder, show_hidden=True, fits_only=False)
+        else:
+            thread = LocalListThread(folder)
+        thread.finished.connect(lambda entries: self._listed(token, entries))
+        thread.error.connect(lambda message: self._listing_failed(token, message))
+        self._list_thread = thread
+        self._start(thread)
+        self.count_label.setText("Loading…")
+        if not self.model.rowCount():
+            self.view.set_empty_text("Loading…")
+
+    def _listed(self, token, entries, fresh=True):
+        if _deleted(self) or token != self._list_token:
+            return
+        self._list_thread = None
+        self._list_failed = False
+        self._fallback_home = False
+        folder = self._folder()
+        paths = self._paths()
+        if fresh and self.source == "remote":
+            RemoteFileBrowser._listing_cache[(self._server_key(), folder)] = (entries, time.time())
+        # Inside a CASA image (its path typed): show it in its folder instead
+        parent, name = paths.split(folder)
+        if casa_named(name) and parent != folder and any(
+            e.name == "table.info" and not e.is_dir for e in entries
+        ):
+            stack = self._back[self.source]
+            if stack and stack[-1] == parent:
+                stack.pop()
+            self._navigate(parent, remember=False, select=folder)
+            return
+        selected = self._select_after or self._selected_path()
+        self._select_after = None
+        known = {}
+        for entry in entries:
+            kind = RemoteFileBrowser._kinds.get(self._header_key(entry))
+            if kind is not None:
+                known[entry.path] = kind
+        self.model.set_entries(entries, self._cached_paths(entries), known)
+        self._reselect(selected)
+        self._update_counts()
+        if self._connected_seen != self._is_connected():
+            self._update_connection()
+
+    def _listing_failed(self, token, message, disconnected=False):
+        if _deleted(self) or token != self._list_token:
+            return
+        self._list_thread = None
+        if self._fallback_home and not disconnected and self.connection.is_connected():
+            # (the folder remembered is gone, or not this server's)
+            self._fallback_home = False
+            home = self.connection.last_home
+            if home and home != self._folder():
+                self._navigate(home, remember=False)
+            else:
+                self._fetch_home(remember=False)
+            return
+        self._list_failed = True
+        self.model.set_entries([])
+        self._reselect(None)
+        self.count_label.setText("")
+        if self.source == "remote" and (disconnected or not self.connection.is_connected()):
+            self.view.set_empty_text("Not connected. Reconnect (on the left) to see the server’s files.")
+        else:
+            self.view.set_empty_text(f"Couldn’t open this folder: {message}")
+        self._update_connection()
+
+    def _cached_paths(self, entries):
+        """The server files (and CASA images) with a copy in the cache."""
+        if self.source != "remote":
+            return set()
+        host = self.connection.host
+        return {
+            e.path for e in entries
+            if (not e.is_dir or casa_named(e.name) or e.table_type == "Image")
+            and self.cache.is_cached(host, e.path, e.mtime, e.size)
+        }
+
+    def _on_filter(self, text):
+        selected = self._selected_path()
+        self.model.text = text.strip()
+        self.model.refilter()
+        self._reselect(selected)
+        self._update_counts()
+
+    def _on_filter_switches(self):
+        selected = self._selected_path()
+        self.model.images_only = self.images_only.isChecked()
+        self.model.show_hidden = self.show_hidden.isChecked()
+        self.model.refilter()
+        self._reselect(selected)
+        self._update_counts()
+
+    def _on_sorted(self, column, order):
+        RemoteFileBrowser._order = (column, order)
+
+    def _update_counts(self):
+        if self._list_failed:
+            return
+        counts = self.model.counts()
+        self.count_label.setText(count_text(counts, bool(self.model.text)))
+        if self.model.rowCount():
+            self.view.set_empty_text("")
+        elif self.model.text:
+            self.view.set_empty_text(f"Nothing in this folder matches “{self.model.text}”.")
+        elif counts["others_hidden"]:
+            others = counts["others_hidden"]
+            files = "1 other file" if others == 1 else f"{others} other files"
+            self.view.set_empty_text(f"No images here. Turn off Images only to see {files}.")
+        elif counts["hidden"]:
+            self.view.set_empty_text("Only hidden files here. Turn on Hidden files to see them.")
+        else:
+            self.view.set_empty_text("This folder is empty.")
+
+    # --------------------------------------------------------- selection ----
+
+    def _selected(self):
+        """(entry, kind) of the selected row, or (None, None)."""
+        rows = self.view.selectionModel().selectedRows()
+        if not rows:
+            return None, None
+        return rows[0].data(ENTRY_ROLE), rows[0].data(KIND_ROLE)
+
+    def _selected_path(self):
+        entry, _kind = self._selected()
+        return entry.path if entry is not None else None
+
+    def _reselect(self, path):
+        row = self.model.row_of(path) if path else None
+        if row is not None:
+            index = self.model.index(row, 0)
+            self.view.setCurrentIndex(index)
+            self.view.scrollTo(index)
+        else:
+            self.view.clearSelection()
+        # (a model reset clears the selection without saying so)
+        self._on_selection_changed()
+
+    def _on_selection_changed(self):
+        entry, kind = self._selected()
+        self._auto_timer.stop()
+        self._refresh_details()
+        self._update_open_button()
+        if (
+            entry is not None
+            and kind in (FITS, SPECTRUM)
+            and self.details.auto_switch.isChecked()
+            and self._header_key(entry) not in RemoteFileBrowser._headers
+            and self._reading != self._header_key(entry)
+        ):
+            self._auto_timer.start(300)
+
+    def _openable(self, kind):
+        if self.casa_mode is True:
+            return kind == CASA
+        if self.casa_mode is False:
+            return kind in (FITS, SPECTRUM)
+        return kind in IMAGES
+
+    def _update_open_button(self):
+        entry, kind = self._selected()
+        hint = self._hint
+        metrics = self.open_button.fontMetrics()
+
+        def named(text, name):
+            return text.format(metrics.elidedText(name, Qt.ElideMiddle, 320))
+
+        if self.pick == "folder":
+            if entry is not None and kind in FOLDERS:
+                text, enabled = named("Use folder “{}”", entry.name), True
+            else:
+                text, enabled = "Use this folder", not self._list_failed
+        elif entry is None:
+            text, enabled = "Choose" if self.pick == "file" else "Open", False
+        elif kind in FOLDERS:
+            text, enabled = named("Open folder “{}”", entry.name), True
+        elif self._openable(kind):
+            text, enabled = named("Choose {}" if self.pick == "file" else "Open {}", entry.name), True
+        else:
+            text, enabled = "Open", False
+            hint = (
+                "Only FITS files, CASA images and spectra open here"
+                if self.casa_mode is None
+                else ("Only CASA images open here" if self.casa_mode else "Only FITS files open here")
+            )
+        self.open_button.setText(text)
+        self.open_button.setEnabled(enabled)
+        self.open_button.setToolTip(entry.path if entry is not None else "")
+        self.hint_label.setText(hint)
+
+    # ----------------------------------------------------------- details ----
+
+    def _header_key(self, entry):
+        return (self._source_key(), entry.path, entry.mtime, entry.size)
+
+    def _refresh_details(self):
+        entry, kind = self._selected()
+        if entry is None:
+            self.details.show_nothing()
+            return
+        cached = None
+        if self.source == "remote" and (not entry.is_dir or kind == CASA):
+            cached = self.model.is_cached(entry.path)
+        self.details.show_entry(entry, kind, cached, self._paths().dirname(entry.path))
+        if kind not in (FITS, SPECTRUM):
+            self.details.show_header("hidden")
+            return
+        key = self._header_key(entry)
+        text = RemoteFileBrowser._headers.get(key)
+        if text is not None:
+            try:
+                self.details.show_header("read", header_rows(text))
+            except Exception as e:
+                self.details.show_header("failed", error=str(e))
+        elif self._reading == key:
+            self.details.show_header("reading")
+        elif key in self._header_errors:
+            self.details.show_header("failed", error=self._header_errors[key])
+        else:
+            self.details.show_header("unread")
+
+    def _read_header(self):
+        """Read the selected FITS file's header (only its first blocks)."""
+        entry, kind = self._selected()
+        if entry is None or kind not in (FITS, SPECTRUM):
+            return
+        key = self._header_key(entry)
+        if key in RemoteFileBrowser._headers or self._reading == key:
+            self._refresh_details()
+            return
+        if self.source == "remote" and not self.connection.is_connected():
+            self._header_errors[key] = "not connected"
+            self._refresh_details()
+            return
+        self._header_errors.pop(key, None)
+        self._reading = key
+        thread = HeaderThread(entry.path, self.connection if self.source == "remote" else None)
+        thread.done.connect(lambda text: self._header_read(key, text))
+        thread.failed.connect(lambda error: self._header_failed(key, error))
+        self._start(thread)
+        self._refresh_details()
+
+    def _header_read(self, key, text):
+        if _deleted(self):
+            return
+        RemoteFileBrowser._headers[key] = text
+        if self._reading == key:
+            self._reading = None
+        try:
+            kind = header_kind(text)
+        except Exception:
+            kind = None
+        path = key[1]
+        row = self.model.row_of(path) if key[0] == self._source_key() else None
+        if kind is not None:
+            RemoteFileBrowser._kinds[key] = kind
+            if row is not None and self.model.index(row, 0).data(KIND_ROLE) != kind:
+                selected = self._selected_path()
+                self.model.set_kind(path, kind)
+                self._reselect(selected)
+                self._update_counts()
+                return
+        self._refresh_details()
+
+    def _header_failed(self, key, error):
+        if _deleted(self):
+            return
+        self._header_errors[key] = error
+        if self._reading == key:
+            self._reading = None
+        self._refresh_details()
+
+    def _show_full_header(self):
+        entry, _kind = self._selected()
+        text = RemoteFileBrowser._headers.get(self._header_key(entry)) if entry is not None else None
+        if text is not None:
+            HeaderDialog(entry.name, text, self).exec_()
+
+    def _on_auto_toggled(self, on):
+        QSettings("SolarViewer", "SolarViewer").setValue("remote_browser/auto_header", bool(on))
+        self._on_selection_changed()
+
+    # -------------------------------------------------- places and recent ----
+
+    def _stored(self, kind):
+        value = QSettings("SolarViewer", "SolarViewer").value(f"remote_browser/{kind}/{self._source_key()}", [])
+        if isinstance(value, str):  # (a list of one comes back as a string)
+            value = [value]
+        return [str(path) for path in value or []]
+
+    def _store(self, kind, paths):
+        QSettings("SolarViewer", "SolarViewer").setValue(f"remote_browser/{kind}/{self._source_key()}", paths)
+
+    def _update_places(self):
+        if self.source == "local":
+            home = os.path.expanduser("~")
+        else:
+            home = self.connection.last_home or "~"  # (found when clicked)
+        folder = self._folder()
+        self.places.set_places(home, self._stored("places"), folder)
+        self.places.set_recent(self._stored("recent"), folder)
+
+    def _on_place(self, path):
+        if path == "~":
+            self._go_home()
+        else:
+            self._navigate(path)
+
+    def _toggle_pin(self, path):
+        pinned = self._stored("places")
+        self._store("places", [p for p in pinned if p != path] if path in pinned else pinned + [path])
+        self._update_places()
+
+    def _remember_recent(self, folder):
+        recent = [folder] + [p for p in self._stored("recent") if p != folder]
+        self._store("recent", recent[: self.RECENT])
+
+    def _list_menu(self, position):
+        index = self.view.indexAt(position)
+        menu = QMenu(self)
+        clipboard = QApplication.clipboard()
+        if index.isValid():
+            entry, kind = index.data(ENTRY_ROLE), index.data(KIND_ROLE)
+            if kind in FOLDERS:
+                menu.addAction("Open", lambda: self._navigate(entry.path))
+                pinned = entry.path in self._stored("places")
+                menu.addAction(
+                    "Unpin from Places" if pinned else "Pin to Places",
+                    lambda: self._toggle_pin(entry.path),
+                )
+            elif self._openable(kind) and self.pick != "folder":
+                menu.addAction(
+                    "Choose" if self.pick == "file" else "Open", lambda: self._open_entry(entry, kind)
+                )
+            if kind in (FITS, SPECTRUM):
+                menu.addAction("Read header", self._read_header)
+            menu.addAction("Copy path", lambda: clipboard.setText(entry.path))
+        else:
+            folder = self._folder()
+            pinned = folder in self._stored("places")
+            menu.addAction(
+                "Unpin this folder" if pinned else "Pin this folder to Places",
+                lambda: self._toggle_pin(folder),
+            )
+            menu.addAction("Copy path", lambda: clipboard.setText(folder))
+        menu.exec_(self.view.viewport().mapToGlobal(position))
+
+    # ------------------------------------------------- connection, cache ----
+
+    def _is_connected(self):
+        return self.connection.is_connected()
+
+    def _update_connection(self):
+        connection = self.connection
+        self._connected_seen = connection.is_connected()
+        if self._reconnect_thread is not None:
+            self.places.show_disconnected("", reconnecting=True)
+        elif self._connected_seen:
+            detail = f"{connection.username} · port {connection.port}" if connection.username else f"port {connection.port}"
+            self.places.show_connected(connection.host, detail, self.can_switch_server)
+        else:
+            error = (connection.last_error or "").strip()
+            if "timed out" in error.lower():
+                reason = f"Timed out after {connection.timeout:.0f} s"
+            elif error:
+                reason = error.splitlines()[0][:90]
+            else:
+                reason = "The server stopped answering."
+            self.places.show_disconnected(reason)
+
+    def _poll_connection(self):
+        connected = self.connection.is_connected()
+        if connected == self._connected_seen:
+            return
+        self._update_connection()
+        if connected and self.source == "remote" and self._list_failed:
+            self._refresh(force=True)
+
+    def _reconnect(self):
+        if self._reconnect_thread is not None:
+            return
+        thread = ReconnectThread(self.connection)
+        thread.done.connect(self._reconnected)
+        self._reconnect_thread = thread
+        self._start(thread)
+        self._update_connection()
+
+    def _reconnected(self, ok):
+        if _deleted(self):
+            return
+        self._reconnect_thread = None
+        self._update_connection()
+        if ok and self.source == "remote":
+            self._refresh(force=True)
+
+    def _switch_server(self):
+        """Connect to another server and browse it (the main window takes
+        the new connection: serverChanged)."""
+        from .connection_dialog import ConnectionDialog
+
+        made = []
+        dialog = ConnectionDialog(self)
+        dialog.connectionEstablished.connect(made.append)
+        dialog.exec_()
+        if not made or made[0] is self.connection:
+            return
+        self._cancel_listing()
+        self._auto_timer.stop()
+        self.connection = made[0]
+        self._back["remote"] = []
+        self.serverChanged.emit(self.connection)
+        self._update_connection()
+        if self.source != "remote":
+            self._set_source("remote")
+            return
+        self.current_path = "/"
+        self._load_initial_directory()
+
+    def _update_cache(self):
+        size, count = self.cache.get_cache_size()
+        self.places.set_cache(size, count)
+
+    def _clear_cache(self):
+        size, count = self.cache.get_cache_size()
+        if not count:
+            return
+        from .browser_parts import size_text
+
+        files = "1 file" if count == 1 else f"{count} files"
+        answer = QMessageBox.question(
+            self, "Clear Cache",
+            f"Delete the copies of {files} ({size_text(size)}) fetched from servers?\n\n"
+            "They are fetched again when next opened.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.cache.clear_cache()
+        self.model.set_cached(set())
+        self._update_cache()
+        self._refresh_details()
+
+    # ----------------------------------------------------------- opening ----
+
+    def _open_index(self, index):
+        if index.isValid():
+            self._open_entry(index.data(ENTRY_ROLE), index.data(KIND_ROLE))
+
+    def _open_selected(self):
+        entry, kind = self._selected()
+        if self.pick == "folder":
+            folder = entry.path if entry is not None and kind in FOLDERS else self._folder()
+            if not self._list_failed or folder != self._folder():
+                self._pick(folder, folder)
+            return
+        if entry is not None:
+            self._open_entry(entry, kind)
+
+    def _open_entry(self, entry, kind):
+        """Open a folder (go into it) or an image (fetched first if it is
+        the server's), or pick it."""
+        if kind in FOLDERS:
+            self._navigate(entry.path)
+            return
+        if self.pick == "folder" or not self._openable(kind):
+            return
+        folder = self._paths().dirname(entry.path)
+        if self.pick == "file":
+            self._pick(entry.path, folder)
+            return
+        self._remember_recent(folder)
+        if self.source == "local":
+            self.fileSelected.emit(entry.path, False)  # is_remote = False
+            self.accept()
+            return
+        self._download_and_open(entry)
+
+    def _pick(self, path, folder):
+        self._remember_recent(folder)
+        self.pathPicked.emit(path)
+        self.accept()
+
+    def _download_and_open(self, entry: RemoteFileInfo):
+        """Fetch ``entry`` into the cache (unless a current copy is there),
+        then say so and close."""
+        host = self.connection.host
+        self.current_path = posixpath.dirname(entry.path) or "/"
+        cached_path = self.cache.get_cached_path(host, entry.path, entry.mtime, entry.size)
+        if cached_path:
+            self.fileSelected.emit(str(cached_path), True)  # is_remote = True
+            self.accept()
+            return
+        if not self.connection.is_connected():
+            self._update_connection()
+            QMessageBox.warning(
+                self, "Not Connected",
+                "The connection to the server was lost. Reconnect (on the left) and try again.",
+            )
+            return
+        if RemoteFileBrowser._has_pending_operation and not any(
+            t.isRunning() for t in RemoteFileBrowser._active_downloads
+        ):
+            if self.connection.refresh_sftp():
+                RemoteFileBrowser._has_pending_operation = False
+
+        local_path = self.cache.get_cache_path(host, entry.path)
+        thread = DownloadThread(self.connection, entry.path, str(local_path), is_directory=entry.is_dir)
+        thread.progress.connect(self._on_download_progress)
+        thread.finished.connect(self._on_download_finished)
+        thread.error.connect(self._on_download_error)
+        # Kept from the garbage collector until it ends, whatever becomes of this
+        RemoteFileBrowser._active_downloads.append(thread)
+        _base_finished(thread).connect(lambda t=thread: RemoteFileBrowser._remove_active_thread(t))
+        self._download_thread = thread
+        self._download_entry = entry
+        self._download_target = local_path
+        self._set_downloading(True)
+        thread.start()
+
+    def _set_downloading(self, downloading):
+        """The footer's progress and Stop while a file is fetched, with the
+        rest of the dialog held still."""
+        self.footer_pages.setCurrentIndex(1 if downloading else 0)
+        for widget in (self.toolbar, self.places, self.list_column, self.details):
+            widget.setEnabled(not downloading)
+        if downloading:
+            name = self._download_entry.name
+            self.download_label.setText(
+                f"Downloading {self.download_label.fontMetrics().elidedText(name, Qt.ElideMiddle, 360)}"
+            )
+            self.download_amount.setText("")
+            self.download_bar.setRange(0, 0)  # (moving until the size is known)
+            self.stop_button.setFocus()
+        else:
+            self.view.setFocus()
+
+    def _on_download_progress(self, transferred: int, total: int):
+        """Update download progress (works for both files and directories)."""
+        if _deleted(self) or total <= 0:
+            return
+        self.download_bar.setRange(0, 1000)
+        self.download_bar.setValue(int(1000 * transferred / total))
+        self.download_amount.setText(progress_text(transferred, total))
+
+    def _on_download_finished(self, local_path: str):
+        """Mark the copy cached, say so and close."""
+        if _deleted(self):
+            return
+        entry = self._download_entry
+        self._download_thread = None
+        self.cache.mark_cached(self.connection.host, entry.path, Path(local_path), entry.mtime, entry.size)
+        self.fileSelected.emit(local_path, True)
+        self.accept()
+
+    def _on_download_error(self, error_msg: str):
+        if _deleted(self):
+            return
+        entry = self._download_entry
+        self._download_thread = None
+        self._set_downloading(False)
+        self._update_connection()
+        QMessageBox.warning(self, "Download Failed", f"Couldn’t fetch {entry.name}:\n\n{error_msg}")
+
+    def _stop_download(self):
+        """Stop fetching: what was fetched so far is deleted once the
+        transfer has stopped."""
+        thread = self._download_thread
+        if thread is None:
+            return
+        self._download_thread = None
+        _silence(thread)
+        thread.cancel()
+        RemoteFileBrowser._has_pending_operation = True
+        cache, target, entry = self.cache, self._download_target, self._download_entry
+        _base_finished(thread).connect(
+            lambda: RemoteFileBrowser._discard_partial(cache, target, entry.is_dir, entry.name)
+        )
+        self._set_downloading(False)
+
+    @staticmethod
+    def _discard_partial(cache, local_path, is_directory, name):
+        """Delete what a stopped download left in ``cache``: never anything
+        outside it, a copy it lists, or a file being fetched again."""
+        import shutil
+
+        path = Path(local_path) / name if is_directory else Path(local_path)
+        try:
+            root = cache.cache_dir.resolve()
+            resolved = path.resolve()
+            if root not in resolved.parents or not resolved.exists():
+                return
+            if cache.remote_source(resolved) is not None:
+                return
+            if any(
+                t.isRunning() and Path(t.local_path).resolve() == Path(local_path).resolve()
+                for t in RemoteFileBrowser._active_downloads
+            ):
+                return
+            if resolved.is_dir():
+                shutil.rmtree(resolved)
+            else:
+                resolved.unlink()
+        except OSError:
+            pass
+
+    # ---------------------------------------------------------- the path ----
+
+    def _complete(self):
+        """Offer the folders that complete the path typed."""
+        edit = self.path_bar.edit
+        text = edit.text().strip()
+        if not text or not self.path_bar.editing:
+            return
+        if self.source == "local":
+            text = os.path.expanduser(text)
+            if text.endswith(os.sep):
+                parent, partial = text, ""
+            else:
+                parent, partial = os.path.split(text)
+            try:
+                names = sorted(
+                    (e.path for e in os.scandir(parent or os.sep)
+                     if e.is_dir() and e.name.lower().startswith(partial.lower())
+                     and (partial.startswith(".") or not e.name.startswith("."))),
+                    key=str.lower,
+                )
+            except OSError:
+                return
+            self._show_completions(names[:200])
+            return
+        if text.endswith("/"):
+            parent, partial = text.rstrip("/") or "/", ""
+        else:
+            parent, partial = posixpath.split(text)
+            parent = parent or "/"
+        cached = RemoteFileBrowser._listing_cache.get((self._server_key(), posixpath.normpath(parent)))
+        if cached is not None and time.time() - cached[1] < self._cache_ttl:
+            self._show_completions([
+                e.path for e in cached[0]
+                if e.is_dir and e.name.lower().startswith(partial.lower())
+                and (partial.startswith(".") or not e.name.startswith("."))
+            ])
+            return
+        if not self.connection.is_connected():
+            return
+        previous = self._autocomplete_thread
+        if previous is not None and previous.isRunning():
+            _silence(previous)
+            previous.cancel()
+        thread = AutocompleteThread(self.connection, parent, partial)
+        thread.finished.connect(self._show_completions)
+        self._autocomplete_thread = thread
+        self._start(thread)
+
+    def _show_completions(self, paths):
+        if _deleted(self) or not self.path_bar.editing:
+            return
+        self._completions.setStringList(paths)
+        if paths and self.path_bar.edit.hasFocus():
+            self._completer.complete()
+
+    # ----------------------------------------------------------- closing ----
 
     def _cleanup_threads(self):
-        """Safely cancel all background threads and disconnect their signals."""
-
-        # Cancel and cleanup listing thread
-        if self._list_thread and self._list_thread.isRunning():
-            try:
-                self._list_thread.finished.disconnect()
-                self._list_thread.error.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            self._list_thread.cancel()
-            self._list_thread = None
-
-        # Cancel and cleanup download thread
-        if self._download_thread and self._download_thread.isRunning():
-            try:
-                self._download_thread.finished.disconnect()
-                self._download_thread.error.disconnect()
-                self._download_thread.progress.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            # Don't wait - just let it finish in background
-            RemoteFileBrowser._has_pending_operation = True
-            # Keep in _active_downloads but remove local reference
-            self._download_thread = None
-
-        # Cancel and cleanup home thread
-        if hasattr(self, "_home_thread") and self._home_thread and self._home_thread.isRunning():
-            try:
-                self._home_thread.result.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            self._home_thread = None
-
-        # Cancel and cleanup autocomplete thread
-        if self._autocomplete_thread and self._autocomplete_thread.isRunning():
-            try:
-                self._autocomplete_thread.finished.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            self._autocomplete_thread.cancel()
-            self._autocomplete_thread = None
-            
-        # Stop autocomplete timer
-        if self._autocomplete_timer:
-            self._autocomplete_timer.stop()
+        """Stop what is running for this dialog: its results are not wanted
+        (a file being fetched is stopped and its part deleted)."""
+        for timer in (self._auto_timer, self._autocomplete_timer, self._status_timer):
+            timer.stop()
+        if self._download_thread is not None:
+            self._stop_download()
+        self._cancel_listing()
+        for thread in self._mine:
+            if thread.isRunning():
+                _silence(thread)
+                if hasattr(thread, "cancel"):
+                    thread.cancel()
+        self._mine = []
+        self._reconnect_thread = None
+        self._home_thread = None
 
     def accept(self):
         """Override accept to perform cleanup first."""
@@ -969,7 +1770,7 @@ class RemoteFileBrowser(QDialog):
         super().accept()
 
     def reject(self):
-        """Override reject to perform cleanup first."""
+        """Override reject to perform cleanup first (stopping a download)."""
         self._cleanup_threads()
         super().reject()
 
@@ -977,335 +1778,3 @@ class RemoteFileBrowser(QDialog):
         """Handle dialog close events."""
         self._cleanup_threads()
         super().closeEvent(event)
-
-    def _on_list_finished(self, entries: list, from_cache: bool = False):
-        """Handle successful directory listing."""
-        try:
-            from PyQt5 import sip
-            if sip.isdeleted(self):
-                return
-                
-            self._set_loading_state(False)
-            if self.pick == "folder":
-                self.open_btn.setEnabled(True)  # the folder shown
-    
-            # Store in cache if this was a fresh fetch
-            if not from_cache:
-                import time
-    
-                cache_key = (
-                    self.connection.host,
-                    self.current_path,
-                    self.show_hidden_cb.isChecked(),
-                    self.fits_only_cb.isChecked(),
-                )
-                RemoteFileBrowser._listing_cache[cache_key] = (entries, time.time())
-    
-            from datetime import datetime
-    
-            for entry in entries:
-                item = QTreeWidgetItem()
-    
-                # Name with icon
-                if entry.is_dir:
-                    item.setText(0, entry.name)
-                    item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
-                elif entry.is_fits:
-                    item.setText(0, entry.name)
-                    item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
-                else:
-                    item.setText(0, entry.name)
-                    item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
-    
-                # Size
-                if entry.is_dir:
-                    item.setText(1, "<DIR>")
-                else:
-                    size = entry.size
-                    if size > 1024 * 1024 * 1024:
-                        item.setText(1, f"{size / (1024**3):.1f} GB")
-                    elif size > 1024 * 1024:
-                        item.setText(1, f"{size / (1024**2):.1f} MB")
-                    elif size > 1024:
-                        item.setText(1, f"{size / 1024:.1f} KB")
-                    else:
-                        item.setText(1, f"{size} B")
-    
-                # Modified time
-                mtime = datetime.fromtimestamp(entry.mtime)
-                item.setText(2, mtime.strftime("%Y-%m-%d %H:%M"))
-    
-                # Store file info
-                item.setData(0, Qt.UserRole, entry)
-    
-                self.tree.addTopLevelItem(item)
-    
-            cache_indicator = " (cached)" if from_cache else ""
-            self.status_label.setText(f"Found {len(entries)} files{cache_indicator}")
-        except RuntimeError:
-            pass
-
-    def _on_list_error(self, error_msg: str):
-        """Handle directory listing error."""
-        try:
-            from PyQt5 import sip
-            if sip.isdeleted(self):
-                return
-            self._set_loading_state(False)
-            self.status_label.setText(f"Error: {error_msg}")
-            QMessageBox.warning(self, "Error", f"Failed to list directory:\n{error_msg}")
-        except RuntimeError:
-            pass
-
-    def _on_selection_changed(self):
-        """Update UI when selection changes."""
-        items = self.tree.selectedItems()
-        if self.pick == "folder":
-            # The selected folder, or the one shown
-            self.open_btn.setEnabled(True)
-            return
-        if self.pick == "file":
-            entry = items[0].data(0, Qt.UserRole) if items else None
-            # A FITS file, or a folder (a CASA image)
-            self.open_btn.setEnabled(entry is not None and (entry.is_dir or entry.is_fits))
-            return
-        if items:
-            entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
-            if entry is None:  # Safeguard against missing data
-                self.open_btn.setEnabled(False)
-                self.go_into_btn.setEnabled(False)
-                return
-            if self.casa_mode is None:
-                # A FITS file, or a folder (a CASA image)
-                self.open_btn.setEnabled(entry.is_dir or entry.is_fits)
-                self.go_into_btn.setEnabled(entry.is_dir)
-            elif self.casa_mode:
-                # In CASA mode, enable Select for directories (CASA images are directories)
-                self.open_btn.setEnabled(entry.is_dir)
-                # Enable Go Into for any directory
-                self.go_into_btn.setEnabled(entry.is_dir)
-            else:
-                # In FITS mode, enable for FITS files only
-                self.open_btn.setEnabled(not entry.is_dir and entry.is_fits)
-        else:
-            self.open_btn.setEnabled(False)
-            self.go_into_btn.setEnabled(False)
-
-    def _go_into_selected(self):
-        """Navigate into the selected directory (CASA mode)."""
-        items = self.tree.selectedItems()
-        if not items:
-            return
-
-        entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
-        if entry is None:  # Safeguard
-            return
-        if entry.is_dir:
-            self._navigate_to(entry.path)
-
-    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
-        """Handle double-click on item."""
-        entry: RemoteFileInfo = item.data(0, Qt.UserRole)
-        if entry is None:  # Safeguard
-            return
-        if self.pick:
-            if entry.is_dir:
-                self._navigate_to(entry.path)
-            elif self.pick == "file" and entry.is_fits:
-                self._pick(entry.path)
-            return
-
-        if entry.is_dir:
-            self._navigate_to(entry.path)
-        elif entry.is_fits:
-            self._download_and_open(entry)
-
-    def _browse_local(self):
-        """Open native file dialog to browse local filesystem."""
-        from PyQt5.QtWidgets import QFileDialog
-
-        if self.casa_mode is None:
-            local_path = choose_image(self, directory=os.path.expanduser("~"))
-        elif self.casa_mode:
-            # CASA mode: select directory
-            local_path = QFileDialog.getExistingDirectory(
-                self,
-                "Select Local CASA Image Directory",
-                os.path.expanduser("~"),
-                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
-            )
-        else:
-            # FITS mode: select file
-            local_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select Local FITS File",
-                os.path.expanduser("~"),
-                "FITS Files (*.fits *.fts *.fit);;All Files (*)",
-            )
-
-        if local_path:
-            self.fileSelected.emit(local_path, False)  # is_remote = False
-            self.accept()
-
-    def _pick(self, path):
-        self.pathPicked.emit(path)
-        self.accept()
-
-    def _open_selected(self):
-        """Open the selected file or directory (in CASA mode)."""
-        items = self.tree.selectedItems()
-        if self.pick == "folder":
-            entry = items[0].data(0, Qt.UserRole) if items else None
-            self._pick(entry.path if entry is not None and entry.is_dir else self.current_path)
-            return
-        if self.pick == "file":
-            entry = items[0].data(0, Qt.UserRole) if items else None
-            if entry is not None:
-                self._pick(entry.path)
-            return
-        if not items:
-            return
-
-        entry: RemoteFileInfo = items[0].data(0, Qt.UserRole)
-        if entry is None:  # Safeguard
-            return
-        if self.casa_mode is None:
-            if entry.is_dir or entry.is_fits:
-                self._download_and_open(entry)
-        elif self.casa_mode:
-            if entry.is_dir:
-                self._download_and_open(entry)
-        else:
-            if not entry.is_dir:
-                self._download_and_open(entry)
-
-    def _download_and_open(self, entry: RemoteFileInfo):
-        """Download a file and emit the signal when ready."""
-        # Check cache first
-        cached_path = self.cache.get_cached_path(
-            self.connection.host,
-            entry.path,
-            entry.mtime,
-            entry.size,
-        )
-
-        if cached_path:
-            self.status_label.setText(f"Using cached: {cached_path.name}")
-            self.fileSelected.emit(str(cached_path), True)  # is_remote = True
-            self.accept()
-            return
-
-        # Need to download
-        local_path = self.cache.get_cache_path(
-            self.connection.host,
-            entry.path,
-        )
-
-        # Show progress
-        self.progress_frame.show()
-        self.progress_label.setText(f"Downloading {entry.name}...")
-        self.progress_bar.setValue(0)
-        self.open_btn.setEnabled(False)
-
-        # Start download thread
-        self._download_thread = DownloadThread(
-            self.connection,
-            entry.path,
-            str(local_path),
-            is_directory=entry.is_dir,
-        )
-        self._download_thread.progress.connect(self._on_download_progress)
-        self._download_thread.finished.connect(self._on_download_finished)
-        self._download_thread.error.connect(self._on_download_error)
-
-        # Add to active downloads to prevent GC
-        RemoteFileBrowser._active_downloads.append(self._download_thread)
-
-        # Connect cleanup logic (independent of dialog instance)
-        thread_ref = self._download_thread
-        cleanup_lambda = lambda _: RemoteFileBrowser._remove_active_thread(thread_ref)
-        self._download_thread.finished.connect(cleanup_lambda)
-        self._download_thread.error.connect(cleanup_lambda)
-
-        self._download_thread.start()
-
-        # Store entry for marking cache
-        self._current_download_entry = entry
-
-    def _on_download_progress(self, transferred: int, total: int):
-        """Update download progress (works for both files and directories)."""
-        try:
-            from PyQt5 import sip
-            if sip.isdeleted(self):
-                return
-                
-            if total > 0:
-                percent = int(100 * transferred / total)
-                self.progress_bar.setValue(percent)
-    
-                if total > 1024 * 1024:
-                    self.progress_label.setText(
-                        f"Downloading... {transferred / (1024**2):.1f} / {total / (1024**2):.1f} MB"
-                    )
-                else:
-                    self.progress_label.setText(
-                        f"Downloading... {transferred / 1024:.1f} / {total / 1024:.1f} KB"
-                    )
-        except RuntimeError:
-            pass
-
-    def _on_download_finished(self, local_path: str):
-        """Handle download completion."""
-        try:
-            from PyQt5 import sip
-            if sip.isdeleted(self):
-                return
-                
-            self.progress_frame.hide()
-    
-            entry = self._current_download_entry
-    
-            # Mark as cached
-            self.cache.mark_cached(
-                self.connection.host,
-                entry.path,
-                Path(local_path),
-                entry.mtime,
-                entry.size,
-            )
-    
-            self._update_cache_info()
-            self.status_label.setText(f"Downloaded: {os.path.basename(local_path)}")
-    
-            # Emit signal (remote=True) and close
-            self.fileSelected.emit(local_path, True)
-            self.accept()
-    
-            # Remove from active list
-            if self._download_thread in RemoteFileBrowser._active_downloads:
-                RemoteFileBrowser._active_downloads.remove(self._download_thread)
-                self._download_thread = None
-        except RuntimeError:
-            pass
-
-    def _on_download_error(self, error_msg: str):
-        """Handle download error."""
-        try:
-            from PyQt5 import sip
-            if sip.isdeleted(self):
-                return
-                
-            self.progress_frame.hide()
-            self.open_btn.setEnabled(True)
-            self.status_label.setText(f"Error: {error_msg}")
-    
-            # Remove from active list
-            if self._download_thread in RemoteFileBrowser._active_downloads:
-                RemoteFileBrowser._active_downloads.remove(self._download_thread)
-                self._download_thread = None
-    
-            QMessageBox.warning(
-                self, "Download Error", f"Failed to download file: {error_msg}"
-            )
-        except RuntimeError:
-            pass

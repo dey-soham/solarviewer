@@ -38,6 +38,48 @@ class Cancelled(Exception):
     """A fetch stopped by its ``cancelled`` callable."""
 
 
+def read_header(raw, gzipped=False):
+    """Header text from the start of the FITS file open as ``raw`` (binary,
+    an SFTP file or a local one), read 2880-byte block by block until its
+    END card: the image is never read. When the image is in the first
+    extension (a tile-compressed file) that header follows, with the
+    primary header's cards it lacks."""
+    from astropy.io import fits
+
+    stream = gzip.GzipFile(fileobj=raw) if gzipped else raw
+
+    def next_header():
+        data = b""
+        while True:
+            block = stream.read(BLOCK)
+            if len(block) < BLOCK:
+                raise ValueError("no END card")
+            data += block
+            cards = [block[i : i + 80] for i in range(0, BLOCK, 80)]
+            if any(c.startswith(b"END") and c[3:].strip() == b"" for c in cards):
+                return fits.Header.fromstring(data.decode("ascii", "replace"))
+
+    primary = next_header()
+    if primary.get("NAXIS", 0) >= 2 or not primary.get("EXTEND", False):
+        return primary.tostring()
+    # The image is in an extension (e.g. tile-compressed): the primary
+    # HDU has no data, so the next header follows at once
+    image = next_header()
+    if image.get("ZIMAGE"):
+        # Tile-compressed: the image's dimensions are the Z keywords
+        # (its WCS, time and unit are plain keywords already)
+        for n in range(int(image.get("ZNAXIS", 0)) + 1):
+            key = "ZNAXIS" + (str(n) if n else "")
+            if key in image:
+                image["NAXIS" + (str(n) if n else "")] = image[key]
+    for card in primary.cards:
+        if card.keyword not in image and card.keyword not in (
+            "SIMPLE", "BITPIX", "NAXIS", "EXTEND", "CHECKSUM", "DATASUM", "",
+        ):
+            image.append(card)
+    return image.tostring()
+
+
 class RemoteFiles:
     """The image files of an SSH server (``connection``, an SSHConnection)."""
 
@@ -215,41 +257,8 @@ class RemoteFiles:
 
     def _read_header(self, path):
         """Header text from the start of a FITS file on the server."""
-        from astropy.io import fits
-
         with self._sftp() as sftp, sftp.open(path, "rb") as raw:
-            stream = gzip.GzipFile(fileobj=raw) if path.lower().endswith(".gz") else raw
-
-            def next_header():
-                data = b""
-                while True:
-                    block = stream.read(BLOCK)
-                    if len(block) < BLOCK:
-                        raise ValueError("no END card")
-                    data += block
-                    cards = [block[i : i + 80] for i in range(0, BLOCK, 80)]
-                    if any(c.startswith(b"END") and c[3:].strip() == b"" for c in cards):
-                        return fits.Header.fromstring(data.decode("ascii", "replace"))
-
-            primary = next_header()
-            if primary.get("NAXIS", 0) >= 2 or not primary.get("EXTEND", False):
-                return primary.tostring()
-            # The image is in an extension (e.g. tile-compressed): the primary
-            # HDU has no data, so the next header follows at once
-            image = next_header()
-            if image.get("ZIMAGE"):
-                # Tile-compressed: the image's dimensions are the Z keywords
-                # (its WCS, time and unit are plain keywords already)
-                for n in range(int(image.get("ZNAXIS", 0)) + 1):
-                    key = "ZNAXIS" + (str(n) if n else "")
-                    if key in image:
-                        image["NAXIS" + (str(n) if n else "")] = image[key]
-            for card in primary.cards:
-                if card.keyword not in image and card.keyword not in (
-                    "SIMPLE", "BITPIX", "NAXIS", "EXTEND", "CHECKSUM", "DATASUM", "",
-                ):
-                    image.append(card)
-            return image.tostring()
+            return read_header(raw, gzipped=path.lower().endswith(".gz"))
 
     def headers(self, paths, progress=None, cancelled=None):
         """{path: header or None} of ``paths``, read in parallel."""

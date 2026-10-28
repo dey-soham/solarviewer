@@ -147,6 +147,24 @@ class RemoteFileCache:
 
         return local_path
 
+    def is_cached(
+        self,
+        host: str,
+        remote_path: str,
+        remote_mtime: float,
+        remote_size: int,
+    ) -> bool:
+        """Whether an up-to-date copy of the remote file is cached; unlike
+        get_cached_path, a stale copy is left alone (for showing, not
+        opening)."""
+        entry = self._metadata.get(self._make_cache_key(host, remote_path))
+        return (
+            entry is not None
+            and entry.remote_mtime == remote_mtime
+            and entry.remote_size == remote_size
+            and os.path.exists(entry.local_path)
+        )
+
     def remote_source(self, local_path) -> Optional[Tuple[str, str]]:
         """(host, remote path) of the server file ``local_path`` is a
         cached copy of, or None."""

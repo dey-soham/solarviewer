@@ -121,7 +121,10 @@ class FileNavigationMixin:
                 cache=main_window.remote_cache,
                 parent=self,
                 casa_mode=None,
+                can_switch_server=hasattr(main_window, "_on_remote_server_changed"),
             )
+            if hasattr(main_window, "_on_remote_server_changed"):
+                browser.serverChanged.connect(main_window._on_remote_server_changed)
 
             # Connect to handle the selected file
             def on_file_selected(local_path, is_remote):
@@ -172,6 +175,10 @@ class FileNavigationMixin:
 
             browser.fileSelected.connect(on_file_selected)
             browser.exec_()
+            # (it may have reconnected)
+            for update in ("_update_remote_menu_state", "_update_remote_status_indicator"):
+                if hasattr(main_window, update):
+                    getattr(main_window, update)()
 
         except Exception as e:
             from PyQt5.QtWidgets import QMessageBox
