@@ -32,6 +32,10 @@ try:
 
     logging.getLogger("paramiko.transport.sftp").setLevel(logging.WARNING)
     logging.getLogger("paramiko.transport").setLevel(logging.WARNING)
+    # A connection closed on purpose while being made logs its handshake
+    # failing, with a traceback: not news (see SSHConnection.abort)
+    _ABORTED_LOG = "paramiko.transport.aborted"
+    logging.getLogger(_ABORTED_LOG).setLevel(logging.CRITICAL)
 except ImportError:
     HAS_PARAMIKO = False
     SSHClient = None
@@ -619,6 +623,20 @@ class SSHConnection:
                 transport.close()
             except Exception:
                 pass
+
+    def abort(self) -> bool:
+        """Close the connection now, from any thread, even while connect()
+        is still making it there (which then fails at once). Returns whether
+        there was one to close."""
+        transport = self.transport
+        if transport is None or not transport.is_active():
+            return False
+        try:
+            transport.set_log_channel(_ABORTED_LOG)
+            transport.close()
+        except Exception:
+            pass
+        return True
 
     def list_directory(
         self,

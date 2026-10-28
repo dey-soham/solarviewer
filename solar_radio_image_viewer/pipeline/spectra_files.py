@@ -706,12 +706,13 @@ class SpectraFilesMixin:
     def _server(self):
         """The server's RemoteFiles, connecting first if need be (None if
         not connected). Launched from SolarViewer while it is connected, the
-        same server is tried first (keys or agent; no password is passed)."""
+        connection dialog tries the same server straight away (keys or
+        agent; no password is passed)."""
         files = self._remote_files
         if files is not None and files.connection.is_connected():
             return files
         try:
-            from ..remote import ConnectionDialog, RemoteFileCache, SSHConnection
+            from ..remote import ConnectionDialog, RemoteFileCache
             from ..remote.remote_files import RemoteFiles
         except ImportError as e:
             QMessageBox.warning(
@@ -721,23 +722,18 @@ class SpectraFilesMixin:
             )
             return None
 
-        connection = None
+        dialog = ConnectionDialog(self)
         saved = os.environ.get("SOLARVIEWER_SSH")
         if saved and files is None:
             try:
-                with self.wait_cursor():
-                    connection = SSHConnection()
-                    connection.connect(**json.loads(saved), timeout=15.0)
-            except Exception as e:
+                dialog.connect_to(json.loads(saved))
+            except (ValueError, TypeError, AttributeError) as e:
                 self.logger.info(f"Could not reuse SolarViewer's server: {e}")
-                connection = None
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+        connection = dialog.get_connection()
         if connection is None:
-            dialog = ConnectionDialog(self)
-            if dialog.exec_() != QDialog.Accepted:
-                return None
-            connection = dialog.get_connection()
-            if connection is None:
-                return None
+            return None
         if files is not None:
             files.close()
         self._remote_files = RemoteFiles(connection, RemoteFileCache())

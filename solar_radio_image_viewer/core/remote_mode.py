@@ -781,7 +781,11 @@ class RemoteModeMixin:
                     logger.warning(f"[SSH] Ping error: {e}")
                     self.result.emit(False)
 
+        connection = self.remote_connection
+
         def on_ping_result(is_alive):
+            if connection is not self.remote_connection:
+                return  # (another server was connected meanwhile: this one was closed)
             if not is_alive:
                 logger.warning("[SSH] Health check: Connection lost, attempting reconnect...")
                 self._reconnect_in_background()

@@ -2,12 +2,15 @@
 SSH Connection Dialog for SolarViewer.
 
 Provides a dialog for configuring and establishing SSH connections,
-with support for saving connection profiles.
+with support for saving connection profiles. Connecting runs in a thread
+(it can take the whole timeout), the dialog showing it with Stop.
 """
 
 from pathlib import Path
 from typing import Optional, List
 import json
+import threading
+import time
 
 from ..ui.widgets import button_bar
 from PyQt5.QtWidgets import (
@@ -27,9 +30,9 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QFrame,
 )
-from PyQt5.QtCore import QEventLoop, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
-from ..ui.busy import busy
+from ..ui.download_parts import Spinner
 from .ssh_manager import (
     ConnectionProfile,
     SSHConnection,
@@ -37,6 +40,51 @@ from .ssh_manager import (
     UnknownHostKey,
     trust_host_key,
 )
+
+
+class _ConnectThread(QThread):
+    """Connects with ``params`` (the form's), in a thread: connecting can take
+    the whole timeout, longer over a stalled network. A test then finds the
+    home folder and disconnects."""
+
+    succeeded = pyqtSignal(object)  # the SSHConnection (a test: the home folder)
+    failed = pyqtSignal(object)  # the exception (UnknownHostKey: to confirm)
+
+    def __init__(self, params, timeout, test):
+        super().__init__()
+        self.params = params
+        self.timeout = timeout
+        self.test = test
+        self.connection = SSHConnection()
+        self._cancelled = False
+
+    def run(self):
+        connection = self.connection
+        try:
+            connection.connect(**self.params, timeout=self.timeout)
+            result = connection.get_home_directory() if self.test else connection
+        except Exception as e:
+            connection.disconnect()
+            if not self._cancelled:
+                self.failed.emit(e)
+            return
+        if self.test or self._cancelled:
+            connection.disconnect()
+        if not self._cancelled:
+            self.succeeded.emit(result)
+
+    def cancel(self):
+        """Its result is not wanted: the connection is closed as soon as
+        there is one, which ends a wait for the server. (Reaching the server
+        cannot be interrupted; it takes at most the timeout.)"""
+        self._cancelled = True
+        threading.Thread(target=self._close, name="ssh-connect-cancel", daemon=True).start()
+
+    def _close(self):
+        while not self.isFinished():
+            self.connection.abort()
+            time.sleep(0.05)
+        self.connection.disconnect()  # (made, and sent, just before cancel)
 
 
 class ConnectionDialog(QDialog):
@@ -51,6 +99,10 @@ class ConnectionDialog(QDialog):
 
     PROFILES_FILE = Path.home() / ".config" / "solarviewer" / "ssh_profiles.json"
 
+    # Connections being made, kept until their threads end (closing the
+    # dialog does not wait for them)
+    _running: set = set()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Connect to Remote Server")
@@ -58,11 +110,14 @@ class ConnectionDialog(QDialog):
         self.setModal(True)
 
         self._ssh_connection: Optional[SSHConnection] = None
+        self._attempt: Optional[_ConnectThread] = None  # connecting now
         self._profiles: List[ConnectionProfile] = []
         self._load_profiles()
 
         self._setup_ui()
-        
+        # (450 at least, and wide enough for the buttons at larger scales)
+        self.setMinimumWidth(max(450, self.minimumSizeHint().width()))
+
         try:
             from ..ui.styles import set_hand_cursor
             set_hand_cursor(self)
@@ -74,7 +129,7 @@ class ConnectionDialog(QDialog):
         layout.setSpacing(12)
 
         # Saved profiles section
-        profiles_group = QGroupBox("Saved Profiles")
+        profiles_group = self.profiles_group = QGroupBox("Saved Profiles")
         profiles_layout = QHBoxLayout(profiles_group)
 
         self.profile_combo = QComboBox()
@@ -92,7 +147,7 @@ class ConnectionDialog(QDialog):
         layout.addWidget(profiles_group)
 
         # Connection settings
-        settings_group = QGroupBox("Connection Settings")
+        settings_group = self.settings_group = QGroupBox("Connection Settings")
         form_layout = QFormLayout(settings_group)
 
         # Host
@@ -114,7 +169,7 @@ class ConnectionDialog(QDialog):
         layout.addWidget(settings_group)
 
         # Authentication section
-        auth_group = QGroupBox("Authentication")
+        auth_group = self.auth_group = QGroupBox("Authentication")
         auth_layout = QVBoxLayout(auth_group)
 
         # Auth type selection
@@ -166,15 +221,19 @@ class ConnectionDialog(QDialog):
 
         layout.addWidget(auth_group)
 
-        # Status label
+        # Status: what happened, led by a spinner while connecting
+        status_row = QHBoxLayout()
+        self.spinner = Spinner(max(12, int(self.fontMetrics().capHeight() * 0.9)))
+        status_row.addWidget(self.spinner, 0, Qt.AlignVCenter)
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
+        status_row.addWidget(self.status_label, 1)
+        layout.addLayout(status_row)
 
-        # Buttons
+        # Buttons (Cancel reads Stop while connecting)
         box, buttons = button_bar(
             primary=("Connect", self._connect),
-            secondary=("Cancel", self.reject),
+            secondary=("Cancel", self._cancel),
             extras=[
                 ("Test Connection", self._test_connection),
                 ("Save Profile", self._save_profile),
@@ -349,101 +408,140 @@ class ConnectionDialog(QDialog):
 
         return params
 
+    def connect_to(self, params):
+        """Fill in ``params`` (host, port, username, key_path, as
+        SSHConnection.connect_params gives them) and connect straight away."""
+        self.host_edit.setText(params.get("host") or "")
+        if params.get("port"):
+            self.port_spin.setValue(int(params["port"]))
+        self.username_edit.setText(params.get("username") or "")
+        self.key_auth_radio.setChecked(True)
+        self.key_path_edit.setText(params.get("key_path") or "")
+        self._connect()
+
     def _test_connection(self):
         """Test the connection without closing the dialog."""
-        params = self._get_connection_params()
-
-        if not params["host"]:
-            self.status_label.setText("Please enter a host.")
-            return
-
-        self.status_label.setText("⏳ Testing connection...")
-        self.test_btn.setEnabled(False)
-        self.connect_btn.setEnabled(False)
-
-        # Force UI update
-        from PyQt5.QtWidgets import QApplication
-
-        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
-
-        try:
-            conn = self._open_connection(params, timeout=10.0)
-
-            home_dir = conn.get_home_directory()
-            self.status_label.setText(
-                f"Connected successfully!\nHome directory: {home_dir}"
-            )
-            conn.disconnect()
-
-        except SSHConnectionError as e:
-            self.status_label.setText(f"Connection failed: {e}")
-        except Exception as e:
-            self.status_label.setText(f"Error: {e}")
-        finally:
-            self.test_btn.setEnabled(True)
-            self.connect_btn.setEnabled(True)
+        self._start(test=True)
 
     def _connect(self):
         """Establish connection and close dialog."""
-        params = self._get_connection_params()
+        self._start(test=False)
 
+    def _start(self, test, params=None):
+        """Connect with ``params`` (the form's if None) in a thread; for a
+        ``test``, only say whether it works."""
+        if params is None:
+            params = self._get_connection_params()
         if not params["host"]:
             self.status_label.setText("Please enter a host.")
             return
-
-        self.status_label.setText("⏳ Connecting...")
-        self.test_btn.setEnabled(False)
-        self.connect_btn.setEnabled(False)
-
-        from PyQt5.QtWidgets import QApplication
-
-        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
-
         try:
-            self._ssh_connection = self._open_connection(params, timeout=30.0)
-
-            self.connectionEstablished.emit(self._ssh_connection)
-            self.accept()
-
+            thread = _ConnectThread(params, timeout=10.0 if test else 30.0, test=test)
         except SSHConnectionError as e:
-            self.status_label.setText(f"Connection failed: {e}")
-            self._ssh_connection = None
-            self.test_btn.setEnabled(True)
-            self.connect_btn.setEnabled(True)
-        except Exception as e:
-            self.status_label.setText(f"Error: {e}")
-            self._ssh_connection = None
-            self.test_btn.setEnabled(True)
-            self.connect_btn.setEnabled(True)
+            self.status_label.setText(str(e))
+            return
+        thread.succeeded.connect(self._on_succeeded)
+        thread.failed.connect(self._on_failed)
+        ConnectionDialog._running.add(thread)
+        thread.finished.connect(lambda t=thread: ConnectionDialog._running.discard(t))
+        self._attempt = thread
+        doing = "Testing the connection to" if test else "Connecting to"
+        self._set_connecting(True, f"{doing} {params['host']}…")
+        thread.start()
 
-    def _open_connection(self, params, timeout):
-        """An SSHConnection made with ``params``. The key of a server not
-        known yet is shown to the user to confirm before anything is sent."""
-        conn = SSHConnection()
-        try:
-            with busy():
-                conn.connect(**params, timeout=timeout)
-        except UnknownHostKey as e:
-            key_type = e.key.get_name()  # ssh-ed25519, ecdsa-sha2-nistp256, ssh-rsa
-            kind = next((k for k in ("ed25519", "ecdsa") if k in key_type), "rsa")
-            answer = QMessageBox.question(
-                self,
-                "Unknown Server",
-                f"SolarViewer does not know the server {e.hostname} yet.\n\n"
-                f"Its {key_type} key fingerprint is:\n{e.fingerprint}\n\n"
-                "Continue only if this matches the server's fingerprint (on the "
-                f"server: ssh-keygen -lf /etc/ssh/ssh_host_{kind}_key.pub).\n\n"
-                "Trust this server and connect?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if answer != QMessageBox.Yes:
-                raise SSHConnectionError("the server's key was not trusted")
-            trust_host_key(e.hostname, e.key)
-            conn = SSHConnection()
-            with busy():
-                conn.connect(**params, timeout=timeout)
-        return conn
+    def _on_succeeded(self, result):
+        thread = self.sender()
+        if thread is not self._attempt:
+            return
+        self._attempt = None
+        if thread.test:
+            self._set_connecting(False, f"Connected successfully. Home folder: {result}")
+            return
+        self._set_connecting(False, "")
+        self._ssh_connection = result
+        self.connectionEstablished.emit(result)
+        self.accept()
+
+    def _on_failed(self, error):
+        thread = self.sender()
+        if thread is not self._attempt:
+            return
+        self._attempt = None
+        test, params, timeout = thread.test, thread.params, thread.timeout
+        if isinstance(error, UnknownHostKey):
+            if self._trust(error):
+                trust_host_key(error.hostname, error.key)
+                self._start(test, params)
+                return
+            self._set_connecting(False, "Not connected: the server's key was not trusted.")
+            return
+        text = str(error).strip() or type(error).__name__
+        if "timed out" in text.lower():
+            text = f"Connection failed: {params['host']} did not answer within {timeout:.0f} s."
+        elif not isinstance(error, SSHConnectionError):
+            text = f"Connection failed: {text}"
+        # (an SSHConnectionError says what failed)
+        self._set_connecting(False, text)
+
+    def _trust(self, e):
+        """Whether the user trusts the key of a server not known yet, shown
+        to confirm before anything is sent to it."""
+        key_type = e.key.get_name()  # ssh-ed25519, ecdsa-sha2-nistp256, ssh-rsa
+        kind = next((k for k in ("ed25519", "ecdsa") if k in key_type), "rsa")
+        answer = QMessageBox.question(
+            self,
+            "Unknown Server",
+            f"SolarViewer does not know the server {e.hostname} yet.\n\n"
+            f"Its {key_type} key fingerprint is:\n{e.fingerprint}\n\n"
+            "Continue only if this matches the server's fingerprint (on the "
+            f"server: ssh-keygen -lf /etc/ssh/ssh_host_{kind}_key.pub).\n\n"
+            "Trust this server and connect?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
+    def _set_connecting(self, connecting, text):
+        """The form and buttons locked while connecting (only Stop works),
+        and the status line."""
+        for widget in (
+            self.profiles_group,
+            self.settings_group,
+            self.auth_group,
+            self.test_btn,
+            self.save_profile_btn,
+            self.connect_btn,
+        ):
+            widget.setEnabled(not connecting)
+        self.cancel_btn.setText("Stop" if connecting else "Cancel")
+        self.spinner.setVisible(connecting)
+        self.status_label.setText(text)
+
+    def _cancel(self):
+        """Stop connecting, or (when not) close the dialog."""
+        if self._attempt is not None:
+            self._abandon()
+            self._set_connecting(False, "Stopped.")
+        else:
+            self.reject()
+
+    def _abandon(self):
+        """Drop the connection being made; its thread ends by itself."""
+        thread, self._attempt = self._attempt, None
+        if thread is None:
+            return
+        for signal in (thread.succeeded, thread.failed):
+            try:
+                signal.disconnect()
+            except TypeError:
+                pass
+        thread.cancel()
+
+    def reject(self):
+        """Close (Cancel when not connecting, Escape, the title bar's close),
+        dropping a connection being made."""
+        self._abandon()
+        super().reject()
 
     def get_connection(self) -> Optional[SSHConnection]:
         """Get the established connection (after dialog accepted)."""
