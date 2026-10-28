@@ -708,6 +708,16 @@ class RemoteModeMixin:
         # Run ping in background thread to avoid blocking UI
         from PyQt5.QtCore import QThread, pyqtSignal
 
+        # A reconnection is under way
+        if getattr(self, "_reconnect_thread", None) is not None:
+            return
+
+        # A download receiving data shows the connection alive. (A ping would
+        # wait behind its data: over a slow link longer than the 10 s below,
+        # and closing the connection then would end the download.)
+        if self.remote_connection.receiving():
+            return
+
         # If previous ping is still running after 10s, assume connection is dead
         if (
             hasattr(self, "_ping_thread")
@@ -718,23 +728,22 @@ class RemoteModeMixin:
                 import time
 
                 elapsed = time.time() - self._ping_start_time
-                if elapsed > 10:
-                    # Connection is dead - the ping is stuck
-                    try:
-                        self._ping_thread.terminate()
-                        self._ping_thread.wait(1000)
-                    except Exception:
-                        pass
-                    # Trigger reconnect
+                if elapsed > 10 and not self._ping_thread.given_up:
+                    # Connection is dead - the ping is stuck. Closing the
+                    # connection ends whatever waits on it, the ping too,
+                    # which then reports it lost and a reconnect follows.
+                    # (Never terminate() the thread: killed while waiting on
+                    # a Python lock, it leaves the lock pointing at its dead
+                    # stack, and the next release of that lock crashes.)
+                    self._ping_thread.given_up = True
+                    self._ping_thread.connection.mark_lost()
                     if self.remote_connection:
-                        self.remote_connection.mark_lost()
                         self.statusBar().showMessage(
                             "Remote connection lost - click status to reconnect",
                             10000,
                         )
                         self._update_remote_status_indicator()
                         self._update_remote_menu_state()
-                    return
             return
 
         class PingThread(QThread):
@@ -743,10 +752,9 @@ class RemoteModeMixin:
             def __init__(self, connection):
                 super().__init__()
                 self.connection = connection
+                self.given_up = False  # (the connection was closed under it)
 
             def run(self):
-                import socket
-
                 try:
                     # Quick passive check first
                     if not self.connection.is_connected():
@@ -758,25 +766,16 @@ class RemoteModeMixin:
                         self.result.emit(False)
                         return
 
-                    # Set socket timeout temporarily
-                    sock = transport.sock
-                    old_timeout = sock.gettimeout()
-                    sock.settimeout(3.0)  # 3 second timeout
-
-                    try:
-                        # Try to open a new SFTP channel - this requires server response
-                        # If network is down, this will timeout
-                        sftp = self.connection.open_sftp()
-                        sftp.close()  # Close it immediately
-                        self.result.emit(True)
-                    except socket.timeout:
-                        logger.warning("[SSH] Ping timeout - connection appears dead")
-                        self.result.emit(False)
-                    except Exception as e:
-                        logger.warning(f"[SSH] Ping failed: {e}")
-                        self.result.emit(False)
-                    finally:
-                        sock.settimeout(old_timeout)
+                    # A request the server answers itself, as ssh's
+                    # ServerAliveInterval sends: the answer shows the
+                    # connection alive, and nothing is started there. (An
+                    # SFTP channel starts a process, which a busy login node
+                    # can take longer than the 10 s allowed to do.)
+                    transport.global_request("keepalive@openssh.com", wait=True)
+                    alive = transport.is_active()
+                    if not alive:
+                        logger.warning("[SSH] Ping failed: the connection closed")
+                    self.result.emit(alive)
 
                 except Exception as e:
                     logger.warning(f"[SSH] Ping error: {e}")
@@ -785,17 +784,7 @@ class RemoteModeMixin:
         def on_ping_result(is_alive):
             if not is_alive:
                 logger.warning("[SSH] Health check: Connection lost, attempting reconnect...")
-                if self.remote_connection and self.remote_connection.ensure_connected():
-                    logger.info("[SSH] Health check: Reconnected successfully")
-                    self.statusBar().showMessage("Remote connection restored", 5000)
-                else:
-                    logger.warning("[SSH] Health check: Reconnect failed")
-                    self.statusBar().showMessage(
-                        "Remote connection lost - click status to reconnect", 10000
-                    )
-
-                self._update_remote_status_indicator()
-                self._update_remote_menu_state()
+                self._reconnect_in_background()
 
         import time
 
@@ -803,3 +792,45 @@ class RemoteModeMixin:
         self._ping_thread = PingThread(self.remote_connection)
         self._ping_thread.result.connect(on_ping_result)
         self._ping_thread.start()
+
+    def _reconnect_in_background(self):
+        """Connect again to the server, in a thread: it can take as long as
+        the connection's timeout, too long for the window to wait."""
+        connection = self.remote_connection
+        if connection is None or getattr(self, "_reconnect_thread", None) is not None:
+            return
+        from PyQt5.QtCore import QThread, pyqtSignal
+
+        class ReconnectThread(QThread):
+            done = pyqtSignal(bool)
+
+            def run(self):
+                try:
+                    ok = connection.ensure_connected()
+                except Exception as e:
+                    logger.warning(f"[SSH] Reconnect error: {e}")
+                    ok = False
+                self.done.emit(bool(ok))
+
+        def on_done(ok):
+            if connection is not self.remote_connection:
+                return  # (another server was connected meanwhile)
+            if ok:
+                logger.info("[SSH] Health check: Reconnected successfully")
+                self.statusBar().showMessage("Remote connection restored", 5000)
+            else:
+                logger.warning("[SSH] Health check: Reconnect failed")
+                self.statusBar().showMessage(
+                    "Remote connection lost - click status to reconnect", 10000
+                )
+            self._update_remote_status_indicator()
+            self._update_remote_menu_state()
+
+        def on_finished():
+            self._reconnect_thread = None
+
+        thread = ReconnectThread()
+        thread.done.connect(on_done)
+        thread.finished.connect(on_finished)  # (kept until it has ended)
+        self._reconnect_thread = thread
+        thread.start()

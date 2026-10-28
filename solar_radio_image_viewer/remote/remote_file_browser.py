@@ -550,9 +550,6 @@ class RemoteFileBrowser(QDialog):
     # Class-level variable to remember last browsed directory per host
     _last_paths: dict = {}  # {host: last_path}
 
-    # Class-level flag to track if there's a pending operation that may be blocking
-    _has_pending_operation: bool = False
-
     # Class-level cache for directory listings: {(user@host:port, path): (entries, timestamp)}
     _listing_cache: dict = {}
     _cache_ttl: int = 60  # Cache TTL in seconds
@@ -1583,12 +1580,8 @@ class RemoteFileBrowser(QDialog):
                 "The connection to the server was lost. Reconnect (on the left) and try again.",
             )
             return
-        if RemoteFileBrowser._has_pending_operation and not any(
-            t.isRunning() for t in RemoteFileBrowser._active_downloads
-        ):
-            if self.connection.refresh_sftp():
-                RemoteFileBrowser._has_pending_operation = False
-
+        # (A stopped download opens a new SFTP channel itself, in its thread:
+        # opening one here would hold the window still while the server is slow)
         local_path = self.cache.get_cache_path(host, entry.path)
         thread = DownloadThread(self.connection, entry.path, str(local_path), is_directory=entry.is_dir)
         thread.progress.connect(self._on_download_progress)
@@ -1656,7 +1649,6 @@ class RemoteFileBrowser(QDialog):
         self._download_thread = None
         _silence(thread)
         thread.cancel()
-        RemoteFileBrowser._has_pending_operation = True
         cache, target, entry = self.cache, self._download_target, self._download_entry
         _base_finished(thread).connect(
             lambda: RemoteFileBrowser._discard_partial(cache, target, entry.is_dir, entry.name)

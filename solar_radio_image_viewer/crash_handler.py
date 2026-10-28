@@ -375,6 +375,25 @@ def crash_excepthook(exctype, value, tb):
     sys.exit(1)
 
 
+def _ended_by_lost_connection(args):
+    """Whether one of paramiko's own threads (an SFTP download's prefetch,
+    which sends read requests ahead) ended because its connection closed: a
+    reconnect or a dropped network, which the download reports itself."""
+    paramiko = sys.modules.get("paramiko")
+    if paramiko is None or not isinstance(
+        args.exc_value, (OSError, EOFError, paramiko.SSHException)
+    ):
+        return False
+    frames = [
+        frame
+        for frame in traceback.extract_tb(args.exc_traceback)
+        if os.path.basename(frame.filename) != "threading.py"
+    ]
+    return bool(frames) and frames[0].filename.startswith(
+        os.path.dirname(paramiko.__file__) + os.sep
+    )
+
+
 def thread_excepthook(args):
     """Catch unhandled exceptions in non-main threads (Python 3.8+).
 
@@ -387,6 +406,10 @@ def thread_excepthook(args):
     if args.exc_type is not None and issubclass(
         args.exc_type, (SystemExit, KeyboardInterrupt)
     ):
+        return
+
+    if _ended_by_lost_connection(args):
+        print(f"[SSH] A paramiko thread stopped, its connection closed: {args.exc_value}")
         return
 
     # Report it (non-fatal: don't exit the app), and show it once the main

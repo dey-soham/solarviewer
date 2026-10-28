@@ -12,6 +12,8 @@ import getpass
 import os
 import socket
 import stat
+import threading
+import time
 from pathlib import Path
 from typing import Optional, List, Tuple, Callable
 from dataclasses import dataclass
@@ -154,6 +156,13 @@ class SSHConnection:
         self._ssh_config: Optional[SSHConfig] = None
         self._last_home: str = ""  # Cached home directory for non-blocking access
         self.last_error: str = ""  # why the last reconnect() failed
+        # One reconnect() at a time: a health check, the browser's Reconnect
+        # and a failed transfer may all try at once, each tearing down the
+        # connection the other is making
+        self._reconnecting = threading.Lock()
+        self._connections_made = 0
+        # When a download last received data (time.monotonic())
+        self._last_data = 0.0
 
         # Store connection parameters for auto-reconnect
         self._connect_params: dict = {}
@@ -283,6 +292,7 @@ class SSHConnection:
             self._port = actual_port
             self._username = actual_user
             self._connected = True
+            self._connections_made += 1
 
             # Store connection parameters for potential reconnect
             self._connect_params = {
@@ -317,19 +327,21 @@ class SSHConnection:
 
     def _cleanup(self):
         """Clean up connection resources."""
-        if self._sftp:
-            try:
-                self._sftp.close()
-            except Exception:
-                pass
-            self._sftp = None
-
+        # The connection first: closing the SFTP channel of a live one sends
+        # a message, which waits as long as the network is stalled
         if self._client:
             try:
                 self._client.close()
             except Exception:
                 pass
             self._client = None
+
+        if self._sftp:
+            try:
+                self._sftp.close()
+            except Exception:
+                pass
+            self._sftp = None
 
         self._connected = False
 
@@ -357,22 +369,27 @@ class SSHConnection:
             self.last_error = "No connection to repeat"
             return False
 
-        try:
-            # Clean up existing connection
-            self._cleanup()
+        made = self._connections_made
+        with self._reconnecting:
+            # Another thread connected again while this one waited
+            if self._connections_made != made and self.is_connected() and self._sftp is not None:
+                return True
+            try:
+                # Clean up existing connection
+                self._cleanup()
 
-            # Reconnect with stored params
-            self.connect(**self._connect_params)
-            self.last_error = ""
-            return True
-        except SSHConnectionError as e:
-            logger.warning(f"[SSH] Reconnection failed: {e}")
-            self.last_error = str(e)
-            return False
-        except Exception as e:
-            logger.warning(f"[SSH] Reconnection error: {e}")
-            self.last_error = str(e)
-            return False
+                # Reconnect with stored params
+                self.connect(**self._connect_params)
+                self.last_error = ""
+                return True
+            except SSHConnectionError as e:
+                logger.warning(f"[SSH] Reconnection failed: {e}")
+                self.last_error = str(e)
+                return False
+            except Exception as e:
+                logger.warning(f"[SSH] Reconnection error: {e}")
+                self.last_error = str(e)
+                return False
 
     def is_connected(self) -> bool:
         """Check if currently connected (passive check only)."""
@@ -557,7 +574,8 @@ class SSHConnection:
     @property
     def transport(self):
         """The paramiko Transport, or None when not connected."""
-        return self._client.get_transport() if self._client else None
+        client = self._client  # (another thread may be reconnecting)
+        return client.get_transport() if client else None
 
     def exec_command(self, command: str, timeout: float = None):
         """Run ``command`` on the server: (stdin, stdout, stderr), as paramiko's
@@ -572,9 +590,35 @@ class SSHConnection:
             raise SSHConnectionError("Not connected to remote server")
         return self._client.open_sftp()
 
+    def receiving(self, within: float = 10.0) -> bool:
+        """Whether a download has received data in the last ``within``
+        seconds: a connection that busy is alive, however long a health
+        check's ping waits behind its data."""
+        return time.monotonic() - self._last_data < within
+
+    def _noting_data(self, progress_callback):
+        """``progress_callback`` (if any), noting each time data arrives."""
+
+        def progress(transferred, total):
+            self._last_data = time.monotonic()
+            if progress_callback is not None:
+                progress_callback(transferred, total)
+
+        return progress
+
     def mark_lost(self) -> None:
-        """Record that the server stopped answering (seen by a health check)."""
+        """Record that the server stopped answering (seen by a health check),
+        and close the connection: whatever waits on it (a listing, a transfer,
+        the check itself) then fails at once instead of waiting for the
+        server."""
         self._connected = False
+        client = self._client
+        transport = client.get_transport() if client is not None else None
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
 
     def list_directory(
         self,
@@ -653,15 +697,9 @@ class SSHConnection:
         attempt a full SSH reconnection.  Otherwise we just refresh the
         SFTP channel.
         """
-        if self._sftp:
-            try:
-                self._sftp.close()
-            except Exception:
-                pass
-            self._sftp = None
-
         if is_network_error:
-            # Transport is probably dead — try full reconnect
+            # Transport is probably dead — try full reconnect (which replaces
+            # the SFTP channel; another thread's reconnect may have already)
             logger.warning("[SSH] Network error during transfer, attempting full reconnect...")
             try:
                 if self.reconnect():
@@ -673,6 +711,12 @@ class SSHConnection:
                 logger.warning(f"[SSH] Reconnect error: {e}")
         else:
             # Transport may still be alive — just refresh SFTP channel
+            if self._sftp:
+                try:
+                    self._sftp.close()
+                except Exception:
+                    pass
+                self._sftp = None
             if self._client:
                 try:
                     self._sftp = self._client.open_sftp()
@@ -707,11 +751,9 @@ class SSHConnection:
         # Ensure parent directory exists
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
+        progress_callback = self._noting_data(progress_callback)
         try:
-            if progress_callback:
-                self._sftp.get(remote_path, local_path, callback=progress_callback)
-            else:
-                self._sftp.get(remote_path, local_path)
+            self._sftp.get(remote_path, local_path, callback=progress_callback)
             return local_path
         except (socket.timeout, EOFError, ConnectionResetError, BrokenPipeError):
             # Network-level failures — transport is likely dead
@@ -742,6 +784,7 @@ class SSHConnection:
         if not self.is_connected():
             raise SSHConnectionError("Not connected to remote server")
 
+        progress_callback = self._noting_data(progress_callback)
         try:
             # Create local directory with same name
             local_dir = os.path.join(local_path, os.path.basename(remote_path))
@@ -759,24 +802,19 @@ class SSHConnection:
                 os.makedirs(os.path.dirname(local_file), exist_ok=True)
 
                 # Create a per-file progress callback that updates cumulative progress
-                if progress_callback:
+                def make_file_callback(current_total):
+                    def file_progress(transferred, _):
+                        progress_callback(current_total + transferred, total_bytes)
 
-                    def make_file_callback(current_total):
-                        def file_progress(transferred, _):
-                            progress_callback(current_total + transferred, total_bytes)
+                    return file_progress
 
-                        return file_progress
-
-                    file_callback = make_file_callback(bytes_transferred)
-                    self._sftp.get(remote_file, local_file, callback=file_callback)
-                else:
-                    self._sftp.get(remote_file, local_file)
+                file_callback = make_file_callback(bytes_transferred)
+                self._sftp.get(remote_file, local_file, callback=file_callback)
 
                 bytes_transferred += file_size
 
                 # Final update for this file
-                if progress_callback:
-                    progress_callback(bytes_transferred, total_bytes)
+                progress_callback(bytes_transferred, total_bytes)
 
             return local_dir
 
