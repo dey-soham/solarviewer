@@ -41,6 +41,31 @@ except ImportError:
     SSHClient = None
     SFTPClient = None
 
+# SFTP channels a folder (a CASA image) is fetched over at once
+DOWNLOAD_CHANNELS = 4
+
+
+class _CountingReader:
+    """A tar stream read from the server, reporting the bytes so far against
+    ``total`` (the files' size) to ``progress_callback``."""
+
+    def __init__(self, stream, total, progress_callback):
+        self._stream = stream
+        self.total = total
+        self.count = 0
+        self._progress = progress_callback
+
+    def read(self, size=-1):
+        data = self._stream.read(size)
+        self.count += len(data)
+        if self.total:
+            self._progress(min(self.count, self.total), self.total)
+        return data
+
+    def finish(self):
+        total = self.total or self.count
+        self._progress(total, total)
+
 
 class SSHConnectionError(Exception):
     """Exception raised for SSH connection errors."""
@@ -808,32 +833,12 @@ class SSHConnection:
             local_dir = os.path.join(local_path, os.path.basename(remote_path))
             os.makedirs(local_dir, exist_ok=True)
 
-            # Get all files recursively with sizes
+            # One tar stream from the server where it runs commands (each
+            # file over SFTP costs several round trips), else file by file
+            if self._download_by_tar(remote_path, local_path, progress_callback):
+                return local_dir
             files_to_download = self._get_files_recursive_with_sizes(remote_path)
-
-            # Calculate total size
-            total_bytes = sum(size for _, _, size in files_to_download)
-            bytes_transferred = 0
-
-            for remote_file, rel_path, file_size in files_to_download:
-                local_file = os.path.join(local_dir, rel_path)
-                os.makedirs(os.path.dirname(local_file), exist_ok=True)
-
-                # Create a per-file progress callback that updates cumulative progress
-                def make_file_callback(current_total):
-                    def file_progress(transferred, _):
-                        progress_callback(current_total + transferred, total_bytes)
-
-                    return file_progress
-
-                file_callback = make_file_callback(bytes_transferred)
-                self._sftp.get(remote_file, local_file, callback=file_callback)
-
-                bytes_transferred += file_size
-
-                # Final update for this file
-                progress_callback(bytes_transferred, total_bytes)
-
+            self._download_files(files_to_download, local_dir, progress_callback)
             return local_dir
 
         except (socket.timeout, EOFError, ConnectionResetError, BrokenPipeError):
@@ -844,6 +849,123 @@ class SSHConnection:
             # Other failures — SFTP channel may be bad but transport might be OK
             self._recover_after_transfer_failure(is_network_error=False)
             raise SSHConnectionError(f"Failed to download directory {remote_path}: {e}")
+
+    def _download_by_tar(self, remote_path, local_path, progress_callback):
+        """Fetch folder ``remote_path`` into ``local_path`` as one tar
+        stream from a command on the server: on ui-02 a CASA image (9 files)
+        took 2.6 s so against 10.6 s over SFTP, whose every file waits on
+        several round trips. Returns False, to fetch it over SFTP instead,
+        where the server runs no commands, has no tar or the stream fails."""
+        import posixpath
+        import shlex
+        import tarfile
+
+        if not hasattr(tarfile, "data_filter"):
+            return False  # (a Python without tar's safe extraction)
+        parent, name = posixpath.split(remote_path.rstrip("/"))
+        # The files' total size first (for the progress; not du: some file
+        # systems give folders the size of their contents), then the tar
+        command = (
+            f"cd {shlex.quote(parent or '/')} && "
+            f"find {shlex.quote(name)} -type f -printf '%s\\n' | awk '{{s += $1}} END {{print s + 0}}' && "
+            f"tar cf - -- {shlex.quote(name)}"
+        )
+        try:
+            _, stdout, _ = self.exec_command(command)
+        except Exception:
+            return False
+        channel = stdout.channel
+        try:
+            # (no data for this long: stalled, as DownloadThread sets it)
+            sock = self.transport.sock if self.transport else None
+            channel.settimeout(sock.gettimeout() if sock is not None else None)
+            line = stdout.readline().strip()
+            if not line.isdigit():
+                return False
+            reader = _CountingReader(stdout, int(line), progress_callback)
+            try:
+                with tarfile.open(fileobj=reader, mode="r|") as tar:
+                    for member in tar:
+                        if member.name != name and not member.name.startswith(name + "/"):
+                            return False  # (not the folder asked for)
+                        tar.extract(member, local_path, filter="data")
+            except tarfile.TarError:
+                return False
+            if channel.recv_exit_status() != 0:
+                return False  # (a file tar could not read: SFTP says which)
+            reader.finish()
+            return True
+        finally:
+            channel.close()
+
+    def _download_files(self, files, local_dir, progress_callback):
+        """Fetch ``files`` ((remote, relative path, size)) into ``local_dir``,
+        several at a time: each SFTP channel has its own sftp-server, which
+        reads the disk one request at a time, so a folder of small files (a
+        CASA image) spends most of its time waiting on round trips. The
+        largest go first; the extra channels open meanwhile (slow on some
+        servers) and join when ready."""
+        total_bytes = sum(size for _, _, size in files)
+        queue = sorted(files, key=lambda f: -f[2])
+        state = threading.Condition()
+        fetched = [0]  # bytes, all files
+        fetching = [0]  # files being fetched
+        failed = []
+
+        def take():
+            with state:
+                if failed or not queue:
+                    return None
+                fetching[0] += 1
+                return queue.pop(0)
+
+        def work(sftp):
+            while True:
+                item = take()
+                if item is None:
+                    return
+                remote_file, rel_path, file_size = item
+                local_file = os.path.join(local_dir, rel_path)
+                last = [0]
+
+                def file_progress(transferred, _):
+                    with state:
+                        fetched[0] += transferred - last[0]
+                        last[0] = transferred
+                        current = fetched[0]
+                    progress_callback(current, total_bytes)
+
+                try:
+                    os.makedirs(os.path.dirname(local_file), exist_ok=True)
+                    sftp.get(remote_file, local_file, callback=file_progress)
+                    file_progress(file_size, file_size)  # (an empty file too)
+                except BaseException as e:
+                    with state:
+                        failed.append(e)
+                finally:
+                    with state:
+                        fetching[0] -= 1
+                        state.notify_all()
+
+        def helper():
+            try:
+                sftp = self.open_sftp()
+            except Exception:
+                return  # (the other channels carry on)
+            try:
+                work(sftp)
+            finally:
+                sftp.close()
+
+        for _ in range(min(DOWNLOAD_CHANNELS, len(files)) - 1):
+            threading.Thread(target=helper, name="sftp-folder", daemon=True).start()
+        work(self._sftp)
+        # The files other channels are still fetching (not a channel still
+        # opening: it finds nothing left and closes)
+        with state:
+            state.wait_for(lambda: fetching[0] == 0)
+            if failed:
+                raise failed[0]
 
     def _get_files_recursive_with_sizes(
         self, remote_path: str, base_path: str = None
