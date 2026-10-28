@@ -29,14 +29,24 @@ def process_context(preload=()):
 
 def process_pool(processes, preload=()):
     """A ``multiprocessing.Pool`` using :func:`process_context`."""
-    return process_context(preload).Pool(processes=processes)
+    return process_context(preload).Pool(processes=processes, initializer=start_worker)
 
 
 def process_pool_executor(max_workers, preload=()):
     """A ``ProcessPoolExecutor`` using :func:`process_context`."""
     return ProcessPoolExecutor(
-        max_workers=max_workers, mp_context=process_context(preload)
+        max_workers=max_workers,
+        mp_context=process_context(preload),
+        initializer=start_worker,
     )
+
+
+def start_worker():
+    """Run first in each worker of these pools: astropy uses the time
+    tables it has (see astropy_tables), as in the window's process."""
+    from .astropy_tables import use_local_tables
+
+    use_local_tables()
 
 
 def import_modules(names):

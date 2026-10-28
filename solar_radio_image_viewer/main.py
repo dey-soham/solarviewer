@@ -72,6 +72,12 @@ class LoaderThread(QThread):
             self.message.emit("Loading core libraries...")
             self.progress.emit(90)
 
+            # Astropy's time tables: those it has, never fetched while a time
+            # is converted (as drawing an image does, on the window's thread)
+            from .processing.astropy_tables import use_local_tables
+
+            use_local_tables()
+
             # Heavy imports happen here
             from .viewer import SolarRadioImageViewerApp
 
@@ -303,6 +309,12 @@ Examples:
             from .processing.temp_files import clean_temp_files_in_background
 
             clean_temp_files_in_background()
+
+            # Newer time tables for astropy, where its own are old (used from
+            # the next start)
+            from .processing.astropy_tables import refresh_in_background
+
+            refresh_in_background()
 
         except Exception as e:
             import traceback
