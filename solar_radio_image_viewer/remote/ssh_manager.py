@@ -127,8 +127,10 @@ class ConnectionProfile:
     host: str
     port: int = 22
     username: str = ""
-    auth_type: str = "key"  # "key" or "password"
+    auth_type: str = "key"  # "agent", "key" or "password"
     key_path: str = ""
+    last_used: float = 0.0  # when it last connected (time.time()); 0: never
+    last_failed: bool = False  # whether its last attempt failed
     password: str = ""  # Note: stored in memory only, not persisted
 
 
@@ -241,6 +243,7 @@ class SSHConnection:
         password: str = None,
         key_path: str = None,
         timeout: float = 30.0,
+        passphrase: str = None,
     ) -> None:
         """
         Connect to a remote SSH server.
@@ -252,6 +255,7 @@ class SSHConnection:
             password: Password for authentication (optional)
             key_path: Path to private key file (optional, uses SSH agent/default keys if not specified)
             timeout: Connection timeout in seconds
+            passphrase: Passphrase of the key file, if it is encrypted
 
         Raises:
             SSHConnectionError: If connection fails
@@ -302,6 +306,8 @@ class SSHConnection:
             elif actual_key and os.path.exists(actual_key):
                 # When explicit key is provided, disable agent to avoid hardware token issues
                 connect_kwargs["key_filename"] = actual_key
+                if passphrase:
+                    connect_kwargs["passphrase"] = passphrase
                 connect_kwargs["allow_agent"] = False
             else:
                 # Only use agent when no explicit credentials provided
@@ -331,6 +337,7 @@ class SSHConnection:
                 "password": password,
                 "key_path": key_path,
                 "timeout": timeout,
+                "passphrase": passphrase,
             }
 
         except UnknownHostKey:
