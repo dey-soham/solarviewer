@@ -74,8 +74,14 @@
   ```bash
   mkdir -p ~/.casa/data
   ```
+  CASA fills this folder with about 870 MB of measures data the first time it is imported.
+- **Linux desktop libraries**: Qt needs a few system libraries that pip cannot install. On Ubuntu/Debian the one most often missing is `libxcb-xinerama0`:
+  ```bash
+  sudo apt install libxcb-xinerama0
+  ```
+  Without it, SolarViewer aborts at startup with `Could not load the Qt platform plugin "xcb"`. See the [Qt xcb error](INSTALLATION.md#troubleshooting) section for the full list and other distributions.
 
-> **Note**: No other manual installation is required — all dependencies are installed automatically via pip.
+> **Note**: All Python dependencies are installed automatically via pip.
 
 ### Recommended: Virtual Environment
 
@@ -127,6 +133,14 @@ For development, install the formatting and lint tools as well:
 pip install -e ".[dev]"
 ```
 
+### Ubuntu 24.04: Use casatools 6.7.5.18
+
+`casatools` 6.7.6.14 needs OpenSSL 3.2 or newer, but Ubuntu 24.04 ships OpenSSL 3.0, so it fails to import and SolarViewer reports `CASA tools not found`. After installing, switch to the previous release:
+
+```bash
+pip install "casatools==6.7.5.18" "casatasks==6.7.5.18"
+```
+
 ### Desktop Integration
 
 After installation, you can create a desktop entry and icon (Linux) or an application bundle (macOS) to launch SolarViewer from your application menu:
@@ -147,6 +161,8 @@ solarviewer --uninstall
 #### 💡 Optimal CASA Configuration
  
 To prevent CASA from auto-updating and to disable telemetry, we recommend adding these configurations:
+
+> **Note**: Add these only after `~/.casa/data` has been populated. With auto-updates off and an empty folder, CASA fails with `measures data is not available`.
  
 <details>
 <summary>Click to view recommended settings</summary>
@@ -194,8 +210,8 @@ EnableTelemetry: False
 | astropy | ≥5.0.0 | FITS handling, coordinates |
 | scipy | ≥1.7.0 | Scientific computing |
 | sunpy | ≥5.0.0 | Solar physics tools |
-| casatools | ≥6.4.0 | CASA image support |
-| casatasks | ≥6.4.0 | CASA tasks |
+| casatools | ≥6.4.0 (6.7.5.18 on Ubuntu 24.04) | CASA image support |
+| casatasks | ≥6.4.0 (6.7.5.18 on Ubuntu 24.04) | CASA tasks |
 
 </details>
 

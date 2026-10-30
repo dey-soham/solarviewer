@@ -212,7 +212,7 @@ If you see the error: `Could not load the Qt platform plugin "xcb" even though i
 sudo apt-get update && sudo apt-get install -y \
     libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
     libxcb-render-util0 libxcb-xkb1 libxkbcommon-x11-0 libdbus-1-3 \
-    libxcb-cursor0 libgl1-mesa-glx libegl1 libx11-xcb1 \
+    libxcb-cursor0 libgl1 libegl1 libx11-xcb1 \
     libfontconfig1 libice6 libsm6 libxext6 libxrender1 libxtst6 libxcb-util1
 ```
 
