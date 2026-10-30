@@ -359,10 +359,9 @@ class PyQtGraphSpectrumCanvas(QWidget):
     def _build_lut(self, cmap_name):
         """Build a 256-color LUT from a matplotlib colormap."""
         try:
-            import matplotlib.cm as cm
             import numpy as np
 
-            mpl_cmap = cm.get_cmap(cmap_name)
+            mpl_cmap = plt.get_cmap(cmap_name)
             lut = np.zeros((256, 4), dtype=np.ubyte)
             for i in range(256):
                 r, g, b, a = mpl_cmap(i / 255.0)
@@ -394,9 +393,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
     def _get_colormap(self, cmap_name):
         """Get a PyQtGraph colormap from a matplotlib colormap name."""
         try:
-            import matplotlib.cm as cm
-
-            mpl_cmap = cm.get_cmap(cmap_name)
+            mpl_cmap = plt.get_cmap(cmap_name)
             colors = [mpl_cmap(i) for i in np.linspace(0, 1, 256)]
             colors_255 = [
                 (int(c[0] * 255), int(c[1] * 255), int(c[2] * 255), int(c[3] * 255))
