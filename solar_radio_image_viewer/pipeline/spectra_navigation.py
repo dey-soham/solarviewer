@@ -42,8 +42,14 @@ class SpectraNavigationMixin:
         if self._nav_mode != "Windowed":
             return 0, total
         window = self._calculate_window_samples()
-        start = page_idx * window
-        return start, min(start + window, total)
+        origin = getattr(self, "_page_origin", 0)  # (<= 0: where the first page begins)
+        start = origin + page_idx * window
+        return max(0, start), min(start + window, total)
+
+    def _sample_dt(self):
+        """The typical spacing of the time axis, in seconds."""
+        sample = self._full_time_axis[:100_001]
+        return float(np.median(np.abs(np.diff(sample))))
 
     def _calculate_window_samples(self):
         """Safely calculate window samples from time axis and duration."""
@@ -52,8 +58,7 @@ class SpectraNavigationMixin:
 
         # The typical spacing (not just the first two samples': cadences
         # can be uneven, with gaps)
-        sample = self._full_time_axis[:100_001]
-        dt = float(np.median(np.abs(np.diff(sample))))
+        dt = self._sample_dt()
         if dt == 0:
             self.logger.warning(
                 "Zero time delta detected in time axis. Using total samples as window."
@@ -74,6 +79,7 @@ class SpectraNavigationMixin:
         """The mode switch, and only the mode's controls."""
         value = {"Full": "Full Spectrum", "Windowed": "Windowed", "Range": "Time Range"}[self._nav_mode]
         self._modeButtons[value].setChecked(True)
+        self.minimap.set_resizable(self._nav_mode in ("Windowed", "Range"))
         self.pagesWidget.setVisible(self._nav_mode == "Windowed")
         self.rangeWidget.setVisible(self._nav_mode == "Range")
 
@@ -98,7 +104,8 @@ class SpectraNavigationMixin:
         if self._nav_mode != "Windowed":
             self._total_pages = 1
         else:
-            self._total_pages = max(1, int(np.ceil(total_samples / window_samples)))
+            origin = getattr(self, "_page_origin", 0)
+            self._total_pages = max(1, int(np.ceil((total_samples - origin) / window_samples)))
 
         if self._current_page >= self._total_pages:
             self._current_page = self._total_pages - 1
@@ -190,6 +197,10 @@ class SpectraNavigationMixin:
             return
 
         page_to_load = self._current_page
+        last = getattr(self, "_last_page_loaded", page_to_load)
+        if page_to_load != last:
+            self._page_step = 1 if page_to_load > last else -1  # (the way the view is moving)
+        self._last_page_loaded = page_to_load
 
         # 1. Instant Preview from RAM (Feature 5 Optimized)
         # We do this FIRST even if cached, to provide instantaneous visual feedback of the button press.
@@ -238,7 +249,13 @@ class SpectraNavigationMixin:
             return
 
         # In the background (the preview shows meanwhile; the window stays
-        # responsive however slow the disk or the server)
+        # responsive however slow the disk or the server). Reads of other
+        # pages (ahead, or left behind) stop: the link is for this page, and
+        # what they had read stays in the cache.
+        for other, read in list(self._remote_reads.items()):
+            if other != page_idx:
+                read.stopped = True
+                del self._remote_reads[other]
         self._read_page(page_idx)
 
     def _read_all(self, raw_data, progress, cancelled):
@@ -442,28 +459,27 @@ class SpectraNavigationMixin:
             self.loadSlice()
 
     def onNavDurationChanged(self, val):
+        """Pages of a new length: the page shown keeps its start, so the
+        view stays where it was (pages before it are the new length too)."""
         if not self.hdul:
             return
+        anchor = 0
+        if self._full_time_axis is not None:
+            anchor = self._page_bounds(self._current_page)[0]
         self._window_duration_min = val
-        self._current_page = 0  # Reset to start when duration changes
 
-        # Invalidate cache
         with self.wait_cursor():
             self._data_cache.clear()
-
-            # Recalculate total pages based on new duration
             if self._full_time_axis is not None:
-                total_samples = len(self._full_time_axis)
-                window_samples = self._calculate_window_samples()
-                if window_samples > 0:
-                    self._total_pages = (
-                        total_samples + window_samples - 1
-                    ) // window_samples
-                else:
-                    self._total_pages = 1
-
+                window = self._calculate_window_samples()
+                self._current_page = -(-anchor // window)  # ceil: the grid passes through anchor
+                self._page_origin = anchor - self._current_page * window
+            else:
+                self._page_origin = 0
+                self._current_page = 0
+            self._updateNavigationStats()  # (the page count, buttons, outline)
             self.loadSlice()
-            self._updateNavigationStats()  # Ensure button states and minimap rectangle update
+            self._updateNavigationStats()
 
     def onPrevPage(self):
         if self._current_page > 0:
@@ -489,6 +505,38 @@ class SpectraNavigationMixin:
             with self.wait_cursor():
                 self.loadSlice()
 
+    def onMinimapResize(self, start_frac, end_frac):
+        """The outline on the overview was resized: the range shown becomes
+        what it covers (Time Range), or the pages become as long as it is
+        (Windowed), the first of them beginning where it does."""
+        if self._full_time_axis is None:
+            return
+        total = len(self._full_time_axis)
+        start = max(0, min(total - 1, int(round(start_frac * total))))
+        stop = max(start + 1, min(total, int(round(end_frac * total))))
+        if self._nav_mode == "Range":
+            self._show_range(start, stop)
+        elif self._nav_mode == "Windowed":
+            dt = self._sample_dt()
+            low, high = self.navDurationSpin.minimum(), self.navDurationSpin.maximum()
+            minutes = round(min(high, max(low, (stop - start) * dt / 60.0)), 1)
+            with self.wait_cursor():
+                self.navDurationSpin.blockSignals(True)
+                self.navDurationSpin.setValue(minutes)
+                self.navDurationSpin.blockSignals(False)
+                self._window_duration_min = minutes
+                window = self._calculate_window_samples()
+                # The page grid passes through the outline's start
+                page = -(-start // window)  # ceil
+                self._page_origin = start - page * window
+                self._current_page = page
+                self._stop_remote_reads()
+                self._data_cache.clear()
+                self._updateNavigationStats()
+                self.loadSlice()
+        else:
+            self._updateNavigationStats()
+
     def onMinimapSeek(self, fraction):
         """Show the part of the file at ``fraction`` of it (a click or drag
         on the overview)."""
@@ -512,7 +560,7 @@ class SpectraNavigationMixin:
             # Determine which page contains this sample
             window_samples = self._calculate_window_samples()
 
-            new_page = target_idx // window_samples
+            new_page = max(0, (target_idx - getattr(self, "_page_origin", 0)) // window_samples)
             if new_page >= self._total_pages:
                 new_page = self._total_pages - 1
 
@@ -521,8 +569,7 @@ class SpectraNavigationMixin:
                 self.loadSlice()
             else:
                 # Snap the minimap rectangle back to the current page position
-                start_idx = self._current_page * window_samples
-                end_idx = min(start_idx + window_samples, total_samples)
+                start_idx, end_idx = self._page_bounds(self._current_page)
                 self.minimap.update_view_percent(
                     start_idx / total_samples, end_idx / total_samples
                 )
@@ -565,7 +612,11 @@ class SpectraNavigationMixin:
                     "That time is outside the range shown (change From/To).", 5000
                 )
                 return
-        page = index // self._calculate_window_samples() if self._nav_mode == "Windowed" else 0
+        page = (
+            max(0, (index - getattr(self, "_page_origin", 0)) // self._calculate_window_samples())
+            if self._nav_mode == "Windowed"
+            else 0
+        )
         page = min(page, self._total_pages - 1)
         if page != self._current_page:
             self._goto_time = target  # centered once shown (_display_data)

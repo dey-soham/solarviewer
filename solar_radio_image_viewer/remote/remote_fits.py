@@ -33,6 +33,8 @@ MIN_PIECE = 256 * 1024  # fewest bytes per readv when splitting reads over chann
 BATCH = 4096  # ranges per readv
 MAX_RANGES = 300_000  # most separate ranges one slice may need
 CONCURRENT = 256  # requests in flight (faster than sftp.get on a slow link)
+CHUNK = 16 * 1024**2  # most bytes of a slice read (and cached) as one piece, so a
+# stopped read keeps what it had read and later reads of the same time need only the rest
 PIECES_LIMIT = 4 * 1024**3  # local cache of slices, all files together
 SMALL = 16 * 1024**2  # extensions read whole when opening, if not tables
 
@@ -166,6 +168,8 @@ class RemoteFits:
         key = hashlib.sha1(f"{files.host}\0{path}\0{mtime}\0{self.size}".encode()).hexdigest()
         self._dir = os.path.join(str(files.cache.cache_dir), getattr(files.cache, "PIECES_DIR", "pieces"), key)
         os.makedirs(self._dir, exist_ok=True)
+        self._index = None  # {(offset, axis): {(start, stop)}} of the pieces, when listed
+        self._index_lock = threading.Lock()
         self._open_channels()
 
         self._hdus = self._walk()  # [(header, header offset, data offset, data size)]
@@ -376,6 +380,62 @@ class RemoteFits:
                 os.remove(partial)
         return value
 
+    # ---------- Intervals: full-resolution slices kept as pieces ----------
+    #
+    # A slice of whole rows (or whole columns) at full resolution is kept as
+    # pieces named by the part of the axis they hold, none overlapping. A
+    # later slice of the same image is made from the pieces that hold part of
+    # it, and only what no piece holds is read from the server (and kept).
+
+    def _intervals(self, offset, axis):
+        """The sorted [(start, stop)] of the pieces of the image at ``offset``
+        sliced along ``axis``."""
+        with self._index_lock:
+            index = self._index
+            if index is None:
+                index = self._index = {}
+                with contextlib.suppress(OSError):
+                    for name in os.listdir(self._dir):
+                        parts = name[:-4].split("_") if name.endswith(".npy") else []
+                        if len(parts) == 5 and parts[0] == "s" and all(p.isdigit() for p in parts[1:]):
+                            index.setdefault((int(parts[1]), int(parts[2])), set()).add(
+                                (int(parts[3]), int(parts[4]))
+                            )
+            return sorted(index.get((offset, axis), ()))
+
+    def _interval_path(self, offset, axis, start, stop):
+        return os.path.join(self._dir, f"s_{offset}_{axis}_{start}_{stop}.npy")
+
+    def load_interval(self, offset, axis, start, stop):
+        """The piece holding [start, stop) (memory-mapped), or None."""
+        path = self._interval_path(offset, axis, start, stop)
+        try:
+            value = np.load(path, mmap_mode="r")
+            os.utime(path)  # recently used
+            return value
+        except (OSError, ValueError):
+            with self._index_lock:  # (pruned, or not whole)
+                if self._index is not None:
+                    self._index.get((offset, axis), set()).discard((start, stop))
+            return None
+
+    def store_interval(self, offset, axis, start, stop, value):
+        path = self._interval_path(offset, axis, start, stop)
+        partial = f"{path}.{os.getpid()}.{threading.get_ident()}.part"
+        try:
+            with open(partial, "wb") as f:
+                np.save(f, value)
+            os.replace(partial, path)
+        except OSError as e:
+            logger.debug(f"Slice not cached: {e}")
+            with contextlib.suppress(OSError):
+                os.remove(partial)
+            return
+        with self._index_lock:
+            if self._index is not None:
+                self._index.setdefault((offset, axis), set()).add((start, stop))
+        _prune(os.path.dirname(self._dir))
+
     def _save(self, path, data):
         partial = f"{path}.{os.getpid()}.part"
         with open(partial, "wb") as f:
@@ -521,11 +581,76 @@ class RemoteArray:
             raise TypeError("RemoteArray takes positive steps only")
         if not rows or not cols:
             return np.empty((len(rows), len(cols)), np.float32)
-        key = (rows.start, rows.stop, rows.step, cols.start, cols.stop, cols.step)
         if not cache:
             return self._read(rows, cols)
+        whole_rows = rows.start == 0 and rows.stop == self.shape[0]
+        whole_cols = cols.start == 0 and cols.stop == self.shape[1]
+        if rows.step == 1 and cols.step == 1 and (whole_rows or whole_cols):
+            # Whole rows or columns at full resolution: made from pieces
+            return self._read_covered(0 if whole_cols else 1, rows, cols)
+        key = (rows.start, rows.stop, rows.step, cols.start, cols.stop, cols.step)
         # (the offset tells the file's images apart)
         return self._file.piece(("data", self._offset) + key, lambda: self._read(rows, cols))
+
+    def _read_covered(self, axis, rows, cols):
+        """Rows (``axis`` 0; all columns) or columns (1; all rows) at full
+        resolution: the parts kept as pieces are used, the rest is read from
+        the server in chunks, each kept as soon as it is read (so what a
+        stopped read had is not lost, and a part of a slice read before
+        costs nothing)."""
+        want = rows if axis == 0 else cols
+        a0, a1 = want.start, want.stop
+        out = np.empty((a1 - a0, cols.stop - cols.start) if axis == 0 else (rows.stop - rows.start, a1 - a0), np.float32)
+
+        def put(start, stop, values):  # values: the axis from start to stop
+            if axis == 0:
+                out[start - a0 : stop - a0] = values
+            else:
+                out[:, start - a0 : stop - a0] = values
+
+        # What the pieces hold, and what is left
+        plan, gaps, at = [], [], a0
+        for start, stop in self._file._intervals(self._offset, axis):
+            if stop <= at or start >= a1:
+                continue
+            if start > at:
+                gaps.append((at, start))
+            lo, hi = max(start, at), min(stop, a1)
+            plan.append((start, stop, lo, hi))
+            at = hi
+        if at < a1:
+            gaps.append((at, a1))
+        unit = self._raw.itemsize * (self.shape[1] if axis == 0 else self.shape[0])
+        total = sum(b - a for a, b in gaps) * unit
+
+        for start, stop, lo, hi in plan:
+            piece = self._file.load_interval(self._offset, axis, start, stop)
+            if piece is None:
+                gaps.append((lo, hi))
+                total += (hi - lo) * unit
+            elif axis == 0:
+                put(lo, hi, piece[lo - start : hi - start])
+            else:
+                put(lo, hi, piece[:, lo - start : hi - start])
+        progress, cancelled = current_reporting()
+        step = max(1, CHUNK // unit)
+        done = 0
+        for g0, g1 in sorted(gaps):
+            for a in range(g0, g1, step):
+                b = min(a + step, g1)
+                if cancelled and cancelled():
+                    raise Cancelled()
+                base = done
+                with reporting(
+                    (lambda d, t, base=base: progress(base + d, total)) if progress else None, cancelled
+                ):
+                    values = self._read(range(a, b), cols) if axis == 0 else self._read(rows, range(a, b))
+                done += (b - a) * unit
+                self._file.store_interval(self._offset, axis, a, b, values)
+                put(a, b, values)
+        if progress and not total:
+            progress(0, 0)
+        return out
 
     def _read(self, rows, cols):
         isz = self._raw.itemsize

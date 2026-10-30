@@ -273,6 +273,8 @@ class SpectraSavingMixin:
         total = len(self._full_time_axis)
         if self._nav_mode == "Windowed":
             window = self._calculate_window_samples()
+            origin = getattr(self, "_page_origin", 0)
+            return [(max(0, s), min(s + window, total)) for s in range(origin, total, window)]
         else:
             nf = len(self._full_freq_axis) if self._full_freq_axis is not None else 1
             time_bin = self._bin[0]

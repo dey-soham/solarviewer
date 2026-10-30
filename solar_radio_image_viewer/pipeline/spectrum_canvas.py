@@ -1463,20 +1463,28 @@ class PyQtGraphSpectrumCanvas(QWidget):
 class OverviewStrip(QWidget):
     """The whole file in a strip under the spectrum: veiled, but for the
     part shown, outlined. A click or a drag moves the outline; on release
-    it asks for that time (seekRequested, the fraction of the file).
+    it asks for that time (seekRequested, the fraction of the file). When
+    resizable, dragging an edge of the outline changes how much it holds
+    (resizeRequested, on release).
 
     Painted with QPainter (never a Matplotlib blit, which misplaces
     sub-rectangles at fractional display scales)."""
 
     seekRequested = pyqtSignal(float)  # fraction of the file, 0..1
+    resizeRequested = pyqtSignal(float, float)  # the outline's new start and end, fractions
+
+    EDGE = 5  # px either side of an outline's edge that grab it
 
     VEIL = 0.55  # the ground's opacity over the parts not shown
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._image = None  # QImage of the file (columns: time, low frequency at the bottom)
+        self._data = None  # what it is drawn from: (freq, time), each channel over its median
+        self._percentiles = (1.0, 99.0)  # the limits of its colours
         self._view = (0.0, 1.0)  # the part shown, as fractions of the file
-        self._drag = None  # the outline's start while dragging
+        self._drag = None  # while dragging: True (moving), "left" or "right" (an edge)
+        self._resizable = False  # whether the outline's edges can be dragged
         self._span = ""  # "12.5 h"
         self.setMouseTracking(True)
         self.setCursor(Qt.PointingHandCursor)
@@ -1494,6 +1502,15 @@ class OverviewStrip(QWidget):
     def draw(self):
         self.update()
 
+    def set_resizable(self, resizable):
+        """Let the outline's edges be dragged (the pages' length, the range)."""
+        self._resizable = bool(resizable)
+        self.setToolTip(
+            "Click or drag to go to a time; drag an edge of the outline to resize it"
+            if self._resizable
+            else "Click or drag to go to a time"
+        )
+
     def set_span(self, seconds):
         """The file's length, for the kicker ("WHOLE FILE · 12.5 h")."""
         if seconds is None or not np.isfinite(seconds) or seconds <= 0:
@@ -1508,7 +1525,7 @@ class OverviewStrip(QWidget):
 
     def set_full_data(self, data_downsampled):
         """The file's overview, (freq, time): each channel divided by its
-        median, 1-99 percentile limits, linear, in inferno; no more columns
+        median, percentile limits (1-99 unless set_percentiles), linear, in inferno; no more columns
         than 2000, each the maximum of those it stands for (so short bursts
         stay)."""
         self._image = None
@@ -1522,8 +1539,25 @@ class OverviewStrip(QWidget):
                 starts = np.arange(0, n, -(-n // 2000))
                 with np.errstate(invalid="ignore"):
                     data = np.fmax.reduceat(data, starts, axis=1)
+            self._data = data
+        else:
+            self._data = None
+        self._render()
+
+    def set_percentiles(self, low, high):
+        """The percentiles of the strip's values taken as black and white
+        (1 and 99 by default); the strip is drawn again at once."""
+        self._percentiles = (float(low), float(high))
+        self._render()
+
+    def _render(self):
+        """The strip's image from its data and percentiles."""
+        self._image = None
+        data = self._data
+        if data is not None:
             finite = data[np.isfinite(data)]
-            vmin, vmax = (np.percentile(finite, [1, 99]) if finite.size else (0.0, 1.0))
+            low, high = self._percentiles
+            vmin, vmax = (np.percentile(finite, [low, high]) if finite.size else (0.0, 1.0))
             if vmax <= vmin:
                 vmax = vmin + 1e-9
             with np.errstate(invalid="ignore"):
@@ -1606,22 +1640,52 @@ class OverviewStrip(QWidget):
     def _fraction(self, x):
         return min(1.0, max(0.0, x / max(1, self.width())))
 
+    def _edge_at(self, x):
+        """"left" or "right" when ``x`` is on an edge of the outline."""
+        if not self._resizable or self._image is None or self._view[1] - self._view[0] >= 0.999:
+            return None
+        left, right = (f * self.width() for f in self._view)
+        near_left, near_right = abs(x - left), abs(x - right)
+        if min(near_left, near_right) > self.EDGE:
+            return None
+        return "left" if near_left <= near_right else "right"
+
     def _centre_outline(self, x):
         width = self._view[1] - self._view[0]
         start = min(1.0 - width, max(0.0, self._fraction(x) - width / 2))
         self._view = (start, start + width)
         self.update()
 
+    def _drag_edge(self, x):
+        gap = 4.0 / max(1, self.width())  # (never thinner than the outline's minimum)
+        start, end = self._view
+        if self._drag == "left":
+            start = min(self._fraction(x), end - gap)
+        else:
+            end = max(self._fraction(x), start + gap)
+        self._view = (start, end)
+        self.update()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self._image is not None:
-            self._drag = True
-            self._centre_outline(event.pos().x())
+            self._drag = self._edge_at(event.pos().x()) or True
+            if self._drag is True:
+                self._centre_outline(event.pos().x())
 
     def mouseMoveEvent(self, event):
-        if self._drag:
+        if self._drag in ("left", "right"):
+            self._drag_edge(event.pos().x())
+        elif self._drag:
             self._centre_outline(event.pos().x())
+        else:
+            self.setCursor(
+                Qt.SizeHorCursor if self._edge_at(event.pos().x()) else Qt.PointingHandCursor
+            )
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._drag:
-            self._drag = None
-            self.seekRequested.emit(self._fraction(event.pos().x()))
+            drag, self._drag = self._drag, None
+            if drag is True:
+                self.seekRequested.emit(self._fraction(event.pos().x()))
+            else:
+                self.resizeRequested.emit(*self._view)

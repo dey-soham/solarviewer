@@ -172,6 +172,7 @@ class MainWindow(
         self._current_page = 0
         self._total_pages = 1
         self._window_duration_min = 15.0
+        self._page_origin = 0  # (<= 0) rows before the first page's start, when the grid is shifted
         self._full_time_axis = None  # Store the full time axis for indexing
         self._full_freq_axis = None  # Store the full freq axis
         self._is_large_file = False
@@ -384,6 +385,19 @@ class MainWindow(
         self.swapAct.triggered.connect(self.swapTimeAndFrequency)
         self.swapAct.setEnabled(False)
 
+        self.overviewAct = QAction("&Overview from Every Sample on Server Files", self, checkable=True)
+        self.overviewAct.setChecked(
+            QSettings("SolarViewer", "DynamicSpectrumViewer").value("overview_remote", False, type=bool)
+        )
+        self.overviewAct.setStatusTip(
+            "Build the overview strip from every sample, so short bursts show in it. This "
+            "reads the whole file on the server, so it is off by default and the strip uses "
+            "every few-th sample (local files always use every sample)"
+        )
+        self.overviewAct.toggled.connect(self.onOverviewToggled)
+
+        self.overviewContrastActs = []  # (action, (low, high)) of the presets
+
         self.smoothAct = QAction("&Average Samples When Zoomed Out", self, checkable=True)
         self.smoothAct.setChecked(True)
         self.smoothAct.setStatusTip(
@@ -433,6 +447,9 @@ class MainWindow(
         viewMenu.addAction(self.rangeAct)
         viewMenu.addAction(self.smoothAct)
         viewMenu.addAction(self.swapAct)
+        viewMenu.addSeparator()
+        viewMenu.addAction(self.overviewAct)
+        self._build_overview_contrast_menu(viewMenu)
         # The file's other images of the spectrum's shape (e.g. LOFAR's noise)
         self.imageMenu = viewMenu.addMenu("&Data Shown")
         self.imageMenu.menuAction().setStatusTip(
@@ -552,12 +569,14 @@ class MainWindow(
         # The overview of the whole file
         self.minimap = OverviewStrip(self)
         self.minimap.setFixedHeight(64)
+        self.minimap.set_percentiles(*self._overview_percentiles())
         self.minimap.seekRequested.connect(self.onMinimapSeek)
-        overviewWrap = QWidget()
-        overviewLayout = QHBoxLayout(overviewWrap)
+        self.minimap.resizeRequested.connect(self.onMinimapResize)
+        self.overviewWrap = QWidget()
+        overviewLayout = QHBoxLayout(self.overviewWrap)
         overviewLayout.setContentsMargins(inset, 0, 14, 0)
         overviewLayout.addWidget(self.minimap)
-        columnLayout.addWidget(overviewWrap)
+        columnLayout.addWidget(self.overviewWrap)
         columnLayout.addSpacing(8)
 
         self.toolBar = self._tool_toolbar()
@@ -1475,6 +1494,68 @@ class MainWindow(
             self._remote_files.close()
             self._remote_files.connection.disconnect()
         super().closeEvent(event)
+
+    OVERVIEW_PRESETS = ((0.0, 100.0), (0.1, 99.9), (1.0, 99.0), (2.0, 98.0), (5.0, 95.0))
+
+    def _overview_percentiles(self):
+        """The overview strip's percentile limits, as remembered."""
+        settings = QSettings("SolarViewer", "DynamicSpectrumViewer")
+        try:
+            low = float(settings.value("overview_low", 1.0))
+            high = float(settings.value("overview_high", 99.0))
+        except (TypeError, ValueError):
+            return 1.0, 99.0
+        return (low, high) if 0.0 <= low < high <= 100.0 else (1.0, 99.0)
+
+    def _build_overview_contrast_menu(self, viewMenu):
+        """View > Overview Contrast: which percentiles of the strip's
+        values are black and white."""
+        from PyQt5.QtWidgets import QActionGroup
+
+        menu = viewMenu.addMenu("Overview &Contrast")
+        menu.setStatusTip("Percentiles of the overview strip's values shown as black and white")
+        group = QActionGroup(self)
+        current = self._overview_percentiles()
+        for low, high in self.OVERVIEW_PRESETS:
+            label = "Minimum to maximum" if (low, high) == (0.0, 100.0) else f"{low:g} to {high:g} percentile"
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked((low, high) == current)
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, lh=(low, high): self._set_overview_percentiles(*lh))
+            self.overviewContrastActs.append((act, (low, high)))
+        self.overviewCustomAct = menu.addAction("Custom…")
+        self.overviewCustomAct.setCheckable(True)
+        self.overviewCustomAct.setChecked(current not in self.OVERVIEW_PRESETS)
+        group.addAction(self.overviewCustomAct)
+        self.overviewCustomAct.triggered.connect(self._ask_overview_percentiles)
+
+    def _set_overview_percentiles(self, low, high):
+        settings = QSettings("SolarViewer", "DynamicSpectrumViewer")
+        settings.setValue("overview_low", low)
+        settings.setValue("overview_high", high)
+        self.minimap.set_percentiles(low, high)
+
+    def _ask_overview_percentiles(self):
+        from PyQt5.QtWidgets import QInputDialog
+
+        low, high = self._overview_percentiles()
+        text, ok = QInputDialog.getText(
+            self, "Overview Contrast", "Black and white percentiles (low, high):", text=f"{low:g}, {high:g}"
+        )
+        try:
+            values = [float(v) for v in text.replace(";", ",").split(",")]
+            valid = ok and len(values) == 2 and 0.0 <= values[0] < values[1] <= 100.0
+        except ValueError:
+            valid = False
+        if valid:
+            self._set_overview_percentiles(*values)
+        else:
+            if ok:
+                self.statusBar().showMessage("Enter two numbers from 0 to 100, the low one first.", 5000)
+            for act, lh in self.overviewContrastActs:  # (back to what is set)
+                act.setChecked(lh == self._overview_percentiles())
+            self.overviewCustomAct.setChecked(self._overview_percentiles() not in self.OVERVIEW_PRESETS)
 
     def _bandpass_profile(self, data):
         """The median over time of each channel: of ``data`` (the page), or

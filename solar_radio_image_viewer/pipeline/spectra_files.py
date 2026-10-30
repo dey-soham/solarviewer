@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
     QProgressDialog,
 )
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QSettings, QSignalBlocker, Qt
 from PyQt5.QtGui import QFont, QColor
 from ..ui.styles import palette_for as get_palette
 
@@ -285,17 +285,53 @@ class SpectraFilesMixin:
         """Read the overview of the image shown (_image) and show it: the
         current page, or all of it; on opening (``choose_mode``) Windowed
         or Full by the file's size, from the first page."""
+        self._load_overview()
+
+        # Initialize Navigation
+        if choose_mode:
+            self._nav_mode = "Windowed" if self._is_large_file else "Full"
+            self.navModeCombo.blockSignals(True)
+            self.navModeCombo.setCurrentText(
+                "Windowed" if self._is_large_file else "Full Spectrum"
+            )
+            self.navModeCombo.blockSignals(False)
+            self._current_page = 0
+            self._page_origin = 0
+        self._updateNavigationStats()
+
+        if self._nav_mode != "Full":
+            self.loadSlice()  # Initial load (a page, or the time range)
+        else:
+            # Load everything (copy to RAM)
+            raw_data = self._image()
+            if self._time_dim == 0:
+                data = np.array(raw_data[:, :], dtype=np.float32)
+            else:
+                data = np.array(raw_data[:, :].T, dtype=np.float32)
+
+            # Handle infinities (NaN stays NaN naturally)
+            data[np.isinf(data)] = np.nan
+
+            # Use centralized display logic to honor persistent toggles (Bandpass, etc.)
+            self._display_data(data, self._full_time_axis, self._full_freq_axis)
+
+    def _every_sample_wanted(self):
+        """Whether the overview is also built from every sample (a burst
+        shorter than a block then shows in the strip): always for a local
+        file; for one on a server, where it means reading all of it, only
+        if View > Overview from Every Sample on Server Files is on."""
+        return self._remote is None or self.overviewAct.isChecked()
+
+    def _load_overview(self):
+        """Read the whole file at low resolution (every ``_lowres_skip``-th
+        time sample), for the strip, the preview of a page being read and
+        the file's bandpass; then, in the background, from every sample."""
         data_ref = self._image()
-        # Feature 2: Load Minimap (Full spectrum overview) - Always load for all files
-        # Downsample significantly (e.g., 2000 points wide)
         total_samples = len(self._full_time_axis)
         self._lowres_skip = max(1, total_samples // 2000)
         if self._remote:
             # Few enough separate reads from the server
-            time_dim = self._time_dim
-            self._lowres_skip = max(
-                self._lowres_skip, data_ref.min_step(time_dim)
-            )
+            self._lowres_skip = max(self._lowres_skip, data_ref.min_step(self._time_dim))
         skip = self._lowres_skip
 
         # Slicing the memmapped data carefully
@@ -317,34 +353,35 @@ class SpectraFilesMixin:
         self.minimap.set_full_data(mini_data_for_display)
         # Then, in the background, from every sample (a burst shorter than
         # a block shows in the strip, as its maximum)
-        self._start_overview_stats()
+        self._overview_exact = False
+        if self._every_sample_wanted():
+            self._start_overview_stats()
 
-        # Initialize Navigation
-        if choose_mode:
-            self._nav_mode = "Windowed" if self._is_large_file else "Full"
-            self.navModeCombo.blockSignals(True)
-            self.navModeCombo.setCurrentText(
-                "Windowed" if self._is_large_file else "Full Spectrum"
-            )
-            self.navModeCombo.blockSignals(False)
-            self._current_page = 0
-        self._updateNavigationStats()
-
-        if self._nav_mode != "Full":
-            self.loadSlice()  # Initial load (a page, or the time range)
-        else:
-            # Load everything (copy to RAM)
-            raw_data = self._image()
-            if self._time_dim == 0:
-                data = np.array(raw_data[:, :], dtype=np.float32)
-            else:
-                data = np.array(raw_data[:, :].T, dtype=np.float32)
-
-            # Handle infinities (NaN stays NaN naturally)
-            data[np.isinf(data)] = np.nan
-
-            # Use centralized display logic to honor persistent toggles (Bandpass, etc.)
-            self._display_data(data, self._full_time_axis, self._full_freq_axis)
+    def onOverviewToggled(self, on):
+        """View > Overview from Every Sample on Server Files: remembered;
+        for a file open on a server, started now, or stopped (the strip
+        then shows the every-k-th-sample overview again)."""
+        QSettings("SolarViewer", "DynamicSpectrumViewer").setValue("overview_remote", on)
+        if not self.hdul or self._remote is None:
+            return
+        if on:
+            self._start_overview_stats()
+            return
+        if self._overview_job is not None:
+            self._overview_job.stopped = True
+            self._overview_job = None
+        if getattr(self, "_overview_exact", False):
+            try:
+                self._server_work(
+                    "Reading the overview from the server...", lambda *_: self._load_overview()
+                )
+            except Exception as e:
+                if type(e).__name__ != "Cancelled":
+                    QMessageBox.critical(self, "Error", f"Failed to read the overview:\n{e}")
+                return
+            self._updateNavigationStats()
+            if self._is_bandpass_enabled and self._bandpass_scope == "file":
+                self._redisplay()
 
     def _guess_time_dim(self, data, header):
         """Which axis of the image (numpy order) is time: the one as long
@@ -418,6 +455,7 @@ class SpectraFilesMixin:
             if not current():
                 return
             self._overview_job = None
+            self._overview_exact = True
             mean, peak = result
             if mean.shape != self._full_lowres_data.shape:
                 return
@@ -875,7 +913,10 @@ class SpectraFilesMixin:
                 self.statusBar().clearMessage()
                 self._completeLoad(page_idx, *result)
                 # The pages either side, ready for paging
-                for near in (page_idx + 1, page_idx - 1):
+                # (from a server only the one ahead: the other is rarely
+                # wanted, and reading it takes the link from what is)
+                ahead = page_idx + (1 if getattr(self, "_page_step", 1) >= 0 else -1)
+                for near in (ahead,) if self._remote else (page_idx + 1, page_idx - 1):
                     if 0 <= near < self._total_pages and near not in self._data_cache:
                         self._read_page(near)
 
