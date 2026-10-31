@@ -862,7 +862,13 @@ class TutorialDialog(QDialog):
             self._create_info_box(
                 "Making Spectra",
                 [
-                    "Apps → Create Dynamic Spectra: from Measurement Sets",
+                    "Apps → Create Dynamic Spectra: from Measurement Sets "
+                    "(.ms or .MS; one per subband or one multi-channel MS), on "
+                    "this computer or on a server (Run on → Server, optionally "
+                    "as a Slurm job)",
+                    "Only the machine that runs the engine needs python-casacore; "
+                    "Server mode needs the server's container or Python and paramiko here",
+                    "createds on the command line opens the same window",
                     "viewds on the command line runs the viewer on its own",
                 ],
             )

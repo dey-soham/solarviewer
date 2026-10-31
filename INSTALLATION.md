@@ -139,6 +139,9 @@ rm -rf ~/.sv
     *   Restart Finder.
     *   Or run `killall Dock` in the terminal to refresh the icon cache.
 
+### **Create Dynamic Spectra and python-casacore**
+Create Dynamic Spectra reads Measurement Sets with python-casacore, but only on the machine that runs the engine. With **Run on = Server**, the engine runs inside the server's container (or Python) and this machine needs only `paramiko` (installed with SolarViewer); with **Run on = This computer** it needs python-casacore here. The dialog says so if it is missing. The same window starts from the command line with `createds`. python-casacore is still a SolarViewer dependency because the Calibration Table Visualizer uses it in this process.
+
 ### **Build Error: `Failed to build python-casacore` (macOS)**
 If you see an error like `Call to scikit_build_core.build.build_wheel failed` or `Casacore: unable to find the header file casa/aips.h`, it means the wrapper cannot find the underlying C++ libraries. This is common on Apple Silicon Macs.
 

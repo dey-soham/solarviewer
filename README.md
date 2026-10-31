@@ -54,6 +54,7 @@
  
 - **Log Console** — Internal console to view application logs and debugging information
 - **Dynamic Spectra Viewer** — Advanced viewer for radio spectra with RFI masking (ROI/Global), bandpass normalization, and cross-section analysis
+- **Create Dynamic Spectra** — Build a dynamic spectrum FITS (and PNG) from Measurement Sets (`.ms` or `.MS`; one MS per subband or a single multi-channel MS), on this machine or on an SSH server (direct, or as a Slurm job for large sets). The window runs without casacore; only the machine that runs the engine needs python-casacore (and paramiko is needed for Server mode)
 - **LOFAR/SIMPL Support** — Calibration table visualizer and pipeline log viewer
 - **Coordinate Transformations** — Convert between RA/Dec and helioprojective coordinates
 - **Phase Center Tool** — Shift image phase centers for radio interferometry data
@@ -243,6 +244,7 @@ viewlogs           # Pipeline log viewer
 viewsolaractivity  # Solar events browser
 heliobrowser       # Helioviewer browser
 viewds             # Dynamic spectra viewer
+createds           # Create dynamic spectra from Measurement Sets
 ```
 ---
 

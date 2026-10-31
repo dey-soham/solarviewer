@@ -33,6 +33,11 @@
 *   **Solar Disk**: Images without an observation date no longer place the disk at the Sun's position in 1858; when the Sun's position is unknown the status bar says the disk is at the image centre.
 *   **Profiles**: The profile plot says why it shows no FWHM.
 
+### Create Dynamic Spectra
+*   **Runs on Servers**: Apps → Create Dynamic Spectra (also `createds`) can run on an SSH server (Run on = Server) inside the server's container or Python, directly or as a Slurm job for large sets. Only the machine that runs the engine needs python-casacore; Server mode needs paramiko here.
+*   **Inputs**: Accepts `.ms` and `.MS` folders, one Measurement Set per subband or a single multi-channel one.
+*   **Safe Outputs**: An existing FITS or PNG is never replaced unless "Replace existing output files (FITS and PNG) without asking" is ticked, and the dialog asks first. If some inputs fail, the rest is still written and the dialog reports how many failed.
+
 ### Batch Dialogs and Servers
 *   **Responsive Batches**: Format, unit and coordinate conversion and the phase shift run in worker processes: the window stays responsive, and Abort stops at once.
 *   **Output Names**: Unit conversion no longer names its output `conv_a.fits.fits`, and full-Stokes coordinate conversion no longer writes all four planes to one file when the name has no extension.

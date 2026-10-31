@@ -8,14 +8,14 @@ for the SIMPL LOFAR pipeline, adapted for use within Solar Radio Image Viewer.
 Tools included:
 - Dynamic Spectrum Viewer: View and clean dynamic spectra FITS files
 - Calibration Table Visualizer: Visualize bandpass/selfcal/crossphase tables
-- Dynamic Spectra Creator: Generate dynamic spectra from MS files
+- Dynamic Spectra Creator: Generate dynamic spectra from MS files (the dialog
+  needs no casacore: only the machine that runs the engine does)
 - Log Viewer: View and filter pipeline log files
 """
 
 # Track which tools are available based on dependencies
 DYNAMIC_SPECTRUM_AVAILABLE = False
 CALTABLE_VISUALIZER_AVAILABLE = False
-DYNAMIC_SPECTRA_CREATOR_AVAILABLE = False
 LOG_VIEWER_AVAILABLE = False
 
 # Check dependencies for each tool
@@ -36,15 +36,6 @@ try:
 except ImportError as e:
     print(f"[pipeline] Calibration Table Visualizer not available: {e}")
     print("  Install with: pip install python-casacore seaborn")
-
-try:
-    from casacore.tables import table  # noqa: F401 (availability check)
-    from astropy.io import fits  # noqa: F401 (availability check)
-
-    DYNAMIC_SPECTRA_CREATOR_AVAILABLE = True
-except ImportError as e:
-    print(f"[pipeline] Dynamic Spectra Creator not available: {e}")
-    print("  Install with: pip install python-casacore astropy")
 
 # Log viewer just needs PyQt5 which is always available
 LOG_VIEWER_AVAILABLE = True
@@ -162,35 +153,3 @@ def launch_log_viewer(parent=None, log_file=None):
                         pass
 
     return window
-
-
-def launch_dynamic_spectra_dialog(parent=None):
-    """
-    Launch dialog to create dynamic spectra from MS files.
-
-    Parameters
-    ----------
-    parent : QWidget, optional
-        Parent widget for the dialog
-
-    Returns
-    -------
-    DynamicSpectraDialog
-        The dialog instance
-    """
-    if not DYNAMIC_SPECTRA_CREATOR_AVAILABLE:
-        from PyQt5.QtWidgets import QMessageBox
-
-        QMessageBox.warning(
-            parent,
-            "Missing Dependencies",
-            "Dynamic Spectra Creator requires: casacore, astropy\n\n"
-            "Install with: pip install python-casacore astropy",
-        )
-        return None
-
-    from .dynamic_spectra_dialog import DynamicSpectraDialog
-
-    dialog = DynamicSpectraDialog(parent)
-    dialog.exec_()
-    return dialog
