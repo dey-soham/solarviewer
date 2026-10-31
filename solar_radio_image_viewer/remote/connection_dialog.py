@@ -117,13 +117,22 @@ def _keyring_delete(name):
 
 
 def _agent_keys():
-    """The number of keys the SSH agent holds, or None without an agent."""
+    """What the SSH agent holds as lines ("ssh-ed25519 · SHA256:… · comment"),
+    or None without an agent."""
     if paramiko is None:
         return None
+    import base64
+    import hashlib
+
     agent = None
     try:
         agent = paramiko.Agent()
-        return len(agent.get_keys())
+        lines = []
+        for key in agent.get_keys():
+            digest = base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+            comment = getattr(key, "comment", "") or ""
+            lines.append(" · ".join(p for p in (key.get_name(), f"SHA256:{digest[:12]}…", comment) if p))
+        return lines
     except Exception:
         return None
     finally:
@@ -418,7 +427,7 @@ class ConnectionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Connect to remote server")
-        self.setFixedSize(760, 500)
+        self.setFixedSize(760, 430)
         self.setModal(True)
 
         self._ssh_connection: Optional[SSHConnection] = None
@@ -427,13 +436,13 @@ class ConnectionDialog(QDialog):
         self._selected = -1  # the profile's index in _profiles, -1: a new connection
         self._loading = False  # the form being filled: its changes are not edits
         self._passphrase = ""  # of the key file, asked on connect (this session)
-        self._agent_count = None
+        self._agent_lines = None  # what the agent holds (None: no agent)
         self._load_profiles()
 
         self._build()
         self._apply_style()
         self._rebuild_sidebar()
-        self._agent_count = _agent_keys()
+        self._agent_lines = _agent_keys()
         self._select_initial()
 
         try:
@@ -598,6 +607,10 @@ class ConnectionDialog(QDialog):
         box.setContentsMargins(0, 0, 0, 0)
         self.agent_status = self._hint()
         box.addWidget(self.agent_status)
+        self.agent_keys = QLabel()
+        self.agent_keys.setObjectName("AgentKeys")
+        self.agent_keys.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        box.addWidget(self.agent_keys)
         box.addStretch()
         self.auth_stack.addWidget(page)
         # key file
@@ -778,6 +791,14 @@ class ConnectionDialog(QDialog):
                 font-size: 11px;
                 color: {ERROR_TEXT};
             }}
+            QLabel#AgentKeys {{
+                font-family: monospace;
+                font-size: 11px;
+                color: {p['text_secondary']};
+                background-color: {p['surface']};
+                border-radius: 6px;
+                padding: 7px 9px;
+            }}
             QLineEdit#MonoEdit {{
                 font-family: monospace;
                 font-size: 12px;
@@ -851,7 +872,7 @@ class ConnectionDialog(QDialog):
         self.name_edit.clear()
         self.save_switch.setChecked(True)
         self._passphrase = ""
-        self._set_auth("agent" if (self._agent_count or 0) > 0 else "key")
+        self._set_auth("agent" if len(self._agent_lines or ()) > 0 else "key")
 
     def _fill(self, profile):
         self.host_edit.setText(profile.host)
@@ -891,13 +912,16 @@ class ConnectionDialog(QDialog):
         auth = self._auth()
         self.auth_stack.setCurrentIndex([k for k, _ in self.AUTH_METHODS].index(auth))
         if auth == "agent":
-            n = self._agent_count
-            if n is None:
+            lines = self._agent_lines
+            if lines is None:
                 self.agent_status.setText("No agent found")
+                self.agent_keys.hide()
             else:
-                self.agent_status.setText(
-                    f"Agent running · {n} key{'s' if n != 1 else ''} loaded"
-                )
+                n = len(lines)
+                self.agent_status.setText(f"Agent running · {n} key{'s' if n != 1 else ''} loaded")
+                shown = lines[:4] + ([f"+ {n - 4} more"] if n > 4 else [])
+                self.agent_keys.setText("\n".join(shown))
+                self.agent_keys.setVisible(bool(lines))
 
     def _browse_key_file(self):
         start = self.key_path_edit.text().strip() or str(Path.home() / ".ssh")
