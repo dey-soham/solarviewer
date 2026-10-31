@@ -6,7 +6,7 @@ Solar Activity Viewer GUI - Comprehensive solar context data display.
 import sys
 import os
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 # Qt imports
@@ -18,7 +18,8 @@ try:
         QHBoxLayout,
         QLabel,
         QPushButton,
-        QDateEdit,
+        QLineEdit,
+        QApplication,
         QFrame,
         QScrollArea,
         QSizePolicy,
@@ -26,7 +27,6 @@ try:
         QProgressBar,
         QTabWidget,
     )
-    from PyQt5.QtCore import QDate
     from PyQt5.QtNetwork import QNetworkAccessManager
 except ImportError:
     print("PyQt5 is required. Install with: pip install PyQt5")
@@ -58,7 +58,10 @@ from .workers import FetchWorker
 from ..processing.fits_io import is_fits, readable_image_path
 
 
+from ..ui.date_picker import attach_date_picker
 from ..ui.geometry import fit_to_screen
+
+DATE_FORMAT = "%Y.%m.%d"
 
 
 class NOAAEventsViewer(
@@ -95,15 +98,15 @@ class NOAAEventsViewer(
 
         # Set initial date
         if initial_date:
-            self.date_edit.setDate(
-                QDate(initial_date.year, initial_date.month, initial_date.day)
-            )
+            self._set_date(initial_date)
         else:
             # Default to yesterday
-            yesterday = QDate.currentDate().addDays(-1)
-            self.date_edit.setDate(yesterday)
+            self._set_date(date.today() - timedelta(days=1))
             
         set_hand_cursor(self)
+
+    def _set_date(self, value):
+        self.date_edit.setText(value.strftime(DATE_FORMAT))
 
     def closeEvent(self, event):
         """Clean up worker threads when window is closed."""
@@ -136,10 +139,9 @@ class NOAAEventsViewer(
         date_label = QLabel("Date:")
         top_bar.addWidget(date_label)
 
-        self.date_edit = QDateEdit()
-        self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDisplayFormat("yyyy.MM.dd")
-        self.date_edit.setMaximumDate(QDate.currentDate())
+        self.date_edit = QLineEdit()
+        self.date_edit.setMinimumWidth(130)
+        attach_date_picker(self.date_edit, lambda text: None, fmt=DATE_FORMAT)
         # Styles handled by global stylesheet
         top_bar.addWidget(self.date_edit)
 
@@ -394,8 +396,12 @@ class NOAAEventsViewer(
         else:
             QApplication.setOverrideCursor(Qt.WaitCursor)
 
-        qdate = self.date_edit.date()
-        selected_date = date(qdate.year(), qdate.month(), qdate.day())
+        try:
+            selected_date = datetime.strptime(self.date_edit.text().strip(), DATE_FORMAT).date()
+        except ValueError:
+            QApplication.restoreOverrideCursor()
+            self.summary_label.setText("Enter the date as YYYY.MM.DD.")
+            return
 
         self.date_edit.setEnabled(False)
         self.fetch_btn.setEnabled(False)
@@ -905,9 +911,7 @@ class NOAAEventsViewer(
                             continue
 
             if extracted_date:
-                self.date_edit.setDate(
-                    QDate(extracted_date.year, extracted_date.month, extracted_date.day)
-                )
+                self._set_date(extracted_date)
                 self.summary_label.setText(
                     f"Date set to {extracted_date} from current image."
                 )
@@ -977,9 +981,7 @@ class NOAAEventsViewer(
     def set_date_from_fits(self, fits_date: Optional[date]):
         """Set the date from a FITS file's DATE-OBS."""
         if fits_date:
-            self.date_edit.setDate(
-                QDate(fits_date.year, fits_date.month, fits_date.day)
-            )
+            self._set_date(fits_date)
 
 
 def show_noaa_events_viewer(parent=None, initial_date: Optional[date] = None):

@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QLabel,
     QPushButton,
-    QDateTimeEdit,
+    QLineEdit,
     QSpinBox,
     QScrollArea,
     QFrame,
@@ -40,8 +40,11 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QPixmap, QImage, QColor, QKeySequence, QIcon
 from collections import OrderedDict
+
+TIME_QT_FORMAT = "yyyy-MM-dd HH:mm:ss"
 from .helioviewer_data import ImageDownloader, fetch_all_instruments
 from .helioviewer_export import HelioviewerExportMixin
+from .ui.date_picker import attach_date_picker
 from .ui.icons import themed_icon
 from .ui.styles import set_hand_cursor, set_tone
 
@@ -266,30 +269,30 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         # Start time
         layout.addWidget(QLabel("Start:"))
-        self.start_datetime = QDateTimeEdit()
-        self.start_datetime.setCalendarPopup(True)
-        self.start_datetime.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.start_datetime = QLineEdit()
+        self.start_datetime.setMinimumWidth(170)
+        attach_date_picker(self.start_datetime, lambda text: None, band=lambda: self._picked_time(self.end_datetime))
         # Default to yesterday 10:00 UTC or initial_start if provided
         if hasattr(self, "initial_start") and self.initial_start:
-            self.start_datetime.setDateTime(self.initial_start)
+            self._set_time(self.start_datetime, self.initial_start)
         else:
             default_start = QDateTime.currentDateTimeUtc().addDays(-1)
             default_start.setTime(
                 default_start.time().fromString("10:00:00", "HH:mm:ss")
             )
-            self.start_datetime.setDateTime(default_start)
+            self._set_time(self.start_datetime, default_start)
         layout.addWidget(self.start_datetime)
 
         # End time
         layout.addWidget(QLabel("End:"))
-        self.end_datetime = QDateTimeEdit()
-        self.end_datetime.setCalendarPopup(True)
-        self.end_datetime.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.end_datetime = QLineEdit()
+        self.end_datetime.setMinimumWidth(170)
+        attach_date_picker(self.end_datetime, lambda text: None, band=lambda: self._picked_time(self.start_datetime))
         if hasattr(self, "initial_end") and self.initial_end:
-            self.end_datetime.setDateTime(self.initial_end)
+            self._set_time(self.end_datetime, self.initial_end)
         else:
-            default_end = self.start_datetime.dateTime().addSecs(3600)  # 1 hour later
-            self.end_datetime.setDateTime(default_end)
+            default_end = self._time_of(self.start_datetime).addSecs(3600)  # 1 hour later
+            self._set_time(self.end_datetime, default_end)
         layout.addWidget(self.end_datetime)
 
         # Interval
@@ -315,6 +318,19 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         layout.addWidget(self.cancel_button)
 
         parent_layout.addWidget(group)
+
+    @staticmethod
+    def _set_time(field, value):
+        field.setText(value.toString(TIME_QT_FORMAT))
+
+    @staticmethod
+    def _time_of(field):
+        """The field's text as a QDateTime (invalid if it does not parse)."""
+        return QDateTime.fromString(field.text().strip(), TIME_QT_FORMAT)
+
+    def _picked_time(self, field):
+        value = self._time_of(field)
+        return value.toPyDateTime() if value.isValid() else None
 
     def create_instrument_panel(self, parent_splitter):
         """Create left panel with instrument filter (tree view grouped by observatory)."""
@@ -738,9 +754,15 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
     def load_time_series(self):
         """Load time series based on user inputs."""
-        start = self.start_datetime.dateTime()
-        end = self.end_datetime.dateTime()
+        start = self._time_of(self.start_datetime)
+        end = self._time_of(self.end_datetime)
         interval_sec = self.interval_spin.value()
+
+        if not start.isValid() or not end.isValid():
+            QMessageBox.warning(
+                self, "Invalid Time", "Enter times as YYYY-MM-DD HH:MM:SS."
+            )
+            return
 
         # Validate
         if start >= end:
