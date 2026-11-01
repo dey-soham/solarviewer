@@ -453,7 +453,7 @@ def clean_rstn(times, freqs, levels, do_flag=True, flag_cal_time=True, bkg_sub=F
             c_std = np.nanstd(c)
             data[np.where(c > 1 + (10 * c_std)), :] = np.nan
 
-    _say(progress, "Interpolating missing data...")
+    _say(progress, "Interpolating missing data…")
     for i in range(data.shape[0]):
         data[i, :] = fill_nan(data[i, :])
 
@@ -461,7 +461,7 @@ def clean_rstn(times, freqs, levels, do_flag=True, flag_cal_time=True, bkg_sub=F
         data[:, 780:] = np.nan
 
     if bkg_sub:
-        _say(progress, "Dividing each channel by its median...")
+        _say(progress, "Dividing each channel by its median…")
         with np.errstate(all="ignore"):
             medians = np.nanmedian(data, axis=0)
         good = medians > 0
@@ -478,7 +478,7 @@ def srs_to_dataframe(
 ) -> Tuple[Optional[pd.DataFrame], Optional[np.ndarray], Optional[np.ndarray]]:
     """An SRS file as a cleaned DataFrame (time x frequency), with its
     frequencies and timestamps."""
-    _say(progress_callback, "Reading SRS file...")
+    _say(progress_callback, "Reading SRS file…")
     times, freqs, levels = read_srs(srs_file)
     if not len(times):
         return None, None, None
@@ -553,7 +553,7 @@ def dataframe_to_fits(
     progress_callback=None,
 ) -> Optional[str]:
     """Write a DataFrame (time x frequency) as a dynamic spectrum FITS file."""
-    _say(progress_callback, "Creating FITS file...")
+    _say(progress_callback, "Creating FITS file…")
     write_spectrum(
         output_file, df.to_numpy(), np.asarray(timestamps, dtype="datetime64[ms]"), np.asarray(freqs),
         site_name, f"{site_name} Spectrograph", f"Source: {site_name} Solar Spectrograph",
@@ -586,7 +586,7 @@ def rstn_spectrum(
     total)`` follows the files."""
     if site not in RSTN_SITES:
         raise ValueError(f"Unknown RSTN station: {site}")
-    _say(progress, f"Asking the archive for {site}'s files...")
+    _say(progress, f"Asking the archive for {site}'s files…")
     files = find_rstn(site, start, end, whole_day)
     if not files:
         _say(progress, f"The archive has no {site} file for this window")
@@ -837,7 +837,7 @@ def ecallisto_spectra(
     receiver (focus code) joining its 15 min files, cut to the window with
     ``crop``; otherwise one per file. Returns the FITS paths."""
     label = station or "every station"
-    _say(progress, f"Asking the archive for {label}'s files...")
+    _say(progress, f"Asking the archive for {label}'s files…")
     files = ecallisto_files(start, end, station)
     if not files:
         _say(progress, f"The archive has no {label} files in this window")

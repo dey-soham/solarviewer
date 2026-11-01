@@ -43,6 +43,11 @@
 *   **Output Names**: Unit conversion no longer names its output `conv_a.fits.fits`, and full-Stokes coordinate conversion no longer writes all four planes to one file when the name has no extension.
 *   **SSH Host Keys**: The server's key is checked against `~/.ssh/known_hosts` and the servers trusted in SolarViewer. A new server's fingerprint is shown for you to confirm before any password is sent, and a changed key is refused.
 
+### Knowing What Is Going On
+*   **Busy Pill**: Anything that takes more than a moment says what it is doing in a small pill low in the window, with a count where one is known. It keeps moving even while the window is held up (X11).
+*   **Fewer Freezes**: Radial filters, exports, reprojection, fitting, table and log loading, server reads and the Helioviewer browser now work in the background, the window drawing, with a Cancel that works.
+*   **Faster Start**: The window appears before the first image loads, and separate tools open a window at once while they load.
+
 ### Stability
 *   **No More Crash-on-Error**: Unexpected errors no longer close the application. A crash report is still saved and a warning is shown, and the viewer keeps running.
 *   **CASA Logs**: CASA no longer writes `casa-*.log` files into the working folder, and closing SolarViewer no longer deletes CASA logs of your own.

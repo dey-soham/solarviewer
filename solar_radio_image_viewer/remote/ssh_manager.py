@@ -427,6 +427,12 @@ class SSHConnection:
                 self.last_error = str(e)
                 return False
 
+    @property
+    def reconnecting(self) -> bool:
+        """Whether a reconnect() is under way (reads waiting for it then
+        make no progress, for as long as ``timeout``)."""
+        return self._reconnecting.locked()
+
     def is_connected(self) -> bool:
         """Check if currently connected (passive check only)."""
         if not self._connected or not self._client:
@@ -819,6 +825,7 @@ class SSHConnection:
         remote_path: str,
         local_path: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        phase_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
         """
         Recursively download a directory (useful for CASA images).
@@ -827,6 +834,8 @@ class SSHConnection:
             remote_path: Path to remote directory
             local_path: Local directory to save to
             progress_callback: Optional callback(bytes_transferred, total_bytes)
+            phase_callback: Optional callback(text), told what is going on
+                while no bytes flow; it may raise to stop
 
         Returns:
             Local path where directory was saved
@@ -835,6 +844,7 @@ class SSHConnection:
             raise SSHConnectionError("Not connected to remote server")
 
         progress_callback = self._noting_data(progress_callback)
+        phase = phase_callback or (lambda _text: None)
         try:
             # Create local directory with same name
             local_dir = os.path.join(local_path, os.path.basename(remote_path))
@@ -842,9 +852,10 @@ class SSHConnection:
 
             # One tar stream from the server where it runs commands (each
             # file over SFTP costs several round trips), else file by file
+            phase("Sizing the folder…")
             if self._download_by_tar(remote_path, local_path, progress_callback):
                 return local_dir
-            files_to_download = self._get_files_recursive_with_sizes(remote_path)
+            files_to_download = self._get_files_recursive_with_sizes(remote_path, phase=phase)
             self._download_files(files_to_download, local_dir, progress_callback)
             return local_dir
 
@@ -975,11 +986,13 @@ class SSHConnection:
                 raise failed[0]
 
     def _get_files_recursive_with_sizes(
-        self, remote_path: str, base_path: str = None
+        self, remote_path: str, base_path: str = None, phase=None
     ) -> List[Tuple[str, str, int]]:
         """Get all files in a directory recursively with their sizes."""
         if base_path is None:
             base_path = remote_path
+        if phase is not None:
+            phase("Listing the folder’s files…")
 
         files = []
         for attr in self._sftp.listdir_attr(remote_path):
@@ -987,7 +1000,7 @@ class SSHConnection:
             rel_path = os.path.relpath(full_path, base_path)
 
             if stat.S_ISDIR(attr.st_mode):
-                files.extend(self._get_files_recursive_with_sizes(full_path, base_path))
+                files.extend(self._get_files_recursive_with_sizes(full_path, base_path, phase))
             else:
                 files.append((full_path, rel_path, attr.st_size))
 

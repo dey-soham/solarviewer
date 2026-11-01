@@ -62,7 +62,6 @@ from datetime import datetime, timedelta
 
 from PyQt5.QtWidgets import (
     QMainWindow,
-    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -90,6 +89,7 @@ from PyQt5.QtCore import Qt, pyqtSlot, QSettings, QSize, QTimer
 from PyQt5.QtGui import QCursor, QKeySequence
 
 from ..ui.app import apply_theme
+from ..ui.busy import busy
 from ..ui.styles import palette_for as get_palette, theme_manager
 from ..ui.cursor_readout import CursorReadout
 from ..ui.empty_canvas import EmptyCanvas
@@ -156,6 +156,8 @@ class MainWindow(
         self._remote = None
         self._remote_files = None
         self._remote_reads = {}  # page index -> _RemoteRead
+        self._page_read = None  # the read the view waits for (on the pill)
+        self._working = 0  # work being waited for (see _server_work)
         self._spectrum_index = 0  # HDU of the spectrum (the first 2-D image)
         self._time_dim = 0  # the image's time axis (numpy order)
         self._image_index = 0  # HDU of the image shown (_image)
@@ -256,17 +258,6 @@ class MainWindow(
 
         # Connect resize event
         self.resizeTimer = None
-
-    from contextlib import contextmanager
-
-    @contextmanager
-    def wait_cursor(self):
-        """Context manager to show a wait cursor during long operations."""
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            yield
-        finally:
-            QApplication.restoreOverrideCursor()
 
     def _setupLogger(self):
         import logging
@@ -498,7 +489,14 @@ class MainWindow(
         paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
         if paths:
             event.acceptProposedAction()
-            QTimer.singleShot(0, lambda: self.openFile(paths[0]))
+            QTimer.singleShot(0, lambda: self._open_dropped(paths[0]))
+
+    def _open_dropped(self, path):
+        if self._working:
+            # (work is waited for in an event loop: this comes after it)
+            QTimer.singleShot(100, lambda: self._open_dropped(path))
+            return
+        self.openFile(path)
 
     # -------------------------- Central Widgets ---------------------------------
     # The window, as in the Nocturne handoff (docs: DYNAMIC_SPECTRA.md): the
@@ -1486,6 +1484,10 @@ class MainWindow(
     # ---------------------------- File Operations -------------------------------
 
     def closeEvent(self, event):
+        if self._working:
+            event.ignore()  # (its dialog holds the window, as after a moment it will)
+            return
+        self.hide()  # (stopping what runs, and the server, can take seconds)
         for popup in self.canvas._popups:
             popup.close()
         self.canvas.release_gl()
@@ -1601,6 +1603,15 @@ class MainWindow(
     def _display_data(self, data, time_axis, freq_axis, fast=False):
         """Show ``data`` (a page as read, (time, freq)): with the masks,
         averaged, and normalised as set. Copies only when it must."""
+        if data.size < self.LARGE_DRAW:
+            self._draw_data(data, time_axis, freq_axis, fast)
+        else:
+            with busy("Drawing the spectrum…", self):
+                self._draw_data(data, time_axis, freq_axis, fast)
+
+    LARGE_DRAW = 10_000_000  # samples: from here a draw takes a noticeable time
+
+    def _draw_data(self, data, time_axis, freq_axis, fast):
         self._shown_raw = (data, time_axis, freq_axis, fast)
         raw = data
         data = self._apply_rfi_flags(data, time_axis, fast)
@@ -1620,7 +1631,7 @@ class MainWindow(
             self._original_data,
             self._time_axis,
             self._freq_axis,
-            filename=self.current_filename + (" (loading full resolution...)" if fast else ""),
+            filename=self.current_filename + (" (loading full resolution…)" if fast else ""),
         )
         self.canvas.draw_spectrum(fast=fast)
         self.levels.set_data(self._original_data, self.canvas._vmin, self.canvas._vmax)
@@ -1645,19 +1656,12 @@ class MainWindow(
             freq_axis = rebin(np.asarray(freq_axis, np.float64), freq_bin, 0)
         return time_axis, freq_axis
 
-    def _unmodified(self):
-        """The data shown without masks or normalisation (averaged as set)."""
-        if self._shown_raw is None:
-            return None
-        return self._binned(self._shown_raw[0])
-
     _NOISE_NAMES = ("STDDEV", "STDEV", "STD", "SIGMA", "NOISE", "RMS")
 
     def _redisplay(self):
         """Show the page again (after a change of masks or settings)."""
         if self._shown_raw is not None:
-            with self.wait_cursor():
-                self._display_data(*self._shown_raw)
+            self._display_data(*self._shown_raw)
 
     # Header cards not carried over to a cleaned file (structure and WCS,
     # which the cleaned file has its own of)
@@ -2017,6 +2021,10 @@ class MainWindow(
     def _on_link_message(self, message):
         """Do as SolarViewer says: open a spectrum, come to the front, take
         its theme, or close with it."""
+        if self._working and ("open" in message or message.get("close")):
+            # (work is waited for in an event loop: this comes after it)
+            QTimer.singleShot(100, lambda: self._on_link_message(message))
+            return
         if "open" in message:
             self.openFile(message["open"])
         if message.get("raise"):

@@ -4,7 +4,6 @@ X-ray conditions, and the GOES X-ray plot.
 """
 
 import logging
-from datetime import date
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -13,7 +12,8 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QMessageBox,
 )
-from PyQt5.QtCore import Qt
+from ..ui.busy import busy
+from ..ui.download_parts import abandon
 from ..ui.styles import set_tone, theme_manager
 
 from .workers import GOESPlotWorker
@@ -41,8 +41,8 @@ class ConditionsTabMixin:
 
     Host attributes/methods used:
 
-    ``date_edit``, ``is_dark_theme``, ``plot_goes_btn``, ``progress``,
-    ``summary_label``, ``tabs``
+    ``begin_job``, ``end_job``, ``goes_worker``, ``is_dark_theme``,
+    ``plot_goes_btn``, ``selected_date``, ``tabs``, ``update_job``
     """
 
     def _create_conditions_tab(self):
@@ -248,52 +248,54 @@ class ConditionsTabMixin:
 
     def plot_goes_xray(self):
         """Fetch and plot GOES X-ray flux for the selected date."""
-        if (
-            hasattr(self, "goes_worker")
-            and self.goes_worker
-            and self.goes_worker.isRunning()
-        ):
+        if self.goes_worker and self.goes_worker.isRunning():
             return
 
-        qdate = self.date_edit.date()
-        selected_date = date(qdate.year(), qdate.month(), qdate.day())
+        selected_date = self.selected_date()
+        if selected_date is None:
+            return
 
-        # Save current summary to restore later
-        self.previous_summary = self.summary_label.text()
-        self.summary_label.setText(f"Fetching GOES data for {selected_date}...")
-        self.progress.show()
         self.plot_goes_btn.setEnabled(False)
-
-        from PyQt5.QtWidgets import QApplication
-
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.begin_job("goes", f"Fetching GOES data for {selected_date}…", self._cancel_goes)
 
         self.goes_worker = GOESPlotWorker(selected_date)
-        self.goes_worker.finished.connect(self.on_goes_plot_ready)
+        self.goes_worker.done.connect(self.on_goes_plot_ready)
         self.goes_worker.error.connect(self.on_goes_plot_error)
+        self.goes_worker.progress.connect(self.on_goes_progress)
         self.goes_worker.start()
+
+    def on_goes_progress(self, message):
+        self.update_job("goes", message)
+
+    def _goes_ended(self):
+        self.end_job("goes")
+        self.plot_goes_btn.setEnabled(True)
+
+    def _cancel_goes(self):
+        abandon(self.goes_worker)
+        self.goes_worker = None
+        self._goes_ended()
 
     def on_goes_plot_ready(self, ts):
         """Handle ready GOES data."""
+        if self.goes_worker is None:
+            return  # cancelled
+        event_date = self.goes_worker.event_date
         try:
             # Check validity
             if not self.isVisible() and not self.parent():
                 return
 
-            from PyQt5.QtWidgets import QApplication
+            label = f"Plotting GOES data for {event_date}…"
+            self.update_job("goes", label)
+            with busy(label, self):
+                self._plot_goes(ts, event_date)
+        finally:
+            self._goes_ended()
 
-            QApplication.restoreOverrideCursor()
-            self.progress.hide()
-            self.plot_goes_btn.setEnabled(True)
-
-            # Restore previous summary
-            if hasattr(self, "previous_summary"):
-                self.summary_label.setText(self.previous_summary)
-            else:
-                self.summary_label.setText(
-                    f"GOES data loaded for {self.date_edit.date().toString('yyyy-MM-dd')}"
-                )
-
+    def _plot_goes(self, ts, event_date):
+        """Plot the GOES data ``ts`` in a figure of its own."""
+        try:
             ts_list = ts if isinstance(ts, list) else [ts]
             if not ts_list:
                 return
@@ -378,9 +380,7 @@ class ConditionsTabMixin:
                 ax.legend(loc="upper right")
                 ax.grid(True, alpha=0.3, which="both")
 
-            ax.set_title(
-                f"GOES X-ray Flux - {self.date_edit.date().toString('yyyy-MM-dd')}"
-            )
+            ax.set_title(f"GOES X-ray Flux - {event_date:%Y-%m-%d}")
 
             plt.tight_layout()
             plt.show(block=False)
@@ -394,16 +394,9 @@ class ConditionsTabMixin:
 
     def on_goes_plot_error(self, error_msg):
         """Handle GOES fetch error."""
-        from PyQt5.QtWidgets import QApplication
-
-        QApplication.restoreOverrideCursor()
-        self.progress.hide()
-        self.plot_goes_btn.setEnabled(True)
-        # Restore previous summary
-        if hasattr(self, "previous_summary"):
-            self.summary_label.setText(self.previous_summary)
-        else:
-            self.summary_label.setText("Error fetching GOES data")
+        if self.goes_worker is None:
+            return  # cancelled
+        self._goes_ended()
         QMessageBox.warning(
             self, "GOES Error", f"Failed to fetch GOES data:\n{error_msg}"
         )

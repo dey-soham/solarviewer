@@ -22,6 +22,14 @@ class _RemoteRead(QThread):
         super().__init__(parent)
         self._work = work
         self.stopped = False
+        self.task = None  # the Activity saying so, if any
+
+    def stop(self):
+        """Stop (at the next read) and stop saying so: what is left of it
+        is thrown away."""
+        self.stopped = True
+        if self.task is not None:
+            self.task.finish()
 
     def run(self):
         from ..remote.remote_fits import reporting
@@ -76,6 +84,48 @@ def _local_block_stats(image, time_dim, skip):
         if progress:
             progress(e * nf * 4, nt * nf * 4)
     return mean, peak
+
+
+def read_rows(image, time_dim, start=0, stop=None, step=1):
+    """Time samples ``start:stop:step`` of ``image`` as (time, freq) float32
+    (a copy; infinities become NaN). A local image is read in blocks, and a
+    server's in pieces, so progress and stopping work as set by
+    remote_fits.reporting. No Qt: runs off the GUI thread."""
+    from ..remote.remote_fits import Cancelled, current_reporting
+
+    stop = image.shape[time_dim] if stop is None else stop
+    if hasattr(image, "min_step"):  # on a server (the read reports by itself)
+        raw = image[start:stop:step, :] if time_dim == 0 else image[:, start:stop:step].T
+        data = np.array(raw, dtype=np.float32)
+    else:
+        progress, cancelled = current_reporting()
+        rows = range(start, stop, step)
+        nf = image.shape[1 - time_dim]
+        data = np.empty((len(rows), nf), np.float32)
+        per = max(1, 16_000_000 // nf)
+        for i in range(0, len(rows), per):
+            if cancelled and cancelled():
+                raise Cancelled()
+            j = min(i + per, len(rows))
+            s, e = rows[i], rows[j - 1] + 1
+            data[i:j] = image[s:e:step, :] if time_dim == 0 else image[:, s:e:step].T
+            if progress:
+                progress(j * nf * 4, len(rows) * nf * 4)
+    data[np.isinf(data)] = np.nan
+    return data
+
+
+def read_view(image, time_dim, total_samples, whole):
+    """What showing ``image`` takes from the file: (k, every k-th time sample
+    of the file, all of it if ``whole`` else None). The overview is a few
+    thousand samples, for the strip, the preview of a page being read and the
+    file's bandpass."""
+    skip = max(1, total_samples // 2000)
+    if hasattr(image, "min_step"):
+        # Few enough separate reads from the server
+        skip = max(skip, image.min_step(time_dim))
+    overview = read_rows(image, time_dim, step=skip)
+    return skip, overview, read_rows(image, time_dim) if whole else None
 
 
 def _channel_medians(data):

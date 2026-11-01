@@ -6,6 +6,12 @@ another file with its own Stokes, levels and style, plus a legend.
 
 Contours from another image are traced on that image's own pixel grid and
 the lines are mapped onto the base image through both images' WCS.
+
+Reading or converting a contour image takes seconds, so it runs in another
+process and can be cancelled: opening or stepping to an image loads its layers
+before the draw, see :meth:`ContoursMixin.prepare_contours`. A layer that a draw
+still finds without data is loaded there, as a draw cannot wait in an event loop
+(a queued redraw would run in the middle of it).
 """
 
 import logging
@@ -15,8 +21,13 @@ import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialogButtonBox, QMessageBox
 
+from ..processing.casa_tasks import (
+    HPC_MODULE,
+    CasaTask,
+    CasaTaskError,
+    read_contour_stokes,
+)
 from ..processing.dependencies import IA
-from ..processing.image_data import get_pixel_values_from_image
 from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.contour_mapping import (
     PixelToPixel,
@@ -33,9 +44,15 @@ from ..processing.contour_layers import (
     legend_handles,
     merge_contour_layers,
 )
-from ..processing.image_meta import casa_info, fits_header
+from ..processing.image_meta import casa_info, coordsys_from_record, fits_header
+from ..ui.background import Cancelled, run_in_background
+from ..ui.busy import busy
+from .exports import wait_for_task
 
 logger = logging.getLogger(__name__)
+
+# The ``loaded_path`` of a layer whose last load failed
+LOAD_FAILED = False
 
 
 class ContoursMixin:
@@ -53,9 +70,13 @@ class ContoursMixin:
     ``_cached_fits_header``, ``_cached_summary``, ``_cached_wcs_obj``,
     ``contour_layers``, ``_contour_conversions``, ``contour_options``,
     ``current_image_data``, ``_get_coordinate_system_from_image``,
-    ``imagename``, ``_open_dialogs``, ``parent``, ``show_contours_checkbox``,
-    ``show_status_message``, ``_temp_file_id``, ``window``
+    ``imagename``, ``on_checkbox_changed``, ``_open_dialogs``, ``parent``,
+    ``show_contours_checkbox``,
+    ``show_status_message``, ``_temp_file_id``, ``_overlay_rows``, ``window``
     """
+
+    _contours_drawing = False  # draw_contours is running
+    _contours_loading = False  # layers are being loaded, waiting in an event loop
 
     def invalidate_contours(self):
         """Forget all layers' loaded contour data (e.g. the base image changed),
@@ -64,6 +85,73 @@ class ContoursMixin:
             layer["contour_data"] = None
             layer["contour_wcs"] = None
             layer["loaded_path"] = None
+
+    def prepare_contours(self):
+        """Load the enabled layers that have no data, off the GUI thread, so
+        that the draw after this has only to draw. False if the user
+        cancelled: those layers still have no data."""
+        if self._contours_loading or self._contours_drawing:
+            return True
+        layers = [
+            layer
+            for layer in self.contour_layers
+            if layer.get("enabled", True) and layer.get("contour_data") is None
+        ]
+        self._contours_loading = True
+        try:
+            for index, layer in enumerate(layers, start=1):
+                step = f" ({index} of {len(layers)})" if len(layers) > 1 else ""
+                self._load_contour_layer(layer, step)
+        except Cancelled:
+            return False
+        finally:
+            self._contours_loading = False
+        return True
+
+    def _contours_cancelled(self):
+        """The user cancelled loading: the switch goes off, or the next draw
+        would load the layers all over again."""
+        box = self.show_contours_checkbox
+        box.blockSignals(True)
+        box.setChecked(False)
+        box.blockSignals(False)
+        for row in self._overlay_rows:
+            row.refresh()
+        self.show_status_message("Contours cancelled")
+
+    def on_contours_switched(self, state):
+        """The Contours switch: what it needs is loaded before it is drawn."""
+        if state and self.current_image_data is not None and not self.prepare_contours():
+            self._contours_cancelled()
+            return
+        self.on_checkbox_changed()
+
+    def _contour_job(self, label, fn, *args, **kwargs):
+        """``fn(*args, **kwargs)`` in the worker process; while drawing, here,
+        ``label`` saying what the wait is."""
+        if self._contours_drawing:
+            with busy(label, self):
+                return fn(*args, **kwargs)
+        return run_in_background(self, label, fn, *args, **kwargs)
+
+    def _convert_contour_image(self, label, task, source, target):
+        """The function ``task`` of coordinates.helioprojective converts
+        ``source`` to ``target``, in a process of its own. Whether it did;
+        the process is only waited for, under ``label`` while drawing."""
+        kwargs = dict(
+            input_fits_file=os.path.abspath(source),
+            output_fits_file=os.path.abspath(target),
+            overwrite=True,
+        )
+        job = CasaTask(task, None, kwargs, HPC_MODULE)
+        try:
+            if self._contours_drawing:
+                with busy(label, self):
+                    return job.run()
+            return wait_for_task(self, label, job)
+        except CasaTaskError as e:
+            logger.error(f"Could not convert the contour image: {e}")
+            return False
 
     def show_contour_settings(self):
         """Show non-modal contour settings dialog."""
@@ -104,14 +192,24 @@ class ContoursMixin:
                         pass
                     return
 
+                before = viewer.contour_layers, viewer.contour_options
                 viewer.contour_layers = merge_contour_layers(
                     viewer.contour_layers, dialog.get_layers()
                 )
                 viewer.contour_options = dialog.get_options()
                 if viewer.show_contours_checkbox.isChecked():
                     # Layers whose source settings changed have no data and are
-                    # loaded while drawing; the others keep theirs
-                    viewer.on_visualization_changed(reload_data=False)
+                    # loaded first; the others keep theirs
+                    apply_btn.setEnabled(False)
+                    try:
+                        if not viewer.prepare_contours():
+                            viewer.contour_layers, viewer.contour_options = before
+                            viewer.show_status_message("Cancelled")
+                            return
+                        viewer.on_visualization_changed(reload_data=False)
+                    finally:
+                        if not sip.isdeleted(apply_btn):
+                            apply_btn.setEnabled(True)
 
                     # Update dialog with captured dimensions
                     if hasattr(dialog, "update_layer_dimensions") and not sip.isdeleted(
@@ -202,11 +300,23 @@ class ContoursMixin:
 
     def load_contour_data(self, layer=None):
         """Load the contour data of ``layer``, or of every enabled layer."""
-        if layer is None:
-            for each in self.contour_layers:
-                if each.get("enabled", True):
-                    self.load_contour_data(each)
+        if self._contours_loading:
             return
+        layers = [layer] if layer is not None else [
+            each for each in self.contour_layers if each.get("enabled", True)
+        ]
+        self._contours_loading = True
+        try:
+            for each in layers:
+                self._load_contour_layer(each)
+        except Cancelled:
+            self._contours_cancelled()
+        finally:
+            self._contours_loading = False
+
+    def _load_contour_layer(self, layer, step=""):
+        """Load one layer; ``step`` follows its name in what the wait says.
+        Raises Cancelled if the user cancels."""
         try:
             if layer["source"] == "external":
                 h, w = self._get_image_dimensions(layer["external_image"])
@@ -255,7 +365,7 @@ class ContoursMixin:
             else:
                 external_image = layer["external_image"]
                 if external_image and os.path.exists(external_image):
-                    image_to_load = self._resolve_contour_image(external_image)
+                    image_to_load = self._resolve_contour_image(external_image, step)
                 else:
                     print(
                         "[ERROR] load_contour_data: external image not found or empty"
@@ -264,6 +374,7 @@ class ContoursMixin:
 
             if image_to_load:
                 contour_data, contour_csys = self._load_contour_stokes(
+                    f"Reading contours of {contour_layer_name(layer)}{step}…",
                     image_to_load,
                     layer["stokes"],
                     layer.get("threshold", 5.0),
@@ -283,12 +394,16 @@ class ContoursMixin:
                     self.show_status_message(
                         f"Failed to load contour data: {contour_layer_name(layer)}"
                     )
+        except Cancelled:
+            raise
         except Exception as e:
             logger.error(f"Error loading contour data: {e}")
             self.show_status_message(
                 f"Error loading contour data ({contour_layer_name(layer)}): {e}"
             )
             layer["contour_data"] = None
+        if layer["contour_data"] is None:
+            layer["loaded_path"] = LOAD_FAILED
 
     def _validate_contour_stokes(self, layer):
         """Fall back to an available Stokes if the requested one isn't in the source image."""
@@ -322,7 +437,7 @@ class ContoursMixin:
                 layer["stokes"] = "I"
                 contour_stokes = "I"
 
-    def _resolve_contour_image(self, external_image):
+    def _resolve_contour_image(self, external_image, step=""):
         """Path of the contour image to load, converting its coordinate system
         (RA/Dec <-> helioprojective) to match the base image if needed.
 
@@ -363,23 +478,29 @@ class ContoursMixin:
             f"sv_contour_transformed_{self._temp_file_id}_{source_id}.fits",
         )
 
+        name = os.path.basename(external_image.rstrip("/"))
         transform_success = False
-        if base_csys_type == "hpc" and contour_csys_type == "radec":
-            # Convert RA/Dec contour to HPC (all Stokes for full flexibility)
-            self.show_status_message("Transforming contour from RA/Dec to HPC...")
-            from ..coordinates.helioprojective import convert_and_save_hpc_all_stokes
-
-            transform_success = convert_and_save_hpc_all_stokes(
-                external_image, transformed_path, overwrite=True
-            )
-        elif base_csys_type == "radec" and contour_csys_type == "hpc":
-            # Convert HPC contour to RA/Dec
-            self.show_status_message("Transforming contour from HPC to RA/Dec...")
-            from ..coordinates.helioprojective import convert_hpc_to_radec
-
-            transform_success = convert_hpc_to_radec(
-                external_image, transformed_path, overwrite=True
-            )
+        try:
+            if base_csys_type == "hpc" and contour_csys_type == "radec":
+                # Convert RA/Dec contour to HPC (all Stokes for full flexibility)
+                transform_success = self._convert_contour_image(
+                    f"Reprojecting {name} to helioprojective coordinates{step}…",
+                    "convert_and_save_hpc_all_stokes",
+                    external_image,
+                    transformed_path,
+                )
+            elif base_csys_type == "radec" and contour_csys_type == "hpc":
+                # Convert HPC contour to RA/Dec
+                transform_success = self._convert_contour_image(
+                    f"Reprojecting {name} to RA/Dec{step}…",
+                    "convert_hpc_to_radec",
+                    external_image,
+                    transformed_path,
+                )
+        except Cancelled:
+            if os.path.exists(transformed_path):
+                os.remove(transformed_path)  # what the stopped job had written
+            raise
 
         if transform_success and os.path.exists(transformed_path):
             self._contour_conversions[external_image] = transformed_path
@@ -403,13 +524,15 @@ class ContoursMixin:
                 pass
         self._contour_conversions.clear()
 
-    def _load_contour_stokes(self, image_path, stokes, threshold, rms_box, target_size):
+    def _load_contour_stokes(
+        self, label, image_path, stokes, threshold, rms_box, target_size
+    ):
         """Contour data for a Stokes product (I/Q/U/V, X/I, L, Lfrac, PANG):
         returns (data, the image's coordsys)."""
-        pix, contour_csys, _ = get_pixel_values_from_image(
-            image_path, stokes, threshold, rms_box, target_size=target_size
+        pix, record = self._contour_job(
+            label, read_contour_stokes, image_path, stokes, threshold, rms_box, target_size
         )
-        return pix, contour_csys
+        return pix, coordsys_from_record(record)
 
     def draw_contours(self, ax):
         """Draw every enabled contour layer, and their legend."""
@@ -417,11 +540,20 @@ class ContoursMixin:
         layers = [layer for layer in self.contour_layers if layer.get("enabled", True)]
 
         handles = []
-        for layer in layers:
-            drawn = self._draw_contour_layer(ax, layer)
-            if not options.get("legend_show_negative", False):
-                drawn = [sign for sign in drawn if sign == "pos"]
-            handles.extend(legend_handles(layer, drawn))
+        self._contours_drawing = True
+        try:
+            with busy("Drawing contours…", self) as task:
+                for index, layer in enumerate(layers):
+                    task.update(label=f"Drawing contours of {contour_layer_name(layer)}…")
+                    if len(layers) > 1:
+                        task.update(done=index, total=len(layers))
+                    step = f" ({index + 1} of {len(layers)})" if len(layers) > 1 else ""
+                    drawn = self._draw_contour_layer(ax, layer, step)
+                    if not options.get("legend_show_negative", False):
+                        drawn = [sign for sign in drawn if sign == "pos"]
+                    handles.extend(legend_handles(layer, drawn))
+        finally:
+            self._contours_drawing = False
 
         if handles and options.get("show_legend", True):
             legend = ax.legend(
@@ -432,12 +564,16 @@ class ContoursMixin:
             )
             legend.set_zorder(10)
 
-    def _draw_contour_layer(self, ax, layer):
-        """Draw one layer; returns the signs ("pos"/"neg") it drew."""
-        main_window = self.window()
+    def _draw_contour_layer(self, ax, layer, step=""):
+        """Draw one layer; returns the signs ("pos"/"neg") it drew. ``step``
+        follows its name if it has to be loaded first."""
         name = contour_layer_name(layer)
         if layer.get("contour_data") is None:
-            self.load_contour_data(layer)
+            if self._contours_loading:
+                return []  # (a redraw in the wait: the draw after it has them)
+            # (one that failed before would only fail again, blocking the window)
+            if layer.get("loaded_path") is not LOAD_FAILED:
+                self._load_contour_layer(layer, step)
 
         if layer.get("contour_data") is None:
             logger.error(f"draw_contours: no contour data for {name}")
@@ -458,7 +594,6 @@ class ContoursMixin:
         fits_flag, header, csys, summary = metadata
 
         try:
-            self.show_status_message(f"Drawing contours ({name}).... Please wait...")
             image_wcs_obj = getattr(self, "_cached_wcs_obj", None)
 
             contour_data = layer["contour_data"]
@@ -485,9 +620,6 @@ class ContoursMixin:
                     ax, layer, contour_data, transform, pos_levels, neg_levels
                 )
 
-            if main_window:
-
-                self.show_status_message("Done. ")
             return drawn
 
         except Exception as e:

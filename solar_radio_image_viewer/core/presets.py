@@ -19,6 +19,7 @@ import matplotlib
 import numpy as np
 
 from ..processing.colormaps import ensure_solar_colormaps
+from ..ui.busy import busy
 
 # --------------------------------------------------------------------------
 # Display ranges
@@ -366,6 +367,11 @@ class PresetsMixin:
         if self.current_image_data is None:
             return
 
+        # (also part of a load, so nothing here may stop short of the plot)
+        with busy("Setting the display range…", self):
+            self._apply_auto_range(mode)
+
+    def _apply_auto_range(self, mode):
         vmin, vmax = compute_range(self.display_data(), mode)
         self.set_range(vmin, vmax)
         if hasattr(self, "show_range_preset"):
@@ -392,6 +398,10 @@ class PresetsMixin:
             return
 
         preset = get_preset(instrument, variant)
+        with busy(f"Applying the {preset.label} preset…", self):
+            self._apply_preset(preset)
+
+    def _apply_preset(self, preset):
         self.set_background_subtraction(preset.background, redraw=False)
         self.set_radial_filter(preset.radial, redraw=False)
         vmin, vmax = compute_range(self.display_data(), preset.range)

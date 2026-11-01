@@ -5,7 +5,7 @@ by what one reference image shows).
 """
 
 import os
-import time
+import tempfile
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -22,8 +22,8 @@ from PyQt5.QtWidgets import (
 )
 
 from ..processing.fits_io import is_fits
+from ..ui.background import Cancelled, run_in_background
 from ..ui.batch import BatchWindow, _escape, _short_home, output_name
-from ..ui.busy import busy
 from ..ui.errors import show_error
 from ..ui.open_image import choose_image
 from ..ui.widgets import kicker
@@ -328,21 +328,28 @@ class PhaseShiftDialog(BatchWindow):
     def run(self):
         """Work out the shift from the reference image, then shift each image
         in worker processes."""
-        from ..coordinates.move_phasecenter import SolarPhaseCenter
-
         if not self.ready():
             return
         batch = self.batch_mode()
         sources = self._sources()
         reference = self.reference_image_edit.text().strip() if batch else sources[0]
         self.start_log()
+        # Named so that a leftover goes with the session's other temporary files
+        export = os.path.join(tempfile.gettempdir(), f"temp_hpc_phase_{os.getpid()}.fits")
         try:
-            with busy():
-                phase_result = SolarPhaseCenter(msname=None).cal_solar_phaseshift(
-                    imagename=reference,
-                    fit_gaussian=self.use_gaussian(),
-                    sigma=self.sigma_spinbox.value(),
-                )
+            phase_result = run_in_background(
+                self,
+                f"Measuring the Sun in {os.path.basename(reference.rstrip('/'))}…",
+                measure_reference,
+                reference,
+                self.use_gaussian(),
+                self.sigma_spinbox.value(),
+                export,
+            )
+        except Cancelled:
+            _remove(export)
+            self.note_label.setText("Cancelled")
+            return
         except Exception as e:
             import traceback
 
@@ -356,11 +363,9 @@ class PhaseShiftDialog(BatchWindow):
             )
             return
 
-        if self._is_helioprojective(reference):
-            phase_result.update(true_ra=0.0, true_dec=0.0, is_hpc=True)
+        if phase_result["is_hpc"]:
             self.log("Helioprojective image: the Sun goes to (0, 0)")
         else:
-            phase_result["is_hpc"] = False
             self.log(
                 f"Sun at RA {phase_result.get('true_ra', 0):.4f}°, Dec {phase_result.get('true_dec', 0):.4f}°"
             )
@@ -426,34 +431,74 @@ class PhaseShiftDialog(BatchWindow):
         if not aborted:
             self.log(f"Shifted {self._done} of {self._done + self._failed}")
 
-    def _is_helioprojective(self, imagepath):
-        """Whether the image is in helioprojective coordinates (Solar-X/Y)."""
-        if not imagepath or not os.path.exists(imagepath):
-            return False
-        try:
-            if is_fits(imagepath):
-                from astropy.io import fits
 
-                header = fits.getheader(imagepath)
-                ctype1 = header.get("CTYPE1", "").upper()
-                ctype2 = header.get("CTYPE2", "").upper()
-                if "HPLN" in ctype1 or "HPLT" in ctype2 or "SOLAR" in ctype1 or "SOLAR" in ctype2:
+def is_helioprojective(imagepath):
+    """Whether the image is in helioprojective coordinates (Solar-X/Y)."""
+    if not imagepath or not os.path.exists(imagepath):
+        return False
+    try:
+        if is_fits(imagepath):
+            from astropy.io import fits
+
+            header = fits.getheader(imagepath)
+            ctype1 = header.get("CTYPE1", "").upper()
+            ctype2 = header.get("CTYPE2", "").upper()
+            if "HPLN" in ctype1 or "HPLT" in ctype2 or "SOLAR" in ctype1 or "SOLAR" in ctype2:
+                return True
+        if os.path.isdir(imagepath):
+            try:
+                from casatools import image as IA
+
+                ia_tool = IA()
+                ia_tool.open(imagepath)
+                names = [n.upper() for n in ia_tool.coordsys().names()]
+                ia_tool.close()
+                if {"SOLAR-X", "SOLAR-Y", "HPLN-TAN", "HPLT-TAN"} & set(names):
                     return True
-            if os.path.isdir(imagepath):
-                try:
-                    from casatools import image as IA
+            except Exception:
+                pass
+        return False
+    except Exception:
+        return False
 
-                    ia_tool = IA()
-                    ia_tool.open(imagepath)
-                    names = [n.upper() for n in ia_tool.coordsys().names()]
-                    ia_tool.close()
-                    if {"SOLAR-X", "SOLAR-Y", "HPLN-TAN", "HPLT-TAN"} & set(names):
-                        return True
-                except Exception:
-                    pass
-            return False
-        except Exception:
-            return False
+
+def measure_reference(reference, use_gaussian, sigma, export):
+    """The shift the image ``reference`` shows, as cal_solar_phaseshift gives
+    it, for the worker process. A CASA image is read as the FITS file
+    ``export``: Cancel kills this process, and the caller knows that name and
+    can remove the file, unlike the one cal_solar_phaseshift would write next
+    to the image. It is written here, as exportfits would write it, because
+    Cancel would leave a task's own process running, still writing the file."""
+    from ..coordinates.move_phasecenter import SolarPhaseCenter
+    from ..processing.dependencies import IA
+
+    image = reference
+    if os.path.isdir(reference):
+        tool = IA()
+        tool.open(reference)
+        try:
+            tool.tofits(outfile=export, optical=False, overwrite=True)
+        finally:
+            tool.close()
+        image = export
+    try:
+        result = SolarPhaseCenter(msname=None).cal_solar_phaseshift(
+            imagename=image, fit_gaussian=use_gaussian, sigma=sigma
+        )
+    finally:
+        _remove(export)
+    if is_helioprojective(reference):
+        result.update(true_ra=0.0, true_dec=0.0, is_hpc=True)
+    else:
+        result["is_hpc"] = False
+    return result
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def process_single_file_phase_shift(args):

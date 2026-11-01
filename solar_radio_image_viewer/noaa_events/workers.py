@@ -5,16 +5,42 @@ spectra.
 """
 
 import logging
+import os
 from datetime import datetime, date
 from typing import Optional
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QSize, Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QImage
 from . import noaa_events as ne
 
 from .cache import _noaa_cache
 logger = logging.getLogger(__name__)
 
+FETCH_STAGES = 6
+THUMBNAIL_SIZE = 320
+CHUNK_BYTES = 64 * 1024
 
-class ImageUrlResolver(QThread):
+
+class Stopped(BaseException):
+    """The work was told to stop. Not an Exception, so that it passes the
+    handlers that note a failed source and go on to the next."""
+
+
+class StoppableThread(QThread):
+    """A thread that stops at its next ``check_stop()`` once told to: its
+    network calls cannot be interrupted, so ``ui.download_parts.abandon``
+    leaves it to get there alone."""
+
+    cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def check_stop(self):
+        if self.cancelled:
+            raise Stopped()
+
+
+class ImageUrlResolver(StoppableThread):
     found = pyqtSignal(str)
 
     def __init__(self, page_url):
@@ -24,11 +50,15 @@ class ImageUrlResolver(QThread):
     def run(self):
         from ..solar_context import context_images as ci
 
-        url = ci.resolve_full_image_url(self.url)
-        self.found.emit(url)
+        try:
+            url = ci.resolve_full_image_url(self.url)
+        except Exception as e:
+            print(f"Failed to resolve high-res: {e}")
+            url = None
+        self.found.emit(url or "")
 
 
-class ImageLoader(QThread):
+class ImageLoader(StoppableThread):
     """
     Thread to download image data.
     If page_url is provided, it tries to resolve the High-Res image first.
@@ -37,6 +67,7 @@ class ImageLoader(QThread):
 
     loaded = pyqtSignal(bytes)
     error = pyqtSignal(str)
+    received = pyqtSignal(int, int)  # bytes so far, of this many (0: not known)
 
     def __init__(self, url, page_url=None):
         super().__init__()
@@ -45,39 +76,136 @@ class ImageLoader(QThread):
 
     def run(self):
         try:
-            target_url = self.url
-            # Try to resolve high-res if page_url available
-            # BUT: Skip for Helioviewer URLs (they're already direct image URLs)
-            if self.page_url and "helioviewer.org" not in self.page_url:
-                try:
-                    from ..solar_context import context_images as ci
-
-                    resolved = ci.resolve_full_image_url(self.page_url)
-                    if resolved:
-                        target_url = resolved
-                except Exception as e:
-                    print(f"Failed to resolve high-res: {e}")
-
-            import requests
-
-            response = requests.get(
-                target_url, timeout=60, headers={"User-Agent": "Mozilla/5.0"}
-            )
-            if response.status_code == 200:
-                self.loaded.emit(response.content)
-            else:
-                self.error.emit(f"HTTP {response.status_code}")
+            self.loaded.emit(self.fetch())
+        except Stopped:
+            pass
         except Exception as e:
             self.error.emit(str(e))
 
+    def fetch(self):
+        """The image's bytes."""
+        target_url = self.url
+        # Try to resolve high-res if page_url available
+        # BUT: Skip for Helioviewer URLs (they're already direct image URLs)
+        if self.page_url and "helioviewer.org" not in self.page_url:
+            try:
+                from ..solar_context import context_images as ci
 
-class FetchWorker(QThread):
+                resolved = ci.resolve_full_image_url(self.page_url)
+                if resolved:
+                    target_url = resolved
+            except Exception as e:
+                print(f"Failed to resolve high-res: {e}")
+
+        data = bytearray()
+        self.stream(target_url, data.extend)
+        return bytes(data)
+
+    def stream(self, url, write):
+        """Download ``url`` a piece at a time into ``write``, saying how far
+        along it is and stopping when told to."""
+        import requests
+
+        with requests.get(
+            url, timeout=60, headers={"User-Agent": "Mozilla/5.0"}, stream=True
+        ) as response:
+            if response.status_code != 200:
+                raise RuntimeError(f"HTTP {response.status_code}")
+            total = int(response.headers.get("Content-Length") or 0)
+            done = 0
+            for chunk in response.iter_content(CHUNK_BYTES):
+                self.check_stop()
+                write(chunk)
+                done += len(chunk)
+                self.received.emit(done, max(total, done) if total else 0)
+
+
+class ThumbnailLoader(ImageLoader):
+    """A card's image, from the cache if it has it: read, decoded and scaled
+    here, so that a dozen of them do not hold up the window."""
+
+    ready = pyqtSignal(object)  # the scaled QImage, None if the data is no image
+
+    def __init__(self, url, page_url, event_date, title):
+        super().__init__(url, page_url)
+        self.event_date = event_date
+        self.title = title
+
+    def run(self):
+        try:
+            cached = _noaa_cache.load_thumbnail(self.event_date, self.title)
+            image = self.decoded(cached.read_bytes()) if cached else None
+            if image is None:
+                data = self.fetch()
+                image = self.decoded(data)
+                if image is not None and self.title:
+                    self.save(data)
+            self.check_stop()
+            self.ready.emit(image)
+        except Stopped:
+            pass
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def decoded(self, data):
+        image = QImage.fromData(data)
+        if image.isNull():
+            return None
+        return image.scaled(
+            QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+
+    def save(self, data):
+        try:
+            _noaa_cache.save_thumbnail(self.event_date, self.title, data)
+        except Exception as e:
+            print(f"Failed to cache thumbnail: {e}")
+
+
+class ImageSaver(ImageLoader):
+    """Downloads an image into the file ``path``, which appears only when the
+    image is complete: stopped or failed, what the file held stays. Nothing
+    is written before the last byte has arrived, as a stalled download may
+    never get to clean up after itself."""
+
+    saved = pyqtSignal(str)
+
+    def __init__(self, url, path):
+        super().__init__(url)
+        self.path = path
+
+    def run(self):
+        partial = f"{self.path}.{id(self):x}.part"  # another save may share the path
+        try:
+            data = self.fetch()
+            self.check_stop()
+            with open(partial, "wb") as f:
+                f.write(data)
+            os.replace(partial, self.path)
+            self.saved.emit(self.path)
+        except Stopped:
+            pass
+        except Exception as e:
+            self.discard(partial)
+            self.error.emit(str(e))
+
+    @staticmethod
+    def discard(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+class FetchWorker(StoppableThread):
     """Worker thread for fetching events, active regions, conditions, CMEs, and images.
     
     Uses cache when available - only fetches missing data from network.
     """
 
-    finished = pyqtSignal(
+    done = pyqtSignal(
         object, object, object, object, object, object
     )  # (events, active_regions, conditions, cmes, images, ecallisto_bursts) tuple
     error = pyqtSignal(str)
@@ -87,6 +215,17 @@ class FetchWorker(QThread):
         super().__init__()
         self.event_date = event_date
         self.force_refresh = force_refresh
+        self._stage = 0
+
+    def _say(self, message, stage=None):
+        """Report what is under way: a new ``stage`` of the six if given."""
+        self.check_stop()
+        if stage is not None:
+            self._stage = stage
+        self.progress.emit(f"{message} {self._stage}/{FETCH_STAGES}")
+
+    def _image_looked_up(self, done, total):
+        self._say(f"Fetching context images, {done} of {total}…")
 
     def run(self):
         try:
@@ -98,11 +237,11 @@ class FetchWorker(QThread):
             # === Events ===
             events = None
             if not self.force_refresh and cached_status['events']:
-                self.progress.emit("Loading events from cache...")
+                self._say("Loading events from cache…", 1)
                 events = cache.load_events(self.event_date)
             
             if events is None:
-                self.progress.emit("Fetching solar events...")
+                self._say("Fetching solar events…", 1)
                 events = ne.fetch_and_parse_events(self.event_date)
                 if events:
                     cache.save_events(self.event_date, events)
@@ -110,12 +249,12 @@ class FetchWorker(QThread):
             # === Active Regions ===
             active_regions = None
             if not self.force_refresh and cached_status['active_regions']:
-                self.progress.emit("Loading active regions from cache...")
+                self._say("Loading active regions from cache…", 2)
                 active_regions = cache.load_active_regions(self.event_date)
             
             if active_regions is None:
                 try:
-                    self.progress.emit("Fetching active regions...")
+                    self._say("Fetching active regions…", 2)
                     from ..solar_context import active_regions as ar
                     active_regions = ar.fetch_and_parse_active_regions(self.event_date)
                     if active_regions:
@@ -126,12 +265,12 @@ class FetchWorker(QThread):
             # === Conditions ===
             conditions = None
             if not self.force_refresh and cached_status['conditions']:
-                self.progress.emit("Loading conditions from cache...")
+                self._say("Loading conditions from cache…", 3)
                 conditions = cache.load_conditions(self.event_date)
             
             if conditions is None:
                 try:
-                    self.progress.emit("Fetching solar conditions...")
+                    self._say("Fetching solar conditions…", 3)
                     from ..solar_context import realtime_data as rt
                     conditions = rt.fetch_conditions_for_date(self.event_date)
                     if conditions:
@@ -142,12 +281,12 @@ class FetchWorker(QThread):
             # === CMEs ===
             cmes = None
             if not self.force_refresh and cached_status['cmes']:
-                self.progress.emit("Loading CMEs from cache...")
+                self._say("Loading CMEs from cache…", 4)
                 cmes = cache.load_cmes(self.event_date)
             
             if cmes is None:
                 try:
-                    self.progress.emit("Fetching CME alerts...")
+                    self._say("Fetching CME alerts…", 4)
                     from ..solar_context import cme_alerts as cme
                     cmes = cme.fetch_and_parse_cme_events(self.event_date)
                     if cmes:
@@ -158,19 +297,21 @@ class FetchWorker(QThread):
             # === Context Images ===
             images = None
             if not self.force_refresh and cached_status['images']:
-                self.progress.emit("Loading context images from cache...")
+                self._say("Loading context images from cache…", 5)
                 images = cache.load_images(self.event_date)
                 
                 # Auto-heal cache for old images missing the timestamp
                 if images and any(not hasattr(img, 'image_date') or img.image_date is None for img in images):
-                    self.progress.emit("Stale image cache detected. Refreshing for timestamps...")
+                    self._say("Refreshing the image list for its timestamps…")
                     images = None
             
             if images is None:
                 try:
-                    self.progress.emit("Fetching context images...")
+                    self._say("Fetching context images…", 5)
                     from ..solar_context import context_images as ci
-                    images = ci.fetch_context_images(self.event_date)
+                    images = ci.fetch_context_images(
+                        self.event_date, progress=self._image_looked_up
+                    )
                     if images:
                         cache.save_images(self.event_date, images)
                 except Exception as img_err:
@@ -182,14 +323,14 @@ class FetchWorker(QThread):
             # === e-CALLISTO Bursts ===
             ecallisto_bursts = None
             if not self.force_refresh and cached_status.get('ecallisto_bursts'):
-                self.progress.emit("Loading e-CALLISTO bursts from cache...")
+                self._say("Loading e-CALLISTO bursts from cache…", 6)
                 ecallisto_bursts = cache.load_ecallisto_bursts(self.event_date)
             
             if ecallisto_bursts is None:
                 try:
                     # Check if within supported range (2010, 2011, 2020+)
                     if self.event_date.year in [2010, 2011] or self.event_date.year >= 2020:
-                        self.progress.emit("Fetching e-CALLISTO radio bursts...")
+                        self._say("Fetching e-CALLISTO radio bursts…", 6)
                         ecallisto_bursts = ne.fetch_and_parse_ecallisto_bursts(self.event_date)
                         if ecallisto_bursts:
                             cache.save_ecallisto_bursts(self.event_date, ecallisto_bursts)
@@ -202,16 +343,20 @@ class FetchWorker(QThread):
             if ecallisto_bursts is None:
                 ecallisto_bursts = []
 
-            self.finished.emit(events, active_regions, conditions, cmes, images, ecallisto_bursts)
+            self.check_stop()
+            self.done.emit(events, active_regions, conditions, cmes, images, ecallisto_bursts)
+        except Stopped:
+            pass
         except Exception as e:
             self.error.emit(str(e))
 
 
-class GOESPlotWorker(QThread):
+class GOESPlotWorker(StoppableThread):
     """Worker thread for fetching and plotting GOES X-ray flux."""
 
-    finished = pyqtSignal(object)
+    done = pyqtSignal(object)
     error = pyqtSignal(str)
+    progress = pyqtSignal(str)
 
     def __init__(self, event_date: date):
         super().__init__()
@@ -219,6 +364,7 @@ class GOESPlotWorker(QThread):
 
     def run(self):
         try:
+            self.progress.emit("Preparing the GOES search…")
             from sunpy.net import Fido, attrs as a
             from sunpy.timeseries import TimeSeries
 
@@ -226,6 +372,8 @@ class GOESPlotWorker(QThread):
             t_start = datetime.combine(self.event_date, datetime.min.time())
             t_end = datetime.combine(self.event_date, datetime.max.time())
 
+            self.check_stop()
+            self.progress.emit("Searching for GOES data…")
             # Search for GOES XRS data
             # Use a.Resolution.flx1s (1-second data) if possible, or avg1m (1-minute)
             res = Fido.search(a.Time(t_start, t_end), a.Instrument("GOES"))
@@ -255,11 +403,15 @@ class GOESPlotWorker(QThread):
             # Slice the UnifiedResponse to keep only the first row of the first provider results
             best_result = res[0, 0]
 
+            self.check_stop()
+            self.progress.emit("Downloading the GOES file…")
             files = Fido.fetch(best_result)
 
             if not files:
                 raise Exception("Failed to download GOES data file.")
 
+            self.check_stop()
+            self.progress.emit("Reading the GOES file…")
             # Load TimeSeries
             ts = TimeSeries(files)
 
@@ -269,13 +421,16 @@ class GOESPlotWorker(QThread):
                     # TODO: Concatenate the TimeSeries objects
                     pass
 
-            self.finished.emit(ts)
+            self.check_stop()
+            self.done.emit(ts)
 
+        except Stopped:
+            pass
         except Exception as e:
             self.error.emit(str(e))
 
 
-class DHSpectraWorker(QThread):
+class DHSpectraWorker(StoppableThread):
     """Worker thread for fetching DH-band dynamic spectra from CDAW NASA.
     
     Fetches WIND/WAVES (24h full-day, calibrated) and STEREO A/B (7h) spectrograms for the selected date.
@@ -284,7 +439,9 @@ class DHSpectraWorker(QThread):
 
     progress = pyqtSignal(str)
     result_ready = pyqtSignal(str, str)  # Emits (source_key, file_path)
-    finished = pyqtSignal(dict, list)  # Emits (results_dict, error_list)
+    done = pyqtSignal(dict, list)  # Emits (results_dict, error_list)
+    source_ended = pyqtSignal(str)  # this one is dealt with, data or not
+    sources_done = pyqtSignal(int, int)  # how many of how many
     # Removing error signal as we now accumulate errors in a list
 
     # CDAW server URLs
@@ -299,6 +456,15 @@ class DHSpectraWorker(QThread):
         super().__init__()
         self.event_datetime = event_datetime
         self.force_refresh = force_refresh
+        self._sources_done = 0
+
+    def _source_done(self, source):
+        """``source`` has been dealt with: the next, unless told to stop."""
+        self.check_stop()
+        self._sources_done += 1
+        total = 7 if self.event_datetime.year <= 2014 else 6  # with STEREO-B
+        self.source_ended.emit(source)
+        self.sources_done.emit(self._sources_done, total)
 
     def run(self):
         """Fetch spectra from CDAW servers, using cache when available."""
@@ -326,13 +492,13 @@ class DHSpectraWorker(QThread):
             # Check cache first
             cached_wind = cache.load_spectra(event_date, 'wind')
             if not self.force_refresh and cached_wind:
-                self.progress.emit("Loading WIND/WAVES from cache...")
+                self.progress.emit("Loading WIND/WAVES from cache…")
                 results['wind'] = str(cached_wind)
                 self.result_ready.emit('wind', str(cached_wind))
             else:
                 # Try calibrated L2 source first (test_daily)
                 wind_found = False
-                self.progress.emit("Searching for calibrated WIND/WAVES data...")
+                self.progress.emit("Searching for calibrated WIND/WAVES data…")
                 
                 try:
                     # Calibrated source: test_daily/YYYY/YYYYMMDD_windwaves__scale_2to6sfu_l2_cdf_v1.jpg
@@ -349,7 +515,7 @@ class DHSpectraWorker(QThread):
                     self.progress.emit("Calibrated WIND/WAVES data found!")
                     
                 except Exception:
-                    self.progress.emit("Calibrated source unavailable, trying fallback...")
+                    self.progress.emit("Calibrated source unavailable, trying fallback…")
                 
                 # Fallback to 24h source if calibrated not found
                 if not wind_found:
@@ -386,21 +552,22 @@ class DHSpectraWorker(QThread):
                         err_msg = f"WIND/WAVES: {str(e)[:50]}"
                         self.progress.emit(err_msg)
                         errors.append(err_msg)
+            self._source_done('wind')
             
             # Check if date is before STEREO mission
             if dt_obj.year < 2007:
                 self.progress.emit("Date predates STEREO mission (launched Oct 2006)")
-                self.finished.emit(results)
+                self.done.emit(results, errors)
                 return
             
             # === STEREO-A ===
             cached_sta = cache.load_spectra(event_date, 'stereo_a')
             if not self.force_refresh and cached_sta:
-                self.progress.emit("Loading STEREO-A from cache...")
+                self.progress.emit("Loading STEREO-A from cache…")
                 results['stereo_a'] = str(cached_sta)
                 self.result_ready.emit('stereo_a', str(cached_sta))
             else:
-                self.progress.emit("Searching for STEREO-A data...")
+                self.progress.emit("Searching for STEREO-A data…")
                 try:
                     stereo_dir_url = f"{swaves_url}{date_path}/"
                     req = urllib.request.urlopen(stereo_dir_url, timeout=15)
@@ -416,7 +583,7 @@ class DHSpectraWorker(QThread):
                     matches_a = sorted(pattern_a.findall(html))
                     
                     if matches_a:
-                        self.progress.emit("Stitching STEREO-A images...")
+                        self.progress.emit("Stitching STEREO-A images…")
                         stitched_data = self._stitch_images(stereo_dir_url, matches_a)
                         if stitched_data:
                             sta_file = cache.save_spectra(event_date, 'stereo_a', stitched_data)
@@ -439,12 +606,13 @@ class DHSpectraWorker(QThread):
                     err_msg = f"STEREO-A: {str(e)[:50]}"
                     self.progress.emit(err_msg)
                     errors.append(err_msg)
+            self._source_done('stereo_a')
             
             # === STEREO-B (only for dates before 2014) ===
             if dt_obj.year <= 2014:
                 cached_stb = cache.load_spectra(event_date, 'stereo_b')
                 if not self.force_refresh and cached_stb:
-                    self.progress.emit("Loading STEREO-B from cache...")
+                    self.progress.emit("Loading STEREO-B from cache…")
                     results['stereo_b'] = str(cached_stb)
                     self.result_ready.emit('stereo_b', str(cached_stb))
                 else:
@@ -458,7 +626,7 @@ class DHSpectraWorker(QThread):
                         matches_b = sorted(pattern_b.findall(html))
                         
                         if matches_b:
-                            self.progress.emit("Stitching STEREO-B images...")
+                            self.progress.emit("Stitching STEREO-B images…")
                             stitched_data = self._stitch_images(stereo_dir_url, matches_b)
                             if stitched_data:
                                 stb_file = cache.save_spectra(event_date, 'stereo_b', stitched_data)
@@ -481,15 +649,16 @@ class DHSpectraWorker(QThread):
                         err_msg = f"STEREO-B: {str(e)[:50]}"
                         self.progress.emit(err_msg)
                         errors.append(err_msg)
+                self._source_done('stereo_b')
             
             # === Nobeyama (NORP) ===
             cached_norp = cache.load_spectra(event_date, 'norp')
             if not self.force_refresh and cached_norp:
-                self.progress.emit("Loading Nobeyama (NORP) from cache...")
+                self.progress.emit("Loading Nobeyama (NORP) from cache…")
                 results['norp'] = str(cached_norp)
                 self.result_ready.emit('norp', str(cached_norp))
             else:
-                self.progress.emit("Searching for Nobeyama (NORP) data...")
+                self.progress.emit("Searching for Nobeyama (NORP) data…")
                 try:
                     # https://solar.nro.nao.ac.jp/norp/html/daily/YYYY/MM/plYYMMDD.png
                     year4 = dt_obj.strftime('%Y')
@@ -508,15 +677,16 @@ class DHSpectraWorker(QThread):
                     err_msg = f"Nobeyama (NORP): {str(e)[:50]}"
                     self.progress.emit(err_msg)
                     errors.append(err_msg)
+            self._source_done('norp')
 
             # === ORFEES (Nancay) ===
             cached_orfees = cache.load_spectra(event_date, 'orfees')
             if not self.force_refresh and cached_orfees:
-                self.progress.emit("Loading ORFEES from cache...")
+                self.progress.emit("Loading ORFEES from cache…")
                 results['orfees'] = str(cached_orfees)
                 self.result_ready.emit('orfees', str(cached_orfees))
             else:
-                self.progress.emit("Searching for ORFEES data...")
+                self.progress.emit("Searching for ORFEES data…")
                 try:
                     # https://rsdb.obs-nancay.fr/QL/Orfees/orfeesYYYYMMDD.png
                     url = f"https://rsdb.obs-nancay.fr/QL/Orfees/orfees{event_date.strftime('%Y%m%d')}.png"
@@ -532,15 +702,16 @@ class DHSpectraWorker(QThread):
                     err_msg = f"ORFEES: {str(e)[:50]}"
                     self.progress.emit(err_msg)
                     errors.append(err_msg)
+            self._source_done('orfees')
 
             # === NDA (Nancay) ===
             cached_nda = cache.load_spectra(event_date, 'nda')
             if not self.force_refresh and cached_nda:
-                self.progress.emit("Loading NDA from cache...")
+                self.progress.emit("Loading NDA from cache…")
                 results['nda'] = str(cached_nda)
                 self.result_ready.emit('nda', str(cached_nda))
             else:
-                self.progress.emit("Searching for NDA data...")
+                self.progress.emit("Searching for NDA data…")
                 try:
                     # https://rsdb.obs-nancay.fr/QL/Nda/NdaP1FYYYYMMDD.png
                     url = f"https://rsdb.obs-nancay.fr/QL/Nda/NdaP1F{event_date.strftime('%Y%m%d')}.png"
@@ -556,6 +727,7 @@ class DHSpectraWorker(QThread):
                     err_msg = f"NDA: {str(e)[:50]}"
                     self.progress.emit(err_msg)
                     errors.append(err_msg)
+            self._source_done('nda')
             # === NICT (Yamagawa or HiRAS) ===
             from datetime import date
             NICT_TRANSITION_DATE = date(2016, 7, 11)
@@ -564,11 +736,11 @@ class DHSpectraWorker(QThread):
                 # Yamagawa
                 cached_yamagawa = cache.load_spectra(event_date, 'yamagawa')
                 if not self.force_refresh and cached_yamagawa:
-                    self.progress.emit("Loading Yamagawa from cache...")
+                    self.progress.emit("Loading Yamagawa from cache…")
                     results['yamagawa'] = str(cached_yamagawa)
                     self.result_ready.emit('yamagawa', str(cached_yamagawa))
                 else:
-                    self.progress.emit("Fetching and stitching Yamagawa data...")
+                    self.progress.emit("Fetching and stitching Yamagawa data…")
                     try:
                         yamagawa_data = self._fetch_nict_spectra('yamagawa', event_date)
                         if yamagawa_data:
@@ -584,11 +756,11 @@ class DHSpectraWorker(QThread):
                 # HiRAS
                 cached_hiras = cache.load_spectra(event_date, 'hiras')
                 if not self.force_refresh and cached_hiras:
-                    self.progress.emit("Loading HiRAS from cache...")
+                    self.progress.emit("Loading HiRAS from cache…")
                     results['hiras'] = str(cached_hiras)
                     self.result_ready.emit('hiras', str(cached_hiras))
                 else:
-                    self.progress.emit("Fetching and stitching HiRAS data...")
+                    self.progress.emit("Fetching and stitching HiRAS data…")
                     try:
                         hiras_data = self._fetch_nict_spectra('hiras', event_date)
                         if hiras_data:
@@ -600,8 +772,11 @@ class DHSpectraWorker(QThread):
                         err_msg = f"HiRAS: {str(e)[:50]}"
                         self.progress.emit(err_msg)
                         errors.append(err_msg)
+            self._source_done('yamagawa' if event_date >= NICT_TRANSITION_DATE else 'hiras')
             
-            self.finished.emit(results, errors)
+            self.done.emit(results, errors)
+        except Stopped:
+            pass
         except Exception as e:
             # Final safety net for the entire worker run
             if 'results' not in locals():
@@ -610,7 +785,7 @@ class DHSpectraWorker(QThread):
                 errors = [f"Critical worker error: {str(e)}"]
             else:
                 errors.append(f"Critical worker error: {str(e)}")
-            self.finished.emit(results, errors)
+            self.done.emit(results, errors)
             
     def _fetch_nict_spectra(self, station: str, event_date: date) -> Optional[bytes]:
         """Fetch hourly strips, legend, and range from NICT and stitch them horizontally.
@@ -632,8 +807,9 @@ class DHSpectraWorker(QThread):
         
         if station == 'yamagawa':
             prefix = "YAMAGAWA"
+            name = "Yamagawa"
         else:
-            prefix = "HiRAS"
+            prefix = name = "HiRAS"
 
         def download_pil_image(url):
             try:
@@ -661,6 +837,8 @@ class DHSpectraWorker(QThread):
         date_compact = event_date.strftime("%Y%m%d")
 
         for h in range(24):
+            self.check_stop()
+            self.progress.emit(f"Fetching {name} hour {h + 1} of 24…")
             hour_str = f"{h:02d}"
             url = f"{base_url}/{year}/{month}/{day}/{prefix}_{date_compact}{hour_str}.png"
             img = download_pil_image(url)
@@ -773,6 +951,7 @@ class DHSpectraWorker(QThread):
         try:
             # Limit to 5 images to avoid excessive memory usage
             for fname in selected_filenames[:5]:
+                self.check_stop()
                 img_url = f"{base_url}{fname}"
                 req = urllib.request.urlopen(img_url, timeout=20)
                 img_data = req.read()

@@ -24,6 +24,7 @@ from .preview import contrast_colors, dashed_pen, halo, halo_pen, measure_previe
 
 logger = logging.getLogger(__name__)
 
+from ..ui.busy import busy
 from ..ui.geometry import fit_to_screen
 
 
@@ -631,11 +632,16 @@ class ProfileMixin:
         Args:
             is_radial: If True, distances are centered at 0 (from -half to +half)
         """
-        from scipy.ndimage import map_coordinates
-
         if self.current_image_data is None:
             QMessageBox.warning(self, "No Data", "No image data loaded")
             return
+
+        # The dialog asking for it has closed: nothing shows until the plot opens
+        with busy("Extracting the profile…", self):
+            self._extract_profile(x1, y1, x2, y2, is_radial)
+
+    def _extract_profile(self, x1, y1, x2, y2, is_radial):
+        from scipy.ndimage import map_coordinates
 
         # Calculate number of points along the line
         pixel_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
@@ -673,21 +679,19 @@ class ProfileMixin:
                 dist_unit = "arcsec"
 
                 # Get WCS world coordinates for secondary axis
-                # Convert pixel coords to world coords
-                world_coords = []
-                for px, py in zip(x_coords, y_coords):
-                    world = self.current_wcs.toworld([px, py, 0, 0])["numeric"]
-                    # world[0] and world[1] are RA, Dec in radians (or arcsec for SOLAR-X)
-                    _hdr_chk = getattr(self, "_cached_fits_header", None) or {}
-                    _is_solar_chk = "SOLAR-X" in str(_hdr_chk.get("CTYPE1", "")).upper()
-                    if _is_solar_chk:
-                        ra_deg = world[0] / 3600.0
-                        dec_deg = world[1] / 3600.0
-                    else:
-                        ra_deg = world[0] * 180 / np.pi
-                        dec_deg = world[1] * 180 / np.pi
-                    world_coords.append((ra_deg, dec_deg))
-                world_coords = np.array(world_coords)
+                # Convert pixel coords to world coords, point by point: a point
+                # off the sky raises here, where toworldmany carries on and
+                # gives wrong numbers for the whole line
+                other_axes = [0] * (self.current_wcs.naxes() - 2)
+                world = np.array(
+                    [
+                        self.current_wcs.toworld([px, py] + other_axes)["numeric"][:2]
+                        for px, py in zip(x_coords, y_coords)
+                    ]
+                )
+                # world[:, 0] and world[:, 1] are RA, Dec in radians (or arcsec for SOLAR-X)
+                to_deg = 1 / 3600.0 if _is_solar else 180 / np.pi
+                world_coords = world * to_deg
                 wcs_available = True
             except Exception as e:
                 self.show_status_message(f"WCS conversion error: {e}")

@@ -5,7 +5,7 @@ A dialog hands :class:`BatchRunner` a worker function (defined at module
 level, so it can be sent to another process) and one task per file. The
 tasks run in worker processes: the window stays responsive, and Abort stops
 them at once, even in the middle of a file. Results come back through Qt
-signals, one per task, in task order.
+signals, one per task, as the tasks finish.
 
 `BatchWindow` is the batch tools' window, laid out as the downloaders are:
 the form at the left, at the right a live summary of what a run would
@@ -16,8 +16,11 @@ import glob
 import multiprocessing
 import os
 import re
+import threading
 import time
+from concurrent.futures import Future, wait
 from datetime import datetime
+from multiprocessing.reduction import ForkingPickler
 
 from PyQt5.QtCore import QCoreApplication, QThread, QTimer, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
@@ -42,16 +45,41 @@ from PyQt5.QtWidgets import (
 )
 
 from ..processing.workers import process_pool
+from .activity import Spinner
+from .background import Cancelled, wait_for
+
+
+def _run_task(job):
+    """One task in a worker process: (its index, whether it worked, what the
+    worker returned or why it failed), as results arrive in finishing order."""
+    worker, index, task = job
+    try:
+        value = worker(task)
+        # Here, where the index is known: the pool would fail to send it back
+        ForkingPickler.dumps(value)
+        return index, True, value
+    except Exception as e:
+        return index, False, f"{type(e).__name__}: {e}"
+
+
+def _scan_folder(future, folder, pattern):
+    """The paths matching ``pattern`` in ``folder``, into ``future``."""
+    try:
+        files = sorted(glob.glob(os.path.join(os.path.expanduser(folder), pattern)))
+    except (OSError, ValueError):
+        files = []
+    future.set_result(files)
 
 
 class BatchRunner(QThread):
     """Runs ``worker(task)`` for every task, in up to ``processes`` worker
     processes.
 
-    ``result(index, value)`` is emitted as each task finishes, in task order,
-    with what the worker returned; ``error(index, message)`` instead if the
-    worker raised. QThread's ``finished`` follows the last one, and
-    ``aborted`` then says whether abort() stopped the batch early.
+    ``result(index, value)`` is emitted as each task finishes, in any order
+    (a slow file does not hide those done after it), with what the worker
+    returned; ``error(index, message)`` instead if the worker raised.
+    QThread's ``finished`` follows the last one, and ``aborted`` then says
+    whether abort() stopped the batch early.
     """
 
     result = pyqtSignal(int, object)
@@ -81,23 +109,30 @@ class BatchRunner(QThread):
         if not self.tasks:
             return
         pool = process_pool(self.processes, self.preload)
+        broken = False
         try:
-            results = pool.imap(self.worker, self.tasks)
-            for index in range(len(self.tasks)):
-                while not self.aborted:
-                    try:
-                        value = results.next(timeout=0.1)
-                    except multiprocessing.TimeoutError:
-                        continue  # still working: check for abort again
-                    except Exception as e:
+            jobs = [(self.worker, i, task) for i, task in enumerate(self.tasks)]
+            results = pool.imap_unordered(_run_task, jobs)
+            waiting = set(range(len(self.tasks)))
+            while waiting and not self.aborted:
+                try:
+                    index, worked, value = results.next(timeout=0.1)
+                except multiprocessing.TimeoutError:
+                    continue  # still working: check for abort again
+                except Exception as e:
+                    # A task that could not be sent has no index to tell it by,
+                    # so the rest of the batch stops, each task reported once
+                    broken = True
+                    for index in sorted(waiting):
                         self.error.emit(index, f"{type(e).__name__}: {e}")
-                    else:
-                        self.result.emit(index, value)
                     break
-                if self.aborted:
-                    break
+                waiting.discard(index)
+                if worked:
+                    self.result.emit(index, value)
+                else:
+                    self.error.emit(index, value)
         finally:
-            if self.aborted:
+            if self.aborted or broken:
                 pool.terminate()
             else:
                 pool.close()
@@ -105,6 +140,8 @@ class BatchRunner(QThread):
 
 
 SCAN_DELAY_MS = 300  # after the last keystroke in a folder or pattern
+SCAN_WAIT_S = 0.1  # a folder listed within this shows nothing of the scan
+SCAN_POLL_MS = 50
 FILES_LISTED = 8  # names shown in the summary
 
 
@@ -158,12 +195,16 @@ class BatchWindow(QDialog):
         self._batch = None
         self._close_after_batch = False
         self._started = None
-        self._done = self._failed = 0
+        self._done = self._failed = self._total = 0
         self._log_lines = []
         self._problem = None
         self._ran = False  # the side shows a finished run until the form changes
         self.files = []
         self.output_folder = ""
+        self._scan_key = None  # (folder, pattern) that _scan_files is, or will be, of
+        self._scan_files = []
+        self._scan_future = None  # the listing under way
+        self._scan_asked = False  # this summary is waiting for it
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -183,6 +224,9 @@ class BatchWindow(QDialog):
         self._scan_timer.setSingleShot(True)
         self._scan_timer.setInterval(SCAN_DELAY_MS)
         self._scan_timer.timeout.connect(self.update_summary)
+        self._scan_poll = QTimer(self)
+        self._scan_poll.setInterval(SCAN_POLL_MS)
+        self._scan_poll.timeout.connect(self._check_scan)
 
     # ------------------------------------------------------------ the form
     def _build_form(self):
@@ -396,10 +440,45 @@ class BatchWindow(QDialog):
             self.out_dir_edit.setText(folder)
 
     def matching_files(self):
+        """The files the folder and pattern match; none yet if a slow folder
+        is still being listed (the summary then says so, and shows them when
+        they come)."""
         folder, pattern = self.dir_edit.text().strip(), self.pattern_edit.text().strip()
         if not folder or not pattern:
             return []
-        return sorted(glob.glob(os.path.join(os.path.expanduser(folder), pattern)))
+        if (folder, pattern) != self._scan_key:
+            self._start_scan((folder, pattern))
+        if self._scan_future is not None:
+            self._scan_asked = True
+            return []
+        return list(self._scan_files)
+
+    def _start_scan(self, key):
+        """List a folder on a thread, as a network mount can hang for any
+        time. A folder that answers at once is not reported as a scan."""
+        self._scan_key = key
+        self._scan_files = []
+        future = self._scan_future = Future()
+        threading.Thread(target=_scan_folder, args=(future, *key), name="batch-scan", daemon=True).start()
+        wait([future], timeout=SCAN_WAIT_S)
+        if not self._take_scan():
+            self._scan_poll.start()
+
+    def _take_scan(self):
+        """Take the listing, if it has come; whether it has. (One overtaken
+        by a new folder is dropped with its future.)"""
+        future = self._scan_future
+        if future is not None and not future.done():
+            return False
+        self._scan_future = None
+        self._scan_poll.stop()
+        if future is not None:
+            self._scan_files = future.result()
+        return True
+
+    def _check_scan(self):
+        if self._take_scan():
+            self.update_summary()
 
     def output_dir_for(self, path):
         """The output folder for the input ``path``: the folder given, or a
@@ -444,8 +523,13 @@ class BatchWindow(QDialog):
         self.count_label = self._label("", "DialogTitle", rich=True)
         self.count_sub = self._label("", "Hint")
         self.count_sub.setWordWrap(True)
+        self.scan_spinner = Spinner(12)
+        sub = QHBoxLayout()
+        sub.setSpacing(6)
+        sub.addWidget(self.scan_spinner, 0, Qt.AlignTop)
+        sub.addWidget(self.count_sub, 1)
         head.addWidget(self.count_label)
-        head.addWidget(self.count_sub)
+        head.addLayout(sub)
         layout.addLayout(head)
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
@@ -574,17 +658,24 @@ class BatchWindow(QDialog):
             self._ran = False
             self.side_pages.setCurrentIndex(0)
             self.folder_button.hide()
+            self._scan_key = None  # the run may have added to the folder
+        self._scan_asked = False
         info = self.summary() or {}
         from .styles import set_tone, theme_manager
 
         secondary = theme_manager.palette["text_secondary"]
-        self._problem = info.get("problem")
+        scanning = self._scan_asked and self._scan_future is not None
+        self._problem = "Scanning the folder…" if scanning else info.get("problem")
+        self.scan_spinner.setVisible(scanning)
+        if scanning:
+            info["count"] = ""
+            self.files_count_label.setText("Scanning…")
         count = info.get("count", "")
         if isinstance(count, tuple):  # (number, noun)
             count = f"{count[0]}" + f"<span style='color:{secondary}'> {_escape(count[1])}</span>"
         self.count_label.setText(count or "—")
         self.count_sub.setText(self._problem or info.get("sub", ""))
-        set_tone(self.count_sub, "warning" if self._problem else None)
+        set_tone(self.count_sub, "warning" if self._problem and not scanning else None)
         rows = info.get("rows", {})
         for key, (name, value) in self.summary_values.items():
             text = rows.get(key)
@@ -616,7 +707,15 @@ class BatchWindow(QDialog):
     def ready(self):
         """Refresh the summary; whether a run can start."""
         self._scan_timer.stop()
+        self._scan_key = None  # the folder may have changed since it was listed
         self.update_summary()
+        if self._scan_asked and self._scan_future is not None:
+            try:
+                wait_for(self, "Scanning the folder…", self._scan_future)
+            except Cancelled:
+                return False
+            self._take_scan()
+            self.update_summary()
         return self._problem is None
 
     # ------------------------------------------------------------- the log
@@ -641,11 +740,10 @@ class BatchWindow(QDialog):
         """Run ``worker`` on ``tasks`` in up to ``processes`` processes."""
         self.output_folder = output_folder
         self._done = self._failed = 0
+        self._total = len(tasks)
         self._started = time.time()
         self.progress_kicker.setText(self.RUNNING.upper())
         self.side_pages.setCurrentIndex(1)
-        self.progress_bar.setRange(0, max(1, len(tasks)))
-        self.progress_bar.setValue(0)
         self._set_form_locked(True)
         self.ok_button.setEnabled(False)
         self.folder_button.hide()
@@ -691,7 +789,7 @@ class BatchWindow(QDialog):
         from .styles import theme_manager
 
         secondary = theme_manager.palette["text_secondary"]
-        total = self.progress_bar.maximum()
+        total = self._total
         handled = self._done + self._failed
         noun = self.NOUN[0] if total == 1 else self.NOUN[1]
         if finished:
@@ -703,12 +801,20 @@ class BatchWindow(QDialog):
             self.progress_count.setText(
                 f"{handled}" + f"<span style='color:{secondary}'> / {total} {noun}</span>"
             )
-            if handled and self._started:
+            if self._batch.aborted:
+                self.progress_left.setText("stopping…")
+            elif handled and self._started:
                 left = (time.time() - self._started) / handled * (total - handled)
                 self.progress_left.setText(f"≈ {_duration_text(left)} left" if left > 5 else "almost done")
             else:
-                self.progress_left.setText("")
-        self.progress_bar.setValue(handled)
+                self.progress_left.setText("working…")
+        if finished or (handled and not self._batch.aborted):
+            self.progress_bar.setRange(0, max(1, total))
+            self.progress_bar.setValue(handled)
+        else:
+            # Nothing to count yet (workers starting, a batch of one running)
+            # or any more (stopping): the bar sweeps rather than sit still
+            self.progress_bar.setRange(0, 0)
         self.tile_values["Done"].setText(str(self._done))
         self.tile_values["Failed"].setText(str(self._failed))
 
@@ -716,6 +822,8 @@ class BatchWindow(QDialog):
         if self._batch is not None and not self._batch.aborted:
             self._batch.abort()
             self.log("Stopping…")
+            self.progress_kicker.setText("STOPPING…")
+            self._render_progress()
             self.cancel_button.setEnabled(False)
 
     def cancel_or_abort(self):

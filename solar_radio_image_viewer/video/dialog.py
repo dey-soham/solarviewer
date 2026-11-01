@@ -9,6 +9,7 @@ import glob
 import os
 import shutil
 import sys
+import threading
 import time
 
 import psutil
@@ -18,7 +19,6 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QMessageBox,
-    QProgressDialog,
     QPushButton,
     QSplitter,
     QTabWidget,
@@ -33,6 +33,7 @@ from ..processing.plot_style import (
     default_style,
 )
 from .lightcurve import lightcurve_csv_path
+from ..ui.background import Cancelled
 from ..ui.free_dialogs import free_modal_dialogs
 
 # The window is put together from these (moved here from this module,
@@ -52,10 +53,10 @@ from .ui.helpers import (
     OUTPUT_FORMATS,
     SIZE_PRESETS,
     _format_duration,
-    wait_cursor,
     is_image,
     viewer_image,
 )
+from .ui.planner import FramePlanner
 from .ui.preview import (
     PreviewRenderer,
     PreviewImage,
@@ -63,6 +64,7 @@ from .ui.preview import (
     zoom_region,
     PreviewPanel,
 )
+from .ui.progress import WorkDialog
 from .ui.worker import VideoWorker
 
 
@@ -71,7 +73,6 @@ __all__ = [
     "OUTPUT_FORMATS",
     "SIZE_PRESETS",
     "_format_duration",
-    "wait_cursor",
     "is_image",
     "viewer_image",
     "PreviewRenderer",
@@ -127,6 +128,16 @@ class VideoCreationDialog(
         self._preview_renderer = PreviewRenderer()
         self._preview_renderer.rendered.connect(self._on_preview_rendered)
         self._preview_renderer.status.connect(self._on_preview_status)
+        # Which frames: planned in the background, too
+        self._planner = FramePlanner()
+        self._planner.planned.connect(self._on_planned)
+        self._planner.status.connect(self._on_plan_status)
+        self._plan = None
+        self._plan_request = 0
+        self._plan_outdated = True
+        self._scanning = False
+        self._closed = False
+        self._after_video = None  # closes the window, when the video has stopped
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._request_preview)
@@ -256,6 +267,7 @@ class VideoCreationDialog(
         self.preview_panel.slider.valueChanged.connect(self._on_preview_slider)
         self.preview_panel.play_button.toggled.connect(self._toggle_play)
         self.preview_panel.render_all_button.clicked.connect(self._render_all_frames)
+        self.preview_panel.stop_fetch_button.clicked.connect(self._stop_render_all)
         self.preview_panel.image_label.dragged.connect(self._on_region_dragged)
         buttons = self.preview_panel.zoom_buttons
         buttons["in"].clicked.connect(lambda: self._zoom(factor=0.5))
@@ -428,7 +440,11 @@ class VideoCreationDialog(
         """Create a video from the selected files"""
         try:
             options = self._video_options()
-            video_files, problem = self._video_files(options)
+            try:
+                video_files, problem = self._video_files(options)
+            except Cancelled:
+                self.preview_panel.show_idle("Cancelled")
+                return
             if problem:
                 QMessageBox.warning(self, *problem)
                 return
@@ -547,23 +563,22 @@ class VideoCreationDialog(
             self.worker.cancelled.connect(self.on_video_creation_cancelled)
             self.worker.progress.connect(self.on_video_progress)
             self.worker.status.connect(self._on_video_status)
+            self.worker.finished.connect(self._on_worker_ended)
 
             # Progress dialog: busy while preparing, then counts frames
-            self.progress_dialog = QProgressDialog(
-                "Preparing frames...", "Cancel", 0, 0, self
+            self.progress_dialog = WorkDialog(
+                "Creating Video",
+                "Preparing frames…",
+                self,
+                cancelling_text="Cancelling… (this finishes the frames being drawn first)",
             )
-            self.progress_dialog.setWindowTitle("Creating Video")
-            self.progress_dialog.setWindowModality(Qt.WindowModal)
-            self.progress_dialog.setMinimumDuration(0)
-            self.progress_dialog.setAutoClose(False)
-            self.progress_dialog.setAutoReset(False)
-            self.progress_dialog.canceled.connect(self._cancel_video)
+            self.progress_dialog.cancel_requested.connect(self._cancel_video)
             self.progress_dialog.show()
             self._render_start = None
 
             # Disable the create button while processing
             self.create_btn.setEnabled(False)
-            self.create_btn.setText("Creating Video...")
+            self.create_btn.setText("Creating Video…")
 
             # Start the worker thread
             self.worker.start()
@@ -576,11 +591,12 @@ class VideoCreationDialog(
                 f"Error creating video: {str(e)}",
             )
 
-    def _on_video_status(self, text):
-        """What is being prepared, before frames are rendered."""
+    def _on_video_status(self, text, done, total):
+        """What is being done before frames are rendered, and after."""
         dialog = getattr(self, "progress_dialog", None)
-        if dialog is not None and self._render_start is None:
-            dialog.setLabelText(text)
+        if dialog is not None:
+            dialog.set_text(text)
+            dialog.set_progress(done, total)
 
     def on_video_progress(self, done, total):
         """Show how many frames are written, and an estimate of the time left."""
@@ -598,21 +614,20 @@ class VideoCreationDialog(
         if done > start_done:
             remaining = (now - start) / (done - start_done) * (total - done)
             text += f" (about {_format_duration(remaining)} left)"
-        dialog.setMaximum(total)
-        dialog.setValue(done)
-        dialog.setLabelText(text)
+        dialog.set_progress(done, total)
+        dialog.set_text(text)
+
+    def _making_video(self):
+        return getattr(self, "progress_dialog", None) is not None
 
     def _cancel_video(self):
         if hasattr(self, "worker") and self.worker.isRunning():
             self.worker.cancel()
-            if getattr(self, "progress_dialog", None) is not None:
-                self.progress_dialog.setLabelText("Cancelling...")
 
     def _close_progress_dialog(self):
         dialog = getattr(self, "progress_dialog", None)
         if dialog is not None:
-            dialog.canceled.disconnect(self._cancel_video)
-            dialog.close()
+            dialog.finish()
             self.progress_dialog = None
         self.create_btn.setEnabled(True)
         self.create_btn.setText("Create Video")
@@ -620,6 +635,8 @@ class VideoCreationDialog(
     def on_video_creation_cancelled(self):
         """The video was cancelled: nothing was written."""
         self._close_progress_dialog()
+        if self._after_video is not None:
+            return  # the window is closing: that is what was asked for
         QMessageBox.information(
             self,
             "Video Cancelled",
@@ -641,13 +658,13 @@ class VideoCreationDialog(
                 for message, count in problems.items()
             )
             QMessageBox.warning(
-                self,
+                self._message_parent(),
                 "Video Created, With Problems",
                 f"Video created: {output_file}\n\nSome things could not be drawn:\n{lines}",
             )
             return
         QMessageBox.information(
-            self,
+            self._message_parent(),
             "Video Created",
             f"Video successfully created: {output_file}",
         )
@@ -658,45 +675,68 @@ class VideoCreationDialog(
         self._close_progress_dialog()
 
         QMessageBox.critical(
-            self,
+            self._message_parent(),
             "Error Creating Video",
             f"Error creating video: {error_message}",
         )
 
 
-    def _remove_coordinate_cache(self):
-        import shutil
+    def _message_parent(self):
+        """Over this window, unless it closes as soon as the video has ended."""
+        return self._main_window if self._after_video is not None else self
 
-        shutil.rmtree(self._coordinate_cache, ignore_errors=True)
+    def _on_worker_ended(self):
+        if self._after_video is not None:
+            self._after_video()
+
+    def _stopping_video(self, then):
+        """If a video is being made, have it stop and return True: ``then``
+        runs when it has. Stopping takes until the frames being rendered are
+        done, which the window must not freeze for, and the progress dialog
+        says it is cancelling."""
+        worker = getattr(self, "worker", None)
+        if worker is None or not worker.isRunning():
+            return False
+        self._after_video = then
+        if self._making_video():
+            self.progress_dialog.reject()
+        worker.cancel()
+        return True
+
+    def _release(self):
+        """Stop what works for this window, without waiting for any of it."""
+        if self._closed:
+            return
+        self._closed = True
+        self._preview_timer.stop()
+        self._play_timer.stop()
+        self._estimate_timer.stop()
+        self._preview_renderer.stop()
+        self._planner.stop()
+        self.preview_panel.release()
+        remote, cache = self.remote, self._coordinate_cache
+
+        def clean_up():
+            shutil.rmtree(cache, ignore_errors=True)
+            if remote is not None:
+                remote.close()  # its SFTP channels (the connection stays)
+
+        # (not a daemon: the folder goes also when the application is ending)
+        threading.Thread(target=clean_up, name="video-window-clean-up").start()
 
     def closeEvent(self, event):
         """Handle dialog close event"""
-        self._play_timer.stop()
-        self._preview_renderer.stop()
-        # Stop worker thread if running
-        if hasattr(self, "worker") and self.worker.isRunning():
-            self.worker.cancel()
-            # Stops after the frame being rendered
-            self.worker.wait(30000)
-        self._remove_coordinate_cache()
-        if self.remote is not None:
-            self.remote.close()  # its SFTP channels (the connection stays)
-        self.preview_panel.release()
+        if self._stopping_video(self.close):
+            event.ignore()
+            return
+        self._release()
         event.accept()
 
     def reject(self):
         """Handle dialog rejection (Cancel button or Esc key)"""
-        self._play_timer.stop()
-        self._preview_renderer.stop()
-        # Stop worker thread if running
-        if hasattr(self, "worker") and self.worker.isRunning():
-            self.worker.cancel()
-            # Stops after the frame being rendered
-            self.worker.wait(30000)
-        self._remove_coordinate_cache()
-        if self.remote is not None:
-            self.remote.close()  # its SFTP channels (the connection stays)
-        self.preview_panel.release()
+        if self._stopping_video(self.reject):
+            return
+        self._release()
         super().reject()
 
 

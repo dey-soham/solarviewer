@@ -8,13 +8,14 @@ from PyQt5.QtCore import QThread, pyqtSignal
 # Worker thread for video creation
 class VideoWorker(QThread):
     """Makes the video in the background; cancel() stops it after the frame
-    being written (no file is left behind)."""
+    being written (no file is left behind). Once all frames are written it
+    is too late: the video gets finished, and video_created says so."""
 
     video_created = pyqtSignal(str)  # output file
     error = pyqtSignal(str)
     cancelled = pyqtSignal()
     progress = pyqtSignal(int, int)  # frames written, total frames
-    status = pyqtSignal(str)  # what is being prepared
+    status = pyqtSignal(str, int, int)  # what is being done, done, total (0, 0: unknown)
 
     def __init__(self, files, output_file, options, remote=None):
         super().__init__()
@@ -62,7 +63,7 @@ class VideoWorker(QThread):
             else:
                 self.error.emit(str(e))
             return
-        if result is None or self.is_cancelled:
+        if result is None:
             self.cancelled.emit()
         else:
             self.video_created.emit(result)
@@ -77,15 +78,19 @@ class VideoWorker(QThread):
         def report(done, total, fetched, count):
             self.status.emit(
                 f"Fetching images from {remote.label}: {fetched} of {count} "
-                f"({done / 1e6:.0f} of {total / 1e6:.0f} MB)"
+                f"({done / 1e6:.0f} of {total / 1e6:.0f} MB)",
+                int(done / 1e6),
+                int(total / 1e6),
             )
-            self.progress.emit(0, len(files))  # still preparing
 
-        self.status.emit(f"Checking the images on {remote.label}…")
+        self.status.emit(f"Checking the images on {remote.label}…", 0, 0)
         local = remote.fetch(
             frame_paths(files, options, range(len(files))),
             progress=report,
             cancelled=lambda: self.is_cancelled,
+            checking=lambda done, total: self.status.emit(
+                f"Checking the images on {remote.label}: {done} of {total}", done, total
+            ),
         )
         times = remote_times(remote, files)
         files, options = localize(files, options, lambda path: local.get(path, path))

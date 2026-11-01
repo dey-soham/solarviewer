@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 from ..lightcurve import (
     default_line_plot,
 )
+from ...ui.background import Cancelled
 from ...processing.plot_style import (
     DEFAULT_BEAM_STYLE,
     DEFAULT_GRID_STYLE,
@@ -185,7 +186,11 @@ class PresetsMixin:
             path += ".json"
         state = self._settings_state()
         options = self._video_options()
-        files, problem = self._video_files(options)
+        try:
+            files, problem = self._video_files(options)
+        except Cancelled:
+            self.preview_panel.show_idle("Cancelled")
+            return
         if not problem:
             # The folder of converted images is this window's own
             options.pop("coordinate_cache", None)

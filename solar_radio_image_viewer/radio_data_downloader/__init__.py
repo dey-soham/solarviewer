@@ -11,17 +11,29 @@ The package includes:
 - Graphical user interface (radio_data_downloader_gui.py)
 """
 
-from .radio_data_downloader import (
-    download_learmonth,
-    srs_to_dataframe,
-    dataframe_to_fits,
-)
+# Importing these takes a second or more (pandas, scipy), so the package
+# itself imports nothing: the viewer's menu reaches launch_gui at once, and it
+# can show the wait
+_FUNCTIONS = ("download_learmonth", "srs_to_dataframe", "dataframe_to_fits")
+_LIBRARIES = ("numpy", "pandas", "scipy.interpolate", "scipy.signal", __name__ + ".radio_data_downloader")
 
-from .radio_data_downloader_gui import launch_gui
+__all__ = [*_FUNCTIONS, "launch_gui"]
 
-__all__ = [
-    "download_learmonth",
-    "srs_to_dataframe",
-    "dataframe_to_fits",
-    "launch_gui",
-]
+
+def __getattr__(name):
+    if name not in _FUNCTIONS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
+
+    return getattr(import_module(__name__ + ".radio_data_downloader"), name)
+
+
+def launch_gui(parent=None, initial_datetime=None):
+    """Show the Radio Data Downloader window (see the function of that name
+    in radio_data_downloader_gui), or nothing if its loading is cancelled."""
+    from ..ui.download_parts import load_downloader
+
+    gui = load_downloader(
+        parent, "Loading the radio data downloader…", _LIBRARIES, __name__ + ".radio_data_downloader_gui"
+    )
+    return gui and gui.launch_gui(parent, initial_datetime=initial_datetime)

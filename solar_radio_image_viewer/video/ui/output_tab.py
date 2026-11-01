@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QWidget,
     QFormLayout,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 import multiprocessing
 from ..creator import (
     QUALITY_CRF,
@@ -27,6 +27,24 @@ from .helpers import (
     OUTPUT_FORMATS,
     _format_duration,
 )
+from .progress import Job
+
+
+def encoded_size(frame, ext, options):
+    """Bytes of ``frame`` encoded alone in format ``ext`` (or None). Runs a
+    video encoder, so it takes up to a second: not for the GUI thread."""
+    import tempfile
+
+    from ..creator import ensure_even_dimensions, video_writer
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "estimate" + ext)
+            with video_writer(path, options)() as writer:
+                writer.append_data(ensure_even_dimensions(frame))
+            return sum(os.path.getsize(os.path.join(tmp, p)) for p in os.listdir(tmp))
+    except Exception:
+        return None
 
 
 class OutputTabMixin:
@@ -104,6 +122,12 @@ class OutputTabMixin:
         self.estimate_label.setObjectName("SecondaryText")
         self.estimate_label.setWordWrap(True)
         video_form.addRow("Result:", self.estimate_label)
+        self._estimate = None  # (settings, frame, bytes of that frame alone)
+        self._estimate_job = None
+        self._estimate_timer = QTimer(self)
+        self._estimate_timer.setSingleShot(True)
+        self._estimate_timer.setInterval(400)
+        self._estimate_timer.timeout.connect(self._start_estimate)
         self.fps_spinbox.valueChanged.connect(self._update_estimate)
         self.quality_combo.currentIndexChanged.connect(self._update_estimate)
         self.format_combo.currentIndexChanged.connect(self._update_estimate)
@@ -180,7 +204,8 @@ class OutputTabMixin:
 
     def _update_estimate(self, *_):
         """Duration, frame count and size, and a rough file size from
-        encoding the frame in the preview."""
+        encoding the frame in the preview, which is done in the background
+        once the settings and frame stay put (so not while playing)."""
         frames = len(self._preview_files)
         frame = getattr(self, "_last_preview_frame", None)
         if not frames or frame is None:
@@ -192,37 +217,54 @@ class OutputTabMixin:
             f"{frames} frames, {_format_duration(frames / fps)} at {fps} fps, "
             f"{width}×{height} px"
         )
-        size = self._estimate_size(frame, frames)
-        if size:
+        settings = self._estimate_settings()
+        if self._estimate is not None and self._estimate[0] == settings and self._estimate[2]:
+            size = self._estimate_size(self._estimate[2], frames)
             text += (
                 f"; roughly {size / 1e6:.1f} MB"
                 if size < 1e9
                 else f"; roughly {size / 1e9:.1f} GB"
             )
         self.estimate_label.setText(text)
+        fresh = self._estimate is not None and self._estimate[:2] == (settings, id(frame))
+        if not fresh and not self._play_timer.isActive():
+            self._estimate_timer.start()
 
-    def _estimate_size(self, frame, frames):
-        """Rough output size in bytes: the preview frame encoded alone (or as
-        PNG), times the frames; later video frames take about half as much,
-        as solar images change little from frame to frame."""
-        import tempfile
+    def _estimate_settings(self):
+        frame = self._last_preview_frame
+        return (
+            self.format_combo.currentData(),
+            self.fps_spinbox.value(),
+            self.quality_combo.currentText(),
+            frame.shape,
+        )
 
-        from ..creator import ensure_even_dimensions, video_writer
+    def _start_estimate(self):
+        if self._estimate_job is not None:
+            return  # when it ends, _update_estimate comes back here
+        frame = self._last_preview_frame
+        settings = self._estimate_settings()
+        ext, fps, quality, _ = settings
+        options = {"fps": fps, "quality": quality}
+        job = Job(lambda _progress: encoded_size(frame, ext, options))
+        job.done.connect(lambda size: self._on_estimated(settings, id(frame), size))
+        job.failed.connect(lambda _: self._on_estimated(settings, id(frame), None))
+        job.finished.connect(self._on_estimate_ended)
+        self._estimate_job = job
+        job.start()
 
-        ext = self.format_combo.currentData()
-        options = {
-            "fps": self.fps_spinbox.value(),
-            "quality": self.quality_combo.currentText(),
-        }
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                path = os.path.join(tmp, "estimate" + ext)
-                with video_writer(path, options)() as writer:
-                    writer.append_data(ensure_even_dimensions(frame))
-                written = [p for p in os.listdir(tmp)]
-                one = sum(os.path.getsize(os.path.join(tmp, p)) for p in written)
-        except Exception:
-            return None
-        if ext in (".png", ".gif"):
+    def _on_estimated(self, settings, frame_id, size):
+        self._estimate = (settings, frame_id, size)
+
+    def _on_estimate_ended(self):
+        self._estimate_job = None
+        if not self._closed:
+            self._update_estimate()
+
+    def _estimate_size(self, one, frames):
+        """Rough output size in bytes, from a frame encoded alone (or as PNG)
+        taking ``one``, times the frames; later video frames take about half
+        as much, as solar images change little from frame to frame."""
+        if self.format_combo.currentData() in (".png", ".gif"):
             return one * frames
         return one * (1 + 0.5 * (frames - 1))

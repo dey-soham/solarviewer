@@ -5,6 +5,7 @@ The main window's menu bar, and opening images from it (Open, Open Recent).
 import logging
 import os
 from PyQt5.QtWidgets import QAction
+from ..ui.background import Cancelled, run_in_thread
 from ..ui.styles import (
     theme_manager,
 )
@@ -281,7 +282,14 @@ class MenusMixin:
         (None if the user cancelled), as ``open_image_path``."""
         from ..processing.fits_io import SPECTRUM, fits_kind
 
-        if fits_kind(path) == SPECTRUM:
+        # Reads the file's headers, however slow the disk or long the file
+        name = os.path.basename(path.rstrip("/"))
+        try:
+            kind = run_in_thread(self, f"Opening {name}…", fits_kind, path)
+        except Cancelled:
+            self.statusBar().showMessage("Cancelled")
+            return None
+        if kind == SPECTRUM:
             return self.open_spectrum(path)
         if tab is None:
             tab = self.tab_widget.currentWidget()

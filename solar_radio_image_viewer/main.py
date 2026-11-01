@@ -12,7 +12,6 @@ os.environ.setdefault("OPENSSL_CONF", "/dev/null")
 
 import sys
 import argparse
-from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QSettings
 
 # Import theme manager FIRST, before viewer
@@ -20,7 +19,6 @@ from .ui.styles import theme_manager, ThemeManager
 from .ui.app import create_app, apply_theme
 from . import __version__
 
-# Globally suppress Astropy's "Invalid 'BLANK' keyword" warning
 import warnings
 from .crash_handler import (
     install_crash_handler,
@@ -34,22 +32,16 @@ logger = logging.getLogger(__name__)
 # Enable crash reporting immediately
 install_crash_handler()
 
-try:
-    from astropy.io.fits.verify import VerifyWarning
-
-    warnings.filterwarnings(
-        "ignore",
-        category=VerifyWarning,
-        message=".*Invalid 'BLANK' keyword.*",
-    )
-    # Suppress Numpy 2.0+ warning about invalid values in string formatting
-    warnings.filterwarnings(
-        "ignore",
-        category=RuntimeWarning,
-        message=".*invalid value encountered in do_format.*",
-    )
-except ImportError:
-    pass
+# Suppress Numpy 2.0+ warning about invalid values in string formatting
+warnings.filterwarnings(
+    "ignore",
+    category=RuntimeWarning,
+    message=".*invalid value encountered in do_format.*",
+)
+# Astropy's "Invalid 'BLANK' keyword", here and in the worker processes, which
+# import this module too. (By its text: naming its class would import astropy
+# before the splash shows.)
+warnings.filterwarnings("ignore", message=".*Invalid 'BLANK' keyword.*")
 
 
 # Threaded Loading Implementation
@@ -68,11 +60,20 @@ class LoaderThread(QThread):
         super().__init__()
         self.imagename = imagename
 
+    def _step(self, message, percent):
+        """Say what is imported next, and how many of the steps are done."""
+        self.message.emit(message)
+        self.progress.emit(percent)
+
     def run(self):
         try:
+            self._step("Loading Astropy…", 0)
+            try:
+                import astropy.io.fits  # noqa: F401
+            except ImportError:
+                pass
 
-            self.message.emit("Loading core libraries...")
-            self.progress.emit(90)
+            self._step("Reading Astropy's time tables…", 15)
 
             # Astropy's time tables: those it has, never fetched while a time
             # is converted (as drawing an image does, on the window's thread)
@@ -80,14 +81,14 @@ class LoaderThread(QThread):
 
             use_local_tables()
 
-            # Heavy imports happen here
+            self._step("Loading Matplotlib…", 30)
+            import matplotlib.backends.backend_qt5agg  # noqa: F401
+
+            self._step("Loading CASA tools…", 45)
+            from .processing import dependencies  # noqa: F401
+
+            self._step("Loading the viewer…", 60)
             from .viewer import SolarRadioImageViewerApp
-
-            self.progress.emit(95)
-
-            self.message.emit("Initializing interface...")
-            self.progress.emit(98)
-            self.message.emit("Finalizing...")
 
             # Return the imported class, not the instance
             self.finished_loading.emit(SolarRadioImageViewerApp)
@@ -189,6 +190,16 @@ Examples:
     app = create_app(ThemeManager.LIGHT if args.light else None)
     settings = QSettings("SolarViewer", "SolarViewer")
 
+    # === STANDARD VIEWER LAUNCH SEQUENCE ===
+
+    # 1. Show Splash Screen, first of all: nothing else is on screen yet
+    # (Imports are fast due to pkg_resources removal)
+    from .splash import ModernSplashScreen
+
+    splash = ModernSplashScreen(version=__version__)
+    splash.show()
+    app.processEvents()
+
     # === Initialize Log Console ===
     # Everything printed or logged also goes to the log file
     from . import app_logging
@@ -200,16 +211,6 @@ Examples:
     from .log_console import LogConsole
 
     LogConsole.get_instance()
-
-
-    # === STANDARD VIEWER LAUNCH SEQUENCE ===
-
-    # 1. Show Splash Screen (Imports are fast due to pkg_resources removal)
-    from .splash import ModernSplashScreen
-
-    splash = ModernSplashScreen(version=__version__)
-    splash.show()
-    app.processEvents()
 
     # 2. Setup Loading Thread
     loader = LoaderThread(args.imagename)
@@ -274,15 +275,13 @@ Examples:
     def on_finished(ViewerClass):
         # This runs in the main thread
         try:
-            splash.set_progress(95)
-            splash.show_message("Building interface...")
-            QApplication.processEvents()
+            splash.step("Applying the theme…", 72)
 
             # Matplotlib is loaded now: give it the theme's colours too
             apply_theme(app)
 
             # Instantiate the main window now that classes are imported and theme is active
-            win = ViewerClass(args.imagename, fast_preview=args.fast)
+            win = ViewerClass(args.imagename, fast_preview=args.fast, on_stage=splash.step)
             window_container["window"] = win
 
             # Remember the theme chosen in the View menu
@@ -290,12 +289,10 @@ Examples:
                 lambda new_theme: settings.setValue("theme", new_theme), owner=win
             )
 
-            splash.set_progress(100)
-            splash.show_message("Ready!")
-
-            # Finish splash sequence
-            splash.finish(win)
+            # Show the window first: splash.finish waits for it to appear
+            splash.step("Opening the window…", 99)
             win.show()
+            splash.finish(win)
 
             # From now on, unhandled exceptions are reported but not fatal
             set_main_window(win)
@@ -323,6 +320,10 @@ Examples:
             from .processing.astropy_tables import refresh_in_background
 
             refresh_in_background()
+
+            # An image named on the command line: with the window up and the
+            # splash gone, so that what loading it says can be seen
+            win.open_start_image()
 
         except Exception as e:
             import traceback

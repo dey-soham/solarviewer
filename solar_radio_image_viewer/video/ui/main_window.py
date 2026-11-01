@@ -75,8 +75,11 @@ class MainWindowMixin:
 
         # The image itself, also when the main window shows a converted copy
         original, coordinates = viewer_image(main_window)
+        source = self._take_main_window_source(tab)
+        if source is False:
+            return  # cancelled
         self.coordinates_combo.setCurrentIndex(self.coordinates_combo.findData(coordinates))
-        if self._take_main_window_source(tab):
+        if source:
             pass  # an image of a server: its folder there
         elif self.remote is not None:
             self._use_server(None)  # the main window's image is on this computer

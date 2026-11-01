@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QWidget,
     QFormLayout,
 )
+from ..creator import reference_shape
 
 
 class RegionTabMixin:
@@ -155,14 +156,15 @@ class RegionTabMixin:
             return
 
         try:
-            # Load the reference image data
-            data = self._load_reference()
+            # The image's size: known from the preview, or read now
+            geometry = getattr(self, "_preview_geometry", None)
+            shape = geometry["image_shape"] if geometry else self._reference_job(reference_shape)
 
-            if data is None:
+            if shape is None:
                 return
 
             # Get image dimensions
-            height, width = data.shape
+            height, width = shape
 
             # Calculate the size of the region
             region_width = int(width * percentage)

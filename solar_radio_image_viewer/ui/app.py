@@ -16,6 +16,7 @@ from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import QApplication
 
+from .activity import start_indicator
 from .styles import theme_manager
 
 SETTINGS = ("SolarViewer", "SolarViewer")
@@ -56,6 +57,7 @@ def create_app(theme=None, argv=None):
     theme_manager.initialize_fonts()
     apply_theme(app)
     theme_manager.register_callback(lambda _theme: apply_theme(app), owner=app)
+    start_indicator()
     return app
 
 

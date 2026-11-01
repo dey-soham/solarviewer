@@ -15,16 +15,28 @@ from PyQt5.QtWidgets import (
     QFrame,
     QScrollArea,
     QMessageBox,
-    QProgressBar,
     QDialog,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
+from ..ui.activity import ActivityLabel
+from ..ui.download_parts import abandon
 from ..ui.styles import theme_manager
 
 from .widgets import ClickableLabel
 from .workers import DHSpectraWorker
 logger = logging.getLogger(__name__)
+
+NO_DATA_TEXT = {
+    'wind': "No WIND/WAVES data",
+    'stereo_a': "No STEREO-A data",
+    'stereo_b': "No STEREO-B data",
+    'norp': "\n\n\n\n\n\n\n\n\n\nNo Nobeyama data",
+    'orfees': "No ORFEES data",
+    'nda': "No NDA data",
+    'yamagawa': "No Yamagawa data",
+    'hiras': "No HiRAS data",
+}
 
 
 class RadioSpectraTabMixin:
@@ -34,11 +46,11 @@ class RadioSpectraTabMixin:
 
     Host attributes/methods used:
 
-    ``_cleanup_viewer``, ``date_edit``, ``hiras_card``, ``hiras_image_label``,
+    ``_cleanup_viewer``, ``dh_worker``, ``hiras_card``, ``hiras_image_label``,
     ``hiras_save_btn``, ``image_viewers``, ``is_dark_theme``,
     ``nda_image_label``, ``nda_save_btn``, ``norp_image_label``,
     ``norp_save_btn``, ``orfees_image_label``, ``orfees_save_btn``,
-    ``stereo_a_image_label``, ``stereo_a_save_btn``, ``stereo_b_card``,
+    ``selected_date``, ``stereo_a_image_label``, ``stereo_a_save_btn``, ``stereo_b_card``,
     ``stereo_b_image_label``, ``stereo_b_save_btn``, ``tabs``,
     ``wind_image_label``, ``wind_save_btn``, ``yamagawa_card``,
     ``yamagawa_image_label``, ``yamagawa_save_btn``
@@ -62,10 +74,14 @@ class RadioSpectraTabMixin:
         self.fetch_spectra_btn.clicked.connect(self.fetch_dh_spectra)
         spectra_controls.addWidget(self.fetch_spectra_btn)
 
-        self.spectra_progress = QProgressBar()
-        self.spectra_progress.setRange(0, 0)  # Indeterminate
-        self.spectra_progress.hide()
-        spectra_controls.addWidget(self.spectra_progress)
+        self.cancel_spectra_btn = QPushButton("Cancel")
+        self.cancel_spectra_btn.clicked.connect(self.cancel_dh_spectra)
+        self.cancel_spectra_btn.hide()
+        spectra_controls.addWidget(self.cancel_spectra_btn)
+
+        self.spectra_activity = ActivityLabel()
+        self.spectra_activity.hide()
+        spectra_controls.addWidget(self.spectra_activity)
 
         spectra_controls.addStretch()
         spectra_layout.addLayout(spectra_controls)
@@ -251,13 +267,22 @@ class RadioSpectraTabMixin:
             card.hide()
         parent_layout.addWidget(card)
 
-    def clear_dh_spectra_ui(self):
-        """Reset the radio spectra UI labels to initial state."""
-        labels = [
+    def _spectrum_labels(self):
+        return [
             self.wind_image_label, self.stereo_a_image_label, self.stereo_b_image_label,
             self.norp_image_label, self.orfees_image_label, self.nda_image_label,
             self.yamagawa_image_label, self.hiras_image_label
         ]
+
+    def _say_no_data_loaded(self, label):
+        if label is self.norp_image_label:
+            label.setText("\n\n\n\n\n\n\n\n\n\nNo data loaded")
+        else:
+            label.setText("No data loaded")
+
+    def clear_dh_spectra_ui(self):
+        """Reset the radio spectra UI labels to initial state."""
+        labels = self._spectrum_labels()
         buttons = [
             self.wind_save_btn, self.stereo_a_save_btn, self.stereo_b_save_btn,
             self.norp_save_btn, self.orfees_save_btn, self.nda_save_btn,
@@ -265,11 +290,9 @@ class RadioSpectraTabMixin:
         ]
         
         for label in labels:
+            label.stop_loading()
             label.clear()
-            if label is self.norp_image_label:
-                label.setText("\n\n\n\n\n\n\n\n\n\nNo data loaded")
-            else:
-                label.setText("No data loaded")
+            self._say_no_data_loaded(label)
             label.setToolTip("Click 'Fetch Spectra' to load")
             
         for btn in buttons:
@@ -277,31 +300,30 @@ class RadioSpectraTabMixin:
             
         self.spectra_status_label.setText("Click 'Fetch Spectra' to load radio spectra.")
         self.spectra_status_label.setToolTip("")
+        self._spectra_paths = {}
 
     def fetch_dh_spectra(self):
         """Fetch DH-band dynamic spectra (WIND/WAVES & STEREO) for the selected date."""
 
-        if hasattr(self, "dh_worker") and self.dh_worker and self.dh_worker.isRunning():
+        if self.dh_worker and self.dh_worker.isRunning():
             return
 
         # Get selected date
-        qdate = self.date_edit.date()
-        selected_date = datetime(qdate.year(), qdate.month(), qdate.day(), 12, 0, 0)
+        day = self.selected_date()
+        if day is None:
+            return
+        selected_date = datetime(day.year, day.month, day.day, 12, 0, 0)
 
         # Update UI
         self.fetch_spectra_btn.setEnabled(False)
-        self.spectra_progress.show()
-        self.spectra_status_label.setText(f"Fetching DH spectra for {qdate.toString('yyyy-MM-dd')}...")
+        self.cancel_spectra_btn.show()
+        self.spectra_activity.show()
+        self.spectra_activity.start("Starting…")
+        self.spectra_status_label.setText(f"Fetching DH spectra for {day:%Y-%m-%d}…")
 
         # Clear previous images
-        self.wind_image_label.setText("Loading...")
-        self.stereo_a_image_label.setText("Loading...")
-        self.stereo_b_image_label.setText("Loading...")
-        self.norp_image_label.setText("\n\n\n\n\n\n\n\n\n\nLoading...")
-        self.orfees_image_label.setText("Loading...")
-        self.nda_image_label.setText("Loading...")
-        self.yamagawa_image_label.setText("Loading...")
-        self.hiras_image_label.setText("Loading...")
+        for label in self._spectrum_labels():
+            label.start_loading("Loading…")
         
         # Hide irrelevant NICT card immediately
         from datetime import date
@@ -314,7 +336,7 @@ class RadioSpectraTabMixin:
             self.hiras_card.show()
 
         # Show/Hide STEREO-B based on mission timeline (lost contact Oct 2014)
-        if qdate.year() <= 2014:
+        if day.year <= 2014:
             self.stereo_b_card.show()
         else:
             self.stereo_b_card.hide()
@@ -323,20 +345,67 @@ class RadioSpectraTabMixin:
         self.dh_worker = DHSpectraWorker(selected_date)
         self.dh_worker.progress.connect(self.on_dh_spectra_progress)
         self.dh_worker.result_ready.connect(self.on_dh_partial_ready)
-        self.dh_worker.finished.connect(self.on_dh_spectra_ready)
+        self.dh_worker.source_ended.connect(self.on_dh_source_ended)
+        self.dh_worker.sources_done.connect(self.on_dh_sources_done)
+        self.dh_worker.done.connect(self.on_dh_spectra_ready)
         self._spectra_paths = {}  # Initialize/Reset
+        self._spectra_date = day
         self.dh_worker.start()
+
+    def _spectra_ended(self):
+        self.fetch_spectra_btn.setEnabled(True)
+        self.cancel_spectra_btn.hide()
+        self.spectra_activity.stop()
+        self.spectra_activity.hide()
+        for label in self._spectrum_labels():
+            label.stop_loading()
+
+    def stop_dh_spectra(self):
+        """Stop a running fetch, if any, nothing more said about it. True if
+        there was one."""
+        if not self.dh_worker or not self.dh_worker.isRunning():
+            return False
+        abandon(self.dh_worker)
+        self.dh_worker = None
+        self._spectra_ended()
+        return True
+
+    def cancel_dh_spectra(self):
+        """The Cancel button: what has arrived stays."""
+        if self.stop_dh_spectra():
+            shown = len(self._spectra_paths)
+            self.spectra_status_label.setText(f"Cancelled ({shown} spectrograph(s) loaded)")
+            for label in self._spectrum_labels():
+                if not label.pixmap() and not label.text():  # was still waiting
+                    self._say_no_data_loaded(label)
+
+    def on_dh_source_ended(self, source):
+        """The card of a source that gave nothing stops waiting now: the last
+        source can be minutes away."""
+        if self.dh_worker is not None:
+            self._say_no_data(source)
+
+    def _say_no_data(self, source):
+        label = getattr(self, f"{source}_image_label")
+        if not label.pixmap():
+            label.stop_loading()
+            label.setText(f"{NO_DATA_TEXT[source]} available for this date")
+
+    def on_dh_sources_done(self, done, total):
+        if self.dh_worker is not None:
+            self.spectra_activity.start(f"{done} of {total} sources")
 
     def on_dh_spectra_progress(self, message: str):
         """Handle progress updates from DH spectra worker."""
-        self.spectra_status_label.setText(message)
+        if self.dh_worker is not None:
+            self.spectra_status_label.setText(message)
 
     def on_dh_partial_ready(self, source: str, path: str):
         """Display a single spectrograph as soon as it's ready."""
         from PyQt5.QtGui import QPixmap
         import os
 
-        if not path or not os.path.exists(path):
+        if self.dh_worker is None or not path or not os.path.exists(path):
             return
 
         self._spectra_paths[source] = path
@@ -359,6 +428,7 @@ class RadioSpectraTabMixin:
         label, btn = ui_map.get(source, (None, None))
         
         if label:
+            label.stop_loading()
             if source in ['yamagawa', 'hiras']:
                 # Zoom in: fit to the available height in the card and allow horizontal scrolling
                 # The scroll area minimum height is 180, so we scale to ~150 to stay within it without vertical scroll
@@ -382,21 +452,22 @@ class RadioSpectraTabMixin:
 
     def on_dh_spectra_ready(self, results: dict, errors: list):
         """Handle completed DH spectra fetch - final cleanup."""
-        self.fetch_spectra_btn.setEnabled(True)
-        self.spectra_progress.hide()
+        if self.dh_worker is None:
+            return  # cancelled
+        self._spectra_ended()
 
         # Update labels for any missing data
         sources = ['wind', 'stereo_a', 'norp', 'orfees', 'nda']
         # Handle station-specific NICT
-        qdate = self.date_edit.date()
+        day = self._spectra_date
         from datetime import date
-        if date(qdate.year(), qdate.month(), qdate.day()) >= date(2016, 7, 11):
+        if day >= date(2016, 7, 11):
             sources.append('yamagawa')
         else:
             sources.append('hiras')
         
         # Stero-B check
-        if qdate.year() <= 2014:
+        if day.year <= 2014:
             sources.append('stereo_b')
 
         found_count = 0
@@ -404,20 +475,7 @@ class RadioSpectraTabMixin:
             if results.get(s) and os.path.exists(results[s]):
                 found_count += 1
             else:
-                # If it's not ready, set the "No data" text
-                label_map = {
-                    'wind': (self.wind_image_label, "No WIND/WAVES data"),
-                    'stereo_a': (self.stereo_a_image_label, "No STEREO-A data"),
-                    'stereo_b': (self.stereo_b_image_label, "No STEREO-B data"),
-                    'norp': (self.norp_image_label, "\n\n\n\n\n\n\n\n\n\nNo Nobeyama data"),
-                    'orfees': (self.orfees_image_label, "No ORFEES data"),
-                    'nda': (self.nda_image_label, "No NDA data"),
-                    'yamagawa': (self.yamagawa_image_label, "No Yamagawa data"),
-                    'hiras': (self.hiras_image_label, "No HiRAS data"),
-                }
-                label, text = label_map.get(s, (None, ""))
-                if label and not label.pixmap():
-                    label.setText(f"{text} available for this date")
+                self._say_no_data(s)
 
         status_text = f"Loaded {found_count} spectrograph(s)"
         if errors:
@@ -427,18 +485,6 @@ class RadioSpectraTabMixin:
             self.spectra_status_label.setToolTip("")
             
         self.spectra_status_label.setText(status_text)
-
-    def on_dh_spectra_error(self, error_msg: str):
-        """Handle DH spectra fetch error."""
-        self.fetch_spectra_btn.setEnabled(True)
-        self.spectra_progress.hide()
-        self.spectra_status_label.setText(f"Error: {error_msg}")
-        self.wind_image_label.setText("Error fetching data")
-        self.stereo_a_image_label.setText("Error fetching data")
-        self.wind_save_btn.setEnabled(False)
-        self.stereo_a_save_btn.setEnabled(False)
-        self.stereo_b_save_btn.setEnabled(False)
-        self.norp_save_btn.setEnabled(False)
 
     def save_spectra_image(self, source: str):
         """Save the spectrogram image to a user-selected location."""
@@ -454,8 +500,7 @@ class RadioSpectraTabMixin:
             return
 
         # Suggest a filename based on source and date
-        qdate = self.date_edit.date()
-        date_str = qdate.toString("yyyyMMdd")
+        date_str = f"{self._spectra_date:%Y%m%d}"
         source_names = {
             'wind': 'WIND_WAVES', 
             'stereo_a': 'STEREO_A', 

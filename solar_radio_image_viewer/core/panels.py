@@ -168,6 +168,7 @@ class PanelsMixin:
     ``_show_roi_histogram``, ``_toggle_tb_mode``, ``apply_auto_range``,
     ``current_image_data``, ``imagename``, ``invalidate_contours``,
     ``launch_helioprojective_viewer``, ``on_checkbox_changed``,
+    ``on_contours_switched``, ``prepare_contours``, ``_contours_cancelled``,
     ``on_stokes_changed``, ``on_stretch_changed``,
     ``on_visualization_changed``, ``open_helioviewer_with_time``,
     ``open_path``, ``reset_view``, ``select_file_or_directory``,
@@ -493,7 +494,7 @@ class PanelsMixin:
         self.show_contours_checkbox = QCheckBox("Contours")
         self.show_contours_checkbox.setChecked(False)
         self.show_contours_checkbox.setObjectName("Switch")
-        self.show_contours_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        self.show_contours_checkbox.stateChanged.connect(self.on_contours_switched)
         self.contour_settings_button = _settings_button(
             "Contour Settings", self.show_contour_settings
         )
@@ -700,7 +701,16 @@ class PanelsMixin:
             # Contour data is reloaded at the new resolution
             self.invalidate_contours()
             if self.current_image_data is not None and self.imagename:
-                self.on_visualization_changed()
+                if self.show_contours_checkbox.isChecked() and not self.prepare_contours():
+                    self._contours_cancelled()
+                if self.on_visualization_changed() is None:
+                    # Cancelled: the image read before is still the one shown
+                    self.invalidate_contours()
+                    self.downsample_toggle.blockSignals(True)
+                    self.downsample_toggle.setChecked(not checked)
+                    self.downsample_toggle.blockSignals(False)
+                    self.downsample_status.setText("" if checked else "preview")
+                    return
                 self.reset_view()
 
         self.downsample_toggle.stateChanged.connect(update_fast_load_status)

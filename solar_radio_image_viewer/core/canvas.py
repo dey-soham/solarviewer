@@ -429,6 +429,8 @@ class CanvasMixin:
 
     def _plot_pending(self):
         """Whether a plot is scheduled (``schedule_plot``) and not yet drawn."""
+        if getattr(self, "_plot_after_preparing", False):
+            return True
         timer = getattr(self, "_plot_timer", None)
         return timer is not None and timer.isActive()
 

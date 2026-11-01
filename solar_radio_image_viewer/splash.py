@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QSplashScreen, QApplication
+from PyQt5.QtWidgets import QSplashScreen, QWidget
 from PyQt5.QtGui import (
     QPixmap,
     QColor,
@@ -13,7 +13,11 @@ from PyQt5.QtGui import (
 from PyQt5.QtCore import Qt, QRectF, QTimer, QPointF
 import os
 import math
+import time
 from .ui.styles import theme_manager
+
+
+FRAME_S = 0.03  # between frames of the animation
 
 
 class ModernSplashScreen(QSplashScreen):
@@ -47,15 +51,16 @@ class ModernSplashScreen(QSplashScreen):
         self._setup_colors()
 
         # UI State
-        self.loading_text = "Initializing..."
+        self.loading_text = "Starting…"
         self._target_progress = 0  # Target progress value
         self._display_progress = 0.0  # Smoothly animated display value
 
         # Animation
         self._glow_phase = 0.0
+        self._last_frame = time.monotonic()
         self._pulse_timer = QTimer(self)
         self._pulse_timer.timeout.connect(self._animate)
-        self._pulse_timer.start(30)  # Faster for smoother animation
+        self._pulse_timer.start(int(FRAME_S * 1000))
 
         # Load icon
         self.icon_pixmap = None
@@ -90,22 +95,27 @@ class ModernSplashScreen(QSplashScreen):
         except Exception:
             pass
 
-    def _animate(self):
-        """Update animation phase and smooth progress."""
-        self._glow_phase += 0.06
-        if self._glow_phase > 2 * math.pi:
-            self._glow_phase = 0
+    def _advance(self):
+        """Move the glow and the bar on by the time gone since the last frame."""
+        now = time.monotonic()
+        frames = max(1, round((now - self._last_frame) / FRAME_S))
+        self._last_frame = now
+        self._glow_phase = (self._glow_phase + 0.06 * frames) % (2 * math.pi)
 
         # Smoothly interpolate display progress toward target
-        if self._display_progress < self._target_progress:
+        for _ in range(min(frames, 100)):
+            if self._display_progress >= self._target_progress:
+                break
             diff = self._target_progress - self._display_progress
-            # Slower interpolation for more gradual feel
-            step = max(0.2, diff * 0.02)
+            step = max(0.2, diff * 0.1)
             self._display_progress = min(
                 self._target_progress, self._display_progress + step
             )
 
-        self.repaint()
+    def _animate(self):
+        """Update animation phase and smooth progress."""
+        self._advance()
+        self.update()
 
     @property
     def progress(self):
@@ -115,33 +125,33 @@ class ModernSplashScreen(QSplashScreen):
     def show_message(self, message):
         """Update loading message."""
         self.loading_text = message
-        self.repaint()
-        QApplication.processEvents()
+        self.update()
 
     def set_progress(self, value):
-        """Set target progress (0-100). Display animates smoothly to this value."""
-        self._target_progress = min(100, max(0, value))
-        self.repaint()
-        QApplication.processEvents()
+        """Set target progress (0-100). Display animates smoothly to this
+        value; it only goes forward, whatever order the steps report in."""
+        self._target_progress = max(self._target_progress, min(100, value))
+        self.update()
+
+    def step(self, message, value):
+        """Say what the GUI thread does next, on screen before it does: no
+        timer runs meanwhile, so these steps are all that moves the splash
+        while the window is built. Not processEvents, as QSplashScreen's own
+        repaint() does: that would run what is queued for a window still being
+        built."""
+        self.show_message(message)
+        self.set_progress(value)
+        self._advance()
+        QWidget.repaint(self)
 
     def finish(self, widget):
-        """Ensure progress reaches 100% then stop animations and finish."""
-        # Set target to 100 and animate to completion
-        self._target_progress = 100
-
-        # Wait for animation to reach 100% (with timeout)
-        max_iterations = 50  # Max ~1.5 seconds
-        while self._display_progress < 99.5 and max_iterations > 0:
-            self._display_progress = min(100, self._display_progress + 2.5)
-            self.repaint()
-            QApplication.processEvents()
-            max_iterations -= 1
-
-        self._display_progress = 100
-        self.repaint()
-        QApplication.processEvents()
-
+        """The window is up: the bar is full, and the splash goes as soon as
+        the window is on screen (QSplashScreen waits for that, up to a second,
+        so ``widget`` must be shown first)."""
         self._pulse_timer.stop()
+        self._target_progress = 100
+        self._display_progress = 100
+        QWidget.repaint(self)
         super().finish(widget)
 
     def paintEvent(self, event):

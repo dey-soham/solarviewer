@@ -1043,6 +1043,7 @@ def _aia_tables(start_dt, end_dt, apply_degradation):
     """The JSOC pointing table and degradation correction table for the time
     range, fetched once for all the files (None where unavailable)."""
     pointing_table = correction_table = None
+    print("Fetching the AIA pointing and degradation tables...", flush=True)
     for source in ("jsoc", "lmsal"):
         try:
             pointing_table = get_pointing_table(

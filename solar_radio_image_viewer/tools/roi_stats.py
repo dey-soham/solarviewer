@@ -8,7 +8,7 @@ import math
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt
+from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
 from PyQt5.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -23,10 +23,15 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..ui.busy import busy
 from ..ui.geometry import fit_to_screen
 from ..ui.styles import set_hand_cursor
 from .preview import contrast_colors
 
+# The histogram redraws this long after the last change of its bins
+HISTOGRAM_SETTLE_MS = 150
+# The most points the Poisson curve is worked out at
+POISSON_POINTS = 2000
 NO_REGION_HINT = "No selection. Draw a rectangle or ellipse on the image."
 # A drag shorter than this (screen pixels) either way is a click
 CLICK_PX = 3
@@ -382,9 +387,6 @@ class RoiStatsMixin:
 
     def _show_roi_histogram(self):
         """Show histogram of pixel values in current ROI with fitting options"""
-        from scipy.optimize import curve_fit
-        from scipy.stats import poisson
-
         if self.current_roi is None or self.current_image_data is None:
             QMessageBox.warning(self, "No ROI", "Please select a region first")
             return
@@ -398,6 +400,17 @@ class RoiStatsMixin:
                 self, "Empty ROI", "Selected region contains no valid data"
             )
             return
+
+        with busy("Preparing the histogram…", self):
+            from scipy.optimize import curve_fit
+            from scipy.stats import poisson
+
+        # Calculate statistics
+        mean_val = np.mean(roi_flat)
+        median_val = np.median(roi_flat)
+        std_val = np.std(roi_flat)
+        min_val = np.min(roi_flat)
+        max_val = np.max(roi_flat)
 
         # Create dialog - resizable
         dialog = QDialog(self)
@@ -479,6 +492,10 @@ class RoiStatsMixin:
             return amp * np.exp(-((x - mean) ** 2) / (2 * sigma**2))
 
         def update_histogram():
+            with busy("Drawing the histogram…", dialog):
+                draw_histogram()
+
+        def draw_histogram():
             fig.clear()
             ax = fig.add_subplot(111)
 
@@ -487,13 +504,6 @@ class RoiStatsMixin:
             show_stats = stats_check.isChecked()
             fit_gaussian = gaussian_check.isChecked()
             fit_poisson = poisson_check.isChecked()
-
-            # Calculate statistics
-            mean_val = np.mean(roi_flat)
-            median_val = np.median(roi_flat)
-            std_val = np.std(roi_flat)
-            min_val = np.min(roi_flat)
-            max_val = np.max(roi_flat)
 
             # Plot histogram
             counts, bins_edges, patches = ax.hist(
@@ -548,7 +558,12 @@ class RoiStatsMixin:
                     # Poisson is discrete - scale to match histogram
                     lambda_est = mean_val
                     if lambda_est > 0:
-                        x_poisson = np.arange(max(0, int(min_val)), int(max_val) + 1)
+                        # At most a curve's worth of points: on a map in K
+                        # every integer in the range would not fit in memory
+                        low, high = max(0, int(min_val)), int(max_val)
+                        x_poisson = np.unique(
+                            np.linspace(low, high, min(high - low + 1, POISSON_POINTS)).round()
+                        )
                         y_poisson = (
                             poisson.pmf(x_poisson, lambda_est)
                             * len(roi_flat)
@@ -639,19 +654,25 @@ class RoiStatsMixin:
             else:
                 fit_label.setText("")
 
+        # Holding the Bins arrows must not queue a redraw per step
+        settle = QTimer(dialog)
+        settle.setSingleShot(True)
+        settle.setInterval(HISTOGRAM_SETTLE_MS)
+        settle.timeout.connect(update_histogram)
+
         # Connect signals
         update_btn.clicked.connect(update_histogram)
-        bins_spin.valueChanged.connect(update_histogram)
+        bins_spin.valueChanged.connect(lambda _: settle.start())
         log_check.stateChanged.connect(update_histogram)
         stats_check.stateChanged.connect(update_histogram)
         gaussian_check.stateChanged.connect(update_histogram)
         poisson_check.stateChanged.connect(update_histogram)
 
-        # Initial plot
-        update_histogram()
-
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
+
+        # Initial plot
+        update_histogram()
 
     # ------------------------------------------------------------------
     # The regions: drawn with the Rectangle and Ellipse tools, kept until

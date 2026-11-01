@@ -12,27 +12,19 @@ import os
 
 import numpy as np
 from PyQt5.QtWidgets import (
-    QApplication,
     QMessageBox,
 )
-from PyQt5.QtCore import Qt, QEventLoop
+from PyQt5.QtCore import Qt
 from ..ui.background import Cancelled, run_in_background, wait_for
 from ..ui.busy import busy
 from ..processing.fits_io import is_fits
 from ..processing.image_meta import casa_info, coordsys_from_record, fits_header
 from ..processing.prefetch import image_prefetcher
-from ..processing.image_data import read_image
+from ..processing.image_data import default_rms_box, read_image, read_new_image
 from ..processing.stokes import StokesUnavailable, missing_planes, uses_rms
 from ..ui.errors import show_error
 
 logger = logging.getLogger(__name__)
-
-
-def default_rms_box(shape):
-    """The RMS box of a newly opened [x, y] image: a band along the
-    bottom, inset from the sides."""
-    nx, ny = shape[:2]
-    return [int(0.05 * nx), int(0.95 * nx), int(0.02 * ny), int(0.20 * ny)]
 
 
 class LoadingMixin:
@@ -49,6 +41,29 @@ class LoadingMixin:
     ``show_beam_label``, ``show_image_stats``, ``show_status_message``,
     ``stokes_combo``, ``tb_btn``, ``threshold_entry``
     """
+
+    batch_position = None  # (n, of) while this tab opens one of several images
+
+    def shown_name(self, imagename=None):
+        """The name to give ``imagename`` (the tab's image): a helioprojective,
+        RA/Dec or brightness temperature view is a temporary file, which goes
+        by the image it was made from."""
+        path = imagename or self.imagename
+        for temp, original in (
+            ("_tb_temp_file", "_tb_original_imagename"),
+            ("_radec_temp_file", "_hpc_original_imagename"),
+            ("_hpc_temp_file", "_original_imagename"),
+        ):
+            if path == getattr(self, temp, None) and getattr(self, original, None):
+                path = getattr(self, original)
+        return os.path.basename(path.rstrip("/"))
+
+    def load_label(self, imagename=None):
+        """What the load of ``imagename`` (the tab's image) says it is doing."""
+        name = self.shown_name(imagename)
+        if self.batch_position is not None:
+            return f"Loading {name} ({self.batch_position[0]} of {self.batch_position[1]})…"
+        return f"Loading {name}…"
 
     def _full_resolution(self, imagename, target_size):
         """(the [x, y] sky shape of the file, the downsample factor of the
@@ -81,11 +96,19 @@ class LoadingMixin:
         return 0
 
     def _read_image(
-        self, imagename, stokes, threshold, rms_box, target_size, fallback_stokes
+        self,
+        imagename,
+        stokes,
+        threshold,
+        rms_box,
+        target_size,
+        fallback_stokes,
+        new_image=False,
     ):
         """The :class:`ImageRead` of these inputs: read ahead by the
-        prefetcher, or now in the worker process."""
-        label = f"Loading {os.path.basename(imagename.rstrip('/'))}…"
+        prefetcher, or now in the worker process (``new_image``: as
+        read_new_image does, in one job)."""
+        label = self.load_label(imagename)
         # Let a background read of this file finish before reading it again
         image_prefetcher.settle(
             imagename, wait=lambda future: wait_for(self, label, future)
@@ -95,7 +118,7 @@ class LoadingMixin:
             read = run_in_background(
                 self,
                 label,
-                read_image,
+                read_new_image if new_image else read_image,
                 imagename,
                 stokes,
                 threshold,
@@ -127,6 +150,7 @@ class LoadingMixin:
             tuple(self.current_rms_box),
             target_size,
             fallback_stokes,
+            new_image=auto_adjust_rms,
         )
         if (
             auto_adjust_rms
@@ -137,14 +161,15 @@ class LoadingMixin:
             # A new image's ratios are measured against its own RMS box, not
             # the previous image's
             self.current_rms_box = default_rms_box(read.pix.shape)
-            read = self._read_image(
-                imagename,
-                read.stokes,
-                threshold,
-                tuple(self.current_rms_box),
-                target_size,
-                None,
-            )._replace(available=read.available)
+            if read.rms_box != tuple(self.current_rms_box):  # read ahead
+                read = self._read_image(
+                    imagename,
+                    read.stokes,
+                    threshold,
+                    tuple(self.current_rms_box),
+                    target_size,
+                    None,
+                )._replace(available=read.available)
         if fallback_stokes is not None:
             self._offer_available_stokes(read.available, stokes, read.stokes)
 
@@ -153,6 +178,7 @@ class LoadingMixin:
         self.current_image_data = pix
         if read.csys_record is not None:
             self.current_wcs = coordsys_from_record(read.csys_record)
+            self._no_coordsys_for = None
             self.psf = read.psf
             self._full_image_shape, self._downsample = self._full_resolution(
                 imagename, target_size
@@ -162,6 +188,7 @@ class LoadingMixin:
             # its beam and its coordinate system (zoom to 1°, the solar disk,
             # HPC detection); and this reader does not downsample
             self.current_wcs = None
+            self._no_coordsys_for = imagename
             self.psf = None
             self._full_image_shape = pix.shape
             self._downsample = 1
@@ -379,12 +406,14 @@ class LoadingMixin:
         if not self.imagename:
             return
 
-        if self.window():
-            self.show_status_message(
-                f"Loading data for Stokes {stokes}... Please wait..."
-            )
-            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+        # One piece of work for the user, from the read to the drawing
+        label = f"Loading Stokes {stokes}…"
+        with busy(label, self):
+            if self.window():
+                self.show_status_message(label)
+            self._change_stokes(stokes)
 
+    def _change_stokes(self, stokes):
         try:
             threshold = float(self.threshold_entry.text())
         except (ValueError, AttributeError):
@@ -393,8 +422,7 @@ class LoadingMixin:
                 self.threshold_entry.setText("10.0")
 
         try:
-            with busy():
-                self.load_data(self.imagename, stokes, threshold)
+            self.load_data(self.imagename, stokes, threshold)
             self._range_stokes = stokes
         except Exception as e:
             import traceback
@@ -423,13 +451,15 @@ class LoadingMixin:
 
         data = self.current_image_data
         if data is not None:
+            dropped = self.keep_display_filters()
             dmin = float(np.nanmin(data))
             dmax = float(np.nanmax(data))
             self.set_range(dmin, dmax)
-            self.schedule_plot()
+            self.plot_from_controls()
 
             self.show_status_message(
-                f"Stokes changed to {stokes}, display range: [{dmin:.4g}, {dmax:.4g}]"
+                dropped
+                or f"Stokes changed to {stokes}, display range: [{dmin:.4g}, {dmax:.4g}]"
             )
 
     def _update_stokes_combo_state(self, available_stokes):

@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QDialog,
 )
 
+from ..ui.activity import track_thread
 from .spectra_common import _RemoteRead
 logger = logging.getLogger(__name__)
 
@@ -309,15 +310,15 @@ class SpectraMasksMixin:
         if self._fill_job is not None and self._fill_job.key == key:
             return data  # being filled
         if self._fill_job is not None:
-            self._fill_job.stopped = True
+            self._fill_job.stop()
         from .rfi_flagging import fill_flagged
 
         fill = flags & ~self._masked(data.shape, time_axis)
         method, reach = o["fill"], o["reach"]
         job = _RemoteRead(lambda: fill_flagged(data, fill, method, reach), self)
         job.key = key
+        job.task = track_thread(job, "Filling the flagged pixels…", self)
         self._fill_job = job
-        self.statusBar().showMessage("Filling the flagged pixels...")
 
         def done(filled):
             if self._fill_job is job:
@@ -487,7 +488,7 @@ class SpectraMasksMixin:
         if self._rfi_job is not None and self._rfi_job.key == key:
             return  # being flagged
         if self._rfi_job is not None:
-            self._rfi_job.stopped = True
+            self._rfi_job.stop()
         finite = data[np.isfinite(data)]
         if finite.size and float(finite.min()) < 0:
             self.statusBar().showMessage(
@@ -507,8 +508,8 @@ class SpectraMasksMixin:
 
         job = _RemoteRead(work, self)
         job.key = key
+        job.task = track_thread(job, "Flagging RFI…", self)
         self._rfi_job = job
-        self.statusBar().showMessage("Flagging RFI...")
 
         def done(flags):
             if self._rfi_job is job:

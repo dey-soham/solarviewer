@@ -25,12 +25,14 @@ class DownloadThread(QThread):
     Thread for downloading files without blocking UI.
 
     Signals:
-        progress(int, int): Emitted with (bytes_transferred, total_bytes)
+        progress(object, object): Emitted with (bytes_transferred, total_bytes)
+        phase(str): What is going on while no bytes flow (a folder only)
         finished(str): Emitted with local_path when download completes
         error(str): Emitted with error message if download fails
     """
 
-    progress = pyqtSignal(int, int)
+    progress = pyqtSignal(object, object)  # (not int: Qt's stops at 2 GB)
+    phase = pyqtSignal(str)
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
@@ -87,11 +89,17 @@ class DownloadThread(QThread):
                     raise InterruptedError("Download cancelled")
                 self.progress.emit(transferred, total)
 
+            def phase_callback(text):
+                if self._is_cancelled:
+                    raise InterruptedError("Download cancelled")
+                self.phase.emit(text)
+
             if self.is_directory:
                 result = self.connection.download_directory(
                     self.remote_path,
                     self.local_path,
                     progress_callback=progress_callback,
+                    phase_callback=phase_callback,
                 )
             else:
                 result = self.connection.download_file(

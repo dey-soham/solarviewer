@@ -5,7 +5,7 @@ Context Images Fetcher - Get solar context imagery from Helioviewer API or Solar
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 import re
 from urllib.parse import urljoin
 
@@ -115,12 +115,15 @@ ESSENTIAL_INSTRUMENTS = [
 ]
 
 
-def fetch_from_helioviewer(event_date: date) -> List[ContextImage]:
+def fetch_from_helioviewer(
+    event_date: date, progress: Optional[Callable[[int, int], None]] = None
+) -> List[ContextImage]:
     """
     Fetch essential context images from Helioviewer API as PNG screenshots.
 
     Args:
         event_date: Date to fetch images for
+        progress: Called with (images looked up, images in all) before each lookup
 
     Returns:
         List of ContextImage objects with PNG image URLs
@@ -131,7 +134,10 @@ def fetch_from_helioviewer(event_date: date) -> List[ContextImage]:
     images = []
 
     # Fetch only essential instruments with PNG screenshots
-    for nickname, layer_path, observatory, description, source_id in ESSENTIAL_INSTRUMENTS:
+    for index, entry in enumerate(ESSENTIAL_INSTRUMENTS):
+        if progress is not None:
+            progress(index, len(ESSENTIAL_INSTRUMENTS))
+        nickname, layer_path, observatory, description, source_id = entry
         # Determine image type for appropriate field of view
         is_lasco_c2 = "LASCO,C2" in layer_path
         is_lasco_c3 = "LASCO,C3" in layer_path
@@ -321,7 +327,9 @@ def fetch_from_solarmonitor(event_date: date) -> List[ContextImage]:
 
 
 def fetch_context_images(
-    event_date: date, use_helioviewer: bool = True
+    event_date: date,
+    use_helioviewer: bool = True,
+    progress: Optional[Callable[[int, int], None]] = None,
 ) -> List[ContextImage]:
     """
     Fetch context images for a given date.
@@ -330,12 +338,13 @@ def fetch_context_images(
         event_date: Date to fetch images for
         use_helioviewer: If True, use Helioviewer API (default, returns PNG).
                         If False, use SolarMonitor (strict backup only).
+        progress: Called with (images looked up, images in all), for Helioviewer
 
     Returns:
         List of ContextImage objects
     """
     if use_helioviewer:
-        images = fetch_from_helioviewer(event_date)
+        images = fetch_from_helioviewer(event_date, progress)
         if images:
             return images
         # Fall back to SolarMonitor if Helioviewer fails

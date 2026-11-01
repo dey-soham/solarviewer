@@ -79,6 +79,7 @@ from .core.panels import PanelsMixin
 from .core.window_dialogs import WindowDialogsMixin
 from .ui import background
 from .ui.background import Cancelled
+from .ui.activity import hint
 from .ui.busy import busy
 from .processing.contour_layers import default_contour_options, new_contour_layer
 from .processing.prefetch import image_prefetcher
@@ -151,7 +152,7 @@ class SolarRadioImageTab(
     SolarEventsMixin,
     QWidget,
 ):
-    def __init__(self, parent=None, tab_name=""):
+    def __init__(self, parent=None, tab_name="", on_stage=None):
         super().__init__(parent)
         self.setObjectName(tab_name)
 
@@ -241,6 +242,7 @@ class SolarRadioImageTab(
         # Image metadata cache for lazy WCS/colorbar computation
         # These are expensive to compute and only need to refresh when imagename changes
         self._cached_imagename = None  # Track which image is cached
+        self._no_coordsys_for = None  # The image loaded, if CASA could not read it
         self._cached_fits_header = None  # FITS header cache
         self._cached_fits_flag = False  # Whether current image is FITS
         self._cached_csys = None  # CASA coordsys cache
@@ -277,7 +279,9 @@ class SolarRadioImageTab(
         # Default mode
         self.region_mode = RegionMode.PAN
 
-        self.setup_ui()
+        on_stage = on_stage or (lambda text, percent: None)
+        self.setup_ui(on_stage)
+        on_stage("Setting up the controls…", 96)
         self._set_button_cursors()
 
     def _set_button_cursors(self):
@@ -296,24 +300,28 @@ class SolarRadioImageTab(
             if main_window:
                 main_window.statusBar().showMessage(message, timeout)
                 if flush:
+                    hint(message)
                     QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
         except AttributeError:
             pass
 
-    def setup_ui(self):
+    def setup_ui(self, on_stage):
         """The canvas (the empty state until an image is loaded) fills this
         widget. The controls around it are built here for the page that
         holds the pane to place (core.compare.ImagePage): the top bar, the
         canvas bar, and the inspector's header, Display and Statistics
-        pages and cursor readout."""
+        pages and cursor readout. ``on_stage(text, percent)`` hears how far
+        it got (the splash screen, the first time)."""
         from PyQt5.QtWidgets import QStackedWidget
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self.page = None  # the ImagePage this pane is in
+        on_stage("Building the top bar…", 84)
         self.top_bar = self.create_top_bar()
 
+        on_stage("Building the image canvas…", 87)
         self._canvas_stack = QStackedWidget()
         self._canvas_stack.addWidget(self.create_empty_canvas())
         canvas_host = QWidget()
@@ -324,7 +332,9 @@ class SolarRadioImageTab(
         self._canvas_stack.addWidget(canvas_host)
         layout.addWidget(self._canvas_stack, 1)
 
+        on_stage("Building the toolbar…", 90)
         self.canvas_bar = self.setup_figure_toolbar()
+        on_stage("Building the inspector…", 93)
         self.create_inspector()
         self._name_icon_only_controls()
 
@@ -362,24 +372,33 @@ class SolarRadioImageTab(
         if path and self.page is not None:
             self.page.pane_renamed(self, os.path.basename(path.rstrip("/")))
 
-    def schedule_plot(self):
+    def schedule_plot(self, done=None):
+        """Draw from the controls in a moment; then the status bar says
+        ``done``, if given."""
+        self._plot_done = done
         # If a timer already exists and is active, stop it.
         if hasattr(self, "_plot_timer") and self._plot_timer.isActive():
             self._plot_timer.stop()
         else:
             self._plot_timer = QTimer(self)
             self._plot_timer.setSingleShot(True)
-            # Use a lambda to call plot_image with current parameters.
-            self._plot_timer.timeout.connect(
-                lambda: self.plot_image(
-                    float(self.vmin_entry.text()),
-                    float(self.vmax_entry.text()),
-                    self.stretch_combo.currentText(),
-                    self.cmap_combo.currentText(),
-                    float(self.gamma_entry.text()),
-                )
-            )
+            self._plot_timer.timeout.connect(self.plot_from_controls)
         self._plot_timer.start(50)  # 10ms delay
+
+    def plot_from_controls(self):
+        """plot_image with the current parameters."""
+        self.plot_image(
+            float(self.vmin_entry.text()),
+            float(self.vmax_entry.text()),
+            self.stretch_combo.currentText(),
+            self.cmap_combo.currentText(),
+            float(self.gamma_entry.text()),
+        )
+        if getattr(self, "_plot_after_preparing", False):
+            return  # not drawn yet: ``done`` waits for that
+        done, self._plot_done = getattr(self, "_plot_done", None), None
+        if done:
+            self.show_status_message(done)
 
     def plot_data(self):
         self.on_visualization_changed()
@@ -411,7 +430,8 @@ class SolarRadioImageTab(
             QMessageBox.warning(self, "No Image", "Please open an image first.")
             return False
 
-        with busy():
+        label = self.load_label() if reload_data else "Updating the display…"
+        with busy(label, self):
             return self._update_visualization(colormap_name, dir_load, reload_data)
 
     def _update_visualization(self, colormap_name, dir_load, reload_data):
@@ -421,10 +441,9 @@ class SolarRadioImageTab(
         main_window = self.window()
         if main_window:
             if reload_data:
-                name = os.path.basename(self.imagename.rstrip("/"))
-                self.show_status_message(f"Loading {name}…")
+                self.show_status_message(self.load_label())
             else:
-                self.show_status_message("Updating display...")
+                self.show_status_message("Updating the display…")
 
         stokes = self.stokes_combo.currentText() if self.stokes_combo else "I"
         try:
@@ -485,6 +504,7 @@ class SolarRadioImageTab(
                             )
                         self.cmap_combo.setCurrentText("viridis")
 
+            dropped = None  # (a filter, see keep_display_filters)
             # Only reload data if needed (new image, stokes change, etc.)
             # Skip for visualization-only changes (colormap, stretch, gamma, vmin/vmax)
             if reload_data:
@@ -501,6 +521,15 @@ class SolarRadioImageTab(
                     fallback_stokes="I" if dir_load else None,
                 )
                 self._range_stokes = stokes
+                # (A new image starts unfiltered, below)
+                if not dir_load:
+                    dropped = self.keep_display_filters()
+                    if dropped:
+                        vmin_val = vmax_val = None  # the filter's, not the image's
+                # What the contours need is loaded here, where the wait can
+                # be cancelled: the draw below only draws
+                if self.show_contours_checkbox.isChecked() and not self.prepare_contours():
+                    self._contours_cancelled()
             if dir_load:
                 mw = self.window()
                 auto_presets = (
@@ -567,7 +596,7 @@ class SolarRadioImageTab(
                     img_name = os.path.basename(self.imagename)
                     self.show_status_message(f"Loaded {img_name}")
                 else:
-                    self.show_status_message("Display updated")
+                    self.show_status_message(dropped or "Display updated")
             if dir_load:
                 # After the caller has rescanned the directory
                 QTimer.singleShot(0, self._prefetch_neighbour_files)
@@ -1045,10 +1074,15 @@ class SolarRadioImageViewerApp(
     RemoteModeMixin,
     QMainWindow,
 ):
-    def __init__(self, imagename=None, fast_preview=False):
+    def __init__(self, imagename=None, fast_preview=False, on_stage=None):
+        """``imagename`` is opened by :meth:`open_start_image`, once the
+        window is up. ``on_stage(text, percent)`` hears how the building of
+        the window goes (the splash screen)."""
         super().__init__()
 
         self._fast_preview = fast_preview
+        self._start_image = None  # opens imagename: see open_start_image
+        on_stage = on_stage or (lambda text, percent: None)
 
         # Initialize bundled fonts before any widgets are created
         theme_manager.initialize_fonts()
@@ -1094,7 +1128,11 @@ class SolarRadioImageViewerApp(
         self._update_thread.start()
 
         # Import what the first image will need while the user picks one
-        threading.Thread(target=_preload_display_modules, daemon=True).start()
+        # (once the window is built: imports running beside its building
+        # double the time it takes)
+        QTimer.singleShot(
+            0, lambda: threading.Thread(target=_preload_display_modules, daemon=True).start()
+        )
         # Start the process that reads images
         QTimer.singleShot(0, background.warm_up)
 
@@ -1105,32 +1143,34 @@ class SolarRadioImageViewerApp(
         self.setAcceptDrops(True)
 
         self.statusBar().showMessage("Ready")
+        on_stage("Building the menus…", 75)
         self.create_menus()
         self._place_tab_strip()
 
         # Set hand cursor for all interactive elements programmatically
         self._set_hand_cursor_recursive(self)
 
-        first_tab = self.add_new_tab("Tab1")  # (the pane of the first page)
+        on_stage("Building the first tab…", 81)
+        first_tab = self.add_new_tab("Tab1", on_stage)  # (the pane of the first page)
 
         # Apply fast preview flag from CLI
         if self._fast_preview and hasattr(first_tab, "downsample_toggle"):
             first_tab.downsample_toggle.setChecked(True)
 
         if imagename and os.path.exists(imagename) and fits_kind(imagename) == SPECTRUM:
-            # Once this window is up, in the Dynamic Spectrum Viewer
-            QTimer.singleShot(100, lambda: self.open_spectrum(imagename))
+            self._start_image = lambda: self.open_spectrum(imagename)
         elif imagename and os.path.exists(imagename):
             first_tab.imagename = imagename
             first_tab.dir_entry.setText(imagename)
-
-            # Load once the tab is set up (not if it is closed first)
-            first_tab.call_later(
-                20, lambda: first_tab.on_visualization_changed(dir_load=True)
-            )
             first_tab.update_tab_name_from_path(imagename)
-            # Scan directory for file navigation (delay to ensure UI is ready)
-            first_tab.call_later(100, first_tab._scan_directory_files)
+
+            def load():
+                first_tab.on_visualization_changed(dir_load=True)
+                # Scan directory for file navigation
+                first_tab._scan_directory_files()
+
+            # (not if the tab is closed first)
+            self._start_image = lambda: first_tab.call_later(0, load)
         """else:
             first_tab.imagename = get_resource_path("assets/splash.fits")
             QTimer.singleShot(
@@ -1139,6 +1179,14 @@ class SolarRadioImageViewerApp(
                     dir_load=True, colormap_name="inferno"
                 ),
             )"""
+
+    def open_start_image(self):
+        """Open the image given to the constructor. Only now: a load says what
+        it is doing in the status bar, the pill and its Cancel dialog, which
+        need the window on screen (and the splash, always on top, gone)."""
+        opening, self._start_image = self._start_image, None
+        if opening is not None:
+            opening()
 
     def _place_tab_strip(self):
         """The tab strip at the right end of the menu bar; on macOS, where
@@ -1188,26 +1236,36 @@ class SolarRadioImageViewerApp(
 
     def _process_dropped_urls(self, urls):
         """Process dropped URLs and open them in tabs."""
-        for i, url in enumerate(urls):
-            if not url.isLocalFile():
-                continue
+        files = [
+            (i, url.toLocalFile())
+            for i, url in enumerate(urls)
+            if url.isLocalFile() and os.path.exists(url.toLocalFile())
+        ]
+        total = len(files)
+        with busy(f"Opening {total} files…" if total > 1 else "Opening the file…", self):
+            for number, (i, file_path) in enumerate(files, 1):
+                if fits_kind(file_path) == SPECTRUM:
+                    self.open_spectrum(file_path)
+                    continue
 
-            file_path = url.toLocalFile()
-            if not os.path.exists(file_path):
-                continue
-            if fits_kind(file_path) == SPECTRUM:
-                self.open_spectrum(file_path)
-                continue
+                # If there's only one tab and it's empty, use it. Otherwise add tab.
+                current_tab = self.tab_widget.currentWidget()
+                if current_tab and not current_tab.imagename and i == 0:
+                    target_tab = current_tab
+                else:
+                    basename = os.path.basename(file_path.rstrip("/"))
+                    target_tab = self.add_new_tab(basename)
 
-            # If there's only one tab and it's empty, use it. Otherwise add tab.
-            current_tab = self.tab_widget.currentWidget()
-            if current_tab and not current_tab.imagename and i == 0:
-                target_tab = current_tab
-            else:
-                basename = os.path.basename(file_path.rstrip("/"))
-                target_tab = self.add_new_tab(basename)
-
-            target_tab.open_image_path(file_path)
+                if total > 1:
+                    target_tab.batch_position = (number, total)
+                shown = target_tab.open_image_path(file_path)
+                target_tab.batch_position = None
+                if shown is None:  # the user cancelled: the rest too
+                    if total > number:
+                        self.statusBar().showMessage(
+                            f"Cancelled: {total - number} more not opened", 8000
+                        )
+                    break
 
     def _on_update_available(self, latest_ver):
         """Show the update button when an update is found."""
@@ -1245,11 +1303,11 @@ class SolarRadioImageViewerApp(
         tab_name = f"Tab{tab_count}"
         self.add_new_tab(tab_name)
 
-    def add_new_tab(self, name):
+    def add_new_tab(self, name, on_stage=None):
         """A new tab, with one pane: returns the pane (the page holding it
         goes in ``tabs``)."""
         page = ImagePage(name)
-        pane = SolarRadioImageTab(page, name)
+        pane = SolarRadioImageTab(page, name, on_stage)
         page.add_pane(pane)
         self.tabs.append(page)
         self.tab_widget.addTab(page, name)
@@ -1286,7 +1344,8 @@ class SolarRadioImageViewerApp(
 
     def toggle_theme(self):
         """Toggle between dark and light themes."""
-        new_theme = theme_manager.toggle_theme()
+        with busy("Applying the theme…", self):
+            new_theme = theme_manager.toggle_theme()
         self.statusBar().showMessage(
             f"Switched to {'Light' if new_theme == 'light' else 'Dark'} mode"
         )
@@ -1435,8 +1494,7 @@ class SolarRadioImageViewerApp(
         ):
             current_tab = self.tab_widget.currentWidget()
             if current_tab:
-                current_tab.schedule_plot()
-                self.statusBar().showMessage("Plot updated")
+                current_tab.schedule_plot(done="Plot updated")
         elif event.key() == Qt.Key_Escape:
             # Leave a text field so the view keys work again
             current_tab = self.tab_widget.currentWidget()
@@ -1463,6 +1521,8 @@ class SolarRadioImageViewerApp(
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        # Gone at once: the cleaning up below takes a moment
+        self.hide()
         image_prefetcher.shutdown()
         background.shutdown()
         # The tools' windows close with this one

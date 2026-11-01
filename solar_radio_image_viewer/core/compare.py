@@ -17,7 +17,6 @@ currentWidget()`` is the current page's active pane.
 """
 
 import logging
-import math
 import os
 
 from PyQt5.QtCore import (
@@ -33,7 +32,7 @@ from PyQt5.QtCore import (
     QVariantAnimation,
     pyqtSignal,
 )
-from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPalette, QPen
+from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPalette
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -57,7 +56,10 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..ui.activity import FRAME_MS, begin_activity
+from ..ui.busy import busy
 from ..ui.icons import launcher_icon, themed_icon
+from ..ui.indicator import paint_ring, spin_now
 from ..ui.styles import _qt_deleted, set_hand_cursor, set_tone, theme_manager
 from ..ui.widgets import kicker_row, link_button, segmented, toggle_row
 from .compare_sync import (
@@ -87,14 +89,13 @@ GRID_GAP = 6
 ICON_SIZE = QSize(16, 16)
 # A change of layout happens under a picture of the image area as it
 # was: a wash of the background comes over it, with a spinner, while the
-# panes draw themselves into their new places (held at most
-# VEIL_HOLD_MS), then the new layout fades in
+# panes draw themselves into their new places (held at most VEIL_HOLD_MS
+# for each), then the new layout fades in
 VEIL_DIM_MS = 200
 VEIL_DIM_LEVEL = 0.7  # how much of the picture the wash takes
 VEIL_REVEAL_MS = 260
 VEIL_HOLD_MS = 900
 SPINNER_SIZE = 36  # the spinner's diameter, in points
-SPINNER_TURN_MS = 1400  # one turn of its arc
 
 
 def _positions(size):
@@ -126,7 +127,6 @@ class _Veil(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._dim = 0.0  # how far the wash has come over the picture
         self._reveal = 0.0  # how far the new layout shows through
-        self._spin = 0.0  # where the spinner's arc is in its turn
         self._waiting = set()
         self._drawn = False
         self._revealing = None
@@ -136,7 +136,9 @@ class _Veil(QWidget):
         page.installEventFilter(self)
         self._dimming = _tween(self, VEIL_DIM_MS, QEasingCurve.OutCubic, self._set_dim)
         self._dimming.finished.connect(self._dimmed)
-        self._spinning = _tween(self, SPINNER_TURN_MS, QEasingCurve.Linear, self._set_spin, loops=-1)
+        self._frames = QTimer(self)  # the spinner turns from ui.indicator's clock
+        self._frames.timeout.connect(self.update)
+        self._frames.start(FRAME_MS)
 
     def dimmed(self):
         return self._dimming.state() != QAbstractAnimation.Running
@@ -160,13 +162,10 @@ class _Veil(QWidget):
         if not self._waiting:
             self.fade()
         else:
-            QTimer.singleShot(VEIL_HOLD_MS, self.fade)
+            QTimer.singleShot(VEIL_HOLD_MS * len(self._waiting), self.fade)
 
     def drawn(self, pane):
-        # A pane with a plot scheduled (drawn compact, say) is not there
-        # yet: this draw is of the old picture at the new size
-        timer = getattr(pane, "_plot_timer", None)
-        if timer is not None and timer.isActive():
+        if _plot_due(pane):
             return
         self._waiting.discard(pane)
         if not self._waiting:
@@ -198,10 +197,6 @@ class _Veil(QWidget):
         self._reveal = value
         self.update()
 
-    def _set_spin(self, value):
-        self._spin = value
-        self.update()
-
     def paintEvent(self, _event):
         # The picture under a wash of the background that thickens as the
         # veil dims, leaving the picture showing through; the whole thins
@@ -219,8 +214,7 @@ class _Veil(QWidget):
         painter.end()
 
     def _paint_spinner(self, painter, opacity):
-        """A slim ring at the centre, an arc of the accent running round
-        it, its length breathing as it goes."""
+        """The ring every spinner has, at the centre."""
         if opacity <= 0:
             return
         size = SPINNER_SIZE
@@ -235,14 +229,7 @@ class _Veil(QWidget):
         painter.setPen(Qt.NoPen)
         painter.setBrush(backing)
         painter.drawEllipse(rect.adjusted(-12, -12, 12, 12))
-        painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(self._track, 3, Qt.SolidLine, Qt.RoundCap))
-        painter.drawEllipse(rect)
-        # Qt arcs: degrees from 3 o'clock, anticlockwise, in sixteenths
-        head = -self._spin * 360
-        span = 50 + 130 * (0.5 - 0.5 * math.cos(self._spin * 2 * math.pi * 2))
-        painter.setPen(QPen(self._accent, 3, Qt.SolidLine, Qt.RoundCap))
-        painter.drawArc(rect, int(head * 16), int(-span * 16))
+        paint_ring(painter, rect, spin_now(), self._accent, self._track, 3)
 
     def _done(self):
         if _qt_deleted(self):
@@ -261,12 +248,18 @@ class _Veil(QWidget):
         return False
 
 
-def _tween(owner, duration, easing, on_value, loops=1):
+def _plot_due(pane):
+    """Whether ``pane`` has a plot scheduled (drawn compact, say): it is not
+    there yet, a draw now being of the old picture at the new size."""
+    timer = getattr(pane, "_plot_timer", None)
+    return timer is not None and timer.isActive()
+
+
+def _tween(owner, duration, easing, on_value):
     """A 0 to 1 animation of ``duration`` ms, ``on_value`` called with
-    each value, started at once; ``loops`` of it (-1: until stopped)."""
+    each value, started at once."""
     tween = QVariantAnimation(owner)
     tween.setDuration(duration)
-    tween.setLoopCount(loops)
     tween.setStartValue(0.0)
     tween.setEndValue(1.0)
     tween.setEasingCurve(easing)
@@ -809,6 +802,8 @@ class ImagePage(QWidget):
         self.full_axes = False  # compare panes drawn with ticks and labels
         self.colorbar = False  # and a colorbar under each image
         self._veil_widget = None
+        self._redraw = None  # (activity, panes yet to draw, how many) of a redraw of several
+        self._opening_drop = False  # dropped files are being opened
         self.sync = PaneSync(self)
         self.sharing_tool = False  # (a pane is giving the others its tool)
 
@@ -1040,18 +1035,29 @@ class ImagePage(QWidget):
         frame.deleteLater()
         self._place_panes()
 
-    def open_in_new_pane(self, path, slot=None):
+    def open_in_new_pane(self, path, slot=None, position=None):
         """Show the image at ``path`` in a new pane, in ``slot`` or the
-        first free one. Returns whether it loaded (None if cancelled), as
-        ``open_image_path``; a pane whose image did not load goes again."""
+        first free one, as ``_open_at`` does. Returns whether it loaded (None
+        if cancelled), as ``open_image_path``; a pane whose image did not
+        load goes again."""
         pane = self.new_pane(slot)
         if pane is None:
             return False
         self.set_active_pane(pane)
-        loaded = pane.open_path(path)
+        loaded = self._open_at(pane, path, position)
         if not loaded or pane.current_image_data is None:
             self.remove_pane(pane)
         return loaded
+
+    @staticmethod
+    def _open_at(pane, path, position):
+        """``pane`` opens ``path``; while it loads, it says which of several
+        that is, if ``position`` (n, of) is given."""
+        pane.batch_position = position
+        try:
+            return pane.open_path(path)
+        finally:
+            pane.batch_position = None
 
     def add_image(self, slot=None):
         """Choose an image for ``slot`` (the first free one otherwise): on
@@ -1209,30 +1215,53 @@ class ImagePage(QWidget):
         """Draw the panes with their ticks and labels (``on``) or as the
         image alone."""
         self.full_axes = bool(on)
-        self._apply_compact()
+        self._follow_redraw(self._apply_compact())
 
     def set_colorbar(self, on):
         """Draw a colorbar under each pane's image (``on``) or none."""
         self.colorbar = bool(on)
-        self._apply_compact()
+        self._follow_redraw(self._apply_compact())
 
     def set_overlay(self, name, on):
         """Every pane draws the overlay ``name`` ("solar_disk", "grid") or not."""
-        for pane in self.panes:
+        changing = [pane for pane in self.panes if overlay_box(pane, name).isChecked() != bool(on)]
+        for pane in changing:
             overlay_box(pane, name).setChecked(bool(on))
         self._compare_panel.refresh_overlays()
+        self._follow_redraw(pane for pane in changing if pane.current_image_data is not None)
 
     def _apply_compact(self):
         """Each pane drawn the way the layout wants: compact (no title)
         with more than one slot, with the axes and the colorbar the page's
-        switches ask for."""
+        switches ask for. Returns the panes that will draw again."""
         compact = self.layout_size > 1
         wanted = (compact, compact and self.full_axes, compact and self.colorbar)
+        redrawing = []
         for pane in self.panes:
             if (pane.compact_plot, pane.pane_axes, pane.pane_colorbar) != wanted:
                 pane.compact_plot, pane.pane_axes, pane.pane_colorbar = wanted
                 if pane.current_image_data is not None:
                     pane.schedule_plot()
+                    redrawing.append(pane)
+        return redrawing
+
+    def _follow_redraw(self, panes):
+        """Say how far a redraw of several ``panes`` has got, until each has
+        drawn (or the time it might take has passed)."""
+        panes = set(panes)
+        self._redraw_over()
+        if len(panes) < 2:
+            return
+        task = begin_activity("Drawing the panes…", self, blocking=False)
+        task.update(done=0, total=len(panes))
+        self._redraw = (task, panes, len(panes))
+        QTimer.singleShot(VEIL_HOLD_MS * len(panes), lambda task=task: self._redraw_over(task))
+
+    def _redraw_over(self, task=None):
+        """The redraw being followed is over (if it is ``task``'s, when given)."""
+        if self._redraw is not None and task in (None, self._redraw[0]):
+            self._redraw[0].finish()
+            self._redraw = None
 
     def apply_display_to_all(self):
         """Give every pane the active pane's colormap, stretch, gamma and
@@ -1257,50 +1286,60 @@ class ImagePage(QWidget):
                 source.show_solar_disk_checkbox,
             )
         ]
-        for pane in self.panes:
-            if pane is source:
-                continue
-            boxes = (
-                pane.show_beam_checkbox,
-                pane.show_grid_checkbox,
-                pane.show_solar_disk_checkbox,
-            )
-            controls = (
-                pane.cmap_combo,
-                pane.stretch_combo,
-                pane.gamma_slider,
-                pane.gamma_entry,
-                pane.vmin_entry,
-                pane.vmax_entry,
-                *boxes,
-            )
-            for control in controls:
-                control.blockSignals(True)
-            try:
-                pane.cmap_combo.setCurrentText(cmap)
-                pane.stretch_combo.setCurrentText(stretch)
-                pane.gamma_entry.setText(gamma)
+        others = [pane for pane in self.panes if pane is not source]
+        with busy("Applying the display to the panes…", self) as task:
+            for index, pane in enumerate(others):
+                if len(others) > 1:
+                    task.update(done=index, total=len(others))
+                    pane.batch_position = (index + 1, len(others))
                 try:
-                    pane.gamma_slider.setValue(int(float(gamma) * 20))
-                except ValueError:
-                    pass
-                if vmin is not None and pane.display_unit() == unit:
-                    pane.show_range(vmin, vmax)
-                    pane.show_range_preset(None)
-                for box, on in zip(boxes, overlays):
-                    box.setChecked(on)
-            finally:
-                for control in controls:
-                    control.blockSignals(False)
-            pane.update_gamma_slider_state()
-            for row in pane._overlay_rows:
-                row.refresh()
-            if pane.current_image_data is not None:
-                pane.update_display()
+                    self._take_display(pane, cmap, stretch, gamma, unit, vmin, vmax, overlays)
+                finally:
+                    pane.batch_position = None
         self._compare_panel.refresh_overlays()
         self.window().statusBar().showMessage(
             f"Pane {self.letter(source)}'s display applied to every pane"
         )
+
+    def _take_display(self, pane, cmap, stretch, gamma, unit, vmin, vmax, overlays):
+        """``pane`` shows the display given, and draws again."""
+        boxes = (
+            pane.show_beam_checkbox,
+            pane.show_grid_checkbox,
+            pane.show_solar_disk_checkbox,
+        )
+        controls = (
+            pane.cmap_combo,
+            pane.stretch_combo,
+            pane.gamma_slider,
+            pane.gamma_entry,
+            pane.vmin_entry,
+            pane.vmax_entry,
+            *boxes,
+        )
+        for control in controls:
+            control.blockSignals(True)
+        try:
+            pane.cmap_combo.setCurrentText(cmap)
+            pane.stretch_combo.setCurrentText(stretch)
+            pane.gamma_entry.setText(gamma)
+            try:
+                pane.gamma_slider.setValue(int(float(gamma) * 20))
+            except ValueError:
+                pass
+            if vmin is not None and pane.display_unit() == unit:
+                pane.show_range(vmin, vmax)
+                pane.show_range_preset(None)
+            for box, on in zip(boxes, overlays):
+                box.setChecked(on)
+        finally:
+            for control in controls:
+                control.blockSignals(False)
+        pane.update_gamma_slider_state()
+        for row in pane._overlay_rows:
+            row.refresh()
+        if pane.current_image_data is not None:
+            pane.update_display()
 
     # ---------------------------------------------------------- layout
     @staticmethod
@@ -1354,6 +1393,12 @@ class ImagePage(QWidget):
         veil = self._veil_widget
         if veil is not None and not _qt_deleted(veil):
             veil.drawn(pane)
+        if self._redraw is not None and pane in self._redraw[1] and not _plot_due(pane):
+            task, waiting, total = self._redraw
+            waiting.discard(pane)
+            task.update(done=total - len(waiting))
+            if not waiting:
+                self._redraw_over()
 
     def _place_panes(self, now=False):
         """Lay the panes out in the grid, a slot offering an image where
@@ -1439,21 +1484,56 @@ class ImagePage(QWidget):
             for url in event.mimeData().urls()
             if url.isLocalFile() and os.path.exists(url.toLocalFile())
         ]
-        if not paths:
+        if not paths or self._opening_drop:
             event.ignore()
             return
         event.acceptProposedAction()
         target = self._target_at(event.pos())
-        first, rest = paths[0], paths[1:]
-        if isinstance(target, PaneFrame):
-            self.set_active_pane(target.pane)
-            target.pane.open_path(first)
-        else:
-            self.open_in_new_pane(first, target.index if isinstance(target, EmptySlot) else None)
-        for path in rest:
-            if len(self.panes) >= MAX_PANES:
-                break
-            self.open_in_new_pane(path)
+        # Not in here: the application the files come from waits for this
+        self._opening_drop = True
+        QTimer.singleShot(0, lambda: self._open_dropped(paths, target))
+
+    def _open_dropped(self, paths, target):
+        """Open ``paths``, the first where they were dropped (``target``), in
+        turn, saying how far along; Cancel on one leaves the rest unopened."""
+        if target is not None and _qt_deleted(target):
+            target = None
+        into_pane = isinstance(target, PaneFrame)
+        total = 0
+        status = self.window().statusBar()
+        name = os.path.basename(paths[0].rstrip("/"))
+        task = begin_activity(f"Opening {name}…", self, blocking=False)
+        opened = 0
+        try:
+            for index, path in enumerate(paths):
+                # Asked for each file: one that did not load left its pane free
+                room = MAX_PANES - len(self.panes) + (into_pane and index == 0)
+                if room <= 0:
+                    break
+                total = min(len(paths), index + room)
+                position = None
+                if total > 1:
+                    position = (index + 1, total)
+                    name = os.path.basename(path.rstrip("/"))
+                    task.update(label=f"Opening {name}…", done=index, total=total)
+                    status.showMessage(f"Opening {index + 1} of {total}: {name}…")
+                if index == 0 and into_pane:
+                    self.set_active_pane(target.pane)
+                    loaded = self._open_at(target.pane, path, position)
+                else:
+                    slot = target.index if index == 0 and isinstance(target, EmptySlot) else None
+                    loaded = self.open_in_new_pane(path, slot, position)
+                if loaded is None:  # cancelled
+                    status.showMessage(f"Cancelled: opened {opened} of {len(paths)} files")
+                    return
+                opened += bool(loaded)
+                if total > 1:
+                    task.update(done=index + 1)
+        finally:
+            task.finish()
+            self._opening_drop = False
+        if len(paths) > 1 or not total:
+            status.showMessage(f"Opened {opened} of {len(paths)} files")
 
     def _target_at(self, pos):
         """The pane frame or slot under ``pos`` (page coordinates), or None."""
@@ -1500,5 +1580,6 @@ class ImagePage(QWidget):
 
     def cleanup(self):
         """Release what the panes hold once the tab is closed."""
+        self._redraw_over()
         for pane in self.panes:
             pane.cleanup()

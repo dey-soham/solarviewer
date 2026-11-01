@@ -4,12 +4,16 @@ Create Video, the solar events viewer, metadata and the log.
 """
 
 import logging
+import os
+
 from PyQt5.QtWidgets import (
     QMessageBox,
     QDialog,
 )
 from PyQt5.QtCore import Qt
 from ..processing.metadata import get_image_metadata
+from ..ui.background import Cancelled, run_in_background
+from ..ui.busy import busy
 from ..ui.errors import show_error
 
 logger = logging.getLogger(__name__)
@@ -62,7 +66,13 @@ class WindowDialogsMixin:
             return
 
         try:
-            metadata = get_image_metadata(current_tab.imagename)
+            name = os.path.basename(current_tab.imagename.rstrip("/"))
+            metadata = run_in_background(
+                self,
+                f"Reading the metadata of {name}…",
+                get_image_metadata,
+                current_tab.imagename,
+            )
             from ..dialogs import ImageInfoDialog
 
             dialog = ImageInfoDialog(
@@ -78,6 +88,8 @@ class WindowDialogsMixin:
             )
             self._open_dialogs.append(dialog)
             dialog.show()
+        except Cancelled:
+            self.statusBar().showMessage("Cancelled")
         except Exception as e:
             import traceback
 
@@ -135,11 +147,12 @@ class WindowDialogsMixin:
             current_file = current_tab.imagename if current_tab else None
 
             # Import and show dialog
-            from ..video.dialog import VideoCreationDialog
+            with busy("Opening Create Video…", self):
+                from ..video.dialog import VideoCreationDialog
 
-            # Store reference to prevent garbage collection
-            self._video_dialog = VideoCreationDialog(self, current_file)
-            self._video_dialog.show()
+                # Store reference to prevent garbage collection
+                self._video_dialog = VideoCreationDialog(self, current_file)
+                self._video_dialog.show()
         except Exception as e:
             # Show error message with details
             from PyQt5.QtWidgets import QMessageBox

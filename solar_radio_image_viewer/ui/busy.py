@@ -6,6 +6,9 @@ they finish: the wait cursor has to reach the screen before the work starts.
 :func:`busy` sets it and lets Qt show it first. A dialog that opens while busy
 (an error message, say) gets the normal cursor back until it closes.
 
+Each also announces the work (see ``ui.activity``): given a ``label`` it says
+what it is, and without one it reads as work in general.
+
 Where a ``with`` block does not fit, begin_busy() and end_busy() do the same
 in two calls, which must pair up like setOverrideCursor/restoreOverrideCursor.
 """
@@ -15,9 +18,11 @@ from contextlib import contextmanager
 from PyQt5.QtCore import QEvent, QEventLoop, QObject, Qt
 from PyQt5.QtWidgets import QApplication, QDialog
 
+from .activity import begin_activity
 from .qt_exit import before_qt_exit
 
 _depth = 0
+_activities = []  # one for each begin_busy() still open
 
 
 class _DialogCursor(QObject):
@@ -36,31 +41,37 @@ class _DialogCursor(QObject):
                     lifted += 1
                 self._lifted[obj] = lifted
             elif event.type() == QEvent.Hide and obj in self._lifted:
-                for _ in range(self._lifted.pop(obj)):
-                    QApplication.setOverrideCursor(Qt.WaitCursor)
+                if self._lifted.pop(obj):
+                    # As many as are open now: some may have ended meanwhile
+                    for _ in range(_depth):
+                        QApplication.setOverrideCursor(Qt.WaitCursor)
         return False
 
-    def release(self):
-        """Put back the cursors of dialogs still open when the work ends."""
-        for lifted in self._lifted.values():
-            for _ in range(lifted):
-                QApplication.setOverrideCursor(Qt.WaitCursor)
-        self._lifted.clear()
+    def holding(self):
+        """Whether an open dialog has the wait cursors off."""
+        return any(self._lifted.values())
 
 
 _dialog_cursor = None
 
 
-def begin_busy():
-    """Show the wait cursor until the matching end_busy(). Nests."""
+def begin_busy(label=None, parent=None):
+    """Show the wait cursor until the matching end_busy(), and return the
+    work's ``Activity``, for saying how it is going. Nests."""
     global _depth, _dialog_cursor
-    QApplication.setOverrideCursor(Qt.WaitCursor)
+    task = begin_activity(label, parent)
+    if QApplication.instance() is None:
+        return task  # a script: there is no cursor, and nothing to end
+    _activities.append(task)
+    if _dialog_cursor is None or not _dialog_cursor.holding():
+        QApplication.setOverrideCursor(Qt.WaitCursor)
     _depth += 1
     if _depth == 1:
         _dialog_cursor = _DialogCursor()
         QApplication.instance().installEventFilter(_dialog_cursor)
         # Let the cursor change reach the screen before the work blocks
         QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+    return task
 
 
 def end_busy():
@@ -70,11 +81,13 @@ def end_busy():
     if _depth == 0:
         return
     _depth -= 1
+    _activities.pop().finish()
+    holding = _dialog_cursor.holding()
     if _depth == 0:
         QApplication.instance().removeEventFilter(_dialog_cursor)
-        _dialog_cursor.release()
         _dialog_cursor = None
-    QApplication.restoreOverrideCursor()
+    if not holding:
+        QApplication.restoreOverrideCursor()
 
 
 def reset():
@@ -85,6 +98,8 @@ def reset():
         QApplication.instance().removeEventFilter(_dialog_cursor)
         _dialog_cursor = None
     _depth = 0
+    while _activities:
+        _activities.pop().finish()
 
 
 # A begin_busy() left open at exit leaves its event filter on the
@@ -93,10 +108,11 @@ before_qt_exit(reset)
 
 
 @contextmanager
-def busy():
-    """Show the wait cursor while the ``with`` block runs. Nests."""
-    begin_busy()
+def busy(label=None, parent=None):
+    """Show the wait cursor while the ``with`` block runs, which is given the
+    work's ``Activity``. Nests."""
+    task = begin_busy(label, parent)
     try:
-        yield
+        yield task
     finally:
         end_busy()

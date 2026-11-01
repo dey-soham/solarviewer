@@ -419,7 +419,7 @@ def _classify_failure(label, text, is_container):
     return ("%s: failed (%s)" % (label, tail or "no output"), [])
 
 
-def detect_runtime(conn, probe_ms=None, hints=()):
+def detect_runtime(conn, probe_ms=None, hints=(), on_candidate=None):
     """First WORKING runtime on the server. A candidate counts only if it
     imports casacore and opens a real table (``probe_ms``/SPECTRAL_WINDOW, or
     calls into the casacore library when no probe is given).
@@ -429,7 +429,10 @@ def detect_runtime(conn, probe_ms=None, hints=()):
     directories listed in $SOLARVIEWER_SIF_DIRS (listed, never searched; only
     run when owned by you or root and not writable by group/others), then bare
     python3. Nothing is discovered by scanning the data directories: an image
-    found there would be run with your rights."""
+    found there would be run with your rights.
+
+    on_candidate(path, n, total), if given, is called before each candidate is
+    tried: starting a container on a shared node can take minutes."""
     probe = _abs_path(probe_ms, "probe_ms") if probe_ms else ""
     rc, out = _run(
         conn,
@@ -477,7 +480,9 @@ def detect_runtime(conn, probe_ms=None, hints=()):
 
     binds = _real_binds(conn, [probe] if probe else [])
     details, fixes = [], []
-    for kind, path, vet in candidates:
+    for number, (kind, path, vet) in enumerate(candidates, 1):
+        if on_candidate is not None:
+            on_candidate(path, number, len(candidates))
         if kind == "container":
             if not tool:
                 details.append("%s: no singularity/apptainer on PATH" % path)
@@ -602,8 +607,9 @@ def inspect_remote(conn, runtime, engine_source, paths_or_dir):
         raise RemoteError("permission denied reading the input on the server")
     if "no such file" in low:
         raise RemoteError("input path not found on the server")
+    said = [l for l in text.strip().splitlines() if not l.startswith("SVDS ")]
     raise RemoteError("inspection failed (exit %s): %s" % (
-        rc, " ".join(text.strip().splitlines()[-3:])[:400] or "no output"))
+        rc, " ".join(said[-3:])[:400] or "no output"))
 
 
 def _summary_bytes(summary):

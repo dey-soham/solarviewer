@@ -18,7 +18,6 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QComboBox,
     QMessageBox,
-    QApplication,
     QGroupBox,
     QTreeWidget,
     QTreeWidgetItem,
@@ -38,19 +37,29 @@ from PyQt5.QtCore import (
     QRect,
     QVariantAnimation,
 )
-from PyQt5.QtGui import QPixmap, QImage, QColor, QKeySequence, QIcon
-from collections import OrderedDict
+from PyQt5.QtGui import QPixmap, QColor, QKeySequence, QIcon
+from collections import OrderedDict, deque
 
 TIME_QT_FORMAT = "yyyy-MM-dd HH:mm:ss"
-from .helioviewer_data import ImageDownloader, fetch_all_instruments
-from .helioviewer_export import HelioviewerExportMixin
+from .helioviewer_data import ImageDownloader, InstrumentLoader
+from .helioviewer_export import HelioviewerExportMixin, difference_image
+from .ui.activity import ActivityLabel
+from .ui.busy import busy
 from .ui.date_picker import attach_date_picker
 from .ui.icons import themed_icon
 from .ui.styles import set_hand_cursor, set_tone
+from .video.ui.progress import WorkDialog
 
 # Global list to keep threads alive if window is closed while they are running
 # This prevents "QThread: Destroyed while thread is still running"
 _active_threads = []
+
+
+def _park(thread):
+    """Keep ``thread`` until it ends by itself (nothing can interrupt a request)."""
+    _active_threads[:] = [t for t in _active_threads if t.isRunning()]
+    if thread.isRunning():
+        _active_threads.append(thread)
 
 
 from .ui.geometry import fit_to_screen
@@ -194,8 +203,11 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.frame_loaders = []
 
         # Download queue management for parallel loading
-        self.download_queue = []  # Queue of (frame_idx, instrument_data)
+        self.download_queue = deque()  # Queue of (frame_idx, instrument_data)
         self.active_downloads = 0
+        self.downloads_total = 0
+        self.downloads_done = 0  # those that failed too
+        self.failed_downloads = {}  # (frame_idx, instrument) -> error
         self.max_concurrent_downloads = 8
 
         # Store initial times
@@ -212,6 +224,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         # Flag to prevent updates during close
         self._closing = False
+        self._close_after_export = False
 
         # Cropping state
         self.crop_mode = False
@@ -219,6 +232,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         # Loading state
         self._loading = False
+        self._loading_names = set()  # the instruments of the load
 
         # Zoom state
         self.zoom_factor = 1.0
@@ -352,12 +366,19 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.instrument_tree.setIndentation(20)
 
 
-        # Load instruments
-        self.load_all_instruments()
-
         # Connect selection change
         self.instrument_tree.itemSelectionChanged.connect(self.on_instrument_selected)
         layout.addWidget(self.instrument_tree)
+
+        # Said when the list is not the one Helioviewer gave
+        self.instruments_note = QLabel()
+        self.instruments_note.setWordWrap(True)
+        set_tone(self.instruments_note, "warning")
+        self.instruments_note.hide()
+        layout.addWidget(self.instruments_note)
+
+        # Load instruments
+        self.load_all_instruments()
 
         # Image size control
         layout.addSpacing(10)
@@ -395,9 +416,33 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.max_concurrent_downloads = value
 
     def load_all_instruments(self):
-        """Load all available instruments from Helioviewer, grouped by observatory."""
+        """Ask Helioviewer for all available instruments, on a thread: the
+        window opens at once, with a spinner in the list until they are in."""
         self.instrument_tree.clear()
-        self.all_instruments = fetch_all_instruments()
+        self.all_instruments = []
+        row = QTreeWidgetItem(self.instrument_tree)
+        row.setFlags(Qt.NoItemFlags)
+        row.setFirstColumnSpanned(True)
+        self.instruments_status = ActivityLabel(parent=self.instrument_tree)
+        self.instruments_status.start("Loading the instruments…")
+        self.instrument_tree.setItemWidget(row, 0, self.instruments_status)
+        self.instrument_loader = InstrumentLoader()
+        self.instrument_loader.loaded.connect(self._on_instruments_loaded)
+        self.instrument_loader.start()
+
+    def _on_instruments_loaded(self, instruments, problem):
+        """Fill the list, grouped by observatory."""
+        if self._closing:
+            return
+        self.instrument_tree.clear()
+        self.all_instruments = instruments
+        if problem:
+            self.instruments_note.setText(
+                "Helioviewer did not answer: these are the usual instruments, "
+                "and may not all have images."
+            )
+            self.instruments_note.setToolTip(problem)
+            self.instruments_note.show()
 
         # Observatory info with icons
         observatory_info = {
@@ -771,30 +816,6 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             )
             return
 
-        # Generate timestamps
-        self.timestamps = []
-        current = start
-        while current <= end:
-            self.timestamps.append(current)
-            current = current.addSecs(interval_sec)
-
-        # Check for large frame count
-        if len(self.timestamps) > 5000:
-            reply = QMessageBox.question(
-                self,
-                "Large Request",
-                f"This time range will generate {len(self.timestamps)} frames, which may take a long time to load and consumes significant memory.\n\n"
-                "Do you want to limit it to the first 5000 frames?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if reply == QMessageBox.Yes:
-                self.timestamps = self.timestamps[:5000]
-
-        # Clear old data
-        self.frames.clear()
-        self.current_frame = 0
-
         # Get selected instruments
         selected_instruments = self.get_selected_instruments()
         if not selected_instruments:
@@ -803,10 +824,32 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             )
             return
 
+        # Check for large frame count
+        count = start.secsTo(end) // interval_sec + 1
+        if count > 5000:
+            reply = QMessageBox.question(
+                self,
+                "Large Request",
+                f"This time range will generate {count} frames, which may take a long time to load and consumes significant memory.\n\n"
+                "Do you want to limit it to the first 5000 frames?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                count = 5000
+
+        # Clear old data
+        self.frames.clear()
+        self.failed_downloads.clear()
+        self.current_frame = 0
+
         # Show progress
+        self.downloads_total = count * len(selected_instruments)
+        self.downloads_done = 0
         self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, len(self.timestamps))
+        self.progress_bar.setRange(0, self.downloads_total)
         self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%v of %m")
         self.load_button.setEnabled(False)
         self.cancel_button.setVisible(True)
         self.crop_btn.setEnabled(False)
@@ -814,11 +857,14 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.diff_label.setEnabled(False)
         self.diff_combo.setCurrentIndex(0) # Reset to "None"
         self._loading = True
+        self._loading_names = {inst[0] for inst in selected_instruments}
 
         # Queue ALL frames for parallel download
-        for frame_idx in range(len(self.timestamps)):
-            for inst_data in selected_instruments:
-                self.download_queue.append((frame_idx, inst_data))
+        if count > 5000:
+            with busy(f"Preparing {count} frames…", self):
+                self._queue_frames(start, interval_sec, count, selected_instruments)
+        else:
+            self._queue_frames(start, interval_sec, count, selected_instruments)
 
         # Start initial batch of downloads
         self._process_frame_download_queue()
@@ -836,13 +882,19 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         # Enable controls (navigation etc) - images will appear as they load
         self.enable_controls()
 
+    def _queue_frames(self, start, interval_sec, count, instruments):
+        self.timestamps = [start.addSecs(i * interval_sec) for i in range(count)]
+        for frame_idx in range(count):
+            for inst_data in instruments:
+                self.download_queue.append((frame_idx, inst_data))
+
     def _process_frame_download_queue(self):
         """Start next frame downloads if under concurrent limit."""
         while (
             self.active_downloads < self.max_concurrent_downloads
             and self.download_queue
         ):
-            frame_idx, inst_data = self.download_queue.pop(0)
+            frame_idx, inst_data = self.download_queue.popleft()
             nickname, layer_path, observatory, description = inst_data
             timestamp = self.timestamps[frame_idx]
 
@@ -855,8 +907,8 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
                 height=self.image_size_spin.value(),
             )
             downloader.finished.connect(
-                lambda inst, pix, idx=frame_idx: self.on_parallel_image_downloaded(
-                    idx, inst, pix
+                lambda inst, image, idx=frame_idx: self.on_parallel_image_downloaded(
+                    idx, inst, image
                 )
             )
             downloader.error.connect(
@@ -869,7 +921,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             self.frame_loaders.append(downloader)
             downloader.start()
 
-    def on_parallel_image_downloaded(self, frame_idx, instrument, pixmap):
+    def on_parallel_image_downloaded(self, frame_idx, instrument, image):
         """Handle parallel image download completion."""
         if self._closing or not self._loading:
             return
@@ -877,11 +929,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         if frame_idx not in self.frames:
             self.frames[frame_idx] = {}
 
-        self.frames[frame_idx][instrument] = pixmap
-
-        # Update progress (count completed frames)
-        completed_frames = len(self.frames)
-        self.progress_bar.setValue(completed_frames)
+        self.frames[frame_idx][instrument] = QPixmap.fromImage(image)
 
         # If this is the current frame, update display
         if frame_idx == self.current_frame:
@@ -892,6 +940,9 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         if self._closing or not self._loading:
             return
         print(f"Error downloading {instrument} for frame {frame_idx}: {error}")
+        self.failed_downloads[(frame_idx, instrument)] = error
+        if frame_idx == self.current_frame:
+            self.display_current_frame()
 
     def _on_frame_download_finished(self):
         """Handle download thread finish and start next in queue."""
@@ -901,6 +952,13 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.active_downloads -= 1
         if self.active_downloads < 0:
             self.active_downloads = 0
+
+        # Those that failed count too: the bar ends when the work does
+        self.downloads_done += 1
+        self.progress_bar.setValue(self.downloads_done)
+        if self.failed_downloads:
+            self.progress_bar.setFormat(f"%v of %m, {len(self.failed_downloads)} failed")
+        self.frame_loaders = [l for l in self.frame_loaders if l.isRunning()]
 
         # Process next in queue
         self._process_frame_download_queue()
@@ -916,27 +974,30 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             return
 
         self._loading = False
-        self.download_queue = []
+        self.download_queue.clear()
         
         # Safely clear loaders and disconnect signals to prevent race conditions
         loaders = self.frame_loaders[:]
         self.frame_loaders = []
         
         for loader in loaders:
-            try:
-                # Disconnect all signals to ensure no UI updates are triggered
-                loader.finished.disconnect()
-                loader.error.disconnect()
-            except Exception:
-                pass
-                
-            if loader.isRunning():
-                loader.stop()
-                # Move to global list to keep reference alive until thread actually exits
-                _active_threads.append(loader)
+            self._abandon(loader)
         
         self.active_downloads = 0
         self.on_loading_finished(canceled=True)
+
+    @staticmethod
+    def _abandon(loader):
+        """Have ``loader`` stop, and hear no more from it."""
+        try:
+            # Disconnect all signals to ensure no UI updates are triggered
+            loader.finished.disconnect()
+            loader.error.disconnect()
+        except Exception:
+            pass
+        loader.stop()
+        # Keep a reference alive until the thread actually exits
+        _park(loader)
 
     def on_loading_finished(self, canceled=False):
         """Handle loading completion or cancellation."""
@@ -947,19 +1008,16 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.crop_btn.setEnabled(True)  # Enable crop after all loaded
         self.diff_combo.setEnabled(True)  # Enable diff after all loaded
         self.diff_label.setEnabled(True)
+        if self.timestamps:
+            self.display_current_frame()  # no longer "loading"
         
+        summary = f"Loaded {len(self.frames)} frames with selected instruments."
+        if self.failed_downloads:
+            summary += f"\nCould not download: {len(self.failed_downloads)}."
         if canceled:
-            QMessageBox.information(
-                self,
-                "Loading Canceled",
-                f"Loaded {len(self.frames)} frames with selected instruments.",
-            )
+            QMessageBox.information(self, "Loading Canceled", summary)
         else:
-            QMessageBox.information(
-                self,
-                "Loading Complete",
-                f"Loaded {len(self.frames)} frames with selected instruments.",
-            )
+            QMessageBox.information(self, "Loading Complete", summary)
 
     def enable_controls(self):
         """Enable animation controls."""
@@ -1034,6 +1092,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.selection_label = img_label if self.crop_mode else None
 
         img_label.setAlignment(Qt.AlignCenter)
+        waiting = None
 
         if pixmap:
             # Display scaled pixmap
@@ -1045,15 +1104,23 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             img_label.zoom_factor = self.zoom_factor
 
         else:
-            if self._loading:
-                img_label.setText("Loading...")
+            error = self.failed_downloads.get((self.current_frame, nickname))
+            if error:
+                img_label.setText("Could not download this frame")
+                img_label.setToolTip(error)
+            elif self._loading and nickname in self._loading_names:
+                waiting = ActivityLabel()
+                waiting.start("Downloading this frame…")
             else:
                 img_label.setText("No data loaded for this instrument")
             img_label.setObjectName("Hint")
             img_label.setMargin(60)
 
         # Add with stretch to center vertically
-        self.image_grid.addWidget(img_label, 1)
+        if waiting is not None:
+            self.image_grid.addWidget(waiting, 1, Qt.AlignCenter)
+        else:
+            self.image_grid.addWidget(img_label, 1)
 
         # Update frame label
         self.frame_label.setText(
@@ -1146,12 +1213,9 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
     # Difference methods
     def on_diff_mode_changed(self):
         """Handle difference mode change and refresh display."""
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
+        with busy("Updating the image…", self):
             self.diff_type = self.diff_combo.currentText()
             self.display_current_frame()
-        finally:
-            QApplication.restoreOverrideCursor()
 
     def cycle_diff_mode(self):
         """Cycle through difference modes."""
@@ -1208,66 +1272,42 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         if not current_pixmap or not reference_pixmap:
             return current_pixmap
 
-        # Convert to QImage
-        curr_img = current_pixmap.toImage().convertToFormat(QImage.Format_RGB888)
-        ref_img = reference_pixmap.toImage().convertToFormat(QImage.Format_RGB888)
-
-        # Basic size check (should match as per API usage)
-        if curr_img.size() != ref_img.size():
-            return current_pixmap
-
-        width = curr_img.width()
-        height = curr_img.height()
-        
-        # Get pixels via numpy for speed
-        import numpy as np
-        
-        # Current
-        curr_ptr = curr_img.bits()
-        curr_ptr.setsize(curr_img.byteCount())
-        arr_curr = np.frombuffer(curr_ptr, np.uint8).reshape((height, curr_img.bytesPerLine()))
-        arr_curr = arr_curr[:, :width * 3].reshape((height, width, 3)).astype(np.int16)
-        
-        # Reference
-        ref_ptr = ref_img.bits()
-        ref_ptr.setsize(ref_img.byteCount())
-        arr_ref = np.frombuffer(ref_ptr, np.uint8).reshape((height, ref_img.bytesPerLine()))
-        arr_ref = arr_ref[:, :width * 3].reshape((height, width, 3)).astype(np.int16)
-
-        # Difference math: (Current - Reference)
-        # We add 128 to show "no change" as mid-gray
-        diff = arr_curr - arr_ref
-        
-        # Enhance contrast for visibility: Multiply by 2.5 (increased for grayscale)
-        diff = (diff * 2.5 + 128).clip(0, 255)
-        
-        # Convert to Grayscale (Average of channels)
-        import numpy as np
-        gray_arr = np.mean(diff, axis=2).astype(np.uint8)
-
-        # Convert back to QImage/QPixmap
-        result_img = QImage(gray_arr.data, width, height, width, QImage.Format_Grayscale8)
-        return QPixmap.fromImage(result_img.copy()) # copy() ensures memory safety
+        # Only large frames take long enough to say so (and while playing,
+        # the frames moving on say it)
+        if self.playing or current_pixmap.width() * current_pixmap.height() < 2500 ** 2:
+            result = difference_image(current_pixmap.toImage(), reference_pixmap.toImage())
+        else:
+            with busy("Working out the difference…", self):
+                result = difference_image(current_pixmap.toImage(), reference_pixmap.toImage())
+        return QPixmap.fromImage(result) if result is not None else current_pixmap
 
     # Zoom controls
+    def _show_zoomed(self):
+        """Show the frame at the new zoom: scaling a large one takes a while."""
+        if self.image_size_spin.value() * self.zoom_factor > 3000:
+            with busy("Scaling the image…", self):
+                self.display_current_frame()
+        else:
+            self.display_current_frame()
+
     def zoom_in(self):
         """Increase zoom factor."""
         self.zoom_factor *= 1.25
         if self.zoom_factor > 10.0:
             self.zoom_factor = 10.0
-        self.display_current_frame()
+        self._show_zoomed()
 
     def zoom_out(self):
         """Decrease zoom factor."""
         self.zoom_factor /= 1.25
         if self.zoom_factor < 0.1:
             self.zoom_factor = 0.1
-        self.display_current_frame()
+        self._show_zoomed()
 
     def reset_zoom(self):
         """Reset zoom factor to 1.0."""
         self.zoom_factor = 1.0
-        self.display_current_frame()
+        self._show_zoomed()
 
     def toggle_crop_mode(self):
         """Enable/disable crop mode and update UI."""
@@ -1296,13 +1336,13 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             return
 
         # Apply crop to all frames
-        cropped_count = 0
-        for frame_idx in self.frames.keys():
-            for inst_name in self.frames[frame_idx].keys():
-                pixmap = self.frames[frame_idx][inst_name]
-                if pixmap:
-                    self.frames[frame_idx][inst_name] = pixmap.copy(crop_rect)
-                    cropped_count += 1
+        total = len(self.frames)
+        with busy(f"Cropping {total} frames…", self) as task:
+            for done, frame_data in enumerate(self.frames.values(), 1):
+                for inst_name, pixmap in frame_data.items():
+                    if pixmap:
+                        frame_data[inst_name] = pixmap.copy(crop_rect)
+                task.update(done=done, total=total)
 
         QMessageBox.information(
             self, "Crop Applied", f"Cropped {len(self.frames)} frames."
@@ -1317,37 +1357,27 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close."""
+        # An export under way goes first: its dialog says it is stopping
+        dialog = self.findChild(WorkDialog)
+        if dialog is not None and dialog.isVisible():
+            self._close_after_export = True
+            dialog.reject()
+            event.ignore()
+            return
+
         # Set closing flag first to prevent signal handlers from updating UI
         self._closing = True
 
         # Clear download queue first to prevent new downloads from starting
         self.download_queue.clear()
 
-        # Stop all loaders (ImageDownloader)
+        # Requests cannot be interrupted, and take up to their timeout: the
+        # window does not wait for them
         for loader in self.frame_loaders:
-            if hasattr(loader, "stop"):
-                loader.stop()
-
-        # Wait for all threads to finish with a timeout
-        remaining_threads = []
-        for loader in self.frame_loaders:
-            if loader.isRunning():
-                # Wait up to 1 second per thread (fast cleanup)
-                if not loader.wait(1000):
-                    print(
-                        f"[WARNING] Thread {loader} did not stop in time, moving to background"
-                    )
-                    remaining_threads.append(loader)
-
-        # Move stuck threads to global list to prevent GC crash
-        if remaining_threads:
-            global _active_threads
-            _active_threads.extend(remaining_threads)
-
-            # Clean up global list of finished threads
-            _active_threads = [t for t in _active_threads if t.isRunning()]
-
+            self._abandon(loader)
         self.frame_loaders.clear()
+        _park(self.instrument_loader)  # (its result finds _closing set)
+
         self.pause_animation()
         event.accept()
 

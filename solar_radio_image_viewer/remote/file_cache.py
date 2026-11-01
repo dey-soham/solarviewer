@@ -7,6 +7,7 @@ Cache is stored in ~/.cache/solarviewer/remote/<host>/<path>
 
 import os
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Optional, Dict, Tuple
@@ -60,6 +61,8 @@ class RemoteFileCache:
         self.cache_dir = cache_dir or self.DEFAULT_CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._metadata: Dict[str, CacheEntry] = {}
+        # Measuring and clearing are slow, and run off the GUI thread
+        self._lock = threading.RLock()
         self._load_metadata()
 
     def _get_metadata_path(self) -> Path:
@@ -80,9 +83,10 @@ class RemoteFileCache:
     def _save_metadata(self):
         """Save cache metadata to disk."""
         meta_path = self._get_metadata_path()
-        data = {k: v.to_dict() for k, v in self._metadata.items()}
-        with open(meta_path, "w") as f:
-            json.dump(data, f, indent=2)
+        with self._lock:
+            data = {k: v.to_dict() for k, v in self._metadata.items()}
+            with open(meta_path, "w") as f:
+                json.dump(data, f, indent=2)
 
     def _make_cache_key(self, host: str, remote_path: str) -> str:
         """Generate a unique key for a cached file."""
@@ -122,30 +126,31 @@ class RemoteFileCache:
         """
         key = self._make_cache_key(host, remote_path)
 
-        if key not in self._metadata:
-            return None
+        with self._lock:
+            if key not in self._metadata:
+                return None
 
-        entry = self._metadata[key]
-        local_path = Path(entry.local_path)
+            entry = self._metadata[key]
+            local_path = Path(entry.local_path)
 
-        # Check if local file still exists
-        if not local_path.exists():
-            del self._metadata[key]
-            self._save_metadata()
-            return None
+            # Check if local file still exists
+            if not local_path.exists():
+                del self._metadata[key]
+                self._save_metadata()
+                return None
 
-        # Check if remote file has changed
-        if entry.remote_mtime != remote_mtime or entry.remote_size != remote_size:
-            # Remote file changed, invalidate cache
-            try:
-                local_path.unlink()
-            except Exception:
-                pass
-            del self._metadata[key]
-            self._save_metadata()
-            return None
+            # Check if remote file has changed
+            if entry.remote_mtime != remote_mtime or entry.remote_size != remote_size:
+                # Remote file changed, invalidate cache
+                try:
+                    local_path.unlink()
+                except Exception:
+                    pass
+                del self._metadata[key]
+                self._save_metadata()
+                return None
 
-        return local_path
+            return local_path
 
     def is_cached(
         self,
@@ -169,7 +174,7 @@ class RemoteFileCache:
         """(host, remote path) of the server file ``local_path`` is a
         cached copy of, or None."""
         local = os.path.realpath(str(local_path))
-        for entry in self._metadata.values():
+        for entry in list(self._metadata.values()):
             if os.path.realpath(entry.local_path) == local:
                 return entry.remote_host, entry.remote_path
         return None
@@ -184,15 +189,16 @@ class RemoteFileCache:
     ):
         """Mark a file as cached after downloading."""
         key = self._make_cache_key(host, remote_path)
-        self._metadata[key] = CacheEntry(
-            remote_path=remote_path,
-            local_path=str(local_path),
-            remote_host=host,
-            remote_mtime=remote_mtime,
-            remote_size=remote_size,
-            cached_time=time.time(),
-        )
-        self._save_metadata()
+        with self._lock:
+            self._metadata[key] = CacheEntry(
+                remote_path=remote_path,
+                local_path=str(local_path),
+                remote_host=host,
+                remote_mtime=remote_mtime,
+                remote_size=remote_size,
+                cached_time=time.time(),
+            )
+            self._save_metadata()
 
     def _get_directory_size(self, path: Path) -> int:
         """Calculate total size of a directory recursively."""
@@ -218,7 +224,7 @@ class RemoteFileCache:
         total_size = 0
         file_count = 0
 
-        for entry in self._metadata.values():
+        for entry in list(self._metadata.values()):
             local_path = Path(entry.local_path)
             if local_path.exists():
                 try:
@@ -239,6 +245,11 @@ class RemoteFileCache:
         Args:
             host: If specified, only clear cache for this host.
                   If None, clear all cached files.
+
+        Raises:
+            OSError: something could not be deleted. What is left stays
+                counted, to be cleared again, but is no longer served: it
+                may be partly gone.
         """
         import shutil
 
@@ -251,19 +262,18 @@ class RemoteFileCache:
             resolved_path == Path.home().resolve()
             or resolved_path == Path("/").resolve()
         ):
-            print(
+            raise OSError(
                 f"SAFETY ERROR: Refusing to clear cache at dangerous path: {resolved_path}"
             )
-            return
 
         if safe_path_indicator not in str(resolved_path) and ".cache" not in str(
             resolved_path
         ):
-            print(
+            raise OSError(
                 f"SAFETY ERROR: Refusing to clear cache at suspicious path (missing 'solarviewer' or '.cache'): {resolved_path}"
             )
-            return
 
+        failed = []
         if host is None:
             # Clear everything
             keys_to_remove = list(self._metadata.keys())
@@ -281,12 +291,15 @@ class RemoteFileCache:
                     if item.name == self.PIECES_DIR:
                         continue  # (cleared on its own: Dynamic Spectrum Slices)
 
-                    if item.is_dir():
-                        shutil.rmtree(item)
-                    elif item.name != self.METADATA_FILE:
-                        item.unlink()
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                        elif item.name != self.METADATA_FILE:
+                            item.unlink()
+                    except Exception as e:
+                        failed.append(str(e) or type(e).__name__)
             except Exception as e:
-                print(f"Error clearing cache directory: {e}")
+                failed.append(str(e) or type(e).__name__)
 
         else:
             # Clear specific host only
@@ -297,22 +310,32 @@ class RemoteFileCache:
                 try:
                     shutil.rmtree(host_dir)
                 except Exception as e:
-                    print(f"Error clearing host cache {host}: {e}")
+                    failed.append(str(e) or type(e).__name__)
 
-            keys_to_remove = [
-                k for k, v in self._metadata.items() if v.remote_host == host
-            ]
+            with self._lock:
+                keys_to_remove = [
+                    k for k, v in self._metadata.items() if v.remote_host == host
+                ]
 
         # Update metadata
-        for key in keys_to_remove:
-            del self._metadata[key]
+        with self._lock:
+            for key in keys_to_remove:
+                entry = self._metadata.get(key)
+                if entry is not None and failed and Path(entry.local_path).exists():
+                    entry.remote_size = -1  # (matches no file of the server)
+                else:
+                    self._metadata.pop(key, None)
 
-        self._save_metadata()
+            self._save_metadata()
+
+        if failed:
+            more = f" (and {len(failed) - 1} more)" if len(failed) > 1 else ""
+            raise OSError(failed[0] + more)
 
     def get_cached_files_for_host(self, host: str) -> list:
         """Get list of cached files for a specific host."""
         result = []
-        for entry in self._metadata.values():
+        for entry in list(self._metadata.values()):
             if entry.remote_host == host:
                 local_path = Path(entry.local_path)
                 if local_path.exists():

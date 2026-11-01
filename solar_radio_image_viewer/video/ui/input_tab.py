@@ -20,16 +20,8 @@ from PyQt5.QtWidgets import (
     QRadioButton,
     QButtonGroup,
 )
-import glob
-from ..creator import (
-    observation_sort_key,
-)
-from ...processing.fits_io import is_casa_image
+from ...ui.activity import ActivityLabel
 from ...ui.open_image import choose_image
-from .helpers import (
-    wait_cursor,
-    is_image,
-)
 
 
 class InputTabMixin:
@@ -136,8 +128,8 @@ class InputTabMixin:
         show_image_source(True)
 
         # Files found status (separate from the group) - use theme-compatible styling
-        self.files_found_label = QLabel("No files found yet")
-        self.files_found_label.setObjectName("StatusLabel")
+        self.files_found_label = ActivityLabel("No files found yet")
+        self.files_found_label.label.setObjectName("StatusLabel")
         input_layout.addWidget(self.files_found_label)
         input_layout.addStretch()
         return input_scroll
@@ -209,41 +201,62 @@ class InputTabMixin:
                 self.preview_input_files()
 
     def preview_input_files(self):
-        """Find the images matching the input pattern and preview them."""
+        """Find the images matching the input pattern and preview them: reads
+        the folder again, on the planner's thread (see _on_scanned)."""
         if self.remote is not None:
-            self._forget_remote_lists()
-            self.files_found_label.setText(f"Reading the folder on {self.remote.label}…")
-            self.schedule_preview(delay=0)
-            return
-        with wait_cursor():
-            if not self.input_directory_edit.text() or not self.input_pattern_edit.text():
-                QMessageBox.warning(
-                    self,
-                    "Incomplete Input",
-                    "Please specify both directory and pattern.",
-                )
-                return
-            files, problem = self._input_files()
-            if problem:
-                self.files_found_label.setText(problem[0])
-                self.create_btn.setEnabled(False)
-                self.create_btn.setToolTip(problem[1])
-                QMessageBox.warning(self, *problem)
-                return
-
-            casa = sum(is_casa_image(f) for f in files)
-            self.files_found_label.setText(
-                f"Found {len(files)} images matching the pattern"
-                + (f" ({casa} CASA)" if casa else "")
+            self.files_found_label.start(f"Reading the folder on {self.remote.label}…")
+        elif not self.input_directory_edit.text() or not self.input_pattern_edit.text():
+            QMessageBox.warning(
+                self,
+                "Incomplete Input",
+                "Please specify both directory and pattern.",
             )
-            self.create_btn.setEnabled(True)
-            self.create_btn.setToolTip("")
+            return
+        else:
+            self.files_found_label.start("Scanning the folder…")
+        self._scanning = True
+        self._planner.forget()
+        self.schedule_preview(delay=0)
 
-            # The first image is previewed unless one of them already is
-            if not self.reference_image or self.reference_image not in files:
-                self.reference_image = files[0]
-                self.reference_image_edit.setText(self.reference_image)
-            self.update_preview(self.reference_image)
+    def _on_scanned(self, plan):
+        """Say what a plan found in the Input tab's folder, after a Scan (for
+        a server, after any plan: it was read anew)."""
+        scanning, self._scanning = self._scanning, False
+        label = self.files_found_label
+        if self.remote is not None:
+            if plan.input_files:
+                label.stop(
+                    f"Found {len(plan.input_files)} images matching the pattern on {self.remote.label}"
+                )
+            elif scanning:
+                label.stop(plan.input_problem[0] if plan.input_problem else "")
+            return
+        if not scanning:
+            return
+        files = plan.input_files
+        if not files:
+            problem = plan.input_problem or plan.problem
+            if not problem:
+                label.stop("")
+                return
+            label.stop(problem[0])
+            self.create_btn.setEnabled(False)
+            self.create_btn.setToolTip(problem[1])
+            QMessageBox.warning(self, *problem)
+            return
+        label.stop(
+            f"Found {len(files)} images matching the pattern"
+            + (f" ({plan.casa} CASA)" if plan.casa else "")
+        )
+        # The first image is previewed unless one of them already is
+        if not self.reference_image or self.reference_image not in files:
+            self.reference_image = files[0]
+            self.reference_image_edit.setText(self.reference_image)
+        if self.reference_image in self._preview_files:
+            slider = self.preview_panel.slider
+            slider.blockSignals(True)
+            slider.setValue(self._preview_files.index(self.reference_image))
+            slider.blockSignals(False)
 
     def browse_reference_image(self):
         """Browse for a reference image to use for preview and settings"""
@@ -262,66 +275,6 @@ class InputTabMixin:
             self.reference_image = filepath
             self.reference_image_edit.setText(filepath)
             self.update_preview(filepath)
-
-    def _input_files(self):
-        """(files, problem): the Input tab's files in the chosen order, or
-        ([], a message saying why there are none)."""
-        input_dir = self.input_directory_edit.text()
-        if self.remote is not None:
-            return self._remote_input_files(input_dir)
-        if not input_dir or not os.path.isdir(input_dir):
-            return [], (
-                "Invalid Directory",
-                "The specified input directory does not exist.",
-            )
-        if not self.input_pattern_edit.text().strip():
-            return [], ("No Pattern", "Enter a file pattern, e.g. *.fits or *.image")
-        input_path = os.path.join(input_dir, self.input_pattern_edit.text())
-        files = glob.glob(input_path)
-        if not files:
-            return [], ("No Files Found", f"No files match the pattern: {input_path}")
-        invalid = [os.path.basename(f) for f in files if not is_image(f)]
-        if invalid:
-            msg = (
-                f"Found {len(invalid)} files that are not images.\n"
-                "FITS files and CASA images are supported."
-            )
-            if len(invalid) > 5:
-                msg += "\n\nExamples:\n" + "\n".join(invalid[:5]) + "\n..."
-            else:
-                msg += "\n\nFiles:\n" + "\n".join(invalid)
-            return [], ("Invalid File Extensions", msg)
-
-        sort_method = self.sort_combo.currentText().lower()
-        if sort_method == "filename":
-            files.sort()
-        elif sort_method == "date/time":
-            # Observation time (header or file name), not file dates
-            files.sort(key=observation_sort_key)
-        elif sort_method == "extension":
-            files.sort(key=lambda x: os.path.splitext(x)[1])
-        return files, None
-
-    def _remote_input_files(self, folder):
-        """_input_files for images on a server."""
-        pattern = self.input_pattern_edit.text().strip()
-        if not folder:
-            return [], ("No Folder", "Choose the folder of the images on the server.")
-        if not pattern:
-            return [], ("No Pattern", "Enter a file pattern, e.g. *.fits or *.image")
-        files = self._remote_list(folder, pattern)
-        if files is None:
-            return [], ("Reading the Server", f"Reading {folder} on {self.remote.label}…")
-        if not files:
-            return [], ("No Files Found", f"No images match {pattern} in {folder} on the server")
-        sort_method = self.sort_combo.currentText().lower()
-        if sort_method == "date/time":
-            files = sorted(files, key=self._remote_sort_key)
-        elif sort_method == "extension":
-            files = sorted(files, key=lambda x: posixpath.splitext(x)[1])
-        else:
-            files = sorted(files)
-        return files, None
 
     def _browse_single_image(self):
         if self.remote is not None:

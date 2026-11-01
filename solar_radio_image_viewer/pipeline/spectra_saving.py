@@ -3,6 +3,7 @@ Saving cleaned dynamic spectra: the part shown or the whole file (page by
 page), locally or on the server, and comparing with the original.
 """
 
+import contextlib
 import logging
 import os
 import posixpath
@@ -16,8 +17,26 @@ from PyQt5.QtWidgets import (
 )
 import matplotlib.pyplot as plt
 
+from ..ui.busy import busy
 from .spectra_common import rebin
 logger = logging.getLogger(__name__)
+
+
+def _compared(original, cleaned, scale):
+    """``original`` and ``cleaned`` as masked arrays, and the limits of each
+    in the same scaling as the view (``scale``); off the GUI thread."""
+    low, high = {"0-100%": (0, 100), "0.1-99.9%": (0.1, 99.9), "0.5-99.5%": (0.5, 99.5)}.get(
+        scale, (1, 99)
+    )
+    limits = []
+    arrays = [ma.masked_invalid(original), ma.masked_invalid(cleaned)]
+    for array in arrays:
+        values = array.compressed()
+        if (low, high) == (0, 100):
+            limits.append((values.min(), values.max()))
+        else:
+            limits.append((np.percentile(values, low), np.percentile(values, high)))
+    return (*arrays, *limits)
 
 
 class SpectraSavingMixin:
@@ -36,8 +55,8 @@ class SpectraSavingMixin:
     ``_masks``, ``_nav_mode``, ``_noise_image``, ``_noise_rows``,
     ``_original_data``, ``_previewing``, ``_remote``, ``_rfi_enabled``,
     ``_rfi_options``, ``_rfi_settings``, ``_server``, ``_server_work``,
-    ``_time_axis``, ``_time_dim``, ``_total_pages``, ``_unmodified``,
-    ``canvas``, ``current_filename``, ``hdul``, ``wait_cursor``
+    ``_shown_raw``, ``_time_axis``, ``_time_dim``, ``_total_pages``,
+    ``canvas``, ``current_filename``, ``hdul``
     """
 
     def _ask_save_extent(self):
@@ -67,15 +86,18 @@ class SpectraSavingMixin:
         ``fileName``; raises Cancelled if the user stops it."""
         if extent == "shown" and self._previewing():
             raise ValueError("the page is still loading: save it once it shows in full")
+        # (the widgets and what is shown, read here: the writing is off the GUI thread)
+        settings = self._rfi_settings() if self._rfi_enabled else None
         if extent == "shown":
-            with self.wait_cursor():
-                self._write_cleaned(fileName)
+            shown = (self._original_data, self._time_axis, self._freq_axis)
+            self._server_work(
+                f"Saving {os.path.basename(fileName)}…",
+                lambda _, cancelled: self._write_cleaned(fileName, *shown, settings, cancelled),
+            )
             return
         self._server_work(
-            "Saving the whole file...",
-            lambda progress, cancelled: self._write_whole(fileName, progress, cancelled),
-            threaded=True,
-            title="Save",
+            "Saving the whole file…",
+            lambda progress, cancelled: self._write_whole(fileName, settings, progress, cancelled),
         )
 
     def saveCleanedData(self):
@@ -94,7 +116,9 @@ class SpectraSavingMixin:
             self._save_to(fileName, extent)
             self.statusBar().showMessage(f"Saved cleaned data to {fileName}", 5000)
         except Exception as e:
-            if type(e).__name__ != "Cancelled":
+            if type(e).__name__ == "Cancelled":
+                self.statusBar().showMessage("Saving cancelled", 5000)
+            else:
                 QMessageBox.critical(self, "Error", f"Failed to save FITS:\n{e}")
 
     def saveCleanedToServer(self):
@@ -133,7 +157,15 @@ class SpectraSavingMixin:
         if self._remote is not None and path == self._remote.path:
             QMessageBox.warning(self, "Save to Server", "That is the file opened: choose another name.")
             return
-        if files.exists(path):
+        try:
+            exists = self._server_work("Checking the server…", lambda *_: files.exists(path))
+        except Exception as e:
+            if type(e).__name__ == "Cancelled":
+                self.statusBar().showMessage("Saving cancelled", 5000)
+            else:
+                QMessageBox.critical(self, "Error", f"Failed to save to the server:\n{e}")
+            return
+        if exists:
             reply = QMessageBox.question(
                 self, "Save to Server", f"{path} exists. Replace it?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
@@ -146,22 +178,24 @@ class SpectraSavingMixin:
         try:
             self._save_to(local, extent)
             self._server_work(
-                f"Uploading {name}...",
+                f"Uploading {name}…",
                 lambda progress, cancelled: files.upload(local, path, progress, cancelled),
-                threaded=True,
             )
             self.statusBar().showMessage(f"Saved cleaned data to {files.host}:{path}", 8000)
         except Exception as e:
-            if type(e).__name__ != "Cancelled":
+            if type(e).__name__ == "Cancelled":
+                self.statusBar().showMessage("Saving cancelled", 5000)
+            else:
                 QMessageBox.critical(self, "Error", f"Failed to save to the server:\n{e}")
         finally:
             import shutil
 
             shutil.rmtree(os.path.dirname(local), ignore_errors=True)
 
-    def _cleaned_header(self, shape, time_axis, freq_axis):
+    def _cleaned_header(self, shape, time_axis, freq_axis, settings):
         """Header of a cleaned file of ``shape`` (time, freq): the original's
-        cards, a linear WCS of the axes, and what was done."""
+        cards, a linear WCS of the axes, and what was done (``settings``: of
+        the automatic RFI flags, None without them)."""
         header = fits.Header()
         header["SIMPLE"] = True
         header["BITPIX"] = -32
@@ -195,8 +229,8 @@ class SpectraSavingMixin:
                 f"  {len(self._masks)} masked regions, "
                 f"{len(self._global_masked_freq_indices)} channels masked at all times"
             )
-        if self._rfi_enabled:
-            st = self._rfi_settings()
+        if settings is not None:
+            st = settings
             used = [
                 name for name, on in (
                     ("ConvRFI (Zhang et al. 2023)", st.convrfi),
@@ -257,14 +291,28 @@ class SpectraSavingMixin:
             )
         return tables
 
-    def _write_cleaned(self, fileName):
-        """Write the data shown (and its axes) to FITS file ``fileName``."""
-        data = np.asarray(self._original_data, np.float32)
-        header = self._cleaned_header(data.shape, self._time_axis, self._freq_axis)
+    def _write_cleaned(self, fileName, data, time_axis, freq_axis, settings, cancelled):
+        """Write ``data`` (and its axes) to FITS file ``fileName``, whole or
+        (if ``cancelled`` meanwhile) not at all; off the GUI thread."""
+        from ..remote.remote_fits import Cancelled
+
+        data = np.asarray(data, np.float32)
+        header = self._cleaned_header(data.shape, time_axis, freq_axis, settings)
         hdul = fits.HDUList(
-            [fits.PrimaryHDU(data, header)] + self._axis_tables(self._time_axis, self._freq_axis)
+            [fits.PrimaryHDU(data, header)] + self._axis_tables(time_axis, freq_axis)
         )
-        hdul.writeto(fileName, overwrite=True)
+        # (the name's end stays: astropy compresses by it)
+        folder, name = os.path.split(fileName)
+        partial = os.path.join(folder, f".part-{name}")
+        try:
+            hdul.writeto(partial, overwrite=True)
+            if cancelled():
+                raise Cancelled()
+            os.replace(partial, fileName)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.remove(partial)
+            raise
 
     def _cleaning_chunks(self):
         """(start, stop) rows of the file cleaned together when saving it:
@@ -281,9 +329,13 @@ class SpectraSavingMixin:
             window = max(time_bin, (16_000_000 // max(nf, 1)) // time_bin * time_bin)
         return [(s, min(s + window, total)) for s in range(0, total, window)]
 
-    def _write_whole(self, fileName, progress, cancelled):
+    def _write_whole(self, fileName, settings, progress, cancelled):
         """Write the whole file, cleaned as shown, to ``fileName``: read,
-        cleaned and written page by page (runs in a background thread)."""
+        cleaned and written page by page (runs in a background thread). If
+        ``cancelled`` meanwhile, not at all: ``fileName`` stays as it was."""
+        from ..remote.remote_fits import Cancelled
+
+        progress(stage="Preparing to save the whole file…")
         image = self._image()
         full_time = self._full_time_axis
         total = len(full_time)
@@ -294,30 +346,37 @@ class SpectraSavingMixin:
         _, freq_out = self._binned_axes(None, self._full_freq_axis)
         nf = image.shape[1] if time_major else image.shape[0]
         nf_out = -(-nf // freq_bin)
-        header = self._cleaned_header((len(time_out), nf_out), time_out, freq_out)
+        header = self._cleaned_header((len(time_out), nf_out), time_out, freq_out, settings)
 
         partial = f"{fileName}.part"
         if os.path.exists(partial):
             os.remove(partial)
         stream = fits.StreamingHDU(partial, header)
+        progress(stage="Saving the whole file…")
         try:
-            self._stream_chunks(stream, image, chunks, time_major, nf, total, progress, cancelled)
+            try:
+                self._stream_chunks(stream, image, chunks, time_major, nf, total, settings, progress, cancelled)
+            finally:
+                stream.close()
+            if cancelled():
+                raise Cancelled()
+            progress(stage="Finishing the file…")
+            with fits.open(partial, mode="append") as hdul:
+                for table in self._axis_tables(time_out, freq_out):
+                    hdul.append(table)
+            if cancelled():
+                raise Cancelled()
+            os.replace(partial, fileName)
         except BaseException:
-            stream.close()
-            os.remove(partial)
+            with contextlib.suppress(OSError):
+                os.remove(partial)
             raise
-        stream.close()
-        with fits.open(partial, mode="append") as hdul:
-            for table in self._axis_tables(time_out, freq_out):
-                hdul.append(table)
-        os.replace(partial, fileName)
 
-    def _stream_chunks(self, stream, image, chunks, time_major, nf, total, progress, cancelled):
+    def _stream_chunks(self, stream, image, chunks, time_major, nf, total, settings, progress, cancelled):
         """Clean the file's rows ``chunks`` and write them to ``stream``."""
         from ..remote.remote_fits import Cancelled, reporting
 
         full_time = self._full_time_axis
-        settings = self._rfi_settings() if self._rfi_enabled else None
         noise = self._noise_image() if settings is not None and settings.noise else None
         fill_mode = self._rfi_options["fill"]
         done = 0
@@ -354,62 +413,42 @@ class SpectraSavingMixin:
             progress(done * nf * 4, total * nf * 4)
 
     def compareOriginalCleaned(self):
-        original = self._unmodified()
-        if original is None or self._original_data is None:
+        if self._shown_raw is None or self._original_data is None:
             QMessageBox.information(self, "Info", "No data loaded.")
             return
-        with self.wait_cursor():
+        # (the original: what is shown without masks or normalisation, averaged as set)
+        raw, cleaned, scale = self._shown_raw[0], self._original_data, self.canvas._smart_scale
+        try:
+            orig_ma, cle_ma, (orig_vmin, orig_vmax), (cle_vmin, cle_vmax) = self._server_work(
+                "Comparing with the original…", lambda *_: _compared(self._binned(raw), cleaned, scale)
+            )
+        except Exception as e:
+            if type(e).__name__ == "Cancelled":
+                self.statusBar().showMessage("Cancelled", 5000)
+            else:
+                QMessageBox.critical(self, "Error", f"Failed to compare:\n{e}")
+            return
+        with busy("Drawing the comparison…", self):
             fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
-        axes[0].set_title("Original Unmodified")
-        axes[1].set_title("Current Cleaned")
-        orig_ma = ma.masked_invalid(original)
-        cle_ma = ma.masked_invalid(self._original_data)
-
-        # Apply the same scaling as the current view
-        if self.canvas._smart_scale == "0-100%":
-            orig_vals = orig_ma.compressed()
-            cle_vals = cle_ma.compressed()
-            orig_vmin, orig_vmax = orig_vals.min(), orig_vals.max()
-            cle_vmin, cle_vmax = cle_vals.min(), cle_vals.max()
-        elif self.canvas._smart_scale == "0.1-99.9%":
-            orig_vals = orig_ma.compressed()
-            cle_vals = cle_ma.compressed()
-            orig_vmin = np.percentile(orig_vals, 0.1)
-            orig_vmax = np.percentile(orig_vals, 99.9)
-            cle_vmin = np.percentile(cle_vals, 0.1)
-            cle_vmax = np.percentile(cle_vals, 99.9)
-        elif self.canvas._smart_scale == "0.5-99.5%":
-            orig_vals = orig_ma.compressed()
-            cle_vals = cle_ma.compressed()
-            orig_vmin = np.percentile(orig_vals, 0.5)
-            orig_vmax = np.percentile(orig_vals, 99.5)
-            cle_vmin = np.percentile(cle_vals, 0.5)
-            cle_vmax = np.percentile(cle_vals, 99.5)
-        else:  # "1-99%"
-            orig_vals = orig_ma.compressed()
-            cle_vals = cle_ma.compressed()
-            orig_vmin = np.percentile(orig_vals, 1)
-            orig_vmax = np.percentile(orig_vals, 99)
-            cle_vmin = np.percentile(cle_vals, 1)
-            cle_vmax = np.percentile(cle_vals, 99)
-
-        norm1 = self.canvas.get_normalization(orig_vmin, orig_vmax)
-        norm2 = self.canvas.get_normalization(cle_vmin, cle_vmax)
-        im1 = axes[0].imshow(
-            orig_ma.T, origin="lower", aspect="auto", norm=norm1, cmap=self.canvas._cmap
-        )
-        fig.colorbar(im1, ax=axes[0], label="")
-        im2 = axes[1].imshow(
-            cle_ma.T, origin="lower", aspect="auto", norm=norm2, cmap=self.canvas._cmap
-        )
-        fig.colorbar(im2, ax=axes[1], label="")
-        axes[0].set_xlabel("Time Index")
-        axes[1].set_xlabel("Time Index")
-        axes[0].set_ylabel("Frequency Index")
-        axes[1].set_ylabel("Frequency Index")
-        fig.suptitle("Original vs Cleaned")
-        fig.tight_layout()
-        fig.show()
+            axes[0].set_title("Original Unmodified")
+            axes[1].set_title("Current Cleaned")
+            norm1 = self.canvas.get_normalization(orig_vmin, orig_vmax)
+            norm2 = self.canvas.get_normalization(cle_vmin, cle_vmax)
+            im1 = axes[0].imshow(
+                orig_ma.T, origin="lower", aspect="auto", norm=norm1, cmap=self.canvas._cmap
+            )
+            fig.colorbar(im1, ax=axes[0], label="")
+            im2 = axes[1].imshow(
+                cle_ma.T, origin="lower", aspect="auto", norm=norm2, cmap=self.canvas._cmap
+            )
+            fig.colorbar(im2, ax=axes[1], label="")
+            axes[0].set_xlabel("Time Index")
+            axes[1].set_xlabel("Time Index")
+            axes[0].set_ylabel("Frequency Index")
+            axes[1].set_ylabel("Frequency Index")
+            fig.suptitle("Original vs Cleaned")
+            fig.tight_layout()
+            fig.show()
 
     def revertToOriginal(self):
         """Remove all masks, drawn and extended, and the Keep regions (Undo

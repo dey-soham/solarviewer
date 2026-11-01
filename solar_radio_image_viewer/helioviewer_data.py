@@ -1,7 +1,7 @@
 """
 Helioviewer data for the browser: the instruments and their cadences, the
-list of data sources from the Helioviewer API, and the thread that
-downloads one image.
+list of data sources from the Helioviewer API, and the threads that fetch
+that list and download one image.
 """
 
 import logging
@@ -9,7 +9,7 @@ from PyQt5.QtCore import (
     QThread,
     pyqtSignal,
 )
-from PyQt5.QtGui import QPixmap, QImage
+from PyQt5.QtGui import QImage
 import requests
 from typing import List, Tuple
 
@@ -110,8 +110,9 @@ VERIFIED_INSTRUMENTS = [
 ]
 
 
-def fetch_all_instruments() -> List[Tuple[str, str, str, str]]:
-    """Fetch all available instruments from Helioviewer API."""
+def fetch_all_instruments(on_fallback=None) -> List[Tuple[str, str, str, str]]:
+    """Fetch all available instruments from Helioviewer API. If that fails,
+    ``on_fallback(error)`` is told and the known instruments are returned."""
     try:
         url = "https://api.helioviewer.org/v2/getDataSources/"
         response = requests.get(url, timeout=10)
@@ -214,6 +215,8 @@ def fetch_all_instruments() -> List[Tuple[str, str, str, str]]:
         import traceback
 
         traceback.print_exc()
+        if on_fallback is not None:
+            on_fallback(e)
         # Transform VERIFIED_INSTRUMENTS to (name, layer_path, observatory, cadence)
         fallback = []
         for name in VERIFIED_INSTRUMENTS:
@@ -260,10 +263,23 @@ def fetch_all_instruments() -> List[Tuple[str, str, str, str]]:
         return fallback
 
 
+class InstrumentLoader(QThread):
+    """Thread to fetch the list of instruments."""
+
+    # instruments, why they are only the known ones ("" if they are the API's)
+    loaded = pyqtSignal(object, str)
+
+    def run(self):
+        problem = []
+        instruments = fetch_all_instruments(lambda e: problem.append(str(e) or "No answer"))
+        self.loaded.emit(instruments, problem[0] if problem else "")
+
+
 class ImageDownloader(QThread):
     """Thread to download a single image."""
 
-    finished = pyqtSignal(str, QPixmap)  # instrument, pixmap
+    # A QImage: a QPixmap can only be made on the GUI thread
+    finished = pyqtSignal(str, QImage)  # instrument, image
     error = pyqtSignal(str, str)  # instrument, error_msg
 
     def __init__(self, instrument_name, layer_path, timestamp, width=1000, height=1000):
@@ -346,12 +362,10 @@ class ImageDownloader(QThread):
             if not self.running:
                 return
 
-            # Convert to QPixmap
             qimage = QImage()
             if qimage.loadFromData(response.content):
-                pixmap = QPixmap.fromImage(qimage)
                 if self.running:
-                    self.finished.emit(self.instrument_name, pixmap)
+                    self.finished.emit(self.instrument_name, qimage)
             else:
                 if self.running:
                     self.error.emit(self.instrument_name, "Failed to load image data")

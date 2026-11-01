@@ -5,6 +5,7 @@ Opening files and stepping through a directory (local or remote).
 import logging
 from contextlib import nullcontext
 import os
+import time
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
@@ -12,6 +13,8 @@ from PyQt5.QtWidgets import (
 )
 
 from ..processing.fits_io import SPECTRUM, fits_kind, is_fits
+from ..ui.activity import track_thread
+from ..ui.background import Cancelled, run_in_thread
 from ..ui.open_image import choose_image
 from ..ui.recent_files import forget_image, last_image_folder, remember_image
 from ..ui.styles import set_hand_cursor
@@ -20,6 +23,34 @@ logger = logging.getLogger(__name__)
 
 
 from ..ui.geometry import fit_to_screen
+
+# A server silent for this long (s) while listing a folder is given up on
+LISTING_TIMEOUT = 60
+# A key's step this soon after the last one ended (s) came in behind it
+STEP_BEHIND_S = 0.015
+
+
+def _images_in_folder(folder, pattern):
+    """The FITS files and CASA images in ``folder`` matching the glob
+    ``pattern``, sorted. On a thread: a network disk can take its time."""
+    import fnmatch
+
+    images = []
+    for item in os.listdir(folder):
+        item_path = os.path.join(folder, item)
+
+        # Check if it matches the filter pattern
+        if not fnmatch.fnmatch(item, pattern):
+            continue
+
+        # Include FITS files
+        if is_fits(item_path):
+            images.append(item_path)
+        # Include CASA images (directories that look like images)
+        elif os.path.isdir(item_path) and item.endswith(".image"):
+            images.append(item_path)
+    # Sort alphabetically
+    return sorted(images)
 
 
 class FileNavigationMixin:
@@ -41,6 +72,10 @@ class FileNavigationMixin:
     # runs on to its end), kept from the garbage collector until they end:
     # a QThread dropped while it runs aborts the app
     _remote_listings: set = set()
+    # The download cancelled last, which stops only at its next data, so
+    # kept likewise (see _await_ending_download)
+    _ending_download = None
+    _last_step_end = 0.0  # when the last next/previous step ended
 
     def _stepped(self, kind):
         """The page hears of a step ("prev", "next", "first", "last"): the
@@ -211,7 +246,6 @@ class FileNavigationMixin:
         Args:
             rescan_only: If True, don't change the filter pattern (user manually set it)
         """
-        import fnmatch
         import os
 
         if not self.imagename:
@@ -246,31 +280,27 @@ class FileNavigationMixin:
             self._file_filter_pattern = default_pattern
 
         # Get all items in directory
-        all_items = []
+        self._scanning_folder = True
         try:
-            for item in os.listdir(self._file_base_dir):
-                item_path = os.path.join(self._file_base_dir, item)
-
-                # Check if it matches the filter pattern
-                if not fnmatch.fnmatch(item, self._file_filter_pattern):
-                    continue
-
-                # Include FITS files
-                if is_fits(item_path):
-                    all_items.append(item_path)
-                # Include CASA images (directories that look like images)
-                elif os.path.isdir(item_path) and item.endswith(".image"):
-                    all_items.append(item_path)
+            self._file_list = run_in_thread(
+                self,
+                f"Listing {os.path.basename(self._file_base_dir.rstrip('/')) or self._file_base_dir}…",
+                _images_in_folder,
+                self._file_base_dir,
+                self._file_filter_pattern,
+            )
         except Exception as e:
-            logger.error(f"Error scanning directory: {e}")
-            self.show_status_message(f"Error scanning directory: {e}")
+            if isinstance(e, Cancelled):
+                self.show_status_message("Listing the folder cancelled")
+            else:
+                logger.error(f"Error scanning directory: {e}")
+                self.show_status_message(f"Error scanning directory: {e}")
             self._file_list = []
             self._file_list_index = -1
             self._update_nav_buttons()
             return
-
-        # Sort alphabetically
-        self._file_list = sorted(all_items)
+        finally:
+            self._scanning_folder = False
 
         # Find current file index
         current_path = os.path.abspath(self.imagename)
@@ -281,12 +311,18 @@ class FileNavigationMixin:
                 break
 
         self._update_nav_buttons()
+        if getattr(self, "_prefetch_after_scan", False):
+            self._prefetch_after_scan = False
+            self._prefetch_neighbour_files()
 
     def _prefetch_neighbour_files(self):
         """Start reading the files either side of the current one in the
         background, with the settings the next load will use."""
         from ..processing.prefetch import image_prefetcher
 
+        if getattr(self, "_scanning_folder", False):
+            self._prefetch_after_scan = True  # (of the folder it is listing)
+            return
         index = getattr(self, "_file_list_index", -1)
         if getattr(self, "_is_remote_mode", False) or index < 0:
             return
@@ -355,9 +391,11 @@ class FileNavigationMixin:
             )
 
     def _populate_remote_file_list(
-        self, main_window, remote_dir, casa_mode, current_local_path
+        self, main_window, remote_dir, casa_mode, current_local_path, on_done=None
     ):
-        """Populate the file list from a remote directory for navigation (async)."""
+        """Populate the file list from a remote directory for navigation
+        (async). ``on_done()``, if given, is called when that has ended,
+        however it went."""
         # Start async population - don't block UI
         from PyQt5.QtCore import QThread, pyqtSignal
 
@@ -418,7 +456,9 @@ except Exception:
                     # Try python3 first, then python
                     cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.remote_dir)}"
                     try:
-                        stdin, stdout, stderr = self.connection.exec_command(cmd)
+                        stdin, stdout, stderr = self.connection.exec_command(
+                            cmd, timeout=LISTING_TIMEOUT
+                        )
 
                         # Read output
                         out_data = stdout.read().decode("utf-8").strip()
@@ -451,6 +491,7 @@ except Exception:
                     if not success:
                         if self.connection.is_connected():
                             self._sftp = self.connection.open_sftp()
+                            self._sftp.get_channel().settimeout(LISTING_TIMEOUT)
                         else:
                             self.error.emit("Not connected")
                             return
@@ -522,6 +563,8 @@ except Exception:
                 not main_window.remote_connection
                 or not main_window.remote_connection.is_connected()
             ):
+                if on_done is not None:
+                    on_done()
                 return
 
             current_basename = os.path.basename(current_local_path)
@@ -556,15 +599,19 @@ except Exception:
                 self._file_list_index = -1
                 try:
                     self._update_nav_buttons()
+                    self.show_status_message(f"Could not list {remote_dir}: {msg}")
                 except RuntimeError:
                     pass
 
             thread.listed.connect(on_listed)
             thread.error.connect(on_error)
+            track_thread(thread, f"Listing {remote_dir}…", self)
             FileNavigationMixin._remote_listings.add(thread)
             thread.finished.connect(
                 lambda t=thread: FileNavigationMixin._remote_listings.discard(t)
             )
+            if on_done is not None:
+                thread.finished.connect(on_done)
             thread.start()
 
         except Exception as e:
@@ -573,11 +620,24 @@ except Exception:
             self._file_list = []
             self._file_list_index = -1
             self._update_nav_buttons()
+            if on_done is not None:
+                on_done()
 
     def _load_remote_file(self, remote_path):
         """Download and load a remote file for navigation. Returns what
-        on_visualization_changed does (True once shown), False if it could
-        not be downloaded."""
+        on_visualization_changed does (True once shown, None if the user
+        cancelled), False if it could not be downloaded."""
+        # The download's dialog leaves the file list's window usable
+        if getattr(self, "_loading_remote", False):
+            self.show_status_message("Still loading the last image")
+            return False
+        self._loading_remote = True
+        try:
+            return self._fetch_and_show_remote_file(remote_path)
+        finally:
+            self._loading_remote = False
+
+    def _fetch_and_show_remote_file(self, remote_path):
         from pathlib import Path
 
         main_window = self.window()
@@ -596,8 +656,17 @@ except Exception:
 
             from ..remote.download_thread import DownloadThread
 
-            # Get the remote file info
-            entry = main_window.remote_connection.get_file_info(remote_path)
+            self._await_ending_download()
+
+            # Get the remote file info (on a thread: with the window held up
+            # here, the health check could not notice a dead connection)
+            name = os.path.basename(remote_path)
+            entry = run_in_thread(
+                self,
+                f"Checking {name} on the server…",
+                main_window.remote_connection.get_file_info,
+                remote_path,
+            )
 
             # Check cache first
             cached_path = main_window.remote_cache.get_cached_path(
@@ -618,7 +687,7 @@ except Exception:
 
                 # Create progress dialog
                 progress = QProgressDialog(
-                    f"Downloading {os.path.basename(remote_path)}...",
+                    f"Downloading {name}…",
                     "Cancel",
                     0,
                     100,
@@ -649,12 +718,12 @@ except Exception:
                         progress.setValue(percent)
                         if total > 1024 * 1024:
                             progress.setLabelText(
-                                f"Downloading {os.path.basename(remote_path)}...\n"
+                                f"Downloading {name}…\n"
                                 f"{transferred / (1024**2):.1f} / {total / (1024**2):.1f} MB"
                             )
                         else:
                             progress.setLabelText(
-                                f"Downloading {os.path.basename(remote_path)}...\n"
+                                f"Downloading {name}…\n"
                                 f"{transferred / 1024:.1f} / {total / 1024:.1f} KB"
                             )
 
@@ -669,14 +738,14 @@ except Exception:
                     loop.quit()
 
                 def on_cancel():
+                    # At once: the thread sees this only when data next
+                    # arrives, which on a stalled link may be never
                     download_thread.cancel()
-                    progress.setLabelText("Cancelling...")
-                    progress.setCancelButtonText(None)  # Disable cancel button
-                    # We don't quit loop yet, wait for thread to actually stop or finish
-                    # But if we rely on loop.quit, we need to ensure thread finishes.
-                    # As a fallback, we can forcefully quit loop if needed, but better to wait.
+                    download_result["cancelled"] = True
+                    loop.quit()
 
                 download_thread.progress.connect(on_progress)
+                download_thread.phase.connect(progress.setLabelText)
                 download_thread.finished.connect(on_finished)
                 download_thread.error.connect(on_error)
                 progress.canceled.connect(on_cancel)
@@ -707,8 +776,14 @@ except Exception:
                 loop.exec_()
 
                 safety_timer.stop()
+                # (Closing the dialog is also heard as Cancel)
+                progress.canceled.disconnect(on_cancel)
+                download_thread.progress.disconnect(on_progress)
                 progress.close()
-                download_thread.wait()  # Ensure thread is joined
+                if download_result.get("cancelled"):
+                    FileNavigationMixin._ending_download = download_thread
+                else:
+                    download_thread.wait()  # Ensure thread is joined
 
                 if not download_result["success"]:
                     if download_result["error"]:
@@ -743,11 +818,29 @@ except Exception:
         except InterruptedError:
             # User cancelled the download
             self.show_status_message("Download cancelled")
-            return False
+            return None
+        except Cancelled:
+            self.show_status_message("Cancelled")
+            return None
         except Exception as e:
             logger.error(f"Failed to load remote file: {e}")
             self.show_status_message(f"Failed to load remote file: {e}")
             return False
+
+    def _await_ending_download(self):
+        """Wait for the download cancelled last, if it runs yet: it replaces
+        the shared SFTP channel when it stops, under any transfer started
+        before that, and it writes to the same cached file. Cancelling this
+        wait raises Cancelled."""
+        from ..remote.download_thread import TRANSFER_STALL_TIMEOUT
+
+        thread = FileNavigationMixin._ending_download
+        if thread is None or thread.isFinished():
+            return
+        # (A stalled link ends it at its timeout, then a reconnect)
+        limit_ms = (TRANSFER_STALL_TIMEOUT + 60) * 1000
+        if not run_in_thread(self, "Stopping the last download…", thread.wait, limit_ms):
+            raise RuntimeError("the last download has not stopped yet, try again in a moment")
 
     def _load_file_index(self, new_index, done="Loaded"):
         """Load file ``new_index`` of the file list (as next/previous do);
@@ -760,10 +853,13 @@ except Exception:
             if hasattr(main_window, "open_spectrum"):
                 return main_window.open_spectrum(new_path)
             return False
+        before = (self._file_list_index, self.imagename)
         self._file_list_index = new_index
 
         if self._is_remote_mode:
             shown = self._load_remote_file(new_path)
+            if not shown and self.imagename == before[1]:
+                self._file_list_index = before[0]  # the image stayed
         else:
             self._reset_hpc_state()
             self.imagename = new_path
@@ -789,36 +885,55 @@ except Exception:
             index += step
         return False
 
+    def _behind_last_step(self):
+        """Whether this is a key's step that came in behind the last one: the
+        repeats of a held key wait out a slow image, and would go on stepping
+        long after it is let go. (Each click of a button counts.)"""
+        now = time.monotonic()
+        behind = self.sender() is None and now - self._last_step_end < STEP_BEHIND_S
+        if behind:
+            self._last_step_end = now
+        return behind
+
+    def _step_and_tell(self, start, step, kind, done="Loaded"):
+        """Step, and the panes following this one step too unless the user
+        cancelled. Returns what _step_file does; the _on_*_file methods
+        return False when there was nothing to do, so None always means
+        cancelled."""
+        shown = self._step_file(start, step, done)
+        if shown is not None:
+            self._stepped(kind)
+        if kind in ("prev", "next"):
+            self._last_step_end = time.monotonic()
+        return shown
+
     def _on_prev_file(self):
         """Load the previous file in the file list"""
-        if self._file_list_index <= 0:
-            return
-        self._step_file(self._file_list_index - 1, -1)
-        self._stepped("prev")
+        if self._file_list_index <= 0 or self._behind_last_step():
+            return False
+        return self._step_and_tell(self._file_list_index - 1, -1, "prev")
 
     def _on_next_file(self):
         """Load the next file in the file list"""
         if (
             self._file_list_index < 0
             or self._file_list_index >= len(self._file_list) - 1
+            or self._behind_last_step()
         ):
-            return
-        self._step_file(self._file_list_index + 1, 1)
-        self._stepped("next")
+            return False
+        return self._step_and_tell(self._file_list_index + 1, 1, "next")
 
     def _on_first_file(self):
         """Load the first file in the file list"""
         if not self._file_list or self._file_list_index <= 0:
-            return
-        self._step_file(0, 1, "Loaded first file:")
-        self._stepped("first")
+            return False
+        return self._step_and_tell(0, 1, "first", "Loaded first file:")
 
     def _on_last_file(self):
         """Load the last file in the file list"""
         if not self._file_list or self._file_list_index >= len(self._file_list) - 1:
-            return
-        self._step_file(len(self._file_list) - 1, -1, "Loaded last file:")
-        self._stepped("last")
+            return False
+        return self._step_and_tell(len(self._file_list) - 1, -1, "last", "Loaded last file:")
 
     def _show_filter_dialog(self):
         """Show a dialog to set the file filter pattern"""

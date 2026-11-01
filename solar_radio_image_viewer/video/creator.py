@@ -235,6 +235,11 @@ def observation_sort_key(filepath):
         when = observation_time(_time_header(filepath), filepath)
     except Exception:
         when = observation_time(None, filepath)
+    return time_sort_key(filepath, when)
+
+
+def time_sort_key(filepath, when):
+    """observation_sort_key of a file whose time ``when`` is known already."""
     if when is not None:
         return (0, when.timestamp(), filepath)
     return (1, os.path.getmtime(filepath), filepath)
@@ -358,6 +363,27 @@ def load_frame_data(path, options):
     (options["coordinates"], see video.coordinates) and Stokes. Raises
     ConversionError if it can't be converted."""
     return load_fits_data(frame_file(path, options), stokes=options.get("stokes", "I"))
+
+
+def reference_range(path, options, mode):
+    """(vmin, vmax) of frame image ``path`` for a range preset: ``mode`` is
+    "minmax", "percentile" (1st and 99th) or "rms" (median ± 3×RMS). For a
+    worker process: the image stays there."""
+    data, _ = load_frame_data(path, options)
+    if mode == "minmax":
+        return float(np.nanmin(data)), float(np.nanmax(data))
+    if mode == "percentile":
+        low, high = np.nanpercentile(data, [1, 99])
+        return float(low), float(high)
+    median = np.nanmedian(data)
+    rms = np.sqrt(np.nanmean(np.square(data - median)))
+    return float(median - 3 * rms), float(median + 3 * rms)
+
+
+def reference_shape(path, options):
+    """(rows, columns) of frame image ``path``, for a worker process."""
+    data, _ = load_frame_data(path, options)
+    return tuple(data.shape)
 
 
 def process_image(
@@ -1670,7 +1696,7 @@ def _convert_frames(files, options, progress_callback=None, status_callback=None
         what = f"Converting images to {'helioprojective' if target == 'hpc' else 'RA/Dec'} coordinates"
     def done(count):
         if status_callback:
-            status_callback(f"{what}: {count} of {len(paths)}")
+            status_callback(f"{what}: {count} of {len(paths)}", count, len(paths))
         return not progress_callback or progress_callback(0, len(files))
 
     if not done(0):
@@ -1749,8 +1775,10 @@ def create_video(
         Filled with what could not be drawn (see process_image), each
         message with the number of frames it applies to.
     status_callback : callable, optional
-        Told (with a text) what is being prepared before frames are drawn,
-        such as converting the images to the video's coordinates.
+        Told what is being prepared before frames are drawn, such as
+        converting the images to the video's coordinates, and that the
+        file is being finished after them, as (text, done, total); 0, 0
+        when how far it got is not known.
 
     Returns
     -------
@@ -1827,7 +1855,9 @@ def _render_video(
 
     def scan_progress(done, total):
         if status_callback:
-            status_callback(f"Reading frames for the range, line plot and levels: {done} of {total}")
+            status_callback(
+                f"Reading frames for the range, line plot and levels: {done} of {total}", done, total
+            )
         return not progress_callback or progress_callback(0, total)
 
     try:
@@ -1865,6 +1895,9 @@ def _render_video(
                 if progress_callback and not progress_callback(i + 1, total_frames):
                     cancelled = True
                     break
+            # Closing the writer can take as long as a good many frames
+            if status_callback and not cancelled:
+                status_callback("Finishing the video file…", 0, 0)
     finally:
         frames.close()
 

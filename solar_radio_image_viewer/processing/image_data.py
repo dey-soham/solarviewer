@@ -31,6 +31,7 @@ from .stokes import (
     missing_planes,
     read_planes,
     stokes_product,
+    uses_rms,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class ImageRead(NamedTuple):
     psf: Optional[dict]  # restoring beam; None from the FITS reader
     info: Optional[CasaInfo]  # what ia.open reports; None from the FITS reader
     header: Optional[object]  # primary header of a FITS file
+    rms_box: Optional[tuple] = None  # the box chosen by read_new_image, if it did
 
     def remember(self):
         """Cache the metadata read with the pixels in this process, so the
@@ -247,6 +249,30 @@ def read_background(imagename, downsample=1):
         return None
     step = max(int(downsample or 1), 1)
     return np.ascontiguousarray(plane.T[::step, ::step])
+
+
+def default_rms_box(shape):
+    """The RMS box of a newly opened [x, y] image: a band along the
+    bottom, inset from the sides."""
+    nx, ny = shape[:2]
+    return [int(0.05 * nx), int(0.95 * nx), int(0.02 * ny), int(0.20 * ny)]
+
+
+def read_new_image(
+    imagename, stokes, threshold, rms_box, target_size, fallback_stokes=None
+):
+    """:func:`read_image` for a newly opened image, whose ratios are measured
+    against its own RMS box: its shape is known only once read, so such a
+    product is read again, in this one job (one wait, one Cancel)."""
+    read = read_image(imagename, stokes, threshold, rms_box, target_size, fallback_stokes)
+    if read.pix is None or not uses_rms(read.stokes):
+        return read
+    box = default_rms_box(read.pix.shape)
+    if box == list(rms_box):
+        return read
+    return read_image(imagename, read.stokes, threshold, tuple(box), target_size)._replace(
+        available=read.available, rms_box=tuple(box)
+    )
 
 
 def read_image(

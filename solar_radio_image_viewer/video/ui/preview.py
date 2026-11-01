@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QWidget,
     QSlider,
@@ -17,16 +18,25 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QRect, QSize, Qt, QObject, pyqtSignal
 from PyQt5.QtGui import QIcon, QImage, QPixmap
 from collections import OrderedDict
+from concurrent.futures import as_completed
+from concurrent.futures.process import BrokenProcessPool
 import threading
 import numpy as np
 import multiprocessing
 from ..lightcurve import (
     line_plot_options,
 )
+from ...ui.activity import ActivityLabel
 
 
 
 logger = logging.getLogger(__name__)
+
+
+def _setup_key(files, options):
+    """What a preview's shared setup depends on (not the frame shown)."""
+    return repr((files, sorted((k, repr(v)) for k, v in options.items())))
+
 
 class PreviewRenderer(QObject):
     """Renders preview frames in a background thread, newest request first.
@@ -41,7 +51,7 @@ class PreviewRenderer(QObject):
 
     # request id, RGB frame or None, problems, geometry (see creator.process_image)
     rendered = pyqtSignal(int, object, object, object)
-    status = pyqtSignal(int, str)  # request id, what is being done
+    status = pyqtSignal(int, str, int, int)  # request id, what is being done, done, total
 
     def __init__(self):
         super().__init__()
@@ -58,6 +68,7 @@ class PreviewRenderer(QObject):
         self.remote = None
         self.render_all = False
         self.all_fetched = False
+        self.fetched_frames = 0  # frames with a local copy (read by the window)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -74,6 +85,14 @@ class PreviewRenderer(QObject):
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
 
+    def _superseded(self):
+        """Whether the work going on is for nobody any more: stop what can be
+        stopped (fetching, reading all frames, converting)."""
+        return self._stopped or self._request is not None
+
+    def _say(self, request_id, text, done=0, total=0):
+        self.status.emit(request_id, text, done, total)
+
     def _run(self):
         while True:
             with self._condition:
@@ -86,10 +105,17 @@ class PreviewRenderer(QObject):
             try:
                 frame, problems, geometry = self._render(*request)
             except Exception as e:
+                if isinstance(e, BrokenProcessPool) and self._executor is not None:
+                    # A worker died reading the frames: a new one next time
+                    self._executor.shutdown(wait=False, cancel_futures=True)
+                    self._executor = None
+                if self._superseded():
+                    continue  # what is newer takes over; this one's work stops
                 logger.error(f"Preview failed: {e}")
-                self.status.emit(request_id, f"Preview failed: {e}")
+                self._say(request_id, f"Preview failed: {e}")
                 frame, problems, geometry = None, [], {}
-            self.rendered.emit(request_id, frame, problems, geometry)
+            if not self._stopped:
+                self.rendered.emit(request_id, frame, problems, geometry)
 
     def _render(self, request_id, files, index, options):
         from ...processing.workers import process_pool_executor
@@ -99,17 +125,18 @@ class PreviewRenderer(QObject):
             process_image_wrapper,
         )
 
+        asked = _setup_key(files, options)
         if self.remote is not None:
             files, options = self._fetch(request_id, files, index, options)
 
-        setup_key = repr((files, sorted((k, repr(v)) for k, v in options.items())))
+        setup_key = _setup_key(files, options)
         frame_key = (setup_key, index)
         if frame_key in self._frames:
             self._frames.move_to_end(frame_key)
             return self._frames[frame_key]
 
         if self._executor is None:
-            self.status.emit(request_id, "Starting the preview renderer...")
+            self._say(request_id, "Starting the preview renderer…")
             # Frames are rendered one at a time; reading all of them (range,
             # timeline, steady levels) uses all the processes
             self._workers = max(1, min(4, multiprocessing.cpu_count() - 1))
@@ -124,7 +151,16 @@ class PreviewRenderer(QObject):
         if prepared is None:
 
             def progress(done, total):
-                self.status.emit(request_id, f"Reading frames {done} of {total}...")
+                # A newer request for another frame of the same setup needs
+                # this scan, and now waits for it; any other does not
+                newer = self._request
+                if self._stopped or (
+                    newer is not None and _setup_key(newer[1], newer[3]) != asked
+                ):
+                    return False
+                waiting = request_id if newer is None else newer[0]
+                self._say(waiting, f"Reading frames: {done} of {total}", done, total)
+                return True
 
             prepared_options = prepare_video_options(
                 files, dict(options), self._executor, progress
@@ -136,9 +172,11 @@ class PreviewRenderer(QObject):
             self._prepared[setup_key] = prepared
             while len(self._prepared) > 4:
                 self._prepared.popitem(last=False)
+            if self._superseded():
+                raise RuntimeError("Superseded")
         prepared_options, global_stats = prepared
 
-        self.status.emit(request_id, "Rendering...")
+        self._say(request_id, "Rendering…")
         options = prepared_options
         try:
             _, frame, problems, geometry = self._executor.submit(
@@ -168,14 +206,27 @@ class PreviewRenderer(QObject):
         missing = [p for p in frame_paths(files, options, indices) if not remote.cached(p)]
         if missing:
             def report(done, total, fetched, count):
-                self.status.emit(
+                self._say(
                     request_id,
                     f"Fetching from {remote.label}: {fetched} of {count} images "
-                    f"({done / 1e6:.0f} of {total / 1e6:.0f} MB)...",
+                    f"({done / 1e6:.0f} of {total / 1e6:.0f} MB)",
+                    int(done / 1e6),
+                    int(total / 1e6),
                 )
 
-            remote.fetch(missing, progress=report)
+            remote.fetch(
+                missing,
+                progress=report,
+                cancelled=self._superseded,
+                checking=lambda done, total: self._say(
+                    request_id,
+                    f"Checking the images on {remote.label}: {done} of {total}",
+                    done,
+                    total,
+                ),
+            )
         self.all_fetched = all(remote.cached(p) for p in frame_paths(files, options, range(len(files))))
+        self.fetched_frames = sum(bool(remote.cached(p)) for p in files)
 
         def local_of(path):
             return remote.cached(path) or str(remote.cache.get_cache_path(remote.host, path))
@@ -213,13 +264,23 @@ class PreviewRenderer(QObject):
             return
         images = f"{len(todo)} image{'s' if len(todo) > 1 else ''}"
         if target == "native":
-            text = f"Reading {images} (CASA)..."
+            text = f"Reading {images} (CASA)"
         else:
             name = "helioprojective" if target == "hpc" else "RA/Dec"
-            text = f"Converting {images} to {name} coordinates..."
-        self.status.emit(request_id, text)
-        list(self._executor.map(_convert_one, [(p, target, cache_dir) for p in todo]))
-        self._converted.setdefault((target, cache_dir), set()).update(todo)
+            text = f"Converting {images} to {name} coordinates"
+        self._say(request_id, f"{text}…")
+        converted = self._converted.setdefault((target, cache_dir), set())
+        futures = {self._executor.submit(_convert_one, (p, target, cache_dir)): p for p in todo}
+        try:
+            for count, future in enumerate(as_completed(futures), 1):
+                if not future.cancelled():
+                    converted.add(futures[future])
+                self._say(request_id, f"{text}: {count} of {len(todo)}", count, len(todo))
+                if self._superseded():
+                    raise RuntimeError("Superseded")
+        finally:
+            for future in futures:
+                future.cancel()
 
 
 class PreviewImage(QLabel):
@@ -357,10 +418,17 @@ class PreviewPanel(QWidget):
         layout.addWidget(self.image_label, 1)
 
         # One line, cut off if long, so the preview above keeps its size
-        self.status_label = QLabel()
-        self.status_label.setObjectName("SecondaryText")
-        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.status_label = ActivityLabel(parent=self)
+        self.status_label.label.setObjectName("SecondaryText")
+        self.status_label.label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         layout.addWidget(self.status_label)
+
+        # How far along, when that is known (images fetched, frames read)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(6)
+        self.progress_bar.hide()
+        layout.addWidget(self.progress_bar)
 
         # What could not be drawn on the frame shown
         self.problems_label = QLabel()
@@ -381,6 +449,12 @@ class PreviewPanel(QWidget):
             "previewed and played (they stay cached for the video)"
         )
         remote_row.addWidget(self.render_all_button)
+        self.stop_fetch_button = QPushButton("Stop")
+        self.stop_fetch_button.setToolTip(
+            "Stop fetching: frames fetched so far stay cached for next time"
+        )
+        self.stop_fetch_button.hide()
+        remote_row.addWidget(self.stop_fetch_button)
         layout.addLayout(remote_row)
         self.show_remote(False)
 
@@ -402,10 +476,26 @@ class PreviewPanel(QWidget):
         self._pixmap = None
         self.show_message("Choose input files to see the preview")
 
+    def show_working(self, text, done=0, total=0):
+        """Something is under way for the preview: ``text``, a spinner, and a
+        bar if ``done`` of ``total`` is known."""
+        self.status_label.start(text)
+        if total > 0:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(min(done, total))
+        self.progress_bar.setVisible(total > 0)
+
+    def show_idle(self, text=None):
+        """Nothing is under way any more; ``text`` replaces what was said."""
+        self.status_label.stop(self.status_label.text() if text is None else text)
+        self.progress_bar.hide()
+
     def show_remote(self, on, all_fetched=False, fetched=0, total=0):
         """The note (and Render All button) for images on a server."""
         self.remote_note.setVisible(on and not all_fetched)
         self.render_all_button.setVisible(on and not all_fetched)
+        if all_fetched or not on:
+            self.stop_fetch_button.hide()
         self.remote_note.setText(
             f"Preview of {fetched} of {total} frames (the first, middle and last, "
             "and those you go to); the range and line plot use these until all "

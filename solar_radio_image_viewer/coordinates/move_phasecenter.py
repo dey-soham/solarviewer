@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import glob
+from ..processing import dependencies  # noqa: F401  (sqlite3 goes before casatools)
 from casatools import msmetadata, table, measures, quanta, image
 
 from astropy.io import fits

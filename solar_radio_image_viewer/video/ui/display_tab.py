@@ -2,6 +2,8 @@
 Display tab: colours, range, stretch, size and coordinates.
 """
 
+import os
+
 from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
@@ -21,9 +23,10 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 import matplotlib.pyplot as plt
-import numpy as np
 from ...processing.colormaps import ensure_solar_colormaps
+from ...ui.background import Cancelled, run_in_background
 from ..coordinates import COORDINATE_NAMES, COORDINATES
+from ..creator import reference_range
 from .helpers import (
     SIZE_PRESETS,
 )
@@ -372,13 +375,11 @@ class DisplayTabMixin:
         if not self.reference_image:
             return
 
-        data = self._load_reference()
-        if data is None:
+        # Min/max, excluding NaN values
+        limits = self._reference_job(reference_range, "minmax")
+        if limits is None:
             return
-
-        # Calculate min/max, excluding NaN values
-        vmin = np.nanmin(data)
-        vmax = np.nanmax(data)
+        vmin, vmax = limits
 
         # Update spinboxes
         self.range_mode_combo.setCurrentIndex(0)  # Switch to fixed range
@@ -393,12 +394,11 @@ class DisplayTabMixin:
         if not self.reference_image:
             return
 
-        data = self._load_reference()
-        if data is None:
+        # 1st and 99th percentiles
+        limits = self._reference_job(reference_range, "percentile")
+        if limits is None:
             return
-
-        # Calculate 1st and 99th percentiles
-        vmin, vmax = np.nanpercentile(data, [1, 99])
+        vmin, vmax = limits
 
         # Update spinboxes
         self.range_mode_combo.setCurrentIndex(0)  # Switch to fixed range
@@ -413,17 +413,11 @@ class DisplayTabMixin:
         if not self.reference_image:
             return
 
-        data = self._load_reference()
-        if data is None:
+        # Median ± 3×RMS
+        limits = self._reference_job(reference_range, "rms")
+        if limits is None:
             return
-
-        # Calculate median and RMS
-        median = np.nanmedian(data)
-        rms = np.sqrt(np.nanmean(np.square(data - median)))
-
-        # Set range to median ± 3×RMS
-        vmin = median - 3 * rms
-        vmax = median + 3 * rms
+        vmin, vmax = limits
 
         # Update spinboxes
         self.range_mode_combo.setCurrentIndex(0)  # Switch to fixed range
@@ -475,11 +469,11 @@ class DisplayTabMixin:
 
         self.gamma_spinbox.setEnabled(enable_gamma)
 
-    def _load_reference(self):
-        """Data of the reference (previewed) image as the video shows it, in
-        the video's coordinates; None (and a message) if it can't be read."""
+    def _reference_job(self, job, *args):
+        """``job(path, options, *args)`` (a function of creator) on the
+        reference (previewed) image, in the worker process; None (and a
+        message) if it can't be read, or was cancelled."""
         from ..coordinates import ConversionError
-        from ..creator import load_frame_data
 
         path = self.reference_image
         if self.remote is not None:
@@ -489,8 +483,16 @@ class DisplayTabMixin:
                 return None
             path = local[path]
         try:
-            data, _ = load_frame_data(path, self._video_options())
+            return run_in_background(
+                self,
+                f"Reading {os.path.basename(path)}…",
+                job,
+                path,
+                self._video_options(),
+                *args,
+            )
         except ConversionError as e:
             QMessageBox.warning(self, "Cannot Convert", str(e))
-            return None
-        return data
+        except Cancelled:
+            self.preview_panel.show_idle("Cancelled")
+        return None

@@ -10,11 +10,245 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (
     Qt,
+    QRect,
 )
-from PyQt5.QtGui import QPixmap, QImage, QColor
+from PyQt5.QtGui import QImage, QColor, QPainter, QFont, QPen
 import os
 
+from .ui.busy import busy
+from .video.ui.progress import run_with_dialog
+
 logger = logging.getLogger(__name__)
+
+
+class _Stop(Exception):
+    """The export was cancelled."""
+
+
+# Exports run on a thread, where a QPixmap cannot go: these work on QImages
+
+
+def _rgb_array(image):
+    """``image`` as an array of rows of RGB pixels."""
+    import numpy as np
+
+    image = image.convertToFormat(QImage.Format_RGB888)
+    width = image.width()
+    height = image.height()
+    ptr = image.bits()
+    ptr.setsize(image.byteCount())
+    # Handle scanline stride (bytesPerLine) to avoid skewing
+    arr = np.frombuffer(ptr, np.uint8).reshape((height, image.bytesPerLine()))
+    # Slice out the padding bytes at the end of each scanline
+    return arr[:, : width * 3].reshape((height, width, 3)).copy()
+
+
+def difference_image(current, reference):
+    """Pixel-wise grayscale difference of two QImages, or None if their sizes
+    differ."""
+    import numpy as np
+
+    # Basic size check (should match as per API usage)
+    if current.size() != reference.size():
+        return None
+    height, width = current.height(), current.width()
+
+    # Difference math: (Current - Reference)
+    # We add 128 to show "no change" as mid-gray
+    diff = _rgb_array(current).astype(np.int16) - _rgb_array(reference).astype(np.int16)
+
+    # Enhance contrast for visibility: Multiply by 2.5 (increased for grayscale)
+    diff = (diff * 2.5 + 128).clip(0, 255)
+
+    # Convert to Grayscale (Average of channels)
+    gray_arr = np.mean(diff, axis=2).astype(np.uint8)
+
+    result = QImage(gray_arr.data, width, height, width, QImage.Format_Grayscale8)
+    return result.copy()  # copy() ensures memory safety
+
+
+def stamped_image(image, timestamp_text, show_bg=True):
+    """Copy of ``image`` with a timestamp overlay of adaptive size."""
+    result = image.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+    painter = QPainter(result)
+
+    # Enable anti-aliasing for smoother text and shapes
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHint(QPainter.TextAntialiasing)
+
+    # Set up font based on image height
+    # Scale font size with height, but keep it within readable range (6 to 22)
+    font_size = max(6, min(22, int(result.height() * 0.030)))
+    font = QFont("Arial", font_size, QFont.Bold)
+    painter.setFont(font)
+
+    # Calculate metrics with the scaled font
+    metrics = painter.fontMetrics()
+    text_rect = metrics.boundingRect(timestamp_text)
+
+    # Scale padding and margins with font size
+    padding_h = max(4, font_size)
+    padding_v = max(2, font_size // 2)
+    margin = max(4, font_size // 2)
+
+    # Define background rectangle
+    bg_width = text_rect.width() + padding_h * 2
+    bg_height = text_rect.height() + padding_v * 2
+
+    bg_rect = QRect(
+        margin,
+        result.height() - bg_height - margin,
+        bg_width,
+        bg_height,
+    )
+
+    # Semi-transparent black background
+    if show_bg:
+        painter.fillRect(bg_rect, QColor(0, 0, 0, 100))
+
+    # Draw white text
+    painter.setPen(QPen(QColor(255, 255, 255)))
+    painter.drawText(
+        bg_rect.adjusted(padding_h, padding_v, -padding_h, -padding_v),
+        Qt.AlignLeft | Qt.AlignVCenter,
+        timestamp_text,
+    )
+
+    painter.end()
+    return result
+
+
+def _export_frames(images, stamps, diff_type):
+    """Each of ``images`` as the export shows it, an RGB array: with the
+    difference map if the mode is on, and its timestamp of ``stamps``, if any."""
+    for i, image in enumerate(images):
+        if diff_type != "None":
+            if i > 0:
+                ref_idx = 0 if diff_type == "Base Diff" else i - 1
+                difference = difference_image(image, images[ref_idx])
+                if difference is not None:
+                    image = difference
+            else:
+                # Neutral Gray for first frame
+                gray = QImage(image.size(), QImage.Format_RGB32)
+                gray.fill(QColor(128, 128, 128))
+                image = gray
+
+        if i < len(stamps) and stamps[i]:
+            # Remove background in diff mode to avoid artifacts
+            image = stamped_image(image, stamps[i], show_bg=(diff_type == "None"))
+
+        yield _rgb_array(image)
+
+
+def _partial_path(file_path):
+    """Written first, so that a cancelled export leaves any earlier file there."""
+    stem, ext = os.path.splitext(file_path)
+    return f"{stem}.part{ext}"
+
+
+def write_gif(images, stamps, diff_type, file_path, duration_ms, progress, cancelled):
+    """Write the frames as an animated GIF with the given speed. Raises _Stop
+    if ``cancelled()``."""
+    try:
+        from PIL import Image
+    except ImportError:
+        raise Exception(
+            "PIL/Pillow is required for GIF export. Install with: pip install Pillow"
+        )
+
+    total = len(images)
+    frames = _export_frames(images, stamps, diff_type)
+
+    # Pillow takes the frames as they come, and quantizes each as it does
+    # (the longest part), so these counts are how far it really is
+    def later_frames():
+        for number, frame in enumerate(frames, 2):
+            if cancelled():
+                raise _Stop()
+            progress(f"Encoding frame {number} of {total}", number, total)
+            yield Image.fromarray(frame)
+        progress("Writing the GIF file…")
+
+    partial = _partial_path(file_path)
+    try:
+        Image.fromarray(next(frames)).save(
+            partial,
+            format="GIF",
+            save_all=True,
+            append_images=later_frames(),
+            duration=duration_ms,
+            loop=0,
+        )
+        if cancelled():
+            raise _Stop()
+        os.replace(partial, file_path)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
+
+
+def write_mp4(images, stamps, diff_type, file_path, fps, progress, cancelled):
+    """Write the frames as an H.264 MP4 video (with imageio's ffmpeg writer,
+    as Create Video does). Raises _Stop if ``cancelled()``."""
+    import imageio
+
+    total = len(images)
+    progress("Starting the encoder…")
+    partial = _partial_path(file_path)
+    out = imageio.get_writer(
+        partial,
+        format="FFMPEG",
+        fps=fps,
+        codec="libx264",
+        quality=None,
+        pixelformat="yuv420p",
+        macro_block_size=1,
+        output_params=["-crf", "18"],
+    )
+    try:
+        try:
+            for number, arr in enumerate(_export_frames(images, stamps, diff_type), 1):
+                if cancelled():
+                    raise _Stop()
+                progress(f"Encoding frame {number} of {total}", number, total)
+                height, width = arr.shape[:2]
+                # H.264 (yuv420p) needs even sizes
+                out.append_data(arr[: height - height % 2, : width - width % 2])
+            progress("Finishing the video file…")
+        finally:
+            out.close()
+        if cancelled():
+            raise _Stop()
+        os.replace(partial, file_path)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
+
+
+def save_frames(frames, metadata_lines, batch_dir, progress, cancelled):
+    """Save ``frames`` (index, QImage or None, its time as text, file name)
+    as PNG files, and ``_metadata.txt`` with what became of each; the number
+    saved. Cancelled, the frames so far stay, and are listed."""
+    saved = 0
+    total = len(frames)
+    for number, (idx, image, when, filename) in enumerate(frames, 1):
+        if cancelled():
+            break
+        if image is None:
+            status = "MISSING"
+        elif image.save(os.path.join(batch_dir, filename), "PNG"):
+            saved += 1
+            status = "OK"
+        else:
+            status = "FAILED"
+        metadata_lines.append(f"{idx:4d} | {when} | {filename} | {status}")
+        progress(f"Saving frames: {number} of {total}", number, total)
+
+    # Save metadata file
+    with open(os.path.join(batch_dir, "_metadata.txt"), "w") as f:
+        f.write("\n".join(metadata_lines))
+    return saved
 
 
 class HelioviewerExportMixin:
@@ -24,7 +258,7 @@ class HelioviewerExportMixin:
 
     Host attributes/methods used:
 
-    ``_calculate_difference``, ``current_frame``, ``diff_type``, ``frames``,
+    ``_close_after_export``, ``current_frame``, ``diff_type``, ``frames``,
     ``get_selected_instruments``, ``speed_combo``, ``timestamps``
     """
 
@@ -64,7 +298,9 @@ class HelioviewerExportMixin:
 
         if file_path:
             try:
-                if pixmap.save(file_path, "PNG"):
+                with busy(f"Saving {os.path.basename(file_path)}…", self):
+                    saved = pixmap.save(file_path, "PNG")
+                if saved:
                     QMessageBox.information(
                         self, "Save Successful", f"Frame saved to:\n{file_path}"
                     )
@@ -94,7 +330,7 @@ class HelioviewerExportMixin:
         nickname, _, _, _ = selected[0]
 
         # Ask for format
-        from PyQt5.QtWidgets import QInputDialog, QProgressDialog
+        from PyQt5.QtWidgets import QInputDialog
 
         formats = ["GIF", "MP4"]
         format_choice, ok = QInputDialog.getItem(
@@ -144,12 +380,13 @@ class HelioviewerExportMixin:
             )
             return
 
-        # Show progress dialog
-        progress = QProgressDialog(
-            "Exporting animation...", "Cancel", 0, len(frames_to_export), self
-        )
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
+        # A QImage of each (cheap): the frames stay as they are in the window
+        with busy(f"Preparing {len(frames_to_export)} frames…", self):
+            images = [pixmap.toImage() for pixmap in frames_to_export]
+        stamps = [
+            when.toString("yyyy-MM-dd HH:mm:ss") + " UTC" if include_timestamp else ""
+            for when in self.timestamps[: len(images)]
+        ]
 
         # Get animation speed from UI
         speed_text = self.speed_combo.currentText()
@@ -157,228 +394,35 @@ class HelioviewerExportMixin:
         # Calculate frame duration in ms (base: 2 fps at 1x speed = 500ms)
         frame_duration_ms = int(500 / speed)
 
-        try:
+        diff_type = self.diff_type
+
+        def work(progress, cancelled):
             if format_choice == "GIF":
-                self._export_gif(
-                    frames_to_export,
-                    file_path,
-                    progress,
-                    frame_duration_ms,
-                    include_timestamp,
+                write_gif(
+                    images, stamps, diff_type, file_path, frame_duration_ms, progress, cancelled
                 )
             else:
                 # For MP4, convert to FPS
                 fps = 1000.0 / frame_duration_ms
-                self._export_mp4(
-                    frames_to_export, file_path, progress, fps, include_timestamp
-                )
+                write_mp4(images, stamps, diff_type, file_path, fps, progress, cancelled)
+            return True
 
-            if not progress.wasCanceled():
-                QMessageBox.information(
-                    self,
-                    "Export Successful",
-                    f"Animation exported to:\n{file_path}\n\n"
-                    f"Frames: {len(frames_to_export)}",
-                )
-        except Exception as e:
-            progress.close()
+        outcome = run_with_dialog(self, "Exporting Animation", "Exporting animation…", work)
+        if self._close_after_export:
+            self.close()
+        elif outcome.cancelled and not outcome.result:
+            pass  # (nothing was written)
+        elif outcome.error:
             QMessageBox.critical(
-                self, "Export Failed", f"Error exporting animation:\n{str(e)}"
+                self, "Export Failed", f"Error exporting animation:\n{outcome.error}"
             )
-        finally:
-            progress.close()
-
-    def _add_timestamp_to_pixmap(self, pixmap, timestamp_text, show_bg=True):
-        """Add timestamp overlay to a pixmap with adaptive sizing."""
-        from PyQt5.QtGui import QPainter, QFont, QColor, QPen
-        from PyQt5.QtCore import Qt, QRect
-
-        # Create a copy to avoid modifying original
-        result = QPixmap(pixmap)
-        painter = QPainter(result)
-        
-        # Enable anti-aliasing for smoother text and shapes
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.TextAntialiasing)
-
-        # Set up font based on image height
-        # Scale font size with height, but keep it within readable range (6 to 22)
-        font_size = max(6, min(22, int(result.height() * 0.030)))
-        font = QFont("Arial", font_size, QFont.Bold)
-        painter.setFont(font)
-
-        # Calculate metrics with the scaled font
-        metrics = painter.fontMetrics()
-        text_rect = metrics.boundingRect(timestamp_text)
-
-        # Scale padding and margins with font size
-        padding_h = max(4, font_size)
-        padding_v = max(2, font_size // 2)
-        margin = max(4, font_size // 2)
-
-        # Define background rectangle
-        bg_width = text_rect.width() + padding_h * 2
-        bg_height = text_rect.height() + padding_v * 2
-
-        bg_rect = QRect(
-            margin,
-            result.height() - bg_height - margin,
-            bg_width,
-            bg_height,
-        )
-
-        # Semi-transparent black background
-        if show_bg:
-            painter.fillRect(bg_rect, QColor(0, 0, 0, 100))
-
-        # Draw white text
-        painter.setPen(QPen(QColor(255, 255, 255)))
-        painter.drawText(
-            bg_rect.adjusted(padding_h, padding_v, -padding_h, -padding_v),
-            Qt.AlignLeft | Qt.AlignVCenter,
-            timestamp_text,
-        )
-
-        painter.end()
-        return result
-
-    def _export_gif(
-        self, frames, file_path, progress, duration_ms, include_timestamp=False
-    ):
-        """Export frames as animated GIF."""
-        try:
-            from PIL import Image
-        except ImportError:
-            raise Exception(
-                "PIL/Pillow is required for GIF export. Install with: pip install Pillow"
+        else:
+            QMessageBox.information(
+                self,
+                "Export Successful",
+                f"Animation exported to:\n{file_path}\n\n"
+                f"Frames: {len(frames_to_export)}",
             )
-
-        # Convert QPixmaps to PIL Images
-        pil_images = []
-        for i, pixmap in enumerate(frames):
-            if progress.wasCanceled():
-                return
-            progress.setValue(i)
-
-            # Apply difference map if mode is on
-            if self.diff_type != "None":
-                if i > 0:
-                    ref_idx = 0 if self.diff_type == "Base Diff" else i - 1
-                    ref_pixmap = frames[ref_idx]
-                    pixmap = self._calculate_difference(pixmap, ref_pixmap)
-                else:
-                    # Neutral Gray for first frame
-                    gray_pixmap = QPixmap(pixmap.size())
-                    gray_pixmap.fill(QColor(128, 128, 128))
-                    pixmap = gray_pixmap
-
-            # Add timestamp if requested
-            if include_timestamp and i < len(self.timestamps):
-                timestamp_text = (
-                    self.timestamps[i].toString("yyyy-MM-dd HH:mm:ss") + " UTC"
-                )
-                # Remove background in diff mode to avoid artifacts
-                pixmap = self._add_timestamp_to_pixmap(
-                    pixmap, timestamp_text, show_bg=(self.diff_type == "None")
-                )
-
-            # Convert QPixmap to PIL Image via QImage
-            qimage = pixmap.toImage()
-            qimage = qimage.convertToFormat(QImage.Format_RGB888)
-
-            width = qimage.width()
-            height = qimage.height()
-            ptr = qimage.bits()
-            ptr.setsize(qimage.byteCount())
-
-            import numpy as np
-
-            # Handle scanline stride (bytesPerLine) to avoid skewing
-            bytes_per_line = qimage.bytesPerLine()
-            arr = np.frombuffer(ptr, np.uint8).reshape((height, bytes_per_line))
-            # Slice out the padding bytes at the end of each scanline
-            arr = arr[:, : width * 3].reshape((height, width, 3))
-
-            pil_img = Image.fromarray(arr, "RGB")
-            pil_images.append(pil_img)
-
-        # Save as animated GIF with user-selected speed
-        progress.setLabelText("Saving GIF...")
-        pil_images[0].save(
-            file_path,
-            save_all=True,
-            append_images=pil_images[1:],
-            duration=duration_ms,
-            loop=0,
-        )
-        progress.setValue(len(frames))
-
-    def _export_mp4(self, frames, file_path, progress, fps, include_timestamp=False):
-        """Export frames as an H.264 MP4 video (with imageio's ffmpeg writer,
-        as Create Video does)."""
-        import imageio
-        import numpy as np
-
-        out = imageio.get_writer(
-            file_path,
-            format="FFMPEG",
-            fps=fps,
-            codec="libx264",
-            quality=None,
-            pixelformat="yuv420p",
-            macro_block_size=1,
-            output_params=["-crf", "18"],
-        )
-
-        try:
-            for i, pixmap in enumerate(frames):
-                if progress.wasCanceled():
-                    return
-                progress.setValue(i)
-
-                # Apply difference map if mode is on
-                if self.diff_type != "None":
-                    if i > 0:
-                        ref_idx = 0 if self.diff_type == "Base Diff" else i - 1
-                        ref_pixmap = frames[ref_idx]
-                        pixmap = self._calculate_difference(pixmap, ref_pixmap)
-                    else:
-                        # Neutral Gray for first frame
-                        gray_pixmap = QPixmap(pixmap.size())
-                        gray_pixmap.fill(QColor(128, 128, 128))
-                        pixmap = gray_pixmap
-
-                # Add timestamp if requested
-                if include_timestamp and i < len(self.timestamps):
-                    timestamp_text = (
-                        self.timestamps[i].toString("yyyy-MM-dd HH:mm:ss") + " UTC"
-                    )
-                    # Remove background in diff mode to avoid artifacts
-                    pixmap = self._add_timestamp_to_pixmap(
-                        pixmap, timestamp_text, show_bg=(self.diff_type == "None")
-                    )
-
-                # Convert QPixmap to numpy array
-                qimage = pixmap.toImage()
-                qimage = qimage.convertToFormat(QImage.Format_RGB888)
-
-                width = qimage.width()
-                height = qimage.height()
-                ptr = qimage.bits()
-                ptr.setsize(qimage.byteCount())
-
-                # Handle scanline stride (bytesPerLine) to avoid skewing
-                bytes_per_line = qimage.bytesPerLine()
-                arr = np.frombuffer(ptr, np.uint8).reshape((height, bytes_per_line))
-                # Slice out the padding bytes at the end of each scanline
-                arr = arr[:, : width * 3].reshape((height, width, 3))
-
-                # H.264 (yuv420p) needs even sizes
-                out.append_data(arr[: height - height % 2, : width - width % 2])
-
-            progress.setValue(len(frames))
-        finally:
-            out.close()
 
     def batch_download(self):
         """Batch download all frames."""
@@ -413,16 +457,6 @@ class HelioviewerExportMixin:
             )
             return
 
-        # Show progress
-        from PyQt5.QtWidgets import QProgressDialog
-
-        progress = QProgressDialog(
-            "Downloading frames...", "Cancel", 0, len(self.frames), self
-        )
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-
-        saved_count = 0
         metadata_lines = []
         metadata_lines.append("Helioviewer Batch Download")
         metadata_lines.append(f"Instrument: {nickname}")
@@ -434,59 +468,46 @@ class HelioviewerExportMixin:
         metadata_lines.append("Frame Index | Timestamp | Filename | Status")
         metadata_lines.append("-" * 80)
 
-        try:
+        with busy(f"Preparing {len(self.frames)} frames…", self):
+            to_save = []
             for idx in sorted(self.frames.keys()):
-                if progress.wasCanceled():
-                    break
-
-                progress.setValue(saved_count)
-
-                frame_data = self.frames[idx]
-                pixmap = frame_data.get(nickname)
-
+                pixmap = self.frames[idx].get(nickname)
+                timestamp = self.timestamps[idx] if idx < len(self.timestamps) else None
                 if pixmap:
-                    timestamp = self.timestamps[idx]
                     filename = (
                         f"frame_{idx:04d}_{timestamp.toString('yyyyMMdd_HHmmss')}.png"
                     )
-                    file_path = os.path.join(batch_dir, filename)
-
-                    if pixmap.save(file_path, "PNG"):
-                        saved_count += 1
-                        status = "OK"
-                    else:
-                        status = "FAILED"
                 else:
-                    timestamp = (
-                        self.timestamps[idx]
-                        if idx < len(self.timestamps)
-                        else "Unknown"
-                    )
                     filename = f"frame_{idx:04d}_missing.png"
-                    status = "MISSING"
-
-                metadata_lines.append(
-                    f"{idx:4d} | {timestamp.toString('yyyy-MM-dd HH:mm:ss') if hasattr(timestamp, 'toString') else timestamp} | {filename} | {status}"
+                when = (
+                    timestamp.toString("yyyy-MM-dd HH:mm:ss") if timestamp else "Unknown"
                 )
+                to_save.append((idx, pixmap.toImage() if pixmap else None, when, filename))
 
-            # Save metadata file
-            metadata_path = os.path.join(batch_dir, "_metadata.txt")
-            with open(metadata_path, "w") as f:
-                f.write("\n".join(metadata_lines))
-
-            progress.setValue(len(self.frames))
-
-            if not progress.wasCanceled():
-                QMessageBox.information(
-                    self,
-                    "Batch Download Complete",
-                    f"Successfully saved {saved_count}/{len(self.frames)} frames to:\n{batch_dir}\n\n"
-                    f"Metadata saved to: _metadata.txt",
-                )
-        except Exception as e:
-            progress.close()
+        outcome = run_with_dialog(
+            self,
+            "Saving Frames",
+            "Saving frames…",
+            lambda progress, cancelled: save_frames(
+                to_save, metadata_lines, batch_dir, progress, cancelled
+            ),
+        )
+        if self._close_after_export:
+            self.close()
+        elif outcome.error:
             QMessageBox.critical(
-                self, "Error", f"Error during batch download:\n{str(e)}"
+                self, "Error", f"Error during batch download:\n{outcome.error}"
             )
-        finally:
-            progress.close()
+        elif outcome.cancelled:
+            QMessageBox.information(
+                self,
+                "Batch Download Cancelled",
+                f"Saved {outcome.result}/{len(to_save)} frames to:\n{batch_dir}",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Batch Download Complete",
+                f"Successfully saved {outcome.result}/{len(to_save)} frames to:\n{batch_dir}\n\n"
+                f"Metadata saved to: _metadata.txt",
+            )

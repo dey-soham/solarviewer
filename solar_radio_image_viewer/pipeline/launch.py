@@ -23,6 +23,28 @@ TOOLS = {
         True,
     ),
 }
+# (as the tools' own windows are titled: the small window hands over to them)
+TITLES = {
+    "dynamic_spectrum_viewer": "Dynamic Spectra Viewer",
+    "caltable_visualizer": "Bandpass and Crossphase Visualizer",
+    "log_viewer": "LOFAR Pipeline Logger",
+    "create_dynamic_spectra": "Create Dynamic Spectra",
+}
+
+
+def _starting_window(title):
+    """A small empty window for the busy pill until the tool's own is up."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication, QStyle, QWidget
+
+    window = QWidget()
+    window.setWindowTitle(title)
+    window.resize(460, 120)
+    screen = QApplication.primaryScreen().availableGeometry()
+    window.setGeometry(QStyle.alignedRect(Qt.LeftToRight, Qt.AlignCenter, window.size(), screen))
+    window.show()
+    QApplication.processEvents()
+    return window
 
 
 def parse_args(argv):
@@ -47,16 +69,22 @@ def main(argv=None):
 
     from PyQt5.QtCore import QTimer
 
-    from ..ui.app import create_app
+    from ..ui.app import apply_theme, create_app
+    from ..ui.busy import busy
 
-    module_name, class_name, takes_theme = TOOLS[tool]
-    window_class = getattr(
-        importlib.import_module(f".{module_name}", __package__), class_name
-    )
-
+    # The application first, as the tool takes a second or more to import
+    # and nothing can show before there is one
     app = create_app(theme)
-    window = window_class(theme=theme) if takes_theme else window_class()
+    module_name, class_name, takes_theme = TOOLS[tool]
+    starting = _starting_window(TITLES[tool])
+    with busy(f"Starting {TITLES[tool]}…", starting):
+        window_class = getattr(
+            importlib.import_module(f".{module_name}", __package__), class_name
+        )
+        apply_theme(app)  # (Matplotlib's colours, now that it is loaded)
+        window = window_class(theme=theme) if takes_theme else window_class()
     window.show()
+    starting.close()
     if path and hasattr(window, "openFile"):
         # Once the window is on screen, so its wait cursor and messages show
         QTimer.singleShot(0, lambda: window.openFile(path))

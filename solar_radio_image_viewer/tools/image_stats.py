@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from ..ui.busy import busy
 from ..ui.styles import set_hand_cursor
 
 
@@ -64,10 +65,8 @@ class ImageStatsMixin:
 
     Host attributes/methods used:
 
-    ``cmap_combo``, ``contour_layers``, ``gamma_entry``, ``image_info_label``,
-    ``image_stats_table``, ``imagename``, ``plot_image``,
-    ``show_status_message``, ``stokes_combo``, ``stretch_combo``,
-    ``threshold_entry``, ``vmax_entry``, ``vmin_entry``
+    ``contour_layers``, ``image_info_label``, ``image_stats_table``,
+    ``imagename``, ``on_visualization_changed``, ``show_status_message``
     """
 
     def show_image_stats(self, rms_box=None):
@@ -282,6 +281,13 @@ class ImageStatsMixin:
         except ValueError:
             pass  # Ignore invalid input
 
+    def _set_rms_box(self, box):
+        self.current_rms_box = box
+        # The RMS box of contours from this image as well
+        for layer in self.contour_layers:
+            if layer["source"] == "same":
+                layer["rms_box"] = tuple(box)
+
     def apply_dialog_rms_box(self, dialog):
         """Apply the RMS box settings from the dialog and close it"""
         # Early return if no valid image is loaded or if it's the splash image
@@ -322,60 +328,26 @@ class ImageStatsMixin:
                     )
                     return
 
-            # Store the current RMS box values
-            self.current_rms_box = [x1, x2, y1, y2]
-
-            # Update the RMS box of contours from this image as well
-            for layer in self.contour_layers:
-                if layer["source"] == "same":
-                    layer["rms_box"] = tuple(self.current_rms_box)
-
-            # Update image stats with new RMS box
-            if self.current_image_data is not None:
-                self.show_image_stats(rms_box=self.current_rms_box)
-
-                # Reload the current image with the new RMS box
-                # This will recalculate RMS for all Stokes parameters
-                if hasattr(self, "imagename") and self.imagename:
-                    current_stokes = self.stokes_combo.currentText()
-                    try:
-                        threshold = float(self.threshold_entry.text())
-                    except (ValueError, AttributeError):
-                        threshold = 10.0
-
-                    # Show a status message
-                    self.show_status_message(
-                        f"Updating RMS box to [{x1}:{x2}, {y1}:{y2}] and recalculating..."
-                    )
-
-                    # Reload the data with the new RMS box
-                    from ..processing.image_data import get_pixel_values_from_image
-
-                    pix, csys, psf = get_pixel_values_from_image(
-                        self.imagename,
-                        current_stokes,
-                        threshold,
-                        rms_box=tuple(self.current_rms_box),
-                    )
-                    self.current_image_data = pix
-                    self.current_wcs = csys
-                    self.psf = psf
-
-                    # Update the plot
-                    try:
-                        vmin_val = float(self.vmin_entry.text())
-                        vmax_val = float(self.vmax_entry.text())
-                        stretch = self.stretch_combo.currentText()
-                        cmap = self.cmap_combo.currentText()
-                        gamma = float(self.gamma_entry.text())
-                        self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
-                    except (ValueError, AttributeError):
-                        self.plot_image()
-
-                self.show_status_message(f"RMS box updated to [{x1}:{x2}, {y1}:{y2}]")
-
-            # Close the dialog
+            # The form is done with: close it before the work, not after
             dialog.accept()
+
+            previous = list(self.current_rms_box)
+            self._set_rms_box([x1, x2, y1, y2])
+            self.show_status_message(
+                f"Updating RMS box to [{x1}:{x2}, {y1}:{y2}] and recalculating…"
+            )
+
+            # Reload the current image with the new RMS box: this recalculates
+            # RMS for all Stokes parameters. None if the user cancelled
+            with busy("Recalculating with the new RMS box…", self):
+                shown = self.on_visualization_changed()
+            if shown:
+                self.show_status_message(f"RMS box updated to [{x1}:{x2}, {y1}:{y2}]")
+            else:
+                self._set_rms_box(previous)
+                self.show_image_stats()
+                if shown is None:
+                    self.show_status_message("RMS box change cancelled")
         except ValueError:
             QMessageBox.warning(
                 self,

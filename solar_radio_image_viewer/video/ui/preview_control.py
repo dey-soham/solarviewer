@@ -23,19 +23,48 @@ class PreviewMixin:
 
     def schedule_preview(self, *_, delay=250):
         """Re-render the preview shortly (settings often change in bursts)."""
+        self._plan_outdated = True
         self._preview_timer.start(delay)
 
     def _request_preview(self):
+        """Have the frames planned (on the planner's thread), unless only the
+        frame shown changed; the plan then gets the frame rendered."""
+        if self._plan_outdated:
+            self._plan_outdated = False
+            self._plan = None
+            self._plan_request += 1
+            self._planner.request(self._plan_request, self._plan_spec(self._video_options()))
+        elif self._plan is not None:
+            self._preview_plan(self._plan)
+
+    def _on_plan_status(self, request_id, text, done, total):
+        if request_id != self._plan_request:
+            return
+        if self._scanning:
+            self.files_found_label.start(text)
+        else:
+            self.preview_panel.show_working(text, done, total)
+
+    def _on_planned(self, request_id, result):
+        if request_id != self._plan_request or self._plan_outdated:
+            return  # another plan is on its way
+        self._plan = result
+        self._on_scanned(result)
+        self._preview_plan(result)
+
+    def _preview_plan(self, plan):
+        """Show what ``plan`` says, and render the frame of the slider."""
         options = self._video_options()
-        files, problem = self._video_files(options)
+        files, problem = self._use_plan(plan, options)
         panel = self.preview_panel
-        self.create_btn.setEnabled(not problem)
-        self.create_btn.setToolTip(problem[1] if problem else "")
+        if not self._making_video():
+            self.create_btn.setEnabled(not problem)
+            self.create_btn.setToolTip(problem[1] if problem else "")
         if problem:
             self._preview_files = []
             panel.slider.setEnabled(False)
             panel.frame_label.setText("")
-            panel.status_label.setText("")
+            panel.show_idle("")
             panel.show_message(problem[1])
             panel.show_problems([])
             return
@@ -48,7 +77,7 @@ class PreviewMixin:
             )
             self._preview_files = files
             # Other frames: fetch only the sample until asked for all again
-            self._preview_renderer.render_all = False
+            self._end_render_all()
             panel.slider.blockSignals(True)
             panel.slider.setRange(0, len(files) - 1)
             panel.slider.setValue(files.index(current) if current in files else 0)
@@ -62,14 +91,17 @@ class PreviewMixin:
         # The frame shown is the reference for presets and region selection
         if self.reference_image != file_path:
             self.reference_image = file_path
+            # (not a setting that changes the frames: no new plan for this)
+            self.reference_image_edit.blockSignals(True)
             self.reference_image_edit.setText(file_path)
+            self.reference_image_edit.blockSignals(False)
 
         self._preview_request += 1
         self._preview_renderer.request(self._preview_request, files, index, options)
 
-    def _on_preview_status(self, request_id, text):
+    def _on_preview_status(self, request_id, text, done, total):
         if request_id == self._preview_request:
-            self.preview_panel.status_label.setText(text)
+            self.preview_panel.show_working(text, done, total)
 
     def _on_preview_rendered(self, request_id, frame, problems, geometry):
         if request_id != self._preview_request:
@@ -79,6 +111,7 @@ class PreviewMixin:
         panel = self.preview_panel
         panel.show_problems(problems)
         if frame is None:
+            panel.show_idle()
             panel.show_message("Could not render this frame")
             return
         panel.show_frame(frame)
@@ -86,7 +119,7 @@ class PreviewMixin:
         self._update_estimate()
         self._update_remote_preview()
         height, width = frame.shape[:2]
-        panel.status_label.setText(
+        panel.show_idle(
             f"{os.path.basename(self._preview_files[panel.slider.value()])} · "
             f"frame size {width}×{height}"
         )
@@ -100,8 +133,9 @@ class PreviewMixin:
             panel.show_remote(False)
             panel.play_button.setEnabled(True)
             return
-        fetched = sum(bool(self.remote.cached(f)) for f in self._preview_files)
-        panel.show_remote(True, renderer.all_fetched, fetched, len(self._preview_files))
+        panel.show_remote(
+            True, renderer.all_fetched, renderer.fetched_frames, len(self._preview_files)
+        )
         panel.play_button.setEnabled(renderer.all_fetched)
         panel.render_all_button.setEnabled(not renderer.render_all)
         panel.play_button.setToolTip(
@@ -114,7 +148,20 @@ class PreviewMixin:
         """Fetch every frame's images, then preview (and play) all of them."""
         self._preview_renderer.render_all = True
         self.preview_panel.render_all_button.setEnabled(False)
+        self.preview_panel.stop_fetch_button.show()
         self.schedule_preview(delay=0)
+
+    def _stop_render_all(self):
+        """Back to the sample frames; the request this makes stops the fetch."""
+        self._end_render_all()
+        self.preview_panel.show_idle("Cancelled")
+        self.schedule_preview(delay=0)
+
+    def _end_render_all(self):
+        self._preview_renderer.render_all = False
+        panel = self.preview_panel
+        panel.render_all_button.setEnabled(True)
+        panel.stop_fetch_button.hide()
 
     def _current_region(self):
         """The region as (x_min, x_max, y_min, y_max), or None (whole image)."""
@@ -196,7 +243,7 @@ class PreviewMixin:
         self._set_region(zoom_region(self._current_region(), geometry["image_shape"], size=size))
 
     def _on_preview_slider(self, _value):
-        self.schedule_preview(delay=0)
+        self._preview_timer.start(0)  # the same frames: no need to plan them
 
     def _toggle_play(self, playing):
         panel = self.preview_panel
@@ -205,6 +252,7 @@ class PreviewMixin:
             self._play_timer.start(max(40, int(1000 / self.fps_spinbox.value())))
         else:
             self._play_timer.stop()
+            self._update_estimate()
 
     def _play_step(self):
         panel = self.preview_panel

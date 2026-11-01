@@ -23,6 +23,7 @@ from ...processing.contour_layers import (
     default_contour_options,
     new_contour_layer,
 )
+from ...ui.busy import busy
 
 
 class ContoursTabMixin:
@@ -117,20 +118,21 @@ class ContoursTabMixin:
             self.contour_layer_list.addItem("No contours")
 
     def _edit_contour_layers(self):
-        from ...dialogs.contour_settings import ContourSettingsDialog
-
         layers = self.contour_layers or [new_contour_layer()]
-        dialog = ContourSettingsDialog(
-            self,
-            layers,
-            self.contour_options,
-            for_video=True,
-            # Images on a server: a contour series there too (a fixed file
-            # is fetched when chosen, as in the main window)
-            series_folder_picker=(
-                (lambda start: self._pick_remote("folder", start)) if self.remote else None
-            ),
-        )
+        with busy("Opening the contour settings…", self):
+            from ...dialogs.contour_settings import ContourSettingsDialog
+
+            dialog = ContourSettingsDialog(
+                self,
+                layers,
+                self.contour_options,
+                for_video=True,
+                # Images on a server: a contour series there too (a fixed file
+                # is fetched when chosen, as in the main window)
+                series_folder_picker=(
+                    (lambda start: self._pick_remote("folder", start)) if self.remote else None
+                ),
+            )
         box = dialog.findChild(QDialogButtonBox)
         if box is not None:
             # Modal here: its Apply / Close (custom buttons) are OK / Cancel

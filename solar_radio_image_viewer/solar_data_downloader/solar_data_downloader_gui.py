@@ -42,6 +42,7 @@ except ImportError:
     sys.exit(1)
 
 from . import solar_data_downloader as sdd  # noqa: F401 (the backend; the worker names its functions)
+from ..ui.activity import activity
 from ..ui.date_picker import attach_date_picker
 from ..ui.download_parts import (
     LOG_LINES_SHOWN,
@@ -57,6 +58,7 @@ from ..ui.download_parts import (
     _short_home,
     _size_text,
     _switch,
+    abandon,
     render_log,
 )
 from ..ui.styles import set_hand_cursor, set_tone, theme_manager
@@ -392,7 +394,7 @@ class DownloadWorker(QThread):
     """Runs the download in a separate process and streams its output."""
 
     progress = pyqtSignal(str)  # a status line
-    finished = pyqtSignal(list)  # the files, when done
+    done = pyqtSignal(list)  # the files, when done
     error = pyqtSignal(str)  # when it failed
 
     def __init__(self, download_params: dict):
@@ -420,7 +422,7 @@ class DownloadWorker(QThread):
             # as an argument, never as Python source
             function, kwargs = self._download_request()
             request = json.dumps({"function": function, "kwargs": kwargs})
-            self.progress.emit("Starting download...")
+            self.progress.emit("Starting the download…")
             process = subprocess.Popen(
                 [sys.executable, "-u", "-c", _DOWNLOAD_SCRIPT, _package_parent(), request],
                 stdout=subprocess.PIPE,
@@ -516,7 +518,7 @@ class DownloadWorker(QThread):
                 return
 
             self.progress.emit(f"Download complete! {len(files)} files")
-            self.finished.emit(files)
+            self.done.emit(files)
 
         except Exception as e:
             self.error.emit(str(e))
@@ -683,6 +685,7 @@ class SolarDataViewerGUI(QDialog):
         self._started = None
         self._log_file = None
         self._fetched = self._processed = self._total = 0
+        self._waiting_for = ""  # what a download with no figures yet is waiting for
         self._log_lines = []
         self._estimate = {}
         self._found = None  # (request key, ISO times) once the archive has answered
@@ -1457,6 +1460,7 @@ class SolarDataViewerGUI(QDialog):
             return
         self.files = []
         self._fetched = self._processed = 0
+        self._waiting_for = ""
         self._total = self._estimate.get("count") or 0
         self._started = time.time()
         self._log_lines = []
@@ -1474,7 +1478,7 @@ class SolarDataViewerGUI(QDialog):
         self._timer.start()
         self.download_worker = DownloadWorker(params)
         self.download_worker.progress.connect(self.update_progress)
-        self.download_worker.finished.connect(self.download_finished)
+        self.download_worker.done.connect(self.download_finished)
         self.download_worker.error.connect(self.download_error)
         self.download_worker.start()
 
@@ -1520,13 +1524,13 @@ class SolarDataViewerGUI(QDialog):
                 left = per_file * (total - self._fetched) + (per_file * (total - self._processed) * 0.3 if preparing else 0)
                 self.progress_left.setText(f"≈ {_duration_text(left)} left" if left > 5 else "almost done")
             else:
-                self.progress_left.setText("")
-            if total:
-                steps = self._fetched + (self._processed if preparing else 0)
-                self.progress_bar.setRange(0, 100)
-                self.progress_bar.setValue(int(100 * steps / (2.0 * total if preparing else total)))
-            else:
+                self.progress_left.setText(self._waiting_for)
+            steps = self._fetched + (self._processed if preparing else 0)
+            if self._started is not None and not steps:  # at 0 % it would look stuck
                 self.progress_bar.setRange(0, 0)  # busy
+            else:
+                self.progress_bar.setRange(0, 100)
+                self.progress_bar.setValue(int(100 * steps / (2.0 * total if preparing else total)) if total else 0)
         size_mb = self._fetched * (self.source.size_mb or 0)
         self.tile_values["Fetched"].setText(f"{self._fetched}" + (f" · {_size_text(size_mb)}" if size_mb else ""))
         short = {"AIA level 1.5": "L1.5", "level 1": "L1", "level 2 composites": "L2"}.get(self.source.prepared, "prepped")
@@ -1541,9 +1545,12 @@ class SolarDataViewerGUI(QDialog):
                 self._log_file.flush()
             except OSError:
                 pass
+        if message.startswith("Waiting for the JSOC export"):
+            self._waiting_for = "JSOC is preparing the files…"
         m = re.match(r"Found (\d+) files", message)
         if m:
             self._total = int(m.group(1))
+            self._waiting_for = ""
         m = re.match(r"Downloading: (\d+)/(\d+) files", message)
         if m:  # the progress bars are figures, not log lines
             self._fetched, self._total = int(m.group(1)), int(m.group(2))
@@ -1582,12 +1589,13 @@ class SolarDataViewerGUI(QDialog):
     def cancel_download(self):
         if self.download_worker is not None and self.download_worker.isRunning():
             self.download_worker.cancel()
-            self.update_progress("Stopping...")
+            self.update_progress("Stopping…")
 
     def _finish(self, kicker_text):
         self._timer.stop()
         self._tick()
         self._started = None
+        self._waiting_for = ""
         if self._log_file is not None:
             try:
                 self._log_file.close()
@@ -1626,8 +1634,8 @@ class SolarDataViewerGUI(QDialog):
 
     def download_error(self, error_message):
         self.update_progress(f"Error: {error_message}")
-        self._render_progress()
         self._finish("Stopped" if "cancel" in error_message.lower() else "Failed")
+        self._render_progress()
         self.download_button.setText("Try again")
 
     def open_in_viewer(self):
@@ -1636,7 +1644,8 @@ class SolarDataViewerGUI(QDialog):
         if self.viewer is None or not self.files:
             return
         try:
-            self.viewer.open_path(self.files[0])
+            with activity(f"Opening {os.path.basename(self.files[0])} in SolarViewer…", self, blocking=False):
+                self.viewer.open_path(self.files[0])
             self.viewer.raise_()
         except Exception as e:
             self.update_progress(f"Could not open in SolarViewer: {e}")
@@ -1644,10 +1653,13 @@ class SolarDataViewerGUI(QDialog):
     def closeEvent(self, event):
         """Stop a running download when the window is closed."""
         self._stop_count()
-        if self.download_worker is not None and self.download_worker.isRunning():
-            self.download_worker.cancel()
-            self.download_worker.quit()
-            self.download_worker.wait(2000)
+        if self.is_downloading():
+            # Its signals go too: the end of the download would reopen the window
+            abandon(self.download_worker)
+            self.download_worker.wait(2000)  # it ends the download process on its way out
+            self.download_worker = None
+            self._timer.stop()
+            self._started = None
         if self._log_file is not None:
             try:
                 self._log_file.close()

@@ -1,4 +1,6 @@
 import logging
+from ..ui.activity import ActivityLabel
+from ..ui.busy import begin_busy, end_busy
 from ..ui.widgets import button_bar
 from ..ui.styles import set_tone
 from PyQt5.QtWidgets import (
@@ -11,14 +13,19 @@ from PyQt5.QtWidgets import (
     QFrame,
     QApplication,
 )
-from PyQt5.QtCore import QProcess, Qt, QThread, pyqtSignal
+from PyQt5.QtCore import QEvent, QProcess, Qt, QThread, pyqtSignal
 import os
+import re
 import sys
 
 from ..utils.update_checker import check_for_updates
 from ..version import __version__
 
 logger = logging.getLogger(__name__)
+
+# Checks still running: a closed dialog must not take its QThread with it
+_running_checks = set()
+
 
 class UpdateCheckThread(QThread):
     """Thread to check for updates in background."""
@@ -40,6 +47,7 @@ class UpdateDialog(QDialog):
         self.setWindowTitle("Check for Updates")
         self.setMinimumWidth(400)
         self._pip = None  # the QProcess installing the update
+        self._finishing = False  # quitting, the window held until pip ends
 
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
@@ -90,7 +98,7 @@ class UpdateDialog(QDialog):
         info_grid.addWidget(self.current_ver_label, 0, 1)
 
         # Latest Version
-        self.latest_ver_label = QLabel("Checking...")
+        self.latest_ver_label = QLabel("Checking…")
         self.latest_ver_label.setObjectName("Mono")
 
         lbl_latest = QLabel("Latest Version:")
@@ -102,16 +110,23 @@ class UpdateDialog(QDialog):
         layout.addWidget(info_container)
 
         # Status Message area
-        self.status_label = QLabel("Connecting to update server...")
+        self.status = ActivityLabel()
+        self.status_label = self.status.label
         self.status_label.setWordWrap(True)
-        self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setObjectName("Hint")
-        layout.addWidget(self.status_label)
+        layout.addWidget(self.status)
+
+        # pip's latest line while it installs
+        self.pip_line = QLabel()
+        self.pip_line.setTextFormat(Qt.PlainText)
+        self.pip_line.setObjectName("Meta")
+        self.pip_line.hide()
+        layout.addWidget(self.pip_line)
 
         layout.addStretch()
 
         box, buttons = button_bar(
-            primary=("Update Now", self.start_update), secondary=("Close", self.accept)
+            primary=("Update Now", self.start_update), secondary=("Close", self.reject)
         )
         self.close_btn = buttons["Close"]
         self.update_btn = buttons["Update Now"]
@@ -119,15 +134,25 @@ class UpdateDialog(QDialog):
         layout.addWidget(box)
 
         # Start check
+        self.status.start("Checking for a new version…")
         self.check_thread = UpdateCheckThread()
         self.check_thread.update_checked.connect(self.on_check_finished)
-        self.check_thread.start()
+        thread = self.check_thread
+        _running_checks.add(thread)
+
+        def forget():
+            thread.wait()  # "finished" comes just before the thread ends
+            _running_checks.discard(thread)
+
+        thread.finished.connect(forget)
+        thread.start()
 
     def on_check_finished(self, is_available, latest_version, error_msg):
         # Safeguard: If dialog is closed/hidden, don't update UI
         if not self.isVisible():
             return
 
+        self.status.stop()
         if error_msg:
             self.status_label.setText(f"Error: {error_msg}")
             set_tone(self.status_label, "error")
@@ -160,10 +185,11 @@ class UpdateDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
 
-        self.status_label.setText("Installing update... Please wait.")
+        self.status.start("Installing the update…")
         set_tone(self.status_label, None)
         self.update_btn.setEnabled(False)
-        self.update_btn.setText("Updating...")
+        self.update_btn.setText("Updating…")
+        self.close_btn.setEnabled(False)
 
         process = QProcess(self)
         process.setProcessChannelMode(QProcess.MergedChannels)
@@ -177,23 +203,71 @@ class UpdateDialog(QDialog):
         self._pip = process
         # Quitting must not cut pip off half-way through an install
         QApplication.instance().aboutToQuit.connect(self._wait_for_pip)
+        if self.parent() is not None:
+            self.parent().installEventFilter(self)
         logger.info(f"Executing: {' '.join(self.PIP_COMMAND)}")
         process.start(self.PIP_COMMAND[0], self.PIP_COMMAND[1:])
 
     def _show_pip_output(self):
-        """pip's output, to the log window and the log file."""
+        """pip's output, to the log window and the log file; its latest line
+        here, so that a long install is seen to move."""
         if self._pip is not None:
             text = bytes(self._pip.readAllStandardOutput()).decode(errors="replace")
             print(text, end="")
+            lines = [line.strip() for line in re.split(r"[\r\n]+", text) if line.strip()]
+            if lines:
+                width = self.pip_line.width() if self.pip_line.isVisible() else self.width() - 48
+                self.pip_line.setText(
+                    self.pip_line.fontMetrics().elidedText(lines[-1], Qt.ElideMiddle, width)
+                )
+                self.pip_line.setToolTip(lines[-1])
+                self.pip_line.show()
+
+    def eventFilter(self, watched, event):
+        # Closing the main window quits, which would hold it frozen until pip
+        # ends: it stays open and usable instead, as this dialog does
+        if (
+            event.type() == QEvent.Close
+            and watched is self.parent()
+            and self._pip is not None
+        ):
+            self.show()
+            self.raise_()
+            self.reject()
+            event.ignore()
+            return True
+        return super().eventFilter(watched, event)
 
     def _wait_for_pip(self):
+        """Hold a quit that did not come through the main window's close."""
         if self._pip is not None:
-            self._pip.waitForFinished(-1)
+            self.show()
+            self.raise_()
+            self.status.start("Finishing the update before closing…")
+            begin_busy("Finishing the update before closing…", self)
+            self._finishing = True
+            # (The event loop has ended, so the line is painted here)
+            pip = self._pip
+            while not pip.waitForFinished(100) and pip.state() != QProcess.NotRunning:
+                self._show_pip_output()
+                self.pip_line.repaint()
+            self._stop_finishing()
+
+    def _stop_finishing(self):
+        """The label ends with pip: its outcome comes up inside the wait."""
+        if self._finishing:
+            self._finishing = False
+            end_busy()
 
     def _on_update_finished(self, exit_code, exit_status):
+        self._stop_finishing()
         self._show_pip_output()
         self._pip = None
+        self.pip_line.hide()
+        self.close_btn.setEnabled(True)
         if exit_status == QProcess.NormalExit and exit_code == 0:
+            self.status.stop("Update installed.")
+            set_tone(self.status_label, "success")
             QMessageBox.information(
                 self,
                 "Update Successful",
@@ -208,11 +282,13 @@ class UpdateDialog(QDialog):
 
     def _on_update_error(self, error):
         if error == QProcess.FailedToStart and self._pip is not None:
+            self._stop_finishing()
             self._pip = None
+            self.close_btn.setEnabled(True)
             self._update_failed(f"Could not start pip ({sys.executable} -m pip).")
 
     def _update_failed(self, reason):
-        self.status_label.setText("Update failed.")
+        self.status.stop("Update failed.")
         set_tone(self.status_label, "error")
         QMessageBox.critical(self, "Update Failed", f"Could not install update:\n{reason}")
         self.update_btn.setEnabled(True)
@@ -221,6 +297,6 @@ class UpdateDialog(QDialog):
     def reject(self):
         # Closing mid-install would stop pip half-way
         if self._pip is not None:
-            self.status_label.setText("Installing update... please wait until it finishes.")
+            self.status_label.setText("Installing the update… closing has to wait until it finishes.")
             return
         super().reject()

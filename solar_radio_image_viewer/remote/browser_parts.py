@@ -10,6 +10,7 @@ the listing, reading and fetching.
 import os
 import posixpath
 import re
+import time
 from datetime import datetime
 
 from PyQt5.QtCore import (
@@ -39,6 +40,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..ui.activity import ActivityLabel, Spinner
 from ..ui.styles import FONT_META, FONT_SMALL, STATUS_DOT, theme_manager
 from ..ui.widgets import kicker, kicker_row, rule
 
@@ -219,6 +221,13 @@ def progress_text(done, total):
     unit, scale = next(((u, s) for u, s in _UNITS if total >= s), ("B", 1))
     digits = 1 if total / scale < 10 and scale > 1 else 0
     return f"{done / scale:.{digits}f} / {total / scale:.{digits}f} {unit}"
+
+
+def waited(text, since, after=3):
+    """``text``, with how long it has gone on (since ``since``, a
+    time.monotonic()) once that is worth saying: "Connecting to x… 7 s"."""
+    seconds = time.monotonic() - since
+    return f"{text} {seconds:.0f} s" if seconds >= after else text
 
 
 def short_time(mtime):
@@ -705,6 +714,8 @@ class PlacesPanel(QFrame):
         line.setSpacing(8)
         self.dot = StatusDot()
         line.addWidget(self.dot, 0, Qt.AlignVCenter)
+        self.spinner = Spinner(STATUS_DOT + 3)
+        line.addWidget(self.spinner, 0, Qt.AlignVCenter)
         names = QVBoxLayout()
         names.setSpacing(0)
         self.host_label = ElidedLabel()
@@ -737,9 +748,9 @@ class PlacesPanel(QFrame):
         column = QVBoxLayout(cache)
         column.setContentsMargins(4, 0, 4, 0)
         column.setSpacing(4)
-        self.cache_label = QLabel()
-        self.cache_label.setObjectName("Meta")
-        self.cache_label.setWordWrap(True)
+        self.cache_label = ActivityLabel(diameter=10)
+        self.cache_label.label.setObjectName("Meta")
+        self.cache_label.label.setWordWrap(True)
         column.addWidget(self.cache_label)
         self.clear_link = SmallLink("Clear cache", self.clearCacheRequested.emit)
         column.addWidget(self.clear_link)
@@ -801,6 +812,8 @@ class PlacesPanel(QFrame):
 
     def show_connected(self, host, detail, can_switch):
         self.dot.set_on(True)
+        self.dot.show()
+        self.spinner.hide()
         self.host_label.setText(host)
         self.user_label.setText(detail)
         self.user_label.show()
@@ -808,22 +821,39 @@ class PlacesPanel(QFrame):
         self.switch_link.setVisible(can_switch)
         self.reconnect_link.hide()
 
-    def show_disconnected(self, reason, reconnecting=False):
+    def show_disconnected(self, reason):
         self.dot.set_on(False)
-        self.host_label.setText("Reconnecting…" if reconnecting else "Disconnected")
+        self.dot.show()
+        self.spinner.hide()
+        self.host_label.setText("Disconnected")
         self.user_label.hide()
         self.reason_label.setText(reason)
         self.reason_label.setVisible(bool(reason))
         self.switch_link.hide()
+        self.reconnect_link.setText("Reconnect")
         self.reconnect_link.show()
-        self.reconnect_link.setEnabled(not reconnecting)
+
+    def show_reconnecting(self, text):
+        """Connecting again: the link then stops it."""
+        self.dot.hide()
+        self.spinner.show()
+        self.host_label.setText(text)
+        self.user_label.hide()
+        self.reason_label.hide()
+        self.switch_link.hide()
+        self.reconnect_link.setText("Cancel")
+        self.reconnect_link.show()
+
+    def show_cache_work(self, text):
+        self.cache_label.start(text)
+        self.clear_link.setEnabled(False)
 
     def set_cache(self, size, count):
         if count:
             files = "1 file" if count == 1 else f"{count} files"
-            self.cache_label.setText(f"Cache · {files}, {size_text(size)}")
+            self.cache_label.stop(f"Cache · {files}, {size_text(size)}")
         else:
-            self.cache_label.setText("Cache · empty")
+            self.cache_label.stop("Cache · empty")
         self.clear_link.setEnabled(bool(count))
 
 
@@ -1173,6 +1203,10 @@ class FileListView(QTreeView):
         self.doubleClicked.connect(self.openRequested.emit)
         self.empty_text = ""
         self._hover_row = -1
+        self.busy_label = ActivityLabel(parent=self.viewport())
+        self.busy_label.label.setObjectName("Meta")
+        self.busy_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.busy_label.hide()
 
     def setModel(self, model):
         super().setModel(model)
@@ -1185,6 +1219,26 @@ class FileListView(QTreeView):
     def set_empty_text(self, text):
         self.empty_text = text
         self.viewport().update()
+
+    def show_busy(self, text):
+        """``text`` with a spinner, where the empty list says why it is."""
+        self.set_empty_text("")
+        self.busy_label.start(text)
+        self.busy_label.adjustSize()
+        self._place_busy()
+        self.busy_label.show()
+
+    def hide_busy(self):
+        self.busy_label.stop()
+        self.busy_label.hide()
+
+    def _place_busy(self):
+        area = self.viewport().rect()
+        self.busy_label.move(area.center() - self.busy_label.rect().center())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_busy()
 
     def drawRow(self, painter, option, index):
         palette = theme_manager.palette
@@ -1314,6 +1368,8 @@ class DetailsPanel(QFrame):
         block.setSpacing(8)
         block.addWidget(rule())
         heading, self.header_state = kicker_row("Header")
+        self.header_spinner = Spinner(10)
+        heading.layout().insertWidget(heading.layout().count() - 1, self.header_spinner)
         self.full_link = SmallLink("Full header…", self.fullHeaderRequested.emit)
         heading.layout().addWidget(self.full_link)
         block.addWidget(heading)
@@ -1401,6 +1457,7 @@ class DetailsPanel(QFrame):
         self.header_block.setVisible(state != "hidden")
         read = state == "read"
         self.header_state.setText({"unread": "not read", "reading": "reading…", "failed": "not read"}.get(state, ""))
+        self.header_spinner.setVisible(state == "reading")
         self.full_link.setVisible(read)
         self.read_button.setVisible(not read)
         self.read_button.setEnabled(state != "reading")

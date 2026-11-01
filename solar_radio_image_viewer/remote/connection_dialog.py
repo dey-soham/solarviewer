@@ -18,7 +18,7 @@ import traceback
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt5.QtCore import QPointF, QRectF, Qt, QThread, pyqtSignal
+from PyQt5.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
@@ -44,8 +44,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..ui.activity import ActivityLabel, Spinner
+from ..ui.background import Cancelled, run_in_thread
 from ..ui.styles import theme_manager
 from ..ui.widgets import kicker, rule, segmented
+from .browser_parts import waited
 from .ssh_manager import (
     ConnectionProfile,
     SSHConnection,
@@ -114,6 +117,12 @@ def _keyring_delete(name):
         keyring.delete_password(KEYRING_SERVICE, name)
     except Exception:
         pass
+
+
+def _in_background(fn, *args):
+    """``fn(*args)`` in a daemon thread: an SSH agent or a locked keyring may
+    never answer, which must not hold up the window, nor its closing."""
+    threading.Thread(target=fn, args=args, name="ssh-dialog", daemon=True).start()
 
 
 def _agent_keys():
@@ -412,6 +421,8 @@ class ConnectionDialog(QDialog):
     """
 
     connectionEstablished = pyqtSignal(object)  # SSHConnection
+    _agent_answered = pyqtSignal(object)  # what it holds (None: no agent)
+    _keyring_answered = pyqtSignal(str, object)  # account, password or None
 
     PROFILES_FILE = Path.home() / ".config" / "solarviewer" / "ssh_profiles.json"
     STATE_FILE = Path.home() / ".config" / "solarviewer" / "ssh_dialog.json"
@@ -437,13 +448,19 @@ class ConnectionDialog(QDialog):
         self._loading = False  # the form being filled: its changes are not edits
         self._passphrase = ""  # of the key file, asked on connect (this session)
         self._agent_lines = None  # what the agent holds (None: no agent)
+        self._agent_known = False  # whether the agent was asked yet
+        self._auth_chosen = False  # how to sign in decided (not just the default)
+        self._password_wanted = ""  # the keyring account being looked up
+        self._after_keyring = None  # test or not, of the start that waits for it
         self._load_profiles()
 
         self._build()
         self._apply_style()
         self._rebuild_sidebar()
-        self._agent_lines = _agent_keys()
+        self._agent_answered.connect(self._on_agent_answered)
+        self._keyring_answered.connect(self._on_keyring_answered)
         self._select_initial()
+        _in_background(self._ask_agent)
 
         try:
             from ..ui.styles import set_hand_cursor
@@ -605,7 +622,9 @@ class ConnectionDialog(QDialog):
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
-        self.agent_status = self._hint()
+        self.agent_status = ActivityLabel()
+        self.agent_status.label.setObjectName("Meta")
+        self.agent_status.label.setWordWrap(True)
         box.addWidget(self.agent_status)
         self.agent_keys = QLabel()
         self.agent_keys.setObjectName("AgentKeys")
@@ -649,6 +668,10 @@ class ConnectionDialog(QDialog):
         box.addWidget(self.password_edit)
         self.password_error = self._error_label()
         box.addWidget(self.password_error)
+        self.keyring_status = ActivityLabel()
+        self.keyring_status.label.setObjectName("Meta")
+        self.keyring_status.hide()
+        box.addWidget(self.keyring_status)
         self.remember_switch = QCheckBox("Remember in system keyring")
         self.remember_switch.setObjectName("Switch")
         if keyring is None:
@@ -703,6 +726,13 @@ class ConnectionDialog(QDialog):
         self.result_mark = _Mark()
         self.result_mark.hide()
         layout.addWidget(self.result_mark)
+        self.result_spinner = Spinner(12)
+        layout.addWidget(self.result_spinner)
+        self._busy_text = ""
+        self._busy_since = 0.0
+        self._busy_timer = QTimer(self)  # how long connecting has taken
+        self._busy_timer.setInterval(1000)
+        self._busy_timer.timeout.connect(self._update_busy_text)
         self.result_label = QLabel()
         self.result_label.setObjectName("Meta")
         self.result_label.setTextFormat(Qt.PlainText)
@@ -845,6 +875,8 @@ class ConnectionDialog(QDialog):
         if self._attempt is not None:
             return
         self._selected = index
+        self._auth_chosen = False
+        self._end_keyring_wait()
         self._loading = True
         self._clear_errors()
         try:
@@ -872,7 +904,7 @@ class ConnectionDialog(QDialog):
         self.name_edit.clear()
         self.save_switch.setChecked(True)
         self._passphrase = ""
-        self._set_auth("agent" if len(self._agent_lines or ()) > 0 else "key")
+        self._set_auth(self._default_auth())
 
     def _fill(self, profile):
         self.host_edit.setText(profile.host)
@@ -886,13 +918,66 @@ class ConnectionDialog(QDialog):
         self._passphrase = ""
         auth = profile.auth_type if profile.auth_type in self.auth_buttons else "key"
         self._set_auth(auth)
-        if auth == "password":
-            saved = _keyring_get(self._password_account(profile.username, profile.host, profile.port))
-            if saved:
+        if auth == "password" and keyring is not None:
+            self._password_wanted = self._password_account(profile.username, profile.host, profile.port)
+            self._show_keyring_wait()
+            _in_background(self._ask_keyring, self._password_wanted)
+
+    def _ask_keyring(self, account):
+        """(In a thread.)"""
+        saved = _keyring_get(account)
+        try:
+            self._keyring_answered.emit(account, saved)
+        except RuntimeError:
+            pass  # (the dialog has gone)
+
+    def _show_keyring_wait(self):
+        self.keyring_status.start("Looking in the keyring…")
+        self.keyring_status.show()
+
+    def _end_keyring_wait(self):
+        self._password_wanted = ""
+        self._after_keyring = None
+        self.keyring_status.stop()
+        self.keyring_status.hide()
+
+    def _on_keyring_answered(self, account, saved):
+        if account != self._password_wanted:
+            return
+        test = self._after_keyring
+        self._end_keyring_wait()
+        if saved and not self.password_edit.text():
+            self._loading = True
+            try:
                 self.password_edit.setText(saved)
                 self.remember_switch.setChecked(True)
+            finally:
+                self._loading = False
+        if test is not None:
+            self._set_result("idle")
+            self._start(test)
 
     # -------------------------------------------------------------- auth
+
+    def _ask_agent(self):
+        """(In a thread.)"""
+        lines = _agent_keys()
+        try:
+            self._agent_answered.emit(lines)
+        except RuntimeError:
+            pass  # (the dialog has gone)
+
+    def _on_agent_answered(self, lines):
+        self._agent_lines = lines
+        self._agent_known = True
+        if self._selected < 0 and not self._auth_chosen and self._attempt is None:
+            self._set_auth(self._default_auth())
+        else:
+            self._update_auth_page()
+
+    def _default_auth(self):
+        """How a new connection signs in: the agent if it has keys."""
+        return "agent" if self._agent_lines or not self._agent_known else "key"
 
     def _auth(self):
         for key, button in self.auth_buttons.items():
@@ -905,6 +990,7 @@ class ConnectionDialog(QDialog):
         self._update_auth_page()
 
     def _on_auth_changed(self):
+        self._auth_chosen = True
         self._update_auth_page()
         self._on_edited()
 
@@ -913,12 +999,15 @@ class ConnectionDialog(QDialog):
         self.auth_stack.setCurrentIndex([k for k, _ in self.AUTH_METHODS].index(auth))
         if auth == "agent":
             lines = self._agent_lines
-            if lines is None:
-                self.agent_status.setText("No agent found")
+            if not self._agent_known:
+                self.agent_status.start("Checking the SSH agent…")
+                self.agent_keys.hide()
+            elif lines is None:
+                self.agent_status.stop("No agent found")
                 self.agent_keys.hide()
             else:
                 n = len(lines)
-                self.agent_status.setText(f"Agent running · {n} key{'s' if n != 1 else ''} loaded")
+                self.agent_status.stop(f"Agent running · {n} key{'s' if n != 1 else ''} loaded")
                 shown = lines[:4] + ([f"+ {n - 4} more"] if n > 4 else [])
                 self.agent_keys.setText("\n".join(shown))
                 self.agent_keys.setVisible(bool(lines))
@@ -1129,7 +1218,9 @@ class ConnectionDialog(QDialog):
         if answer != QMessageBox.Yes:
             return
         if profile.auth_type == "password":
-            _keyring_delete(self._password_account(profile.username, profile.host, profile.port))
+            _in_background(
+                _keyring_delete, self._password_account(profile.username, profile.host, profile.port)
+            )
         del self._profiles[index]
         self._save_profiles()
         if index == self._selected:
@@ -1214,12 +1305,15 @@ class ConnectionDialog(QDialog):
         self.cancel_btn.setText("Cancel")
         self.sidebar.setEnabled(not busy)
         self.form.setEnabled(not busy)
+        self.result_spinner.setVisible(busy)
+        if busy:
+            self._busy_text, self._busy_since = message, time.monotonic()
+            self._busy_timer.start()
+        else:
+            self._busy_timer.stop()
         p = theme_manager.palette
-        if state == "idle":
+        if state == "idle" or busy:
             self.result_mark.hide()
-        elif busy:
-            self.result_mark.set_state(p["highlight"])
-            self.result_mark.show()
         elif state == "ok":
             self.result_mark.set_state(p["status_on"], check=True)
             self.result_mark.show()
@@ -1231,6 +1325,9 @@ class ConnectionDialog(QDialog):
         self.result_label.setStyleSheet(
             f"color: {p['text_strong']};" if state == "failed" else ""
         )
+
+    def _update_busy_text(self):
+        self.result_label.setText(waited(self._busy_text, self._busy_since))
 
     # ------------------------------------------------------------ connect
 
@@ -1268,6 +1365,7 @@ class ConnectionDialog(QDialog):
             self.save_switch.setChecked(False)
         finally:
             self._loading = False
+        self._auth_chosen = True
         self._connect()
 
     def _test_connection(self):
@@ -1281,7 +1379,7 @@ class ConnectionDialog(QDialog):
 
     def _ask_passphrase(self, path):
         """The key's passphrase (the keyring's, or asked), or None to stop."""
-        saved = _keyring_get(f"key:{path}")
+        saved = run_in_thread(self, "Looking in the keyring…", _keyring_get, f"key:{path}")
         if saved:
             self._passphrase = saved
             return True
@@ -1298,16 +1396,31 @@ class ConnectionDialog(QDialog):
         ``test``, only say whether it works."""
         if params is None:
             self._parse_target()
+            if self._password_wanted and self._auth() == "password" and not self.password_edit.text():
+                # (the saved password is on its way: this goes on when it comes)
+                self._after_keyring = test
+                self.keyring_status.stop()
+                self.keyring_status.hide()
+                self._set_result("testing" if test else "connecting", "Looking in the keyring…")
+                return
             if not self._validate():
                 return
+            self._auth_chosen = True  # (the agent may answer during the waits here)
             if paramiko is None:
                 self._set_result("failed", "paramiko is not installed", "pip install paramiko")
                 return
             if self._auth() == "key":
                 path = os.path.expanduser(self.key_path_edit.text().strip())
-                if not self._passphrase and _key_needs_passphrase(path):
-                    if not self._ask_passphrase(path):
-                        return
+                try:
+                    if not self._passphrase and run_in_thread(
+                        self, f"Reading {os.path.basename(path)}…", _key_needs_passphrase, path
+                    ):
+                        if not self._ask_passphrase(path):
+                            return
+                except Cancelled:
+                    self._set_result("idle")
+                    self.result_label.setText("Cancelled")
+                    return
             params = self._get_connection_params()
         try:
             thread = _ConnectThread(params, timeout=10.0 if test else 30.0, test=test)
@@ -1333,12 +1446,13 @@ class ConnectionDialog(QDialog):
         """After a success: keep the password / passphrase in the keyring."""
         params = thread.params
         if params.get("password") and self.remember_switch.isChecked():
-            _keyring_set(
+            _in_background(
+                _keyring_set,
                 self._password_account(params.get("username"), params["host"], params.get("port")),
                 params["password"],
             )
         if params.get("passphrase") and params.get("key_path"):
-            _keyring_set(f"key:{params['key_path']}", params["passphrase"])
+            _in_background(_keyring_set, f"key:{params['key_path']}", params["passphrase"])
 
     def _mark_profile(self, failed, used=False):
         """Note on the selected profile how its attempt went."""
@@ -1381,6 +1495,8 @@ class ConnectionDialog(QDialog):
         self._attempt = None
         test, params, timeout = thread.test, thread.params, thread.timeout
         if isinstance(error, UnknownHostKey):
+            self._set_result("idle")  # (the wait is now on the user)
+            self.result_label.setText("Check the server’s key to go on")
             if self._trust(error):
                 trust_host_key(error.hostname, error.key)
                 self._start(test, params)
@@ -1416,6 +1532,12 @@ class ConnectionDialog(QDialog):
         if self._attempt is not None:
             self._abandon()
             self._set_result("idle")
+            self.result_label.setText("Cancelled")
+        elif self._after_keyring is not None:
+            self._after_keyring = None  # (the password is still filled in)
+            self._set_result("idle")
+            self.result_label.setText("Cancelled")
+            self._show_keyring_wait()
         else:
             self.reject()
 
@@ -1435,6 +1557,8 @@ class ConnectionDialog(QDialog):
         """Close (Cancel when not connecting, Escape, the title bar's close),
         dropping a connection being made."""
         self._abandon()
+        self._after_keyring = None
+        self._busy_timer.stop()
         super().reject()
 
     def get_connection(self) -> Optional[SSHConnection]:

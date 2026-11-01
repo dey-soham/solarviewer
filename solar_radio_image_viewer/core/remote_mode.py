@@ -4,15 +4,215 @@ Main-window remote (SSH) mode: connection, browser, status, cache.
 
 import logging
 import os
+import shutil
+import threading
+from pathlib import Path
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QObject, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QMessageBox,
 )
 
+from ..ui.activity import track_thread
+from ..ui.background import Cancelled, run_in_thread
 from ..ui.styles import set_hand_cursor, set_tone
 
 logger = logging.getLogger(__name__)
+
+# The caches: walking them can take a while (many files, a slow disk), and
+# clearing them longer, so these run on a thread. Nothing here touches Qt.
+
+
+def _folder_size(folder, pattern="*"):
+    """(bytes, files) in ``folder``, below it too, of names like ``pattern``."""
+    size = count = 0
+    if folder.exists():
+        for f in folder.rglob(pattern):
+            if f.is_file():
+                size += f.stat().st_size
+                count += 1
+    return size, count
+
+
+def _cache_root():
+    return Path.home() / ".cache" / "solarviewer"
+
+
+def _pieces_dir():
+    return _cache_root() / "remote" / "pieces"
+
+
+def _masks_dir():
+    return _cache_root() / "dynspec_masks"
+
+
+def _sunpy_dirs():
+    # Check both ~/sunpy and ~/.sunpy
+    return [Path.home() / "sunpy", Path.home() / ".sunpy"]
+
+
+def _legacy_dir():
+    return Path.home() / ".solarviewer_cache"
+
+
+def _measure_caches(remote_cache):
+    """[(key, name, bytes, files, description)] of each cache."""
+
+    def size_of(*folders, pattern="*"):
+        size = count = 0
+        try:
+            for folder in folders:
+                found = _folder_size(folder, pattern)
+                size += found[0]
+                count += found[1]
+        except Exception:
+            pass
+        return size, count
+
+    try:
+        remote_size, remote_count = remote_cache.get_cache_size()
+    except Exception:
+        remote_size = remote_count = 0
+    cache_info = [
+        (
+            "remote",
+            "Remote Files Cache",
+            remote_size,
+            remote_count,
+            "Downloaded files from remote SSH servers",
+        ),
+        # Slices of dynamic spectra read from servers, and their masks
+        (
+            "pieces",
+            "Dynamic Spectrum Slices",
+            *size_of(_pieces_dir()),
+            "Parts of dynamic spectra read from servers (read again when needed)",
+        ),
+        (
+            "masks",
+            "Dynamic Spectrum Masks",
+            *size_of(_masks_dir(), pattern="*.json"),
+            "Masks drawn on dynamic spectra (clearing forgets them)",
+        ),
+        (
+            "noaa",
+            "Solar Activity Cache",
+            *size_of(_cache_root() / "noaa_events"),
+            "Solar events, active regions, conditions, and spectrographs",
+        ),
+    ]
+
+    # Helioviewer / API JSON Cache
+    json_size = json_count = 0
+    try:
+        if _cache_root().exists():
+            for f in _cache_root().glob("*.json"):
+                if f.is_file():
+                    json_size += f.stat().st_size
+                    json_count += 1
+    except Exception:
+        pass
+    if json_size > 0:
+        cache_info.append(
+            (
+                "json",
+                "API Metadata Cache",
+                json_size,
+                json_count,
+                "Cached JSON responses from Helioviewer and other APIs",
+            )
+        )
+
+    sunpy_size, sunpy_count = size_of(*_sunpy_dirs())
+    if sunpy_size > 0:
+        cache_info.append(
+            (
+                "sunpy",
+                "Sunpy Data Cache",
+                sunpy_size,
+                sunpy_count,
+                "Downloaded AIA pointing tables, .nc files, etc.",
+            )
+        )
+
+    # Old solarviewer_cache (if exists)
+    old_cache_size, old_cache_count = size_of(_legacy_dir())
+    if old_cache_size > 0:
+        cache_info.append(
+            (
+                "old",
+                "Legacy Cache",
+                old_cache_size,
+                old_cache_count,
+                "Old cache location (~/.solarviewer_cache)",
+            )
+        )
+    return cache_info
+
+
+# Each cache, as named once cleared
+_CLEARED_NAMES = {
+    "remote": "Remote Files",
+    "pieces": "Dynamic Spectrum Slices",
+    "masks": "Dynamic Spectrum Masks",
+    "noaa": "Solar Activity",
+    "json": "API Metadata",
+    "sunpy": "Sunpy Data",
+    "old": "Legacy Cache",
+}
+
+
+def _clear_cache(key, remote_cache):
+    """Clear the cache ``key``; True if that went well."""
+    try:
+        if key == "remote":
+            remote_cache.clear_cache()
+        elif key == "json":
+            if _cache_root().exists():
+                for f in _cache_root().glob("*.json"):
+                    f.unlink()
+        else:
+            folders = {
+                "pieces": [_pieces_dir()],
+                "masks": [_masks_dir()],
+                "noaa": [_cache_root() / "noaa_events"],
+                "sunpy": _sunpy_dirs(),
+                "old": [_legacy_dir()],
+            }[key]
+            for folder in folders:
+                if folder.exists():
+                    shutil.rmtree(folder)
+        return True
+    except Exception as e:
+        print(f"[Cache] Error clearing {key}: {e}")
+        return False
+
+
+def _total_cache_size():
+    """Bytes in all the caches."""
+    total_size = 0
+    # 1. Main solarviewer cache (~/.cache/solarviewer): this includes remote
+    # files, noaa events, and json metadata. 2. Sunpy cache. 3. Legacy cache.
+    for folder in (_cache_root(), *_sunpy_dirs(), _legacy_dir()):
+        try:
+            total_size += _folder_size(folder)[0]
+        except Exception:
+            pass
+    return total_size
+
+
+def _disconnect(connection):
+    """Close ``connection``, on a thread: closing waits on the network."""
+    try:
+        connection.disconnect()
+    except Exception as e:
+        logger.warning(f"Error disconnecting: {e}")
+
+
+class _Measured(QObject):
+    """Brings the size found on a thread back to the window."""
+
+    done = pyqtSignal(object)  # bytes (Qt's int stops at 2 GB), or None
 
 
 class RemoteModeMixin:
@@ -129,10 +329,7 @@ class RemoteModeMixin:
         old = self.remote_connection
         if old is not None and old is not connection:
             self._stop_connection_health_timer()
-            try:
-                old.disconnect()
-            except Exception as e:
-                logger.warning(f"Error disconnecting: {e}")
+            threading.Thread(target=_disconnect, args=(old,), daemon=True).start()
         self._on_remote_connected(connection)
 
     def _on_remote_file_selected(self, local_path: str, is_remote=False, browser=None):
@@ -157,14 +354,12 @@ class RemoteModeMixin:
         self._stop_connection_health_timer()
 
         if self.remote_connection:
-            try:
-                host_info = self.remote_connection.connection_info
-                self.remote_connection.disconnect()
-                self.statusBar().showMessage(f"Disconnected from {host_info}", 3000)
-            except Exception as e:
-                logger.warning(f"Error disconnecting: {e}")
-            finally:
-                self.remote_connection = None
+            host_info = self.remote_connection.connection_info
+            threading.Thread(
+                target=_disconnect, args=(self.remote_connection,), daemon=True
+            ).start()
+            self.statusBar().showMessage(f"Disconnected from {host_info}", 3000)
+            self.remote_connection = None
 
         self._update_remote_menu_state()
         self._update_remote_status_indicator()
@@ -234,9 +429,6 @@ class RemoteModeMixin:
 
     def show_cache_manager(self):
         """Show cache management dialog with options to clear different cache types."""
-        import shutil
-        from pathlib import Path
-
         from PyQt5.QtWidgets import (
             QCheckBox,
             QDialog,
@@ -251,6 +443,19 @@ class RemoteModeMixin:
         if hasattr(self, "_cache_manager_dialog") and self._cache_manager_dialog:
             self._cache_manager_dialog.raise_()
             self._cache_manager_dialog.activateWindow()
+            return
+
+        # Calculate cache sizes
+        if self.remote_cache is None:
+            from ..remote import RemoteFileCache
+
+            self.remote_cache = RemoteFileCache()
+        try:
+            cache_info = run_in_thread(
+                self, "Measuring the caches…", _measure_caches, self.remote_cache
+            )
+        except Cancelled:
+            self.statusBar().showMessage("Cancelled", 3000)
             return
 
         dialog = QDialog(self)
@@ -272,161 +477,6 @@ class RemoteModeMixin:
         desc.setWordWrap(True)
         desc.setObjectName("Hint")
         layout.addWidget(desc)
-
-        # Calculate cache sizes
-        cache_info = []
-
-        # 1. Remote Cache
-        remote_size = 0
-        remote_count = 0
-        try:
-            if self.remote_cache is None:
-                from ..remote import RemoteFileCache
-
-                self.remote_cache = RemoteFileCache()
-            remote_size, remote_count = self.remote_cache.get_cache_size()
-        except Exception:
-            pass
-        cache_info.append(
-            (
-                "remote",
-                "Remote Files Cache",
-                remote_size,
-                remote_count,
-                "Downloaded files from remote SSH servers",
-            )
-        )
-
-        # 1b. Slices of dynamic spectra read from servers, and their masks
-        def folder_size(folder, pattern="*"):
-            size = count = 0
-            if folder.exists():
-                for f in folder.rglob(pattern):
-                    if f.is_file():
-                        size += f.stat().st_size
-                        count += 1
-            return size, count
-
-        pieces_dir = Path.home() / ".cache" / "solarviewer" / "remote" / "pieces"
-        masks_dir = Path.home() / ".cache" / "solarviewer" / "dynspec_masks"
-        try:
-            pieces_size, pieces_count = folder_size(pieces_dir)
-        except Exception:
-            pieces_size = pieces_count = 0
-        cache_info.append(
-            (
-                "pieces",
-                "Dynamic Spectrum Slices",
-                pieces_size,
-                pieces_count,
-                "Parts of dynamic spectra read from servers (read again when needed)",
-            )
-        )
-        try:
-            masks_size, masks_count = folder_size(masks_dir, "*.json")
-        except Exception:
-            masks_size = masks_count = 0
-        cache_info.append(
-            (
-                "masks",
-                "Dynamic Spectrum Masks",
-                masks_size,
-                masks_count,
-                "Masks drawn on dynamic spectra (clearing forgets them)",
-            )
-        )
-
-        # 2. NOAA Events Cache
-        noaa_size = 0
-        noaa_count = 0
-        try:
-            noaa_cache_dir = Path.home() / ".cache" / "solarviewer" / "noaa_events"
-            if noaa_cache_dir.exists():
-                for f in noaa_cache_dir.rglob("*"):
-                    if f.is_file():
-                        noaa_size += f.stat().st_size
-                        noaa_count += 1
-        except Exception:
-            pass
-        cache_info.append(
-            (
-                "noaa",
-                "Solar Activity Cache",
-                noaa_size,
-                noaa_count,
-                "Solar events, active regions, conditions, and spectrographs",
-            )
-        )
-
-        # 3. Helioviewer / API JSON Cache
-        json_size = 0
-        json_count = 0
-        try:
-            root_cache = Path.home() / ".cache" / "solarviewer"
-            if root_cache.exists():
-                for f in root_cache.glob("*.json"):
-                    if f.is_file():
-                        json_size += f.stat().st_size
-                        json_count += 1
-        except Exception:
-            pass
-        if json_size > 0:
-            cache_info.append(
-                (
-                    "json",
-                    "API Metadata Cache",
-                    json_size,
-                    json_count,
-                    "Cached JSON responses from Helioviewer and other APIs",
-                )
-            )
-
-        # 4. Sunpy Data
-        sunpy_size = 0
-        sunpy_count = 0
-        try:
-            # Check both ~/sunpy and ~/.sunpy
-            for p in [Path.home() / "sunpy", Path.home() / ".sunpy"]:
-                if p.exists():
-                    for f in p.rglob("*"):
-                        if f.is_file():
-                            sunpy_size += f.stat().st_size
-                            sunpy_count += 1
-        except Exception:
-            pass
-        if sunpy_size > 0:
-            cache_info.append(
-                (
-                    "sunpy",
-                    "Sunpy Data Cache",
-                    sunpy_size,
-                    sunpy_count,
-                    "Downloaded AIA pointing tables, .nc files, etc.",
-                )
-            )
-
-        # 5. Old solarviewer_cache (if exists)
-        old_cache_size = 0
-        old_cache_count = 0
-        try:
-            old_cache_dir = Path.home() / ".solarviewer_cache"
-            if old_cache_dir.exists():
-                for f in old_cache_dir.rglob("*"):
-                    if f.is_file():
-                        old_cache_size += f.stat().st_size
-                        old_cache_count += 1
-        except Exception:
-            pass
-        if old_cache_size > 0:
-            cache_info.append(
-                (
-                    "old",
-                    "Legacy Cache",
-                    old_cache_size,
-                    old_cache_count,
-                    "Old cache location (~/.solarviewer_cache)",
-                )
-            )
 
         # Create checkboxes for each cache type
         checkboxes = {}
@@ -518,78 +568,27 @@ class RemoteModeMixin:
                         return
 
             cleared = []
+            try:
+                for number, key in enumerate(selected_keys, 1):
+                    name = _CLEARED_NAMES[key]
+                    clearing = f"Clearing {name} ({number} of {len(selected_keys)})…"
+                    if run_in_thread(dialog, clearing, _clear_cache, key, self.remote_cache):
+                        cleared.append(name)
+            except Cancelled:
+                # A deletion under way cannot be stopped; the rest is spared
+                self.statusBar().showMessage(
+                    f"Stopped: {name} is still being cleared, the caches after it are kept",
+                    8000,
+                )
+                self._update_cache_menu_item()
+                dialog.reject()
+                return
 
             if "remote" in selected_keys:
-                try:
-                    if self.remote_cache:
-                        self.remote_cache.clear_cache()
-                    else:
-                        from ..remote import RemoteFileCache
+                from ..remote import RemoteFileBrowser
 
-                        RemoteFileCache().clear_cache()
-
-                    from ..remote import RemoteFileBrowser
-
-                    if hasattr(RemoteFileBrowser, "_listing_cache"):
-                        RemoteFileBrowser._listing_cache.clear()
-                    cleared.append("Remote Files")
-                except Exception as e:
-                    print(f"[Cache] Error clearing remote: {e}")
-
-            if "pieces" in selected_keys:
-                try:
-                    if pieces_dir.exists():
-                        shutil.rmtree(pieces_dir)
-                    cleared.append("Dynamic Spectrum Slices")
-                except Exception as e:
-                    print(f"[Cache] Error clearing slices: {e}")
-
-            if "masks" in selected_keys:
-                try:
-                    if masks_dir.exists():
-                        shutil.rmtree(masks_dir)
-                    cleared.append("Dynamic Spectrum Masks")
-                except Exception as e:
-                    print(f"[Cache] Error clearing masks: {e}")
-
-            if "noaa" in selected_keys:
-                try:
-                    noaa_cache_dir = (
-                        Path.home() / ".cache" / "solarviewer" / "noaa_events"
-                    )
-                    if noaa_cache_dir.exists():
-                        shutil.rmtree(noaa_cache_dir)
-                    cleared.append("Solar Activity")
-                except Exception as e:
-                    print(f"[Cache] Error clearing NOAA: {e}")
-
-            if "json" in selected_keys:
-                try:
-                    root_cache = Path.home() / ".cache" / "solarviewer"
-                    if root_cache.exists():
-                        for f in root_cache.glob("*.json"):
-                            f.unlink()
-                    cleared.append("API Metadata")
-                except Exception as e:
-                    print(f"[Cache] Error clearing JSON: {e}")
-
-            if "sunpy" in selected_keys:
-                try:
-                    for p in [Path.home() / "sunpy", Path.home() / ".sunpy"]:
-                        if p.exists():
-                            shutil.rmtree(p)
-                    cleared.append("Sunpy Data")
-                except Exception as e:
-                    print(f"[Cache] Error clearing Sunpy: {e}")
-
-            if "old" in selected_keys:
-                try:
-                    old_cache_dir = Path.home() / ".solarviewer_cache"
-                    if old_cache_dir.exists():
-                        shutil.rmtree(old_cache_dir)
-                    cleared.append("Legacy Cache")
-                except Exception as e:
-                    print(f"[Cache] Error clearing legacy: {e}")
+                if hasattr(RemoteFileBrowser, "_listing_cache"):
+                    RemoteFileBrowser._listing_cache.clear()
 
             if cleared:
                 self.statusBar().showMessage(f"Cleared: {', '.join(cleared)}", 5000)
@@ -626,53 +625,35 @@ class RemoteModeMixin:
         return f"{size_bytes:.1f} {power_labels[n]}B"
 
     def _update_cache_menu_item(self):
-        """Update the Manage Cache menu item with current total cache size."""
-        if not hasattr(self, "clear_cache_act"):
+        """Update the Manage Cache menu item with current total cache size.
+        Called as the menu opens, which must not wait for that: the item says
+        the last size found until the new one is in."""
+        if not hasattr(self, "clear_cache_act") or getattr(self, "_cache_measurer", None):
             return
 
-        try:
-            from pathlib import Path
-
-            total_size = 0
-
-            # 1. Main solarviewer cache (~/.cache/solarviewer)
-            # This includes remote files, noaa events, and json metadata
+        def measure():
             try:
-                root_cache = Path.home() / ".cache" / "solarviewer"
-                if root_cache.exists():
-                    for f in root_cache.rglob("*"):
-                        if f.is_file():
-                            total_size += f.stat().st_size
-            except Exception:
-                pass
-
-            # 2. Sunpy cache
+                total_size = _total_cache_size()
+            except Exception as e:
+                # Fallback if something goes wrong
+                logger.warning(f"Failed to update cache size: {e}")
+                total_size = None
             try:
-                for p in [Path.home() / "sunpy", Path.home() / ".sunpy"]:
-                    if p.exists():
-                        for f in p.rglob("*"):
-                            if f.is_file():
-                                total_size += f.stat().st_size
-            except Exception:
-                pass
+                self._cache_measurer.done.emit(total_size)
+            except RuntimeError:
+                pass  # (the window has gone)
 
-            # 3. Legacy cache
-            try:
-                old_cache = Path.home() / ".solarviewer_cache"
-                if old_cache.exists():
-                    for f in old_cache.rglob("*"):
-                        if f.is_file():
-                            total_size += f.stat().st_size
-            except Exception:
-                pass
+        self._cache_measurer = _Measured(self)
+        self._cache_measurer.done.connect(self._show_cache_size)
+        threading.Thread(target=measure, name="cache-size", daemon=True).start()
 
-            size_str = self._format_size(total_size)
-            self.clear_cache_act.setText(f"Manage Cache ({size_str})")
-
-        except Exception as e:
-            # Fallback if something goes wrong
-            logger.warning(f"Failed to update cache size: {e}")
+    def _show_cache_size(self, total_size):
+        self._cache_measurer.deleteLater()
+        self._cache_measurer = None
+        if total_size is None:
             self.clear_cache_act.setText("Manage Cache...")
+        else:
+            self.clear_cache_act.setText(f"Manage Cache ({self._format_size(total_size)})")
 
     def _check_connection_health(self):
         """Periodically check connection health and auto-reconnect if needed."""
@@ -812,4 +793,6 @@ class RemoteModeMixin:
         thread.done.connect(on_done)
         thread.finished.connect(on_finished)  # (kept until it has ended)
         self._reconnect_thread = thread
+        track_thread(thread, f"Reconnecting to {connection.connection_info}…", self)
+        self.remote_status_btn.setText("Reconnecting…")
         thread.start()

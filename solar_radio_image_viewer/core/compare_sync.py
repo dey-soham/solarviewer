@@ -39,6 +39,8 @@ from PyQt5.QtWidgets import (
 )
 
 from ..tools.preview import contrast_colors, halo_pen, measure_preview
+from ..ui.activity import begin_activity
+from ..ui.busy import busy
 from ..ui.widgets import kicker, kicker_row, link_button, rule, toggle_row
 
 logger = logging.getLogger(__name__)
@@ -420,7 +422,9 @@ class PaneSync:
         outer, self._joining = self._joining, pane
         pane._quiet_conversion = True
         try:
-            pane.launch_helioprojective_viewer()
+            # The conversion, then a second load and a draw, as one wait
+            with begin_activity("Matching the other panes' sky frame…", self.page, blocking=False):
+                pane.launch_helioprojective_viewer()
         finally:
             pane._quiet_conversion = False
             self._joining = outer
@@ -464,16 +468,24 @@ class PaneSync:
     # --------------------------------------------------------- frames
     def frame_stepped(self, leader, kind):
         """``leader`` stepped to another file: the linked panes step the
-        same way through their own folders."""
+        same way through their own folders, until one is cancelled (a step
+        returning None): Cancel stops the group, not one pane of it."""
         if not self.on["frames"] or self._busy or not leader.linked:
             return
+        panes = [
+            pane
+            for pane in self.page.panes
+            if pane is not leader and pane.linked and pane._file_list
+        ]
         self._busy = True
+        task = begin_activity(None, self.page, blocking=False)
         try:
-            for pane in self.page.panes:
-                if pane is leader or not pane.linked or not pane._file_list:
-                    continue
-                getattr(pane, f"_on_{kind}_file")()
+            for index, pane in enumerate(panes, start=1):
+                task.update(label=f"Stepping the linked panes ({index} of {len(panes)})…")
+                if getattr(pane, f"_on_{kind}_file")() is None:
+                    break
         finally:
+            task.finish()
             self._busy = False
 
     # ---------------------------------------------------------- range
@@ -489,19 +501,27 @@ class PaneSync:
         """``panes`` with images in ``unit`` are shown from vmin to vmax."""
         if not self.on["range"] or self._busy:
             return
+        panes = [pane for pane in panes if self._needs_range(pane, vmin, vmax, unit)]
+        if not panes:
+            return
         self._busy = True
         try:
-            for pane in panes:
-                if pane.current_image_data is None or pane.display_unit() != unit:
-                    continue
-                shown = getattr(pane, "_last_norm_params", None)
-                if shown is not None and np.allclose(shown[:2], (vmin, vmax), rtol=1e-9, atol=0):
-                    continue
-                pane.show_range(vmin, vmax)
-                pane.show_range_preset(None)
-                pane.update_display()
+            with busy("Matching the range…", self.page) as task:
+                for index, pane in enumerate(panes):
+                    if len(panes) > 1:
+                        task.update(done=index, total=len(panes))
+                    pane.show_range(vmin, vmax)
+                    pane.show_range_preset(None)
+                    pane.update_display()
         finally:
             self._busy = False
+
+    @staticmethod
+    def _needs_range(pane, vmin, vmax, unit):
+        if pane.current_image_data is None or pane.display_unit() != unit:
+            return False
+        shown = getattr(pane, "_last_norm_params", None)
+        return shown is None or not np.allclose(shown[:2], (vmin, vmax), rtol=1e-9, atol=0)
 
     # -------------------------------------------------------- regions
     def region_added(self, leader, region, select=True):

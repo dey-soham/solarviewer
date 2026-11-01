@@ -4,6 +4,7 @@ its time axis, selections and overlays) and the overview strip of the
 whole file.
 """
 
+import contextlib
 import logging
 import os
 import re
@@ -16,6 +17,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QFileDialog,
+    QLabel,
     QMessageBox,
     QPushButton,
     QInputDialog,
@@ -23,15 +25,85 @@ from PyQt5.QtWidgets import (
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
-import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, Normalize, PowerNorm
+from ..ui.background import Cancelled
+from ..ui.busy import busy
 from ..ui.styles import palette_for as get_palette
 import pyqtgraph as pg
 from pyqtgraph import ColorMap
 
 from .spectra_common import _channel_medians
 logger = logging.getLogger(__name__)
+
+
+def _write_replacing(fileName, write, cancelled):
+    """``write(path)`` to a name beside ``fileName``, which it then replaces,
+    or (if ``cancelled`` meanwhile) leaves as it was; off the GUI thread."""
+    # (the name's end stays: Matplotlib takes the format from it)
+    folder, name = os.path.split(fileName)
+    partial = os.path.join(folder, f".part-{name}")
+    try:
+        write(partial)
+        if cancelled():
+            raise Cancelled()
+        os.replace(partial, fileName)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(partial)
+        raise
+
+
+def _write_profile_csv(fileName, x, values, at_label, along_time, has_axis, source):
+    """A profile as a CSV file; off the GUI thread."""
+    kind = "Light curve" if along_time else "Spectrum"
+    with open(fileName, "w") as out:
+        out.write(f"# {kind} at {at_label}\n")
+        if source:
+            out.write(f"# Source: {os.path.basename(source)}\n")
+        if along_time and has_axis:
+            out.write("time_utc,time_mjd,intensity\n")
+            for t, v in zip(x, values):
+                utc = datetime(1858, 11, 17) + timedelta(seconds=float(t))
+                out.write(f"{utc.isoformat(timespec='milliseconds')},{t / 86400:.9f},{v:.6g}\n")
+        else:
+            name = "frequency_mhz" if has_axis else "index"
+            out.write(f"{name},intensity\n")
+            for f, v in zip(x, values):
+                out.write(f"{f:.6f},{v:.6g}\n" if has_axis else f"{int(f)},{v:.6g}\n")
+
+
+def _write_profile_plot(fileName, x, values, title, x_label, along_time, has_axis, source):
+    """A profile as a figure file (no pyplot or Qt: off the GUI thread), in
+    a plain light style whatever the app theme. The style is set on the figure:
+    rcParams are the whole process's, and the window draws with them."""
+    from matplotlib import rcParams
+    from matplotlib.figure import Figure
+    import matplotlib.dates as mdates
+
+    ink, size = "black", 10
+    fig = Figure(figsize=(8, 4.5), dpi=150, facecolor="white", edgecolor="white")
+    ax = fig.add_subplot(111, facecolor="white")
+    if along_time and has_axis:
+        # (MJD seconds -> datetimes, so the axis reads in UTC)
+        x = [datetime(1858, 11, 17) + timedelta(seconds=float(t)) for t in x]
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+    ax.plot(x, values, color="#4f46e5", linewidth=1.2)
+    ax.set_xlabel(x_label, color=ink, fontsize=size)
+    ax.set_ylabel("Intensity", color=ink, fontsize=size)
+    ax.set_title(
+        f"{title}\n{os.path.basename(source)}" if source else title, color=ink, fontsize=size
+    )
+    ax.grid(True, alpha=0.3, color="#b0b0b0")
+    ax.tick_params(colors=ink, labelsize=size)
+    for axis in (ax.xaxis, ax.yaxis):
+        axis.get_offset_text().set(color=ink, fontsize=size)
+    for spine in ax.spines.values():
+        spine.set(edgecolor=ink, linewidth=0.8)
+    if along_time and has_axis:
+        fig.autofmt_xdate()
+    fig.tight_layout(pad=1.08 * size / rcParams["font.size"])  # (its pad is in that size)
+    fig.savefig(fileName)
 
 
 class _AxisLayout:
@@ -1152,11 +1224,13 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
     def _plot_1d_time(self, data_slice, freq_label):
         """The light curve at one frequency, in its own window."""
-        self._show_profile(data_slice, freq_label, along_time=True)
+        with busy("Plotting the light curve…", self):
+            self._show_profile(data_slice, freq_label, along_time=True)
 
     def _plot_1d_freq(self, data_slice, time_label):
         """The spectrum at one time, in its own window."""
-        self._show_profile(data_slice, time_label, along_time=False)
+        with busy("Plotting the spectrum…", self):
+            self._show_profile(data_slice, time_label, along_time=False)
 
     def _show_profile(self, values, at_label, along_time):
         """A window with the profile and Save CSV / Save Plot buttons."""
@@ -1196,6 +1270,9 @@ class PyQtGraphSpectrumCanvas(QWidget):
         layout.addWidget(plot, 1)
 
         buttons = QHBoxLayout()
+        win.saved_note = QLabel(win)  # (a saved file's name: this window has no status bar)
+        win.saved_note.setObjectName("Hint")
+        buttons.addWidget(win.saved_note)
         buttons.addStretch()
         csv_btn = QPushButton("Save CSV")
         csv_btn.clicked.connect(
@@ -1221,6 +1298,15 @@ class PyQtGraphSpectrumCanvas(QWidget):
         label = re.sub(r"[^0-9A-Za-z.]+", "", at_label.replace(":", ""))
         return f"{base}_{kind}_{label}"
 
+    def _save_profile(self, parent, fileName, write):
+        """``write(path)`` off the GUI thread, its result then ``fileName``;
+        raises Cancelled, once it has stopped and ``fileName`` is as it was."""
+        self.main_window._server_work(
+            f"Saving {os.path.basename(fileName)}…",
+            lambda _, cancelled: _write_replacing(fileName, write, cancelled),
+            parent,
+        )
+
     def _save_profile_csv(self, parent, x, values, at_label, along_time, has_axis):
         fileName, _ = QFileDialog.getSaveFileName(
             parent, "Save Profile as CSV",
@@ -1229,25 +1315,18 @@ class PyQtGraphSpectrumCanvas(QWidget):
         if not fileName:
             return
         source = getattr(self.main_window, "current_filename", "")
-        kind = "Light curve" if along_time else "Spectrum"
         try:
-            with open(fileName, "w") as out:
-                out.write(f"# {kind} at {at_label}\n")
-                if source:
-                    out.write(f"# Source: {os.path.basename(source)}\n")
-                if along_time and has_axis:
-                    out.write("time_utc,time_mjd,intensity\n")
-                    for t, v in zip(x, values):
-                        utc = datetime(1858, 11, 17) + timedelta(seconds=float(t))
-                        out.write(f"{utc.isoformat(timespec='milliseconds')},{t / 86400:.9f},{v:.6g}\n")
-                else:
-                    name = "frequency_mhz" if has_axis else "index"
-                    out.write(f"{name},intensity\n")
-                    for f, v in zip(x, values):
-                        out.write(f"{f:.6f},{v:.6g}\n" if has_axis else f"{int(f)},{v:.6g}\n")
+            self._save_profile(
+                parent, fileName,
+                lambda path: _write_profile_csv(path, x, values, at_label, along_time, has_axis, source),
+            )
+        except Cancelled:
+            parent.saved_note.setText("Cancelled")
+            return
         except OSError as e:
             QMessageBox.warning(parent, "Save CSV", f"Could not save:\n{e}")
             return
+        parent.saved_note.setText(f"Saved {os.path.basename(fileName)}")
         self.logger.info(f"Profile saved to {fileName}")
 
     def _save_profile_plot(self, parent, x, values, at_label, title, x_label, along_time, has_axis):
@@ -1260,31 +1339,19 @@ class PyQtGraphSpectrumCanvas(QWidget):
             return
         if not os.path.splitext(fileName)[1]:
             fileName += "." + chosen.split("*.")[1].rstrip(")")
-        from matplotlib.figure import Figure
-        import matplotlib.dates as mdates
-
-        # (a plain light style, whatever the app theme)
-        with matplotlib.style.context("default"):
-            fig = Figure(figsize=(8, 4.5), dpi=150)
-            ax = fig.add_subplot(111)
-            if along_time and has_axis:
-                # (MJD seconds -> datetimes, so the axis reads in UTC)
-                x = [datetime(1858, 11, 17) + timedelta(seconds=float(t)) for t in x]
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-            ax.plot(x, values, color="#4f46e5", linewidth=1.2)
-            ax.set_xlabel(x_label)
-            ax.set_ylabel("Intensity")
-            source = getattr(self.main_window, "current_filename", "")
-            ax.set_title(f"{title}\n{os.path.basename(source)}" if source else title, fontsize=10)
-            ax.grid(True, alpha=0.3)
-            if along_time and has_axis:
-                fig.autofmt_xdate()
-            fig.tight_layout()
-            try:
-                fig.savefig(fileName)
-            except (OSError, ValueError) as e:
-                QMessageBox.warning(parent, "Save Plot", f"Could not save:\n{e}")
-                return
+        source = getattr(self.main_window, "current_filename", "")
+        try:
+            self._save_profile(
+                parent, fileName,
+                lambda path: _write_profile_plot(path, x, values, title, x_label, along_time, has_axis, source),
+            )
+        except Cancelled:
+            parent.saved_note.setText("Cancelled")
+            return
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(parent, "Save Plot", f"Could not save:\n{e}")
+            return
+        parent.saved_note.setText(f"Saved {os.path.basename(fileName)}")
         self.logger.info(f"Profile plot saved to {fileName}")
 
     # ------------------ Mouse Hover: Display Amplitude --------------------------

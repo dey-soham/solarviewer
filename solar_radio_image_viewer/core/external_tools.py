@@ -3,14 +3,38 @@ Launching downloaders, Helioviewer browser and pipeline tools.
 """
 
 import logging
+import time
+
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QMessageBox
 
+from ..ui.activity import begin_activity
+from ..ui.background import Cancelled, run_in_thread
+from ..ui.busy import busy
 from ..ui.styles import theme_manager
 from ..processing.fits_io import is_fits, readable_image_path
 from ..ui.recent_files import remember_image
 from ..processing.image_meta import casa_obs_time
 
 logger = logging.getLogger(__name__)
+
+# The tools that tell this window when they are up (pipeline/viewer_link.py);
+# how long to wait for that, in seconds (as ToolLink.note_launch)
+TOOLS_SAYING_HELLO = ("dynamic_spectrum_viewer",)
+TOOL_HELLO_S = 20
+# The other tools say nothing: about how long their window takes to appear
+TOOL_START_S = 3
+
+
+def _helioviewer_reachable():
+    """Whether the Helioviewer API answers (on a thread: this waits)."""
+    import requests
+
+    try:
+        requests.get("https://api.helioviewer.org/v2/", timeout=3)
+    except requests.RequestException:
+        return False
+    return True
 
 
 class ExternalToolsMixin:
@@ -26,11 +50,12 @@ class ExternalToolsMixin:
     def launch_data_downloader_gui(self):
         """Launch the Solar Data Downloader GUI."""
         try:
-            from ..solar_data_downloader import launch_gui as launch_downloader_gui
+            with busy("Opening the Solar Data Downloader…", self):
+                from ..solar_data_downloader import launch_gui as launch_downloader_gui
 
-            # Try to extract datetime from current tab
-            initial_datetime = self._get_current_tab_datetime()
-            launch_downloader_gui(self, initial_datetime=initial_datetime)
+                # Try to extract datetime from current tab
+                initial_datetime = self._get_current_tab_datetime()
+                launch_downloader_gui(self, initial_datetime=initial_datetime)
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -42,13 +67,14 @@ class ExternalToolsMixin:
     def launch_radio_data_downloader_gui(self):
         """Launch the Radio Solar Data Downloader GUI."""
         try:
-            from ..radio_data_downloader import (
-                launch_gui as launch_radio_downloader_gui,
-            )
+            with busy("Opening the Radio Data Downloader…", self):
+                from ..radio_data_downloader import (
+                    launch_gui as launch_radio_downloader_gui,
+                )
 
-            # Try to extract datetime from current tab
-            initial_datetime = self._get_current_tab_datetime()
-            launch_radio_downloader_gui(self, initial_datetime=initial_datetime)
+                # Try to extract datetime from current tab
+                initial_datetime = self._get_current_tab_datetime()
+                launch_radio_downloader_gui(self, initial_datetime=initial_datetime)
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -241,13 +267,12 @@ read -p "Press Enter to close..."
     def open_helioviewer_browser(self):
         """Open Helioviewer browser window."""
         try:
-            import requests
             from PyQt5.QtWidgets import QMessageBox
 
             # Fast connection check
-            try:
-                requests.get("https://api.helioviewer.org/v2/", timeout=3)
-            except requests.RequestException:
+            if not run_in_thread(
+                self, "Checking the connection to Helioviewer…", _helioviewer_reachable
+            ):
                 QMessageBox.warning(
                     self,
                     "Connection Error",
@@ -255,10 +280,13 @@ read -p "Press Enter to close..."
                 )
                 return
 
-            from ..helioviewer_browser import HelioviewerBrowser
+            with busy("Opening the Helioviewer browser…", self):
+                from ..helioviewer_browser import HelioviewerBrowser
 
-            browser = HelioviewerBrowser(self)
-            browser.show()
+                browser = HelioviewerBrowser(self)
+                browser.show()
+        except Cancelled:
+            self.statusBar().showMessage("Cancelled")
         except Exception as e:
             from PyQt5.QtWidgets import QMessageBox
 
@@ -314,7 +342,7 @@ read -p "Press Enter to close..."
             remember_image(path)
             self.statusBar().showMessage(
                 f"{os.path.basename(path)} is a dynamic spectrum: "
-                "opened in the Dynamic Spectrum Viewer",
+                "opening it in the Dynamic Spectrum Viewer",
                 8000,
             )
         return started
@@ -329,6 +357,11 @@ read -p "Press Enter to close..."
         import os
         import subprocess
         import sys
+
+        starting = self.__dict__.setdefault("_tools_starting", set())
+        if path is None and tool in starting:
+            self.statusBar().showMessage(f"{display_name} is still starting", 3000)
+            return True
 
         try:
             env = self._get_clean_qt_env()
@@ -366,10 +399,10 @@ read -p "Press Enter to close..."
             ]
             if path:
                 command.append(path)
-            subprocess.Popen(
+            process = subprocess.Popen(
                 command, start_new_session=True, env=env, cwd=launch_cwd
             )
-            self.statusBar().showMessage(f"{display_name} launched", 3000)
+            self._show_tool_starting(tool, display_name, process)
             return True
         except Exception as e:
             error_message = f"Error launching {display_name}: {str(e)}"
@@ -379,3 +412,32 @@ read -p "Press Enter to close..."
             traceback.print_exc()
             QMessageBox.critical(self, "Error", error_message)
             return False
+
+    def _show_tool_starting(self, tool, display_name, process):
+        """Say ``tool`` is starting until it says it is up, or for the time a
+        tool takes if it cannot, or until its process ends: its window comes
+        seconds after the process does."""
+        task = begin_activity(f"Starting {display_name}…", self, blocking=False)
+        link = getattr(self, "_tool_link", None)
+        says_hello = link is not None and tool in TOOLS_SAYING_HELLO
+        until = time.monotonic() + (TOOL_HELLO_S if says_hello else TOOL_START_S)
+        self._tools_starting.add(tool)
+        timer = QTimer(self)
+
+        def check():
+            ended = process.poll() is not None
+            up = says_hello and link.has(tool)
+            if not (ended or up or time.monotonic() >= until):
+                return
+            timer.stop()
+            timer.deleteLater()
+            task.finish()
+            self._tools_starting.discard(tool)
+            if ended and process.returncode != 0:
+                message = f"{display_name} stopped as it started (exit code {process.returncode})"
+            else:
+                message = f"{display_name} launched"
+            self.statusBar().showMessage(message, 3000)
+
+        timer.timeout.connect(check)
+        timer.start(100)

@@ -16,6 +16,7 @@ import json
 import math
 import os
 import posixpath
+import queue
 import re
 import shlex
 import signal
@@ -53,6 +54,8 @@ from PyQt5.QtWidgets import (
 )
 
 from ..remote.ssh_manager import UnknownHostKey, trust_host_key
+from ..ui.activity import Spinner, begin_activity
+from ..ui.background import Cancelled, run_in_thread
 from ..ui.styles import set_hand_cursor, set_tone
 from ..ui.widgets import button_bar, kicker, link_button, segmented
 
@@ -66,6 +69,10 @@ DEFAULT_CHUNK_MB = 128
 SLURM_DEFAULT_CPUS = 8
 _MJD_EPOCH = datetime(1858, 11, 17)
 _TERMINAL = ("DONE", "FAILED", "CANCELLED")
+SCAN_CLOCK_AFTER_S = 3  # a scan shows how long it has been going after this long
+# How long "Opening the viewer…" lasts: the viewer gives no sign when it is up,
+# and its window takes this long at worst
+VIEWER_START_MS = 4000
 
 # the run state of the window (one place decides what may be pressed)
 IDLE, STARTING, LOCAL, REMOTE, DOWNLOADING = "idle", "starting", "local", "remote", "downloading"
@@ -154,6 +161,23 @@ class RunLog:
             return ("Note: casacore says its leap-second table is out of date; "
                     "this does not change the result (repeats are hidden).")
         return value if value.strip() else None
+
+
+def run_stage_text(log):
+    """What a run is doing where no percentage says it (``log`` a RunLog), or
+    "": the rows take the bar to 100%, and the writing comes after them."""
+    stage = log.info.get("stage")
+    if stage == "writing":
+        return "Writing the FITS file…"
+    if stage == "plotting":
+        return "Drawing the plot…"
+    if log.total > 0:
+        return "Finishing the spectrum…" if log.done >= log.total else ""
+    if stage == "reading":
+        return f"Opening {log.info.get('found', 'the')} Measurement Set(s)…"
+    if stage in ("inputs", "plan"):
+        return "Preparing the data…"
+    return ""
 
 
 def _short(value):
@@ -762,9 +786,45 @@ def local_cpu_count():
         return os.cpu_count() or 1
 
 
-def local_scan(paths, python=None, script=None, timeout=180):
+def _output_lines(proc, timeout):
+    """The lines ``proc`` writes, until it has ended. A child that outlives it
+    with the pipe open, or a worker stuck on a dead disk, holds up a read but
+    not this: the read is on a thread of its own. Raises TimeoutExpired."""
+    deadline = time.monotonic() + timeout
+    lines = queue.Queue()
+
+    def read():
+        try:
+            for line in proc.stdout:
+                lines.put(line)
+        finally:
+            proc.stdout.close()
+            lines.put(None)
+
+    threading.Thread(target=read, daemon=True).start()
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        ended = proc.poll() is not None
+        try:
+            line = lines.get(timeout=min(left, 1 if ended else 0.1))
+        except queue.Empty:
+            if ended:
+                return
+            continue
+        if line is None:
+            proc.wait(max(deadline - time.monotonic(), 0))
+            return
+        yield line
+
+
+def local_scan(paths, python=None, script=None, timeout=180, on_start=None, on_progress=None):
     """The engine's ``--list`` summary (raw dict) for local ``paths``.
-    Raises RuntimeError with a message for the user."""
+    Raises RuntimeError with a message for the user.
+
+    ``on_start(process)`` is given the process, to stop it when its answer is
+    no longer wanted; ``on_progress(done, total)`` follows the MS read."""
     for path in paths:
         if not os.path.exists(path):
             raise RuntimeError(f"That path does not exist: {path}")
@@ -772,24 +832,36 @@ def local_scan(paths, python=None, script=None, timeout=180):
             raise RuntimeError(f"Permission denied: {path}")
     args = ["--indir", paths[0]] if len(paths) == 1 else ["--ms"] + list(paths)
     cmd = [python or sys.executable, script or ENGINE_PATH, "--list"] + args
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, cwd=_safe_cwd(),
-            env=dict(os.environ, PYTHONUNBUFFERED="1"),
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Reading the data took too long; is the disk reachable?")
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+        bufsize=1, cwd=_safe_cwd(), env=dict(os.environ, PYTHONUNBUFFERED="1"),
+    )
+    if on_start is not None:
+        on_start(proc)
     summary = None
     problems = []
-    for line in proc.stdout.splitlines():
-        kind, value = parse_svds_line(line)
-        if kind == "SUMMARY":
-            summary = value
-        elif kind == "ERROR":
-            problems.append(value)
+    other = []
+    try:
+        for line in _output_lines(proc, timeout):
+            kind, value = parse_svds_line(line)
+            if kind == "SUMMARY":
+                summary = value
+            elif kind == "ERROR":
+                problems.append(value)
+            elif kind == "PROGRESS":
+                if on_progress is not None:
+                    on_progress(*value)
+            elif kind == "TEXT" and value.strip():
+                other.append(value.strip())
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(1)
+        except subprocess.TimeoutExpired:
+            pass  # it cannot die until the disk answers: nothing to wait for
+        raise RuntimeError("Reading the data took too long; is the disk reachable?")
     if summary is None:
-        tail = proc.stderr.strip().splitlines()[-3:]
-        raise RuntimeError(friendly_scan_error(" ".join(problems) or " ".join(tail)))
+        raise RuntimeError(friendly_scan_error(" ".join(problems) or " ".join(other[-3:])))
     return summary
 
 
@@ -831,6 +903,7 @@ class _Task(QThread):
 
     result = pyqtSignal(object)
     failed = pyqtSignal(object)
+    note = pyqtSignal(object)  # for ``fn`` to say how it is going
 
     def __init__(self, fn):
         super().__init__()
@@ -878,7 +951,10 @@ class _ServerScan(QThread):
         if runtime is None:
             probe = self.paths[0] if len(self.paths) == 1 and is_ms_name(self.paths[0]) else None
             try:
-                runtime = remote.detect_runtime(conn, probe_ms=probe, hints=tuple(self.hints))
+                runtime = remote.detect_runtime(
+                    conn, probe_ms=probe, hints=tuple(self.hints),
+                    on_candidate=lambda *c: self.stage.emit("candidate", c),
+                )
             except Exception as e:
                 self.stage.emit("runtime_error", e)
                 return
@@ -1122,6 +1198,17 @@ class DynamicSpectraDialog(QDialog):
         self._p = {}
         self._final_status = False
         self._resume_handle = None
+        self._connect_try = 0  # bumped by every silent connect and its Cancel
+        self._scan_proc = None  # the local scan's process
+        self._scan_doing = ""  # what the scan under way is at, for the clock
+        self._scan_begun = time.monotonic()
+        self._scan_clock = QTimer(self)
+        self._scan_clock.timeout.connect(self._scan_tick)
+        self._start_text = ""  # what the start under way is at, for the clock
+        self._viewer_opening = None  # the Activity of a viewer on its way
+        self._viewer_timer = QTimer(self)
+        self._viewer_timer.setSingleShot(True)
+        self._viewer_timer.timeout.connect(self._viewer_started)
         self._setup_ui()
         self._load_settings()
         self._wire()
@@ -1175,6 +1262,8 @@ class DynamicSpectraDialog(QDialog):
         self.run_group.addButton(self.local_btn)
         self.run_group.addButton(self.server_btn)
         row.addWidget(segmented([self.local_btn, self.server_btn]))
+        self.conn_spinner = Spinner(14)
+        row.addWidget(self.conn_spinner)
         self.conn_label = QLabel("")
         self.conn_label.setObjectName("Hint")
         row.addWidget(self.conn_label, 1)
@@ -1224,7 +1313,12 @@ class DynamicSpectraDialog(QDialog):
         self.scan_label = QLabel("Choose the data to see what it holds.")
         self.scan_label.setObjectName("Hint")
         self.scan_label.setWordWrap(True)
-        lay.addWidget(self.scan_label)
+        self.scan_spinner = Spinner(14)
+        scan_row = QHBoxLayout()
+        scan_row.setSpacing(6)
+        scan_row.addWidget(self.scan_spinner, 0, Qt.AlignTop)
+        scan_row.addWidget(self.scan_label, 1)
+        lay.addLayout(scan_row)
         self.summary_grid = QGridLayout()
         self.summary_grid.setHorizontalSpacing(12)
         self.summary_grid.setVerticalSpacing(4)
@@ -1552,7 +1646,7 @@ class DynamicSpectraDialog(QDialog):
     def _wire(self):
         self.local_btn.clicked.connect(lambda: self._set_run_on("local"))
         self.server_btn.clicked.connect(lambda: self._set_run_on("server"))
-        self.connect_btn.clicked.connect(lambda: self._connect_dialog())
+        self.connect_btn.clicked.connect(self._connect_clicked)
         self.browse_btn.clicked.connect(self._browse_data)
         self.act_folder.triggered.connect(self._browse_folder)
         self.act_files.triggered.connect(self._browse_files)
@@ -1769,18 +1863,26 @@ class DynamicSpectraDialog(QDialog):
         self._outdir_redirected = False
         self._clear_recommendation()
         self._fill_summary(None)
-        self._set_scan_text("Choose the data to see what it holds." if not self.data_edit.text()
-                            else "Reading the data...")
+        self._end_local_scan()
+        if not self.data_edit.text():
+            self._set_scan_text("Choose the data to see what it holds.")
+        elif server and not self._connected():
+            self._set_scan_text("")  # read once connected
+        else:
+            self._scan_begun = time.monotonic()
+            self._scan_wait("Reading the data…")
         self._cpus_changed()
         self._update_connection_label()
         self._update_output_hint()
         self._update_state()
 
     def _update_connection_label(self):
+        self.conn_spinner.setVisible(self._is_server() and self._conn_connecting)
         if self._is_server():
             if self._conn_connecting:
-                self.conn_label.setText("Connecting...")
-                self.connect_btn.setVisible(False)
+                self.conn_label.setText("Connecting…")
+                self.connect_btn.setText("Cancel")
+                self.connect_btn.setVisible(True)
             elif self._connected():
                 c = self._conn
                 self.conn_label.setText(f"Connected to {c.username}@{c.host}")
@@ -1803,6 +1905,8 @@ class DynamicSpectraDialog(QDialog):
     def _connect_silently(self, params):
         """Reuse the main window's server (keys or agent; no password asked)."""
         self._conn_connecting = True
+        self._connect_try += 1
+        token = self._connect_try
         self._update_connection_label()
 
         def work():
@@ -1816,9 +1920,26 @@ class DynamicSpectraDialog(QDialog):
             return c
 
         task = _Task(work)
-        task.result.connect(self._connected_ok)
-        task.failed.connect(self._silent_failed)
+        task.result.connect(lambda c, t=token: self._silently_connected(t, c))
+        task.failed.connect(lambda e, t=token: t == self._connect_try and self._silent_failed(e))
         task.start()
+
+    def _silently_connected(self, token, conn):
+        if token == self._connect_try:
+            self._connected_ok(conn)
+        else:  # cancelled meanwhile: nobody will use this connection
+            _Task(conn.disconnect).start()
+
+    def _connect_clicked(self):
+        if self._conn_connecting:
+            self._connect_try += 1  # whatever the attempt reports later is dropped
+            self._conn_connecting = False
+            if self._is_server():
+                self._update_connection_label()
+                self._set_scan_text("Cancelled. Use Connect... to sign in.")
+                self._update_state()
+                return
+        self._connect_dialog()  # in the Local view the button says just this
 
     def _silent_failed(self, error):
         self._conn_connecting = False
@@ -1876,6 +1997,7 @@ class DynamicSpectraDialog(QDialog):
         """The text of the Data field changed: whatever a scan of the old text
         reports is dropped (the token), and a new scan follows a pause."""
         self._scan_token += 1
+        self._end_local_scan()
         self._summary = None
         self._scan_error = ""
         self._clear_recommendation()
@@ -1887,7 +2009,11 @@ class DynamicSpectraDialog(QDialog):
         self._fill_summary(None)
         have = bool(self.data_edit.text().strip())
         self._scanning = have
-        self._set_scan_text("Reading the data..." if have else "Choose the data to see what it holds.")
+        if have:
+            self._scan_begun = time.monotonic()
+            self._scan_wait("Reading the data…")
+        else:
+            self._set_scan_text("Choose the data to see what it holds.")
         self._final_status = False
         self._scan_timer.start(1000 if self._is_server() else 600)
         self._update_state()
@@ -1900,10 +2026,42 @@ class DynamicSpectraDialog(QDialog):
         self.mode_reason.setText("")
 
     def _set_scan_text(self, text, tone=None):
+        """Say how a scan ended, or what to do next: nothing is under way."""
+        self._scan_doing = ""
+        self._scan_clock.stop()
+        self.scan_spinner.setVisible(False)
+        self._show_scan_text(text, tone)
+
+    def _show_scan_text(self, text, tone=None):
         self.scan_label.setText(text)
         self.scan_label.setObjectName("Hint" if tone is None else "")
         set_tone(self.scan_label, tone)
         self.scan_label.setVisible(bool(text))
+
+    def _scan_wait(self, text):
+        """Say what the scan is at: it turns, and counts the time, until
+        _set_scan_text() says how it went."""
+        self._scan_doing = text
+        self.scan_spinner.setVisible(True)
+        if not self._scan_clock.isActive():
+            self._scan_clock.start(1000)
+        self._scan_tick()
+
+    def _scan_tick(self):
+        waited = time.monotonic() - self._scan_begun
+        clock = f" ({format_duration(waited)})" if waited >= SCAN_CLOCK_AFTER_S else ""
+        self._show_scan_text(self._scan_doing + clock)
+
+    def _scan_progress(self, token, done, total):
+        if token == self._scan_token and total > 1:
+            self._scan_wait(f"Reading the data… {done} of {total} Measurement Sets")
+
+    def _end_local_scan(self):
+        """Stop a scan whose answer is no longer wanted, so that the next one
+        does not wait for it."""
+        proc, self._scan_proc = self._scan_proc, None
+        if proc is not None:
+            proc.terminate()
 
     def _paths(self):
         """The data paths; on this computer made absolute (~ expanded), so the
@@ -1920,6 +2078,7 @@ class DynamicSpectraDialog(QDialog):
         self._summary = None
         if not paths:
             self._scanning = False
+            self._set_scan_text("Choose the data to see what it holds.")
             self._update_state()
             return
         self._scanning = True
@@ -1928,12 +2087,23 @@ class DynamicSpectraDialog(QDialog):
             # one scan at a time (each is a process, on the server a container
             # start on a shared node); this one follows when it is over
             self._scan_again = True
+            self._end_local_scan()
+            self._scan_wait("Reading the data…")
             self._update_state()
             return
+        self._scan_begun = time.monotonic()
         self._update_state()
         if not self._is_server():
-            self._set_scan_text("Reading the data...")
-            task = _Task(lambda: local_scan(paths))
+            self._scan_wait("Reading the data…")
+
+            def started(proc, t=token):
+                self._scan_proc = proc
+                if t != self._scan_token:  # the data changed as it started
+                    self._end_local_scan()
+
+            task = _Task(lambda: local_scan(
+                paths, on_start=started, on_progress=lambda *n: task.note.emit(n)))
+            task.note.connect(lambda n, t=token: self._scan_progress(t, *n))
             task.result.connect(lambda raw, t=token: self._scan_done(t, raw))
             task.failed.connect(lambda e, t=token: self._scan_failed(t, e))
             self._start_scan_thread(task)
@@ -1959,9 +2129,9 @@ class DynamicSpectraDialog(QDialog):
                 self._scan_failed(token, e)
                 return
         hints = [h for h in (self.container_edit.text().strip(),) if h]
-        self._set_scan_text(
-            "Looking for the software on the server..." if self._runtime is None
-            else "Reading the data on the server..."
+        self._scan_wait(
+            "Looking for the software on the server…" if self._runtime is None
+            else "Reading the data on the server…"
         )
         scan = _ServerScan(
             remote, self._conn, self._engine_source, paths, self._runtime, hints,
@@ -1978,6 +2148,7 @@ class DynamicSpectraDialog(QDialog):
 
     def _scan_thread_ended(self):
         self._scan_busy = False
+        self._scan_proc = None
         if self._scan_again and not self._closed:
             self._scan_again = False
             self._scan_now()
@@ -1985,10 +2156,13 @@ class DynamicSpectraDialog(QDialog):
     def _server_stage(self, token, name, value):
         if token != self._scan_token:
             return
-        if name == "runtime":
+        if name == "candidate":
+            path, number, total = value
+            self._scan_wait(f"Trying {posixpath.basename(path)} on the server ({number} of {total})…")
+        elif name == "runtime":
             self._runtime = value
             self._show_runtime(value)
-            self._set_scan_text("Reading the data on the server...")
+            self._scan_wait("Reading the data on the server…")
         elif name == "runtime_error":
             self._scanning = False
             self._runtime = None
@@ -2364,13 +2538,13 @@ class DynamicSpectraDialog(QDialog):
         if self._state != IDLE:
             return False, ""
         if self._is_server() and self._conn_connecting:
-            return False, "Connecting to the server..."
+            return False, "Connecting to the server…"
         if self._is_server() and not self._connected():
             return False, "Connect to a server first."
         if not self._paths():
             return False, "Choose the data first."
         if self._scanning:
-            return False, "Reading the data..."
+            return False, "Reading the data…"
         if self._summary is None:
             return False, "The data could not be read (see above)."
         if self._is_server() and self._runtime is None:
@@ -2429,7 +2603,9 @@ class DynamicSpectraDialog(QDialog):
         self._submitting = False
         self.retry_btn.setVisible(False)
         self._enter(STARTING)
-        self._set_status("Checking the output location...")
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setVisible(True)
+        self._set_status("Checking the output location…")
         if p["remote"]:
             task = _Task(lambda: self._remote_check(p))
             task.result.connect(lambda res, t=token: self._after_check(t, p, res))
@@ -2511,6 +2687,8 @@ class DynamicSpectraDialog(QDialog):
         exists = list(res.get("exists") or [])
         if exists and not p["overwrite"]:
             names = "\n".join(exists)
+            self.progress_bar.setVisible(False)  # the question waits for the user, not for work
+            self._set_status("The output already exists.")
             reply = QMessageBox.question(
                 self, "File exists",
                 f"These files already exist {where}:\n\n{names}\n\nReplace them?",
@@ -2581,7 +2759,7 @@ class DynamicSpectraDialog(QDialog):
             self._runner.line.connect(self._local_line)
             self._runner.exited.connect(self._local_exited)
             self._enter(LOCAL)
-            self._set_status("Starting...")
+            self._set_status("Starting…")
             self._runner.start()
             return
         remote = self._remote()
@@ -2592,7 +2770,8 @@ class DynamicSpectraDialog(QDialog):
                 mem_gb=self.mem_spin.value() or None, time_limit=p["time_limit"], extra=[],
             )
         self._submitting = True
-        self._set_status("Submitting to the server..." if slurm else "Starting on the server...")
+        self._start_text = "Submitting to the server…" if slurm else "Starting on the server…"
+        self._set_status(self._start_text)
         conn, runtime, source = self._conn, self._runtime, self._engine_source
         token = self._run_token
 
@@ -2671,7 +2850,7 @@ class DynamicSpectraDialog(QDialog):
         self.stop_btn.setEnabled(True)
         self._show_lost_buttons(False)
         self.close_btn.setText("Close")
-        if state in (LOCAL, REMOTE):
+        if state in (STARTING, LOCAL, REMOTE):
             self._tick_timer.start(1000)
         else:
             self._tick_timer.stop()
@@ -2966,10 +3145,9 @@ class DynamicSpectraDialog(QDialog):
     def _download(self, remote_path):
         self._remote_result = remote_path
         self._enter(DOWNLOADING)
-        self._set_status("Downloading the result...")
+        self._set_status("Downloading the result…")
         self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 1000)
-        self.progress_bar.setValue(0)
+        self.progress_bar.setRange(0, 0)  # the first bytes can be a while: the connection may be busy
         self._fetch = _Fetch(
             self._remote(), self._conn, self._handle, self._p["download_dir"],
             self._p["saveplot"],
@@ -2981,6 +3159,8 @@ class DynamicSpectraDialog(QDialog):
 
     def _download_progress(self, done, total):
         if total and self._state == DOWNLOADING and not self._stopping:
+            if self.progress_bar.maximum() == 0:
+                self.progress_bar.setRange(0, 1000)
             self.progress_bar.setValue(int(1000 * done / total))
             self._set_status(f"Downloading: {format_size(done)} of {format_size(total)}")
 
@@ -3022,11 +3202,7 @@ class DynamicSpectraDialog(QDialog):
                     if self._submitting else "Cancelled before the job started.")
             self._cancel_start(note)
         elif self._state == LOCAL and self._runner is not None:
-            self._stopping = True
-            self._stop_requested = True
-            self.stop_btn.setEnabled(False)
-            self._runner.cancel()
-            self._tick()
+            self._begin_local_stop()
         elif self._state == REMOTE and self._handle is not None:
             if self._stopping:
                 return  # a stop (or its host-key question) is already under way
@@ -3041,13 +3217,26 @@ class DynamicSpectraDialog(QDialog):
             self._stopping = True
             self._stop_requested = True
             self._stop_unconfirmed = None
+            self.progress_bar.setRange(0, 0)
             self._tick()
             self._cancel_job(self._handle, retried=False)
         elif self._state == DOWNLOADING and self._fetch is not None:
-            self._fetch.stop = True
-            self._stopping = True
-            self.stop_btn.setEnabled(False)
-            self._set_status("Stopping the download...")
+            self._begin_download_stop()
+
+    def _begin_local_stop(self):
+        self._stopping = True
+        self._stop_requested = True
+        self.stop_btn.setEnabled(False)
+        self.progress_bar.setRange(0, 0)  # a percentage standing still would mislead
+        self._runner.cancel()
+        self._tick()
+
+    def _begin_download_stop(self):
+        self._fetch.stop = True
+        self._stopping = True
+        self.stop_btn.setEnabled(False)
+        self.progress_bar.setRange(0, 0)
+        self._set_status("Stopping the download…")
 
     def _cancel_job(self, handle, retried):
         remote, conn = self._remote(), self._conn
@@ -3144,9 +3333,12 @@ class DynamicSpectraDialog(QDialog):
     def _progress_update(self):
         log = self._runlog
         if log.total > 0:
+            self._tracker.update(log.done, log.total)
+        if self._stopping or 0 < log.total <= log.done:
+            self.progress_bar.setRange(0, 0)  # what comes now has no percentage
+        elif log.total > 0:
             if self.progress_bar.maximum() == 0:
                 self.progress_bar.setRange(0, 1000)
-            self._tracker.update(log.done, log.total)
             self.progress_bar.setValue(int(1000 * (self._tracker.fraction() or 0)))
         self._tick()
 
@@ -3157,17 +3349,20 @@ class DynamicSpectraDialog(QDialog):
         log = self._runlog
         elapsed = time.monotonic() - self._started
         if self._stopping:
-            return f"Stopping... Elapsed {format_clock(elapsed)}", None
+            return f"Stopping… Elapsed {format_clock(elapsed)}", None
         pending = remote and self._slurm_state == "PENDING"
+        stage = run_stage_text(log)
         parts = []
         if pending:
             parts.append("Waiting in the Slurm queue" + (f" ({self._slurm_reason})" if self._slurm_reason else ""))
+        elif stage:
+            parts.append(stage)
         elif log.total > 0:
             parts.append(f"{100 * log.done / log.total:.0f}%")
         elif remote:
             parts.append("Running on the server, preparing the data")
         else:
-            parts.append("Starting")
+            parts.append("Starting…")
         parts.append(f"Elapsed {format_clock(elapsed)}")
         if log.total > 0 and not pending:
             eta = self._tracker.eta() if self._tracker else None
@@ -3213,6 +3408,9 @@ class DynamicSpectraDialog(QDialog):
         return "\n".join(lines), tone
 
     def _tick(self):
+        if self._state == STARTING and self._submitting:
+            elapsed = time.monotonic() - self._started
+            self._set_status(f"{self._start_text} Elapsed {format_clock(elapsed)}")
         if self._state not in (LOCAL, REMOTE):
             return
         self._set_status(*self._run_status())
@@ -3423,6 +3621,18 @@ class DynamicSpectraDialog(QDialog):
             )
         except Exception as e:
             QMessageBox.critical(self, "Open in viewer", f"Could not start the viewer:\n{e}")
+            return
+        # A second press would start a second viewer before the first is up
+        self.open_btn.setEnabled(False)
+        self._viewer_opening = begin_activity("Opening the viewer…", self, blocking=False)
+        self._viewer_timer.start(VIEWER_START_MS)
+
+    def _viewer_started(self):
+        self._viewer_timer.stop()
+        if self._viewer_opening is not None:
+            self._viewer_opening.finish()
+            self._viewer_opening = None
+            self.open_btn.setEnabled(True)
 
     def reject(self):
         """Esc and the window's close go the same way as the Close button."""
@@ -3442,16 +3652,27 @@ class DynamicSpectraDialog(QDialog):
             if reply != QMessageBox.Yes:
                 return False
             if self._state == LOCAL and self._runner is not None:
-                self._runner.cancel()
-                self._runner.wait(6000)
+                runner = self._runner
+                self._begin_local_stop()
+                return self._waited_for(runner, "Stopping the run…", 6000)
         elif self._state == STARTING:
             # a submit in flight is stopped by its own thread (the token), and
             # kept in the saved list until it is
             self._run_token += 1
         elif self._state == DOWNLOADING and self._fetch is not None:
-            self._fetch.stop = True
-            self._fetch.wait(3000)
+            fetch = self._fetch
+            self._begin_download_stop()
+            return self._waited_for(fetch, "Stopping the download…", 3000)
         # a server job is left running; it is in the saved list for next time
+        return True
+
+    def _waited_for(self, thread, label, ms):
+        """Whether ``thread`` was waited for, the window alive meanwhile. Not
+        if Cancel is pressed: the window stays, and says how the stop ends."""
+        try:
+            run_in_thread(self, label, thread.wait, ms)
+        except Cancelled:
+            return False
         return True
 
     def closeEvent(self, event):
@@ -3463,9 +3684,12 @@ class DynamicSpectraDialog(QDialog):
             return
         self._closed = True
         self._scan_token += 1  # late scan answers are dropped
+        self._end_local_scan()
         self._poll_timer.stop()
         self._tick_timer.stop()
         self._scan_timer.stop()
+        self._scan_clock.stop()
+        self._viewer_started()
         self._save_settings()
         self._closing = True
         try:
@@ -3479,6 +3703,8 @@ class DynamicSpectraDialog(QDialog):
             self._closed = False
             self._closing = False
             self._poll_busy = False
+            if self._scanning:  # the close dropped the scan's answer
+                self._scan_soon()
             if self._state in (LOCAL, REMOTE):
                 self._tick_timer.start(1000)
             if self._state == REMOTE:

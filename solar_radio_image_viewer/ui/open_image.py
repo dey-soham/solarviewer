@@ -7,6 +7,7 @@ Dynamic Spectrum Viewer.
 from PyQt5.QtWidgets import QDialog, QFileDialog, QListView, QTreeView
 
 from ..processing.fits_io import is_casa_image
+from .busy import busy
 
 FITS_PATTERNS = "*.fits *.fts *.fit *.FITS *.FTS *.FIT"
 IMAGE_FILTER = f"Images and dynamic spectra ({FITS_PATTERNS});;All files (*)"
@@ -56,7 +57,9 @@ def choose_image(parent, caption="Open Image or Dynamic Spectrum", directory="")
     A FITS file is chosen as in any file dialog; a CASA image by opening its
     folder (double-click it, or select it and press Open).
     """
-    dialog = _ImageDialog(parent, caption, directory)
+    # Building it lists the folder, which a dead network mount can hold up
+    with busy("Opening the file chooser…", parent):
+        dialog = _ImageDialog(parent, caption, directory)
     if dialog.exec_() != QDialog.Accepted:
         return ""
     if dialog.casa_image:

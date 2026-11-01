@@ -23,6 +23,7 @@ from .canvas import READOUT_HINT
 from .display_resolution import draw_at_screen_resolution
 from .presets import display_range
 from ..processing.fits_io import is_fits, readable_image_path
+from ..ui.background import Cancelled, run_in_background
 from ..ui.busy import busy
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,14 @@ def _strip_above(ax, gap_px, height_px):
         return ax.figure.transSubfigure.inverted().transform_bbox(strip)
 
     return locate
+
+# What the pill and Cancel dialog say of a filter being worked out
+RADIAL_LABELS = {
+    "ratio": "Dividing by the radial median…",
+    "nrgf": "Working out the radial filter (NRGF)…",
+    "fnrgf": "Working out the radial filter (FNRGF)…",
+}
+
 # The colorbar of a pane of a compare page: a strip over the image, its
 # height and its gap from the image, in points
 COMPACT_CB_HEIGHT_PT = 6
@@ -216,31 +225,48 @@ class RenderingMixin:
         header = getattr(self, "current_header", None) or {}
         return self.current_image_data is not None and bool(str(header.get("BKGEXT", "") or "").strip())
 
+    def _background_key(self):
+        return (self.imagename, getattr(self, "_downsample", 1) or 1, self.current_image_data.shape)
+
+    def _background_read(self):
+        """Whether the background plane of the image is at hand."""
+        cached = getattr(self, "_background", None)
+        return cached is not None and cached[0] == self._background_key()
+
+    def _read_background(self, run=lambda fn, *args: fn(*args)):
+        """Read the background plane and keep it, ``run(fn, *args)`` being
+        how the reader is called."""
+        from ..processing.image_data import read_background
+
+        key = self._background_key()
+        try:
+            plane = run(read_background, self.imagename, key[1])
+        except Cancelled:
+            raise
+        except Exception as e:
+            logger.warning(f"Background plane of {self.imagename} not read: {e}")
+            plane = None
+        if plane is not None and plane.shape != key[2]:
+            logger.warning(f"Background plane {plane.shape} does not fit the image {key[2]}")
+            plane = None
+        self._background = (key, plane)
+
     def background_data(self):
         """The background plane sampled like the image, read once per
         file; None when there is none or it does not fit the image."""
         if not self.has_background():
             return None
-        key = (self.imagename, getattr(self, "_downsample", 1) or 1, self.current_image_data.shape)
-        cached = getattr(self, "_background", None)
-        if cached is None or cached[0] != key:
-            from ..processing.image_data import read_background
+        if not self._background_read():
+            self._read_background()
+        return self._background[1]
 
-            try:
-                plane = read_background(self.imagename, key[1])
-            except Exception as e:
-                logger.warning(f"Background plane of {self.imagename} not read: {e}")
-                plane = None
-            if plane is not None and plane.shape != key[2]:
-                logger.warning(f"Background plane {plane.shape} does not fit the image {key[2]}")
-                plane = None
-            cached = self._background = (key, plane)
-        return cached[1]
-
-    def _unfiltered_display_data(self):
-        """The image, or the image less its background."""
+    def _unfiltered_display_data(self, subtract=None):
+        """The image, or the image less its background (``subtract``, by
+        default as chosen)."""
         data = self.current_image_data
-        if data is None or not self.background_subtracted:
+        if subtract is None:
+            subtract = self.background_subtracted
+        if data is None or not subtract:
             return data
         plane = self.background_data()
         if plane is None:
@@ -256,12 +282,79 @@ class RenderingMixin:
         data = self._unfiltered_display_data()
         if data is None or self.radial_filter == "off":
             return data
+        mode, centre = self.radial_filter, self._radial_centre()
+        cache = self._radial_filter_cache()
+        if cache.holds(data, mode, centre):
+            return cache.get(data, mode, centre)
+        # Not prepared (see prepare_display_data)
+        with busy(RADIAL_LABELS[mode], self):
+            return cache.get(data, mode, centre)
+
+    def _radial_filter_cache(self):
         from .radial_filter import RadialFilterCache
 
         cache = getattr(self, "_radial_cache", None)
         if cache is None:
             cache = self._radial_cache = RadialFilterCache()
-        return cache.get(data, self.radial_filter, self._radial_centre())
+        return cache
+
+    def prepare_display_data(self, radial=None, subtract=None):
+        """What drawing with these choices (by default the current ones) needs
+        and is slow, done in the worker process, where the window keeps
+        drawing and it can be cancelled (raising Cancelled): reading the
+        background plane and the radial filter, which took 11 s on a
+        4096 x 4096 image.
+
+        This runs the event loop, so it comes before drawing, from what the
+        user did: never from a paint, a resize or a draw callback. There,
+        display_data() does the same work where it stands."""
+        radial = self.radial_filter if radial is None else radial
+        subtract = self.background_subtracted if subtract is None else subtract
+        self._preparing_display = True
+        try:
+            if subtract and self.has_background() and not self._background_read():
+                name = os.path.basename(self.imagename.rstrip("/"))
+                label = f"Reading the background of {name}…"
+                self._read_background(
+                    lambda fn, *args: run_in_background(self, label, fn, *args)
+                )
+            if radial == "off":
+                return
+            from ..processing.radial_filter import apply
+
+            cache = self._radial_filter_cache()
+            # (Again if the image was replaced meanwhile)
+            while self.current_image_data is not None:
+                data = self._unfiltered_display_data(subtract)
+                centre = self._radial_centre()
+                if cache.holds(data, radial, centre):
+                    break
+                filtered = run_in_background(
+                    self, RADIAL_LABELS[radial], apply, data, radial, centre
+                )
+                cache.put(data, radial, centre, filtered)
+        finally:
+            self._preparing_display = False
+            if getattr(self, "_plot_after_preparing", False):
+                self._plot_after_preparing = False
+                self.schedule_plot(getattr(self, "_plot_done", None))
+
+    def keep_display_filters(self):
+        """After the image changed: prepare the filters that are on for it.
+        Cancelling or a failure turns them off (the image they were on has
+        gone). Returns None, or then what to tell the user when the drawing
+        has ended, as its own messages would cover it."""
+        try:
+            self.prepare_display_data()
+            return None
+        except Cancelled:
+            why = "Filter cancelled"
+        except Exception as e:
+            logger.error(f"Display filter failed: {e}")
+            why = f"Filter failed ({e})"
+        self.set_background_subtraction(False, redraw=False)
+        self.set_radial_filter("off", redraw=False)
+        return f"{why}: it is off, and the image is drawn as it is"
 
     def value_unit(self):
         """The unit of the image's values: the file's for a Stokes plane,
@@ -293,6 +386,16 @@ class RenderingMixin:
 
         on = bool(on) and self.has_background()
         changed = on != self.background_subtracted
+        if redraw and changed:
+            try:
+                self.prepare_display_data(subtract=on)
+            except Cancelled:
+                self.show_status_message("Background subtraction cancelled")
+                on, redraw = self.background_subtracted, False
+            except Exception as e:
+                logger.error(f"Background subtraction failed: {e}")
+                self.show_status_message(f"Background subtraction failed: {e}")
+                on, redraw = self.background_subtracted, False
         self._subtract_background = on
         box = getattr(self, "background_checkbox", None)
         if box is not None:
@@ -305,17 +408,18 @@ class RenderingMixin:
         self.show_radial_row()
         if not redraw or not changed or self.current_image_data is None:
             return
-        data = self.display_data()
-        if self.radial_filter == "off":
-            vmin, vmax = compute_range(data, "p1_99")
-        else:
-            vmin, vmax = compute_range(data, {"ratio": "p1_99"}.get(self.radial_filter, (-1.5, 4.0)))
-        self.set_range(vmin, vmax)
-        if hasattr(self, "show_range_preset"):
-            self.show_range_preset(None)
-        stretch = self.stretch_combo.currentText() if hasattr(self, "stretch_combo") else "linear"
-        cmap = self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
-        self.plot_image(vmin, vmax, stretch, cmap, self._current_gamma())
+        with busy(self._draw_label(), self):
+            data = self.display_data()
+            if self.radial_filter == "off":
+                vmin, vmax = compute_range(data, "p1_99")
+            else:
+                vmin, vmax = compute_range(data, {"ratio": "p1_99"}.get(self.radial_filter, (-1.5, 4.0)))
+            self.set_range(vmin, vmax)
+            if hasattr(self, "show_range_preset"):
+                self.show_range_preset(None)
+            stretch = self.stretch_combo.currentText() if hasattr(self, "stretch_combo") else "linear"
+            cmap = self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+            self.plot_image(vmin, vmax, stretch, cmap, self._current_gamma())
         if self.window():
             self.show_status_message("Background subtracted: the K corona is drawn" if on else "Background kept: the total brightness is drawn")
 
@@ -334,6 +438,16 @@ class RenderingMixin:
         if mode not in MODES:
             raise ValueError(f"unknown radial filter {mode!r}")
         changed = mode != self.radial_filter
+        if redraw and changed:
+            try:
+                self.prepare_display_data(radial=mode)
+            except Cancelled:
+                self.show_status_message("Radial filter cancelled")
+                mode, redraw = self.radial_filter, False
+            except Exception as e:
+                logger.error(f"Radial filter failed: {e}")
+                self.show_status_message(f"Radial filter failed: {e}")
+                mode, redraw = self.radial_filter, False
         self._radial_filter = mode
         combo = getattr(self, "radial_combo", None)
         if combo is not None:
@@ -346,17 +460,18 @@ class RenderingMixin:
         self.show_radial_row()
         if not redraw or not changed or self.current_image_data is None:
             return
-        data = self.display_data()
-        # the sigma modes have a natural range; the ratio takes the data's;
-        # a coronagraph image shown as it is needs its tails cut
-        plain = "p1_99" if self.is_coronagraph() else "minmax"
-        vmin, vmax = compute_range(data, {"off": plain, "ratio": "p1_99"}.get(mode, (-1.5, 4.0)))
-        self.set_range(vmin, vmax)
-        if hasattr(self, "show_range_preset"):
-            self.show_range_preset(None)
-        stretch = self.stretch_combo.currentText() if hasattr(self, "stretch_combo") else "linear"
-        cmap = self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
-        self.plot_image(vmin, vmax, stretch, cmap, self._current_gamma())
+        with busy(self._draw_label(), self):
+            data = self.display_data()
+            # the sigma modes have a natural range; the ratio takes the data's;
+            # a coronagraph image shown as it is needs its tails cut
+            plain = "p1_99" if self.is_coronagraph() else "minmax"
+            vmin, vmax = compute_range(data, {"off": plain, "ratio": "p1_99"}.get(mode, (-1.5, 4.0)))
+            self.set_range(vmin, vmax)
+            if hasattr(self, "show_range_preset"):
+                self.show_range_preset(None)
+            stretch = self.stretch_combo.currentText() if hasattr(self, "stretch_combo") else "linear"
+            cmap = self.cmap_combo.currentText() if hasattr(self, "cmap_combo") else "viridis"
+            self.plot_image(vmin, vmax, stretch, cmap, self._current_gamma())
         if self.window():
             name = MODES[mode][0]
             self.show_status_message(f"Radial filter: {name.lower() if mode != 'off' else 'off'}")
@@ -392,11 +507,27 @@ class RenderingMixin:
         if background_row is not None:
             background_row.setVisible(self.has_background())
 
+    def _draw_label(self):
+        name = self.shown_name() if getattr(self, "imagename", "") else ""
+        position = self.batch_position
+        of = f" ({position[0]} of {position[1]})" if position is not None else ""
+        return f"Drawing {name}{of}…" if name else f"Drawing{of}…"
+
     def plot_image(self, *args, **kwargs):
         """Draw the image (see _plot_image), with the wait cursor until it
         is on screen; the page hears of the range shown (the linked panes
         may take it, core/compare_sync.py)."""
-        with busy():
+        if getattr(self, "_preparing_display", False):
+            # A timer, in the wait for what this needs: when that has ended
+            self._plot_after_preparing = True
+            return
+        with busy(self._draw_label(), self):
+            dropped = self.keep_display_filters()
+            if dropped:
+                # The range asked for is the filter's, not the image's
+                args = (None, None) + args[2:]
+                kwargs.pop("vmin_val", None)
+                kwargs.pop("vmax_val", None)
             self._plot_image(*args, **kwargs)
         # The unit by the range boxes is that of what is drawn (the Stokes
         # product chosen, a filter)
@@ -407,6 +538,9 @@ class RenderingMixin:
         params = getattr(self, "_last_norm_params", None)
         if page is not None and params is not None and self.current_image_data is not None:
             page.sync.range_changed(self, params[0], params[1])
+        if dropped:
+            self._plot_done = None
+            self.show_status_message(dropped)
 
     def _plot_image(
         self,
@@ -593,14 +727,17 @@ class RenderingMixin:
                         self.show_status_message(f"Error getting header: {e2}")
                         self._cached_fits_flag = False
 
-            try:
-                info = casa_info(self.imagename)
-                self._cached_csys = info.coordsys()
-                self._cached_summary = info.summary
-                self._cached_csys_record = info.csys_record
-            except Exception as e:
-                logger.error(f"Error getting image metadata: {e}")
-                self.show_status_message(f"Error getting image metadata: {e}")
+            # (No coordinate system loaded: CASA could not read the file, and
+            # would take as long to say so again)
+            if self._no_coordsys_for != self.imagename:
+                try:
+                    info = casa_info(self.imagename)
+                    self._cached_csys = info.coordsys()
+                    self._cached_summary = info.summary
+                    self._cached_csys_record = info.csys_record
+                except Exception as e:
+                    logger.error(f"Error getting image metadata: {e}")
+                    self.show_status_message(f"Error getting image metadata: {e}")
 
             self._cached_imagename = self.imagename
 

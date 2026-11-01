@@ -16,35 +16,47 @@ Downloads images from SDO (AIA, HMI), IRIS, SOHO (EIT, LASCO, MDI), GOES
 - solar_data_downloader_gui.py: the window
 """
 
-from .solar_data_downloader import (
-    download_aia,
-    download_aia_with_fido,
-    download_goes_suvi,
-    download_gong,
-    download_hmi,
-    download_hmi_with_fido,
-    download_iris,
-    download_soho,
-    download_stereo,
-    prepare_files,
-)
+# Importing these takes seconds (sunpy, aiapy), so the package itself imports
+# nothing: the viewer's menu reaches launch_gui at once, and it can show the wait
+_FUNCTIONS = {
+    "calibrate_lasco_file": ("lasco_calibration", "calibrate_file"),
+    "calibrate_secchi_files": ("secchi_calibration", "calibrate_files"),
+    **{
+        name: ("solar_data_downloader", name)
+        for name in (
+            "download_aia",
+            "download_aia_with_fido",
+            "download_goes_suvi",
+            "download_gong",
+            "download_hmi",
+            "download_hmi_with_fido",
+            "download_iris",
+            "download_soho",
+            "download_stereo",
+            "prepare_files",
+        )
+    },
+}
+_LIBRARIES = ("numpy", "astropy.io.fits", "astropy.units", "sunpy", "drms", __name__ + ".solar_data_downloader")
 
-from .lasco_calibration import calibrate_file as calibrate_lasco_file
-from .secchi_calibration import calibrate_files as calibrate_secchi_files
-from .solar_data_downloader_gui import launch_gui
+__all__ = [*sorted(_FUNCTIONS), "launch_gui"]
 
-__all__ = [
-    "calibrate_lasco_file",
-    "calibrate_secchi_files",
-    "download_aia",
-    "download_aia_with_fido",
-    "download_goes_suvi",
-    "download_gong",
-    "download_hmi",
-    "download_hmi_with_fido",
-    "download_iris",
-    "download_soho",
-    "download_stereo",
-    "prepare_files",
-    "launch_gui",
-]
+
+def __getattr__(name):
+    if name not in _FUNCTIONS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
+
+    module, function = _FUNCTIONS[name]
+    return getattr(import_module(f"{__name__}.{module}"), function)
+
+
+def launch_gui(parent=None, initial_datetime=None):
+    """Show the Solar Data Downloader window (see the function of that name
+    in solar_data_downloader_gui), or nothing if its loading is cancelled."""
+    from ..ui.download_parts import load_downloader
+
+    gui = load_downloader(
+        parent, "Loading the solar data downloader…", _LIBRARIES, __name__ + ".solar_data_downloader_gui"
+    )
+    return gui and gui.launch_gui(parent, initial_datetime=initial_datetime)

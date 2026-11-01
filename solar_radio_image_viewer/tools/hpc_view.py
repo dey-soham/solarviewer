@@ -6,7 +6,6 @@ import logging
 import os
 
 
-from ..processing.dependencies import IA
 from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.image_meta import casa_info, fits_header
 from ..processing.workers import call_function
@@ -58,18 +57,16 @@ class HpcViewMixin:
             import os
             import tempfile
 
-            from PyQt5.QtCore import QEventLoop
-            from PyQt5.QtWidgets import QApplication
+            task = begin_busy("Converting to helioprojective coordinates…", self)
 
             # Check if image is already in helioprojective coordinates (Solar-X/Y)
             # If so, convert TO RA/Dec instead of showing error
             if self._is_already_hpc():
+                end_busy()
                 self._revert_to_radec_view()
                 return
 
-            begin_busy()
-            self.show_status_message("Converting to helioprojective coordinates...")
-            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+            self.show_status_message("Converting to helioprojective coordinates…")
 
             # Store original imagename before switching
             self._original_imagename = self.imagename
@@ -123,10 +120,18 @@ class HpcViewMixin:
             self.invalidate_contours()
 
             # Load the HPC FITS file in the main canvas
+            task.update(label="Loading the helioprojective view…")
             self.imagename = temp_hpc_file
             # Clear figure to prevent restoring old view limits
             self.figure.clear()
             shown = self.on_visualization_changed(dir_load=True)
+            if shown is None:
+                original, self._original_imagename = self._original_imagename, None
+                self._hpc_temp_file = None
+                self._show_again(original)
+                _remove(temp_hpc_file)
+                end_busy()
+                return
             self.update_tab_name_from_path(temp_hpc_file)
 
             # Refresh contours if enabled
@@ -164,6 +169,20 @@ class HpcViewMixin:
                 traceback.format_exc(),
             )
 
+    def _show_again(self, imagename):
+        """Cancelling the load of a new view leaves the canvas blank: show
+        ``imagename``, what was on it, with its contours."""
+        self.imagename = imagename
+        self.figure.clear()
+        if self.on_visualization_changed(dir_load=True):
+            if (
+                hasattr(self, "show_contours_checkbox")
+                and self.show_contours_checkbox.isChecked()
+            ):
+                self.load_contour_data()
+                self.schedule_plot()
+            self.show_status_message("Conversion cancelled")
+
     def _conversion_failed(self, title, text, details=None):
         """Say the conversion failed: in a dialog, or in the status bar
         while ``_quiet_conversion`` (a compare pane converting on its own
@@ -173,7 +192,9 @@ class HpcViewMixin:
                 "Could not reproject the image to the other panes' coordinates: "
                 + text.split("\n")[0]
             )
-        elif details is None:
+            return
+        self.show_status_message("Conversion failed")
+        if details is None:
             from PyQt5.QtWidgets import QMessageBox
 
             QMessageBox.warning(self, title, text)
@@ -186,8 +207,10 @@ class HpcViewMixin:
         import tempfile
 
         try:
-            begin_busy()
-            self.show_status_message("Converting to RA/DEC view...")
+            task = begin_busy("Converting to RA/Dec coordinates…", self)
+            self.show_status_message("Converting to RA/DEC view…")
+
+            previous = self.imagename
 
             # Check if we have an original file to revert to
             has_original = (
@@ -198,15 +221,6 @@ class HpcViewMixin:
                 # Revert to original file
                 self.imagename = self._original_imagename
                 self._original_imagename = None
-
-                # Clean up temp HPC file
-                if hasattr(self, "_hpc_temp_file") and self._hpc_temp_file:
-                    if os.path.exists(self._hpc_temp_file):
-                        try:
-                            os.remove(self._hpc_temp_file)
-                        except Exception:
-                            pass
-                    self._hpc_temp_file = None
             else:
                 # No original - convert current HPC file to RA/Dec
                 # Create temp output file
@@ -214,9 +228,6 @@ class HpcViewMixin:
                 self._radec_temp_file = os.path.join(
                     temp_dir, f"solarviewer_radec_temp_{self._temp_file_id}.fits"
                 )
-
-                # Store current as "original" for potential revert
-                self._hpc_original_imagename = self.imagename
 
                 try:
                     success = run_in_background(
@@ -231,7 +242,6 @@ class HpcViewMixin:
                     )
                 except Cancelled:
                     end_busy()
-                    self._hpc_original_imagename = None
                     _remove(self._radec_temp_file)
                     self._radec_temp_file = None
                     self.show_status_message("Conversion cancelled")
@@ -239,9 +249,12 @@ class HpcViewMixin:
 
                 if not success:
                     end_busy()
+                    self._radec_temp_file = None
                     self._conversion_failed("Error", "Failed to convert HPC to RA/Dec")
                     return
 
+                # Store current as "original" for potential revert
+                self._hpc_original_imagename = self.imagename
                 self.imagename = self._radec_temp_file
 
             # Clear old contour data (stale WCS would cause reprojection failures)
@@ -249,8 +262,30 @@ class HpcViewMixin:
 
             # Reload image
             # Clear figure to prevent restoring old view limits
+            task.update(label="Loading the RA/Dec view…")
             self.figure.clear()
             shown = self.on_visualization_changed(dir_load=True)
+            if shown is None:
+                if has_original:
+                    self._original_imagename = self.imagename
+                else:
+                    self._hpc_original_imagename = None
+                self._show_again(previous)
+                if not has_original:
+                    _remove(self._radec_temp_file)
+                    self._radec_temp_file = None
+                end_busy()
+                return
+
+            # Clean up temp HPC file
+            if has_original and getattr(self, "_hpc_temp_file", None):
+                if os.path.exists(self._hpc_temp_file):
+                    try:
+                        os.remove(self._hpc_temp_file)
+                    except Exception:
+                        pass
+                self._hpc_temp_file = None
+
             self.update_tab_name_from_path(self.imagename)
 
             # Refresh contours if enabled
@@ -299,12 +334,26 @@ class HpcViewMixin:
 
         try:
 
-            begin_busy()
-            self.show_status_message("Reverting to HPC view...")
+            begin_busy("Loading the helioprojective view…", self)
+            self.show_status_message("Reverting to HPC view…")
 
             # Restore HPC file
+            previous = self.imagename
             self.imagename = self._hpc_original_imagename
             self._hpc_original_imagename = None
+
+            # Clear old contour data
+            self.invalidate_contours()
+
+            # Reload HPC image
+            # Clear figure to prevent restoring old view limits
+            self.figure.clear()
+            shown = self.on_visualization_changed(dir_load=True)
+            if shown is None:
+                self._hpc_original_imagename = self.imagename
+                self._show_again(previous)
+                end_busy()
+                return
 
             # Clean up temp RA/Dec file
             if hasattr(self, "_radec_temp_file") and self._radec_temp_file:
@@ -315,13 +364,6 @@ class HpcViewMixin:
                         pass
                 self._radec_temp_file = None
 
-            # Clear old contour data
-            self.invalidate_contours()
-
-            # Reload HPC image
-            # Clear figure to prevent restoring old view limits
-            self.figure.clear()
-            shown = self.on_visualization_changed(dir_load=True)
             self.update_tab_name_from_path(self.imagename)
 
             # Update button
@@ -442,9 +484,7 @@ class HpcViewMixin:
         try:
             # For FITS files, check the header first (more reliable)
             if is_fits(imagepath):
-                from astropy.io import fits
-
-                header = fits.getheader(imagepath)
+                header = fits_header(imagepath)
                 ctype1 = header.get("CTYPE1", "").upper()
                 ctype2 = header.get("CTYPE2", "").upper()
 
@@ -464,15 +504,11 @@ class HpcViewMixin:
 
         try:
             # For CASA images, use coordinate system info
-            ia_tool = IA()
-            ia_tool.open(imagepath)
-            csys = ia_tool.coordsys()
+            csys = casa_info(imagepath).coordsys()
 
             # Get direction reference code (e.g., 'J2000' for RA/Dec, 'SUN' for HPC)
             ref_code = csys.referencecode("direction")
             dimension_names = [n.upper() for n in csys.names()]
-
-            ia_tool.close()
 
             # Check for Solar/Helioprojective (SUN reference frame)
             if ref_code and "SUN" in str(ref_code).upper():

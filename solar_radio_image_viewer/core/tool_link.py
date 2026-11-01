@@ -25,6 +25,8 @@ from PyQt5 import sip
 from PyQt5.QtCore import QObject, QThread, QTimer, pyqtSignal
 from PyQt5.QtNetwork import QLocalServer
 
+from ..ui.activity import track_thread
+
 ENV = "SOLARVIEWER_LINK"
 _link_numbers = itertools.count(1)
 
@@ -38,7 +40,7 @@ class _Times(QThread):
     """Observation times of a tab's files, read in the background."""
 
     done = pyqtSignal(object)
-    progress = pyqtSignal(str)
+    progress = pyqtSignal(int, int)  # done, total
 
     def __init__(self, work, parent=None):
         super().__init__(parent)
@@ -130,8 +132,9 @@ class ToolLink(QObject):
         if not self.has(tool):
             return False
         socket = self._tools[tool]
-        socket.write((json.dumps(message) + "\n").encode())
-        return socket.waitForBytesWritten(1000)
+        written = socket.write((json.dumps(message) + "\n").encode())
+        socket.flush()  # as much as goes at once: the event loop sends the rest
+        return written != -1
 
     def deliver(self, tool, message):
         """Send ``message`` to ``tool``, or hold it for one just started;
@@ -152,6 +155,10 @@ class ToolLink(QObject):
     def close_tools(self):
         """Close the tools' windows (the main window is closing)."""
         self.broadcast({"close": True})
+        # The event loop will not send it: a moment for that
+        for tool in list(self._tools):
+            if self.has(tool):
+                self._tools[tool].waitForBytesWritten(200)
 
     def _hello(self, tool, socket):
         self._tools[tool] = socket
@@ -221,12 +228,16 @@ class ToolLink(QObject):
         reference = files[current] if 0 <= current < len(files) else files[0]
         self._request += 1
         request = self._request
-        self._status("Finding the image...", 0)
         job = _Times(
-            lambda progress: self._candidates(remote, files, reference, freq_mhz, progress),
+            lambda progress: self._candidates(
+                remote, files, reference, freq_mhz, progress, lambda: request != self._request
+            ),
             self,
         )
-        job.progress.connect(lambda text: self._status(text, 0))
+        task = track_thread(job, "Finding the image…", self.main_window)
+        job.progress.connect(
+            lambda done, total: task.update(label="Reading the images' times…", done=done, total=total)
+        )
         job.done.connect(
             lambda result: self._on_candidates(job, request, tab, files, result, target, freq_mhz)
         )
@@ -250,29 +261,25 @@ class ToolLink(QObject):
         if source is None or source[0] != connection.host:
             return False
         folder = posixpath.dirname(source[1])
-        self._status(f"Listing {folder} on the server...", 0)
         tab._is_remote_mode = True
         tab._remote_base_dir = folder
         tab._file_list = []
-        tab._populate_remote_file_list(window, folder, os.path.isdir(image), image)
-        started = time.time()
 
-        def check():
+        def listed():
             if tab._file_list:
                 self.show_time(iso, freq_mhz)
-            elif time.time() - started < 60:
-                QTimer.singleShot(200, check)
             else:
                 self._status(f"Could not list {folder} on the server")
 
-        QTimer.singleShot(200, check)
+        tab._populate_remote_file_list(window, folder, os.path.isdir(image), image, listed)
         return True
 
     # (These run in the background: listing and headers may be on a server.)
 
-    def _candidates(self, remote, files, reference, freq_mhz, progress):
+    def _candidates(self, remote, files, reference, freq_mhz, progress, superseded):
         """(folder, images, times, frequencies) to choose from: the tab's
-        folder, or the frequency folder beside it nearest ``freq_mhz``."""
+        folder, or the frequency folder beside it nearest ``freq_mhz``.
+        Reading stops early once ``superseded()``: a later click came in."""
         path = posixpath if remote else os.path
         folder = path.dirname(reference)
         images = files
@@ -288,7 +295,10 @@ class ToolLink(QObject):
             return folder, [], [], []
         key = (remote, tuple(images))
         if key not in self._times:
-            self._times[key] = self._read_times(remote, images, reference, progress)
+            times = self._read_times(remote, images, reference, progress, superseded)
+            if superseded():
+                return folder, [], [], []  # (some times unread: not to keep)
+            self._times[key] = times
         times, freqs = self._times[key]
         # Images without a frequency of their own have their folder's
         folder_freq = _name_frequency(path.basename(folder))
@@ -327,7 +337,7 @@ class ToolLink(QObject):
         except OSError:
             return []
 
-    def _read_times(self, remote, files, reference, progress):
+    def _read_times(self, remote, files, reference, progress, superseded):
         """(times, frequencies) of ``files``: from their names when every
         name has a time that agrees with ``reference``'s header (reading
         thousands of headers over SSH takes minutes), else their headers."""
@@ -341,25 +351,24 @@ class ToolLink(QObject):
             named = names[files.index(reference)]
             if real is None or abs((real - named).total_seconds()) <= 60:
                 return names, freqs
-        headers = self._headers(
-            remote,
-            files,
-            lambda done, total: progress(f"Reading the times of the images: {done} of {total}"),
-        )
+        headers = self._headers(remote, files, progress, superseded)
         times = [observation_time(headers.get(p), p) for p in files]
         freqs = [f if f is not None else _header_frequency(headers.get(p)) for p, f in zip(files, freqs)]
         return times, freqs
 
-    def _headers(self, remote, files, progress=None):
-        """{path: FITS header or None} of local or server ``files``."""
+    def _headers(self, remote, files, progress=None, cancelled=None):
+        """{path: FITS header or None} of local or server ``files``; those
+        not read yet stay None once ``cancelled()``."""
         if remote:
-            return self._server_files().headers(files, progress=progress)
+            return self._server_files().headers(files, progress=progress, cancelled=cancelled)
         from astropy.io import fits
 
         from ..processing.fits_io import fits_image_path
 
         headers = {}
         for n, path in enumerate(files, 1):
+            if cancelled and cancelled():
+                break
             try:
                 headers[path] = fits.getheader(fits_image_path(path))
             except Exception:

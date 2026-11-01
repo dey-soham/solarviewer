@@ -33,6 +33,7 @@ from ..processing.contour_layers import (
     default_contour_options,
     new_contour_layer,
 )
+from ..ui.busy import busy
 from ..ui.icons import get_resource_path
 from ..ui.open_image import choose_image
 from ..ui.widgets import button_bar
@@ -810,18 +811,19 @@ class ContourSettingsDialog(QDialog):
 
         if is_remote:
             # Use remote file browser
-            from ..remote.remote_file_browser import RemoteFileBrowser
-            from ..remote.file_cache import RemoteFileCache
+            with busy("Opening the server's files…", self):
+                from ..remote.remote_file_browser import RemoteFileBrowser
+                from ..remote.file_cache import RemoteFileCache
 
-            cache = getattr(main_window, "remote_cache", None) or RemoteFileCache()
+                cache = getattr(main_window, "remote_cache", None) or RemoteFileCache()
 
-            # Either kind of image: a FITS file or a CASA image folder
-            browser = RemoteFileBrowser(
-                main_window.remote_connection,
-                cache=cache,
-                parent=self,
-                casa_mode=None,
-            )
+                # Either kind of image: a FITS file or a CASA image folder
+                browser = RemoteFileBrowser(
+                    main_window.remote_connection,
+                    cache=cache,
+                    parent=self,
+                    casa_mode=None,
+                )
 
             def on_file_selected(path):
                 self.file_path_edit.setText(path)
@@ -891,9 +893,10 @@ class ContourSettingsDialog(QDialog):
         if not imagepath or not os.path.exists(imagepath):
             return
         try:
-            from ..processing.stokes import get_available_stokes
+            with busy(f"Reading {os.path.basename(imagepath.rstrip('/'))}…", self):
+                from ..processing.stokes import get_available_stokes
 
-            available_stokes = get_available_stokes(imagepath)
+                available_stokes = get_available_stokes(imagepath)
             self._update_stokes_combo_state(available_stokes)
         except Exception as e:
             logger.warning(f"Could not detect Stokes from {imagepath}: {e}")

@@ -1,20 +1,69 @@
-"""Pieces both downloader windows use: the small widgets, the checking
-spinner, the files timeline, the wrapping log and the tie that closes a
-downloader with the viewer that opened it."""
+"""Pieces both downloader windows use: the small widgets, the files timeline,
+the wrapping log, the tie that closes a downloader with the viewer that opened
+it, and the labelled wait for their first import. :func:`abandon` also serves
+the solar events viewer."""
 
-import math
+import importlib
 import os
 import re
+import sys
 
-from PyQt5.QtCore import QEvent, QObject, QRectF, Qt, QVariantAnimation
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QTextBlockFormat, QTextCharFormat, QTextCursor
+from PyQt5.QtCore import QEvent, QObject, Qt
+from PyQt5.QtGui import QColor, QFont, QPainter, QTextBlockFormat, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import QCheckBox, QLabel, QPushButton, QSizePolicy, QWidget
 
+from .activity import Spinner as Spinner  # for the downloaders
+from .background import Cancelled, run_in_thread
 from .styles import theme_manager
 from .widgets import segmented
 
 LOG_LINES_SHOWN = 500  # the full log is in the log file
-SPINNER_TURN_MS = 1400  # one turn of the checking spinner's arc, as in the compare view
+
+_abandoned = set()  # QThreads left to end by themselves
+
+
+def abandon(worker):
+    """Stop listening to the QThread ``worker``, tell it to stop if it can be
+    told, and leave it to end by itself. Its network call may take a minute,
+    too long to hold the window up for; it is kept here till then, as
+    destroying a running QThread takes the application down."""
+    try:
+        worker.disconnect()
+    except TypeError:  # nothing was connected
+        pass
+    if hasattr(worker, "cancel"):
+        worker.cancel()
+    if worker.isRunning():
+        _abandoned.add(worker)
+        worker.finished.connect(lambda: _abandoned.discard(worker))
+        if worker.isFinished():  # before that was connected
+            _abandoned.discard(worker)
+
+
+def _import_quietly(names):
+    """Import ``names`` ahead of the module that needs them, which reports
+    anything missing."""
+    for name in names:
+        try:
+            importlib.import_module(name)
+        except Exception:
+            pass
+
+
+def load_downloader(parent, label, libraries, module):
+    """The window module ``module`` of a downloader, imported on first use;
+    None if the user cancelled. The ``libraries`` it needs, free of Qt, are
+    imported first in a thread, the window drawing and ``label`` showing: that
+    is seconds of work. The module itself imports Qt, so it stays on this
+    thread."""
+    if module not in sys.modules:
+        try:
+            run_in_thread(parent, label, _import_quietly, libraries)
+        except Cancelled:
+            if hasattr(parent, "statusBar"):
+                parent.statusBar().showMessage("Cancelled", 5000)
+            return None
+    return importlib.import_module(module)
 
 
 def _monospace(widget):
@@ -70,8 +119,6 @@ def _duration_text(seconds):
     return f"{minutes / 60.0:.1f} h"
 
 
-
-
 def _short_home(path):
     home = os.path.expanduser("~")
     if path == home or path.startswith(home + os.sep):
@@ -85,53 +132,6 @@ def _escape(text):
 
 def _muted(text, color):
     return f"<span style='color:{color}'>{_escape(text)}</span>"
-
-
-class Spinner(QWidget):
-    """A slim ring with an arc of the accent running round it, its length
-    breathing as it goes (the compare view's busy look): shown while the
-    archive is being asked. It turns only while visible."""
-
-    def __init__(self, diameter, parent=None):
-        super().__init__(parent)
-        self.diameter = diameter
-        self.setFixedSize(diameter + 4, diameter + 4)
-        self._spin = 0.0
-        self._turn = QVariantAnimation(self)
-        self._turn.setDuration(SPINNER_TURN_MS)
-        self._turn.setLoopCount(-1)
-        self._turn.setStartValue(0.0)
-        self._turn.setEndValue(1.0)
-        self._turn.valueChanged.connect(self._set_spin)
-        self.hide()
-
-    def setVisible(self, visible):
-        super().setVisible(visible)
-        if visible and self._turn.state() != QVariantAnimation.Running:
-            self._turn.start()
-        elif not visible:
-            self._turn.stop()
-
-    def _set_spin(self, value):
-        self._spin = value
-        self.update()
-
-    def paintEvent(self, event):
-        palette = theme_manager.palette
-        track = QColor(palette["text_secondary"])
-        track.setAlphaF(0.25)
-        rect = QRectF(2, 2, self.diameter, self.diameter)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        width = max(2.0, self.diameter / 9.0)
-        painter.setPen(QPen(track, width, Qt.SolidLine, Qt.RoundCap))
-        painter.drawEllipse(rect)
-        # Qt arcs: degrees from 3 o'clock, anticlockwise, in sixteenths
-        head = -self._spin * 360
-        span = 50 + 130 * (0.5 - 0.5 * math.cos(self._spin * 2 * math.pi * 2))
-        painter.setPen(QPen(QColor(palette["highlight"]), width, Qt.SolidLine, Qt.RoundCap))
-        painter.drawArc(rect, int(head * 16), int(-span * 16))
-        painter.end()
 
 
 class Timeline(QWidget):

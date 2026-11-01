@@ -3,7 +3,6 @@ Frames tab: which frames make the video.
 """
 
 import os
-import posixpath
 from PyQt5.QtWidgets import (
     QVBoxLayout,
     QLabel,
@@ -19,14 +18,9 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
 )
 from PyQt5.QtCore import Qt
-import glob
-from ..creator import (
-    apply_difference,
-    observation_sort_key,
-)
-from .helpers import (
-    is_image,
-)
+from ...ui.background import wait_for
+from ...ui.busy import busy
+from .planner import PlanSpec
 
 
 class FramesTabMixin:
@@ -86,104 +80,43 @@ class FramesTabMixin:
         layout.addWidget(include_all, 0, Qt.AlignLeft)
         return scroll
 
-    def _frame_plan(self, layers):
-        """(plan, problem): frame_plan for the Input and Frames tabs (frames
-        unticked in the Frames tab included), or (None, (title, message))."""
-        from datetime import datetime
-
-        from ..creator import frame_plan
-
-        if self.image_single_radio.isChecked():
-            path = self.single_image_edit.text().strip()
-            on_disk = self.remote.is_image if self.remote is not None else is_image
-            if not path or not on_disk(path):
-                return None, ("No Image", "Choose the image shown in every frame.")
-            image_files, is_series = [path], False
-        else:
-            image_files, problem = self._input_files()
-            if problem:
-                return None, problem
-            is_series = True
-
-        bounds = []
-        for edit, name in (
-            (self.frame_start_edit, "From"),
-            (self.frame_end_edit, "To"),
-        ):
-            text = edit.text().strip()
-            try:
-                bounds.append(
-                    datetime.fromisoformat(text.replace("T", " ")) if text else None
-                )
-            except ValueError:
-                return None, ("Invalid Time", f"{name}: use YYYY-MM-DD HH:MM:SS")
-
-        scanned = []
-        for layer in layers:
-            layer = dict(layer)
-            if layer.get("source") == "series" and self.remote is not None:
-                # The series folder on the server
-                folder = layer.get("series_dir", "")
-                pattern = posixpath.join(folder, layer.get("series_pattern") or "*.fits")
-                found = self._remote_list(folder, layer.get("series_pattern") or "*.fits")
-                if found is None:
-                    return None, ("Reading the Server", f"Reading {folder} on {self.remote.label}…")
-                layer["series_files"] = sorted(found, key=self._remote_sort_key)
-            elif layer.get("source") == "series":
-                pattern = os.path.join(
-                    layer.get("series_dir", ""), layer.get("series_pattern") or "*.fits"
-                )
-                layer["series_files"] = sorted(
-                    glob.glob(pattern), key=observation_sort_key
-                )
-                if layer.get("enabled", True) and not layer["series_files"]:
-                    return None, ("No Contour Files", f"No files match {pattern}")
-            scanned.append(layer)
-
-        plan = frame_plan(
-            image_files,
-            is_series,
-            scanned,
-            bounds[0],
-            bounds[1],
-            self.frame_every_spinbox.value(),
-            # Times of server files from their headers (read once)
-            times_of=self._remote_times_of if self.remote is not None else None,
+    def _plan_spec(self, options):
+        """What the Input and Frames tabs say about the frames, for the
+        planner (frames unticked in the Frames tab are in the plan, and left
+        out of its files)."""
+        return PlanSpec(
+            single=self.image_single_radio.isChecked(),
+            single_path=self.single_image_edit.text().strip(),
+            folder=self.input_directory_edit.text(),
+            pattern=self.input_pattern_edit.text(),
+            sort=self.sort_combo.currentText().lower(),
+            start=self.frame_start_edit.text().strip(),
+            end=self.frame_end_edit.text().strip(),
+            every=self.frame_every_spinbox.value(),
+            layers=options.get("contour_layers", []),
+            excluded=frozenset(self._excluded_frames),
+            difference=options.get("difference", "none"),
+            remote=self.remote,
         )
-        if not plan["image_files"]:
-            return None, ("No Frames", "No frames in the chosen time range.")
-        return plan, None
 
     def _video_files(self, options):
         """(files, problem): the image shown in each frame, with the frames
         unticked in the Frames tab left out and ``options["contour_layers"]``
-        given each series layer's file per frame; or ([], (title, message))."""
-        plan, problem = self._frame_plan(options.get("contour_layers", []))
-        if problem:
-            return [], problem
-        self._show_frames(plan)
-        keep = [
-            i
-            for i, f in enumerate(plan["driver_files"])
-            if f not in self._excluded_frames
-        ]
-        if not keep:
-            return [], ("No Frames", "All frames are unticked in the Frames tab.")
-        layers = []
-        for layer in plan["layers"]:
-            layer = dict(layer)
-            if "frame_files" in layer:
-                layer["frame_files"] = [layer["frame_files"][i] for i in keep]
-            layer.pop("series_files", None)  # not needed by the frames
-            layers.append(layer)
-        options["contour_layers"] = layers
-        files, difference_options = apply_difference(
-            [plan["image_files"][i] for i in keep], options
-        )
-        options.update(difference_options)
-        if not files:
-            return [], ("No Frames", "A running difference needs at least two frames.")
-        return files, None
+        given each series layer's file per frame; or ([], (title, message)).
+        Waits for the plan with the window drawing, so can raise Cancelled."""
+        future = self._planner.plan_now(self._plan_spec(options))
+        plan = wait_for(self, "Working out the frames…", future, on_cancel=future.cancel)
+        return self._use_plan(plan, options)
+
+    def _use_plan(self, plan, options):
+        """``plan`` (see planner.PlanResult) as _video_files returns it."""
+        if plan.plan is not None:
+            self._show_frames(plan.plan)
+        if plan.problem:
+            return [], plan.problem
+        options.update(plan.updates)
+        options["contour_layers"] = [dict(layer) for layer in plan.updates["contour_layers"]]
+        return plan.files, None
 
     def _show_frames(self, plan):
         """List the frames of ``plan`` in the Frames tab."""
@@ -191,6 +124,13 @@ class FramesTabMixin:
         if getattr(self, "_shown_frame_rows", None) == (rows, repr(plan["gaps"])):
             return
         self._shown_frame_rows = (rows, repr(plan["gaps"]))
+        if len(rows) > 1000:
+            with busy(f"Listing {len(rows)} frames…", self):
+                self._fill_frames_table(plan, rows)
+        else:
+            self._fill_frames_table(plan, rows)
+
+    def _fill_frames_table(self, plan, rows):
         series = [
             l for l in plan["layers"] if l.get("enabled", True) and "frame_files" in l
         ]

@@ -233,8 +233,11 @@ class RemoteFits:
             pass
         hdus = []
         offset = 0
+        _, cancelled = current_reporting()
         with self.files._sftp() as sftp, sftp.open(self.path, "rb") as f:
             while offset < self.size:
+                if cancelled and cancelled():
+                    raise Cancelled()
                 text, length = self._header_at(f, offset)
                 header = fits.Header.fromstring(text)
                 size = _data_size(header)
@@ -338,21 +341,21 @@ class RemoteFits:
         done = 0
         if progress:
             progress(0, total)
-        with ThreadPoolExecutor(min(workers, len(batches)) or 1) as pool:
-            pending = {pool.submit(read, b) for b in batches}
-            try:
-                while pending:
-                    finished, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
-                    for future in finished:
-                        done += future.result()
-                    if progress and finished:
-                        progress(done, total)
-                    if cancelled and cancelled():
-                        raise Cancelled()
-            finally:
-                stop.set()
-                for future in pending:
-                    future.cancel()
+        pool = ThreadPoolExecutor(min(workers, len(batches)) or 1)
+        pending = {pool.submit(read, b) for b in batches}
+        try:
+            while pending:
+                finished, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    done += future.result()
+                if progress and finished:
+                    progress(done, total)
+                if cancelled and cancelled():
+                    raise Cancelled()
+        finally:
+            stop.set()
+            # (not waiting: a read stalled on the server must not hold up Cancel)
+            pool.shutdown(wait=False, cancel_futures=True)
         return out
 
     # ---------- Cache ----------

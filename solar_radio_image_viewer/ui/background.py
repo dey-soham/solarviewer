@@ -13,12 +13,17 @@ worker at once.
 Jobs are module-level functions without Qt (from ``processing`` or
 ``coordinates``), with picklable arguments and results. Without a running
 application (scripts), or off the GUI thread, they run in the calling thread.
+
+Work that only waits (a server, a slow disk, a program) and is not CASA, or
+that cannot be pickled, goes to :func:`run_in_thread` instead, which waits for
+it in the same way. Until the dialog shows, the pill of ``ui.activity`` says
+what is going on.
 """
 
 import logging
 import threading
 import time
-from concurrent.futures import wait
+from concurrent.futures import Future, wait
 from concurrent.futures.process import BrokenProcessPool
 
 from PyQt5.QtCore import QEventLoop, Qt, QTimer
@@ -26,12 +31,13 @@ from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
-    QProgressBar,
     QVBoxLayout,
 )
 
 from ..processing.workers import import_modules, process_pool_executor
+from .activity import Spinner, begin_activity, pills_held
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +97,33 @@ def run_in_background(parent, label, fn, *args, **kwargs):
         ) from None
 
 
+def run_in_thread(parent, label, fn, *args, **kwargs):
+    """Run ``fn(*args, **kwargs)`` on a thread and return its result, or raise
+    its exception, the window drawing meanwhile, as :func:`run_in_background`.
+
+    For work that waits rather than computes, which the worker process cannot
+    take: it must not touch Qt or CASA tools. Cancel cannot stop a thread, so
+    ``fn`` runs on to its end with nobody waiting for it (give the call a
+    timeout) and :class:`Cancelled` is raised at once.
+    """
+    if not _gui_thread():
+        return fn(*args, **kwargs)
+    future = Future()
+
+    def run():
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as e:
+            future.set_exception(e)
+        else:
+            future.set_result(result)
+
+    threading.Thread(target=run, name="wait-in-thread", daemon=True).start()
+    return wait_for(parent, label, future)
+
+
 def wait_for(parent, label, future, on_cancel=None):
     """Wait for ``future`` (a ``concurrent.futures.Future``) and return its
     result, keeping the window drawing.
@@ -105,9 +138,10 @@ def wait_for(parent, label, future, on_cancel=None):
         # an event loop that leaves input waiting spins while input is queued.)
         app = QApplication.instance()
         deadline = time.monotonic() + SHOW_AFTER_MS / 1000
-        while not future.done() and time.monotonic() < deadline:
-            app.processEvents(QEventLoop.ExcludeUserInputEvents)
-            wait([future], timeout=0.01)
+        with begin_activity(label, parent, blocking=False):
+            while not future.done() and time.monotonic() < deadline:
+                app.processEvents(QEventLoop.ExcludeUserInputEvents)
+                wait([future], timeout=0.01)
         if not future.done():
             _wait_with_dialog(parent, label, future, on_cancel)
     return future.result()
@@ -129,7 +163,7 @@ def shutdown():
 
 
 class _WaitDialog(QDialog):
-    """What is being worked on, a busy bar and Cancel."""
+    """What is being worked on, a spinner and Cancel."""
 
     def __init__(self, parent, label):
         super().__init__(parent.window() if parent is not None else None)
@@ -137,33 +171,38 @@ class _WaitDialog(QDialog):
         self.setWindowModality(Qt.ApplicationModal)
         self.setMinimumWidth(340)
         layout = QVBoxLayout(self)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        spinner = Spinner(22, self)
+        spinner.show()
+        row.addWidget(spinner, 0, Qt.AlignTop)
         text = QLabel(label)
         text.setWordWrap(True)
-        layout.addWidget(text)
-        bar = QProgressBar()
-        bar.setRange(0, 0)  # busy: how far along it is is not known
-        bar.setTextVisible(False)
-        bar.setAccessibleName("Working")
-        layout.addWidget(bar)
+        row.addWidget(text, 1)
+        layout.addLayout(row)
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
 
 def _wait_with_dialog(parent, label, future, on_cancel):
-    """Wait in an event loop, the (modal) dialog holding off other input."""
+    """Wait handling events, the (modal) dialog holding off other input.
+
+    Not with QEventLoop.exec_(): once the application has been told to quit
+    (its last window closing, say) that returns at once and handles nothing,
+    so Cancel would not work and the window would not draw."""
     loop = QEventLoop()
-    poll = QTimer()
-    poll.timeout.connect(lambda: future.done() and loop.quit())
+    poll = QTimer()  # wakes the waiting below to look at the future
     poll.start(10)
     dialog = _WaitDialog(parent, label)
     cancelled = []
     # Cancel, Escape and closing the dialog all reject it
-    dialog.rejected.connect(lambda: (cancelled.append(True), loop.quit()))
+    dialog.rejected.connect(lambda: cancelled.append(True))
     dialog.show()
     try:
-        while not future.done() and not cancelled:
-            loop.exec_()
+        with pills_held():
+            while not future.done() and not cancelled:
+                loop.processEvents(QEventLoop.AllEvents | QEventLoop.WaitForMoreEvents)
     finally:
         poll.stop()
         dialog.hide()

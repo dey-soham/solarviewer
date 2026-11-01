@@ -5,6 +5,14 @@ Import ``IA``, ``CASA_AVAILABLE``, ``u`` and ``ASTROPY_AVAILABLE`` from here
 rather than importing casatools directly, so CASA logging is configured once.
 """
 
+# casatools loads its own libsqlite3, which lacks symbols Python's sqlite3
+# needs; imported after it, sqlite3 fails, and sunpy with it. CASA itself does
+# not need it, so this failing says nothing about CASA.
+try:
+    import sqlite3  # noqa: F401
+except ImportError:
+    pass
+
 # Try to import CASA tools (casatasks now run via subprocess)
 try:
     # Suppress CASA logging warnings before importing casatools

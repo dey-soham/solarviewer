@@ -22,7 +22,7 @@ import queue
 import socket
 import stat
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import paramiko
 
@@ -93,9 +93,8 @@ class RemoteFiles:
         self._lock = threading.Lock()
         self._stats = {}  # remote path -> (mtime, size, is_dir)
         self._casa = {}  # remote folder -> is a CASA image
-        self._headers = {}  # (path, mtime, size) -> header text
+        self._headers = None  # (path, mtime, size) -> header text, once read
         self._headers_file = os.path.join(str(self.cache.cache_dir), "headers.json")
-        self._load_headers()
 
     @property
     def host(self):
@@ -158,6 +157,28 @@ class RemoteFiles:
             self._stats[path] = (attr.st_mtime, attr.st_size, stat.S_ISDIR(attr.st_mode))
         return self._stats[path]
 
+    def _map(self, work, items, cancelled=None, done=None):
+        """[work(item)] of ``items``, on ``workers`` threads at once, the
+        calling thread telling ``done(n)`` how many have finished. An error
+        or ``cancelled()`` returning True (raises Cancelled) ends the wait at
+        once: what has not started never does, and what is waiting on the
+        server ends by itself, so a stalled server holds up nobody."""
+        pool = ThreadPoolExecutor(min(self.workers, len(items)) or 1)
+        futures = [pool.submit(work, item) for item in items]
+        pending = set(futures)
+        try:
+            while pending:
+                finished, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    future.result()
+                if done and finished:
+                    done(len(items) - len(pending))
+                if cancelled and cancelled():
+                    raise Cancelled()
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        return [future.result() for future in futures]
+
     # ---------- Listing ----------
 
     def listdir(self, directory):
@@ -208,12 +229,17 @@ class RemoteFiles:
     # ---------- Headers ----------
 
     def _load_headers(self):
-        try:
-            with open(self._headers_file) as f:
-                saved = json.load(f)
-            self._headers = {tuple(json.loads(k)): v for k, v in saved.items()}
-        except (OSError, ValueError, TypeError):
-            self._headers = {}
+        """The headers kept from earlier sessions, read at first use by the
+        thread that needs them (the file only grows)."""
+        with self._lock:
+            if self._headers is not None:
+                return
+            try:
+                with open(self._headers_file) as f:
+                    saved = json.load(f)
+                self._headers = {tuple(json.loads(k)): v for k, v in saved.items()}
+            except (OSError, ValueError, TypeError):
+                self._headers = {}
 
     def _save_headers(self):
         with self._lock:
@@ -227,11 +253,12 @@ class RemoteFiles:
         except OSError as e:
             logger.debug(f"Headers not saved: {e}")
 
-    def header(self, path):
+    def header(self, path, cancelled=None):
         """The FITS header of image ``path`` on the server (with the image
         extension's cards when the image isn't in the primary HDU), read
         without fetching the image; for a CASA image the header of its
-        fetched copy. None if it can't be read."""
+        fetched copy (which ``cancelled()`` returning True stops: raises
+        Cancelled). None if it can't be read."""
         from astropy.io import fits
 
         try:
@@ -239,15 +266,19 @@ class RemoteFiles:
         except OSError:
             return None
         key = (self.host, path, mtime, size)
+        self._load_headers()
         text = self._headers.get(key)
         if text is None:
             try:
                 if is_dir:
                     from ..processing.fits_io import fits_image_path
 
-                    text = fits.getheader(fits_image_path(self.fetch([path])[path])).tostring()
+                    local = self.fetch([path], cancelled=cancelled)[path]
+                    text = fits.getheader(fits_image_path(local)).tostring()
                 else:
                     text = self._read_header(path)
+            except Cancelled:
+                raise
             except Exception as e:
                 logger.warning(f"Header of {path} not read: {e}")
                 return None
@@ -261,28 +292,21 @@ class RemoteFiles:
             return read_header(raw, gzipped=path.lower().endswith(".gz"))
 
     def headers(self, paths, progress=None, cancelled=None):
-        """{path: header or None} of ``paths``, read in parallel."""
+        """{path: header or None} of ``paths``, read in parallel.
+        ``progress(done, total)`` is told how far it got; ``cancelled()``
+        returning True stops it (the headers not read yet stay None)."""
         found = {p: None for p in paths}
-        todo = []
-        for p in paths:
-            try:
-                mtime, size, _ = self._stat(p)
-                if (self.host, p, mtime, size) in self._headers:
-                    found[p] = self.header(p)
-                    continue
-            except OSError:
-                continue
-            todo.append(p)
-        if todo:
-            done = 0
-            with ThreadPoolExecutor(self.workers) as pool:
-                for path, head in zip(todo, pool.map(self.header, todo)):
-                    found[path] = head
-                    done += 1
-                    if progress:
-                        progress(done, len(todo))
-                    if cancelled and cancelled():
-                        break
+        self._load_headers()
+        known = len(self._headers)
+
+        def one(path):
+            if not (cancelled and cancelled()):
+                found[path] = self.header(path, cancelled)
+
+        done = (lambda n: progress(n, len(found))) if progress else None
+        with contextlib.suppress(Cancelled):
+            self._map(one, list(found), cancelled, done)
+        if len(self._headers) != known:
             self._save_headers()
         return found
 
@@ -297,24 +321,30 @@ class RemoteFiles:
         local = self.cache.get_cached_path(self.host, path, mtime, size)
         return str(local) if local else None
 
-    def fetch(self, paths, progress=None, cancelled=None):
+    def fetch(self, paths, progress=None, cancelled=None, checking=None):
         """{path: local copy} of ``paths`` (files or CASA folders), fetched
         into the cache (several at a time) unless cached already.
 
         ``progress(done_bytes, total_bytes, done_files, total_files)`` is
         told how far it got; ``cancelled()`` returning True stops it (raises
-        Cancelled; files fetched so far stay cached)."""
+        Cancelled; files fetched so far stay cached). Before any of that each
+        path is looked up on the server, which ``checking(done, total)`` is
+        told of: for many files that is the longer part."""
         paths = list(dict.fromkeys(paths))
+        self._map(
+            lambda path: self._stat(path, refresh=True), paths, cancelled,
+            (lambda n: checking(n, len(paths))) if checking else None,
+        )
         local = {}
         todo = []
         for path in paths:
-            mtime, size, is_dir = self._stat(path, refresh=True)
+            mtime, size, is_dir = self._stat(path)
             copy = self.cached(path)
             if copy:
                 local[path] = copy
             else:
                 if is_dir:
-                    size = self._dir_size(path)
+                    size = self._dir_size(path, cancelled)
                 todo.append((path, size, is_dir, mtime))
         total_bytes = sum(t[1] for t in todo)
         state = {"bytes": 0, "files": 0}
@@ -345,9 +375,7 @@ class RemoteFiles:
         if todo:
             if progress:
                 progress(0, total_bytes, 0, len(todo))
-            with ThreadPoolExecutor(min(self.workers, len(todo))) as pool:
-                for path, copy in pool.map(one, todo):
-                    local[path] = copy
+            local.update(self._map(one, todo, cancelled))
         return local
 
     def _get_file(self, path, target, report, cancelled):
@@ -355,10 +383,10 @@ class RemoteFiles:
         seen = [0]
 
         def callback(transferred, _total):
-            report(nbytes=transferred - seen[0])
-            seen[0] = transferred
             if cancelled and cancelled():
                 raise Cancelled()
+            report(nbytes=transferred - seen[0])
+            seen[0] = transferred
 
         try:
             with self._sftp() as sftp:
@@ -418,29 +446,34 @@ class RemoteFiles:
 
     def _copy_tree(self, sftp, path, target, report, cancelled):
         for attr in sftp.listdir_attr(path):
+            if cancelled and cancelled():
+                raise Cancelled()
             remote = posixpath.join(path, attr.filename)
             local = os.path.join(target, attr.filename)
             if stat.S_ISDIR(attr.st_mode):
                 os.makedirs(local, exist_ok=True)
                 self._copy_tree(sftp, remote, local, report, cancelled)
             else:
-                if cancelled and cancelled():
-                    raise Cancelled()
                 seen = [0]
 
                 def callback(transferred, _total, seen=seen):
+                    # (a CASA image keeps nearly all its data in one file)
+                    if cancelled and cancelled():
+                        raise Cancelled()
                     report(nbytes=transferred - seen[0])
                     seen[0] = transferred
 
                 sftp.get(remote, local, callback=callback)
 
-    def _dir_size(self, path):
+    def _dir_size(self, path, cancelled=None):
+        if cancelled and cancelled():
+            raise Cancelled()
         total = 0
         with self._sftp() as sftp:
             listing = sftp.listdir_attr(path)
         for attr in listing:
             if stat.S_ISDIR(attr.st_mode):
-                total += self._dir_size(posixpath.join(path, attr.filename))
+                total += self._dir_size(posixpath.join(path, attr.filename), cancelled)
             else:
                 total += attr.st_size
         return total

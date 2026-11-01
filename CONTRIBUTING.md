@@ -54,12 +54,20 @@ Vfrac, ...) are computed once, in `stokes_product`.
 through `processing/casa_tasks.run_casa_task`, with their arguments passed
 as JSON. Never build Python source or shell commands from file names.
 
-**Long work.** Wrap work that blocks the window in `ui/busy.busy()` (or
-`begin_busy()`/`end_busy()`), so the wait cursor shows. Reading an image and
-converting one (TB, HPC) run in a worker process through
-`ui/background.run_in_background()`: the window keeps drawing, and work that
-takes more than a second shows a dialog whose Cancel stops it. Its jobs
-are module-level functions without Qt (from `processing/` or `coordinates/`).
+**Long work.** Everything that says the application is busy goes through
+`ui/activity.py`; add no spinners, wait cursors or polling loops of your own.
+Work that does not need the GUI thread leaves it. CPU and CASA work (reading
+an image, converting one) runs in a worker process through
+`ui/background.run_in_background()`, and work that only waits (a server, a
+copy, a program) on a thread through `run_in_thread()`: the window keeps
+drawing, and work that takes more than a second shows a dialog whose Cancel
+stops it. Handle `Cancelled`. Process jobs are module-level functions without
+Qt (from `processing/` or `coordinates/`). Work that must stay on the GUI
+thread (drawing, building windows) goes in `ui/busy.busy("Drawing…", self)`,
+which gives the wait cursor and a pill saying what is happening; a small
+process of its own (`ui/indicator.py`) keeps the pill moving while the GUI
+thread is held up. For work in a QThread use `begin_activity(blocking=False)`
+or `track_thread()`, and inside a window `Spinner` or `ActivityLabel`.
 Batch work over many files runs in worker processes with
 `ui/batch.BatchRunner` (`BatchDialogMixin` for dialogs), so the window stays
 responsive and Abort works at once.

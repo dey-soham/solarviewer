@@ -1,8 +1,6 @@
 import sys
 import numpy as np
-import seaborn as sns  # Import seaborn
 from PyQt5.QtWidgets import (
-    QApplication,
     QMainWindow,
     QWidget,
     QVBoxLayout,
@@ -13,11 +11,11 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QComboBox,
     QGridLayout,
-    QProgressBar,
+    QMessageBox,
     QShortcut,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QKeySequence, QCursor
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QKeySequence
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
@@ -29,6 +27,8 @@ import subprocess
 import os
 from matplotlib import rcParams
 
+from ..ui.background import Cancelled, run_in_background, run_in_thread
+from ..ui.busy import busy
 from ..ui.styles import set_hand_cursor, theme_manager
 
 
@@ -55,19 +55,23 @@ sys.stdout.buffer.write(buffer.getvalue())
 
 from ..ui.geometry import fit_to_screen
 
+READ_TIMEOUT_S = 300
+SNR_WORKER_CHANNELS = 2000  # below this the SNR is under a second or so: not worth a worker
 
-def read_caltable_safe(table_path, read_spectral_window=False):
+
+def read_caltable_safe(table_path, read_spectral_window=False, timeout=READ_TIMEOUT_S, on_start=None):
     """
     Read a caltable using a completely separate subprocess to avoid casacore/Qt conflicts.
 
     The path goes to the subprocess as an argument and the arrays come back
     as NumPy .npz bytes, so no file name can break the script and nothing
-    is unpickled.
+    is unpickled. ``on_start(process)`` is given the process, so that the
+    read can be stopped by killing it.
     """
     table_path = str(Path(table_path).absolute())
 
     # Run in completely separate process
-    result = subprocess.run(
+    process = subprocess.Popen(
         [
             sys.executable,
             "-c",
@@ -75,27 +79,89 @@ def read_caltable_safe(table_path, read_spectral_window=False):
             table_path,
             "1" if read_spectral_window else "0",
         ],
-        capture_output=True,
-        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         cwd=os.getcwd() if os.access(os.getcwd(), os.W_OK) else os.path.expanduser("~"),
     )
+    if on_start is not None:
+        on_start(process)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise RuntimeError(f"Reading the table took over {timeout} s; is the disk reachable?")
+    if process.returncode != 0:
+        lines = stderr.decode(errors="replace").strip().splitlines()
+        raise RuntimeError(lines[-1] if lines else f"The reader ended with code {process.returncode}")
 
-    with np.load(io.BytesIO(result.stdout)) as arrays:
+    with np.load(io.BytesIO(stdout)) as arrays:
         return {key: arrays[key] for key in arrays.files}
 
 
-class WorkerThread(QThread):
-    finished = pyqtSignal()
+def split_solutions(solutions, flag):
+    """The X and Y solutions of a table, the flagged ones blank."""
+    if solutions.ndim != 3 or solutions.shape[2] < 2:
+        raise ValueError(f"X and Y solutions are needed, but CPARAM has shape {solutions.shape}")
+    solutions[flag] = np.nan
+    return solutions[:, :, 0], solutions[:, :, 1]
 
-    def __init__(self, func, *args, **kwargs):
-        super().__init__()
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
 
-    def run(self):
-        self.func(*self.args, **self.kwargs)
-        self.finished.emit()
+def read_crossphase(path):
+    """What the Crossphase tab shows of the file ``path``, with its fit."""
+    loaded_caltable = np.load(path, allow_pickle=True)
+    cross_freq = np.array(loaded_caltable[0, :] / 1e6, dtype=float)
+    crossphase = np.array(loaded_caltable[1, :], dtype=float)
+    cross_flags = loaded_caltable[2, :]
+
+    median_crossphase = np.median(crossphase)
+    absolute_deviation = np.abs(crossphase - median_crossphase)
+    mad = np.median(absolute_deviation)
+
+    threshold = 10 * mad
+    mask = absolute_deviation <= threshold
+
+    cross_freq_filtered = cross_freq[mask]
+    crossphase_filtered = crossphase[mask]
+
+    cross_fit_coeffs = np.polyfit(cross_freq_filtered, crossphase_filtered, 2)
+    cross_fit_func = np.poly1d(cross_fit_coeffs)
+    crossphase_fit = cross_fit_func(cross_freq_filtered)
+
+    residuals = crossphase_filtered - crossphase_fit
+    sse = np.sum(residuals**2)
+    sst = np.sum((crossphase_filtered - np.mean(crossphase)) ** 2)
+
+    return {
+        "cross_freq": cross_freq,
+        "crossphase": crossphase,
+        "cross_flags": cross_flags,
+        "cross_freq_filtered": cross_freq_filtered,
+        "crossphase_filtered": crossphase_filtered,
+        "cross_fit_coeffs": cross_fit_coeffs,
+        "cross_fit_func": cross_fit_func,
+        "crossphase_fit": crossphase_fit,
+        "cross_r_squared": 1 - (sse / sst),
+        "cross_std_residuals": np.std(residuals),
+    }
+
+
+def snr_estimate(xx_sols, yy_sols):
+    """SNR per antenna and channel: amplitude / std(amplitude) over a sliding
+    window of channels. Run in a worker: a Python loop over every channel."""
+    amp = (np.abs(xx_sols) + np.abs(yy_sols)) / 2
+
+    # Simple SNR estimate: mean / std across small windows
+    window_size = max(1, amp.shape[1] // 20)
+    snr = np.zeros_like(amp)
+
+    for i in range(amp.shape[1]):
+        start = max(0, i - window_size)
+        end = min(amp.shape[1], i + window_size)
+        local_mean = np.nanmean(amp[:, start:end], axis=1)
+        local_std = np.nanstd(amp[:, start:end], axis=1)
+        snr[:, i] = local_mean / (local_std + 1e-10)
+    return snr
 
 
 class VisualizationApp(QMainWindow):
@@ -117,6 +183,9 @@ class VisualizationApp(QMainWindow):
         self.bandpass_directory = None
         self.crossphase_file = None
         self.plot_mode = "Amplitude"  # Default mode for bandpass
+        self.xx_sols = None
+        self.yy_sols = None
+        self.shown_view = "Per-Antenna"  # the view on the canvas
 
         # Variables for crossphase
         self.crossphase_file = None
@@ -170,15 +239,6 @@ class VisualizationApp(QMainWindow):
         QShortcut(
             QKeySequence("3"), self, lambda: self.tab_control.setCurrentIndex(2)
         )  # Selfcal tab
-
-    def _set_busy_cursor(self):
-        """Set busy (wait) cursor during long operations."""
-        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
-        QApplication.processEvents()
-
-    def _restore_cursor(self):
-        """Restore normal cursor after operation completes."""
-        QApplication.restoreOverrideCursor()
 
     def toggle_current_mode(self):
         """Toggle mode based on current tab."""
@@ -294,10 +354,6 @@ class VisualizationApp(QMainWindow):
     def create_bandpass_widgets(self):
         # Instead of icons, use text labels
         layout = QVBoxLayout(self.bandpass_tab)
-        # Progress bar
-        self.progress = QProgressBar()
-        self.progress.setVisible(False)
-        layout.addWidget(self.progress)
 
         # Bandpass directory selection
         dir_frame = QHBoxLayout()
@@ -421,10 +477,6 @@ class VisualizationApp(QMainWindow):
 
     def create_selfcal_widgets(self):
         layout = QVBoxLayout(self.selfcal_tab)
-        # Progress bar (can be reused or a new one created if needed)
-        # self.selfcal_progress = QProgressBar()
-        # self.selfcal_progress.setVisible(False)
-        # layout.addWidget(self.selfcal_progress)
 
         # Selfcal directory selection
         dir_frame = QHBoxLayout()
@@ -473,8 +525,6 @@ class VisualizationApp(QMainWindow):
     def select_bandpass_directory(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Bandpass Table")
         if directory:
-            self.dir_label.setText(directory)
-            self.bandpass_directory = directory
             self.load_bandpass_table(directory)
 
     def update_plot_grid(self):
@@ -482,66 +532,71 @@ class VisualizationApp(QMainWindow):
         self.plot_rows, self.plot_cols = map(int, size_str.split("x"))
         self.antennas_per_page = self.plot_rows * self.plot_cols
 
-        # Remove old layout properly
-        old_layout = self.bandpass_canvas_frame.layout()
-        if old_layout is not None:
-            while old_layout.count():
-                item = old_layout.takeAt(0)
-                widget = item.widget()
-                if widget is not None:
-                    widget.deleteLater()
-            QWidget().setLayout(old_layout)
+        with busy("Drawing the plots…", self):
+            # Remove old layout properly
+            old_layout = self.bandpass_canvas_frame.layout()
+            if old_layout is not None:
+                while old_layout.count():
+                    item = old_layout.takeAt(0)
+                    widget = item.widget()
+                    if widget is not None:
+                        widget.deleteLater()
+                QWidget().setLayout(old_layout)
 
-        # Re-create bandpass canvas
-        self.create_bandpass_canvas()
-        self.plot_bandpass_page()
+            # Re-create bandpass canvas
+            self.create_bandpass_canvas()
+            self.plot_bandpass_page()
+
+    def _read_table(self, path, read_spectral_window):
+        """The arrays of a caltable, or None if it failed (said in a message)
+        or was cancelled. A process does the reading, so Cancel can stop it."""
+        name = os.path.basename(str(path).rstrip("/"))
+        started = []
+        try:
+            return run_in_thread(
+                self,
+                f"Reading {name}…",
+                read_caltable_safe,
+                path,
+                read_spectral_window,
+                on_start=started.append,
+            )
+        except Cancelled:
+            for process in started:
+                process.kill()
+            self.statusBar().showMessage("Cancelled", 3000)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load caltable:\n{str(e)}")
+        return None
 
     def load_bandpass_table(self, bandpass_table):
-        # Set busy cursor
-        self._set_busy_cursor()
-
-        # Show progress bar and initialize value
-        self.progress.setVisible(True)
-        self.progress.setValue(0)
-
-        # Simulate progress updates
-        QTimer.singleShot(500, lambda: self.progress.setValue(50))  # 50% after 500ms
-        QTimer.singleShot(
-            1000, lambda: self.progress.setValue(100)
-        )  # 100% after 1000ms
-        QTimer.singleShot(
-            1500, lambda: self.progress.setVisible(False)
-        )  # Hide after 1500ms
-
+        """Whether the table was loaded; if not, what is shown stays."""
         # Load bandpass table using subprocess to avoid Qt/casacore conflicts
+        data = self._read_table(bandpass_table, True)
+        if data is None:
+            return False
         try:
-            data = read_caltable_safe(bandpass_table, read_spectral_window=True)
-            solutions = data["solutions"]
-            flag = data["flag"]
-            self.bandpass_freqs = data["chan_freq"][0, :] / 1e6
+            xx_sols, yy_sols = split_solutions(data["solutions"], data["flag"])
+            bandpass_freqs = data["chan_freq"][0, :] / 1e6
         except Exception as e:
-            self.progress.setVisible(False)
-            self._restore_cursor()
-            from PyQt5.QtWidgets import QMessageBox
-
             QMessageBox.critical(self, "Error", f"Failed to load caltable:\n{str(e)}")
-            return
+            return False
 
-        solutions[flag] = np.nan
-        self.xx_sols = solutions[:, :, 0]
-        self.yy_sols = solutions[:, :, 1]
+        self.dir_label.setText(str(bandpass_table))
+        self.bandpass_directory = bandpass_table
+        self.bandpass_freqs = bandpass_freqs
+        self.xx_sols = xx_sols
+        self.yy_sols = yy_sols
         self.num_antennas = self.xx_sols.shape[0]
         self.current_page = 0
 
         # Enable/disable navigation buttons based on data
         self.update_navigation_buttons()
-        self.plot_bandpass_page()
-
-        # Restore cursor
-        self._restore_cursor()
+        with busy("Drawing the plots…", self):
+            self.plot_bandpass_page()
+        return True
 
     def toggle_bandpass_mode(self):
-        self._set_busy_cursor()
         if self.plot_mode == "Amplitude":
             self.plot_mode = "Phase"
             self.plot_button.setText("Amplitude")
@@ -549,63 +604,85 @@ class VisualizationApp(QMainWindow):
             self.plot_mode = "Amplitude"
             self.plot_button.setText("Phase")
         self._on_plot_type_changed()  # Re-plot with current view type
-        self._restore_cursor()
 
     def _on_plot_type_changed(self):
         """Handle plot type ComboBox change - route to appropriate plot method."""
         if self.xx_sols is None:
             return  # No data loaded
 
-        self._set_busy_cursor()
         plot_type = self.plot_type_combo.currentText()
+        snr = None
+        if plot_type == "SNR Heatmap":
+            snr = self._compute_snr()
+            if snr is None:
+                self.plot_type_combo.blockSignals(True)
+                self.plot_type_combo.setCurrentText(self.shown_view)
+                self.plot_type_combo.blockSignals(False)
+                return
 
-        # Enable/disable navigation buttons based on plot type
-        is_per_antenna = plot_type == "Per-Antenna"
-        self.first_button.setEnabled(is_per_antenna and self.current_page > 0)
-        self.prev_button.setEnabled(is_per_antenna and self.current_page > 0)
-        self.next_button.setEnabled(
-            is_per_antenna
-            and self.current_page
-            < int(np.ceil(self.num_antennas / self.antennas_per_page)) - 1
-        )
-        self.last_button.setEnabled(
-            is_per_antenna
-            and self.current_page
-            < int(np.ceil(self.num_antennas / self.antennas_per_page)) - 1
-        )
-        self.plot_size_menu.setEnabled(is_per_antenna)
+        self.shown_view = plot_type
+        with busy(f"Drawing {plot_type}…", self):
+            # Enable/disable navigation buttons based on plot type
+            is_per_antenna = plot_type == "Per-Antenna"
+            self.first_button.setEnabled(is_per_antenna and self.current_page > 0)
+            self.prev_button.setEnabled(is_per_antenna and self.current_page > 0)
+            self.next_button.setEnabled(
+                is_per_antenna
+                and self.current_page
+                < int(np.ceil(self.num_antennas / self.antennas_per_page)) - 1
+            )
+            self.last_button.setEnabled(
+                is_per_antenna
+                and self.current_page
+                < int(np.ceil(self.num_antennas / self.antennas_per_page)) - 1
+            )
+            self.plot_size_menu.setEnabled(is_per_antenna)
 
-        # Enable/disable amplitude/phase toggle based on applicable views
-        # Phase Unwrapped, RMS, SNR, and Closure don't use amplitude/phase mode
-        toggle_applicable = plot_type in ["Per-Antenna", "Waterfall", "Median Diff"]
-        self.plot_button.setEnabled(toggle_applicable)
+            # Enable/disable amplitude/phase toggle based on applicable views
+            # Phase Unwrapped, RMS, SNR, and Closure don't use amplitude/phase mode
+            toggle_applicable = plot_type in ["Per-Antenna", "Waterfall", "Median Diff"]
+            self.plot_button.setEnabled(toggle_applicable)
 
-        # Check if we WERE in single-axis mode before changing the flag
-        was_single_axis = getattr(self, "_single_axis_mode", False)
+            # Check if we WERE in single-axis mode before changing the flag
+            was_single_axis = getattr(self, "_single_axis_mode", False)
 
-        # Track whether we're in single-axis mode (for next switch)
-        self._single_axis_mode = not is_per_antenna
+            # Track whether we're in single-axis mode (for next switch)
+            self._single_axis_mode = not is_per_antenna
 
-        # If switching TO Per-Antenna from single-axis, need to restore grid
-        if plot_type == "Per-Antenna" and was_single_axis:
-            self._restore_grid_axes()
+            # If switching TO Per-Antenna from single-axis, need to restore grid
+            if plot_type == "Per-Antenna" and was_single_axis:
+                self._restore_grid_axes()
 
-        if plot_type == "Per-Antenna":
-            self.plot_bandpass_page()
-        elif plot_type == "Waterfall":
-            self.plot_bandpass_waterfall()
-        elif plot_type == "Median Diff":
-            self.plot_bandpass_median_diff()
-        elif plot_type == "Phase Unwrapped":
-            self.plot_bandpass_unwrapped_phase()
-        elif plot_type == "RMS per Antenna":
-            self.plot_rms_per_antenna()
-        elif plot_type == "SNR Heatmap":
-            self.plot_snr_heatmap()
-        elif plot_type == "Closure Phases":
-            self.plot_closure_phases()
+            if plot_type == "Per-Antenna":
+                self.plot_bandpass_page()
+            elif plot_type == "Waterfall":
+                self.plot_bandpass_waterfall()
+            elif plot_type == "Median Diff":
+                self.plot_bandpass_median_diff()
+            elif plot_type == "Phase Unwrapped":
+                self.plot_bandpass_unwrapped_phase()
+            elif plot_type == "RMS per Antenna":
+                self.plot_rms_per_antenna()
+            elif plot_type == "SNR Heatmap":
+                self.plot_snr_heatmap(snr)
+            elif plot_type == "Closure Phases":
+                self.plot_closure_phases()
 
-        self._restore_cursor()
+    def _compute_snr(self):
+        """The SNR map, or None if it failed (said in a message) or was
+        cancelled: it comes before anything on screen changes."""
+        try:
+            if self.xx_sols.shape[1] < SNR_WORKER_CHANNELS:
+                with busy("Computing the SNR…", self):
+                    return snr_estimate(self.xx_sols, self.yy_sols)
+            return run_in_background(
+                self, "Computing the SNR…", snr_estimate, self.xx_sols, self.yy_sols
+            )
+        except Cancelled:
+            self.statusBar().showMessage("Cancelled", 3000)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not compute the SNR:\n{str(e)}")
+        return None
 
     def plot_bandpass_page(self):
         # Fallback: ensure grid axes exist (normally handled by _on_plot_type_changed)
@@ -673,7 +750,6 @@ class VisualizationApp(QMainWindow):
             f"{self.plot_mode} vs Frequency - Page {self.current_page + 1} of {int(np.ceil(self.num_antennas / self.antennas_per_page))}\n X: Blue, Y: Orange"
         )
         self.bandpass_canvas.draw()
-        self.preload_bandpass_page()
 
     def _setup_single_axes(self):
         """Reconfigure figure for a single axes plot."""
@@ -817,23 +893,9 @@ class VisualizationApp(QMainWindow):
         self.bandpass_figure.suptitle("RMS Amplitude per Antenna")
         self.bandpass_canvas.draw()
 
-    def plot_snr_heatmap(self):
+    def plot_snr_heatmap(self, snr):
         """Heatmap of SNR estimate per antenna/channel."""
         ax = self._setup_single_axes()
-
-        # Estimate SNR as amplitude / std(amplitude)
-        amp = (np.abs(self.xx_sols) + np.abs(self.yy_sols)) / 2
-
-        # Simple SNR estimate: mean / std across small windows
-        window_size = max(1, amp.shape[1] // 20)
-        snr = np.zeros_like(amp)
-
-        for i in range(amp.shape[1]):
-            start = max(0, i - window_size)
-            end = min(amp.shape[1], i + window_size)
-            local_mean = np.nanmean(amp[:, start:end], axis=1)
-            local_std = np.nanstd(amp[:, start:end], axis=1)
-            snr[:, i] = local_mean / (local_std + 1e-10)
 
         im = ax.imshow(
             snr,
@@ -907,58 +969,32 @@ class VisualizationApp(QMainWindow):
         self.bandpass_figure.tight_layout()
         self.bandpass_canvas.draw()
 
+    def _show_page(self, page):
+        self.current_page = page
+        total_pages = int(np.ceil(self.num_antennas / self.antennas_per_page))
+        with busy(f"Drawing page {page + 1} of {total_pages}…", self):
+            self.plot_bandpass_page()
+
     def next_bandpass_page(self):
         if self.current_page < int(np.ceil(self.num_antennas / self.antennas_per_page)):
-            self._set_busy_cursor()
-            self.current_page += 1
-            self.plot_bandpass_page()
-            self._restore_cursor()
+            self._show_page(self.current_page + 1)
         self.update_navigation_buttons()
 
     def prev_bandpass_page(self):
         if self.current_page > 0:
-            self._set_busy_cursor()
-            self.current_page -= 1
-            self.plot_bandpass_page()
-            self._restore_cursor()
+            self._show_page(self.current_page - 1)
         self.update_navigation_buttons()
 
     def first_bandpass_page(self):
         if self.current_page != 0:
-            self._set_busy_cursor()
-            self.current_page = 0
-            self.plot_bandpass_page()
-            self._restore_cursor()
+            self._show_page(0)
         self.update_navigation_buttons()
 
     def last_bandpass_page(self):
         last_page = int(np.ceil(self.num_antennas / self.antennas_per_page)) - 1
         if self.current_page != last_page:
-            self._set_busy_cursor()
-            self.current_page = last_page
-            self.plot_bandpass_page()
-            self._restore_cursor()
+            self._show_page(last_page)
         self.update_navigation_buttons()
-
-    def preload_bandpass_page(self):
-        self.thread = WorkerThread(self._preload_bandpass_data)
-        self.thread.finished.connect(self.thread.quit)
-        self.thread.start()
-
-    def _preload_bandpass_data(self):
-        total_pages = int(np.ceil(self.num_antennas / self.antennas_per_page))
-        for page in range(total_pages):
-            start_ant = page * self.antennas_per_page
-            end_ant = min(start_ant + self.antennas_per_page, self.num_antennas)
-            for ant_idx in range(start_ant, end_ant):
-                if ant_idx >= self.num_antennas:
-                    break
-                if self.plot_mode == "Amplitude":
-                    _ = np.abs(self.xx_sols[ant_idx, :])
-                    _ = np.abs(self.yy_sols[ant_idx, :])
-                else:
-                    _ = np.angle(self.xx_sols[ant_idx, :], deg=True)
-                    _ = np.angle(self.yy_sols[ant_idx, :], deg=True)
 
     def update_navigation_buttons(self):
         total_pages = int(np.ceil(self.num_antennas / self.antennas_per_page))
@@ -972,52 +1008,30 @@ class VisualizationApp(QMainWindow):
             self, "Select Self-calibration Table"
         )
         if directory:
-            self.selfcal_dir_label.setText(directory)  # Update selfcal specific label
-            self.selfcal_directory = directory
             self.load_selfcal_table(directory)
 
     def load_selfcal_table(self, caltable):
-        # Set busy cursor
-        self._set_busy_cursor()
-
-        # Show progress bar and initialize value
-        self.progress.setVisible(True)
-        self.progress.setValue(0)
-
-        # Simulate progress updates
-        QTimer.singleShot(500, lambda: self.progress.setValue(50))  # 50% after 500ms
-        QTimer.singleShot(
-            1000, lambda: self.progress.setValue(100)
-        )  # 100% after 1000ms
-        QTimer.singleShot(
-            1500, lambda: self.progress.setVisible(False)
-        )  # Hide after 1500ms
-
+        """Whether the table was loaded; if not, what is shown stays."""
         # Load selfcal table using subprocess to avoid Qt/casacore conflicts
+        data = self._read_table(caltable, False)
+        if data is None:
+            return False
         try:
-            data = read_caltable_safe(caltable, read_spectral_window=False)
-            solutions = data["solutions"]
-            flag = data["flag"]
+            xx_sols, yy_sols = split_solutions(data["solutions"], data["flag"])
         except Exception as e:
-            self.progress.setVisible(False)
-            self._restore_cursor()
-            from PyQt5.QtWidgets import QMessageBox
-
             QMessageBox.critical(self, "Error", f"Failed to load caltable:\n{str(e)}")
-            return
+            return False
 
-        solutions[flag] = np.nan
-        self.xx_sols = solutions[:, :, 0]
-        self.yy_sols = solutions[:, :, 1]
+        self.selfcal_dir_label.setText(str(caltable))  # Update selfcal specific label
+        self.selfcal_directory = caltable
+        self.xx_sols = xx_sols
+        self.yy_sols = yy_sols
         self.num_antennas = self.xx_sols.shape[0]
-
-        self.plot_selfcal_page()
-
-        # Restore cursor
-        self._restore_cursor()
+        with busy("Drawing the plot…", self):
+            self.plot_selfcal_page()
+        return True
 
     def toggle_selfcal_mode(self):
-        self._set_busy_cursor()
         if self.plot_mode == "Amplitude":
             self.plot_mode = "Phase"
             self.selfcal_plot_button.setText(
@@ -1029,8 +1043,8 @@ class VisualizationApp(QMainWindow):
                 "Plot Phase vs Antenna"
             )  # Update selfcal button
         if self.selfcal_directory:  # Only plot if data is loaded
-            self.plot_selfcal_page()
-        self._restore_cursor()
+            with busy("Drawing the plot…", self):
+                self.plot_selfcal_page()
 
     def plot_selfcal_page(self):
         if (
@@ -1107,48 +1121,26 @@ class VisualizationApp(QMainWindow):
             "kcross Files (*.kcross);;Numpy Files (*.npy);;All Files (*)",
         )
         if file:
-            self.crossphase_file = file
             self.load_crossphase_file(file)
 
     def load_crossphase_file(self, caltable):
-        # Set busy cursor
-        self._set_busy_cursor()
-
-        loaded_caltable = np.load(caltable, allow_pickle=True)
-        self.cross_freq = loaded_caltable[0, :] / 1e6
-        self.crossphase = loaded_caltable[1, :]
-        self.cross_flags = loaded_caltable[2, :]
-
-        self.cross_freq = np.array(self.cross_freq, dtype=float)
-        self.crossphase = np.array(self.crossphase, dtype=float)
-
-        median_crossphase = np.median(self.crossphase)
-        absolute_deviation = np.abs(self.crossphase - median_crossphase)
-        mad = np.median(absolute_deviation)
-
-        threshold = 10 * mad
-        mask = absolute_deviation <= threshold
-
-        self.cross_freq_filtered = self.cross_freq[mask]
-        self.crossphase_filtered = self.crossphase[mask]
-
-        self.cross_fit_coeffs = np.polyfit(
-            self.cross_freq_filtered, self.crossphase_filtered, 2
-        )
-        self.cross_fit_func = np.poly1d(self.cross_fit_coeffs)
-        self.crossphase_fit = self.cross_fit_func(self.cross_freq_filtered)
-
-        residuals = self.crossphase_filtered - self.crossphase_fit
-        sse = np.sum(residuals**2)
-        sst = np.sum((self.crossphase_filtered - np.mean(self.crossphase)) ** 2)
-        self.cross_r_squared = 1 - (sse / sst)
-
-        self.cross_std_residuals = np.std(residuals)
-
-        self.plot_crossphase()
-
-        # Restore cursor
-        self._restore_cursor()
+        """Whether the file was loaded; if not, what is shown stays."""
+        try:
+            fit = run_in_thread(
+                self, f"Reading {os.path.basename(caltable)}…", read_crossphase, caltable
+            )
+        except Cancelled:
+            self.statusBar().showMessage("Cancelled", 3000)
+            return False
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load caltable:\n{str(e)}")
+            return False
+        self.crossphase_file = caltable
+        for name, value in fit.items():
+            setattr(self, name, value)
+        with busy("Drawing the plot…", self):
+            self.plot_crossphase()
+        return True
 
     def plot_crossphase(self):
         self.crossphase_ax.clear()
@@ -1181,6 +1173,8 @@ class VisualizationApp(QMainWindow):
 def main():
     """Entry point for viewcaltable command."""
     import argparse
+
+    import seaborn as sns
 
     from ..ui.app import create_app
 

@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QTimer
 
-from .spectra_common import _size_text
+from .spectra_common import _size_text, read_rows
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +30,7 @@ class SpectraNavigationMixin:
     ``canvas``, ``firstBtn``, ``gotoEdit``, ``hdul``, ``lastBtn``,
     ``logger``, ``minimap``, ``navGroup``, ``navModeCombo``, ``nextBtn``,
     ``pageLabel``, ``pagesWidget``, ``prevBtn``, ``rangeFromEdit``,
-    ``rangeToEdit``, ``rangeWidget``, ``wait_cursor``
+    ``rangeToEdit``, ``rangeWidget``
     """
 
     def _page_bounds(self, page_idx):
@@ -146,18 +146,10 @@ class SpectraNavigationMixin:
         step = max(1, downsample)
 
         try:
-            if self._time_dim == 0:
-                # (time, freq)
-                data_slice = raw_data[start_idx:end_idx:step, :]
-            else:
-                # (freq, time) -> (time, freq)
-                data_slice = raw_data[:, start_idx:end_idx:step].T
-
+            # In RAM as (time, freq), in blocks (a long time range reports
+            # how far it got, and stops)
+            data = read_rows(raw_data, self._time_dim, start_idx, end_idx, step)
             time_slice = self._full_time_axis[start_idx:end_idx:step]
-
-            # Convert to RAM and handle infinities (NaN stays NaN naturally)
-            data = np.array(data_slice, dtype=np.float32)
-            data[np.isinf(data)] = np.nan
             return data, time_slice, self._full_freq_axis
 
         except Exception as e:
@@ -196,6 +188,7 @@ class SpectraNavigationMixin:
         if not self.hdul:
             return
 
+        self._end_page_wait()  # (until the page's read, if it needs one)
         page_to_load = self._current_page
         last = getattr(self, "_last_page_loaded", page_to_load)
         if page_to_load != last:
@@ -234,9 +227,8 @@ class SpectraNavigationMixin:
             or page_idx != self._pending_page
         ):
             return
-        with self.wait_cursor():
-            self._display_data(data, time_axis, freq_axis)
-            self._pending_page = -1  # Completed
+        self._display_data(data, time_axis, freq_axis)
+        self._pending_page = -1  # Completed
 
     def _loadFullRes(self, page_idx):
         """Perform the actual high-resolution load scheduled by loadSlice."""
@@ -254,29 +246,10 @@ class SpectraNavigationMixin:
         # what they had read stays in the cache.
         for other, read in list(self._remote_reads.items()):
             if other != page_idx:
-                read.stopped = True
+                read.stop()
                 del self._remote_reads[other]
         self._read_page(page_idx)
-
-    def _read_all(self, raw_data, progress, cancelled):
-        """All of a local image as (time, freq) float32, read in blocks (so
-        it reports progress and can stop)."""
-        from ..remote.remote_fits import Cancelled
-
-        time_major = self._time_dim == 0
-        nt = raw_data.shape[0] if time_major else raw_data.shape[1]
-        nf = raw_data.shape[1] if time_major else raw_data.shape[0]
-        data = np.empty((nt, nf), np.float32)
-        rows = max(1, 16_000_000 // nf)
-        for start in range(0, nt, rows):
-            if cancelled():
-                raise Cancelled()
-            stop = min(start + rows, nt)
-            block = raw_data[start:stop, :] if time_major else raw_data[:, start:stop].T
-            data[start:stop] = block
-            progress(stop * nf * 4, nt * nf * 4)
-        data[np.isinf(data)] = np.nan
-        return data
+        self._wait_for_page(page_idx)
 
     def _cache_page(self, page_idx, data, time_axis, freq_axis):
         self._data_cache[page_idx] = (data, time_axis, freq_axis)
@@ -302,10 +275,24 @@ class SpectraNavigationMixin:
         nf = self._shown_raw[0].shape[1]
         return t0, max(t1, t0 + 1), iymin * freq_bin, min((iymax + 1) * freq_bin, nf)
 
+    def _keep_mode(self, mode):
+        """Stay in ``mode`` (another was chosen, then given up): the switch
+        says so, and a page whose read was stopped is read after all."""
+        names = {"Full": "Full Spectrum", "Windowed": "Windowed", "Range": "Time Range"}
+        self.navModeCombo.blockSignals(True)
+        self.navModeCombo.setCurrentText(names[mode])
+        self.navModeCombo.blockSignals(False)
+        self._nav_mode = mode
+        self._show_nav_mode()
+        if self._previewing():
+            self.loadSlice()
+
     def onNavModeChanged(self, mode):
         if not self.hdul:
             return
         self._stop_remote_reads()  # (reads of the previous mode's pages)
+        self._pending_page = -1  # (and those about to start)
+        mode_before = self._nav_mode
         previous = self._page_bounds(self._current_page) if self._full_time_axis is not None else None
         self._nav_mode = "Windowed" if "Windowed" in mode else "Range" if "Range" in mode else "Full"
 
@@ -331,61 +318,30 @@ class SpectraNavigationMixin:
                     QMessageBox.No,
                 )
                 if reply == QMessageBox.No:
-                    self.navModeCombo.blockSignals(True)
-                    self.navModeCombo.setCurrentText("Windowed")
-                    self.navModeCombo.blockSignals(False)
-                    self._nav_mode = "Windowed"
+                    self._keep_mode(mode_before)
                     return
 
             # Load full data into RAM (subject to memory limits)
-            raw_data = self._image()
-            if self._remote:
-                try:
-                    data = self._server_work(
-                        "Reading the whole spectrum from the server...",
-                        lambda *_: raw_data[:, :],
-                    )
-                except Exception as e:
-                    if type(e).__name__ != "Cancelled":
-                        QMessageBox.critical(self, "Error", f"Failed to read the spectrum:\n{e}")
-                    self.navModeCombo.blockSignals(True)
-                    self.navModeCombo.setCurrentText("Windowed")
-                    self.navModeCombo.blockSignals(False)
-                    self._nav_mode = "Windowed"
-                    return
-                if self._time_dim != 0:
-                    data = np.ascontiguousarray(data.T)
-                data[np.isinf(data)] = np.nan
-                self._display_data(data, self._full_time_axis, self._full_freq_axis)
-                return
-            if self._is_large_file:
-                try:
-                    data = self._server_work(
-                        "Reading the whole spectrum...",
-                        lambda progress, cancelled: self._read_all(raw_data, progress, cancelled),
-                        threaded=True,
-                        title="Loading",
-                    )
-                except Exception as e:
-                    if type(e).__name__ != "Cancelled":
-                        QMessageBox.critical(self, "Error", f"Failed to read the spectrum:\n{e}")
-                    self.navModeCombo.setCurrentText("Windowed")
-                    return
-                self._display_data(data, self._full_time_axis, self._full_freq_axis)
-                return
-            with self.wait_cursor():
-                if self._time_dim == 0:
-                    data = np.array(raw_data, dtype=np.float32)
+            raw_data, time_dim = self._image(), self._time_dim
+            where = " from the server" if self._remote else ""
+            try:
+                data = self._server_work(
+                    f"Reading the whole spectrum{where}…", lambda *_: read_rows(raw_data, time_dim)
+                )
+            except Exception as e:
+                if type(e).__name__ == "Cancelled":
+                    self.statusBar().showMessage("Cancelled", 5000)
                 else:
-                    data = np.array(raw_data.T, dtype=np.float32)
-                self._display_data(data, self._full_time_axis, self._full_freq_axis)
+                    QMessageBox.critical(self, "Error", f"Failed to read the spectrum:\n{e}")
+                self._keep_mode(mode_before)
+                return
+            self._display_data(data, self._full_time_axis, self._full_freq_axis)
             return
 
         # Switching/Returning to Windowed mode
         self._data_cache.clear()
         self._current_page = 0
-        with self.wait_cursor():
-            self.loadSlice()
+        self.loadSlice()
 
     def showRangeControls(self):
         """Time Range mode, with its From/To boxes in view and focused."""
@@ -455,8 +411,7 @@ class SpectraNavigationMixin:
         self._data_cache.clear()
         self._current_page = 0
         self._updateNavigationStats()
-        with self.wait_cursor():
-            self.loadSlice()
+        self.loadSlice()
 
     def onNavDurationChanged(self, val):
         """Pages of a new length: the page shown keeps its start, so the
@@ -468,42 +423,37 @@ class SpectraNavigationMixin:
             anchor = self._page_bounds(self._current_page)[0]
         self._window_duration_min = val
 
-        with self.wait_cursor():
-            self._data_cache.clear()
-            if self._full_time_axis is not None:
-                window = self._calculate_window_samples()
-                self._current_page = -(-anchor // window)  # ceil: the grid passes through anchor
-                self._page_origin = anchor - self._current_page * window
-            else:
-                self._page_origin = 0
-                self._current_page = 0
-            self._updateNavigationStats()  # (the page count, buttons, outline)
-            self.loadSlice()
-            self._updateNavigationStats()
+        self._data_cache.clear()
+        if self._full_time_axis is not None:
+            window = self._calculate_window_samples()
+            self._current_page = -(-anchor // window)  # ceil: the grid passes through anchor
+            self._page_origin = anchor - self._current_page * window
+        else:
+            self._page_origin = 0
+            self._current_page = 0
+        self._updateNavigationStats()  # (the page count, buttons, outline)
+        self.loadSlice()
+        self._updateNavigationStats()
 
     def onPrevPage(self):
         if self._current_page > 0:
             self._current_page -= 1
-            with self.wait_cursor():
-                self.loadSlice()
+            self.loadSlice()
 
     def onNextPage(self):
         if self._current_page < self._total_pages - 1:
             self._current_page += 1
-            with self.wait_cursor():
-                self.loadSlice()
+            self.loadSlice()
 
     def onFirstPage(self):
         if self._current_page != 0:
             self._current_page = 0
-            with self.wait_cursor():
-                self.loadSlice()
+            self.loadSlice()
 
     def onLastPage(self):
         if self._current_page != self._total_pages - 1:
             self._current_page = self._total_pages - 1
-            with self.wait_cursor():
-                self.loadSlice()
+            self.loadSlice()
 
     def onMinimapResize(self, start_frac, end_frac):
         """The outline on the overview was resized: the range shown becomes
@@ -520,20 +470,19 @@ class SpectraNavigationMixin:
             dt = self._sample_dt()
             low, high = self.navDurationSpin.minimum(), self.navDurationSpin.maximum()
             minutes = round(min(high, max(low, (stop - start) * dt / 60.0)), 1)
-            with self.wait_cursor():
-                self.navDurationSpin.blockSignals(True)
-                self.navDurationSpin.setValue(minutes)
-                self.navDurationSpin.blockSignals(False)
-                self._window_duration_min = minutes
-                window = self._calculate_window_samples()
-                # The page grid passes through the outline's start
-                page = -(-start // window)  # ceil
-                self._page_origin = start - page * window
-                self._current_page = page
-                self._stop_remote_reads()
-                self._data_cache.clear()
-                self._updateNavigationStats()
-                self.loadSlice()
+            self.navDurationSpin.blockSignals(True)
+            self.navDurationSpin.setValue(minutes)
+            self.navDurationSpin.blockSignals(False)
+            self._window_duration_min = minutes
+            window = self._calculate_window_samples()
+            # The page grid passes through the outline's start
+            page = -(-start // window)  # ceil
+            self._page_origin = start - page * window
+            self._current_page = page
+            self._stop_remote_reads()
+            self._data_cache.clear()
+            self._updateNavigationStats()
+            self.loadSlice()
         else:
             self._updateNavigationStats()
 
@@ -543,36 +492,35 @@ class SpectraNavigationMixin:
         if self._full_time_axis is None:
             return
 
-        with self.wait_cursor():
-            total_samples = len(self._full_time_axis)
-            pct = max(0, min(0.999, fraction))
+        total_samples = len(self._full_time_axis)
+        pct = max(0, min(0.999, fraction))
 
-            # Map percentage directly to sample index
-            target_idx = int(pct * total_samples)
+        # Map percentage directly to sample index
+        target_idx = int(pct * total_samples)
 
-            if self._nav_mode == "Range" and self._range is not None:
-                # The same range length, centered on the click
-                length = self._range[1] - self._range[0]
-                start = max(0, min(total_samples - length, target_idx - length // 2))
-                self._show_range(start, start + length)
-                return
+        if self._nav_mode == "Range" and self._range is not None:
+            # The same range length, centered on the click
+            length = self._range[1] - self._range[0]
+            start = max(0, min(total_samples - length, target_idx - length // 2))
+            self._show_range(start, start + length)
+            return
 
-            # Determine which page contains this sample
-            window_samples = self._calculate_window_samples()
+        # Determine which page contains this sample
+        window_samples = self._calculate_window_samples()
 
-            new_page = max(0, (target_idx - getattr(self, "_page_origin", 0)) // window_samples)
-            if new_page >= self._total_pages:
-                new_page = self._total_pages - 1
+        new_page = max(0, (target_idx - getattr(self, "_page_origin", 0)) // window_samples)
+        if new_page >= self._total_pages:
+            new_page = self._total_pages - 1
 
-            if new_page != self._current_page:
-                self._current_page = new_page
-                self.loadSlice()
-            else:
-                # Snap the minimap rectangle back to the current page position
-                start_idx, end_idx = self._page_bounds(self._current_page)
-                self.minimap.update_view_percent(
-                    start_idx / total_samples, end_idx / total_samples
-                )
+        if new_page != self._current_page:
+            self._current_page = new_page
+            self.loadSlice()
+        else:
+            # Snap the minimap rectangle back to the current page position
+            start_idx, end_idx = self._page_bounds(self._current_page)
+            self.minimap.update_view_percent(
+                start_idx / total_samples, end_idx / total_samples
+            )
 
     def _parse_time(self, text):
         """MJD seconds of ``text``: a UTC date and time, or a time on the

@@ -19,14 +19,13 @@ try:
         QLabel,
         QPushButton,
         QLineEdit,
-        QApplication,
         QFrame,
         QScrollArea,
         QSizePolicy,
         QMessageBox,
-        QProgressBar,
         QTabWidget,
     )
+    from PyQt5.QtCore import QTimer
     from PyQt5.QtNetwork import QNetworkAccessManager
 except ImportError:
     print("PyQt5 is required. Install with: pip install PyQt5")
@@ -55,13 +54,19 @@ from .context_images_tab import ContextImagesTabMixin
 from .radio_spectra_tab import RadioSpectraTabMixin
 from .widgets import CollapsibleSection, EventTable
 from .workers import FetchWorker
-from ..processing.fits_io import is_fits, readable_image_path
+from ..processing.fits_io import is_fits
+from ..processing.image_meta import casa_info, casa_obs_time, fits_header
 
 
+from ..ui.activity import ActivityLabel
+from ..ui.background import Cancelled, run_in_background
+from ..ui.busy import busy
 from ..ui.date_picker import attach_date_picker
+from ..ui.download_parts import abandon
 from ..ui.geometry import fit_to_screen
 
 DATE_FORMAT = "%Y.%m.%d"
+CANCEL_NOTE_MS = 4000  # how long "Cancelled" stays beside the buttons
 
 
 class NOAAEventsViewer(
@@ -81,16 +86,13 @@ class NOAAEventsViewer(
 
         self.worker = None
         self.goes_worker = None
+        self.dh_worker = None
         self.events = []
-
-        # Initial load state to manage cursor
-        self._initial_load = False
-        if initial_date:
-            self._initial_load = True
-            from PyQt5.QtWidgets import QApplication
-            from PyQt5.QtCore import Qt
-
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.download_queue = []
+        self.image_savers = {}  # file path -> its ImageSaver
+        self.shown_date = None  # the date the tables and images are of
+        self._spectra_date = None  # the date of the last spectra fetched
+        self._jobs = {}  # what is running, oldest first: key -> [text, how to cancel it]
 
         self.is_dark_theme = theme_manager.is_dark
 
@@ -102,25 +104,77 @@ class NOAAEventsViewer(
         else:
             # Default to yesterday
             self._set_date(date.today() - timedelta(days=1))
-            
+        self.shown_date = self.selected_date()
+
         set_hand_cursor(self)
 
     def _set_date(self, value):
         self.date_edit.setText(value.strftime(DATE_FORMAT))
 
+    def selected_date(self) -> Optional[date]:
+        """The date in the field; if it is not one, None, and it says so."""
+        try:
+            return datetime.strptime(self.date_edit.text().strip(), DATE_FORMAT).date()
+        except ValueError:
+            self.summary_label.setText("Enter the date as YYYY.MM.DD.")
+            return None
+
     def closeEvent(self, event):
-        """Clean up worker threads when window is closed."""
-        # Stop fetch worker if running
-        if hasattr(self, "worker") and self.worker is not None:
-            if self.worker.isRunning():
-                self.worker.quit()
-                self.worker.wait(2000)
-        # Stop GOES plot worker if running
-        if hasattr(self, "goes_worker") and self.goes_worker is not None:
-            if self.goes_worker.isRunning():
-                self.goes_worker.quit()
-                self.goes_worker.wait(2000)
+        """Leave what is running to end by itself: a stalled server must not
+        hold the window up as it closes."""
+        for _, cancel in reversed(list(self._jobs.values())):
+            cancel()
+        self._jobs.clear()
+        self.stop_dh_spectra()
+        self.leave_image_downloads()
+        self._note_timer.stop()
+        self._show_jobs()
         super().closeEvent(event)
+
+    # What is running, beside the buttons: the fetch, the GOES plot and saved
+    # images overlap, and the line lasts until the last of them has ended
+
+    def begin_job(self, key, text, cancel):
+        """Show ``text`` until ``end_job(key)``; ``cancel()`` is what the
+        Cancel button calls to stop this job."""
+        self._jobs[key] = [text, cancel]
+        self._note_timer.stop()
+        self._show_jobs()
+
+    def update_job(self, key, text):
+        if key in self._jobs:
+            self._jobs[key][0] = text
+            self._show_jobs()
+
+    def end_job(self, key):
+        self._jobs.pop(key, None)
+        self._show_jobs()
+
+    def _show_jobs(self):
+        """The latest job is the one shown, and the one Cancel stops."""
+        running = bool(self._jobs)
+        self.cancel_btn.setVisible(running)
+        if running:
+            self.activity_line.start(list(self._jobs.values())[-1][0])
+            self.activity_line.show()
+        elif not self._note_timer.isActive():
+            self.activity_line.stop()
+            self.activity_line.hide()
+
+    def cancel_latest_job(self):
+        if not self._jobs:
+            return
+        key = list(self._jobs)[-1]
+        cancel = self._jobs[key][1]
+        self._jobs.pop(key)
+        cancel()
+        if self._jobs:
+            self._show_jobs()
+        else:
+            self.activity_line.stop("Cancelled")
+            self.activity_line.show()
+            self.cancel_btn.hide()
+            self._note_timer.start()
 
     def init_ui(self):
         """Initialize the user interface."""
@@ -156,11 +210,19 @@ class NOAAEventsViewer(
 
         top_bar.addStretch()
 
-        self.progress = QProgressBar()
-        self.progress.setMaximumWidth(150)
-        self.progress.setMaximum(0)  # Indeterminate
-        self.progress.hide()
-        top_bar.addWidget(self.progress)
+        self.activity_line = ActivityLabel()
+        self.activity_line.hide()
+        top_bar.addWidget(self.activity_line)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.cancel_latest_job)
+        self.cancel_btn.hide()
+        top_bar.addWidget(self.cancel_btn)
+
+        self._note_timer = QTimer(self)
+        self._note_timer.setSingleShot(True)
+        self._note_timer.setInterval(CANCEL_NOTE_MS)
+        self._note_timer.timeout.connect(self._show_jobs)
 
         self.fetch_btn = QPushButton("Fetch")
         self.fetch_btn.setObjectName("PrimaryButton")
@@ -379,92 +441,97 @@ class NOAAEventsViewer(
 
     def fetch_data(self):
         """Start fetching data for the selected date."""
-        # Ensure imports are available for whole scope
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import Qt
-
-        # Clear radio spectra UI immediately on new fetch
-        self.clear_dh_spectra_ui()
-
         if self.worker and self.worker.isRunning():
             return
 
-        # Show busy cursor immediately
-        # If this is the initial load, cursor was already set in __init__
-        if getattr(self, "_initial_load", False):
-            self._initial_load = False
-        else:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-
-        try:
-            selected_date = datetime.strptime(self.date_edit.text().strip(), DATE_FORMAT).date()
-        except ValueError:
-            QApplication.restoreOverrideCursor()
-            self.summary_label.setText("Enter the date as YYYY.MM.DD.")
+        selected_date = self.selected_date()
+        if selected_date is None:
             return
+
+        # Clear radio spectra UI immediately on new fetch
+        self.stop_dh_spectra()
+        self.clear_dh_spectra_ui()
 
         self.date_edit.setEnabled(False)
         self.fetch_btn.setEnabled(False)
-        self.summary_label.setText(f"Fetching data for {selected_date}...")
-        self.progress.show()
-
-        QApplication.processEvents()  # Force UI update immediately
+        self._summary_before = self.summary_label.text()
+        self.summary_label.setText(f"Fetching data for {selected_date}…")
+        self.begin_job("fetch", "Starting…", self._cancel_fetch)
 
         # Clean up old worker if exists
         if self.worker is not None:
-            self.worker.finished.disconnect()
-            self.worker.error.disconnect()
             self.worker.deleteLater()
 
         self.worker = FetchWorker(selected_date)
-        self.worker.finished.connect(self.on_fetch_finished)
+        self.worker.done.connect(self.on_fetch_finished)
         self.worker.error.connect(self.on_fetch_error)
+        self.worker.progress.connect(self.on_fetch_progress)
         self.worker.start()
 
         # [AUTO-FETCH SPECTRA] If radio spectra are already cached, load them automatically
         if _noaa_cache.has_any_spectra(selected_date):
             self.fetch_dh_spectra()
 
+    def on_fetch_progress(self, message):
+        self.update_job("fetch", message)
+
+    def _fetch_ended(self):
+        self.end_job("fetch")
+        self.date_edit.setEnabled(True)
+        self.fetch_btn.setEnabled(True)
+        self.fetch_btn.setText("Fetch")
+
+    def _cancel_fetch(self):
+        """Back to the tables and summary from before the fetch. The spectra
+        went when it started; those of the new date do not stay beside them."""
+        abandon(self.worker)
+        self.worker = None
+        self._fetch_ended()
+        self.summary_label.setText(self._summary_before)
+        if self._spectra_date != self.shown_date:
+            self.stop_dh_spectra()
+            self.clear_dh_spectra_ui()
+
     def on_fetch_finished(self, events, active_regions, conditions, cmes, images, ecallisto_bursts=None):
         """Handle fetched data."""
+        if self.worker is None:
+            return  # cancelled
         ecallisto_bursts = ecallisto_bursts or []
+        event_date = self.worker.event_date
         try:
             # Check for validity
             if not self.isVisible() and not self.parent():
                 return  # Window closed
 
-            # Restore cursor
-            from PyQt5.QtWidgets import QApplication
-
-            QApplication.restoreOverrideCursor()
-
-            self.date_edit.setEnabled(True)
-            self.fetch_btn.setEnabled(True)
-            self.fetch_btn.setText("Fetch")
-            self.progress.hide()
             self.events = events
+            self.shown_date = event_date
 
-            # Display events
-            self.display_events(events, ecallisto_bursts)
+            label = f"Showing the data for {event_date}…"
+            self.update_job("fetch", label)
+            with busy(label, self):
+                # Display events
+                self.display_events(events, ecallisto_bursts)
 
-            # Display active regions
-            self.display_active_regions(active_regions)
+                # Display active regions
+                self.display_active_regions(active_regions)
 
-            # Display conditions
-            self.display_solar_conditions(conditions)
+                # Display conditions
+                self.display_solar_conditions(conditions)
 
-            # Display CMEs
-            self.display_cme_events(cmes)
+                # Display CMEs
+                self.display_cme_events(cmes)
 
-            # Display images
-            self.display_context_images(images)
+                # Display images
+                self.display_context_images(images)
 
-            # Update comprehensive summary
-            self._update_comprehensive_summary(events, active_regions, conditions, cmes)
+                # Update comprehensive summary
+                self._update_comprehensive_summary(events, active_regions, conditions, cmes)
 
         except RuntimeError:
             # Widget deleted during update
             pass
+        finally:
+            self._fetch_ended()
 
     def _update_comprehensive_summary(self, events, active_regions, conditions, cmes):
         """Update the main summary label with a comprehensive overview of all data."""
@@ -516,20 +583,16 @@ class NOAAEventsViewer(
 
     def on_fetch_error(self, error_msg):
         """Handle fetch error."""
+        if self.worker is None:
+            return  # cancelled
         try:
+            self._fetch_ended()
+
             # Check validity
             if not self.isVisible() and not self.parent():
                 return
 
-            from PyQt5.QtWidgets import QApplication
             from PyQt5.QtWidgets import QMessageBox
-
-            QApplication.restoreOverrideCursor()
-
-            self.date_edit.setEnabled(True)
-            self.fetch_btn.setEnabled(True)
-            self.fetch_btn.setText("Fetch")
-            self.progress.hide()
 
             self.summary_label.setText(f"Error fetching data: {error_msg}")
             QMessageBox.critical(self, "Fetch Error", "Failed to fetch data")
@@ -580,52 +643,54 @@ class NOAAEventsViewer(
 
         # Populate X-ray table
         self.xray_section.set_count(xray_count)
-        for event in sorted(categories["xray"], key=lambda e: e.begin_time or "9999"):
-            duration = (
-                f"{event.duration_minutes} min" if event.duration_minutes else "—"
-            )
-            flare_class = event.flare_class or "—"
-            peak_flux = (
-                event.particulars.split()[1]
-                if len(event.particulars.split()) > 1
-                else "—"
-            )
+        with self.xray_table.filling():
+            for event in sorted(categories["xray"], key=lambda e: e.begin_time or "9999"):
+                duration = (
+                    f"{event.duration_minutes} min" if event.duration_minutes else "—"
+                )
+                flare_class = event.flare_class or "—"
+                peak_flux = (
+                    event.particulars.split()[1]
+                    if len(event.particulars.split()) > 1
+                    else "—"
+                )
 
-            color_col = {}
-            if event.flare_class_letter in ["M", "X"]:
-                color_col[1] = event.flare_class_color
+                color_col = {}
+                if event.flare_class_letter in ["M", "X"]:
+                    color_col[1] = event.flare_class_color
 
-            self.xray_table.add_event_row(
-                [
-                    event.time_range,
-                    flare_class,
-                    peak_flux,
-                    event.active_region or "—",
-                    duration,
-                    event.observatory_name,
-                ],
-                color_col,
-            )
+                self.xray_table.add_event_row(
+                    [
+                        event.time_range,
+                        flare_class,
+                        peak_flux,
+                        event.active_region or "—",
+                        duration,
+                        event.observatory_name,
+                    ],
+                    color_col,
+                )
 
         # Populate Optical table
         self.optical_section.set_count(optical_count)
-        for event in sorted(
-            categories["optical"], key=lambda e: e.begin_time or "9999"
-        ):
-            optical_class = event.optical_class or "—"
-            notes_parts = event.particulars.split()[1:] if event.particulars else []
-            notes = " ".join(notes_parts) if notes_parts else "—"
+        with self.optical_table.filling():
+            for event in sorted(
+                categories["optical"], key=lambda e: e.begin_time or "9999"
+            ):
+                optical_class = event.optical_class or "—"
+                notes_parts = event.particulars.split()[1:] if event.particulars else []
+                notes = " ".join(notes_parts) if notes_parts else "—"
 
-            self.optical_table.add_event_row(
-                [
-                    event.time_range,
-                    optical_class,
-                    event.location_or_freq,
-                    event.active_region or "—",
-                    notes,
-                    event.observatory_name,
-                ]
-            )
+                self.optical_table.add_event_row(
+                    [
+                        event.time_range,
+                        optical_class,
+                        event.location_or_freq,
+                        event.active_region or "—",
+                        notes,
+                        event.observatory_name,
+                    ]
+                )
 
         # Populate Radio table
         self.radio_section.set_count(radio_count)
@@ -654,25 +719,26 @@ class NOAAEventsViewer(
                 'sort_time': b.begin_time.replace(":", "") or "9999"
             })
             
-        for event in sorted(all_radio_events, key=lambda x: x['sort_time']):
-            tooltips = {}
-            display_values = [
-                event['type'],
-                event['time'],
-                event['freq'],
-                event['particulars'],
-                event['region'],
-                event['obs'],
-            ]
+        with self.radio_table.filling():
+            for event in sorted(all_radio_events, key=lambda x: x['sort_time']):
+                tooltips = {}
+                display_values = [
+                    event['type'],
+                    event['time'],
+                    event['freq'],
+                    event['particulars'],
+                    event['region'],
+                    event['obs'],
+                ]
             
-            # Truncate long station lists for display and show full in tooltip
-            if event['obs'] and len(event['obs']) > 30 and ',' in event['obs']:
-                stations = [s.strip() for s in event['obs'].split(',')]
-                if len(stations) > 2:
-                    display_values[5] = f"{stations[0]}, {stations[1]} ..."
-                    tooltips[5] = event['obs']  # Full list in tooltip
+                # Truncate long station lists for display and show full in tooltip
+                if event['obs'] and len(event['obs']) > 30 and ',' in event['obs']:
+                    stations = [s.strip() for s in event['obs'].split(',')]
+                    if len(stations) > 2:
+                        display_values[5] = f"{stations[0]}, {stations[1]} ..."
+                        tooltips[5] = event['obs']  # Full list in tooltip
 
-            self.radio_table.add_event_row(display_values, tooltips=tooltips)
+                self.radio_table.add_event_row(display_values, tooltips=tooltips)
 
         # Resize columns to fit contents and scroll to top
         self.xray_table.resizeColumnsToContents()
@@ -705,38 +771,39 @@ class NOAAEventsViewer(
             "Quiet": "#9E9E9E",  # Grey
         }
 
-        for region in sorted(regions, key=lambda r: r.area, reverse=True):
-            # Format probabilities
-            c_prob = f"{region.prob_c}%" if region.prob_c is not None else "—"
-            m_prob = f"{region.prob_m}%" if region.prob_m is not None else "—"
-            x_prob = f"{region.prob_x}%" if region.prob_x is not None else "—"
+        with self.ar_table.filling():
+            for region in sorted(regions, key=lambda r: r.area, reverse=True):
+                # Format probabilities
+                c_prob = f"{region.prob_c}%" if region.prob_c is not None else "—"
+                m_prob = f"{region.prob_m}%" if region.prob_m is not None else "—"
+                x_prob = f"{region.prob_x}%" if region.prob_x is not None else "—"
 
-            risk = region.flare_risk_level
-            risk_color = risk_colors.get(risk, "#9E9E9E")
+                risk = region.flare_risk_level
+                risk_color = risk_colors.get(risk, "#9E9E9E")
 
-            # Add row with color for risk level column
-            color_col = {8: risk_color}
+                # Add row with color for risk level column
+                color_col = {8: risk_color}
 
-            # Also color M% and X% if they're significant
-            if region.prob_m and region.prob_m >= 20:
-                color_col[6] = "#FF9800"
-            if region.prob_x and region.prob_x >= 5:
-                color_col[7] = "#F44336"
+                # Also color M% and X% if they're significant
+                if region.prob_m and region.prob_m >= 20:
+                    color_col[6] = "#FF9800"
+                if region.prob_x and region.prob_x >= 5:
+                    color_col[7] = "#F44336"
 
-            self.ar_table.add_event_row(
-                [
-                    f"AR{region.noaa_number}",
-                    region.location,
-                    str(region.area),
-                    region.mcintosh_class,
-                    region.mag_type,
-                    c_prob,
-                    m_prob,
-                    x_prob,
-                    risk,
-                ],
-                color_col,
-            )
+                self.ar_table.add_event_row(
+                    [
+                        f"AR{region.noaa_number}",
+                        region.location,
+                        str(region.area),
+                        region.mcintosh_class,
+                        region.mag_type,
+                        c_prob,
+                        m_prob,
+                        x_prob,
+                        risk,
+                    ],
+                    color_col,
+                )
 
         self.ar_table.resizeColumnsToContents()
         self.ar_table.scrollToTop()
@@ -756,41 +823,42 @@ class NOAAEventsViewer(
             f"Found {len(cmes)} CME events (±3 days from selected date)"
         )
 
-        for cme in cmes:
-            # Format columns
-            time_str = cme.start_time.strftime("%Y-%m-%d %H:%M")
-            speed_str = f"{cme.speed:.0f}"
-            width_str = f"{cme.half_angle:.0f}°" if cme.half_angle else "—"
-            earth_str = "Yes" if cme.is_earth_directed else "No"
+        with self.cme_table.filling():
+            for cme in cmes:
+                # Format columns
+                time_str = cme.start_time.strftime("%Y-%m-%d %H:%M")
+                speed_str = f"{cme.speed:.0f}"
+                width_str = f"{cme.half_angle:.0f}°" if cme.half_angle else "—"
+                earth_str = "Yes" if cme.is_earth_directed else "No"
 
-            # Color coding
-            color_col = {}
+                # Color coding
+                color_col = {}
 
-            # Color Earth-directed column
-            if cme.is_earth_directed:
-                color_col[4] = "#FF9800"  # Orange for Earth-directed
-                if cme.speed >= 1000:
-                    color_col[4] = "#F44336"  # Red for fast Earth-directed
+                # Color Earth-directed column
+                if cme.is_earth_directed:
+                    color_col[4] = "#FF9800"  # Orange for Earth-directed
+                    if cme.speed >= 1000:
+                        color_col[4] = "#F44336"  # Red for fast Earth-directed
 
-            # Color speed column based on category
-            speed_colors = {
-                "Slow": "#4CAF50",
-                "Moderate": "#FFC107",
-                "Fast": "#FF9800",
-                "Extreme": "#F44336",
-            }
-            color_col[1] = speed_colors.get(cme.speed_category, "#9E9E9E")
+                # Color speed column based on category
+                speed_colors = {
+                    "Slow": "#4CAF50",
+                    "Moderate": "#FFC107",
+                    "Fast": "#FF9800",
+                    "Extreme": "#F44336",
+                }
+                color_col[1] = speed_colors.get(cme.speed_category, "#9E9E9E")
 
-            self.cme_table.add_event_row(
-                [
-                    time_str,
-                    speed_str,
-                    cme.source_location,
-                    width_str,
-                    earth_str,
-                ],
-                color_col,
-            )
+                self.cme_table.add_event_row(
+                    [
+                        time_str,
+                        speed_str,
+                        cme.source_location,
+                        width_str,
+                        earth_str,
+                    ],
+                    color_col,
+                )
 
         self.cme_table.resizeColumnsToContents()
         self.cme_table.scrollToTop()
@@ -831,9 +899,11 @@ class NOAAEventsViewer(
             if header is None and imagename:
                 if is_fits(imagename):
                     try:
-                        from astropy.io import fits
-
-                        header = fits.getheader(readable_image_path(imagename))
+                        header = run_in_background(
+                            self, f"Reading the date of {os.path.basename(imagename)}…", fits_header, imagename
+                        )
+                    except Cancelled:
+                        raise
                     except Exception as fits_err:
                         print(f"FITS header read failed: {fits_err}")
 
@@ -864,25 +934,14 @@ class NOAAEventsViewer(
 
                 if is_casa_image:
                     try:
-                        from casatools import image as IA
-
-                        ia_tool = IA()
-                        ia_tool.open(readable_image_path(imagename))
-                        csys_record = ia_tool.coordsys().torecord()
-                        ia_tool.close()
-
-                        if "obsdate" in csys_record:
-                            obsdate = csys_record["obsdate"]
-                            m0 = obsdate.get("m0", {})
-                            time_value = m0.get("value", None)
-                            time_unit = m0.get("unit", None)
-                            refer = obsdate.get("refer", None)
-
-                            if (refer == "UTC" or time_unit == "d") and time_value:
-                                from astropy.time import Time
-
-                                t = Time(time_value, format="mjd")
-                                extracted_date = t.to_datetime().date()
+                        info = run_in_background(
+                            self, f"Reading the date of {os.path.basename(imagename)}…", casa_info, imagename
+                        )
+                        t = casa_obs_time(info.csys_record)
+                        if t is not None:
+                            extracted_date = t.to_datetime().date()
+                    except Cancelled:
+                        raise
                     except Exception as casa_err:
                         print(f"CASA date extraction failed: {casa_err}")
 
@@ -926,6 +985,8 @@ class NOAAEventsViewer(
                     "• Files with date in filename (YYYYMMDD)",
                 )
 
+        except Cancelled:
+            self.summary_label.setText("Cancelled")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Error extracting date: {str(e)}")
 

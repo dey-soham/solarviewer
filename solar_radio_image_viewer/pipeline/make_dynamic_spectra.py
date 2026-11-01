@@ -627,11 +627,21 @@ def _init_info_worker(parent_pid):
     _worker_setup(parent_pid)
 
 
-def _read_infos(paths, rep=None, datacolumn="DATA", with_bytes=False, max_workers=4):
+def _read_infos(paths, rep=None, datacolumn="DATA", with_bytes=False, max_workers=4, progress=None):
     """Metadata of every MS (in parallel when there are many: opening a table
     on a network disk takes ~0.1-0.4 s), sorted; plus the (path, error) failures.
-    At most max_workers processes (default 4: this also runs on shared login nodes)."""
+    At most max_workers processes (default 4: this also runs on shared login nodes).
+    progress(done, total), if given, is called as each MS is read."""
     jobs = [(p, datacolumn, with_bytes) for p in paths]
+
+    def gather(results):
+        gathered = []
+        for result in results:
+            gathered.append(result)
+            if progress is not None:
+                progress(len(gathered), len(jobs))
+        return gathered
+
     nproc = max(1, min(int(max_workers or 4), available_cpus(), len(jobs)))
     results = None
     if nproc > 1 and len(jobs) >= 4:
@@ -640,7 +650,7 @@ def _read_infos(paths, rep=None, datacolumn="DATA", with_bytes=False, max_worker
             ctx = multiprocessing.get_context("fork")
             pool = concurrent.futures.ProcessPoolExecutor(
                 max_workers=nproc, mp_context=ctx, initializer=_init_info_worker, initargs=(os.getpid(),))
-            results = list(pool.map(_info_task, jobs))
+            results = gather(pool.map(_info_task, jobs))
             pool.shutdown(wait=True)
         except Exception:
             results = None
@@ -651,7 +661,7 @@ def _read_infos(paths, rep=None, datacolumn="DATA", with_bytes=False, max_worker
                 _abort_pool(pool)
             raise
     if results is None:
-        results = [_info_task(j) for j in jobs]
+        results = gather(_info_task(j) for j in jobs)
     infos, failed = [], []
     for (p, _, _), (info, err) in zip(jobs, results):
         if info is not None:
@@ -663,10 +673,11 @@ def _read_infos(paths, rep=None, datacolumn="DATA", with_bytes=False, max_worker
     return _sort_infos(infos), failed
 
 
-def summarize(paths, datacolumn="DATA", max_workers=4):
+def summarize(paths, datacolumn="DATA", max_workers=4, progress=None):
     """Fast overview of the inputs (no data read): dict as printed by --list."""
     paths = discover_ms(paths)
-    infos, failed = _read_infos(paths, None, datacolumn, with_bytes=True, max_workers=max_workers)
+    infos, failed = _read_infos(paths, None, datacolumn, with_bytes=True, max_workers=max_workers,
+                                progress=progress)
     ms_list = []
     for i in infos:
         ms_list.append({
@@ -1736,6 +1747,7 @@ def run(inputs, outfits, rep, saveplot=False, plotfile=None, showplot=False,
     paths = discover_ms(inputs)
     if not paths:
         raise EngineError("no Measurement Sets found (names ending .ms in any case) in %s" % (inputs,))
+    rep.info({"stage": "reading", "found": len(paths)})
     infos, failed = _read_infos(paths, rep, args["datacolumn"], max_workers=min(4, args["ncpu"] or 4))
     if not infos:
         raise EngineError("none of the %d Measurement Sets could be read, first cause: %s: %s"
@@ -1746,8 +1758,10 @@ def run(inputs, outfits, rep, saveplot=False, plotfile=None, showplot=False,
     times, spec, freq, stats = compute(infos, args, rep)
     stats["failed"] += len(failed)
     stats["failed_inputs"] = [{"path": p, "error": e} for p, e in failed] + stats["failed_inputs"]
+    rep.info({"stage": "writing"})
     write_fits(times, spec, freq, outfits, args, stats, overwrite=overwrite)
     if pf:
+        rep.info({"stage": "plotting"})
         tmp = temp_name(pf)
         _TEMPS.add(tmp)
         try:
@@ -1847,7 +1861,8 @@ def main(argv=None):
     inputs = a.indir if a.indir else a.ms
     try:
         if a.list:
-            s = summarize(inputs, a.datacolumn, max_workers=a.ncpu if a.ncpu > 0 else 4)
+            s = summarize(inputs, a.datacolumn, max_workers=a.ncpu if a.ncpu > 0 else 4,
+                          progress=rep.progress)
             if not s["count"]:
                 if s["failed"]:
                     f = s["failed"][0]

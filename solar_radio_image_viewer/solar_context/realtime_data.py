@@ -451,7 +451,7 @@ def fetch_historical_from_ftp(
 
     # If missing, fetch from FTP
     try:
-        ftp = FTP("ftp.swpc.noaa.gov")
+        ftp = FTP("ftp.swpc.noaa.gov", timeout=30)
         ftp.login()
         ftp.cwd("pub/indices/old_indices")
 

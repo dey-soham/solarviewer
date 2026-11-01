@@ -27,9 +27,6 @@ class TbModeMixin:
         import os
         import tempfile
 
-        from PyQt5.QtCore import QEventLoop
-        from PyQt5.QtWidgets import QApplication
-
         if self.current_image_data is None:
             return
 
@@ -107,12 +104,16 @@ class TbModeMixin:
             return
 
         try:
-            begin_busy()
+            task = begin_busy(
+                "Converting to flux density…"
+                if is_kelvin
+                else "Converting to brightness temperature…",
+                self,
+            )
 
             if is_kelvin:
                 # K -> Jy/beam (Flux conversion)
-                self.show_status_message("Converting to flux (Jy/beam)...")
-                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+                self.show_status_message("Converting to flux (Jy/beam)…")
 
                 # Store original imagename
                 self._tb_original_imagename = self.imagename
@@ -140,15 +141,16 @@ class TbModeMixin:
                     self._tb_original_imagename = None
                     return
 
-                self.show_status_message("Created temp flux file")
-
                 # Load the flux FITS file
+                task.update(label="Loading the flux density map…")
                 self.imagename = self._tb_temp_file
                 self._tb_mode = True
                 self._current_bunit = "Jy/beam"
 
                 # Reload and plot
                 shown = self.on_visualization_changed(dir_load=True)
+                if shown is None:
+                    raise Cancelled()
 
                 # Update button
                 self.tb_btn.setText("TB")
@@ -163,8 +165,7 @@ class TbModeMixin:
 
             else:
                 # Jy/beam -> K (TB conversion)
-                self.show_status_message("Converting to brightness temperature...")
-                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+                self.show_status_message("Converting to brightness temperature…")
 
                 # Store original imagename
                 self._tb_original_imagename = self.imagename
@@ -193,12 +194,15 @@ class TbModeMixin:
                     return
 
                 # Load the TB FITS file
+                task.update(label="Loading the brightness temperature map…")
                 self.imagename = self._tb_temp_file
                 self._tb_mode = True
                 self._current_bunit = "K"
 
                 # Reload and plot (use dir_load to avoid changing presets)
                 shown = self.on_visualization_changed(dir_load=True)
+                if shown is None:
+                    raise Cancelled()
 
                 # Update button
                 self.tb_btn.setText("FLUX")
@@ -213,13 +217,21 @@ class TbModeMixin:
 
         except Cancelled:
             end_busy()
-            # What the stopped conversion had written
-            for path in (self._tb_temp_file, self._tb_temp_file + TEMP_EXPORT_SUFFIX):
-                if os.path.exists(path):
-                    os.remove(path)
+            original, temp_file = self._tb_original_imagename, self._tb_temp_file
             self._tb_original_imagename = None
             self._tb_temp_file = None
-            self.show_status_message("Conversion cancelled")
+            restored = True
+            if self.imagename == temp_file:
+                # Cancelled loading the result, which left the canvas blank
+                # (loading the original sets the mode and the button again)
+                self.imagename = original
+                restored = self.on_visualization_changed(dir_load=True)
+            # What the stopped conversion had written
+            for path in (temp_file, temp_file + TEMP_EXPORT_SUFFIX):
+                if os.path.exists(path):
+                    os.remove(path)
+            if restored:
+                self.show_status_message("Conversion cancelled")
         except Exception as e:
             import traceback
 
@@ -259,11 +271,17 @@ class TbModeMixin:
             self.tb_btn.setChecked(False)
             return
 
-        begin_busy()
+        begin_busy("Loading the original image…", self)
         try:
-            self.show_status_message(f"Reverting to original ({original_unit})...")
+            self.show_status_message(f"Reverting to original ({original_unit})…")
 
             # Restore original imagename
+            converted = (
+                self.imagename,
+                self._tb_original_imagename,
+                self._tb_original_unit,
+                self.tb_btn.toolTip(),
+            )
             self.imagename = self._tb_original_imagename
             self._tb_original_imagename = None
             self._tb_original_unit = None
@@ -271,6 +289,19 @@ class TbModeMixin:
 
             # Reload original image
             shown = self.on_visualization_changed(dir_load=True)
+            if shown is None:
+                # Cancelled, which left the canvas blank: stay on the converted view
+                (
+                    self.imagename,
+                    self._tb_original_imagename,
+                    self._tb_original_unit,
+                    tooltip,
+                ) = converted
+                self._tb_mode = True
+                if self.on_visualization_changed(dir_load=True):
+                    self.tb_btn.setToolTip(tooltip)
+                    self.show_status_message("Revert cancelled")
+                return
 
             # Clean up temp file
             if (

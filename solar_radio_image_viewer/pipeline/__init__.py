@@ -13,28 +13,20 @@ Tools included:
 - Log Viewer: View and filter pipeline log files
 """
 
-# Track which tools are available based on dependencies
-DYNAMIC_SPECTRUM_AVAILABLE = False
-CALTABLE_VISUALIZER_AVAILABLE = False
-LOG_VIEWER_AVAILABLE = False
+from importlib.util import find_spec
 
-# Check dependencies for each tool
-try:
-    import numpy as np  # noqa: F401 (availability check)
-    import pyqtgraph  # noqa: F401 (availability check)
-    from astropy.io import fits
+# Check dependencies for each tool: finding them, not importing them, which
+# would take every tool over a second before it can show anything (and load
+# casacore here, which must stay out of SolarViewer's process)
+_missing = [m for m in ("numpy", "pyqtgraph", "astropy") if find_spec(m) is None]
+DYNAMIC_SPECTRUM_AVAILABLE = not _missing
+if _missing:
+    print(f"[pipeline] Dynamic Spectrum Viewer not available: no {', '.join(_missing)}")
 
-    DYNAMIC_SPECTRUM_AVAILABLE = True
-except ImportError as e:
-    print(f"[pipeline] Dynamic Spectrum Viewer not available: {e}")
-
-try:
-    import seaborn  # noqa: F401 (availability check)
-    from casacore.tables import table
-
-    CALTABLE_VISUALIZER_AVAILABLE = True
-except ImportError as e:
-    print(f"[pipeline] Calibration Table Visualizer not available: {e}")
+_missing = [m for m in ("seaborn", "casacore") if find_spec(m) is None]
+CALTABLE_VISUALIZER_AVAILABLE = not _missing
+if _missing:
+    print(f"[pipeline] Calibration Table Visualizer not available: no {', '.join(_missing)}")
     print("  Install with: pip install python-casacore seaborn")
 
 # Log viewer just needs PyQt5 which is always available
@@ -75,7 +67,10 @@ def launch_dynamic_spectrum_viewer(parent=None, fits_file=None):
 
     # Open file if provided
     if fits_file:
-        window.openFile(fits_file)
+        # Once the window is on screen, so what it says while opening shows
+        from PyQt5.QtCore import QTimer
+
+        QTimer.singleShot(0, lambda: window.openFile(fits_file))
 
     return window
 
@@ -134,22 +129,6 @@ def launch_log_viewer(parent=None, log_file=None):
     window.show()
 
     if log_file:
-        # Load the log file using the internal method pattern
-        window.log_monitor.set_log_file(log_file)
-        # Parse and load the log file
-        import os
-        from .pipeline_logger_gui import LogRecord
-
-        if os.path.exists(log_file):
-            with open(log_file, "r") as f:
-                for line in f:
-                    try:
-                        parts = line.strip().split(" - ", 3)
-                        if len(parts) >= 4:
-                            timestamp, level, name, message = parts
-                            log_record = LogRecord(level, name, message, timestamp)
-                            window.log_model.add_log(log_record)
-                    except Exception:
-                        pass
+        window.openFile(log_file)
 
     return window

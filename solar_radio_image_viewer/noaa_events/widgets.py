@@ -4,6 +4,7 @@ image viewer, collapsible sections and the events table.
 """
 
 import logging
+from contextlib import contextmanager
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -19,6 +20,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QPixmap
+from ..ui.activity import ActivityLabel
+from ..ui.download_parts import abandon
 from ..ui.styles import set_hand_cursor
 
 from .workers import ImageLoader, ImageUrlResolver
@@ -28,13 +31,48 @@ logger = logging.getLogger(__name__)
 from ..ui.geometry import fit_to_screen
 
 
+def megabytes_text(done, total):
+    """How much of a download has come, ``total`` 0 if that is not known."""
+    if total:
+        return f"{done / 1e6:.1f} of {total / 1e6:.1f} MB"
+    return f"{done / 1e6:.1f} MB"
+
+
 class ClickableLabel(QLabel):
-    """QLabel that emits a clicked signal."""
+    """QLabel that emits a clicked signal. While its image is on the way, it
+    shows a spinner in place of the image."""
 
     clicked = pyqtSignal()
 
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.loading = None
+
     def mouseReleaseEvent(self, event):
         self.clicked.emit()
+
+    def start_loading(self, text):
+        self.clear()
+        if self.loading is None:
+            self.loading = ActivityLabel(parent=self)
+            self.loading.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.loading.start(text)
+        self.loading.show()
+        self._centre_loading()
+
+    def stop_loading(self):
+        if self.loading is not None:
+            self.loading.stop()
+            self.loading.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._centre_loading()
+
+    def _centre_loading(self):
+        if self.loading is not None and self.loading.isVisibleTo(self):
+            self.loading.adjustSize()
+            self.loading.move(self.rect().center() - self.loading.rect().center())
 
 
 class FullImageViewer(QDialog):
@@ -58,8 +96,9 @@ class FullImageViewer(QDialog):
         )  # Start resizable, maybe set False when huge image loads?
         self.scroll.setObjectName("ImageWell")
 
-        self.img_label = QLabel("Resolving high-resolution image URL...")
+        self.img_label = ClickableLabel()
         self.img_label.setAlignment(Qt.AlignCenter)
+        self.img_label.start_loading("Finding the high-resolution image…")
 
         self.scroll.setWidget(self.img_label)
         layout.addWidget(self.scroll)
@@ -72,6 +111,10 @@ class FullImageViewer(QDialog):
         btn_layout.addWidget(close)
         layout.addLayout(btn_layout)
 
+        # Close, the window's X and Escape all end here
+        self.finished.connect(self._leave_workers)
+        self.downloader = None
+
         # Start Resolve
         self.resolve_url()
 
@@ -80,19 +123,11 @@ class FullImageViewer(QDialog):
         self.resolver.found.connect(self.on_url_found)
         self.resolver.start()
 
-    def closeEvent(self, event):
-        """Clean up threads when dialog is closed."""
-        # Stop resolver thread if running
-        if hasattr(self, "resolver") and self.resolver is not None:
-            if self.resolver.isRunning():
-                self.resolver.quit()
-                self.resolver.wait(1000)
-        # Stop downloader thread if running
-        if hasattr(self, "downloader") and self.downloader is not None:
-            if self.downloader.isRunning():
-                self.downloader.quit()
-                self.downloader.wait(1000)
-        super().closeEvent(event)
+    def _leave_workers(self):
+        """The image is no longer wanted: nobody waits for what is under way."""
+        for worker in (self.resolver, self.downloader):
+            if worker is not None:
+                abandon(worker)
 
     def on_url_found(self, full_url):
         try:
@@ -100,23 +135,29 @@ class FullImageViewer(QDialog):
                 return
 
             if not full_url:
+                self.img_label.stop_loading()
                 self.img_label.setText("Failed to resolve high-res image.")
                 return
 
-            self.img_label.setText("Loading... Please wait")
+            self.img_label.start_loading("Downloading the image…")
 
             # Download
             self.downloader = ImageLoader(full_url)
             self.downloader.loaded.connect(self.on_image_loaded)
             self.downloader.error.connect(self.on_image_error)
+            self.downloader.received.connect(self.on_image_received)
             self.downloader.start()
         except RuntimeError:
             pass
+
+    def on_image_received(self, done, total):
+        self.img_label.start_loading(f"Downloading the image… {megabytes_text(done, total)}")
 
     def on_image_error(self, error_msg):
         """Handle image download error safely."""
         try:
             if self.isVisible():
+                self.img_label.stop_loading()
                 self.img_label.setText(f"Error: {error_msg}")
         except RuntimeError:
             pass  # Widget was deleted
@@ -126,6 +167,7 @@ class FullImageViewer(QDialog):
             if not self.isVisible():
                 return
 
+            self.img_label.stop_loading()
             pixmap = QPixmap()
             if pixmap.loadFromData(data):
                 self.img_label.setPixmap(pixmap)
@@ -232,6 +274,22 @@ class EventTable(QTableWidget):
 
         # Modern table styling handled by global stylesheet
         pass
+
+    @contextmanager
+    def filling(self):
+        """For adding many rows: each one costs a sort and a resize of every
+        column otherwise, which grows with the rows already there."""
+        sorting = self.isSortingEnabled()
+        header = self.horizontalHeader()
+        self.setSortingEnabled(False)
+        self.setUpdatesEnabled(False)
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        try:
+            yield
+        finally:
+            header.setSectionResizeMode(QHeaderView.ResizeToContents)
+            self.setSortingEnabled(sorting)
+            self.setUpdatesEnabled(True)
 
     def add_event_row(self, values: list, colors: dict = None, tooltips: dict = None):
         """Add a row with optional cell coloring and tooltips."""

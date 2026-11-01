@@ -11,7 +11,9 @@ RemoteFileCache before they are opened. The pieces are in browser_parts.
 
 import os
 import posixpath
+import socket
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -62,13 +64,21 @@ from .browser_parts import (
     icon,
     pixmap,
     progress_text,
+    waited,
 )
 from .download_thread import DownloadThread
 from .file_cache import RemoteFileCache
 from .ssh_manager import RemoteFileInfo, SSHConnection, SSHConnectionError
+from ..ui.activity import ActivityLabel
 from ..ui.geometry import fit_to_screen
 from ..ui.styles import set_hand_cursor, theme_manager
 from ..ui.widgets import segmented
+
+# Seconds a listing or a header read waits for the server to say anything.
+# (The fast listing says nothing until it has walked the folder.)
+SERVER_TIMEOUT = 60
+# Seconds without data before a download says so
+STALL_NOTE = 5
 
 
 def _base_finished(thread):
@@ -79,7 +89,7 @@ def _base_finished(thread):
 
 def _silence(thread):
     """Disconnect ``thread``'s own result signals (not QThread's finished)."""
-    for name in ("finished", "error", "done", "failed", "result", "progress"):
+    for name in ("finished", "error", "done", "failed", "result", "progress", "phase"):
         if name in type(thread).__dict__:
             try:
                 getattr(thread, name).disconnect()
@@ -91,6 +101,19 @@ def _deleted(obj):
     from PyQt5 import sip
 
     return sip.isdeleted(obj)
+
+
+def _close_later(channel):
+    """Close an SSH channel or SFTP session, not waiting: closing one sends a
+    message, which waits as long as the network is stalled."""
+
+    def close():
+        try:
+            channel.close()
+        except Exception:
+            pass
+
+    threading.Thread(target=close, name="ssh-channel-close", daemon=True).start()
 
 
 class ListDirectoryThread(QThread):
@@ -113,16 +136,16 @@ class ListDirectoryThread(QThread):
         self.fits_only = fits_only
         self._cancelled = False
         self._sftp = None  # Thread's own SFTP channel
+        self._channel = None  # The channel of the fast path's command
+        self.partial = False  # Listed by SFTP after the fast path went silent
 
     def cancel(self):
         """Request cancellation of the listing operation."""
         self._cancelled = True
-        # Try to close our SFTP channel to interrupt blocking operation
-        if self._sftp:
-            try:
-                self._sftp.close()
-            except Exception:
-                pass
+        # Try to close our channels to interrupt blocking operation
+        for channel in (self._sftp, self._channel):
+            if channel:
+                _close_later(channel)
 
     def run(self):
         try:
@@ -135,12 +158,27 @@ class ListDirectoryThread(QThread):
                 # Uses "OK:" prefix to distinguish success from script failure.
                 # A folder holding a CASA table gets its type ('t', from its
                 # table.info), a CASA image the size of its whole folder.
+                # Newlines (stripped below) go out while it works, so that
+                # SERVER_TIMEOUT measures a stall, not the size of the folder.
                 py_script = """
-import os, json, sys, stat
+import os, json, sys, stat, time
 path = sys.argv[1]
 entries = []
 show_hidden = %s
 fits_only = %s
+BEAT = 15
+last_beat = 0
+
+def beat():
+    global last_beat
+    now = time.time()
+    if now - last_beat >= BEAT:
+        last_beat = now
+        try:
+            sys.stdout.write("\\n")
+            sys.stdout.flush()
+        except (IOError, OSError):
+            os._exit(1)  # (nobody is listening any more)
 
 def table_type(folder):
     try:
@@ -154,7 +192,9 @@ def table_type(folder):
 def tree_size(folder):
     total = 0
     for root, dirs, files in os.walk(folder):
+        beat()
         for name in files:
+            beat()
             try:
                 total += os.lstat(os.path.join(root, name)).st_size
             except OSError:
@@ -162,6 +202,7 @@ def tree_size(folder):
     return total
 
 def add_entry(name, is_dir, size, mtime):
+    beat()
     if not show_hidden and name.startswith('.'):
         return
     if fits_only and not is_dir:
@@ -210,15 +251,20 @@ except Exception as exc:
 
                 # Try python3 first
                 cmd = f"python3 -c {shlex.quote(py_script)} {shlex.quote(self.path)}"
-                stdin, stdout, stderr = self.connection.exec_command(cmd)
+                stdin, stdout, stderr = self.connection.exec_command(cmd, timeout=SERVER_TIMEOUT)
+                self._channel = stdout.channel
 
                 # Check for cancellation before reading
                 if self._cancelled:
+                    _close_later(self._channel)
                     return
 
                 out_data = stdout.read().decode("utf-8").strip()
                 stderr.read()
                 exit_status = stdout.channel.recv_exit_status()
+
+                if self._cancelled:
+                    return
 
                 if exit_status == 0 and out_data.startswith("OK:"):
                     try:
@@ -250,6 +296,12 @@ except Exception as exc:
                     print("[SSH-List] Fast path failed, falling back to SFTP")
             except Exception as e:
                 print(f"[SSH-List] Fast path exception: {e}, falling back to SFTP")
+                self.partial = isinstance(e, socket.timeout)
+
+            if self._cancelled:
+                return
+            if self._channel:
+                _close_later(self._channel)  # (timed out: its command may run on)
 
             # FALLBACK: Use SFTP loop (slow for large dirs)
             print(f"[SSH-List] SFTP fallback: listing {self.path}")
@@ -258,6 +310,9 @@ except Exception as exc:
                 self._sftp = self.connection.open_sftp()
             else:
                 raise SSHConnectionError("SSH client not connected")
+            if self._cancelled:
+                return
+            self._sftp.get_channel().settimeout(SERVER_TIMEOUT)
 
             # List directory using our own SFTP channel
             import stat
@@ -300,7 +355,10 @@ except Exception as exc:
         except Exception as e:
             print(f"[SSH-List] ERROR: {e}")
             if not self._cancelled:
-                self.error.emit(str(e))
+                if isinstance(e, socket.timeout):
+                    self.error.emit(f"the server did not answer for {SERVER_TIMEOUT} s")
+                else:
+                    self.error.emit(str(e) or type(e).__name__)
         finally:
             if self._sftp:
                 try:
@@ -332,10 +390,7 @@ class AutocompleteThread(QThread):
         """Request cancellation."""
         self._cancelled = True
         if self._sftp:
-            try:
-                self._sftp.close()
-            except Exception:
-                pass
+            _close_later(self._sftp)
 
     def run(self):
         try:
@@ -343,6 +398,7 @@ class AutocompleteThread(QThread):
                 return
 
             self._sftp = self.connection.open_sftp()
+            self._sftp.get_channel().settimeout(SERVER_TIMEOUT)
 
             import stat
 
@@ -400,9 +456,11 @@ def _table_type(folder):
     return value.strip() if key.strip() == "Type" else ""
 
 
-def _tree_size(folder):
+def _tree_size(folder, cancelled=lambda: False):
     total = 0
     for root, _dirs, files in os.walk(folder):
+        if cancelled():
+            break
         for name in files:
             try:
                 total += os.lstat(os.path.join(root, name)).st_size
@@ -429,9 +487,40 @@ def list_local(path, cancelled=lambda: False):
             if is_dir:
                 table = _table_type(item.path)
                 if table == "Image":
-                    size = _tree_size(item.path)
+                    size = _tree_size(item.path, cancelled)
             entries.append(RemoteFileInfo(item.name, item.path, is_dir, size, info.st_mtime, table))
     return entries
+
+
+def _local_completions(parent, partial):
+    """The local folders in ``parent`` whose names start with ``partial``."""
+    names = sorted(
+        (e.path for e in os.scandir(parent)
+         if e.is_dir() and e.name.lower().startswith(partial.lower())
+         and (partial.startswith(".") or not e.name.startswith("."))),
+        key=str.lower,
+    )
+    return names[:200]
+
+
+class CallThread(QThread):
+    """``fn(*args)`` in a thread: work on a disk, which can be slow."""
+
+    done = pyqtSignal(object)  # what it returned
+    failed = pyqtSignal(str)
+
+    def __init__(self, fn, *args):
+        super().__init__()
+        self.fn = fn
+        self.args = args
+
+    def run(self):
+        try:
+            result = self.fn(*self.args)
+        except Exception as e:
+            self.failed.emit(str(e) or type(e).__name__)
+            return
+        self.done.emit(result)
 
 
 class LocalListThread(QThread):
@@ -483,6 +572,7 @@ class HeaderThread(QThread):
             else:
                 sftp = self.connection.open_sftp()
                 try:
+                    sftp.get_channel().settimeout(SERVER_TIMEOUT)
                     with sftp.open(self.path, "rb") as raw:
                         text = read_header(raw, gzipped=gzipped)
                 finally:
@@ -501,6 +591,7 @@ class ReconnectThread(QThread):
     def __init__(self, connection):
         super().__init__()
         self.connection = connection
+        self._aborted = False
 
     def run(self):
         try:
@@ -508,7 +599,21 @@ class ReconnectThread(QThread):
         except Exception as e:
             self.connection.last_error = str(e)
             ok = False
+        if self._aborted:
+            self.connection.last_error = "Cancelled"
         self.done.emit(bool(ok))
+
+    def abort(self):
+        """Give up: the connection is closed as soon as there is one, which
+        ends a wait for the server. (Reaching the server cannot be
+        interrupted; it takes at most the timeout.)"""
+        self._aborted = True
+        threading.Thread(target=self._close, name="ssh-reconnect-cancel", daemon=True).start()
+
+    def _close(self):
+        while not self.isFinished():
+            self.connection.abort()
+            time.sleep(0.05)
 
 
 class HomeThread(QThread):
@@ -599,6 +704,7 @@ class RemoteFileBrowser(QDialog):
         self._back = {"remote": [], "local": []}
         self._select_after = None  # a path to select once its folder is listed
         self._list_token = 0
+        self._list_partial = False  # the listing shown lacks CASA types and sizes
         self._list_thread = None
         self._list_failed = False
         self._fallback_home = False
@@ -608,8 +714,16 @@ class RemoteFileBrowser(QDialog):
         self._reading = None  # the key of the header being read
         self._header_errors = {}
         self._reconnect_thread = None
+        self._reconnect_since = 0.0
         self._home_thread = None
-        self._autocomplete_thread: Optional[AutocompleteThread] = None
+        self._home_wanted = None  # (remember,) until the home folder is found
+        self._autocomplete_thread: Optional[QThread] = None
+        self._clear_thread = None
+        self._cache_size = (0, 0)  # (bytes, files), as last measured
+        self._waiting = None  # (text, since) of what the list waits for
+        self._download_text = ""
+        self._download_phase = None  # what a folder's download is doing first
+        self._download_seen = 0.0  # when it last received data
         self._mine = []  # the threads started here
         self._connected_seen = connection.is_connected()
 
@@ -631,6 +745,9 @@ class RemoteFileBrowser(QDialog):
         self._status_timer = QTimer(self)  # notices a connection lost or back
         self._status_timer.timeout.connect(self._poll_connection)
         self._status_timer.start(3000)
+        self._wait_timer = QTimer(self)  # while something waits: how long
+        self._wait_timer.setInterval(1000)
+        self._wait_timer.timeout.connect(self._tick)
 
         self._update_connection()
         self._update_cache()
@@ -783,8 +900,8 @@ class RemoteFileBrowser(QDialog):
         self.show_hidden.toggled.connect(self._on_filter_switches)
         row.addWidget(self.show_hidden)
         row.addStretch()
-        self.count_label = QLabel()
-        self.count_label.setObjectName("Meta")
+        self.count_label = ActivityLabel()
+        self.count_label.label.setObjectName("Meta")
         row.addWidget(self.count_label)
         layout.addWidget(strip)
         self.list_column = column
@@ -914,7 +1031,6 @@ class RemoteFileBrowser(QDialog):
         elif self.connection.last_home:
             self._navigate(self.connection.last_home, remember=False)
         elif self.connection.is_connected():
-            self.view.set_empty_text("Loading…")
             self._fetch_home(remember=False)
         else:
             self._navigate("/", remember=False)
@@ -923,6 +1039,7 @@ class RemoteFileBrowser(QDialog):
         """Show the folder ``path`` (of the server or of this computer, as
         shown), with ``select`` selected once it is listed; ``fallback``:
         the home folder instead if it cannot be listed."""
+        self._home_wanted = None
         path = self._normalise(path)
         self._fallback_home = fallback
         previous = self._folder()
@@ -996,19 +1113,23 @@ class RemoteFileBrowser(QDialog):
     def _fetch_home(self, remember=True):
         """Find the server's home folder and go there (``remember``: with
         the folder shown kept for Back)."""
+        self._cancel_listing()
+        self._home_wanted = (remember,)
+        self._show_waiting("Finding your home folder…")
         if self._home_thread is not None:
             return
         thread = HomeThread(self.connection)
-        thread.result.connect(lambda home: self._on_home(home, remember))
+        thread.result.connect(self._on_home)
         self._home_thread = thread
         self._start(thread)
 
-    def _on_home(self, home, remember):
+    def _on_home(self, home):
         if _deleted(self):
             return
         self._home_thread = None
-        if self.source == "remote":
-            self._navigate(home, remember=remember)
+        wanted = self._home_wanted  # (None if another folder was asked for meanwhile)
+        if wanted is not None and self.source == "remote":
+            self._navigate(home, remember=wanted[0])
 
     def _set_source(self, source):
         """Browse the server's files ("remote") or this computer's ("local")."""
@@ -1063,13 +1184,48 @@ class RemoteFileBrowser(QDialog):
         thread = self._list_thread
         self._list_thread = None
         self._list_token += 1
+        self._end_waiting()
         if thread is not None and thread.isRunning():
             _silence(thread)
             thread.cancel()
 
+    def _show_waiting(self, text):
+        """``text`` with a spinner until the list has its answer: over the
+        empty list, or beside the count if the last listing stays shown."""
+        self._waiting = (text, time.monotonic())
+        self._update_waiting()
+        self._wait_timer.start()
+
+    def _update_waiting(self):
+        text = waited(*self._waiting)
+        if self.model.rowCount():
+            self.view.hide_busy()
+            self.count_label.start(text)
+        else:
+            self.count_label.stop()
+            self.view.show_busy(text)
+
+    def _end_waiting(self):
+        self._waiting = None
+        self.view.hide_busy()
+        self.count_label.stop()
+
+    def _tick(self):
+        """Each second while something waits: for how long it has."""
+        if self._waiting is not None:
+            self._update_waiting()
+        if self._reconnect_thread is not None:
+            self._update_connection()
+        if self._download_thread is not None:
+            self._update_download_label()
+        if self._waiting is None and self._reconnect_thread is None and self._download_thread is None:
+            self._wait_timer.stop()
+
     def _refresh(self, force: bool = False):
         """List the folder shown (a server's from the listing cache, unless
         ``force``d or older than a minute)."""
+        if self._home_wanted is not None:
+            return  # (the home folder is about to replace this one)
         self._cancel_listing()
         token = self._list_token
         folder = self._folder()
@@ -1084,23 +1240,25 @@ class RemoteFileBrowser(QDialog):
             thread = ListDirectoryThread(self.connection, folder, show_hidden=True, fits_only=False)
         else:
             thread = LocalListThread(folder)
-        thread.finished.connect(lambda entries: self._listed(token, entries))
+        thread.finished.connect(
+            lambda entries: self._listed(token, entries, partial=getattr(thread, "partial", False))
+        )
         thread.error.connect(lambda message: self._listing_failed(token, message))
         self._list_thread = thread
         self._start(thread)
-        self.count_label.setText("Loading…")
-        if not self.model.rowCount():
-            self.view.set_empty_text("Loading…")
+        self._show_waiting("Listing this folder…")
 
-    def _listed(self, token, entries, fresh=True):
+    def _listed(self, token, entries, fresh=True, partial=False):
         if _deleted(self) or token != self._list_token:
             return
         self._list_thread = None
+        self._end_waiting()
         self._list_failed = False
+        self._list_partial = partial
         self._fallback_home = False
         folder = self._folder()
         paths = self._paths()
-        if fresh and self.source == "remote":
+        if fresh and not partial and self.source == "remote":
             RemoteFileBrowser._listing_cache[(self._server_key(), folder)] = (entries, time.time())
         # Inside a CASA image (its path typed): show it in its folder instead
         parent, name = paths.split(folder)
@@ -1129,6 +1287,7 @@ class RemoteFileBrowser(QDialog):
         if _deleted(self) or token != self._list_token:
             return
         self._list_thread = None
+        self._end_waiting()
         if self._fallback_home and not disconnected and self.connection.is_connected():
             # (the folder remembered is gone, or not this server's)
             self._fallback_home = False
@@ -1178,10 +1337,16 @@ class RemoteFileBrowser(QDialog):
         RemoteFileBrowser._order = (column, order)
 
     def _update_counts(self):
+        if self._waiting is not None:
+            self._update_waiting()  # (the filter may have emptied or filled the list)
+            return
         if self._list_failed:
             return
         counts = self.model.counts()
-        self.count_label.setText(count_text(counts, bool(self.model.text)))
+        text = count_text(counts, bool(self.model.text))
+        if self._list_partial:
+            text += " · server too slow for sizes and CASA types"
+        self.count_label.setText(text)
         if self.model.rowCount():
             self.view.set_empty_text("")
         elif self.model.text:
@@ -1267,7 +1432,7 @@ class RemoteFileBrowser(QDialog):
                 else ("Only CASA images open here" if self.casa_mode else "Only FITS files open here")
             )
         self.open_button.setText(text)
-        self.open_button.setEnabled(enabled)
+        self.open_button.setEnabled(enabled and self._clear_thread is None)
         self.open_button.setToolTip(entry.path if entry is not None else "")
         self.hint_label.setText(hint)
 
@@ -1437,7 +1602,7 @@ class RemoteFileBrowser(QDialog):
         connection = self.connection
         self._connected_seen = connection.is_connected()
         if self._reconnect_thread is not None:
-            self.places.show_disconnected("", reconnecting=True)
+            self.places.show_reconnecting(waited("Reconnecting…", self._reconnect_since))
         elif self._connected_seen:
             detail = f"{connection.username} · port {connection.port}" if connection.username else f"port {connection.port}"
             self.places.show_connected(connection.host, detail, self.can_switch_server)
@@ -1460,13 +1625,22 @@ class RemoteFileBrowser(QDialog):
             self._refresh(force=True)
 
     def _reconnect(self):
-        if self._reconnect_thread is not None:
+        """Connect again; while that goes on, stop it."""
+        thread = self._reconnect_thread
+        if thread is not None:
+            _silence(thread)
+            thread.abort()
+            self._reconnect_thread = None
+            self.connection.last_error = "Cancelled"
+            self._update_connection()
             return
         thread = ReconnectThread(self.connection)
         thread.done.connect(self._reconnected)
         self._reconnect_thread = thread
+        self._reconnect_since = time.monotonic()
         self._start(thread)
         self._update_connection()
+        self._wait_timer.start()
 
     def _reconnected(self, ok):
         if _deleted(self):
@@ -1500,12 +1674,23 @@ class RemoteFileBrowser(QDialog):
         self._load_initial_directory()
 
     def _update_cache(self):
-        size, count = self.cache.get_cache_size()
-        self.places.set_cache(size, count)
+        """Measure the cache, in a thread: each copy is looked at, which a
+        large cache or a slow disk makes slow."""
+        self.places.show_cache_work("Cache · measuring…")
+        thread = CallThread(self.cache.get_cache_size)
+        thread.done.connect(self._on_cache_measured)
+        thread.failed.connect(lambda _error: self._on_cache_measured((0, 0)))
+        self._start(thread)
+
+    def _on_cache_measured(self, measured):
+        if _deleted(self):
+            return
+        self._cache_size = measured
+        self.places.set_cache(*measured)
 
     def _clear_cache(self):
-        size, count = self.cache.get_cache_size()
-        if not count:
+        size, count = self._cache_size
+        if not count or self._clear_thread is not None:
             return
         from .browser_parts import size_text
 
@@ -1518,10 +1703,27 @@ class RemoteFileBrowser(QDialog):
         )
         if answer != QMessageBox.Yes:
             return
-        self.cache.clear_cache()
+        # Nothing is opened meanwhile: the copies are going
+        self.places.show_cache_work("Clearing the cache…")
+        thread = CallThread(self.cache.clear_cache)
+        thread.done.connect(lambda _result: self._on_cache_cleared())
+        thread.failed.connect(self._on_cache_cleared)
+        self._clear_thread = thread
+        self._hold(True)
+        self.open_button.setEnabled(False)
+        self._start(thread)
+
+    def _on_cache_cleared(self, error=None):
+        if _deleted(self):
+            return
+        self._clear_thread = None
+        self._hold(False)
         self.model.set_cached(set())
         self._update_cache()
         self._refresh_details()
+        self._update_open_button()
+        if error:
+            QMessageBox.warning(self, "Clear Cache", f"Couldn’t clear the cache:\n\n{error}")
 
     # ----------------------------------------------------------- opening ----
 
@@ -1553,10 +1755,15 @@ class RemoteFileBrowser(QDialog):
             return
         self._remember_recent(folder)
         if self.source == "local":
-            self.fileSelected.emit(entry.path, False)  # is_remote = False
-            self.accept()
+            self._deliver(entry.path, False)
             return
         self._download_and_open(entry)
+
+    def _deliver(self, local_path, is_remote):
+        """Close, then say what was chosen: opening it can take a while,
+        and its feedback is in the window behind this dialog."""
+        self.accept()
+        self.fileSelected.emit(local_path, is_remote)
 
     def _pick(self, path, folder):
         self._remember_recent(folder)
@@ -1570,8 +1777,7 @@ class RemoteFileBrowser(QDialog):
         self.current_path = posixpath.dirname(entry.path) or "/"
         cached_path = self.cache.get_cached_path(host, entry.path, entry.mtime, entry.size)
         if cached_path:
-            self.fileSelected.emit(str(cached_path), True)  # is_remote = True
-            self.accept()
+            self._deliver(str(cached_path), True)
             return
         if not self.connection.is_connected():
             self._update_connection()
@@ -1585,6 +1791,7 @@ class RemoteFileBrowser(QDialog):
         local_path = self.cache.get_cache_path(host, entry.path)
         thread = DownloadThread(self.connection, entry.path, str(local_path), is_directory=entry.is_dir)
         thread.progress.connect(self._on_download_progress)
+        thread.phase.connect(self._on_download_phase)
         thread.finished.connect(self._on_download_finished)
         thread.error.connect(self._on_download_error)
         # Kept from the garbage collector until it ends, whatever becomes of this
@@ -1596,26 +1803,55 @@ class RemoteFileBrowser(QDialog):
         self._set_downloading(True)
         thread.start()
 
+    def _hold(self, held):
+        """Hold the dialog still (not its footer)."""
+        for widget in (self.toolbar, self.places, self.list_column, self.details):
+            widget.setEnabled(not held)
+
     def _set_downloading(self, downloading):
         """The footer's progress and Stop while a file is fetched, with the
         rest of the dialog held still."""
         self.footer_pages.setCurrentIndex(1 if downloading else 0)
-        for widget in (self.toolbar, self.places, self.list_column, self.details):
-            widget.setEnabled(not downloading)
+        self._hold(downloading)
         if downloading:
             name = self._download_entry.name
-            self.download_label.setText(
+            self._download_text = (
                 f"Downloading {self.download_label.fontMetrics().elidedText(name, Qt.ElideMiddle, 360)}"
             )
+            self._download_phase = None
+            self._download_seen = time.monotonic()
+            self._update_download_label()
             self.download_amount.setText("")
             self.download_bar.setRange(0, 0)  # (moving until the size is known)
             self.stop_button.setFocus()
+            self._wait_timer.start()
         else:
             self.view.setFocus()
 
+    def _update_download_label(self):
+        """What the download is doing, and if nothing has come for a while
+        how long (a stalled transfer fails only after two minutes)."""
+        text = self._download_phase or self._download_text
+        quiet = time.monotonic() - self._download_seen
+        if quiet >= STALL_NOTE:
+            text += f" · no data for {quiet:.0f} s"
+        self.download_label.setText(text)
+
+    def _on_download_phase(self, text):
+        if _deleted(self):
+            return
+        self._download_phase = text
+        self._download_seen = time.monotonic()
+        self._update_download_label()
+
     def _on_download_progress(self, transferred: int, total: int):
         """Update download progress (works for both files and directories)."""
-        if _deleted(self) or total <= 0:
+        if _deleted(self):
+            return
+        self._download_seen = time.monotonic()
+        self._download_phase = None
+        self._update_download_label()
+        if total <= 0:
             return
         self.download_bar.setRange(0, 1000)
         self.download_bar.setValue(int(1000 * transferred / total))
@@ -1628,8 +1864,7 @@ class RemoteFileBrowser(QDialog):
         entry = self._download_entry
         self._download_thread = None
         self.cache.mark_cached(self.connection.host, entry.path, Path(local_path), entry.mtime, entry.size)
-        self.fileSelected.emit(local_path, True)
-        self.accept()
+        self._deliver(local_path, True)
 
     def _on_download_error(self, error_msg: str):
         if _deleted(self):
@@ -1695,16 +1930,7 @@ class RemoteFileBrowser(QDialog):
                 parent, partial = text, ""
             else:
                 parent, partial = os.path.split(text)
-            try:
-                names = sorted(
-                    (e.path for e in os.scandir(parent or os.sep)
-                     if e.is_dir() and e.name.lower().startswith(partial.lower())
-                     and (partial.startswith(".") or not e.name.startswith("."))),
-                    key=str.lower,
-                )
-            except OSError:
-                return
-            self._show_completions(names[:200])
+            self._run_completion(CallThread(_local_completions, parent or os.sep, partial))
             return
         if text.endswith("/"):
             parent, partial = text.rstrip("/") or "/", ""
@@ -1721,12 +1947,16 @@ class RemoteFileBrowser(QDialog):
             return
         if not self.connection.is_connected():
             return
+        self._run_completion(AutocompleteThread(self.connection, parent, partial))
+
+    def _run_completion(self, thread):
+        """Start ``thread``, instead of the one that may still be at it."""
         previous = self._autocomplete_thread
         if previous is not None and previous.isRunning():
             _silence(previous)
-            previous.cancel()
-        thread = AutocompleteThread(self.connection, parent, partial)
-        thread.finished.connect(self._show_completions)
+            if hasattr(previous, "cancel"):
+                previous.cancel()
+        (thread.done if isinstance(thread, CallThread) else thread.finished).connect(self._show_completions)
         self._autocomplete_thread = thread
         self._start(thread)
 
@@ -1742,7 +1972,7 @@ class RemoteFileBrowser(QDialog):
     def _cleanup_threads(self):
         """Stop what is running for this dialog: its results are not wanted
         (a file being fetched is stopped and its part deleted)."""
-        for timer in (self._auto_timer, self._autocomplete_timer, self._status_timer):
+        for timer in (self._auto_timer, self._autocomplete_timer, self._status_timer, self._wait_timer):
             timer.stop()
         if self._download_thread is not None:
             self._stop_download()
@@ -1755,6 +1985,7 @@ class RemoteFileBrowser(QDialog):
         self._mine = []
         self._reconnect_thread = None
         self._home_thread = None
+        self._home_wanted = None
 
     def accept(self):
         """Override accept to perform cleanup first."""

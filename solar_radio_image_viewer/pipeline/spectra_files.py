@@ -9,6 +9,9 @@ import gc
 import json
 import posixpath
 import threading
+import time
+from concurrent.futures import Future
+from types import SimpleNamespace
 import numpy as np
 from astropy.io import fits
 from PyQt5.QtWidgets import (
@@ -26,17 +29,19 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QAbstractItemView,
     QTabWidget,
-    QProgressDialog,
 )
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import QSettings, QSignalBlocker, Qt
+from PyQt5.QtCore import QSettings, QSignalBlocker, Qt, QTimer
 from PyQt5.QtGui import QFont, QColor
 from ..ui.styles import palette_for as get_palette
 
-from .spectra_common import _RemoteRead, _local_block_stats, _size_text
+from .spectra_common import _RemoteRead, _local_block_stats, _size_text, read_view
 logger = logging.getLogger(__name__)
 
 
+from ..ui.activity import begin_activity, track_thread
+from ..ui.background import Cancelled, run_in_thread, wait_for
+from ..ui.busy import busy
 from ..ui.recent_files import forget_spectrum, remember_spectrum
 from ..ui.widgets import button_bar
 from ..ui.geometry import fit_to_screen
@@ -176,7 +181,7 @@ class SpectraFilesMixin:
     ``_updateNavigationStats``, ``_update_mask_summary``,
     ``_update_undo_actions``, ``canvas``, ``current_theme``, ``imageMenu``,
     ``loadSlice``, ``logger``, ``minimap``, ``navModeCombo``, ``redo_stack``,
-    ``swapAct``, ``undo_stack``, ``wait_cursor``
+    ``swapAct``, ``undo_stack``
     """
 
     @staticmethod
@@ -199,21 +204,16 @@ class SpectraFilesMixin:
                 pass
         return data
 
-    def _find_spectrum(self):
-        """Index of the file's first 2-D image (None if it has none)."""
-        for i, hdu in enumerate(self.hdul):
-            if self._image_data(hdu, i) is not None:
-                return i
-        return None
-
-    def _header_of(self, index):
-        """HDU ``index``'s header, with the primary header's cards it lacks
-        (e.g. DATE-OBS, when the image is in an extension)."""
-        header = self.hdul[index].header
+    def _header_of(self, index, hdul=None):
+        """HDU ``index``'s header (of the open file, or of ``hdul``), with
+        the primary header's cards it lacks (e.g. DATE-OBS, when the image
+        is in an extension)."""
+        hdul = self.hdul if hdul is None else hdul
+        header = hdul[index].header
         if index == 0:
             return header
         header = header.copy()
-        for card in self.hdul[0].header.cards:
+        for card in hdul[0].header.cards:
             if card.keyword and card.keyword not in header and card.keyword not in (
                 "SIMPLE", "BITPIX", "NAXIS", "EXTEND", "COMMENT", "HISTORY",
             ):
@@ -225,15 +225,10 @@ class SpectraFilesMixin:
         of the same shape (View > Image), e.g. a noise image."""
         return self._image_data(self.hdul[self._image_index], self._image_index)
 
-    def _find_images(self):
-        """The file's images that can be shown in place of the spectrum
-        (the primary image and extensions of its shape), in View > Image."""
-        shape = self._image_data(self.hdul[self._spectrum_index], self._spectrum_index).shape
-        self._images = []
-        for i, hdu in enumerate(self.hdul):
-            data = self._image_data(hdu, i)
-            if data is not None and data.shape == shape:
-                self._images.append((i, hdu.name or f"HDU {i}"))
+    def _fill_image_menu(self, shape):
+        """View > Data Shown: the file's images that can be shown in place of
+        the spectrum (``_images``: the primary image and extensions of the
+        spectrum's ``shape``)."""
         self.imageMenu.clear()
         group = QtWidgets.QActionGroup(self.imageMenu)
         for i, name in self._images:
@@ -248,6 +243,11 @@ class SpectraFilesMixin:
         # Swapping time and frequency only applies to square images
         self.swapAct.setEnabled(shape[0] == shape[1])
 
+    def _check_shown_image(self):
+        """View > Data Shown ticks the image shown (not one that failed)."""
+        for act, (i, _) in zip(self.imageMenu.actions(), self._images):
+            act.setChecked(i == self._image_index)
+
     def _image_label(self, index, name):
         """How View > Data Shown names the file's image ``index``."""
         if index == self._spectrum_index:
@@ -260,32 +260,40 @@ class SpectraFilesMixin:
         """Show the file's image of HDU ``index`` instead (same page)."""
         if index == self._image_index or not self.hdul:
             return
-        self._image_index = index
-        self._stop_remote_reads()
-        self._data_cache.clear()
-        self._cached_bandpass_profile = None
         name = dict(self._images).get(index, "")
+        shown = self._image_label(index, name)
         try:
-            if self._remote:
-                self._server_work(
-                    f"Reading {self._image_label(index, name)} from the server...",
-                    lambda *_: self._show_image(),
-                )
-            else:
-                with self.wait_cursor():
-                    self._show_image()
+            view = self._read_view(f"Reading {shown}…", self._image_data(self.hdul[index], index))
+            self._image_index = index
+            self._stop_remote_reads()
+            self._data_cache.clear()
+            self._cached_bandpass_profile = None
+            with busy(f"Showing {shown}…", self):
+                self._show_view(view)
         except Exception as e:
-            if type(e).__name__ != "Cancelled":
+            self._check_shown_image()
+            if type(e).__name__ == "Cancelled":
+                self.statusBar().showMessage("Cancelled", 5000)
+            else:
                 QMessageBox.critical(self, "Error", f"Failed to show {name}:\n{e}")
             return
-        shown = self._image_label(index, name)
         self.statusBar().showMessage(f"Showing: {shown}", 5000)
 
-    def _show_image(self, choose_mode=False):
-        """Read the overview of the image shown (_image) and show it: the
+    def _read_view(self, label, image, time_dim=None):
+        """``read_view`` of ``image`` (all of it in Full Spectrum mode) off
+        the GUI thread; nothing on show changes."""
+        time_dim = self._time_dim if time_dim is None else time_dim
+        total, whole = len(self._full_time_axis), self._nav_mode == "Full"
+        if self._remote:
+            label = label.replace("…", " from the server…")
+        return self._server_work(label, lambda *_: read_view(image, time_dim, total, whole))
+
+    def _show_view(self, view, choose_mode=False):
+        """Show what ``read_view`` read of the image shown (_image): the
         current page, or all of it; on opening (``choose_mode``) Windowed
         or Full by the file's size, from the first page."""
-        self._load_overview()
+        skip, overview, whole = view
+        self._show_overview(skip, overview)
 
         # Initialize Navigation
         if choose_mode:
@@ -302,18 +310,8 @@ class SpectraFilesMixin:
         if self._nav_mode != "Full":
             self.loadSlice()  # Initial load (a page, or the time range)
         else:
-            # Load everything (copy to RAM)
-            raw_data = self._image()
-            if self._time_dim == 0:
-                data = np.array(raw_data[:, :], dtype=np.float32)
-            else:
-                data = np.array(raw_data[:, :].T, dtype=np.float32)
-
-            # Handle infinities (NaN stays NaN naturally)
-            data[np.isinf(data)] = np.nan
-
             # Use centralized display logic to honor persistent toggles (Bandpass, etc.)
-            self._display_data(data, self._full_time_axis, self._full_freq_axis)
+            self._display_data(whole, self._full_time_axis, self._full_freq_axis)
 
     def _every_sample_wanted(self):
         """Whether the overview is also built from every sample (a burst
@@ -322,35 +320,16 @@ class SpectraFilesMixin:
         if View > Overview from Every Sample on Server Files is on."""
         return self._remote is None or self.overviewAct.isChecked()
 
-    def _load_overview(self):
-        """Read the whole file at low resolution (every ``_lowres_skip``-th
-        time sample), for the strip, the preview of a page being read and
-        the file's bandpass; then, in the background, from every sample."""
-        data_ref = self._image()
-        total_samples = len(self._full_time_axis)
-        self._lowres_skip = max(1, total_samples // 2000)
-        if self._remote:
-            # Few enough separate reads from the server
-            self._lowres_skip = max(self._lowres_skip, data_ref.min_step(self._time_dim))
-        skip = self._lowres_skip
-
-        # Slicing the memmapped data carefully
-        if self._time_dim == 0:
-            # (time, freq)
-            mini_data = data_ref[::skip, :]
-            self._full_lowres_data = np.array(mini_data, dtype=np.float32)
-            mini_data_for_display = self._full_lowres_data.T
-        else:
-            # (freq, time)
-            mini_data = data_ref[:, ::skip]
-            mini_data_for_display = np.array(mini_data, dtype=np.float32)
-            self._full_lowres_data = mini_data_for_display.T
-
-        # Handle infinities (NaN stays NaN naturally)
-        self._full_lowres_data[np.isinf(self._full_lowres_data)] = np.nan
+    def _show_overview(self, skip, overview):
+        """The whole file at low resolution (every ``skip``-th time sample,
+        as read by ``read_view``), for the strip, the preview of a page
+        being read and the file's bandpass; then, in the background, from
+        every sample."""
+        self._lowres_skip = skip
+        self._full_lowres_data = overview
 
         # Minimap makes its own copy internally, so pass view directly
-        self.minimap.set_full_data(mini_data_for_display)
+        self.minimap.set_full_data(overview.T)
         # Then, in the background, from every sample (a burst shorter than
         # a block shows in the strip, as its maximum)
         self._overview_exact = False
@@ -367,27 +346,30 @@ class SpectraFilesMixin:
         if on:
             self._start_overview_stats()
             return
-        if self._overview_job is not None:
-            self._overview_job.stopped = True
-            self._overview_job = None
+        self._stop_overview()
         if getattr(self, "_overview_exact", False):
+            image, time_dim, total = self._image(), self._time_dim, len(self._full_time_axis)
             try:
-                self._server_work(
-                    "Reading the overview from the server...", lambda *_: self._load_overview()
+                skip, overview, _ = self._server_work(
+                    "Reading the overview from the server…",
+                    lambda *_: read_view(image, time_dim, total, False),
                 )
             except Exception as e:
-                if type(e).__name__ != "Cancelled":
+                if type(e).__name__ == "Cancelled":
+                    self.statusBar().showMessage("Cancelled", 5000)
+                else:
                     QMessageBox.critical(self, "Error", f"Failed to read the overview:\n{e}")
                 return
+            self._show_overview(skip, overview)
             self._updateNavigationStats()
             if self._is_bandpass_enabled and self._bandpass_scope == "file":
                 self._redisplay()
 
-    def _guess_time_dim(self, data, header):
+    @staticmethod
+    def _guess_time_dim(data, header, nt):
         """Which axis of the image (numpy order) is time: the one as long
-        as the time axis; for a square image the header's (CTYPE), else the
-        rows (View > Swap Time and Frequency corrects it)."""
-        nt = len(self._full_time_axis)
+        as the time axis (``nt`` samples); for a square image the header's
+        (CTYPE), else the rows (View > Swap Time and Frequency corrects it)."""
         if data.shape[0] != data.shape[1]:
             return 0 if data.shape[0] == nt else 1
         # numpy axis 0 is FITS axis 2, axis 1 is FITS axis 1
@@ -410,12 +392,21 @@ class SpectraFilesMixin:
                 "The image's axes have different lengths, so which is time is certain.",
             )
             return
-        self._time_dim = 1 - self._time_dim
-        self._stop_remote_reads()
-        self._data_cache.clear()
-        self._cached_bandpass_profile = None
-        with self.wait_cursor():
-            self._show_image()
+        time_dim = 1 - self._time_dim
+        try:
+            view = self._read_view("Reading the image…", data, time_dim)
+            self._time_dim = time_dim
+            self._stop_remote_reads()
+            self._data_cache.clear()
+            self._cached_bandpass_profile = None
+            with busy("Showing the image…", self):
+                self._show_view(view)
+        except Exception as e:
+            if type(e).__name__ == "Cancelled":
+                self.statusBar().showMessage("Cancelled", 5000)
+            else:
+                QMessageBox.critical(self, "Error", f"Failed to swap the axes:\n{e}")
+            return
         self.statusBar().showMessage(
             f"Time is now the image's {'rows' if self._time_dim == 0 else 'columns'}.", 5000
         )
@@ -425,9 +416,7 @@ class SpectraFilesMixin:
         block of _lowres_skip time samples gives its mean (for the quick
         preview and file medians) and maximum (for the overview strip).
         Local files are read here; files on a server, on the server."""
-        if self._overview_job is not None:
-            self._overview_job.stopped = True
-            self._overview_job = None
+        self._stop_overview()
         skip = self._lowres_skip
         if skip <= 1:
             return  # the overview has every sample already
@@ -439,6 +428,7 @@ class SpectraFilesMixin:
             return _local_block_stats(image, time_dim, skip)
 
         job = _RemoteRead(work, self)
+        job.task = track_thread(job, "Building the overview from every sample…", self)
         self._overview_job = job
         hdul, index = self.hdul, self._image_index
 
@@ -447,9 +437,7 @@ class SpectraFilesMixin:
 
         def progress(done, total):
             if current() and total:
-                self.statusBar().showMessage(
-                    f"Building the overview from every sample... {100 * done // total}%"
-                )
+                job.task.update(done=100 * done // total, total=100)
 
         def done(result):
             if not current():
@@ -604,127 +592,179 @@ class SpectraFilesMixin:
                 )
                 return
 
-        with self.wait_cursor():
-            new_hdul = None
-            if remote is None:
-                # (opened first: a file that can't be read leaves the one
-                # shown, its masks and its undo history as they are)
-                try:
-                    new_hdul = open_local_spectrum(fileName)
-                except Exception as e:
-                    self.logger.error(f"Failed to open FITS file: {e}")
-                    forget_spectrum(fileName)
-                    QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{e}")
-                    return
-            self.current_filename = fileName
+        # (a read is waited for in a local event loop: _on_link_message waits)
+        self._working += 1
+        try:
+            self._open(fileName, remote)
+        finally:
+            self._working -= 1
 
+    def _open(self, fileName, remote):
+        """Read the file off the GUI thread (a file that can't be read, or
+        Cancel, leaves the one shown, its masks and its undo history as they
+        are), then show it."""
+        shown = os.path.basename(fileName)
+        opened = []
+
+        def read(progress, cancelled):
+            hdul = remote.hdul if remote else open_local_spectrum(fileName)
+            opened.append(hdul)
             try:
-                # Close previous file handle if any
-                if hasattr(self, "hdul") and self.hdul:
-                    self.hdul.close()
-                self._data_cache.clear()
-                self._stop_remote_reads()
-                self._remote = remote
-                self._goto_time = None
-                self._range = None
-                self._select_region(None)
-                self.canvas.mark_time(None)
-                self._cached_bandpass_profile = None  # Invalidate bandpass cache
-                self._global_masked_freq_indices.clear()  # Clear stale masks
-                self._masks = []
-                self._keeps = []
-                self.undo_stack.clear()
-                self.redo_stack.clear()
-                self._update_mask_summary()
-                gc.collect()  # Force memory release
+                result = self._read_file(hdul, progress)
+                if cancelled():
+                    raise Cancelled()
+            except BaseException:
+                hdul.close()
+                raise
+            return hdul, result
 
-                self.logger.info(f"Opening FITS file: {fileName}")
-                self.hdul = remote.hdul if remote else new_hdul
-                # The spectrum: the first 2-D image, primary or extension
-                self._spectrum_index = self._find_spectrum()
-                if self._spectrum_index is None:
-                    raise ValueError("the file has no 2-D image (dynamic spectrum)")
-                self._image_index = self._spectrum_index
-                header = self._header_of(self._spectrum_index)
-                data_ref = self._image()
+        label = f"Reading {shown} from the server…" if remote else f"Opening {shown}…"
+        try:
+            hdul, file = self._server_work(label, read)
+        except Exception as e:
+            if type(e).__name__ == "Cancelled":
+                self.statusBar().showMessage("Opening cancelled", 5000)
+                return
+            self.logger.error(f"Failed to open FITS file: {e}")
+            if not opened and remote is None:
+                forget_spectrum(fileName)
+            QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{e}")
+            return
 
-                # Capture metadata from all HDUs
-                self._all_headers = []
-                for i, hdu in enumerate(self.hdul):
-                    name = hdu.name if hdu.name else f"HDU {i}"
-                    self._all_headers.append((name, hdu.header))
+        try:
+            with busy(f"Showing {shown}…", self):
+                self._show_file(fileName, remote, hdul, file)
+        except Exception as e:
+            self.logger.exception(f"Failed to open or plot FITS file: {e}")
+            # (part shown: nothing of it, or of the file before, is kept)
+            self._close_file()
+            QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{e}")
 
-                self._metadata = str(header)
+    def _read_file(self, hdul, progress):
+        """All that showing the file ``hdul`` takes from it. Runs off the GUI
+        thread, so it sets nothing on the window and touches no widget;
+        ``progress(stage=...)`` says what it is reading. (Memory-mapped or
+        not, an image's data is read or mapped once, here.)"""
+        progress(stage="Finding the spectrum…")
+        # The spectrum: the first 2-D image, primary or extension
+        spectrum = next(
+            (i for i, hdu in enumerate(hdul) if self._image_data(hdu, i) is not None), None
+        )
+        if spectrum is None:
+            raise ValueError("the file has no 2-D image (dynamic spectrum)")
+        data_ref = self._image_data(hdul[spectrum], spectrum)
+        images = []
+        for i, hdu in enumerate(hdul):
+            data = self._image_data(hdu, i)
+            if data is not None and data.shape == data_ref.shape:
+                images.append((i, hdu.name or f"HDU {i}"))
+        header = self._header_of(spectrum, hdul)
 
-                # Detect if large (e.g., > 10^7 pixels)
-                num_pixels = data_ref.size
-                self._is_large_file = num_pixels > 1e7 or data_ref.shape[0] > 10000
+        # Detect if large (e.g., > 10^7 pixels)
+        is_large = data_ref.size > 1e7 or data_ref.shape[0] > 10000
 
-                time_axis = None
-                freq_axis = None
+        progress(stage="Reading the time and frequency axes…")
+        time_axis, freq_axis = self._read_axes(hdul, header, data_ref)
+        nt = len(time_axis)
+        time_dim = self._guess_time_dim(data_ref, header, nt)
 
-                for hdu in self.hdul:
-                    if hdu.name.upper() == "TIME_AXIS":
-                        time_axis = self._table_time_axis(hdu)
-                    elif hdu.name.upper() == "FREQ_AXIS":
-                        freq_axis = hdu.data["FREQ_MHz"]
-                    elif isinstance(hdu, fits.BinTableHDU):
-                        cols = [c.name.upper() for c in hdu.columns]
-                        if "TIME" in cols and time_axis is None:
-                            t_raw = np.array(hdu.data["TIME"].tolist()).flatten()
-                            if len(t_raw) > 0:
-                                time_axis = self._interpret_time_column(
-                                    t_raw, header
-                                )
-                        if "FREQ" in cols and freq_axis is None:
-                            f_raw = np.array(hdu.data["FREQ"].tolist()).flatten()
-                            if len(f_raw) > 0:
-                                freq_axis = f_raw
+        progress(stage="Reading the spectrum…" if not is_large else "Reading the overview…")
+        return SimpleNamespace(
+            spectrum=spectrum,
+            images=images,
+            headers=[(hdu.name if hdu.name else f"HDU {i}", hdu.header) for i, hdu in enumerate(hdul)],
+            metadata=str(header),
+            is_large=is_large,
+            time_axis=time_axis,
+            freq_axis=freq_axis,
+            time_dim=time_dim,
+            shape=data_ref.shape,
+            view=read_view(data_ref, time_dim, nt, not is_large),
+        )
 
-                if time_axis is None or freq_axis is None:
-                    try:
-                        naxis1 = header.get(
-                            "NAXIS1",
-                            data_ref.shape[1] if len(data_ref.shape) > 1 else 0,
-                        )
-                        naxis2 = header.get("NAXIS2", data_ref.shape[0])
-                        header_time, header_freq = axes_from_header(
-                            header, int(naxis1), int(naxis2)
-                        )
-                        if time_axis is None:
-                            time_axis = header_time
-                        if freq_axis is None:
-                            freq_axis = header_freq
-                    except Exception as wcs_err:
-                        self.logger.warning(f"Axis extraction error: {wcs_err}")
+    def _read_axes(self, hdul, header, data_ref):
+        """(time axis, frequency axis) of the file: from its tables, else
+        from its header (either None if neither has it)."""
+        time_axis = None
+        freq_axis = None
 
-                self._full_time_axis = time_axis
-                self._full_freq_axis = freq_axis
-                self._time_dim = self._guess_time_dim(data_ref, header)
+        for hdu in hdul:
+            if hdu.name.upper() == "TIME_AXIS":
+                time_axis = self._table_time_axis(hdu)
+            elif hdu.name.upper() == "FREQ_AXIS":
+                freq_axis = hdu.data["FREQ_MHz"]
+            elif isinstance(hdu, fits.BinTableHDU):
+                cols = [c.name.upper() for c in hdu.columns]
+                if "TIME" in cols and time_axis is None:
+                    t_raw = np.array(hdu.data["TIME"].tolist()).flatten()
+                    if len(t_raw) > 0:
+                        time_axis = self._interpret_time_column(t_raw, header)
+                if "FREQ" in cols and freq_axis is None:
+                    f_raw = np.array(hdu.data["FREQ"].tolist()).flatten()
+                    if len(f_raw) > 0:
+                        freq_axis = f_raw
 
-                self._find_images()
-                self._restore_masks()
-                self._show_image(choose_mode=True)
-
-                self.undo_stack.clear()
-                self.redo_stack.clear()
-                self._update_undo_actions()
-                gc.collect()  # Force memory release
-                self.statusBar().showMessage(
-                    f"Loaded {os.path.basename(fileName)}", 5000
+        if time_axis is None or freq_axis is None:
+            try:
+                naxis1 = header.get(
+                    "NAXIS1",
+                    data_ref.shape[1] if len(data_ref.shape) > 1 else 0,
                 )
-                if remote is None:
-                    remember_spectrum(fileName)
+                naxis2 = header.get("NAXIS2", data_ref.shape[0])
+                header_time, header_freq = axes_from_header(header, int(naxis1), int(naxis2))
+                if time_axis is None:
+                    time_axis = header_time
+                if freq_axis is None:
+                    freq_axis = header_freq
+            except Exception as wcs_err:
+                self.logger.warning(f"Axis extraction error: {wcs_err}")
+        return time_axis, freq_axis
 
-            except Exception as e:
-                if remote and type(e).__name__ == "Cancelled":
-                    self._close_file()
-                    self.statusBar().showMessage("Opening cancelled", 5000)
-                    return
-                self.logger.exception(f"Failed to open or plot FITS file: {e}")
-                # (part read: nothing of it, or of the file before, is kept)
-                self._close_file()
-                QMessageBox.critical(self, "Error", f"Failed to open FITS file:\n{e}")
+    def _show_file(self, fileName, remote, hdul, file):
+        """The file read by ``_read_file`` replaces the one shown."""
+        # Close previous file handle if any
+        self._stop_remote_reads()
+        self._stop_overview()
+        if self.hdul:
+            self.hdul.close()
+        self.current_filename = fileName
+        self._data_cache.clear()
+        self._remote = remote
+        self._goto_time = None
+        self._range = None
+        self._select_region(None)
+        self.canvas.mark_time(None)
+        self._cached_bandpass_profile = None  # Invalidate bandpass cache
+        self._global_masked_freq_indices.clear()  # Clear stale masks
+        self._masks = []
+        self._keeps = []
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self._update_mask_summary()
+        gc.collect()  # Force memory release
+
+        self.logger.info(f"Opening FITS file: {fileName}")
+        self.hdul = hdul
+        self._spectrum_index = self._image_index = file.spectrum
+        self._images = file.images
+        self._all_headers = file.headers
+        self._metadata = file.metadata
+        self._is_large_file = file.is_large
+        self._full_time_axis = file.time_axis
+        self._full_freq_axis = file.freq_axis
+        self._time_dim = file.time_dim
+
+        self._fill_image_menu(file.shape)
+        self._restore_masks()
+        self._show_view(file.view, choose_mode=True)
+
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self._update_undo_actions()
+        gc.collect()  # Force memory release
+        self.statusBar().showMessage(f"Loaded {os.path.basename(fileName)}", 5000)
+        if remote is None:
+            remember_spectrum(fileName)
 
     # -------------------------- Files on a server -------------------------------
     def openRemote(self):
@@ -784,12 +824,21 @@ class SpectraFilesMixin:
         name = f"{files.host}:{path}"
         try:
             remote = self._server_work(
-                f"Reading {posixpath.basename(path)} from the server...",
+                f"Reading {posixpath.basename(path)} from the server…",
                 lambda *_: RemoteFits(files, path),
             )
         except NotSliceable as e:
             # Only a whole copy will do
-            size = files._stat(path)[1]
+            try:
+                size = self._server_work(
+                    f"Checking {posixpath.basename(path)}…", lambda *_: files._stat(path)[1]
+                )
+            except Exception as error:
+                if type(error).__name__ == "Cancelled":
+                    self.statusBar().showMessage("Opening cancelled", 5000)
+                else:
+                    QMessageBox.critical(self, "Error", f"Failed to open {name}:\n{error}")
+                return
             reply = QMessageBox.question(
                 self,
                 "Download File",
@@ -802,90 +851,94 @@ class SpectraFilesMixin:
                 return
             try:
                 local = self._server_work(
-                    f"Downloading {posixpath.basename(path)}...",
+                    f"Downloading {posixpath.basename(path)}…",
                     lambda progress, cancelled: files.fetch(
                         [path],
                         progress=lambda done, total, *_: progress(done, total),
                         cancelled=cancelled,
                     )[path],
-                    threaded=True,
                 )
             except Exception as e:
-                if type(e).__name__ != "Cancelled":
+                if type(e).__name__ == "Cancelled":
+                    self.statusBar().showMessage("Opening cancelled", 5000)
+                else:
                     QMessageBox.critical(self, "Error", f"Failed to download:\n{e}")
                 return
             self.openFile(local)
             return
         except Exception as e:
-            if type(e).__name__ != "Cancelled":
+            if type(e).__name__ == "Cancelled":
+                self.statusBar().showMessage("Opening cancelled", 5000)
+            else:
                 self.logger.exception(f"Failed to open {name}")
                 QMessageBox.critical(self, "Error", f"Failed to open {name}:\n{e}")
             return
-        self._server_work(
-            f"Reading {posixpath.basename(path)} from the server...",
-            lambda *_: self.openFile(name, remote=remote),
-        )
+        self.openFile(name, remote=remote)
 
-    def _server_work(self, label, work, threaded=False, title="Server"):
-        """``work(progress, cancelled)``, reading from the server, with a
-        progress dialog; returns what it returns (raises Cancelled if the
-        dialog is cancelled). Unless ``threaded``, it runs here, and the
-        dialog updates as reads report progress."""
+    def _server_work(self, label, work, parent=None):
+        """``work(progress, cancelled)`` on a thread, the window drawing and
+        its input held back meanwhile, as ``ui.background``; returns what it
+        returns (raises Cancelled if cancelled, once it has stopped: then no
+        file it writes is left half done). No Qt or changing of the window's
+        state in ``work``.
+
+        ``progress(done, total)`` (bytes), and reads made in ``work``, show
+        how far it got on the pill, ``progress(stage=...)`` what it is at.
+        The pill and any dialog are ``parent``'s (another window of this one)
+        if given."""
         from ..remote.remote_fits import reporting
 
-        state = {"done": 0, "total": 0, "cancel": False}
-        dialog = QProgressDialog(label, "Cancel", 0, 0, self)
-        dialog.setWindowTitle(title)
-        dialog.setWindowModality(Qt.WindowModal)
-        dialog.setMinimumDuration(500)
-        dialog.setAutoReset(False)
-        dialog.setAutoClose(False)
-        dialog.canceled.connect(lambda: state.update(cancel=True))
+        stop = threading.Event()
+        ended = Future()
+        parent = parent or self
+        doing = [label]
+        said = [label]
+        tasks = []
 
-        def update():
-            if state["total"]:
-                dialog.setMaximum(1000)
-                dialog.setValue(int(1000 * state["done"] / state["total"]))
-                dialog.setLabelText(
-                    f"{label}\n{_size_text(state['done'])} of {_size_text(state['total'])}"
-                )
-            else:
-                dialog.setValue(0)
+        def announce():
+            # (the pill stays up beside the dialog of a long wait, with the figures)
+            tasks.append(begin_activity(label, parent, blocking=False))
+            tasks[0].update(label=said[0])
 
-        def progress(done, total):
-            state.update(done=done, total=total)
-            if threading.current_thread() is threading.main_thread():
-                update()
-                QApplication.processEvents()
+        def progress(done=None, total=None, stage=None):
+            if stop.is_set():
+                return  # (it says "Cancelling…" until it has stopped)
+            doing[0] = stage or doing[0]
+            sizes = f"  {_size_text(done)} of {_size_text(total)}" if total else ""
+            said[0] = doing[0] + sizes
+            for task in tasks:
+                task.update(label=said[0])
 
-        def cancelled():
-            return state["cancel"]
+        def run():
+            try:
+                with reporting(progress, stop.is_set):
+                    return work(progress, stop.is_set)
+            finally:
+                ended.set_result(None)
 
+        # The pill says the newest activity, and the wait's own can only say
+        # ``label``: this one begins once the wait has
+        begin = QTimer()
+        begin.setSingleShot(True)
+        begin.timeout.connect(announce)
+        begin.start(0)
+        self._working += 1
         try:
-            if not threaded:
-                with reporting(progress, cancelled):
-                    return work(progress, cancelled)
-            result = {}
-
-            def run():
-                try:
-                    with reporting(progress, cancelled):
-                        result["value"] = work(progress, cancelled)
-                except BaseException as e:
-                    result["error"] = e
-
-            thread = threading.Thread(target=run, daemon=True)
-            thread.start()
-            while thread.is_alive():
-                update()
-                QApplication.processEvents()
-                thread.join(0.05)
-            if "error" in result:
-                raise result["error"]
-            return result["value"]
+            return run_in_thread(parent, label, run)
+        except Cancelled:
+            stop.set()
+            for task in tasks:
+                task.update(label="Cancelling…")
+            try:
+                wait_for(parent, "Cancelling…", ended)
+            except Cancelled:
+                pass  # (a stalled read: it ends with its timeout, unwatched)
+            raise
         finally:
-            dialog.close()
-            dialog.deleteLater()
+            begin.stop()
+            self._working -= 1
+            for task in tasks:
+                task.finish()
 
     def _read_page(self, page_idx, show=True):
         """Read page ``page_idx`` (from the file or the server) in the
@@ -895,11 +948,14 @@ class SpectraFilesMixin:
             return
         hdul = self.hdul
         read = _RemoteRead(lambda: self._get_slice_data(page_idx, downsample=1), self)
+        read.waited = None  # the Activity, while the view waits for this read
         self._remote_reads[page_idx] = read
 
         def finished():
             if self._remote_reads.get(page_idx) is read:
                 del self._remote_reads[page_idx]
+            if self._page_read is read:
+                self._end_page_wait()
             read.deleteLater()
 
         def done(result):
@@ -926,11 +982,8 @@ class SpectraFilesMixin:
                 self.statusBar().showMessage(f"Reading{where} failed: {message}")
 
         def progress(done_bytes, total):
-            if hdul is self.hdul and page_idx == self._current_page and total:
-                self.statusBar().showMessage(
-                    f"Reading page {page_idx + 1}{' from the server' if self._remote else ''}... "
-                    f"{_size_text(done_bytes)} of {_size_text(total)}"
-                )
+            if read is self._page_read and total:
+                read.task.update(label=f"{read.waited}  {_size_text(done_bytes)} of {_size_text(total)}")
 
         read.done.connect(done)
         read.failed.connect(failed)
@@ -938,29 +991,56 @@ class SpectraFilesMixin:
         read.finished.connect(finished)
         read.start()
 
+    def _wait_for_page(self, page_idx):
+        """The pill says the view is waiting for page ``page_idx``, being
+        read (read-ahead, which nobody waits for, says nothing)."""
+        self._end_page_wait()
+        read = self._remote_reads.get(page_idx)
+        if read is None:
+            return
+        where = " from the server" if self._remote else ""
+        part = "the time range" if self._nav_mode == "Range" else f"page {page_idx + 1}"
+        read.waited = f"Reading {part}{where}…"
+        read.task = begin_activity(read.waited, self, blocking=False)
+        self._page_read = read
+
+    def _end_page_wait(self):
+        read, self._page_read = self._page_read, None
+        if read is not None:
+            read.task.finish()
+
+    def _stop_overview(self):
+        if self._overview_job is not None:
+            self._overview_job.stop()
+            self._overview_job = None
+
     def _stop_remote_reads(self, wait=False):
-        if self._fill_job is not None:
-            self._fill_job.stopped = True
+        """Stop the background work on what is shown; with ``wait`` (closing),
+        until it has stopped, 5 s at most in all."""
+        deadline = time.monotonic() + 5
+
+        def stop(job):
+            job.stop()
             if wait:
-                self._fill_job.wait(5000)
+                job.wait(max(0, int(1000 * (deadline - time.monotonic()))))
+
+        self._end_page_wait()
+        if self._fill_job is not None:
+            stop(self._fill_job)
             self._fill_job = None
         if self._rfi_job is not None:
-            self._rfi_job.stopped = True
-            if wait:
-                self._rfi_job.wait(5000)
+            stop(self._rfi_job)
             self._rfi_job = None
         if wait and self._overview_job is not None:
-            self._overview_job.stopped = True
-            self._overview_job.wait(5000)
+            stop(self._overview_job)
         for read in list(self._remote_reads.values()):
-            read.stopped = True
-            if wait:
-                read.wait(5000)
+            stop(read)
         self._remote_reads.clear()
 
     def _close_file(self):
-        """Forget the open file (e.g. when opening it failed or was cancelled)."""
+        """Forget the open file (e.g. when showing it failed)."""
         self._stop_remote_reads()
+        self._stop_overview()
         if self.hdul:
             self.hdul.close()
         self.hdul = None
@@ -993,6 +1073,10 @@ class SpectraFilesMixin:
             self._metadata_dialog.activateWindow()
             return
 
+        with busy("Opening the metadata…", self):
+            self._build_metadata_window()
+
+    def _build_metadata_window(self):
         palette = get_palette(self.current_theme)
 
         # Create a non-modal dialog

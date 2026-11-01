@@ -1,14 +1,9 @@
 """
 Small helpers of the Create Video window: output formats, frame size
-presets, durations, the wait cursor, and images of the main window.
+presets, durations, and images of the main window.
 """
 
 import os
-from PyQt5.QtWidgets import (
-    QApplication,
-)
-from PyQt5.QtCore import Qt
-from contextlib import contextmanager
 from ...processing.fits_io import is_casa_image
 
 
@@ -41,16 +36,6 @@ def _format_duration(seconds):
     if minutes < 60:
         return f"{minutes} min"
     return f"{minutes // 60} h {minutes % 60} min"
-
-
-@contextmanager
-def wait_cursor():
-    """Context manager to show a wait cursor"""
-    QApplication.setOverrideCursor(Qt.WaitCursor)
-    try:
-        yield
-    finally:
-        QApplication.restoreOverrideCursor()
 
 
 def is_image(path):

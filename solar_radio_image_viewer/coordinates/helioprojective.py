@@ -16,6 +16,7 @@ from astropy.coordinates import SkyCoord, EarthLocation
 from astropy.time import Time
 from astropy.io import fits
 from matplotlib import rcParams
+from ..processing import dependencies  # noqa: F401  (sqlite3 goes before casatools)
 from casatools import image as IA
 
 # casatasks (immath, exportfits) are now run via subprocess to avoid memory issues

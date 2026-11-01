@@ -2,10 +2,18 @@
 2D Gaussian fitting tool for SolarViewer.
 """
 
+import json
 import logging
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
 import numpy as np
-from PyQt5.QtCore import QEventLoop
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QMessageBox
+from ..ui.background import Cancelled, run_in_thread
 from ..ui.errors import show_error
 
 from ..processing.fits_io import readable_image_path
@@ -35,6 +43,40 @@ def imfit_box(roi, shape=None):
     if yhigh <= ylow:
         raise ValueError("yhigh <= ylow")
     return f"{xlow},{ylow},{xhigh},{yhigh}"
+
+
+def run_imfit_process(command, env, cwd, stop, result_file, timeout=120):
+    """Run ``command`` (the imfit process) to its end: (exit code, stdout,
+    stderr). Raises subprocess.TimeoutExpired after ``timeout`` seconds.
+
+    Cancel cannot stop the thread this runs on, so it sets ``stop``: the
+    process is killed, ``result_file`` removed, and None returned.
+    """
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        cwd=cwd,
+    )
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=0.1)
+            break
+        except subprocess.TimeoutExpired:
+            if stop.is_set() or time.monotonic() > deadline:
+                process.kill()
+                process.communicate()
+                if not stop.is_set():
+                    raise subprocess.TimeoutExpired(command, timeout)
+                break
+    if stop.is_set():
+        if os.path.exists(result_file):
+            os.remove(result_file)
+        return None
+    return process.returncode, stdout, stderr
 
 
 class FittingMixin:
@@ -92,12 +134,6 @@ class FittingMixin:
         dooff = reply == QMessageBox.Yes
 
         try:
-            import json
-            import os
-            import subprocess
-            import sys
-            import tempfile
-
             # Box format: 'x1,y1,x2,y2' (pixel coordinates)
             box = ""
             if current_tab.current_roi and isinstance(current_tab.current_roi, tuple):
@@ -117,10 +153,7 @@ class FittingMixin:
             ) as f:
                 result_file = f.name
 
-            # Show wait cursor during fitting
-            begin_busy()
-            self.statusBar().showMessage("Fitting Gaussian ... Please wait")
-            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+            self.statusBar().showMessage("Fitting a Gaussian…")
 
             # Run imfit in a subprocess to avoid casatasks/PyQt5 conflicts
             env = os.environ.copy()
@@ -129,32 +162,39 @@ class FittingMixin:
                 if key in env:
                     del env[key]
 
-            process = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "solar_radio_image_viewer.processing.imfit",
-                    os.path.abspath(readable_image_path(imagename)),
-                    box,
-                    os.path.abspath(result_file),
-                    str(dooff),
-                    stokes,
-                ],
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=120,  # 2 minute timeout
-                cwd=(
-                    os.getcwd()
-                    if os.access(os.getcwd(), os.W_OK)
-                    else tempfile.gettempdir()
-                ),
-            )
+            stop = threading.Event()
+            try:
+                returncode, stdout, stderr = run_in_thread(
+                    self,
+                    "Fitting a Gaussian…",
+                    run_imfit_process,
+                    [
+                        sys.executable,
+                        "-m",
+                        "solar_radio_image_viewer.processing.imfit",
+                        os.path.abspath(readable_image_path(imagename)),
+                        box,
+                        os.path.abspath(result_file),
+                        str(dooff),
+                        stokes,
+                    ],
+                    env,
+                    (
+                        os.getcwd()
+                        if os.access(os.getcwd(), os.W_OK)
+                        else tempfile.gettempdir()
+                    ),
+                    stop,
+                    result_file,
+                )
+            except Cancelled:
+                stop.set()
+                self.statusBar().showMessage("Gaussian fit cancelled", 3000)
+                return
 
             # Check if subprocess had errors
-            if process.returncode != 0:
-                end_busy()
-                error_msg = process.stderr or process.stdout or "Unknown error"
+            if returncode != 0:
+                error_msg = stderr or stdout or "Unknown error"
                 QMessageBox.warning(
                     self, "Fit Error", f"imfit subprocess failed:\n{error_msg}"
                 )
@@ -164,7 +204,6 @@ class FittingMixin:
 
             # Read results from temp file
             if not os.path.exists(result_file):
-                end_busy()
                 QMessageBox.warning(self, "Fit Error", "No results from fitting")
                 return
 
@@ -174,7 +213,6 @@ class FittingMixin:
             os.remove(result_file)
 
             if not output.get("success", False):
-                end_busy()
                 error = output.get("error", "Unknown error")
                 tb = output.get("traceback", "")
                 logger.error(f"Fitting failed: {error}\n{tb}")
@@ -185,7 +223,6 @@ class FittingMixin:
             # With a zero-level offset, imfit can return only the offset when it
             # fails to fit a component; don't report that as an all-zero source.
             if "major_arcsec" not in results:
-                end_busy()
                 QMessageBox.warning(
                     self,
                     "Fit Failed",
@@ -194,6 +231,8 @@ class FittingMixin:
                     + (", or fit without the zero-level offset." if dooff else "."),
                 )
                 return
+
+            begin_busy("Reading the fit…", self)
 
             # Helper function for smart unit formatting
             def format_smart_arcsec(value_arcsec):
@@ -426,7 +465,6 @@ class FittingMixin:
             self.statusBar().showMessage("Gaussian fit completed", 3000)
 
         except subprocess.TimeoutExpired:
-            end_busy()
             QMessageBox.warning(
                 self, "Timeout", "Gaussian fit took too long to complete"
             )

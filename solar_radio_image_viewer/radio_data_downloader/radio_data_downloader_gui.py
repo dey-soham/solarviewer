@@ -45,6 +45,7 @@ except ImportError:
 
 from . import radio_data_downloader as rdd
 from ..noaa_events import noaa_events as _noaa_events  # noqa: F401 (loaded here: its package imports Qt, never from a worker thread)
+from ..ui.activity import activity
 from ..ui.date_picker import attach_date_picker
 from ..ui.download_parts import (
     LOG_LINES_SHOWN,
@@ -52,6 +53,7 @@ from ..ui.download_parts import (
     Spinner,
     Timeline,
     _duration_text,
+    abandon,
     _escape,
     _label,
     _monospace,
@@ -102,12 +104,12 @@ def _years_text(site):
 
 # ---------------------------------------------------------------- workers
 class DownloadWorker(QThread):
-    """Downloads and converts in a thread; ``finished`` gives the FITS
-    files written."""
+    """Downloads and converts in a thread; ``done`` gives the FITS files
+    written."""
 
     progress = pyqtSignal(str)
     counts = pyqtSignal(int, int, int)  # fetched, written, total
-    finished = pyqtSignal(list)
+    done = pyqtSignal(list)
     error = pyqtSignal(str)
 
     def __init__(self, params: dict):
@@ -138,7 +140,7 @@ class DownloadWorker(QThread):
                     p["start"], p["end"], p["station"], p["output_dir"], join=p["join"], crop=p["join"],
                     subtract_background=p["subtract_background"], keep_raw=p["keep_raw"], **hooks,
                 )
-            self.finished.emit(files)
+            self.done.emit(files)
         except rdd.Cancelled:
             self.error.emit("Download cancelled")
         except rdd.ArchiveUnreachable as e:
@@ -571,7 +573,13 @@ class RadioDataDownloaderGUI(QDialog):
         self.bursts_head = _label("", "Meta")
         self.bursts_head.setTextFormat(Qt.RichText)
         self.bursts_head.setWordWrap(True)
-        bursts.addWidget(self.bursts_head)
+        bursts_row = QHBoxLayout()
+        bursts_row.setSpacing(6)
+        bursts_row.addWidget(self.bursts_head, 1)
+        self.bursts_spinner = Spinner(12)
+        self.bursts_spinner.setToolTip("Asking the burst lists")
+        bursts_row.addWidget(self.bursts_spinner, 0, Qt.AlignVCenter)
+        bursts.addLayout(bursts_row)
         self.bursts_label = QLabel()
         self.bursts_label.setTextFormat(Qt.RichText)
         self.bursts_label.setWordWrap(True)
@@ -1006,6 +1014,7 @@ class RadioDataDownloaderGUI(QDialog):
 
     def _render_bursts(self):
         days = self._burst_days
+        self.bursts_spinner.setVisible(bool(days) and days not in self._bursts)
         if not days:
             self.bursts_head.setText("")
             self.bursts_label.setText("")
@@ -1298,7 +1307,7 @@ class RadioDataDownloaderGUI(QDialog):
         self.download_worker = DownloadWorker(params)
         self.download_worker.progress.connect(self.update_progress)
         self.download_worker.counts.connect(self.update_counts)
-        self.download_worker.finished.connect(self.download_finished)
+        self.download_worker.done.connect(self.download_finished)
         self.download_worker.error.connect(self.download_error)
         self.download_worker.start()
 
@@ -1335,11 +1344,12 @@ class RadioDataDownloaderGUI(QDialog):
                 self.progress_left.setText(f"≈ {_duration_text(left)} left" if left > 5 else "almost done")
             else:
                 self.progress_left.setText("")
-            if total:
-                self.progress_bar.setRange(0, 100)
-                self.progress_bar.setValue(int(100 * (self._fetched + self._written) / (2.0 * total)))
-            else:
+            steps = self._fetched + self._written
+            if self._started is not None and not steps:  # at 0 % it would look stuck
                 self.progress_bar.setRange(0, 0)  # busy
+            else:
+                self.progress_bar.setRange(0, 100)
+                self.progress_bar.setValue(int(100 * steps / (2.0 * total)) if total else 0)
         self.tile_values["Fetched"].setText(str(self._fetched))
         self.tile_values["Converted"].setText(f"{self._written}" if self._written or self._fetched else "—")
 
@@ -1415,8 +1425,8 @@ class RadioDataDownloaderGUI(QDialog):
 
     def download_error(self, message):
         self._log(message, "stopped" if "cancel" in message.lower() else "failed")
-        self._render_progress()
         self._finish("Stopped" if "cancel" in message.lower() else "Failed")
+        self._render_progress()
         self.download_button.setText("Try again")
         self.download_button.setEnabled(True)
 
@@ -1425,7 +1435,8 @@ class RadioDataDownloaderGUI(QDialog):
         if self.viewer is None or not self.files:
             return
         try:
-            self.viewer.open_spectrum(self.files[0])
+            with activity(f"Opening {os.path.basename(self.files[0])} in the Dynamic Spectrum Viewer…", self, blocking=False):
+                self.viewer.open_spectrum(self.files[0])
         except Exception as e:
             self._log(f"Could not open the Dynamic Spectrum Viewer: {e}", "failed")
 
@@ -1439,9 +1450,11 @@ class RadioDataDownloaderGUI(QDialog):
         if self._burst_worker is not None:
             self._burst_worker.stopped = True
             self._burst_worker = None
-        if self.is_downloading():
-            self.download_worker.cancel()
-            self.download_worker.wait(5000)
+        if self.is_downloading():  # a stalled read must not hold the window up
+            abandon(self.download_worker)
+            self.download_worker = None
+            self._timer.stop()
+            self._started = None
         if self._log_file is not None:
             try:
                 self._log_file.close()

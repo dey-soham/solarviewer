@@ -3,15 +3,175 @@ Main-window export actions (FITS, CASA image, sub-image, regions, HPC).
 """
 
 import os
+import shutil
+import tempfile
+import threading
 
-from PyQt5.QtCore import QEventLoop
-from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
-from ..processing.dependencies import IA
-from ..processing.casa_tasks import run_casa_task
-from ..processing.fits_io import is_fits, readable_image_path
-from ..ui.busy import begin_busy, busy, end_busy
+from ..processing.casa_tasks import (
+    HPC_MODULE,
+    CasaTask,
+    write_sub_image,
+    write_tb_map_from,
+)
+from ..processing.fits_io import is_fits
+from ..ui.background import Cancelled, run_in_background, run_in_thread
+from ..ui.busy import busy
 from ..ui.errors import show_error
+
+COPY_CHUNK = 1024 * 1024
+
+
+class _Stopped(Exception):
+    """A copy on a thread was cancelled."""
+
+
+def _name(path):
+    return os.path.basename(path.rstrip("/"))
+
+
+def _partial(path):
+    """Where an export of ``path`` is written until it is complete: in a new
+    folder beside it, so the name is nobody else's and moving it into place
+    is a rename. A cancelled or failed export leaves what was at ``path``
+    alone, and :func:`_discard` removes the folder."""
+    folder = tempfile.mkdtemp(
+        prefix=".solarviewer_export_", dir=os.path.dirname(os.path.abspath(path))
+    )
+    return os.path.join(folder, _name(path))
+
+
+def _discard(partial):
+    """Remove the folder of ``partial`` and what is left in it."""
+    shutil.rmtree(os.path.dirname(partial), ignore_errors=True)
+
+
+def _remove(path):
+    """Delete the file or CASA image ``path``, if it is there."""
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+    elif os.path.lexists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _put_in_place(parent, partial, path):
+    """The finished export ``partial`` takes the place of what is at ``path``.
+
+    Renames only, on the GUI thread once the wait is over, so that no Cancel
+    can land between them. An old CASA image is deleted after that, which on
+    a slow disk takes a while."""
+    if not (os.path.isdir(partial) or os.path.isdir(path)):
+        os.replace(partial, path)
+        return
+    old = None
+    if os.path.lexists(path):
+        old = _partial(path)
+        os.replace(path, old)
+    try:
+        os.replace(partial, path)
+    except OSError:
+        if old is not None:
+            os.replace(old, path)
+            _discard(old)
+        raise
+    if old is not None:
+        try:
+            run_in_thread(parent, f"Removing the old {_name(path)}…", _discard, old)
+        except Cancelled:
+            pass  # the export is done; the old image goes on being deleted
+
+
+def _copy_file(source, partial, stop):
+    """As shutil.copy2, stopping between chunks once ``stop`` is set."""
+    with open(source, "rb") as reader, open(partial, "wb") as writer:
+        while chunk := reader.read(COPY_CHUNK):
+            if stop.is_set():
+                raise _Stopped()
+            writer.write(chunk)
+    shutil.copystat(source, partial)
+
+
+def _copy_image(source, partial, stop):
+    """Copy the CASA image ``source``, stopping between files once ``stop``
+    is set."""
+
+    def copy(src, dst):
+        if stop.is_set():
+            raise _Stopped()
+        shutil.copy2(src, dst)
+
+    shutil.copytree(source, partial, copy_function=copy)
+
+
+def _write_fits(hdul, partial, _stop):
+    """Write ``hdul``; astropy has no way to stop half-way."""
+    hdul.writeto(partial)
+
+
+def _stoppable(parent, label, path, job, *args):
+    """``job(*args, partial, stop)`` writes the export of ``path`` on a thread,
+    then it goes in place, here. Cancel sets ``stop`` for it to end early. It
+    may run on for a while with nobody waiting, so it then removes what it
+    wrote, unless it was done by the time Cancel came."""
+    partial = _partial(path)
+    stop = threading.Event()
+    ended = threading.Event()
+
+    def run():
+        try:
+            job(*args, partial, stop)
+        finally:
+            ended.set()
+            if stop.is_set():
+                _discard(partial)
+
+    still_writing = False
+    try:
+        run_in_thread(parent, label, run)
+        _put_in_place(parent, partial, path)
+    except Cancelled:
+        stop.set()
+        still_writing = not ended.is_set()
+        raise
+    finally:
+        if not still_writing:
+            _discard(partial)
+
+
+def wait_for_task(parent, label, job):
+    """Run the :class:`CasaTask` ``job``, waited for on a thread; returns its
+    result. Cancel ends its process."""
+    try:
+        return run_in_thread(parent, label, job.run)
+    except BaseException:
+        job.stop()
+        raise
+
+
+def _casa_export(parent, label, task, output_arg, output, **kwargs):
+    """The CASA ``task`` writes ``output``, named by its argument ``output_arg``."""
+    partial = _partial(output)
+    kwargs[output_arg] = partial
+    try:
+        wait_for_task(parent, label, CasaTask(task, None, kwargs))
+        _put_in_place(parent, partial, output)
+    finally:
+        _discard(partial)
+
+
+def _reproject(parent, label, task, source, output, **kwargs):
+    """The function ``task`` of coordinates.helioprojective writes ``output``.
+    Returns whether it did."""
+    kwargs.update(
+        input_fits_file=os.path.abspath(source),
+        output_fits_file=os.path.abspath(output),
+        overwrite=True,
+    )
+    return wait_for_task(parent, label, CasaTask(task, None, kwargs, HPC_MODULE))
 
 
 def _export_failed(parent, what, error):
@@ -49,7 +209,8 @@ class ExportsMixin:
             "PNG Files (*.png);;PDF Files (*.pdf);;All Files (*)",
         )
         if path:
-            with busy():
+            # The figure is the window's: it cannot be drawn on another thread
+            with busy(f"Saving {_name(path)}…", self):
                 current_tab.figure.savefig(path, dpi=300, bbox_inches="tight")
             QMessageBox.information(self, "Exported", f"Figure saved to {path}")
 
@@ -81,19 +242,23 @@ class ExportsMixin:
             if source_image and os.path.isdir(source_image):
                 try:
                     # Every Stokes plane, in a separate process
-                    with busy():
-                        run_casa_task(
-                            "exportfits",
-                            imagename=os.path.abspath(source_image),
-                            fitsimage=os.path.abspath(path),
-                            overwrite=True,
-                            stokeslast=True,
-                        )
+                    _casa_export(
+                        self,
+                        f"Exporting {_name(source_image)} to FITS…",
+                        "exportfits",
+                        "fitsimage",
+                        path,
+                        imagename=os.path.abspath(source_image),
+                        overwrite=True,
+                        stokeslast=True,
+                    )
 
                     QMessageBox.information(
                         self, "Exported", f"CASA image exported to {path}"
                     )
                     return
+                except Cancelled:
+                    raise
                 except Exception as e:
                     _export_failed(self, "the CASA image", e)
                     return
@@ -103,11 +268,15 @@ class ExportsMixin:
                 is_fits(source_image)
             ):
                 try:
-                    import shutil
-
                     # If saving to a different location, copy the original file
                     if os.path.abspath(source_image) != os.path.abspath(path):
-                        shutil.copy2(source_image, path)
+                        _stoppable(
+                            self,
+                            f"Copying {_name(source_image)}…",
+                            path,
+                            _copy_file,
+                            source_image,
+                        )
                         QMessageBox.information(
                             self, "Exported", f"FITS file exported to {path}"
                         )
@@ -118,6 +287,8 @@ class ExportsMixin:
                             "Source and destination are the same file.",
                         )
                     return
+                except Cancelled:
+                    raise
                 except Exception:
                     # Fall back to creating from current data if copy fails
                     pass
@@ -166,8 +337,10 @@ class ExportsMixin:
             hdu.header.add_history("Exported with SolarViewer")
 
             hdul = fits.HDUList([hdu])
-            hdul.writeto(path, overwrite=True)
+            _stoppable(self, f"Writing {_name(path)}…", path, _write_fits, hdul)
             QMessageBox.information(self, "Exported", f"Data saved to {path}")
+        except Cancelled:
+            self.statusBar().showMessage("Export cancelled")
         except ImportError:
             QMessageBox.warning(
                 self,
@@ -221,15 +394,16 @@ class ExportsMixin:
                 )
                 if reply == QMessageBox.No:
                     return
-                import shutil
-
-                shutil.rmtree(output_image)
 
             # If source is already a CASA image, copy it
             if os.path.isdir(source_image):
-                import shutil
-
-                shutil.copytree(source_image, output_image)
+                _stoppable(
+                    self,
+                    f"Copying {_name(source_image)}…",
+                    output_image,
+                    _copy_image,
+                    source_image,
+                )
                 QMessageBox.information(
                     self, "Exported", f"CASA image exported to {output_image}"
                 )
@@ -259,27 +433,6 @@ class ExportsMixin:
                             or "HPLT" in ctype2
                         ):
                             # Convert HPC to RA/Dec first
-                            from ..coordinates.helioprojective import convert_hpc_to_radec
-
-                            temp_radec_file = os.path.join(
-                                tempfile.gettempdir(),
-                                f"solarviewer_radec_export_{os.getpid()}.fits",
-                            )
-
-                            with busy():
-                                success = convert_hpc_to_radec(
-                                    source_image, temp_radec_file, overwrite=True
-                                )
-
-                            if not success:
-                                QMessageBox.warning(
-                                    self,
-                                    "Conversion Failed",
-                                    "Failed to convert helioprojective coordinates to RA/Dec.",
-                                )
-                                return
-
-                            fits_to_import = temp_radec_file
                             is_hpc_converted = True
 
                         # Check for other unsupported coordinate systems
@@ -309,22 +462,44 @@ class ExportsMixin:
                 except Exception:
                     pass  # If we can't check, proceed anyway
 
-                # Run importfits in a separate process
+                name = _name(source_image)
+                import_label = f"Importing {name} as a CASA image…"
                 try:
-                    with busy():
-                        run_casa_task(
-                            "importfits",
-                            fitsimage=os.path.abspath(fits_to_import),
-                            imagename=os.path.abspath(output_image),
-                            overwrite=True,
+                    if is_hpc_converted:
+                        fits_to_import = os.path.join(
+                            tempfile.gettempdir(),
+                            f"solarviewer_radec_export_{os.getpid()}.fits",
                         )
+                        success = _reproject(
+                            self,
+                            f"Reprojecting {name} to RA/Dec (step 1 of 2)…",
+                            "convert_hpc_to_radec",
+                            source_image,
+                            fits_to_import,
+                        )
+                        if not success:
+                            QMessageBox.warning(
+                                self,
+                                "Conversion Failed",
+                                "Failed to convert helioprojective coordinates to RA/Dec.",
+                            )
+                            return
+                        import_label = f"Importing {name} as a CASA image (step 2 of 2)…"
+
+                    # Run importfits in a separate process
+                    _casa_export(
+                        self,
+                        import_label,
+                        "importfits",
+                        "imagename",
+                        output_image,
+                        fitsimage=os.path.abspath(fits_to_import),
+                        overwrite=True,
+                    )
                 finally:
                     # Clean up temp file if we created one
-                    if is_hpc_converted and os.path.exists(fits_to_import):
-                        try:
-                            os.remove(fits_to_import)
-                        except OSError:
-                            pass
+                    if is_hpc_converted:
+                        _remove(fits_to_import)
 
                 if is_hpc_converted:
                     QMessageBox.information(
@@ -345,6 +520,8 @@ class ExportsMixin:
                 self, "Unsupported", "Source must be a FITS file or CASA image"
             )
 
+        except Cancelled:
+            self.statusBar().showMessage("Export cancelled")
         except Exception as e:
             _export_failed(self, "the CASA image", e)
 
@@ -381,8 +558,6 @@ class ExportsMixin:
             return
 
         try:
-            from ..processing.maps import generate_tb_map
-
             # Get save path
             default_name = os.path.basename(current_tab.imagename)
             if is_fits(default_name):
@@ -400,24 +575,30 @@ class ExportsMixin:
             if not path:
                 return
 
-            begin_busy()
-
             # Generate and save TB map
-            tb_data, result = generate_tb_map(
-                current_tab.imagename,
-                outfile=path,
-                flux_data=current_tab.current_image_data,
-            )
+            partial = _partial(path)
+            try:
+                error = run_in_background(
+                    self,
+                    f"Writing {_name(path)}…",
+                    write_tb_map_from,
+                    current_tab.imagename,
+                    partial,
+                    current_tab.current_image_data,
+                )
+                if error is None:
+                    _put_in_place(self, partial, path)
+            finally:
+                _discard(partial)  # and the map's own temporary file
 
-            end_busy()
-
-            if tb_data is None:
-                QMessageBox.warning(self, "Error", f"TB conversion failed: {result}")
+            if error is not None:
+                QMessageBox.warning(self, "Error", f"TB conversion failed: {error}")
             else:
                 QMessageBox.information(self, "Saved", f"TB map saved to:\n{path}")
 
+        except Cancelled:
+            self.statusBar().showMessage("Export cancelled")
         except Exception as e:
-            end_busy()
             _export_failed(self, "the brightness temperature map", e)
 
     def save_sub_image(self):
@@ -435,39 +616,45 @@ class ExportsMixin:
         )
 
         if output_dir:
+            if not isinstance(current_tab.current_roi, tuple):
+                QMessageBox.information(
+                    self,
+                    "Not Implemented",
+                    "Subimage for polygon/circle ROI not implemented yet",
+                )
+                return
+
+            existed = os.path.exists(output_dir)
             try:
-                ia_tool = IA()
-                ia_tool.open(readable_image_path(current_tab.imagename))
+                # In the file's own pixels (Fast mode shows fewer)
+                xlow, xhigh, ylow, yhigh = current_tab.roi_at_full_resolution()
+                region_dict = (
+                    "box[["
+                    + str(xlow)
+                    + "pix, "
+                    + str(ylow)
+                    + "pix],["
+                    + str(xhigh)
+                    + "pix, "
+                    + str(yhigh)
+                    + "pix]]"
+                )
 
-                if isinstance(current_tab.current_roi, tuple):
-                    # In the file's own pixels (Fast mode shows fewer)
-                    xlow, xhigh, ylow, yhigh = current_tab.roi_at_full_resolution()
-                    region_dict = (
-                        "box[["
-                        + str(xlow)
-                        + "pix, "
-                        + str(ylow)
-                        + "pix],["
-                        + str(xhigh)
-                        + "pix, "
-                        + str(yhigh)
-                        + "pix]]"
-                    )
-
-                    with busy():
-                        ia_tool.subimage(outfile=output_dir, region=region_dict)
-                else:
-                    QMessageBox.information(
-                        self,
-                        "Not Implemented",
-                        "Subimage for polygon/circle ROI not implemented yet",
-                    )
-                    return
-
-                ia_tool.close()
+                run_in_background(
+                    self,
+                    f"Writing {_name(output_dir)}…",
+                    write_sub_image,
+                    current_tab.imagename,
+                    output_dir,
+                    region_dict,
+                )
                 QMessageBox.information(
                     self, "Success", f"Subimage saved to {output_dir}"
                 )
+            except Cancelled:
+                if not existed:
+                    _remove(output_dir)  # what the stopped job had written
+                self.statusBar().showMessage("Export cancelled")
             except Exception as e:
                 _export_failed(self, "the sub-image", e)
 
@@ -540,23 +727,21 @@ class ExportsMixin:
                 except (ValueError, AttributeError):
                     threshold = 10.0
 
-                # Show progress in status bar
-                self.statusBar().showMessage(
-                    "Converting to helioprojective coordinates..."
-                )
-                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
-
-                # Call convert_and_save_hpc
-                from ..coordinates.helioprojective import convert_and_save_hpc
-
-                with busy():
-                    success = convert_and_save_hpc(
+                partial = _partial(path)
+                try:
+                    success = _reproject(
+                        self,
+                        f"Reprojecting {_name(current_tab.imagename)} to helioprojective coordinates…",
+                        "convert_and_save_hpc",
                         current_tab.imagename,
-                        path,
+                        partial,
                         Stokes=stokes,
                         thres=threshold,
-                        overwrite=True,
                     )
+                    if success:
+                        _put_in_place(self, partial, path)
+                finally:
+                    _discard(partial)
 
                 if success:
                     QMessageBox.information(
@@ -575,6 +760,8 @@ class ExportsMixin:
                     )
                     self.statusBar().showMessage("Export failed")
 
+        except Cancelled:
+            self.statusBar().showMessage("Export cancelled")
         except Exception as e:
             _export_failed(self, "the helioprojective FITS file", e)
             self.statusBar().showMessage("Export error")

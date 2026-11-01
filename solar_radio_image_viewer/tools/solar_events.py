@@ -3,10 +3,23 @@ Context lookups for the current image: NOAA events and Helioviewer.
 """
 
 import logging
-from ..processing.fits_io import is_fits, readable_image_path
-from ..processing.image_meta import casa_obs_time, fits_header
+from ..processing.fits_io import is_fits
+from ..processing.image_meta import casa_info, casa_obs_time, fits_header
+from ..ui.background import Cancelled, run_in_thread
+from ..ui.busy import busy
 
 logger = logging.getLogger(__name__)
+
+
+def helioviewer_reachable():
+    """Whether the Helioviewer API answers."""
+    import requests
+
+    try:
+        requests.get("https://api.helioviewer.org/v2/", timeout=3)
+    except requests.RequestException:
+        return False
+    return True
 
 
 class SolarEventsMixin:
@@ -37,14 +50,7 @@ class SolarEventsMixin:
                 logger.error(f"FITS header read failed: {e}")
         else:
             try:
-                from casatools import image as IA
-
-                ia_tool = IA()
-                ia_tool.open(readable_image_path(imagename))
-                try:
-                    t = casa_obs_time(ia_tool.coordsys().torecord())
-                finally:
-                    ia_tool.close()
+                t = casa_obs_time(casa_info(imagename).csys_record)
                 if t is not None:
                     return t.to_datetime()
             except Exception as e:
@@ -54,8 +60,6 @@ class SolarEventsMixin:
     def show_noaa_events_for_current_image(self):
         """Show NOAA Solar Events for the current image date and auto-fetch events."""
         try:
-            from ..noaa_events.noaa_events_gui import NOAAEventsViewer
-
             if not hasattr(self, "imagename") or not self.imagename:
                 from PyQt5.QtWidgets import QMessageBox
 
@@ -69,7 +73,8 @@ class SolarEventsMixin:
                 QMessageBox.information(self, "Info", "Please load an image first.")
                 return
 
-            when = self._observation_datetime()
+            with busy("Reading the observation date…", self):
+                when = self._observation_datetime()
             extracted_date = when.date() if when is not None else None
 
             if extracted_date is None:
@@ -90,10 +95,13 @@ class SolarEventsMixin:
             main_window = self.window()
 
             # Create and show the viewer with the date
-            viewer = NOAAEventsViewer(self, extracted_date)
-            if main_window:
-                main_window._noaa_events_viewer = viewer
-            viewer.show()
+            with busy("Opening NOAA events…", self):
+                from ..noaa_events.noaa_events_gui import NOAAEventsViewer
+
+                viewer = NOAAEventsViewer(self, extracted_date)
+                if main_window:
+                    main_window._noaa_events_viewer = viewer
+                viewer.show()
 
             # Auto-fetch events for the extracted date
             viewer.fetch_data()
@@ -112,13 +120,17 @@ class SolarEventsMixin:
     def open_helioviewer_with_time(self):
         """Open Helioviewer Browser with time range from current file (FITS or CASA)."""
         try:
-            import requests
             from PyQt5.QtWidgets import QMessageBox
 
             # Fast connection check
             try:
-                requests.get("https://api.helioviewer.org/v2/", timeout=3)
-            except requests.RequestException:
+                reachable = run_in_thread(
+                    self, "Checking the connection to Helioviewer…", helioviewer_reachable
+                )
+            except Cancelled:
+                self.show_status_message("Cancelled")
+                return
+            if not reachable:
                 QMessageBox.warning(
                     self,
                     "Connection Error",
@@ -130,32 +142,33 @@ class SolarEventsMixin:
 
             from PyQt5.QtCore import QDateTime
 
-            from ..helioviewer_browser import HelioviewerBrowser
+            with busy("Opening the Helioviewer browser…", self):
+                from ..helioviewer_browser import HelioviewerBrowser
 
-            obs_datetime = self._observation_datetime()
+                obs_datetime = self._observation_datetime()
 
-            # Set time range if we found a time
-            initial_start = None
-            initial_end = None
+                # Set time range if we found a time
+                initial_start = None
+                initial_end = None
 
-            if obs_datetime:
-                start_dt = obs_datetime - timedelta(minutes=30)
-                end_dt = obs_datetime + timedelta(minutes=30)
-                initial_start = QDateTime(start_dt)
-                initial_end = QDateTime(end_dt)
-                self.show_status_message(
-                    f"Opening Helioviewer Browser for {obs_datetime} (±30 min)"
+                if obs_datetime:
+                    start_dt = obs_datetime - timedelta(minutes=30)
+                    end_dt = obs_datetime + timedelta(minutes=30)
+                    initial_start = QDateTime(start_dt)
+                    initial_end = QDateTime(end_dt)
+                    self.show_status_message(
+                        f"Opening Helioviewer Browser for {obs_datetime} (±30 min)"
+                    )
+                else:
+                    self.show_status_message(
+                        "No observation time found in file, using default time range"
+                    )
+
+                # Launch browser
+                browser = HelioviewerBrowser(
+                    self, initial_start=initial_start, initial_end=initial_end
                 )
-            else:
-                self.show_status_message(
-                    "No observation time found in file, using default time range"
-                )
-
-            # Launch browser
-            browser = HelioviewerBrowser(
-                self, initial_start=initial_start, initial_end=initial_end
-            )
-            browser.show()
+                browser.show()
 
         except Exception as e:
             import traceback
