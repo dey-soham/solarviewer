@@ -20,6 +20,10 @@ _SHAPES = {
     "zoom_out": '<circle cx="11" cy="11" r="6"/><path d="M16 16l4 4M8 11h6"/>',
     "reset": '<path d="M20 12a8 8 0 11-2.3-5.7M20 4v4h-4"/>',
     "clock": '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
+    "first": '<path d="M6 5v14M18 6l-8 6 8 6"/>',
+    "prev": '<path d="M15 6l-6 6 6 6"/>',
+    "next": '<path d="M9 6l6 6-6 6"/>',
+    "last": '<path d="M18 5v14M6 6l8 6-8 6"/>',
 }
 
 

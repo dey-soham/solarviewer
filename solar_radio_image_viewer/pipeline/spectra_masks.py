@@ -17,12 +17,13 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QSpinBox,
     QCheckBox,
-    QDialogButtonBox,
     QGroupBox,
     QDialog,
 )
 
 from ..ui.activity import track_thread
+from ..ui.styles import SPACE_M, SPACE_XS
+from ..ui.widgets import button_bar, dialog_layout
 from .spectra_common import _RemoteRead
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class SpectraMasksMixin:
         except (OSError, ValueError):
             return
         nt = len(self._full_time_axis)
-        nf = len(self._full_freq_axis) if self._full_freq_axis is not None else 0
+        nf = self._image().shape[1 - self._time_dim]
         masks = [
             tuple(m) for m in saved.get("masks", [])
             if len(m) == 4 and 0 <= m[0] < m[1] <= nt and 0 <= m[2] < m[3] <= nf
@@ -108,24 +109,24 @@ class SpectraMasksMixin:
             tuple(k) for k in saved.get("keeps", [])
             if len(k) == 4 and 0 <= k[0] < k[1] <= nt and 0 <= k[2] < k[3] <= nf
         ]
-        self._keeps = keeps
-        if masks or channels:
+        if masks or channels or keeps:
+            self._keeps = keeps
             self._masks = masks
             self._global_masked_freq_indices = channels
             self._mask_version += 1
             self._update_mask_summary()
             self.statusBar().showMessage(
-                f"Restored the masks from last time ({len(masks)} regions, "
-                f"{len(channels)} channels); Clear removes them.", 8000
+                f"Restored the masks from last time ({len(masks)} regions, {len(channels)} channels, "
+                f"{len(keeps)} kept); Clear removes them.", 8000
             )
 
     def saveMasks(self):
         """Save the masks as times and frequencies (for this file or others)."""
         if not self._masks and not self._global_masked_freq_indices:
-            QMessageBox.information(self, "Save Masks", "There are no masks.")
+            QMessageBox.information(self, "Save masks", "There are no masks.")
             return
         fileName, _ = QFileDialog.getSaveFileName(
-            self, "Save Masks", "masks.json", "Masks (*.json)"
+            self, "Save masks", "masks.json", "Masks (*.json)"
         )
         if not fileName:
             return
@@ -146,8 +147,12 @@ class SpectraMasksMixin:
             "channels_mhz": [float(freqs[c]) for c in channels] if freqs is not None else [],
             "channels": [int(c) for c in channels] if freqs is None else [],
         }
-        with open(fileName, "w") as f:
-            json.dump(saved, f, indent=1)
+        try:
+            with open(fileName, "w") as f:
+                json.dump(saved, f, indent=1)
+        except OSError as e:
+            QMessageBox.critical(self, "Error", f"Failed to save the masks:\n{e}")
+            return
         self.statusBar().showMessage(f"Saved {len(regions)} masks to {fileName}", 5000)
 
     def loadMasks(self):
@@ -155,7 +160,7 @@ class SpectraMasksMixin:
         if self._full_time_axis is None:
             QMessageBox.information(self, "Info", "No data loaded.")
             return
-        fileName, _ = QFileDialog.getOpenFileName(self, "Load Masks", "", "Masks (*.json)")
+        fileName, _ = QFileDialog.getOpenFileName(self, "Load masks", "", "Masks (*.json)")
         if not fileName:
             return
         try:
@@ -165,28 +170,33 @@ class SpectraMasksMixin:
             QMessageBox.critical(self, "Error", f"Failed to read the masks:\n{e}")
             return
         times, freqs = self._full_time_axis, self._full_freq_axis
-        nf = len(freqs) if freqs is not None else self._image().shape[1]
+        nf = self._image().shape[1 - self._time_dim]
         masks = []
-        for region in saved.get("regions", []):
-            t0 = int(np.searchsorted(times, region["from_mjd"] * 86400.0 - 1e-3, "left"))
-            t1 = int(np.searchsorted(times, region["to_mjd"] * 86400.0 + 1e-3, "right"))
-            if "from_mhz" in region and freqs is not None:
-                inside = np.flatnonzero((freqs >= region["from_mhz"] - 1e-6) & (freqs <= region["to_mhz"] + 1e-6))
-                if not len(inside):
-                    continue
-                f0, f1 = int(inside[0]), int(inside[-1]) + 1
-            else:
-                f0, f1 = region.get("from_channel", 0), region.get("to_channel", nf - 1) + 1
-            if t0 < t1 and 0 <= f0 < f1 <= nf:
-                masks.append((t0, t1, f0, f1))
-        channels = set(c for c in saved.get("channels", []) if 0 <= c < nf)
-        if freqs is not None:
-            # Within half a channel of a channel here
-            tolerance = 1e-3 + (0.5 * np.median(np.abs(np.diff(freqs))) if nf > 1 else np.inf)
-            for mhz in saved.get("channels_mhz", []):
-                c = int(np.argmin(np.abs(freqs - mhz)))
-                if abs(freqs[c] - mhz) <= tolerance:
-                    channels.add(c)
+        channels = set()
+        try:
+            for region in saved.get("regions", []):
+                t0 = int(np.searchsorted(times, region["from_mjd"] * 86400.0 - 1e-3, "left"))
+                t1 = int(np.searchsorted(times, region["to_mjd"] * 86400.0 + 1e-3, "right"))
+                if "from_mhz" in region and freqs is not None:
+                    inside = np.flatnonzero((freqs >= region["from_mhz"] - 1e-6) & (freqs <= region["to_mhz"] + 1e-6))
+                    if not len(inside):
+                        continue
+                    f0, f1 = int(inside[0]), int(inside[-1]) + 1
+                else:
+                    f0, f1 = region.get("from_channel", 0), region.get("to_channel", nf - 1) + 1
+                if t0 < t1 and 0 <= f0 < f1 <= nf:
+                    masks.append((t0, t1, f0, f1))
+            channels.update(c for c in saved.get("channels", []) if 0 <= c < nf)
+            if freqs is not None:
+                # Within half a channel of a channel here
+                tolerance = 1e-3 + (0.5 * np.median(np.abs(np.diff(freqs))) if nf > 1 else np.inf)
+                for mhz in saved.get("channels_mhz", []):
+                    c = int(np.argmin(np.abs(freqs - mhz)))
+                    if abs(freqs[c] - mhz) <= tolerance:
+                        channels.add(c)
+        except (AttributeError, KeyError, TypeError) as e:
+            QMessageBox.critical(self, "Error", f"{os.path.basename(fileName)} holds no saved masks:\n{e!r}")
+            return
         if not masks and not channels:
             self.statusBar().showMessage("None of those masks fall on this file.", 5000)
             return
@@ -377,10 +387,11 @@ class SpectraMasksMixin:
         """What automatic RFI flagging does: detectors, filling, display."""
         o = dict(self._rfi_options)
         dialog = QDialog(self)
-        dialog.setWindowTitle("RFI Flagging")
-        layout = QVBoxLayout(dialog)
+        dialog.setWindowTitle("RFI flagging")
+        layout = dialog_layout(dialog)
         detectors = QGroupBox("Detectors")
         dl = QVBoxLayout(detectors)
+        dl.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
         convrfi = QCheckBox("Spikes and narrow lines (ConvRFI)")
         convrfi.setChecked(o["convrfi"])
         edges = QCheckBox("Sharp edges too (ConvRFI)")
@@ -407,30 +418,31 @@ class SpectraMasksMixin:
 
         after = QGroupBox("Then")
         al = QFormLayout(after)
+        al.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
         gaps = QDoubleSpinBox()
         gaps.setRange(0.0, 0.5)
         gaps.setSingleStep(0.05)
         gaps.setValue(o["fill_gaps"])
         gaps.setSpecialValueText("off")
         gaps.setToolTip("Flag gaps mostly surrounded by flags (0: off)")
-        al.addRow("Fill gaps (eta):", gaps)
+        al.addRow("Fill gaps (eta)", gaps)
         channels = QSpinBox()
         channels.setRange(10, 100)
         channels.setSuffix(" %")
         channels.setValue(int(round(o["channel_limit"] * 100)))
-        channels.setSpecialValueText("off")
         channels.setToolTip("Flag a whole channel above this share (100: off)")
-        al.addRow("Whole channels above:", channels)
+        al.addRow("Whole channels above", channels)
         times = QSpinBox()
         times.setRange(10, 100)
         times.setSuffix(" %")
         times.setValue(int(round(o["time_limit"] * 100)))
         times.setToolTip("Flag a whole time above this share (100: off)")
-        al.addRow("Whole times above:", times)
+        al.addRow("Whole times above", times)
         layout.addWidget(after)
 
         pixels = QGroupBox("Flagged pixels")
         pl = QFormLayout(pixels)
+        pl.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
         fillCombo = QComboBox()
         for text, value in (
             ("Blank", "blank"),
@@ -440,7 +452,7 @@ class SpectraMasksMixin:
             fillCombo.addItem(text, value)
         fillCombo.setCurrentIndex(max(0, fillCombo.findData(o["fill"])))
         fillCombo.setToolTip("Fill from good pixels around, in time and frequency")
-        pl.addRow("Fill:", fillCombo)
+        pl.addRow("Fill", fillCombo)
         maxGap = QSpinBox()
         maxGap.setRange(1, 50)
         maxGap.setValue(int(o["reach"]))
@@ -448,7 +460,7 @@ class SpectraMasksMixin:
         maxGap.setToolTip("Farther from any good pixel: left blank")
         maxGap.setEnabled(o["fill"] != "blank")
         fillCombo.currentIndexChanged.connect(lambda _: maxGap.setEnabled(fillCombo.currentData() != "blank"))
-        pl.addRow("Reach:", maxGap)
+        pl.addRow("Reach", maxGap)
         mask_note = QLabel("Masks you draw always stay blank.")
         mask_note.setObjectName("Hint")
         pl.addRow(mask_note)
@@ -456,6 +468,7 @@ class SpectraMasksMixin:
 
         show = QGroupBox("Show")
         sl = QVBoxLayout(show)
+        sl.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
         tint = QCheckBox("Flags as a tint over the data (else blanked)")
         tint.setChecked(o["tint"])
         share = QCheckBox("Each channel's flagged share, beside the spectrum")
@@ -467,9 +480,7 @@ class SpectraMasksMixin:
         sl.addWidget(note)
         layout.addWidget(show)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
+        buttons, _ = button_bar(primary=("Apply", dialog.accept), secondary=("Cancel", dialog.reject))
         layout.addWidget(buttons)
         if dialog.exec_() != QDialog.Accepted:
             return
@@ -717,7 +728,7 @@ class SpectraMasksMixin:
         brings them back)."""
         reply = QMessageBox.question(
             self,
-            "Clear Masks",
+            "Clear masks",
             "Clear all masks, extended channels and Keep regions?\n(Undo brings them back.)",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,

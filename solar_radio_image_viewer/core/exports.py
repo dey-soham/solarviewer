@@ -174,13 +174,37 @@ def _reproject(parent, label, task, source, output, **kwargs):
     return wait_for_task(parent, label, CasaTask(task, None, kwargs, HPC_MODULE))
 
 
+def _crtf_box(xlow, xhigh, ylow, yhigh):
+    """The CRTF box of the ROI (xlow, xhigh, ylow, yhigh): CASA's box
+    includes its top corner, the ROI's high ends are past its last pixel."""
+    return f"box[[{xlow}pix, {ylow}pix], [{xhigh - 1}pix, {yhigh - 1}pix]]"
+
+
+def _crtf_line(tab):
+    """The CRTF line of ``tab``'s region, in the file's own pixels."""
+    region = tab.selected_region
+    if region is None or (region.shape == "rect" and not region.angle):
+        return _crtf_box(*tab.roi_at_full_resolution())
+    factor = getattr(tab, "_downsample", 1) or 1  # (Fast mode shows fewer)
+    if region.shape == "rect":
+        # Not rotbox: its sense of turning changes with the sign of CDELT1
+        points = [(x * factor, y * factor) for x, y in region.outline()]
+        return "poly[" + ", ".join(f"[{x:.3f}pix, {y:.3f}pix]" for x, y in points) + "]"
+    x1, y1, x2, y2 = (v * factor for v in region.corners)
+    # An ellipse's angle runs from the y axis, a region's from the x axis
+    return (
+        f"ellipse[[{(x1 + x2) / 2:.3f}pix, {(y1 + y2) / 2:.3f}pix], "
+        f"[{(x2 - x1) / 2:.3f}pix, {(y2 - y1) / 2:.3f}pix], {region.angle - 90:.3f}deg]"
+    )
+
+
 def _export_failed(parent, what, error):
     """Say that saving ``what`` failed (called while handling ``error``)."""
     import traceback
 
     show_error(
         parent,
-        "Export Failed",
+        "Export failed",
         f"Could not save {what}: {error}\n\nCheck that the folder exists, that "
         "you can write to it, and that the disk is not full.",
         traceback.format_exc(),
@@ -199,26 +223,34 @@ class ExportsMixin:
 
     def export_data(self):
         current_tab = self.tab_widget.currentWidget()
-        if not current_tab:
+        if not current_tab or current_tab.current_image_data is None:
+            QMessageBox.warning(self, "No data", "No image to export")
             return
 
-        path, _ = QFileDialog.getSaveFileName(
+        path, chosen = QFileDialog.getSaveFileName(
             self,
-            "Export Figure",
+            "Export figure",
             "",
-            "PNG Files (*.png);;PDF Files (*.pdf);;All Files (*)",
+            "PNG files (*.png);;PDF files (*.pdf);;All files (*)",
         )
         if path:
-            # The figure is the window's: it cannot be drawn on another thread
-            with busy(f"Saving {_name(path)}…", self):
-                current_tab.figure.savefig(path, dpi=300, bbox_inches="tight")
+            # (savefig would add .png itself, whatever the type chosen)
+            if not os.path.splitext(path)[1]:
+                path += ".pdf" if "*.pdf" in chosen else ".png"
+            try:
+                # The figure is the window's: it cannot be drawn on another thread
+                with busy(f"Saving {_name(path)}…", self):
+                    current_tab.figure.savefig(path, dpi=300, bbox_inches="tight")
+            except Exception as e:
+                _export_failed(self, "the figure", e)
+                return
             QMessageBox.information(self, "Exported", f"Figure saved to {path}")
 
     def export_as_fits(self):
         """Export current image data as FITS file with all metadata preserved."""
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
-            QMessageBox.warning(self, "No Data", "No image data to export")
+            QMessageBox.warning(self, "No data", "No image data to export")
             return
 
         try:
@@ -227,7 +259,7 @@ class ExportsMixin:
             from astropy.io import fits
 
             path, _ = QFileDialog.getSaveFileName(
-                self, "Export as FITS", "", "FITS Files (*.fits);;All Files (*)"
+                self, "Export as FITS", "", "FITS files (*.fits);;All files (*)"
             )
             if not path:
                 return
@@ -283,7 +315,7 @@ class ExportsMixin:
                     else:
                         QMessageBox.warning(
                             self,
-                            "Same File",
+                            "Same file",
                             "Source and destination are the same file.",
                         )
                     return
@@ -294,6 +326,11 @@ class ExportsMixin:
                     pass
 
             # Fallback: create FITS from current_image_data with header
+            if (getattr(current_tab, "_downsample", 1) or 1) > 1:
+                # The header describes the file's pixels, not a preview's
+                raise RuntimeError("the image shown is a Fast load preview")
+            data = current_tab.current_image_data.T  # FITS is [y, x]
+
             # Get the original header if available
             original_header = None
             if hasattr(current_tab, "current_header") and current_tab.current_header:
@@ -323,15 +360,13 @@ class ExportsMixin:
                         except (ValueError, KeyError):
                             # Skip keys that can't be added
                             pass
-                    hdu = fits.PrimaryHDU(current_tab.current_image_data, header=header)
+                    hdu = fits.PrimaryHDU(data, header=header)
                 else:
                     # Already a FITS header
-                    hdu = fits.PrimaryHDU(
-                        current_tab.current_image_data, header=original_header
-                    )
+                    hdu = fits.PrimaryHDU(data, header=original_header)
             else:
                 # No header available, create basic HDU
-                hdu = fits.PrimaryHDU(current_tab.current_image_data)
+                hdu = fits.PrimaryHDU(data)
 
             # Add HISTORY entry
             hdu.header.add_history("Exported with SolarViewer")
@@ -344,7 +379,7 @@ class ExportsMixin:
         except ImportError:
             QMessageBox.warning(
                 self,
-                "Missing Dependency",
+                "Missing dependency",
                 "Astropy is required for FITS export. Please install it.",
             )
         except Exception as e:
@@ -354,7 +389,7 @@ class ExportsMixin:
         """Export/convert current image to CASA image format."""
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
-            QMessageBox.warning(self, "No Data", "No image data to export")
+            QMessageBox.warning(self, "No data", "No image data to export")
             return
 
         try:
@@ -362,20 +397,18 @@ class ExportsMixin:
             if hasattr(current_tab, "imagename") and current_tab.imagename:
                 source_image = current_tab.imagename
             else:
-                QMessageBox.warning(self, "No Source", "No source image file available")
+                QMessageBox.warning(self, "No source", "No source image file available")
                 return
 
             # Suggest a default output name based on source
-            default_name = (
-                os.path.splitext(os.path.basename(source_image))[0] + ".image"
-            )
+            default_name = os.path.splitext(_name(source_image))[0] + ".image"
 
             # Ask user for output path and name
             output_image, _ = QFileDialog.getSaveFileName(
                 self,
                 "Export as CASA Image",
                 default_name,
-                "CASA Image (*.image);;All Files (*)",
+                "CASA image (*.image);;All files (*)",
             )
             if not output_image:
                 return
@@ -453,7 +486,7 @@ class ExportsMixin:
                             if unsupported_types:
                                 QMessageBox.warning(
                                     self,
-                                    "Unsupported Coordinates",
+                                    "Unsupported coordinates",
                                     f"This FITS file uses {', '.join(unsupported_types)} coordinates.\n\n"
                                     "Only RA/Dec (celestial) and helioprojective (Solar-X/Y) "
                                     "coordinate systems are supported for CASA export.",
@@ -480,7 +513,7 @@ class ExportsMixin:
                         if not success:
                             QMessageBox.warning(
                                 self,
-                                "Conversion Failed",
+                                "Conversion failed",
                                 "Failed to convert helioprojective coordinates to RA/Dec.",
                             )
                             return
@@ -529,11 +562,11 @@ class ExportsMixin:
         """Save brightness temperature map as FITS file"""
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
-            QMessageBox.warning(self, "No Data", "No image data loaded")
+            QMessageBox.warning(self, "No data", "No image data loaded")
             return
 
         if not hasattr(current_tab, "imagename") or not current_tab.imagename:
-            QMessageBox.warning(self, "No Image", "No image file loaded")
+            QMessageBox.warning(self, "No image", "No image file loaded")
             return
 
         # Check if TB conversion is available (units must be Jy/beam)
@@ -544,14 +577,14 @@ class ExportsMixin:
                 self,
                 "Already TB",
                 "Current image is already in temperature units (K).\n"
-                "Use 'Export Data as FITS' to save it.",
+                "Use File → Export image as → FITS… to save it.",
             )
             return
 
         if not ("jy" in bunit and "beam" in bunit):
             QMessageBox.warning(
                 self,
-                "Invalid Units",
+                "Invalid units",
                 f"TB conversion requires Jy/beam units.\n"
                 f"Current units: {bunit or 'unknown'}",
             )
@@ -559,7 +592,7 @@ class ExportsMixin:
 
         try:
             # Get save path
-            default_name = os.path.basename(current_tab.imagename)
+            default_name = _name(current_tab.imagename)
             if is_fits(default_name):
                 default_name = default_name.rsplit(".", 1)[0] + "_TB.fits"
             else:
@@ -569,7 +602,7 @@ class ExportsMixin:
                 self,
                 "Save TB Map as FITS",
                 default_name,
-                "FITS Files (*.fits);;All Files (*)",
+                "FITS files (*.fits);;All files (*)",
             )
 
             if not path:
@@ -592,7 +625,12 @@ class ExportsMixin:
                 _discard(partial)  # and the map's own temporary file
 
             if error is not None:
-                QMessageBox.warning(self, "Error", f"TB conversion failed: {error}")
+                show_error(
+                    self,
+                    "Brightness temperature conversion failed",
+                    "The map was not saved. Check that the image has a beam and try again.",
+                    str(error),
+                )
             else:
                 QMessageBox.information(self, "Saved", f"TB map saved to:\n{path}")
 
@@ -608,18 +646,18 @@ class ExportsMixin:
             return
 
         if not current_tab.imagename:
-            QMessageBox.warning(self, "No Image", "No image loaded")
+            QMessageBox.warning(self, "No image", "No image loaded")
             return
 
         output_dir, _ = QFileDialog.getSaveFileName(
-            self, "Save Subimage As", "", "CASA Image (*);;All Files (*)"
+            self, "Save sub-image as", "", "CASA image (*);;All files (*)"
         )
 
         if output_dir:
             if not isinstance(current_tab.current_roi, tuple):
                 QMessageBox.information(
                     self,
-                    "Not Implemented",
+                    "Not implemented",
                     "Subimage for polygon/circle ROI not implemented yet",
                 )
                 return
@@ -628,17 +666,7 @@ class ExportsMixin:
             try:
                 # In the file's own pixels (Fast mode shows fewer)
                 xlow, xhigh, ylow, yhigh = current_tab.roi_at_full_resolution()
-                region_dict = (
-                    "box[["
-                    + str(xlow)
-                    + "pix, "
-                    + str(ylow)
-                    + "pix],["
-                    + str(xhigh)
-                    + "pix, "
-                    + str(yhigh)
-                    + "pix]]"
-                )
+                region_dict = _crtf_box(xlow, xhigh, ylow, yhigh)
 
                 run_in_background(
                     self,
@@ -665,25 +693,14 @@ class ExportsMixin:
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Region", "", "CASA Region (*.crtf);;All Files (*)"
+            self, "Export region", "", "CASA region (*.crtf);;All files (*)"
         )
 
         if path:
             try:
                 with open(path, "w") as f:
                     f.write("#CRTFv0\n")
-
-                if isinstance(current_tab.current_roi, tuple):
-                    # In the file's own pixels (Fast mode shows fewer)
-                    xlow, xhigh, ylow, yhigh = current_tab.roi_at_full_resolution()
-                    with open(path, "a") as f:
-                        f.write(
-                            f"box[[{xlow}pix, {ylow}pix], [{xhigh}pix, {yhigh}pix]]\n"
-                        )
-                else:
-                    with open(path, "a") as f:
-                        f.write("# Complex region - simplified representation\n")
-                        f.write("circle[[512pix, 512pix], 100pix]\n")
+                    f.write(_crtf_line(current_tab) + "\n")
 
                 QMessageBox.information(self, "Success", f"Region saved to {path}")
             except Exception as e:
@@ -693,16 +710,16 @@ class ExportsMixin:
         """Export the current image as a helioprojective FITS file"""
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or not current_tab.imagename:
-            QMessageBox.warning(self, "No Image", "No image loaded to export")
+            QMessageBox.warning(self, "No image", "No image loaded to export")
             return
 
         # Check if the image is already in helioprojective coordinates
         if current_tab._is_already_hpc():
             QMessageBox.information(
                 self,
-                "Already in Helioprojective",
+                "Already in helioprojective",
                 "This image is already in helioprojective (Solar-X/Y) coordinates.\n\n"
-                "No conversion is needed. You can save it directly using File → Save As FITS.",
+                "No conversion is needed. You can save it directly using File → Export image as → FITS…",
             )
             return
 
@@ -710,9 +727,9 @@ class ExportsMixin:
             # Get the output filename from user
             path, _ = QFileDialog.getSaveFileName(
                 self,
-                "Export as Helioprojective FITS",
+                "Export as helioprojective FITS",
                 "",
-                "FITS Files (*.fits);;All Files (*)",
+                "FITS files (*.fits);;All files (*)",
             )
 
             if path:
@@ -755,7 +772,7 @@ class ExportsMixin:
                 else:
                     QMessageBox.critical(
                         self,
-                        "Export Failed",
+                        "Export failed",
                         "Failed to export image as helioprojective FITS",
                     )
                     self.statusBar().showMessage("Export failed")

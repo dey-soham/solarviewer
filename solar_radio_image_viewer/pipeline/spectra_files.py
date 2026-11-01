@@ -16,8 +16,6 @@ import numpy as np
 from astropy.io import fits
 from PyQt5.QtWidgets import (
     QApplication,
-    QWidget,
-    QVBoxLayout,
     QHBoxLayout,
     QFileDialog,
     QMessageBox,
@@ -31,9 +29,9 @@ from PyQt5.QtWidgets import (
     QTabWidget,
 )
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import QSettings, QSignalBlocker, Qt, QTimer
+from PyQt5.QtCore import QSettings, Qt, QTimer
 from PyQt5.QtGui import QFont, QColor
-from ..ui.styles import palette_for as get_palette
+from ..ui.styles import FONT_SMALL, MONO_FAMILY, SPACE_M, themed
 
 from .spectra_common import _RemoteRead, _local_block_stats, _size_text, read_view
 logger = logging.getLogger(__name__)
@@ -43,7 +41,7 @@ from ..ui.activity import begin_activity, track_thread
 from ..ui.background import Cancelled, run_in_thread, wait_for
 from ..ui.busy import busy
 from ..ui.recent_files import forget_spectrum, remember_spectrum
-from ..ui.widgets import button_bar
+from ..ui.widgets import button_bar, dialog_layout
 from ..ui.geometry import fit_to_screen
 
 
@@ -388,7 +386,7 @@ class SpectraFilesMixin:
         if data.shape[0] != data.shape[1]:
             QMessageBox.information(
                 self,
-                "Swap Time and Frequency",
+                "Swap time and frequency",
                 "The image's axes have different lengths, so which is time is certain.",
             )
             return
@@ -554,6 +552,16 @@ class SpectraFilesMixin:
             except Exception as e:
                 self.logger.warning(f"DATE-OBS validation failed ({e}); using range fallback")
 
+        # Not a date, with a date to go by: seconds of that day, or from that
+        # start (e-CALLISTO's TIME column)
+        start, date_only = observation_start(header)
+        if start is not None and 0 <= t_first < 1.5 * 86400:
+            start_s = start.mjd * 86400.0
+            day_s = np.floor(start.mjd) * 86400.0
+            if abs(day_s + t_first - start_s) <= 1.0:
+                return day_s + t_raw
+            return (day_s if date_only else start_s) + t_raw
+
         # --- Fallback: range-based heuristic ---
         if 600000 < t_first < 800000:
             return (t_raw - 678576.0) * 86400.0
@@ -576,7 +584,7 @@ class SpectraFilesMixin:
         """
         if not fileName:
             fileName, _ = QFileDialog.getOpenFileName(
-                self, "Open FITS File", "", "FITS Files (*.fits *.fts);;All Files (*)"
+                self, "Open FITS file", "", "FITS files (*.fits *.fts);;All files (*)"
             )
         if not fileName:
             return
@@ -665,7 +673,13 @@ class SpectraFilesMixin:
 
         progress(stage="Reading the time and frequency axes…")
         time_axis, freq_axis = self._read_axes(hdul, header, data_ref)
+        if time_axis is None:
+            raise ValueError(
+                "it does not give its times: no TIME_AXIS table, TIME column or time axis in the header"
+            )
         nt = len(time_axis)
+        if nt not in data_ref.shape:
+            raise ValueError(f"it has {nt} times, but the image's shape is {data_ref.shape}")
         time_dim = self._guess_time_dim(data_ref, header, nt)
 
         progress(stage="Reading the spectrum…" if not is_large else "Reading the overview…")
@@ -699,8 +713,9 @@ class SpectraFilesMixin:
                     t_raw = np.array(hdu.data["TIME"].tolist()).flatten()
                     if len(t_raw) > 0:
                         time_axis = self._interpret_time_column(t_raw, header)
-                if "FREQ" in cols and freq_axis is None:
-                    f_raw = np.array(hdu.data["FREQ"].tolist()).flatten()
+                column = next((c for c in ("FREQ", "FREQUENCY") if c in cols), None)
+                if column and freq_axis is None:
+                    f_raw = np.array(hdu.data[column].tolist()).flatten()
                     if len(f_raw) > 0:
                         freq_axis = f_raw
 
@@ -795,7 +810,7 @@ class SpectraFilesMixin:
         except ImportError as e:
             QMessageBox.warning(
                 self,
-                "Missing Dependency",
+                "Missing dependency",
                 f"Opening files on a server needs paramiko:\n\npip install paramiko\n\n{e}",
             )
             return None
@@ -841,7 +856,7 @@ class SpectraFilesMixin:
                 return
             reply = QMessageBox.question(
                 self,
-                "Download File",
+                "Download file",
                 f"{posixpath.basename(path)} can't be read in parts ({e}).\n\n"
                 f"Download all of it ({_size_text(size)})?",
                 QMessageBox.Yes | QMessageBox.No,
@@ -1048,6 +1063,10 @@ class SpectraFilesMixin:
         self._data_cache.clear()
         self.current_filename = ""
         self._shown_raw = None
+        self._original_data = None
+        self._full_time_axis = None
+        self._full_freq_axis = None
+        self._all_headers = []
         self.canvas.clear_plot()
         self.minimap.set_full_data(None)
         self._select_region(None)
@@ -1077,8 +1096,6 @@ class SpectraFilesMixin:
             self._build_metadata_window()
 
     def _build_metadata_window(self):
-        palette = get_palette(self.current_theme)
-
         # Create a non-modal dialog
         dlg = QDialog(self, Qt.Window)
         self._metadata_dialog = dlg
@@ -1088,53 +1105,31 @@ class SpectraFilesMixin:
             self._metadata_dialog = None
 
         dlg.finished.connect(on_close)
-        dlg.setWindowTitle("FITS File Metadata")
-        dlg.setMinimumSize(750, 750)
+        dlg.setWindowTitle("FITS file metadata")
         fit_to_screen(dlg, 750, 750)
 
-        main_layout = QVBoxLayout(dlg)
-        main_layout.setSpacing(0)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout = dialog_layout(dlg)
 
-        # Compact Aesthetic Source Info
-        source_container = QWidget()
-        source_layout = QHBoxLayout(source_container)
-        source_layout.setContentsMargins(35, 20, 35, 0)
-
+        # The file, and a filter across the tables
+        search_layout = QHBoxLayout()
+        search_layout.setSpacing(SPACE_M)
         source_label = QLabel(os.path.basename(self.current_filename))
         source_label.setObjectName("Badge")
-        source_layout.addWidget(source_label)
-        source_layout.addStretch()
-        main_layout.addWidget(source_container)
-
-        # Search area - Styled precisely like SolarViewer
-        search_widget = QWidget()
-        search_layout = QHBoxLayout(search_widget)
-        search_layout.setContentsMargins(35, 15, 35, 20)
-        search_layout.setSpacing(15)
-
-        search_label = QLabel("Search:")
-        search_layout.addWidget(search_label)
-
+        search_layout.addWidget(source_label)
         search_input = QLineEdit()
-        search_input.setPlaceholderText("Filter headers across all columns...")
-        search_layout.addWidget(search_input)
-        main_layout.addWidget(search_widget)
-
-        # Tab Widget Container
-        tab_container = QWidget()
-        tab_container_layout = QVBoxLayout(tab_container)
-        tab_container_layout.setContentsMargins(35, 0, 35, 20)
+        search_input.setPlaceholderText("Filter headers across all columns…")
+        search_layout.addWidget(search_input, 1)
+        main_layout.addLayout(search_layout)
 
         tab_widget = QTabWidget()
-        tab_container_layout.addWidget(tab_widget)
-        main_layout.addWidget(tab_container)
+        main_layout.addWidget(tab_widget, 1)
 
         # Typography for technical data
-        mono_font = QFont("Monospace", 11)
+        mono_font = QFont(MONO_FAMILY, FONT_SMALL)
         mono_font.setStyleHint(QFont.TypeWriter)
         bold_mono = QFont(mono_font)
         bold_mono.setBold(True)
+        comments = []
 
         for hdu_name, hdu_header in self._all_headers:
             table = QTableWidget()
@@ -1163,14 +1158,19 @@ class SpectraFilesMixin:
 
                 c = QTableWidgetItem(str(card.comment) if card.comment else "")
                 c.setFont(mono_font)
-                c.setForeground(QColor(palette["text_secondary"]))
+                comments.append(c)
 
                 table.setItem(i, 0, k)
                 table.setItem(i, 1, v)
                 table.setItem(i, 2, c)
 
-            table.setViewportMargins(5, 5, 5, 5)
             tab_widget.addTab(table, hdu_name)
+
+        def tint_comments(palette):
+            for item in comments:
+                item.setForeground(QColor(palette["text_secondary"]))
+
+        themed(dlg, tint_comments)
 
         def filter_active_tab(text):
             text = text.lower()
@@ -1190,10 +1190,9 @@ class SpectraFilesMixin:
         )
 
         box, _ = button_bar(
-            primary=("Close", dlg.close),
-            extras=[("Copy to Clipboard", self._copy_metadata_to_clipboard)],
+            secondary=("Close", dlg.close),
+            extras=[("Copy to clipboard", self._copy_metadata_to_clipboard)],
         )
-        box.setContentsMargins(35, 10, 35, 20)
         main_layout.addWidget(box)
         dlg.show()
 

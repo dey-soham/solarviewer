@@ -38,8 +38,8 @@ INSTRUMENT_CADENCES = {
     "EIT 284": 720,
     "EIT 304": 720,
     # SOHO/MDI - 96 minutes
-    "MDI magnetogram": 96,
-    "MDI continuum": 96,
+    "MDI magnetogram": 5760,
+    "MDI continuum": 5760,
     # SOHO/LASCO - 30 minutes for both C2 and C3
     "LASCO": 1800,
     "LASCO C2": 1800,
@@ -237,7 +237,7 @@ def fetch_all_instruments(on_fallback=None) -> List[Tuple[str, str, str, str]]:
                 obs, inst, det = "SOHO", "EIT", "EIT"
                 meas = name.split(" ")[1]
             elif name.startswith("LASCO"):
-                obs, inst, det = "SOHO", "LASCO", name.split(" ")[1]
+                obs, inst, det = "SOHO", "LASCO", name.split("/")[1].split(" ")[0]
                 meas = "white-light"
             elif "EUVI" in name:
                 # Default to STEREO_A for fallback if not specified
@@ -251,13 +251,15 @@ def fetch_all_instruments(on_fallback=None) -> List[Tuple[str, str, str, str]]:
                 det = name.split(" ")[1] if "/" not in name else name.split("/")[1].split(" ")[0]
                 meas = "white-light"
             elif name.startswith("SUVI"):
-                obs, inst, det = "GOES-16", "SUVI", "SUVI" # Default to GOES-16
+                obs, inst, det = "GOES", "SUVI", "SUVI"
                 meas = name.split(" ")[1]
             else:
                 continue
                 
             layer = f"[{obs},{inst},{det},{meas},1,100]"
-            cadence = INSTRUMENT_CADENCES.get(name, 60)
+            cadence = INSTRUMENT_CADENCES.get(
+                name, INSTRUMENT_CADENCES.get(f"{det} {meas}", INSTRUMENT_CADENCES.get(det, INSTRUMENT_CADENCES.get(inst, 60)))
+            )
             fallback.append((name, layer, obs, cadence))
 
         return fallback

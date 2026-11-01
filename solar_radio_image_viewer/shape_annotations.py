@@ -6,22 +6,17 @@ and solar radii preset circles.
 """
 
 import logging
-import numpy as np
 from PyQt5.QtWidgets import (
     QDialog,
-    QVBoxLayout,
     QHBoxLayout,
-    QGridLayout,
-    QGroupBox,
-    QLabel,
     QLineEdit,
     QComboBox,
     QDoubleSpinBox,
     QCheckBox,
-    QDialogButtonBox,
     QAction,
     QMenu,
     QMessageBox,
+    QWidget,
 )
 from PyQt5.QtCore import Qt
 from matplotlib.patches import Circle, Ellipse, Rectangle
@@ -35,21 +30,32 @@ logger = logging.getLogger(__name__)
 # Drawing
 # ---------------------------------------------------------------------------
 
+def pixel_scales_deg(csys):
+    """Degrees per pixel along x and y of the CASA coordinate system ``csys``,
+    by the axes' own units (radians on the sky, arcsec on linear solar axes)."""
+    from astropy import units as u
+
+    increments = csys.increment()["numeric"][0:2]
+    units = csys.units()[0:2]
+    return [abs(float(v) * u.Unit(unit).to(u.deg)) for v, unit in zip(increments, units)]
+
+
+def world_degrees(csys, x, y):
+    """The world position in degrees of pixel (x, y) of ``csys``, by the
+    axes' own units and the image's projection."""
+    from astropy import units as u
+
+    world = csys.toworld([x, y] + [0] * (csys.naxes() - 2))["numeric"][0:2]
+    units = csys.units()[0:2]
+    return [float(v) * u.Unit(unit).to(u.deg) for v, unit in zip(world, units)]
+
+
 def _get_pixel_scale_deg(tab):
     """Return the pixel scale in degrees from the tab's WCS, or None."""
     if not tab.current_wcs:
         return None
     try:
-        cdelt = tab.current_wcs.increment()["numeric"][0:2]
-        if isinstance(cdelt, list):
-            cdelt = [float(c) for c in cdelt]
-        _hdr = getattr(tab, "_cached_fits_header", None) or {}
-        _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-        if _is_solar:
-            cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
-        else:
-            cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
-        return abs(float(cdelt[0]))
+        return pixel_scales_deg(tab.current_wcs)[0]
     except Exception:
         return None
 
@@ -290,48 +296,48 @@ class ShapeAnnotationDialog(QDialog):
     def __init__(self, parent, tab):
         super().__init__(parent)
         self.tab = tab
-        self.setWindowTitle("Add Shape Annotation")
+        self.setWindowTitle("Add shape annotation")
         set_hand_cursor(self)
-        self.setMinimumWidth(400)
         self._build_ui()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        from .dialogs.form import color_combo, field_label, form_block
+        from .ui.widgets import button_bar, dialog_layout
+
+        layout = dialog_layout(self)
 
         # --- Shape type ---
-        type_group = QGroupBox("Shape")
-        type_layout = QHBoxLayout(type_group)
-        type_layout.addWidget(QLabel("Type:"))
+        type_layout = form_block(layout, "Shape")
+        type_layout.addWidget(field_label("Type"), 0, 0)
         self.type_combo = QComboBox()
         self.type_combo.addItems(["Circle", "Ellipse", "Square", "Rectangle"])
         self.type_combo.currentTextChanged.connect(self._on_type_changed)
-        type_layout.addWidget(self.type_combo)
-        layout.addWidget(type_group)
+        type_layout.addWidget(self.type_combo, 0, 1)
 
         # --- Solar Radii Preset (Circle only) ---
-        self.preset_group = QGroupBox("Solar Radii Preset")
-        preset_layout = QHBoxLayout(self.preset_group)
-        preset_layout.addWidget(QLabel("Radius:"))
+        self.preset_label = field_label("Solar radii")
+        type_layout.addWidget(self.preset_label, 1, 0)
         self.preset_combo = QComboBox()
         self.preset_combo.addItem("None (custom)", None)
         for r in [1, 1.5, 2, 2.5, 3, 5, 10]:
             label = f"{int(r)} R☉" if r == int(r) else f"{r} R☉"
             self.preset_combo.addItem(label, r)
         self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
-        preset_layout.addWidget(self.preset_combo)
 
         self.preset_auto_check = QCheckBox("From FITS")
-        self.preset_auto_check.setToolTip("Scale radius perfectly to the actual FITS date")
+        self.preset_auto_check.setToolTip("Scale the radius to the Sun's size on the FITS date")
         self.preset_auto_check.setChecked(True)
         self.preset_auto_check.toggled.connect(lambda: self._on_preset_changed(self.preset_combo.currentIndex()))
-        preset_layout.addWidget(self.preset_auto_check)
-        
-        layout.addWidget(self.preset_group)
+        self.preset_row = QWidget()
+        preset_row = QHBoxLayout(self.preset_row)
+        preset_row.setContentsMargins(0, 0, 0, 0)
+        preset_row.addWidget(self.preset_combo, 1)
+        preset_row.addWidget(self.preset_auto_check)
+        type_layout.addWidget(self.preset_row, 1, 1)
 
         # --- Position ---
-        pos_group = QGroupBox("Position (pixels)")
-        pos_layout = QGridLayout(pos_group)
-        pos_layout.addWidget(QLabel("Center X:"), 0, 0)
+        pos_layout = form_block(layout, "Position (pixels)", pairs=2)
+        pos_layout.addWidget(field_label("Centre X"), 0, 0)
         cx_default = "0"
         cy_default = "0"
         if self.tab.current_image_data is not None:
@@ -340,23 +346,21 @@ class ShapeAnnotationDialog(QDialog):
             cy_default = str(ny // 2)
         self.cx_edit = QLineEdit(cx_default)
         pos_layout.addWidget(self.cx_edit, 0, 1)
-        pos_layout.addWidget(QLabel("Center Y:"), 0, 2)
+        pos_layout.addWidget(field_label("Centre Y"), 0, 2)
         self.cy_edit = QLineEdit(cy_default)
         pos_layout.addWidget(self.cy_edit, 0, 3)
-        layout.addWidget(pos_group)
 
         # --- Size ---
-        size_group = QGroupBox("Size")
-        size_layout = QGridLayout(size_group)
+        size_layout = form_block(layout, "Size", pairs=2)
 
-        size_layout.addWidget(QLabel("Width:"), 0, 0)
+        size_layout.addWidget(field_label("Width"), 0, 0)
         self.width_spin = QDoubleSpinBox()
         self.width_spin.setRange(0.1, 999999)
         self.width_spin.setValue(100)
         self.width_spin.setDecimals(1)
         size_layout.addWidget(self.width_spin, 0, 1)
 
-        self.height_label = QLabel("Height:")
+        self.height_label = field_label("Height")
         size_layout.addWidget(self.height_label, 0, 2)
         self.height_spin = QDoubleSpinBox()
         self.height_spin.setRange(0.1, 999999)
@@ -364,44 +368,45 @@ class ShapeAnnotationDialog(QDialog):
         self.height_spin.setDecimals(1)
         size_layout.addWidget(self.height_spin, 0, 3)
 
-        size_layout.addWidget(QLabel("Unit:"), 1, 0)
+        size_layout.addWidget(field_label("Unit"), 1, 0)
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["Pixels", "Arcsec"])
         size_layout.addWidget(self.unit_combo, 1, 1)
 
-        self.angle_label = QLabel("Angle (°):")
+        self.angle_label = field_label("Angle (°)")
         size_layout.addWidget(self.angle_label, 1, 2)
         self.angle_spin = QDoubleSpinBox()
         self.angle_spin.setRange(-360, 360)
         self.angle_spin.setValue(0)
         self.angle_spin.setDecimals(1)
         size_layout.addWidget(self.angle_spin, 1, 3)
-
-        layout.addWidget(size_group)
+        # (hidden for a circle or square: the fields keep their width)
+        for widget in (self.height_label, self.height_spin, self.angle_label, self.angle_spin):
+            policy = widget.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            widget.setSizePolicy(policy)
 
         # --- Style ---
-        style_group = QGroupBox("Style")
-        style_layout = QGridLayout(style_group)
+        style_layout = form_block(layout, "Style", pairs=2)
 
-        style_layout.addWidget(QLabel("Color:"), 0, 0)
-        self.color_combo = QComboBox()
-        self.color_combo.addItems(_COLORS)
+        style_layout.addWidget(field_label("Colour"), 0, 0)
+        self.color_combo = color_combo(_COLORS)
         style_layout.addWidget(self.color_combo, 0, 1)
 
-        style_layout.addWidget(QLabel("Line Style:"), 0, 2)
+        style_layout.addWidget(field_label("Line style"), 0, 2)
         self.linestyle_combo = QComboBox()
         for name, val in _LINESTYLES:
             self.linestyle_combo.addItem(name, val)
         style_layout.addWidget(self.linestyle_combo, 0, 3)
 
-        style_layout.addWidget(QLabel("Line Width:"), 1, 0)
+        style_layout.addWidget(field_label("Line width"), 1, 0)
         self.linewidth_spin = QDoubleSpinBox()
         self.linewidth_spin.setRange(0.5, 10.0)
         self.linewidth_spin.setValue(1.5)
         self.linewidth_spin.setSingleStep(0.5)
         style_layout.addWidget(self.linewidth_spin, 1, 1)
 
-        style_layout.addWidget(QLabel("Alpha:"), 1, 2)
+        style_layout.addWidget(field_label("Opacity"), 1, 2)
         self.alpha_spin = QDoubleSpinBox()
         self.alpha_spin.setRange(0.0, 1.0)
         self.alpha_spin.setValue(0.8)
@@ -409,38 +414,28 @@ class ShapeAnnotationDialog(QDialog):
         style_layout.addWidget(self.alpha_spin, 1, 3)
 
         self.fill_check = QCheckBox("Fill")
-        style_layout.addWidget(self.fill_check, 2, 0)
+        style_layout.addWidget(self.fill_check, 2, 1)
         self.fill_check.stateChanged.connect(self._on_fill_changed)
 
-        self.fillcolor_label = QLabel("Fill Color:")
+        self.fillcolor_label = field_label("Fill colour")
         style_layout.addWidget(self.fillcolor_label, 2, 2)
-        self.fillcolor_combo = QComboBox()
-        self.fillcolor_combo.addItems(_COLORS)
-        self.fillcolor_combo.setCurrentText("cyan")
+        self.fillcolor_combo = color_combo(_COLORS, "cyan")
         style_layout.addWidget(self.fillcolor_combo, 2, 3)
         self.fillcolor_label.setVisible(False)
         self.fillcolor_combo.setVisible(False)
 
-        layout.addWidget(style_group)
-
-        # --- Label ---
-        label_group = QGroupBox("Label (optional)")
-        label_layout = QHBoxLayout(label_group)
+        style_layout.addWidget(field_label("Label"), 3, 0)
         self.label_edit = QLineEdit("")
-        label_layout.addWidget(self.label_edit)
-        layout.addWidget(label_group)
+        self.label_edit.setPlaceholderText("Optional")
+        style_layout.addWidget(self.label_edit, 3, 1, 1, 3)
 
-        from PyQt5.QtWidgets import QPushButton
-        btn_layout = QHBoxLayout()
-        add_btn = QPushButton("Add")
-        add_btn.setToolTip("Add shape and keep dialog open")
-        add_btn.clicked.connect(self._on_add)
-        btn_layout.addWidget(add_btn)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self._on_ok)
-        buttons.rejected.connect(self.reject)
-        btn_layout.addWidget(buttons)
-        layout.addLayout(btn_layout)
+        box, buttons = button_bar(
+            primary=("Add", self._on_ok),
+            secondary=("Cancel", self.reject),
+            extras=[("Add another", self._on_add)],
+        )
+        buttons["Add another"].setToolTip("Add the shape and keep this window open")
+        layout.addWidget(box)
 
         # Initial visibility
         self._on_type_changed(self.type_combo.currentText())
@@ -455,7 +450,8 @@ class ShapeAnnotationDialog(QDialog):
         has_angle = shape_type in ("Ellipse", "Rectangle")
         self.angle_label.setVisible(has_angle)
         self.angle_spin.setVisible(has_angle)
-        self.preset_group.setVisible(is_circle)
+        self.preset_label.setVisible(is_circle)
+        self.preset_row.setVisible(is_circle)
         # Reset preset when switching away from circle
         if not is_circle:
             self.preset_combo.setCurrentIndex(0)
@@ -500,8 +496,8 @@ class ShapeAnnotationDialog(QDialog):
             cx = float(self.cx_edit.text())
             cy = float(self.cy_edit.text())
         except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Enter valid numeric coordinates.")
-            return
+            QMessageBox.warning(self, "Invalid input", "Enter valid numeric coordinates.")
+            return False
 
         shape_type = self.type_combo.currentText().lower()
         w = self.width_spin.value()
@@ -515,23 +511,24 @@ class ShapeAnnotationDialog(QDialog):
             "width": w,
             "height": h,
             "unit": unit,
-            "color": self.color_combo.currentText(),
+            "color": self.color_combo.currentData(),
             "linestyle": self.linestyle_combo.currentData(),
             "linewidth": self.linewidth_spin.value(),
             "alpha": self.alpha_spin.value(),
             "fill": self.fill_check.isChecked(),
-            "facecolor": self.fillcolor_combo.currentText() if self.fill_check.isChecked() else "none",
+            "facecolor": self.fillcolor_combo.currentData() if self.fill_check.isChecked() else "none",
             "angle": self.angle_spin.value(),
             "label": self.label_edit.text().strip(),
         }
 
         self.tab.shape_annotations.append(shape)
         self.tab.schedule_plot()
+        return True
 
     def _on_ok(self):
         """Add shape and close the dialog."""
-        self._on_add()
-        self.accept()
+        if self._on_add():
+            self.accept()
 
 
 # ---------------------------------------------------------------------------
@@ -546,13 +543,13 @@ def setup_shape_menu(app, annot_menu):
     annot_menu.addSeparator()
 
     # Add Shape dialog
-    shape_act = QAction("Add Shape…", app)
+    shape_act = QAction("Add shape…", app)
     shape_act.setStatusTip("Add a customizable shape annotation to the image")
     shape_act.triggered.connect(lambda: _open_shape_dialog(app))
     annot_menu.addAction(shape_act)
 
     # Solar Radii Presets submenu
-    radii_menu = QMenu("Solar Radii Presets", app)
+    radii_menu = QMenu("Solar radii presets", app)
     for r in [1, 1.5, 2, 2.5, 3, 5, 10]:
         label = f"{r} R☉" if r == int(r) else f"{r} R☉"
         act = QAction(label, app)
@@ -564,15 +561,15 @@ def setup_shape_menu(app, annot_menu):
     annot_menu.addSeparator()
 
     # --- Remove / Clear submenu ---
-    manage_menu = QMenu("Remove / Clear", app)
+    manage_menu = QMenu("Remove or clear", app)
 
     # Text
-    remove_text_act = QAction("Remove Last Text", app)
+    remove_text_act = QAction("Remove last text", app)
     remove_text_act.setStatusTip("Remove the most recently added text annotation")
     remove_text_act.triggered.connect(lambda: _remove_last_of(app, "text_annotations"))
     manage_menu.addAction(remove_text_act)
 
-    clear_text_act = QAction("Clear All Text", app)
+    clear_text_act = QAction("Clear all text", app)
     clear_text_act.setStatusTip("Remove all text annotations")
     clear_text_act.triggered.connect(lambda: _clear_all_of(app, "text_annotations"))
     manage_menu.addAction(clear_text_act)
@@ -580,12 +577,12 @@ def setup_shape_menu(app, annot_menu):
     manage_menu.addSeparator()
 
     # Arrow
-    remove_arrow_act = QAction("Remove Last Arrow", app)
+    remove_arrow_act = QAction("Remove last arrow", app)
     remove_arrow_act.setStatusTip("Remove the most recently added arrow annotation")
     remove_arrow_act.triggered.connect(lambda: _remove_last_of(app, "arrow_annotations"))
     manage_menu.addAction(remove_arrow_act)
 
-    clear_arrow_act = QAction("Clear All Arrows", app)
+    clear_arrow_act = QAction("Clear all arrows", app)
     clear_arrow_act.setStatusTip("Remove all arrow annotations")
     clear_arrow_act.triggered.connect(lambda: _clear_all_of(app, "arrow_annotations"))
     manage_menu.addAction(clear_arrow_act)
@@ -593,12 +590,12 @@ def setup_shape_menu(app, annot_menu):
     manage_menu.addSeparator()
 
     # Shape
-    remove_shape_act = QAction("Remove Last Shape", app)
+    remove_shape_act = QAction("Remove last shape", app)
     remove_shape_act.setStatusTip("Remove the most recently added shape annotation")
     remove_shape_act.triggered.connect(lambda: _remove_last_of(app, "shape_annotations"))
     manage_menu.addAction(remove_shape_act)
 
-    clear_shape_act = QAction("Clear All Shapes", app)
+    clear_shape_act = QAction("Clear all shapes", app)
     clear_shape_act.setStatusTip("Remove all shape annotations")
     clear_shape_act.triggered.connect(lambda: _clear_all_of(app, "shape_annotations"))
     manage_menu.addAction(clear_shape_act)
@@ -606,7 +603,7 @@ def setup_shape_menu(app, annot_menu):
     manage_menu.addSeparator()
 
     # Clear everything
-    clear_all_act = QAction("Clear All Annotations", app)
+    clear_all_act = QAction("Clear all annotations", app)
     clear_all_act.setStatusTip("Remove all text, arrow, and shape annotations")
     clear_all_act.triggered.connect(lambda: _clear_everything(app))
     manage_menu.addAction(clear_all_act)
@@ -619,7 +616,7 @@ def setup_shape_menu(app, annot_menu):
 def _open_shape_dialog(app):
     tab = app.tab_widget.currentWidget()
     if not tab or tab.current_image_data is None:
-        QMessageBox.warning(app, "No Data", "Load an image first.")
+        QMessageBox.warning(app, "No data", "Load an image first.")
         return
     dlg = ShapeAnnotationDialog(app, tab)
     dlg.setAttribute(Qt.WA_DeleteOnClose)
@@ -635,7 +632,7 @@ def _open_shape_dialog(app):
 def _add_preset(app, multiplier):
     tab = app.tab_widget.currentWidget()
     if not tab or tab.current_image_data is None:
-        QMessageBox.warning(app, "No Data", "Load an image first.")
+        QMessageBox.warning(app, "No data", "Load an image first.")
         return
     add_solar_radius_circle(tab, multiplier)
 

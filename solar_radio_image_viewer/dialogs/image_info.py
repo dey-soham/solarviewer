@@ -13,7 +13,9 @@ from PyQt5.QtWidgets import (
 )
 import os
 
-from ..ui.widgets import button_bar
+from PyQt5.QtCore import Qt
+
+from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import set_hand_cursor
 
 
@@ -25,7 +27,7 @@ class ImageInfoDialog(QDialog):
 
     def __init__(self, parent=None, info_text="", metadata=None, imagename=None):
         super().__init__(parent)
-        self.setWindowTitle("Image Metadata")
+        self.setWindowTitle("Image metadata")
         self.setMinimumSize(700, 600)
         fit_to_screen(self, 700, 600)
         self.metadata = metadata
@@ -36,9 +38,7 @@ class ImageInfoDialog(QDialog):
         set_hand_cursor(self)
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout = dialog_layout(self)
 
         # Source Info
         if hasattr(self, "imagename") and self.imagename:
@@ -68,8 +68,8 @@ class ImageInfoDialog(QDialog):
         # Button row
 
         box, _ = button_bar(
-            primary=("Close", self.accept),
-            extras=[("Copy to Clipboard", self._copy_to_clipboard)],
+            secondary=("Close", self.accept),
+            extras=[("Copy to clipboard", self._copy_to_clipboard)],
         )
         layout.addWidget(box)
 
@@ -106,6 +106,8 @@ class ImageInfoDialog(QDialog):
         table = QTableWidget()
         table.setColumnCount(2)
         table.setHorizontalHeaderLabels(["Property", "Value"])
+        table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        table.setShowGrid(False)
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         table.verticalHeader().setVisible(False)
@@ -140,9 +142,9 @@ class ImageInfoDialog(QDialog):
 
         # Search box
         search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel("Search:"))
+        search_layout.addWidget(QLabel("Search"))
         search_edit = QLineEdit()
-        search_edit.setPlaceholderText("Filter headers...")
+        search_edit.setPlaceholderText("Filter headers…")
         search_layout.addWidget(search_edit)
         layout.addLayout(search_layout)
 
@@ -150,6 +152,8 @@ class ImageInfoDialog(QDialog):
         table = QTableWidget()
         table.setColumnCount(2)
         table.setHorizontalHeaderLabels(["Keyword", "Value"])
+        table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        table.setShowGrid(False)
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         table.verticalHeader().setVisible(False)

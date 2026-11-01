@@ -8,7 +8,6 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QGridLayout,
-    QLabel,
     QLineEdit,
     QPushButton,
     QFileDialog,
@@ -17,11 +16,12 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QWidget,
-    QRadioButton,
     QButtonGroup,
 )
 from ...ui.activity import ActivityLabel
 from ...ui.open_image import choose_image
+from ...ui.widgets import segmented
+from .helpers import hint
 
 
 class InputTabMixin:
@@ -35,43 +35,78 @@ class InputTabMixin:
         input_scroll.setWidgetResizable(True)
         input_scroll_content = QWidget()
         input_layout = QVBoxLayout(input_scroll_content)
-        input_layout.setContentsMargins(12, 12, 12, 12)
+        input_layout.setContentsMargins(0, 12, 8, 12)
         input_layout.setSpacing(12)
         input_scroll.setWidget(input_scroll_content)
 
         # Input pattern section
-        input_group = QGroupBox("Input Files")
+        input_group = QGroupBox("Image series")
         input_group_layout = QGridLayout(input_group)
-        input_group_layout.setContentsMargins(12, 16, 12, 12)
-        input_group_layout.setHorizontalSpacing(10)
+        input_group_layout.setContentsMargins(12, 4, 12, 4)
+        input_group_layout.setHorizontalSpacing(8)
         input_group_layout.setVerticalSpacing(8)
 
-        # Images on this computer or on a server (ui.remote_source)
-        input_layout.addLayout(self._create_images_on_row())
+        top_grid = QGridLayout()
+        top_grid.setHorizontalSpacing(8)
+        top_grid.setVerticalSpacing(8)
+        top_grid.setColumnStretch(1, 1)
 
-        # 0. Image: a series of files, or one image for every frame
-        source_row = QHBoxLayout()
-        self.image_series_radio = QRadioButton("Image series (folder + pattern)")
-        self.image_single_radio = QRadioButton("Single image")
-        self.image_series_radio.setChecked(True)
+        # Images on this computer or on a server (ui.remote_source), and
+        # starting from the main window's view
+        images_on_row = self._create_images_on_row()
+        use_view_btn = QPushButton("Use current view")
+        use_view_btn.setToolTip(
+            "Take the files, colormap, stretch, range, visible area and\n"
+            "contours of the image open in the main window"
+        )
+        use_view_btn.setEnabled(self._main_window is not None)
+        use_view_btn.clicked.connect(self._use_current_view)
+        images_on_row.addWidget(use_view_btn)
+        top_grid.addWidget(hint("Images on"), 0, 0)
+        top_grid.addLayout(images_on_row, 0, 1)
+
+        # 0. Image: a series of files, or one image for every frame (the
+        # names are the keys of saved settings files)
+        self.image_series_radio = QPushButton("Image series")
+        self.image_single_radio = QPushButton("Single image")
+        self.image_series_radio.setToolTip(
+            "A folder and a file pattern: one frame for each image found"
+        )
         self.image_single_radio.setToolTip(
             "The same image in every frame; the frames then follow the first\n"
             "contour layer that is a series"
         )
         source_group = QButtonGroup(self)
-        source_group.addButton(self.image_series_radio)
-        source_group.addButton(self.image_single_radio)
-        source_row.addWidget(self.image_series_radio)
-        source_row.addWidget(self.image_single_radio)
+        for button in (self.image_series_radio, self.image_single_radio):
+            button.setCheckable(True)
+            button.setAutoDefault(False)
+            source_group.addButton(button)
+        self.image_series_radio.setChecked(True)
+        self.image_series_radio.toggled.connect(self.schedule_preview)
+        source_row = QHBoxLayout()
+        source_row.addWidget(
+            segmented([self.image_series_radio, self.image_single_radio], role="HeaderSegmented")
+        )
         source_row.addStretch()
-        input_layout.addLayout(source_row)
+        top_grid.addWidget(hint("Show"), 1, 0)
+        top_grid.addLayout(source_row, 1, 1)
+
+        # Stokes parameter (of either kind of image)
+        self.stokes_combo = QComboBox()
+        self.stokes_combo.addItems(["I", "Q", "U", "V"])
+        stokes_row = QHBoxLayout()
+        stokes_row.addWidget(self.stokes_combo)
+        stokes_row.addStretch()
+        top_grid.addWidget(hint("Stokes"), 2, 0)
+        top_grid.addLayout(stokes_row, 2, 1)
+        input_layout.addLayout(top_grid)
 
         # 1. Directory field
-        input_group_layout.addWidget(QLabel("Input Directory:"), 0, 0)
+        input_group_layout.addWidget(hint("Folder"), 0, 0)
         self.input_directory_edit = QLineEdit()
         input_group_layout.addWidget(self.input_directory_edit, 0, 1)
 
-        browse_dir_btn = QPushButton("Browse")
+        browse_dir_btn = QPushButton("Browse…")
         browse_dir_btn.clicked.connect(
             lambda: (
                 (
@@ -85,9 +120,9 @@ class InputTabMixin:
         input_group_layout.addWidget(browse_dir_btn, 0, 2)
 
         # 2. Pattern field
-        input_group_layout.addWidget(QLabel("File Pattern:"), 1, 0)
+        input_group_layout.addWidget(hint("Pattern"), 1, 0)
         self.input_pattern_edit = QLineEdit()
-        self.input_pattern_edit.setPlaceholderText("e.g., *.fits, *_171*.fits or *.image (CASA)")
+        self.input_pattern_edit.setPlaceholderText("For example *.fits, *_171*.fits or *.image (CASA)")
         input_group_layout.addWidget(self.input_pattern_edit, 1, 1)
 
         # Scan button
@@ -96,42 +131,39 @@ class InputTabMixin:
         input_group_layout.addWidget(scan_btn, 1, 2)
 
         # File sorting
-        input_group_layout.addWidget(QLabel("Sort Files By:"), 2, 0)
+        input_group_layout.addWidget(hint("Sort by"), 2, 0)
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Filename", "Date/Time", "Extension"])
         input_group_layout.addWidget(self.sort_combo, 2, 1)
 
-        # Stokes parameter
-        input_group_layout.addWidget(QLabel("Stokes Parameter:"), 3, 0)
-        self.stokes_combo = QComboBox()
-        self.stokes_combo.addItems(["I", "Q", "U", "V"])
-        input_group_layout.addWidget(self.stokes_combo, 3, 1)
-
         input_layout.addWidget(input_group)
 
-        self.single_image_group = QGroupBox("Single Image")
+        self.single_image_group = QGroupBox("Single image")
         single_layout = QHBoxLayout(self.single_image_group)
+        single_layout.setContentsMargins(12, 4, 12, 4)
+        single_layout.setSpacing(8)
         self.single_image_edit = QLineEdit()
         self.single_image_edit.setPlaceholderText("FITS or CASA image shown in every frame")
         single_layout.addWidget(self.single_image_edit, 1)
-        single_browse = QPushButton("Browse")
+        single_browse = QPushButton("Browse…")
         single_browse.setToolTip("Choose a FITS file or CASA image")
         single_browse.clicked.connect(self._browse_single_image)
         single_layout.addWidget(single_browse)
         input_layout.addWidget(self.single_image_group)
 
         def show_image_source(series):
-            input_group.setEnabled(series)
-            self.single_image_group.setEnabled(not series)
-
-        self.image_series_radio.toggled.connect(show_image_source)
-        show_image_source(True)
+            input_group.setVisible(series)
+            self.single_image_group.setVisible(not series)
+            self.files_found_label.setVisible(series)
 
         # Files found status (separate from the group) - use theme-compatible styling
         self.files_found_label = ActivityLabel("No files found yet")
         self.files_found_label.label.setObjectName("StatusLabel")
         input_layout.addWidget(self.files_found_label)
         input_layout.addStretch()
+
+        self.image_series_radio.toggled.connect(show_image_source)
+        show_image_source(True)
         return input_scroll
 
     def get_smart_start_directory(self, *extra_paths):
@@ -184,7 +216,7 @@ class InputTabMixin:
         start_dir = self.get_smart_start_directory(self.input_directory_edit.text())
 
         directory = QFileDialog.getExistingDirectory(
-            self, "Select Input Directory", start_dir
+            self, "Select input folder", start_dir
         )
 
         if directory:
@@ -208,8 +240,8 @@ class InputTabMixin:
         elif not self.input_directory_edit.text() or not self.input_pattern_edit.text():
             QMessageBox.warning(
                 self,
-                "Incomplete Input",
-                "Please specify both directory and pattern.",
+                "Incomplete input",
+                "Enter both a folder and a file pattern.",
             )
             return
         else:
@@ -269,7 +301,7 @@ class InputTabMixin:
         else:
             start_dir = os.path.expanduser("~")
 
-        filepath = choose_image(self, "Select Reference Image", start_dir)
+        filepath = choose_image(self, "Select reference image", start_dir)
 
         if filepath:
             self.reference_image = filepath
@@ -284,7 +316,7 @@ class InputTabMixin:
             return
         path = choose_image(
             self,
-            "Select the Image",
+            "Select the image",
             self.get_smart_start_directory(self.single_image_edit.text()),
         )
         if path:

@@ -167,7 +167,7 @@ class _WaitDialog(QDialog):
 
     def __init__(self, parent, label):
         super().__init__(parent.window() if parent is not None else None)
-        self.setWindowTitle("Please Wait")
+        self.setWindowTitle("Please wait")
         self.setWindowModality(Qt.ApplicationModal)
         self.setMinimumWidth(340)
         layout = QVBoxLayout(self)
@@ -181,6 +181,7 @@ class _WaitDialog(QDialog):
         row.addWidget(text, 1)
         layout.addLayout(row)
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Cancel).setAutoDefault(False)  # (no accent on it)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 

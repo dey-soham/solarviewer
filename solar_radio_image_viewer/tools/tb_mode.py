@@ -240,7 +240,7 @@ class TbModeMixin:
             self._tb_original_imagename = None
             show_error(
                 self,
-                "Conversion Failed",
+                "Conversion failed",
                 f"Could not convert between flux density and brightness "
                 f"temperature: {e}\n\nThe conversion needs the beam (BMAJ, BMIN) "
                 "and the frequency from the image's header.",

@@ -298,12 +298,17 @@ class SpectraNavigationMixin:
 
         if self._nav_mode == "Range":
             # From the page shown (the first window on the first visit)
+            range_before = self._range
             if self._range is None:
                 self._range = previous if previous and previous != (0, len(self._full_time_axis)) else (
                     0, min(self._calculate_window_samples(), len(self._full_time_axis))
                 )
             self._set_range_edits(*self._range)
-            self._show_range(*self._range)
+            if not self._show_range(*self._range):
+                self._range = range_before
+                self._keep_mode(mode_before)
+                self._updateNavigationStats()
+                return
             self._reveal_range_controls()
             return
 
@@ -312,7 +317,7 @@ class SpectraNavigationMixin:
             if self._is_large_file:
                 reply = QMessageBox.warning(
                     self,
-                    "Large Data Warning",
+                    "Large data",
                     "Loading the full spectrum for a very large file may consume significant memory. Continue?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
@@ -356,14 +361,19 @@ class SpectraNavigationMixin:
         self.rangeFromEdit.setFocus()
         self.rangeFromEdit.selectAll()
 
-    def _time_text(self, index):
-        """UTC of the file's sample ``index``, as typed in the range boxes."""
-        when = datetime(1858, 11, 17) + timedelta(seconds=float(self._full_time_axis[index]))
+    def _time_text(self, index, round_up=False):
+        """UTC of the file's sample ``index``, as typed in the range boxes (to
+        1/100 s; ``round_up``: the last time of a range, which read back must
+        still hold that sample)."""
+        seconds = float(self._full_time_axis[index])
+        if round_up:
+            seconds = np.ceil(seconds * 100) / 100
+        when = datetime(1858, 11, 17) + timedelta(seconds=seconds)
         return when.strftime("%H:%M:%S.%f")[:-4]
 
     def _set_range_edits(self, start, stop):
         self.rangeFromEdit.setText(self._time_text(start))
-        self.rangeToEdit.setText(self._time_text(stop - 1))
+        self.rangeToEdit.setText(self._time_text(stop - 1, round_up=True))
 
     def onShowRange(self):
         """Show the data between the times typed (Time Range)."""
@@ -390,13 +400,14 @@ class SpectraNavigationMixin:
         self._show_range(start, stop)
 
     def _show_range(self, start, stop):
-        """Show rows ``start``..``stop`` of the file (Time Range mode)."""
+        """Show rows ``start``..``stop`` of the file (Time Range mode); False
+        if the user would rather not (what is shown stays)."""
         nf = len(self._full_freq_axis) if self._full_freq_axis is not None else 1
         values = (stop - start) * nf
         if values > 50_000_000:
             reply = QMessageBox.warning(
                 self,
-                "Large Range",
+                "Large range",
                 f"This range holds {values / 1e6:.0f} million values "
                 f"({_size_text(values * 4)} in memory). Show it?\n\n"
                 "(Averaging time samples keeps what is drawn small.)",
@@ -404,7 +415,8 @@ class SpectraNavigationMixin:
                 QMessageBox.No,
             )
             if reply != QMessageBox.Yes:
-                return
+                self._updateNavigationStats()  # (the overview's outline, if dragged)
+                return False
         self._range = (start, stop)
         self._set_range_edits(start, stop)
         self._stop_remote_reads()
@@ -412,6 +424,7 @@ class SpectraNavigationMixin:
         self._current_page = 0
         self._updateNavigationStats()
         self.loadSlice()
+        return True
 
     def onNavDurationChanged(self, val):
         """Pages of a new length: the page shown keeps its start, so the
@@ -423,6 +436,7 @@ class SpectraNavigationMixin:
             anchor = self._page_bounds(self._current_page)[0]
         self._window_duration_min = val
 
+        self._stop_remote_reads()  # (reads of pages of the old length)
         self._data_cache.clear()
         if self._full_time_axis is not None:
             window = self._calculate_window_samples()

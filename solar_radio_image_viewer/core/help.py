@@ -9,7 +9,6 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
     QLabel,
-    QPushButton,
     QFrame,
     # QInputDialog,
     # QMenuBar,
@@ -18,11 +17,34 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from ..dialogs import UpdateDialog
 from ..ui.icons import get_resource_path
+from ..ui.styles import SPACE_L, SPACE_M, SPACE_S, SPACE_XS, themed
+from ..ui.widgets import button_bar, dialog_layout, empty_note, rule
 
 logger = logging.getLogger(__name__)
 
 
-from ..ui.geometry import fit_to_screen, fit_width_to_text
+from ..ui.geometry import fit_to_screen
+
+
+def _round_logo(path, size, widget):
+    """The logo at ``size``, cut to its disc as on the splash screen (the
+    picture has a white square round the sun)."""
+    from PyQt5.QtGui import QPainter, QPainterPath, QPixmap
+
+    ratio = widget.devicePixelRatioF()
+    pixels = round(size * ratio)
+    round_logo = QPixmap(pixels, pixels)
+    round_logo.fill(Qt.transparent)
+    painter = QPainter(round_logo)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    disc = QPainterPath()
+    disc.addEllipse(0, 0, pixels, pixels)
+    painter.setClipPath(disc)
+    painter.drawPixmap(0, 0, QPixmap(path).scaled(pixels, pixels, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    painter.end()
+    round_logo.setDevicePixelRatio(ratio)
+    return round_logo
 
 
 class HelpMixin:
@@ -58,69 +80,54 @@ class HelpMixin:
 
     def show_about_dialog(self):
         """Show a modern, professional about dialog."""
-        from PyQt5.QtGui import QPixmap
-
         dialog = QDialog(self)
         dialog.setWindowTitle("About SolarViewer")
-        fit_to_screen(dialog, 510, 580)
+        dialog.setMinimumWidth(440)
 
         layout = QVBoxLayout(dialog)
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Header: a banner in the accent colour
+        # Header: a low banner in the accent colour, the logo beside the name
         header = QFrame()
         header.setObjectName("Banner")
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(30, 25, 30, 20)
-        header_layout.setSpacing(10)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(SPACE_L, SPACE_M, SPACE_L, SPACE_M)
+        header_layout.setSpacing(SPACE_M)
 
         icon_label = QLabel()
         try:
-            icon_path = get_resource_path("assets/icon.png")
-            pixmap = QPixmap(icon_path)
-            icon_label.setPixmap(
-                pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
+            icon_label.setPixmap(_round_logo(get_resource_path("assets/icon.png"), 56, dialog))
         except Exception:
             pass
-        icon_label.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(icon_label)
 
         # App title
-        title = QLabel("SolarViewer")
-        title.setObjectName("DialogTitle")
-        title.setAlignment(Qt.AlignCenter)
-        header_layout.addWidget(title)
-
-        # Version badge
         from .. import __version__
 
-        version_container = QHBoxLayout()
-        version_container.addStretch()
-        version_label = QLabel(f"Version {__version__}")
-        version_container.addWidget(version_label)
-        version_container.addStretch()
-        header_layout.addLayout(version_container)
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(SPACE_XS)
+        title = QLabel("SolarViewer")
+        title.setObjectName("DialogTitle")
+        title_layout.addWidget(title)
+        title_layout.addWidget(QLabel(f"Version {__version__}"))
+        header_layout.addLayout(title_layout)
+        header_layout.addStretch()
 
         layout.addWidget(header)
 
         # Content section
         content = QFrame()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(30, 25, 30, 20)
-        content_layout.setSpacing(16)
+        content_layout = dialog_layout(content)
 
         # Description
         desc = QLabel("A visualization tool for CASA and FITS solar radio images")
         desc.setWordWrap(True)
-        desc.setAlignment(Qt.AlignCenter)
         content_layout.addWidget(desc)
 
         # Feature pills
         features_layout = QHBoxLayout()
-        features_layout.setSpacing(10)
-        features_layout.addStretch()
+        features_layout.setSpacing(SPACE_S)
 
         for feature in ["Multi-tab", "Stokes", "Fitting", "Contours", "Remote"]:
             pill = QLabel(feature)
@@ -130,58 +137,39 @@ class HelpMixin:
         features_layout.addStretch()
         content_layout.addLayout(features_layout)
 
-        content_layout.addSpacing(12)
-
-        # Divider
-        divider = QFrame()
-        divider.setObjectName("Rule")
-        content_layout.addWidget(divider)
-
-        content_layout.addSpacing(8)
+        content_layout.addWidget(rule())
 
         # Author section
         author_label = QLabel("Developed by")
-        author_label.setAlignment(Qt.AlignCenter)
         author_label.setObjectName("Hint")
         content_layout.addWidget(author_label)
 
         author_name = QLabel("Soham Dey")
-        author_name.setAlignment(Qt.AlignCenter)
         author_name.setObjectName("SectionTitle")
         content_layout.addWidget(author_name)
 
         # Contact links
-        links_layout = QHBoxLayout()
-        links_layout.setSpacing(20)
-        links_layout.addStretch()
-
-        email_link = QLabel('<a href="mailto:sohamd943@gmail.com">sohamd943@gmail.com</a>')
+        email_link = QLabel()
         email_link.setOpenExternalLinks(True)
+        # (a label keeps the link colour it first laid out with)
+        themed(
+            email_link,
+            lambda palette: email_link.setText(
+                f'<a href="mailto:sohamd943@gmail.com" style="color: {palette["link"]}">'
+                "sohamd943@gmail.com</a>"
+            ),
+        )
         email_link.setCursor(Qt.PointingHandCursor)
-        links_layout.addWidget(email_link)
-
-        links_layout.addStretch()
-        content_layout.addLayout(links_layout)
-
-        content_layout.addSpacing(12)
+        content_layout.addWidget(email_link)
 
         # Keyboard shortcut hint
         hint = QLabel("Press F1 for keyboard shortcuts")
-        hint.setAlignment(Qt.AlignCenter)
         hint.setObjectName("Hint")
         content_layout.addWidget(hint)
 
-        content_layout.addStretch()
-
         # Close button
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        close_btn.setDefault(True)
-        btn_layout.addWidget(close_btn)
-        btn_layout.addStretch()
-        content_layout.addLayout(btn_layout)
+        box, _ = button_bar(secondary=("Close", dialog.accept))
+        content_layout.addWidget(box)
 
         layout.addWidget(content, 1)
 
@@ -270,54 +258,36 @@ class HelpMixin:
                 rows = rows_of(top.menu())
                 if rows:
                     sections.append((top.text().replace("&", ""), rows))
-        sections.append(("On the Image", self.IMAGE_KEYS))
+        sections.append(("On the image", self.IMAGE_KEYS))
         sections.append(("Mouse", self.MOUSE_GESTURES))
         return sections
 
     def show_keyboard_shortcuts(self):
         """Show the keyboard shortcuts: those of the menus, read from the
         menus themselves, and the keys and mouse gestures of the image."""
-        from PyQt5.QtWidgets import QGridLayout, QScrollArea, QFrame, QLineEdit
+        from PyQt5.QtWidgets import QGridLayout, QGroupBox, QScrollArea, QFrame, QLineEdit
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Keyboard Shortcuts")
-        dialog.setMinimumSize(850, 600)
+        dialog.setWindowTitle("Keyboard shortcuts")
         fit_to_screen(dialog, 850, 600)
 
-        main_layout = QVBoxLayout(dialog)
-        main_layout.setSpacing(16)
-        main_layout.setContentsMargins(24, 20, 24, 20)
-
-        # Header with search
-        header_layout = QHBoxLayout()
-
-        title = QLabel("Keyboard Shortcuts")
-        title.setObjectName("DialogTitle")
-        header_layout.addWidget(title)
-
-        header_layout.addStretch()
+        main_layout = dialog_layout(dialog)
 
         # Search filter
         search_box = QLineEdit()
-        search_box.setPlaceholderText("Filter shortcuts...")
+        search_box.setPlaceholderText("Filter shortcuts…")
         search_box.setClearButtonEnabled(True)
-        fit_width_to_text(search_box, "Filter shortcuts......................")
-        header_layout.addWidget(search_box)
-
-        main_layout.addLayout(header_layout)
+        main_layout.addWidget(search_box)
 
         # Scroll area for content
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setSpacing(20)
-        scroll_layout.setContentsMargins(0, 0, 10, 0)
-
-        categories = [("", title, rows) for title, rows in self._shortcut_sections()]
+        scroll_layout.setSpacing(SPACE_M)
+        scroll_layout.setContentsMargins(0, 0, SPACE_S, 0)
 
         def create_key_badge(key_text):
             """Create a styled keyboard key badge."""
@@ -363,23 +333,14 @@ class HelpMixin:
         # Store all shortcut widgets for filtering
         all_shortcut_widgets = []
 
-        def create_category_section(icon, name, shortcuts):
+        def create_category_section(name, shortcuts):
             """Create a styled category section."""
-            section = QFrame()
-            section.setObjectName("Card")
-
-            layout = QVBoxLayout(section)
-            layout.setContentsMargins(16, 12, 16, 12)
-            layout.setSpacing(10)
-
-            # Category header
-            header = QLabel(f"{icon}  {name}" if icon else name)
-            header.setObjectName("SectionTitle")
-            layout.addWidget(header)
+            section = QGroupBox(name)
 
             # Shortcuts grid
-            grid = QGridLayout()
-            grid.setSpacing(8)
+            grid = QGridLayout(section)
+            grid.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
+            grid.setSpacing(SPACE_S)
             # Wide enough for the widest keys, so all sections line up
             grid.setColumnMinimumWidth(0, 290)
             grid.setColumnStretch(1, 1)  # descriptions next to their keys
@@ -388,6 +349,7 @@ class HelpMixin:
             for row, (key, action) in enumerate(shortcuts):
                 key_widget = create_key_badge(key)
                 action_label = QLabel(action)
+                action_label.setWordWrap(True)  # (the long gestures, in a narrow window)
 
                 grid.addWidget(key_widget, row, 0)
                 grid.addWidget(action_label, row, 1)
@@ -397,14 +359,17 @@ class HelpMixin:
                     (key_widget, action_label, key.lower(), action.lower())
                 )
 
-            layout.addLayout(grid)
             return section, shortcut_rows
 
         # Create all category sections
-        for icon, name, shortcuts in categories:
-            section, rows = create_category_section(icon, name, shortcuts)
+        for name, shortcuts in self._shortcut_sections():
+            section, rows = create_category_section(name, shortcuts)
             scroll_layout.addWidget(section)
             all_shortcut_widgets.extend([(section, rows)])
+
+        no_match = empty_note("No shortcut matches. Clear the filter to see them all.")
+        no_match.hide()
+        scroll_layout.addWidget(no_match)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -413,6 +378,7 @@ class HelpMixin:
         # Filter function
         def filter_shortcuts(text):
             text = text.lower()
+            matches = 0
             for section, rows in all_shortcut_widgets:
                 visible_count = 0
                 for key_widget, action_label, key_text, action_text in rows:
@@ -422,19 +388,13 @@ class HelpMixin:
                     if visible:
                         visible_count += 1
                 section.setVisible(visible_count > 0)
+                matches += visible_count
+            no_match.setVisible(matches == 0)
 
         search_box.textChanged.connect(filter_shortcuts)
 
-        # Footer with close button
-        footer = QHBoxLayout()
-        footer.addStretch()
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        close_btn.setDefault(True)
-        footer.addWidget(close_btn)
-
-        main_layout.addLayout(footer)
+        box, _ = button_bar(secondary=("Close", dialog.accept))
+        main_layout.addWidget(box)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()

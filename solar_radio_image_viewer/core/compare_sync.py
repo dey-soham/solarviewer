@@ -676,7 +676,7 @@ class SyncPopover(QFrame):
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 0, 0, 0)
         foot.setSpacing(6)
-        in_sync = QLabel("In sync:")
+        in_sync = QLabel("In sync")
         in_sync.setObjectName("Hint")
         foot.addWidget(in_sync)
         self._badges = QHBoxLayout()

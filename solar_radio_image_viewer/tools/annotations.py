@@ -6,19 +6,15 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
-    QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMessageBox,
     QSpinBox,
-    QVBoxLayout,
 )
 
+from ..dialogs.form import color_combo, field_label, form_block
 from ..ui.styles import set_hand_cursor
+from ..ui.widgets import button_bar, dialog_layout
 
 
 class AnnotationsMixin:
@@ -98,41 +94,35 @@ class AnnotationDialogsMixin:
     def show_add_text_annotation_dialog(self):
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
-            QMessageBox.warning(self, "No Data", "Load data first.")
+            QMessageBox.warning(self, "No data", "Load data first.")
             return
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Add Text Annotation")
+        dialog.setWindowTitle("Add text annotation")
         set_hand_cursor(dialog)
-        dialog.setMinimumWidth(350)
-        layout = QVBoxLayout(dialog)
+        layout = dialog_layout(dialog)
+
+        # Text
+        text_layout = form_block(layout)
+        text_layout.addWidget(field_label("Text"), 0, 0)
+        text_input = QLineEdit("Annotation")
+        text_layout.addWidget(text_input, 0, 1)
 
         # Position group
-        pos_group = QGroupBox("Position")
-        pos_layout = QGridLayout(pos_group)
-        pos_layout.addWidget(QLabel("X:"), 0, 0)
+        pos_layout = form_block(layout, "Position (pixels)", pairs=2)
+        pos_layout.addWidget(field_label("X"), 0, 0)
         x_pos = QLineEdit("100")
         pos_layout.addWidget(x_pos, 0, 1)
-        pos_layout.addWidget(QLabel("Y:"), 0, 2)
+        pos_layout.addWidget(field_label("Y"), 0, 2)
         y_pos = QLineEdit("100")
         pos_layout.addWidget(y_pos, 0, 3)
-        layout.addWidget(pos_group)
-
-        # Text group
-        text_group = QGroupBox("Text")
-        text_layout = QVBoxLayout(text_group)
-        text_input = QLineEdit("Annotation")
-        text_layout.addWidget(text_input)
-        layout.addWidget(text_group)
 
         # Style group
-        style_group = QGroupBox("Style")
-        style_layout = QGridLayout(style_group)
+        style_layout = form_block(layout, "Style", pairs=2)
 
         # Color
-        style_layout.addWidget(QLabel("Color:"), 0, 0)
-        color_combo = QComboBox()
-        color_combo.addItems(
+        style_layout.addWidget(field_label("Colour"), 0, 0)
+        color_choice = color_combo(
             [
                 "yellow",
                 "white",
@@ -145,34 +135,33 @@ class AnnotationDialogsMixin:
                 "black",
             ]
         )
-        style_layout.addWidget(color_combo, 0, 1)
+        style_layout.addWidget(color_choice, 0, 1)
 
         # Font size
-        style_layout.addWidget(QLabel("Font Size:"), 0, 2)
+        style_layout.addWidget(field_label("Font size"), 0, 2)
         fontsize_spin = QSpinBox()
         fontsize_spin.setRange(6, 48)
         fontsize_spin.setValue(12)
         style_layout.addWidget(fontsize_spin, 0, 3)
 
         # Font weight
-        style_layout.addWidget(QLabel("Weight:"), 1, 0)
+        style_layout.addWidget(field_label("Weight"), 1, 0)
         weight_combo = QComboBox()
-        weight_combo.addItems(["normal", "bold"])
+        weight_combo.addItems(["Normal", "Bold"])
         style_layout.addWidget(weight_combo, 1, 1)
 
         # Font style
-        style_layout.addWidget(QLabel("Style:"), 1, 2)
+        style_layout.addWidget(field_label("Style"), 1, 2)
         fontstyle_combo = QComboBox()
-        fontstyle_combo.addItems(["normal", "italic"])
+        fontstyle_combo.addItems(["Normal", "Italic"])
         style_layout.addWidget(fontstyle_combo, 1, 3)
 
         # Background
-        style_layout.addWidget(QLabel("Background:"), 2, 0)
-        bg_combo = QComboBox()
-        bg_combo.addItems(["None", "black", "white", "gray", "yellow", "red", "blue"])
+        style_layout.addWidget(field_label("Background"), 2, 0)
+        bg_combo = color_combo(["black", "white", "gray", "yellow", "red", "blue"])
+        bg_combo.insertItem(0, "None")
+        bg_combo.setCurrentIndex(0)
         style_layout.addWidget(bg_combo, 2, 1)
-
-        layout.addWidget(style_group)
 
         # Store tab reference for callback
         tab_ref = current_tab
@@ -189,13 +178,11 @@ class AnnotationDialogsMixin:
                 x = int(x_pos.text())
                 y = int(y_pos.text())
                 text = text_input.text()
-                color = color_combo.currentText()
+                color = color_choice.currentData()
                 fontsize = fontsize_spin.value()
-                fontweight = weight_combo.currentText()
-                fontstyle = fontstyle_combo.currentText()
-                background = (
-                    bg_combo.currentText() if bg_combo.currentText() != "None" else None
-                )
+                fontweight = weight_combo.currentText().lower()
+                fontstyle = fontstyle_combo.currentText().lower()
+                background = bg_combo.currentData()
                 tab_ref.add_text_annotation(
                     x,
                     y,
@@ -206,9 +193,10 @@ class AnnotationDialogsMixin:
                     fontstyle=fontstyle,
                     background=background,
                 )
+                return True
             except ValueError:
                 QMessageBox.warning(
-                    self, "Invalid Input", "Please enter valid numeric coordinates"
+                    self, "Invalid input", "Please enter valid numeric coordinates"
                 )
             except RuntimeError:
                 QMessageBox.warning(
@@ -217,21 +205,16 @@ class AnnotationDialogsMixin:
                 dialog.close()
 
         def on_ok():
-            on_add()
-            dialog.close()
+            if on_add():  # (on bad input it stays open, to be corrected)
+                dialog.close()
 
-        from PyQt5.QtWidgets import QPushButton
-
-        btn_layout = QHBoxLayout()
-        add_btn = QPushButton("Add")
-        add_btn.setToolTip("Add annotation and keep dialog open")
-        add_btn.clicked.connect(on_add)
-        btn_layout.addWidget(add_btn)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(on_ok)
-        buttons.rejected.connect(dialog.close)
-        btn_layout.addWidget(buttons)
-        layout.addLayout(btn_layout)
+        box, buttons = button_bar(
+            primary=("Add", on_ok),
+            secondary=("Cancel", dialog.close),
+            extras=[("Add another", on_add)],
+        )
+        buttons["Add another"].setToolTip("Add the annotation and keep this window open")
+        layout.addWidget(box)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(
@@ -247,40 +230,35 @@ class AnnotationDialogsMixin:
     def show_add_arrow_annotation_dialog(self):
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or current_tab.current_image_data is None:
-            QMessageBox.warning(self, "No Data", "Load data first.")
+            QMessageBox.warning(self, "No data", "Load data first.")
             return
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Add Arrow Annotation")
+        dialog.setWindowTitle("Add arrow annotation")
         set_hand_cursor(dialog)
-        dialog.setMinimumWidth(350)
-        layout = QVBoxLayout(dialog)
+        layout = dialog_layout(dialog)
 
         # Position group
-        pos_group = QGroupBox("Position")
-        pos_layout = QGridLayout(pos_group)
-        pos_layout.addWidget(QLabel("Start X:"), 0, 0)
+        pos_layout = form_block(layout, "Position (pixels)", pairs=2)
+        pos_layout.addWidget(field_label("Start X"), 0, 0)
         x1_pos = QLineEdit("100")
         pos_layout.addWidget(x1_pos, 0, 1)
-        pos_layout.addWidget(QLabel("Start Y:"), 0, 2)
+        pos_layout.addWidget(field_label("Start Y"), 0, 2)
         y1_pos = QLineEdit("100")
         pos_layout.addWidget(y1_pos, 0, 3)
-        pos_layout.addWidget(QLabel("End X:"), 1, 0)
+        pos_layout.addWidget(field_label("End X"), 1, 0)
         x2_pos = QLineEdit("150")
         pos_layout.addWidget(x2_pos, 1, 1)
-        pos_layout.addWidget(QLabel("End Y:"), 1, 2)
+        pos_layout.addWidget(field_label("End Y"), 1, 2)
         y2_pos = QLineEdit("150")
         pos_layout.addWidget(y2_pos, 1, 3)
-        layout.addWidget(pos_group)
 
         # Style group
-        style_group = QGroupBox("Style")
-        style_layout = QGridLayout(style_group)
+        style_layout = form_block(layout, "Style", pairs=2)
 
         # Color
-        style_layout.addWidget(QLabel("Color:"), 0, 0)
-        color_combo = QComboBox()
-        color_combo.addItems(
+        style_layout.addWidget(field_label("Colour"), 0, 0)
+        color_choice = color_combo(
             [
                 "red",
                 "yellow",
@@ -293,10 +271,10 @@ class AnnotationDialogsMixin:
                 "black",
             ]
         )
-        style_layout.addWidget(color_combo, 0, 1)
+        style_layout.addWidget(color_choice, 0, 1)
 
         # Line width
-        style_layout.addWidget(QLabel("Line Width:"), 0, 2)
+        style_layout.addWidget(field_label("Line width"), 0, 2)
         linewidth_spin = QDoubleSpinBox()
         linewidth_spin.setRange(0.5, 10.0)
         linewidth_spin.setValue(2.0)
@@ -304,13 +282,11 @@ class AnnotationDialogsMixin:
         style_layout.addWidget(linewidth_spin, 0, 3)
 
         # Head size
-        style_layout.addWidget(QLabel("Head Size:"), 1, 0)
+        style_layout.addWidget(field_label("Head size"), 1, 0)
         headsize_spin = QSpinBox()
         headsize_spin.setRange(4, 30)
         headsize_spin.setValue(10)
         style_layout.addWidget(headsize_spin, 1, 1)
-
-        layout.addWidget(style_group)
 
         # Store tab reference for callback
         tab_ref = current_tab
@@ -328,7 +304,7 @@ class AnnotationDialogsMixin:
                 y1 = int(y1_pos.text())
                 x2 = int(x2_pos.text())
                 y2 = int(y2_pos.text())
-                color = color_combo.currentText()
+                color = color_choice.currentData()
                 linewidth = linewidth_spin.value()
                 head_width = headsize_spin.value()
                 tab_ref.add_arrow_annotation(
@@ -340,9 +316,10 @@ class AnnotationDialogsMixin:
                     linewidth=linewidth,
                     head_width=head_width,
                 )
+                return True
             except ValueError:
                 QMessageBox.warning(
-                    self, "Invalid Input", "Please enter valid numeric coordinates"
+                    self, "Invalid input", "Please enter valid numeric coordinates"
                 )
             except RuntimeError:
                 QMessageBox.warning(
@@ -351,21 +328,16 @@ class AnnotationDialogsMixin:
                 dialog.close()
 
         def on_ok():
-            on_add()
-            dialog.close()
+            if on_add():  # (on bad input it stays open, to be corrected)
+                dialog.close()
 
-        from PyQt5.QtWidgets import QPushButton
-
-        btn_layout = QHBoxLayout()
-        add_btn = QPushButton("Add")
-        add_btn.setToolTip("Add annotation and keep dialog open")
-        add_btn.clicked.connect(on_add)
-        btn_layout.addWidget(add_btn)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(on_ok)
-        buttons.rejected.connect(dialog.close)
-        btn_layout.addWidget(buttons)
-        layout.addLayout(btn_layout)
+        box, buttons = button_bar(
+            primary=("Add", on_ok),
+            secondary=("Cancel", dialog.close),
+            extras=[("Add another", on_add)],
+        )
+        buttons["Add another"].setToolTip("Add the annotation and keep this window open")
+        layout.addWidget(box)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(

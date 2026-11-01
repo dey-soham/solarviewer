@@ -27,7 +27,7 @@ import string
 import threading
 import time
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 JOBS_SUBDIR = ".solarviewer/dynspec_jobs"
 JOB_NAME = "solarviewer-dynspec"
@@ -1132,8 +1132,10 @@ def _split_direct(handle):
 
 _SLURM_STATES = {
     "PENDING": "PENDING", "CONFIGURING": "PENDING", "REQUEUED": "PENDING",
-    "RESV_DEL_HOLD": "PENDING", "SUSPENDED": "PENDING",
+    "RESV_DEL_HOLD": "PENDING", "SUSPENDED": "PENDING", "STOPPED": "PENDING",
+    "REQUEUE_HOLD": "PENDING", "REQUEUE_FED": "PENDING", "SPECIAL_EXIT": "PENDING",
     "RUNNING": "RUNNING", "COMPLETING": "RUNNING", "RESIZING": "RUNNING",
+    "SIGNALING": "RUNNING", "STAGE_OUT": "RUNNING",
     "COMPLETED": "DONE",
     "CANCELLED": "CANCELLED",
 }

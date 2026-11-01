@@ -34,10 +34,12 @@ from ..processing.contour_layers import (
     new_contour_layer,
 )
 from ..ui.busy import busy
+from ..ui.geometry import fit_to_screen
 from ..ui.icons import get_resource_path
 from ..ui.open_image import choose_image
-from ..ui.widgets import button_bar
-from ..ui.styles import set_hand_cursor
+from ..ui.widgets import button_bar, dialog_layout, kicker, segmented
+from ..ui.styles import SPACE_L, SPACE_M, SPACE_S, set_hand_cursor, theme_manager, themed
+from .form import field_label, follow_swatches, form_block, swatch_icon
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +82,7 @@ class ContourSettingsDialog(QDialog):
         # Choosing the series folder some other way (a server's folder):
         # series_folder_picker(start) -> folder or None
         self.series_folder_picker = series_folder_picker
-        self.setWindowTitle("Contour Settings")
+        self.setWindowTitle("Contour settings")
         self.layers = [contour_layer_settings(layer) for layer in (layers or [])]
         if not self.layers:
             self.layers = [contour_layer_settings(new_contour_layer())]
@@ -90,42 +92,13 @@ class ContourSettingsDialog(QDialog):
         # Widgets are built from the first layer's settings
         self.settings = self.layers[0]
 
-        # Import theme manager for theme-aware styling
-        try:
-            from ..ui.styles import theme_manager
-        except ImportError:
-            from ..ui.styles import theme_manager
-
-        # Get colors directly from the palette for consistency
-        palette = theme_manager.palette
-
-        border_color = palette["border"]
-        surface_color = palette["surface"]
-        base_color = palette["base"]
-        disabled_color = palette["disabled"]
-        button_hover = palette["button_hover"]
-        button_pressed = palette["button_pressed"]
-        text_color = palette["text"]
-        highlight_color = palette["highlight"]
-
         self.setup_ui()
+        themed(self, self._outline_layer_swatches)
+        fit_to_screen(self, 780, 520)
         set_hand_cursor(self)
 
     def setup_ui(self):
-        # Get theme colors for styling
-        try:
-            from ..ui.styles import theme_manager
-        except ImportError:
-            from ..ui.styles import theme_manager
-
-        palette = theme_manager.palette
-        highlight_color = palette["highlight"]
-        border_color = palette["border"]
-        text_secondary = palette.get("text_secondary", palette["disabled"])
-
-        main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout = dialog_layout(self)
 
         # ========== TAB WIDGET ==========
         self.tab_widget = QTabWidget()
@@ -133,13 +106,13 @@ class ContourSettingsDialog(QDialog):
         # ========== TAB 1: SOURCE ==========
         source_tab = QWidget()
         source_layout = QVBoxLayout(source_tab)
-        source_layout.setSpacing(20)
-        source_layout.setContentsMargins(20, 20, 20, 20)
+        source_layout.setSpacing(SPACE_M)
+        source_layout.setContentsMargins(0, SPACE_M, 0, 0)
 
         # Layer label (legend text)
         label_row = QHBoxLayout()
-        label_row.setSpacing(20)
-        layer_label_label = QLabel("Label:")
+        label_row.setSpacing(SPACE_M)
+        layer_label_label = field_label("Label")
         label_row.addWidget(layer_label_label)
         self.layer_label_edit = QLineEdit(self.settings.get("label", ""))
         self.layer_label_edit.setPlaceholderText(
@@ -154,13 +127,13 @@ class ContourSettingsDialog(QDialog):
 
         # Source selection
         source_row = QHBoxLayout()
-        source_row.setSpacing(20)
+        source_row.setSpacing(SPACE_M)
 
-        source_label = QLabel("Source:")
+        source_label = field_label("Source")
         source_row.addWidget(source_label)
 
         self.same_image_radio = QRadioButton(
-            "Video image" if self.for_video else "Current Image"
+            "Video image" if self.for_video else "Current image"
         )
         self.external_image_radio = QRadioButton("External")
         self.series_radio = QRadioButton("Series")
@@ -184,22 +157,21 @@ class ContourSettingsDialog(QDialog):
 
         # Stokes selection with noise threshold on same row
         stokes_row = QHBoxLayout()
-        stokes_row.setSpacing(20)
+        stokes_row.setSpacing(SPACE_M)
 
-        stokes_label = QLabel("Stokes:")
+        stokes_label = field_label("Stokes")
         stokes_row.addWidget(stokes_label)
 
         self.stokes_combo = QComboBox()
         self.stokes_combo.addItems(CONTOUR_PRODUCTS)
-        self.stokes_combo.setMinimumWidth(100)
         current_stokes = self.settings.get("stokes", "I")
         self.stokes_combo.setCurrentText(current_stokes)
         stokes_row.addWidget(self.stokes_combo)
 
-        stokes_row.addSpacing(30)
+        stokes_row.addSpacing(SPACE_L)
 
         # Noise threshold for derived Stokes parameters (Q/I, U/I, V/I, Lfrac, PANG)
-        self.threshold_label = QLabel("Threshold (σ):")
+        self.threshold_label = field_label("Threshold (σ)")
         self.threshold_label.setToolTip(
             "Pixels with signal below this many σ (noise RMS) are masked.\n"
             "Only applies to derived parameters: Q/I, U/I, V/I, Lfrac, Vfrac, PANG."
@@ -211,7 +183,6 @@ class ContourSettingsDialog(QDialog):
         self.threshold_spin.setSingleStep(0.5)
         self.threshold_spin.setDecimals(1)
         self.threshold_spin.setValue(self.settings.get("threshold", 5.0))
-        self.threshold_spin.setMinimumWidth(70)
         self.threshold_spin.setToolTip(
             "Noise threshold in units of σ (RMS noise).\n"
             "Default: 5.0 (pixels below 5σ are masked)"
@@ -227,8 +198,8 @@ class ContourSettingsDialog(QDialog):
         # External file options
         self.external_group = QWidget()
         external_layout = QVBoxLayout(self.external_group)
-        external_layout.setSpacing(12)
-        external_layout.setContentsMargins(0, 12, 0, 0)
+        external_layout.setSpacing(SPACE_M)
+        external_layout.setContentsMargins(0, 0, 0, 0)
 
         # Separator line
         sep_line = QFrame()
@@ -238,9 +209,9 @@ class ContourSettingsDialog(QDialog):
 
         # File path
         path_row = QHBoxLayout()
-        path_row.setSpacing(12)
+        path_row.setSpacing(SPACE_M)
 
-        path_label = QLabel("Path:")
+        path_label = field_label("Path")
         path_row.addWidget(path_label)
 
         self.file_path_edit = QLineEdit(self.settings.get("external_image", ""))
@@ -248,7 +219,7 @@ class ContourSettingsDialog(QDialog):
         self.file_path_edit.setReadOnly(True)
         path_row.addWidget(self.file_path_edit, 1)
 
-        self.browse_button = QPushButton("Browse...")
+        self.browse_button = QPushButton("Browse…")
         self.browse_button.clicked.connect(self.browse_file)
         path_row.addWidget(self.browse_button)
         external_layout.addLayout(path_row)
@@ -262,15 +233,15 @@ class ContourSettingsDialog(QDialog):
         # Series of files (videos only)
         self.series_group = QWidget()
         series_layout = QGridLayout(self.series_group)
-        series_layout.setContentsMargins(0, 12, 0, 0)
-        series_layout.addWidget(QLabel("Folder:"), 0, 0)
+        series_layout.setContentsMargins(0, 0, 0, 0)
+        series_layout.addWidget(field_label("Folder"), 0, 0)
         self.series_dir_edit = QLineEdit(self.settings.get("series_dir", ""))
-        self.series_dir_edit.setPlaceholderText("Folder of the contour images...")
+        self.series_dir_edit.setPlaceholderText("Folder of the contour images…")
         series_layout.addWidget(self.series_dir_edit, 0, 1)
-        series_browse = QPushButton("Browse...")
+        series_browse = QPushButton("Browse…")
         series_browse.clicked.connect(self._browse_series_dir)
         series_layout.addWidget(series_browse, 0, 2)
-        series_layout.addWidget(QLabel("Pattern:"), 1, 0)
+        series_layout.addWidget(field_label("Pattern"), 1, 0)
         self.series_pattern_edit = QLineEdit(self.settings.get("series_pattern", "*.fits"))
         series_layout.addWidget(self.series_pattern_edit, 1, 1)
         self.series_group.setVisible(self.for_video and self.series_radio.isChecked())
@@ -299,52 +270,50 @@ class ContourSettingsDialog(QDialog):
         # ========== TAB 2: LEVELS ==========
         levels_tab = QWidget()
         levels_layout = QVBoxLayout(levels_tab)
-        levels_layout.setSpacing(20)
-        levels_layout.setContentsMargins(20, 20, 20, 20)
+        levels_layout.setSpacing(SPACE_M)
+        levels_layout.setContentsMargins(0, SPACE_M, 0, 0)
 
         # Level type
         type_row = QHBoxLayout()
-        type_row.setSpacing(20)
+        type_row.setSpacing(SPACE_M)
 
-        type_label = QLabel("Level Type:")
+        type_label = field_label("Level type")
         type_row.addWidget(type_label)
 
         self.level_type_combo = QComboBox()
-        self.level_type_combo.addItems(["fraction", "sigma", "absolute"])
-        current_level_type = self.settings.get("level_type", "fraction")
-        self.level_type_combo.setCurrentText(current_level_type)
-        self.level_type_combo.setMinimumWidth(120)
+        for level_type in ("fraction", "sigma", "absolute"):
+            self.level_type_combo.addItem(level_type.capitalize(), level_type)
+        self._set_level_type(self.settings.get("level_type", "fraction"))
         type_row.addWidget(self.level_type_combo)
         type_row.addStretch()
         levels_layout.addLayout(type_row)
 
         # Presets
         preset_row = QHBoxLayout()
-        preset_row.setSpacing(12)
+        preset_row.setSpacing(SPACE_M)
 
-        presets_label = QLabel("Presets:")
+        presets_label = field_label("Presets")
         preset_row.addWidget(presets_label)
 
-        self.preset_5_btn = QPushButton("5 Levels")
+        self.preset_5_btn = QPushButton("5 levels")
         self.preset_5_btn.clicked.connect(lambda: self._apply_level_preset("5levels"))
-        preset_row.addWidget(self.preset_5_btn)
 
-        self.preset_3_btn = QPushButton("3 Levels")
+        self.preset_3_btn = QPushButton("3 levels")
         self.preset_3_btn.clicked.connect(lambda: self._apply_level_preset("3levels"))
-        preset_row.addWidget(self.preset_3_btn)
 
         self.preset_dense_btn = QPushButton("Dense")
         self.preset_dense_btn.clicked.connect(lambda: self._apply_level_preset("dense"))
-        preset_row.addWidget(self.preset_dense_btn)
+        preset_row.addWidget(
+            segmented([self.preset_5_btn, self.preset_3_btn, self.preset_dense_btn])
+        )
 
         preset_row.addStretch()
         levels_layout.addLayout(preset_row)
 
         # Level values
         pos_row = QHBoxLayout()
-        pos_row.setSpacing(12)
-        pos_label = QLabel("Positive:")
-        pos_label.setMinimumWidth(70)
+        pos_row.setSpacing(SPACE_M)
+        pos_label = field_label("Positive")
         pos_row.addWidget(pos_label)
 
         self.pos_levels_edit = QLineEdit(
@@ -358,9 +327,8 @@ class ContourSettingsDialog(QDialog):
         levels_layout.addLayout(pos_row)
 
         neg_row = QHBoxLayout()
-        neg_row.setSpacing(12)
-        neg_label = QLabel("Negative:")
-        neg_label.setMinimumWidth(70)
+        neg_row.setSpacing(SPACE_M)
+        neg_label = field_label("Negative")
         neg_row.addWidget(neg_label)
 
         self.neg_levels_edit = QLineEdit(
@@ -375,15 +343,17 @@ class ContourSettingsDialog(QDialog):
 
         levels_layout.addStretch()
 
-        self.level_type_combo.currentTextChanged.connect(self.on_level_type_changed)
+        self.level_type_combo.currentIndexChanged.connect(
+            lambda: self.on_level_type_changed(self.level_type_combo.currentData())
+        )
 
         self.tab_widget.addTab(levels_tab, "Levels")
 
         # ========== TAB 3: APPEARANCE ==========
         appearance_tab = QWidget()
         appearance_layout = QVBoxLayout(appearance_tab)
-        appearance_layout.setSpacing(16)
-        appearance_layout.setContentsMargins(20, 20, 20, 20)
+        appearance_layout.setSpacing(SPACE_M)
+        appearance_layout.setContentsMargins(0, SPACE_M, 0, 0)
 
         # Helper to create color combo: the default palette, then the extras
         def create_color_combo(default_color):
@@ -394,110 +364,66 @@ class ContourSettingsDialog(QDialog):
             for name, color in EXTRA_COLORS:
                 self._add_color_item(combo, name, color)
             self._set_color(combo, default_color)
-            combo.setMinimumWidth(140)
+            follow_swatches(combo)
             return combo
 
         # ===== Positive Contours Section =====
-        pos_header = QLabel("Positive Contours")
-        appearance_layout.addWidget(pos_header)
+        pos_row = form_block(appearance_layout, "Positive contours", pairs=3)
 
-        pos_row = QHBoxLayout()
-        pos_row.setSpacing(16)
-
-        pos_color_label = QLabel("Color:")
-        pos_row.addWidget(pos_color_label)
+        pos_row.addWidget(field_label("Colour"), 0, 0)
         self.pos_color_combo = create_color_combo(
             self.settings.get("pos_color", self.settings.get("color", "white"))
         )
-        pos_row.addWidget(self.pos_color_combo)
+        pos_row.addWidget(self.pos_color_combo, 0, 1)
 
-        pos_row.addSpacing(10)
-
-        pos_width_label = QLabel("Width:")
-        pos_row.addWidget(pos_width_label)
+        pos_row.addWidget(field_label("Width"), 0, 2)
         self.pos_linewidth_spin = QDoubleSpinBox()
         self.pos_linewidth_spin.setRange(0.5, 5.0)
         self.pos_linewidth_spin.setSingleStep(0.5)
         self.pos_linewidth_spin.setValue(
             self.settings.get("pos_linewidth", self.settings.get("linewidth", 1.0))
         )
-        self.pos_linewidth_spin.setMinimumWidth(70)
-        pos_row.addWidget(self.pos_linewidth_spin)
+        pos_row.addWidget(self.pos_linewidth_spin, 0, 3)
 
-        pos_row.addSpacing(10)
-
-        pos_style_label = QLabel("Style:")
-        pos_row.addWidget(pos_style_label)
+        pos_row.addWidget(field_label("Style"), 0, 4)
         self.pos_linestyle_combo = QComboBox()
         self.pos_linestyle_combo.addItems(["─", "- -", "-·-", "···"])
         linestyle_map = {"-": 0, "--": 1, "-.": 2, ":": 3}
         current_pos = self.settings.get("pos_linestyle", "-")
         self.pos_linestyle_combo.setCurrentIndex(linestyle_map.get(current_pos, 0))
-        self.pos_linestyle_combo.setMinimumWidth(90)
-        pos_row.addWidget(self.pos_linestyle_combo)
-
-        pos_row.addStretch()
-        appearance_layout.addLayout(pos_row)
+        pos_row.addWidget(self.pos_linestyle_combo, 0, 5)
 
         # ===== Negative Contours Section =====
-        neg_header = QLabel("Negative Contours")
-        appearance_layout.addWidget(neg_header)
+        neg_row = form_block(appearance_layout, "Negative contours", pairs=3)
 
-        neg_row = QHBoxLayout()
-        neg_row.setSpacing(16)
-
-        neg_color_label = QLabel("Color:")
-        neg_row.addWidget(neg_color_label)
+        neg_row.addWidget(field_label("Colour"), 0, 0)
         self.neg_color_combo = create_color_combo(
             self.settings.get("neg_color", self.settings.get("color", "white"))
         )
-        neg_row.addWidget(self.neg_color_combo)
+        neg_row.addWidget(self.neg_color_combo, 0, 1)
 
-        neg_row.addSpacing(10)
-
-        neg_width_label = QLabel("Width:")
-        neg_row.addWidget(neg_width_label)
+        neg_row.addWidget(field_label("Width"), 0, 2)
         self.neg_linewidth_spin = QDoubleSpinBox()
         self.neg_linewidth_spin.setRange(0.5, 5.0)
         self.neg_linewidth_spin.setSingleStep(0.5)
         self.neg_linewidth_spin.setValue(
             self.settings.get("neg_linewidth", self.settings.get("linewidth", 1.0))
         )
-        self.neg_linewidth_spin.setMinimumWidth(70)
-        neg_row.addWidget(self.neg_linewidth_spin)
+        neg_row.addWidget(self.neg_linewidth_spin, 0, 3)
 
-        neg_row.addSpacing(10)
-
-        neg_style_label = QLabel("Style:")
-        neg_row.addWidget(neg_style_label)
+        neg_row.addWidget(field_label("Style"), 0, 4)
         self.neg_linestyle_combo = QComboBox()
         self.neg_linestyle_combo.addItems(["─", "- -", "-·-", "···"])
         current_neg = self.settings.get("neg_linestyle", "--")
         self.neg_linestyle_combo.setCurrentIndex(linestyle_map.get(current_neg, 1))
-        self.neg_linestyle_combo.setMinimumWidth(90)
-        neg_row.addWidget(self.neg_linestyle_combo)
-
-        neg_row.addStretch()
-        appearance_layout.addLayout(neg_row)
-
-        # ===== Options Section =====
-        appearance_layout.addSpacing(8)
-
-        options_header = QLabel("Options")
-        appearance_layout.addWidget(options_header)
-
-        options_row = QHBoxLayout()
-        options_row.setSpacing(30)
+        neg_row.addWidget(self.neg_linestyle_combo, 0, 5)
 
         self.show_labels_checkbox = QCheckBox("Contour labels")
         self.show_labels_checkbox.setChecked(self.settings.get("show_labels", False))
         self.show_labels_checkbox.setToolTip(
             "Display level values on the contour lines"
         )
-        options_row.addWidget(self.show_labels_checkbox)
-
-        options_row.addStretch()
-        appearance_layout.addLayout(options_row)
+        appearance_layout.addWidget(self.show_labels_checkbox)
 
         appearance_layout.addStretch()
 
@@ -506,8 +432,8 @@ class ContourSettingsDialog(QDialog):
         # ========== TAB 4: RMS ==========
         rms_tab = QWidget()
         rms_layout = QVBoxLayout(rms_tab)
-        rms_layout.setSpacing(20)
-        rms_layout.setContentsMargins(20, 20, 20, 20)
+        rms_layout.setSpacing(SPACE_M)
+        rms_layout.setContentsMargins(0, SPACE_M, 0, 0)
 
         # Default checkbox
         self.use_default_rms_box = QCheckBox("Use default region")
@@ -519,7 +445,7 @@ class ContourSettingsDialog(QDialog):
 
         # Info
         info_label = QLabel(
-            "Define a source-free region for RMS/noise calculation (σ levels)."
+            "A source-free region for the noise that σ levels are measured in."
         )
         info_label.setObjectName("Hint")
         rms_layout.addWidget(info_label)
@@ -527,31 +453,34 @@ class ContourSettingsDialog(QDialog):
         # Custom region inputs
         self.rms_inputs_container = QWidget()
         rms_grid = QGridLayout(self.rms_inputs_container)
-        rms_grid.setSpacing(16)
-        rms_grid.setContentsMargins(0, 8, 0, 0)
+        rms_grid.setHorizontalSpacing(SPACE_M)
+        rms_grid.setVerticalSpacing(SPACE_S)
+        rms_grid.setColumnStretch(1, 1)
+        rms_grid.setColumnStretch(3, 1)
+        rms_grid.setContentsMargins(0, 0, 0, 0)
 
-        self.rms_xmin_label = QLabel("X min:")
+        self.rms_xmin_label = field_label("X min")
         rms_grid.addWidget(self.rms_xmin_label, 0, 0)
         self.rms_xmin = QSpinBox()
         self.rms_xmin.setRange(0, 10000)
         self.rms_xmin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[0])
         rms_grid.addWidget(self.rms_xmin, 0, 1)
 
-        self.rms_xmax_label = QLabel("X max:")
+        self.rms_xmax_label = field_label("X max")
         rms_grid.addWidget(self.rms_xmax_label, 0, 2)
         self.rms_xmax = QSpinBox()
         self.rms_xmax.setRange(0, 10000)
         self.rms_xmax.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[1])
         rms_grid.addWidget(self.rms_xmax, 0, 3)
 
-        self.rms_ymin_label = QLabel("Y min:")
+        self.rms_ymin_label = field_label("Y min")
         rms_grid.addWidget(self.rms_ymin_label, 1, 0)
         self.rms_ymin = QSpinBox()
         self.rms_ymin.setRange(0, 10000)
         self.rms_ymin.setValue(self.settings.get("rms_box", (0, 200, 0, 130))[2])
         rms_grid.addWidget(self.rms_ymin, 1, 1)
 
-        self.rms_ymax_label = QLabel("Y max:")
+        self.rms_ymax_label = field_label("Y max")
         rms_grid.addWidget(self.rms_ymax_label, 1, 2)
         self.rms_ymax = QSpinBox()
         self.rms_ymax.setRange(0, 10000)
@@ -560,8 +489,8 @@ class ContourSettingsDialog(QDialog):
 
         w = self.settings.get("dim_w", 0)
         h = self.settings.get("dim_h", 0)
-        dim_text = f"{w} x {h}" if w > 0 and h > 0 else "Unknown"
-        self.rms_dims_label = QLabel(f"Contour Dimensions: {dim_text}")
+        dim_text = f"{w} × {h}" if w > 0 and h > 0 else "unknown"
+        self.rms_dims_label = QLabel(f"Contour image size: {dim_text}")
         self.rms_dims_label.setObjectName("Hint")
         rms_grid.addWidget(self.rms_dims_label, 2, 0, 1, 4, Qt.AlignLeft)
 
@@ -573,14 +502,19 @@ class ContourSettingsDialog(QDialog):
         self.tab_widget.addTab(rms_tab, "RMS")
 
         body_row = QHBoxLayout()
-        body_row.setSpacing(12)
-        body_row.addWidget(self._build_layer_panel(text_secondary))
+        body_row.setSpacing(SPACE_L)
+        body_row.addWidget(self._build_layer_panel())
         body_row.addWidget(self.tab_widget, 1)
-        main_layout.addLayout(body_row)
+        main_layout.addLayout(body_row, 1)
 
         # ========== OPTIONS SHARED BY ALL LAYERS ==========
+        options_layout = QVBoxLayout()
+        options_layout.setSpacing(SPACE_S)
+        options_layout.addWidget(kicker("Options"))
+        main_layout.addLayout(options_layout)
+
         legend_row = QHBoxLayout()
-        legend_row.setSpacing(12)
+        legend_row.setSpacing(SPACE_M)
 
         self.show_legend_checkbox = QCheckBox("Show legend")
         self.show_legend_checkbox.setChecked(self.options.get("show_legend", True))
@@ -595,7 +529,8 @@ class ContourSettingsDialog(QDialog):
         self.legend_loc_combo.setToolTip("Where the legend is placed on the image")
         legend_row.addWidget(self.legend_loc_combo)
 
-        self.legend_fontsize_label = QLabel("Font size:")
+        self.legend_fontsize_label = QLabel("Font size")
+        self.legend_fontsize_label.setObjectName("Hint")
         legend_row.addWidget(self.legend_fontsize_label)
         self.legend_fontsize_spin = QSpinBox()
         self.legend_fontsize_spin.setRange(5, 24)
@@ -626,10 +561,10 @@ class ContourSettingsDialog(QDialog):
 
         self.show_legend_checkbox.toggled.connect(enable_legend_controls)
         enable_legend_controls(self.show_legend_checkbox.isChecked())
-        main_layout.addLayout(legend_row)
+        options_layout.addLayout(legend_row)
 
         shared_row = QHBoxLayout()
-        shared_row.setSpacing(20)
+        shared_row.setSpacing(SPACE_M)
 
         self.show_full_extent_checkbox = QCheckBox("Full extent")
         self.show_full_extent_checkbox.setChecked(
@@ -648,7 +583,7 @@ class ContourSettingsDialog(QDialog):
         shared_row.addWidget(self.downsample_checkbox)
 
         shared_row.addStretch()
-        main_layout.addLayout(shared_row)
+        options_layout.addLayout(shared_row)
         # Main-viewer options; video frames always show full contours
         self.show_full_extent_checkbox.setVisible(not self.for_video)
         self.downsample_checkbox.setVisible(not self.for_video)
@@ -656,9 +591,9 @@ class ContourSettingsDialog(QDialog):
         box, buttons = button_bar(
             primary=("Apply", self.accept),
             secondary=("Close", self.reject),
-            extras=[("Reset Layer", self._reset_to_defaults)],
+            extras=[("Reset layer", self._reset_to_defaults)],
         )
-        buttons["Reset Layer"].setToolTip(
+        buttons["Reset layer"].setToolTip(
             "Reset the selected layer's settings to the defaults"
         )
         main_layout.addWidget(box)
@@ -701,6 +636,9 @@ class ContourSettingsDialog(QDialog):
             if hasattr(self, "browse_icon_light"):
                 self.browse_button.setIcon(self.browse_icon_light)
 
+    def _set_level_type(self, level_type):
+        self.level_type_combo.setCurrentIndex(self.level_type_combo.findData(level_type))
+
     def on_level_type_changed(self, level_type):
         """Update default levels when level type changes."""
         # Define default levels for each type
@@ -727,7 +665,7 @@ class ContourSettingsDialog(QDialog):
 
     def _apply_level_preset(self, preset_name):
         """Apply a predefined level preset based on current level type."""
-        level_type = self.level_type_combo.currentText()
+        level_type = self.level_type_combo.currentData()
 
         presets = {
             "fraction": {
@@ -772,9 +710,10 @@ class ContourSettingsDialog(QDialog):
 
         # Stokes
         self.stokes_combo.setCurrentText("I")
+        self.threshold_spin.setValue(5.0)
 
         # Levels
-        self.level_type_combo.setCurrentText("fraction")
+        self._set_level_type("fraction")
         self.pos_levels_edit.setText("0.1, 0.3, 0.5, 0.7, 0.9")
         self.neg_levels_edit.setText("0.1, 0.3, 0.5, 0.7, 0.9")
 
@@ -851,22 +790,6 @@ class ContourSettingsDialog(QDialog):
         Args:
             available_stokes: List of available base Stokes, e.g., ["I"] or ["I", "Q", "U", "V"]
         """
-        from PyQt5.QtGui import QBrush, QColor
-
-        # Get theme-aware colors for disabled state
-        try:
-            from ..ui.styles import theme_manager
-
-            palette = theme_manager.palette
-            is_dark = theme_manager.is_dark
-            disabled_color = QColor(palette.get("disabled", "#cccccc"))
-            enabled_color = QColor(
-                palette.get("text", "#ffffff" if is_dark else "#000000")
-            )
-        except ImportError:
-            disabled_color = QColor("#cccccc")
-            enabled_color = QColor("#000000")
-
         from ..processing.stokes import missing_planes
         from ..ui.stokes_picker import offer_correlations
 
@@ -881,12 +804,10 @@ class ContourSettingsDialog(QDialog):
             if item:
                 if enabled:
                     item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                    item.setData(QBrush(enabled_color), Qt.ForegroundRole)
                 else:
                     item.setFlags(
                         item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable
                     )
-                    item.setData(QBrush(disabled_color), Qt.ForegroundRole)
 
     def _update_stokes_combo_for_external(self, imagepath):
         """Update stokes combo based on an external image file."""
@@ -939,8 +860,8 @@ class ContourSettingsDialog(QDialog):
         """Update the image dimensions label."""
         try:
             if hasattr(self, "rms_dims_label") and self.rms_dims_label:
-                dim_text = f"{w} x {h}" if w > 0 and h > 0 else "Unknown"
-                self.rms_dims_label.setText(f"Contour Dimensions: {dim_text}")
+                dim_text = f"{w} × {h}" if w > 0 and h > 0 else "unknown"
+                self.rms_dims_label.setText(f"Contour image size: {dim_text}")
         except RuntimeError:
             # Handle case where QLabel has been deleted
             pass
@@ -958,16 +879,15 @@ class ContourSettingsDialog(QDialog):
 
     # ---------- Layers ----------
 
-    def _build_layer_panel(self, text_secondary):
+    def _build_layer_panel(self):
         """The layer list with Add / Duplicate / Remove."""
         panel = QWidget()
         panel.setFixedWidth(panel.fontMetrics().averageCharWidth() * 40)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(SPACE_S)
 
-        header = QLabel("Layers")
-        layout.addWidget(header)
+        layout.addWidget(kicker("Layers"))
 
         self.layer_list = QListWidget()
         self.layer_list.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -978,8 +898,8 @@ class ContourSettingsDialog(QDialog):
         layout.addWidget(self.layer_list, 1)
 
         buttons = QHBoxLayout()
-        buttons.setSpacing(6)
-        self.add_layer_btn = QPushButton("+ Add")
+        buttons.setSpacing(SPACE_S)
+        self.add_layer_btn = QPushButton("Add")
         self.add_layer_btn.setToolTip("Add a contour layer")
         self.add_layer_btn.clicked.connect(self._add_layer)
         buttons.addWidget(self.add_layer_btn)
@@ -1022,20 +942,17 @@ class ContourSettingsDialog(QDialog):
         return item
 
     def _show_layer_on_item(self, item, layer):
-        from PyQt5.QtGui import QColor, QPainter, QPixmap
-
         self.layer_list.blockSignals(True)
         item.setText(self._layer_name(layer))
-        # Colour swatch with an outline, so white and black show on any theme
-        pixmap = QPixmap(14, 14)
-        pixmap.fill(QColor(layer.get("pos_color", "white")))
-        painter = QPainter(pixmap)
-        painter.setPen(QColor(128, 128, 128))
-        painter.drawRect(0, 0, 13, 13)
-        painter.end()
-        item.setIcon(QIcon(pixmap))
+        item.setIcon(
+            swatch_icon(layer.get("pos_color", "white"), theme_manager.palette["text_faint"])
+        )
         item.setCheckState(Qt.Checked if layer.get("enabled", True) else Qt.Unchecked)
         self.layer_list.blockSignals(False)
+
+    def _outline_layer_swatches(self, _palette):
+        for row, layer in enumerate(self.layers):
+            self._show_layer_on_item(self.layer_list.item(row), layer)
 
     def _update_layer_buttons(self):
         count = len(self.layers)
@@ -1122,15 +1039,7 @@ class ContourSettingsDialog(QDialog):
 
     @staticmethod
     def _add_color_item(combo, name, color):
-        from PyQt5.QtGui import QColor, QPainter, QPixmap
-
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(QColor(color))
-        painter = QPainter(pixmap)
-        painter.setPen(QColor(128, 128, 128))
-        painter.drawRect(0, 0, 15, 15)
-        painter.end()
-        combo.addItem(QIcon(pixmap), name, color)
+        combo.addItem(swatch_icon(color, theme_manager.palette["text_faint"]), name, color)
 
     def _set_color(self, combo, color):
         """Select ``color`` (a Matplotlib colour) in a colour combo, adding it
@@ -1185,7 +1094,7 @@ class ContourSettingsDialog(QDialog):
 
             # Without its signal: changing the type resets the levels
             self.level_type_combo.blockSignals(True)
-            self.level_type_combo.setCurrentText(layer.get("level_type", "fraction"))
+            self._set_level_type(layer.get("level_type", "fraction"))
             self.level_type_combo.blockSignals(False)
             self.pos_levels_edit.setText(
                 ", ".join(str(l) for l in layer.get("pos_levels", []))
@@ -1235,7 +1144,7 @@ class ContourSettingsDialog(QDialog):
         settings["external_image"] = self.file_path_edit.text()
         settings["stokes"] = self.stokes_combo.currentText()
         settings["threshold"] = self.threshold_spin.value()
-        settings["level_type"] = self.level_type_combo.currentText()
+        settings["level_type"] = self.level_type_combo.currentData()
         try:
             pos_levels_text = self.pos_levels_edit.text()
             settings["pos_levels"] = [
@@ -1244,7 +1153,7 @@ class ContourSettingsDialog(QDialog):
                 if level.strip()
             ]
         except ValueError:
-            settings["pos_levels"] = [0.1, 0.3, 0.5, 0.7, 0.9]
+            pass  # (a typo keeps the levels there were)
         try:
             neg_levels_text = self.neg_levels_edit.text()
             settings["neg_levels"] = [
@@ -1253,7 +1162,7 @@ class ContourSettingsDialog(QDialog):
                 if level.strip()
             ]
         except ValueError:
-            settings["neg_levels"] = [0.1, 0.3, 0.5, 0.7, 0.9]
+            pass
         settings["use_default_rms_region"] = self.use_default_rms_box.isChecked()
         settings["rms_box"] = (
             self.rms_xmin.value(),

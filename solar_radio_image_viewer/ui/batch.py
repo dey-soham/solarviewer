@@ -47,6 +47,7 @@ from PyQt5.QtWidgets import (
 from ..processing.workers import process_pool
 from .activity import Spinner
 from .background import Cancelled, wait_for
+from .styles import SPACE_L, SPACE_M
 
 
 def _run_task(job):
@@ -233,7 +234,6 @@ class BatchWindow(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.form = QWidget()
         self.form_layout = QVBoxLayout(self.form)
         self.form_layout.setContentsMargins(22, 18, 22, 18)
@@ -279,7 +279,6 @@ class BatchWindow(QDialog):
         row.setSpacing(8)
         if name:
             row.addWidget(self.row_label(name))
-        edit.setMinimumHeight(30)
         edit.textChanged.connect(self.schedule_summary)
         row.addWidget(edit, 1)
         browse_button = QPushButton(button)
@@ -350,7 +349,6 @@ class BatchWindow(QDialog):
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addWidget(self.row_label("Matching"))
-        self.pattern_edit.setMinimumHeight(30)
         self.pattern_edit.textChanged.connect(self.schedule_summary)
         row.addWidget(self.pattern_edit, 1)
         layout.addLayout(row)
@@ -367,7 +365,6 @@ class BatchWindow(QDialog):
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addWidget(self.row_label("Names"))
-        self.output_pattern_edit.setMinimumHeight(30)
         self.output_pattern_edit.textChanged.connect(self.schedule_summary)
         row.addWidget(self.output_pattern_edit, 1)
         hint = QLabel("* is the input's name")
@@ -418,7 +415,7 @@ class BatchWindow(QDialog):
     # -------------------------------------------- the usual browse buttons
     def browse_directory(self):
         folder = QFileDialog.getExistingDirectory(
-            self, "Select Input Folder", self.dir_edit.text() or os.path.expanduser("~")
+            self, "Select input folder", self.dir_edit.text() or os.path.expanduser("~")
         )
         if folder:
             self.dir_edit.setText(folder)
@@ -434,7 +431,7 @@ class BatchWindow(QDialog):
         if start and not os.path.isabs(start) and self.dir_edit.text():
             start = os.path.join(self.dir_edit.text(), start)
         folder = QFileDialog.getExistingDirectory(
-            self, "Select Output Folder", start or self.dir_edit.text() or os.path.expanduser("~")
+            self, "Select output folder", start or self.dir_edit.text() or os.path.expanduser("~")
         )
         if folder:
             self.out_dir_edit.setText(folder)
@@ -614,9 +611,8 @@ class BatchWindow(QDialog):
     def _build_footer(self):
         footer = QFrame()
         footer.setObjectName("CanvasBar")
-        footer.setFixedHeight(52)
         layout = QHBoxLayout(footer)
-        layout.setContentsMargins(20, 0, 20, 0)
+        layout.setContentsMargins(SPACE_L, SPACE_M, SPACE_L, SPACE_M)
         layout.setSpacing(8)
         self.footer_note = self._label("", "Meta")
         layout.addWidget(self.footer_note)

@@ -17,6 +17,7 @@ from PyQt5.QtCore import QSettings
 # Import theme manager FIRST, before viewer
 from .ui.styles import theme_manager, ThemeManager
 from .ui.app import create_app, apply_theme
+from .ui.errors import show_error
 from . import __version__
 
 import warnings
@@ -99,7 +100,7 @@ class LoaderThread(QThread):
             error_details = "".join(
                 traceback.format_exception(None, e, e.__traceback__)
             )
-            print(f"Error in loader thread: {e}")
+            logging.getLogger(__name__).error(f"Error in loader thread: {e}")
             self.error.emit(error_details)
 
 
@@ -224,52 +225,17 @@ Examples:
     def on_message(msg):
         splash.show_message(msg)
 
-    from PyQt5.QtWidgets import QMessageBox
-
     def on_failure(error_msg):
         """Handle startup failure by showing an error dialog."""
         splash.hide()  # Hide splash so it doesn't cover the error
 
-        msg = QMessageBox()
-
-        # Apply theme stylesheet with specific override for QTextEdit (details box)
-        custom_style = (
-            theme_manager.stylesheet
-            + """
-        QTextEdit {
-            background-color: %s;
-            color: %s;
-            border: 1px solid %s;
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-            font-size: 10pt;
-        }
-        QLabel {
-            font-family: 'Inter', system-ui, sans-serif;
-            font-size: 11pt;
-            color: %s;
-        }
-        QPushButton {
-            font-family: 'Inter', system-ui, sans-serif;
-            font-size: 10pt;
-            font-weight: 500;
-        }
-        """
-            % (
-                theme_manager.palette["base"],
-                theme_manager.palette["text"],
-                theme_manager.palette["border"],
-                theme_manager.palette["text"],
-            )
+        show_error(
+            None,
+            "Startup error",
+            "SolarViewer failed to start. Check that all dependencies are installed "
+            "and try again; the details say what went wrong.",
+            error_msg,
         )
-        msg.setStyleSheet(custom_style)
-
-        msg.setIcon(QMessageBox.Critical)
-        msg.setWindowTitle("Startup Error")
-        msg.setText("SolarViewer failed to start.")
-        msg.setInformativeText("An error occurred while initializing the application.")
-        msg.setDetailedText(error_msg)
-        msg.setStandardButtons(QMessageBox.Ok)
-        msg.exec_()
         sys.exit(1)
 
     def on_finished(ViewerClass):

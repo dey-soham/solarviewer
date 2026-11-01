@@ -27,6 +27,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import paramiko
 
 from .file_cache import RemoteFileCache
+from .ssh_manager import SSHConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,8 @@ class RemoteFiles:
             sftp = self._channels.get_nowait()
         except queue.Empty:
             self.connection.ensure_connected()
+            if self.connection.transport is None:
+                raise SSHConnectionError(self.connection.last_error or "Not connected to remote server")
             sftp = self.connection.transport.open_sftp_client()
             with self._lock:
                 self._all_channels.append(sftp)

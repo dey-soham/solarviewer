@@ -38,7 +38,7 @@ from .ui.app import apply_theme
 from .ui.geometry import fit_to_screen
 from .ui.icons import get_resource_path, launcher_icon, themed_icon
 from .ui.document_tabs import DocumentTabs
-from .ui.widgets import StatusDotButton
+from .ui.widgets import StatusDotButton, button_bar
 from .utils.update_checker import check_for_updates
 from .version import __version__
 from .tools import (
@@ -376,24 +376,40 @@ class SolarRadioImageTab(
         """Draw from the controls in a moment; then the status bar says
         ``done``, if given."""
         self._plot_done = done
-        # If a timer already exists and is active, stop it.
-        if hasattr(self, "_plot_timer") and self._plot_timer.isActive():
-            self._plot_timer.stop()
-        else:
+        if not hasattr(self, "_plot_timer"):
             self._plot_timer = QTimer(self)
             self._plot_timer.setSingleShot(True)
             self._plot_timer.timeout.connect(self.plot_from_controls)
-        self._plot_timer.start(50)  # 10ms delay
+        self._plot_timer.start(50)
+
+    def _range_in_boxes(self):
+        """(low, high) as the Min and Max boxes give it, whichever way round,
+        or (None, None) unless both are finite numbers."""
+        try:
+            low = float(self.vmin_entry.text())
+            high = float(self.vmax_entry.text())
+        except (ValueError, AttributeError):
+            return None, None
+        if not (np.isfinite(low) and np.isfinite(high)):
+            return None, None
+        if low > high:
+            low, high = high, low
+            self.show_range(low, high)
+        return low, high
 
     def plot_from_controls(self):
         """plot_image with the current parameters."""
-        self.plot_image(
-            float(self.vmin_entry.text()),
-            float(self.vmax_entry.text()),
-            self.stretch_combo.currentText(),
-            self.cmap_combo.currentText(),
-            float(self.gamma_entry.text()),
-        )
+        vmin_val, vmax_val = self._range_in_boxes()
+        if vmin_val is None:
+            self.apply_auto_range("minmax")  # in the boxes too
+        else:
+            self.plot_image(
+                vmin_val,
+                vmax_val,
+                self.stretch_combo.currentText(),
+                self.cmap_combo.currentText(),
+                self._current_gamma(),
+            )
         if getattr(self, "_plot_after_preparing", False):
             return  # not drawn yet: ``done`` waits for that
         done, self._plot_done = getattr(self, "_plot_done", None), None
@@ -427,7 +443,7 @@ class SolarRadioImageTab(
         saying why), None if the user cancelled loading.
         """
         if not hasattr(self, "imagename") or not self.imagename:
-            QMessageBox.warning(self, "No Image", "Please open an image first.")
+            QMessageBox.warning(self, "No image", "Please open an image first.")
             return False
 
         label = self.load_label() if reload_data else "Updating the display…"
@@ -454,12 +470,7 @@ class SolarRadioImageTab(
                 self.threshold_entry.setText("10.0")
 
         try:
-            try:
-                vmin_val = float(self.vmin_entry.text())
-                vmax_val = float(self.vmax_entry.text())
-            except (ValueError, AttributeError):
-                vmin_val = None
-                vmax_val = None
+            vmin_val, vmax_val = self._range_in_boxes()
 
             try:
                 gamma = float(self.gamma_entry.text())
@@ -495,8 +506,8 @@ class SolarRadioImageTab(
                         cmap = matches[0]
                         self.cmap_combo.setCurrentText(cmap)
                     else:
-                        print(
-                            f"[WARNING] {cmap_text} colormap not available, using default"
+                        logger.warning(
+                            f"{cmap_text} colormap not available, using default"
                         )
                         if main_window:
                             self.show_status_message(
@@ -626,10 +637,10 @@ class SolarRadioImageTab(
             else:
                 message = (
                     f"Something went wrong loading or drawing {name}:\n\n{e}\n\n"
-                    "The details below, and the log (View > Log Console), "
+                    "The details below, and the log (View > Log console), "
                     "say more."
                 )
-            show_error(self, "Could Not Show Image", message, traceback.format_exc())
+            show_error(self, "Could not show the image", message, traceback.format_exc())
             return False
 
     def set_range(self, vmin_val, vmax_val):
@@ -656,6 +667,7 @@ class SolarRadioImageTab(
             vmax_val = vmin_val + 1e-6
 
         self.show_range(vmin_val, vmax_val)
+        return vmin_val, vmax_val
 
     def show_range(self, vmin_val, vmax_val):
         """Write the display range into the Min/Max boxes, showing each start."""
@@ -717,23 +729,27 @@ class SolarRadioImageTab(
     def update_gamma_slider(self):
         try:
             gamma = float(self.gamma_entry.text())
-            if 0.1 <= gamma <= 3.0:
-                self.gamma_slider.blockSignals(True)
-                self.gamma_slider.setValue(int(gamma * 20))
-                self.gamma_slider.blockSignals(False)
+            # What the slider can show: a power of 0 or less draws nothing
+            in_range = min(max(gamma, 0.05), 3.0)
+            if in_range != gamma:
+                gamma = in_range
+                self.gamma_entry.setText(f"{gamma:g}")
+            self.gamma_slider.blockSignals(True)
+            self.gamma_slider.setValue(round(gamma * 20))
+            self.gamma_slider.blockSignals(False)
 
-                if (
-                    self.current_image_data is not None
-                    and self.stretch_combo.currentText() == "power"
-                ):
-                    try:
-                        vmin_val = float(self.vmin_entry.text())
-                        vmax_val = float(self.vmax_entry.text())
-                        stretch = self.stretch_combo.currentText()
-                        cmap = self.cmap_combo.currentText()
-                        self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
-                    except ValueError:
-                        pass
+            if (
+                self.current_image_data is not None
+                and self.stretch_combo.currentText() == "power"
+            ):
+                try:
+                    vmin_val = float(self.vmin_entry.text())
+                    vmax_val = float(self.vmax_entry.text())
+                    stretch = self.stretch_combo.currentText()
+                    cmap = self.cmap_combo.currentText()
+                    self.plot_image(vmin_val, vmax_val, stretch, cmap, gamma)
+                except ValueError:
+                    pass
         except ValueError:
             self.gamma_entry.setText("1.0")
             self.gamma_slider.setValue(20)
@@ -941,11 +957,9 @@ class SolarRadioImageTab(
         # Replace the standard button box with Apply/Close
         button_box = dialog.findChild(QDialogButtonBox)
         if button_box:
-            button_box.clear()
-            apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
-            close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
-            apply_btn.clicked.connect(on_apply)
-            close_btn.clicked.connect(on_close)
+            bar, _ = button_bar(primary=("Apply", on_apply), secondary=("Close", on_close))
+            button_box.parentWidget().layout().replaceWidget(button_box, bar)
+            button_box.deleteLater()
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
@@ -1151,7 +1165,7 @@ class SolarRadioImageViewerApp(
         self._set_hand_cursor_recursive(self)
 
         on_stage("Building the first tab…", 81)
-        first_tab = self.add_new_tab("Tab1", on_stage)  # (the pane of the first page)
+        first_tab = self.add_new_tab("Tab 1", on_stage)  # (the pane of the first page)
 
         # Apply fast preview flag from CLI
         if self._fast_preview and hasattr(first_tab, "downsample_toggle"):
@@ -1164,13 +1178,10 @@ class SolarRadioImageViewerApp(
             first_tab.dir_entry.setText(imagename)
             first_tab.update_tab_name_from_path(imagename)
 
-            def load():
-                first_tab.on_visualization_changed(dir_load=True)
-                # Scan directory for file navigation
-                first_tab._scan_directory_files()
-
             # (not if the tab is closed first)
-            self._start_image = lambda: first_tab.call_later(0, load)
+            self._start_image = lambda: first_tab.call_later(
+                0, lambda: first_tab.open_image_path(imagename)
+            )
         """else:
             first_tab.imagename = get_resource_path("assets/splash.fits")
             QTimer.singleShot(
@@ -1285,12 +1296,14 @@ class SolarRadioImageViewerApp(
         empty tab)"""
         if index >= 0 and index < len(self.tabs):
             if len(self.tabs) == 1:
-                self.add_new_tab("Tab1")
+                self.add_new_tab("Tab 1")
             page = self.tabs.pop(index)
             self.tab_widget.removeTab(index)
             # A removed page is not deleted by Qt: free it and its images
             page.cleanup()
             page.deleteLater()
+            # (closing the current tab moves on without always saying so)
+            self.update_window_title()
 
     def close_current_tab(self):
         """Close the currently active tab"""
@@ -1299,9 +1312,11 @@ class SolarRadioImageViewerApp(
 
     def handle_add_tab(self):
         """Handle the add tab button click"""
-        tab_count = len(self.tabs) + 1
-        tab_name = f"Tab{tab_count}"
-        self.add_new_tab(tab_name)
+        names = {self.tab_widget.tabText(i) for i in range(self.tab_widget.count())}
+        number = 1
+        while f"Tab {number}" in names:
+            number += 1
+        self.add_new_tab(f"Tab {number}")
 
     def add_new_tab(self, name, on_stage=None):
         """A new tab, with one pane: returns the pane (the page holding it
@@ -1419,9 +1434,9 @@ class SolarRadioImageViewerApp(
     def _update_theme_action_text(self):
         """Update theme toggle action text based on current theme."""
         if theme_manager.is_dark:
-            self.theme_action.setText("Switch to Light Mode")
+            self.theme_action.setText("Switch to light mode")
         else:
-            self.theme_action.setText("Switch to Dark Mode")
+            self.theme_action.setText("Switch to dark mode")
 
     def _update_application_palette(self):
         """Restyle the application (palette and stylesheet) for the theme."""
@@ -1438,9 +1453,8 @@ class SolarRadioImageViewerApp(
             axes_bg = palette["base"]
             text_color = palette["text"]
         else:
-            fig_bg = palette.get("plot_bg", "#ffffff")
-            axes_bg = palette.get("plot_bg", "#ffffff")
-            text_color = palette.get("plot_text", "#1a1a1a")
+            fig_bg = axes_bg = palette["plot_bg"]
+            text_color = palette["plot_text"]
 
         for tab in self.all_panes():
             if hasattr(tab, "figure") and tab.figure:
@@ -1478,7 +1492,7 @@ class SolarRadioImageViewerApp(
                                 ax.coords.frame.set_color(text_color)
                         except Exception as e:
                             logger.error(f"Error updating WCSAxes colors: {e}")
-                            self.show_status_message(
+                            self.statusBar().showMessage(
                                 f"Error updating WCSAxes colors: {e}"
                             )
 

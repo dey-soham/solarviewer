@@ -18,12 +18,15 @@ from PyQt5.QtWidgets import (
     QDialog,
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QImage, QPixmap
 from ..ui.activity import ActivityLabel
 from ..ui.download_parts import abandon
-from ..ui.styles import theme_manager
+from ..ui.errors import show_error
+from ..ui.geometry import fit_to_screen
+from ..ui.styles import SPACE_M, SPACE_S
+from ..ui.widgets import button_bar, dialog_layout
 
-from .widgets import ClickableLabel
+from .widgets import ClickableLabel, source_note
 from .workers import DHSpectraWorker
 logger = logging.getLogger(__name__)
 
@@ -31,12 +34,14 @@ NO_DATA_TEXT = {
     'wind': "No WIND/WAVES data",
     'stereo_a': "No STEREO-A data",
     'stereo_b': "No STEREO-B data",
-    'norp': "\n\n\n\n\n\n\n\n\n\nNo Nobeyama data",
+    'norp': "No Nobeyama data",
     'orfees': "No ORFEES data",
     'nda': "No NDA data",
     'yamagawa': "No Yamagawa data",
     'hiras': "No HiRAS data",
 }
+EMPTY_HEIGHT = 48  # of a spectrum's place while it has no image: room for its spinner
+SCROLL_HEIGHT = 180  # of a place that scrolls, holding its image and scroll bar
 
 
 class RadioSpectraTabMixin:
@@ -47,7 +52,7 @@ class RadioSpectraTabMixin:
     Host attributes/methods used:
 
     ``_cleanup_viewer``, ``dh_worker``, ``hiras_card``, ``hiras_image_label``,
-    ``hiras_save_btn``, ``image_viewers``, ``is_dark_theme``,
+    ``hiras_save_btn``, ``image_viewers``,
     ``nda_image_label``, ``nda_save_btn``, ``norp_image_label``,
     ``norp_save_btn``, ``orfees_image_label``, ``orfees_save_btn``,
     ``selected_date``, ``stereo_a_image_label``, ``stereo_a_save_btn``, ``stereo_b_card``,
@@ -62,37 +67,35 @@ class RadioSpectraTabMixin:
         # Tab 6: Radio Spectra (DH-band)
         spectra_tab = QWidget()
         spectra_layout = QVBoxLayout(spectra_tab)
-        spectra_layout.setContentsMargins(16, 12, 16, 12)
-        spectra_layout.setSpacing(12)
+        spectra_layout.setContentsMargins(0, SPACE_M, 0, 0)
+        spectra_layout.setSpacing(SPACE_S)
 
-        # Fetch button and progress
+        # Status, progress and the fetch button, under the Fetch above
         spectra_controls = QHBoxLayout()
-        self.fetch_spectra_btn = QPushButton("Fetch Spectra")
-        self.fetch_spectra_btn.setToolTip(
-            "Download WIND/WAVES and STEREO dynamic spectra for this date"
+        spectra_controls.setSpacing(SPACE_S)
+        self.spectra_status_label = QLabel(
+            "Press Fetch spectra to download the day's radio spectra."
         )
-        self.fetch_spectra_btn.clicked.connect(self.fetch_dh_spectra)
-        spectra_controls.addWidget(self.fetch_spectra_btn)
+        self.spectra_status_label.setWordWrap(True)
+        self.spectra_status_label.setObjectName("Hint")
+        spectra_controls.addWidget(self.spectra_status_label, 1)
+
+        self.spectra_activity = ActivityLabel()
+        self.spectra_activity.hide()
+        spectra_controls.addWidget(self.spectra_activity)
 
         self.cancel_spectra_btn = QPushButton("Cancel")
         self.cancel_spectra_btn.clicked.connect(self.cancel_dh_spectra)
         self.cancel_spectra_btn.hide()
         spectra_controls.addWidget(self.cancel_spectra_btn)
 
-        self.spectra_activity = ActivityLabel()
-        self.spectra_activity.hide()
-        spectra_controls.addWidget(self.spectra_activity)
-
-        spectra_controls.addStretch()
-        spectra_layout.addLayout(spectra_controls)
-
-        # Status label
-        self.spectra_status_label = QLabel(
-            "Click 'Fetch Spectra' to download radio spectra."
+        self.fetch_spectra_btn = QPushButton("Fetch spectra")
+        self.fetch_spectra_btn.setToolTip(
+            "Download WIND/WAVES and STEREO dynamic spectra for this date"
         )
-        self.spectra_status_label.setWordWrap(True)
-        self.spectra_status_label.setObjectName("Hint")
-        spectra_layout.addWidget(self.spectra_status_label)
+        self.fetch_spectra_btn.clicked.connect(self.fetch_dh_spectra)
+        spectra_controls.addWidget(self.fetch_spectra_btn)
+        spectra_layout.addLayout(spectra_controls)
 
         # Scrollable content area for spectra images
         spectra_scroll = QScrollArea()
@@ -101,30 +104,28 @@ class RadioSpectraTabMixin:
 
         spectra_content = QWidget()
         spectra_content_layout = QVBoxLayout(spectra_content)
-        spectra_content_layout.setSpacing(16)
+        spectra_content_layout.setContentsMargins(0, 0, 0, 0)
+        spectra_content_layout.setSpacing(SPACE_M)
 
         # One card per instrument
         self._add_spectrum_card(
             spectra_content_layout,
             "wind",
-            "WIND/WAVES 24h Calibrated (14 kHz - 14 MHz)",
-            (99, 102, 241),
+            "WIND/WAVES 24 h calibrated (14 kHz–14 MHz)",
             "WIND/WAVES",
             "WIND/WAVES",
         )
         self._add_spectrum_card(
             spectra_content_layout,
             "stereo_a",
-            "STEREO-A S/WAVES (10 kHz - 16 MHz)",
-            (16, 185, 129),
+            "STEREO-A S/WAVES (10 kHz–16 MHz)",
             "STEREO-A",
             "STEREO-A",
         )
         self._add_spectrum_card(
             spectra_content_layout,
             "stereo_b",
-            "STEREO-B S/WAVES (10 kHz - 16 MHz)",
-            (251, 146, 60),
+            "STEREO-B S/WAVES (10 kHz–16 MHz)",
             "STEREO-B",
             "STEREO-B",
             keep_card=True,
@@ -133,49 +134,39 @@ class RadioSpectraTabMixin:
         self._add_spectrum_card(
             spectra_content_layout,
             "norp",
-            "Nobeyama Radio Polarimeter (NORP) Full-Day",
-            (59, 130, 246),
+            "Nobeyama Radio Polarimeter (NORP), full day",
             "Nobeyama",
             "Nobeyama NORP",
-            label_text="\n\n\n\n\n\n\n\n\n\nNo data loaded",
-            alignment=Qt.AlignTop | Qt.AlignHCenter,
-            min_height=400,
         )
         self._add_spectrum_card(
             spectra_content_layout,
             "yamagawa",
-            "NICT Yamagawa Spectrograph",
-            (20, 184, 166),
+            "NICT Yamagawa spectrograph",
             "Yamagawa",
             "Yamagawa",
-            min_height=None,
             keep_card=True,
             scroll=True,
         )
         self._add_spectrum_card(
             spectra_content_layout,
             "hiras",
-            "NICT HiRAS Spectrograph",
-            (14, 165, 233),
+            "NICT HiRAS spectrograph",
             "HiRAS",
             "HiRAS",
-            min_height=None,
             keep_card=True,
             scroll=True,
         )
         self._add_spectrum_card(
             spectra_content_layout,
             "orfees",
-            "ORFEES (Nançay) Spectrograph",
-            (168, 85, 247),
+            "ORFEES (Nançay) spectrograph",
             "ORFEES",
             "ORFEES",
         )
         self._add_spectrum_card(
             spectra_content_layout,
             "nda",
-            "NDA (Nançay) Spectrograph",
-            (236, 72, 153),
+            "NDA (Nançay) spectrograph",
             "NDA",
             "NDA",
         )
@@ -185,29 +176,23 @@ class RadioSpectraTabMixin:
         spectra_layout.addWidget(spectra_scroll)
 
         # Credits label
-        spectra_credits_label = QLabel(
-            'Data Sources: <a href="https://cdaw.gsfc.nasa.gov/">CDAW NASA</a>, '
+        spectra_credits_label = source_note(
+            'Data sources: <a href="https://cdaw.gsfc.nasa.gov/">CDAW NASA</a>, '
             '<a href="https://solar.nro.nao.ac.jp/norp/">NoRP</a>, '
             '<a href="https://rsdb.obs-nancay.fr/">Nançay</a>, '
             '<a href="https://solobs.nict.go.jp/radio/cgi-bin/MainDisplay.pl">NICT</a>'
         )
-        spectra_credits_label.setOpenExternalLinks(True)
-        spectra_credits_label.setObjectName("Hint")
         spectra_layout.addWidget(spectra_credits_label)
 
-        self.tabs.addTab(spectra_tab, "Radio Spectra")
+        self.tabs.addTab(spectra_tab, "Radio spectra")
 
     def _add_spectrum_card(
         self,
         parent_layout,
         key,
         title,
-        accent_rgb,
         save_name,
         viewer_title,
-        label_text="No data loaded",
-        alignment=Qt.AlignCenter,
-        min_height=200,
         scroll=False,
         hidden=False,
         keep_card=False,
@@ -216,14 +201,12 @@ class RadioSpectraTabMixin:
         label for one radio spectrograph. Creates ``self.<key>_save_btn`` and
         ``self.<key>_image_label`` (and ``self.<key>_scroll`` / ``self.<key>_card``
         when ``scroll`` / ``keep_card`` are set)."""
-        palette = theme_manager.palette
-        rgb = ", ".join(str(v) for v in accent_rgb)
         card = QFrame()
         if keep_card:
             setattr(self, f"{key}_card", card)
         card.setObjectName("Card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
 
         header = QHBoxLayout()
         title_label = QLabel(title)
@@ -243,14 +226,14 @@ class RadioSpectraTabMixin:
             scroll_area.setWidgetResizable(True)
             scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            scroll_area.setMinimumHeight(180)  # Scaled image + scrollbar
+            scroll_area.setFixedHeight(EMPTY_HEIGHT)
             scroll_area.setFrameShape(QFrame.NoFrame)
             setattr(self, f"{key}_scroll", scroll_area)
 
-        image_label = ClickableLabel(label_text)
-        image_label.setAlignment(alignment)
+        image_label = ClickableLabel("Press Fetch spectra to see this one")
+        image_label.setAlignment(Qt.AlignCenter)
         if not scroll:
-            image_label.setMinimumHeight(min_height)
+            image_label.setMinimumHeight(EMPTY_HEIGHT)
         image_label.setScaledContents(False)
         image_label.setObjectName("Hint")
         image_label.setCursor(Qt.PointingHandCursor)
@@ -274,12 +257,6 @@ class RadioSpectraTabMixin:
             self.yamagawa_image_label, self.hiras_image_label
         ]
 
-    def _say_no_data_loaded(self, label):
-        if label is self.norp_image_label:
-            label.setText("\n\n\n\n\n\n\n\n\n\nNo data loaded")
-        else:
-            label.setText("No data loaded")
-
     def clear_dh_spectra_ui(self):
         """Reset the radio spectra UI labels to initial state."""
         labels = self._spectrum_labels()
@@ -292,13 +269,14 @@ class RadioSpectraTabMixin:
         for label in labels:
             label.stop_loading()
             label.clear()
-            self._say_no_data_loaded(label)
-            label.setToolTip("Click 'Fetch Spectra' to load")
+            label.setText("Press Fetch spectra to see this one")
             
         for btn in buttons:
             btn.setEnabled(False)
-            
-        self.spectra_status_label.setText("Click 'Fetch Spectra' to load radio spectra.")
+
+        self.yamagawa_scroll.setFixedHeight(EMPTY_HEIGHT)
+        self.hiras_scroll.setFixedHeight(EMPTY_HEIGHT)
+        self.spectra_status_label.setText("Press Fetch spectra to download the day's radio spectra.")
         self.spectra_status_label.setToolTip("")
         self._spectra_paths = {}
 
@@ -377,7 +355,7 @@ class RadioSpectraTabMixin:
             self.spectra_status_label.setText(f"Cancelled ({shown} spectrograph(s) loaded)")
             for label in self._spectrum_labels():
                 if not label.pixmap() and not label.text():  # was still waiting
-                    self._say_no_data_loaded(label)
+                    label.setText("Press Fetch spectra to see this one")
 
     def on_dh_source_ended(self, source):
         """The card of a source that gave nothing stops waiting now: the last
@@ -431,8 +409,9 @@ class RadioSpectraTabMixin:
             label.stop_loading()
             if source in ['yamagawa', 'hiras']:
                 # Zoom in: fit to the available height in the card and allow horizontal scrolling
-                # The scroll area minimum height is 180, so we scale to ~150 to stay within it without vertical scroll
+                # Scaled to ~150 to stay within the scroll area without vertical scroll
                 scaled = pixmap.scaledToHeight(150, Qt.SmoothTransformation)
+                getattr(self, f"{source}_scroll").setFixedHeight(SCROLL_HEIGHT)
             else:
                 parent = label.parent()
                 if parent:
@@ -491,12 +470,12 @@ class RadioSpectraTabMixin:
         from PyQt5.QtWidgets import QFileDialog
         
         if not hasattr(self, '_spectra_paths') or not self._spectra_paths.get(source):
-            QMessageBox.warning(self, "Error", "No image available to save.")
+            QMessageBox.warning(self, "No image", "No image available to save.")
             return
 
         source_path = self._spectra_paths[source]
         if not os.path.exists(source_path):
-            QMessageBox.warning(self, "Error", "Source image file not found.")
+            QMessageBox.warning(self, "No image", "The downloaded image file was not found.")
             return
 
         # Suggest a filename based on source and date
@@ -516,18 +495,17 @@ class RadioSpectraTabMixin:
         # Open save dialog
         save_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Spectrogram",
+            "Save spectrogram",
             suggested_name,
             "PNG Images (*.png);;All Files (*)"
         )
 
         if save_path:
-            import shutil
-            try:
-                shutil.copy2(source_path, save_path)
-                QMessageBox.information(self, "Saved", f"Image saved to:\n{save_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save image:\n{str(e)}")
+            # Converted: WIND/WAVES is kept as the JPEG the archive sends
+            if QImage(source_path).save(save_path, "PNG"):
+                QMessageBox.information(self, "Image saved", f"Image saved to:\n{save_path}")
+            else:
+                show_error(self, "Could not save the image", f"The image could not be saved to:\n{save_path}")
 
     def show_local_image(self, source: str, title: str):
         """Open a local spectra image in a full-resolution dialog viewer."""
@@ -540,14 +518,14 @@ class RadioSpectraTabMixin:
 
         # Create a dialog to show the full image
         dialog = QDialog(None)  # Use None as parent for independent window
-        dialog.setWindowTitle(f"{title} - Full Resolution")
+        dialog.setWindowTitle(f"{title}: full resolution")
         dialog.setWindowFlags(
             Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
         )
-        dialog.resize(1280, 900)
+        fit_to_screen(dialog, 1280, 900)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
 
-        layout = QVBoxLayout(dialog)
+        layout = dialog_layout(dialog)
 
         # Scrollable image
         scroll = QScrollArea()
@@ -563,18 +541,13 @@ class RadioSpectraTabMixin:
             img_label.setPixmap(pixmap)
             img_label.adjustSize()
         else:
-            img_label.setText("Failed to load image")
+            img_label.setText("The image could not be read")
 
         scroll.setWidget(img_label)
         layout.addWidget(scroll)
 
-        # Close button
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        btn_layout.addWidget(close_btn)
-        layout.addLayout(btn_layout)
+        buttons, _ = button_bar(secondary=("Close", dialog.accept))
+        layout.addWidget(buttons)
 
         # Keep reference and show
         self.image_viewers.append(dialog)

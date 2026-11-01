@@ -47,6 +47,7 @@ from ..processing.contour_layers import (
 from ..processing.image_meta import casa_info, coordsys_from_record, fits_header
 from ..ui.background import Cancelled, run_in_background
 from ..ui.busy import busy
+from ..ui.widgets import button_bar
 from .exports import wait_for_task
 
 logger = logging.getLogger(__name__)
@@ -236,11 +237,10 @@ class ContoursMixin:
         # The dialog already has a button box, so we need to modify it
         button_box = dialog.findChild(QDialogButtonBox)
         if button_box:
-            button_box.clear()
-            apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
-            close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
-            apply_btn.clicked.connect(on_apply)
-            close_btn.clicked.connect(on_close)
+            bar, buttons = button_bar(primary=("Apply", on_apply), secondary=("Close", on_close))
+            apply_btn = buttons["Apply"]
+            button_box.parentWidget().layout().replaceWidget(button_box, bar)
+            button_box.deleteLater()
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.destroyed.connect(on_dialog_destroyed)
@@ -335,10 +335,10 @@ class ContoursMixin:
 
                 # Ensure valid region
                 if rms_x2 < rms_x1 or rms_y2 < rms_y1:
-                    print("[Warning] Invalid RMS region. Using default RMS region.")
+                    logger.warning("Invalid RMS region. Using default RMS region.")
                     rms_box = (30, 200, 30, 130)
             else:
-                print("[Warning] Invalid image dimensions. Using default RMS region.")
+                logger.warning("Invalid image dimensions. Using default RMS region.")
                 rms_box = (30, 200, 30, 130)
 
             # Calculate target size for fast load mode (must match load_data)
@@ -367,8 +367,8 @@ class ContoursMixin:
                 if external_image and os.path.exists(external_image):
                     image_to_load = self._resolve_contour_image(external_image, step)
                 else:
-                    print(
-                        "[ERROR] load_contour_data: external image not found or empty"
+                    logger.error(
+                        "load_contour_data: external image not found or empty"
                     )
                     image_to_load = None
 
@@ -426,7 +426,7 @@ class ContoursMixin:
                 # Show warning dialog and switch to Stokes I
                 QMessageBox.warning(
                     self,
-                    "Contour Stokes Unavailable",
+                    "Contour Stokes unavailable",
                     f"The contour Stokes parameter '{contour_stokes}' of "
                     f"'{contour_layer_name(layer)}' requires "
                     f"polarization data ({', '.join(missing_stokes)}) that is not available "
@@ -623,10 +623,7 @@ class ContoursMixin:
             return drawn
 
         except Exception as e:
-            logger.error(f"Error drawing contours ({name}): {e}")
-            import traceback
-
-            traceback.print_exc()
+            logger.exception(f"Error drawing contours ({name}): {e}")
             if self.window():
                 self.show_status_message(f"Error drawing contours ({name}): {str(e)}")
             return []
@@ -710,7 +707,7 @@ class ContoursMixin:
         if len(vertices) and not inside.any():
             QMessageBox.warning(
                 self,
-                "No Coordinate Overlap",
+                "No coordinate overlap",
                 f"None of the contours of '{contour_layer_name(layer)}' fall on "
                 "the base image.\n\n"
                 "This typically happens when the base image and contour image "
@@ -865,8 +862,8 @@ class ContoursMixin:
             max_dim = max(contour_data.shape)
             if max_dim > 2048:
                 factor = int(np.ceil(max_dim / 2048.0))
-                print(
-                    f"[INFO] Downsampling aligned contour by {factor}x (original size: {contour_data.shape})"
+                logger.info(
+                    f"Downsampling aligned contour by {factor}x (original size: {contour_data.shape})"
                 )
                 # Simple slicing is sufficient for aligned data
                 contour_data = contour_data[::factor, ::factor]

@@ -20,6 +20,8 @@ Author: Soham Dey
 Date: April 2025
 """
 
+import csv
+import logging
 import os
 import sys
 import threading
@@ -30,7 +32,8 @@ from datetime import datetime
 from ..ui.activity import begin_activity
 from ..ui.background import Cancelled, run_in_thread
 from ..ui.busy import busy
-from ..ui.styles import set_hand_cursor
+from ..ui.styles import SPACE_M, SPACE_S, set_hand_cursor, theme_manager, themed
+from ..ui.widgets import button_bar, dialog_layout, empty_note, kicker, vrule
 
 from PyQt5.QtWidgets import (
     QApplication,
@@ -48,8 +51,10 @@ from PyQt5.QtWidgets import (
     QStatusBar,
     QAction,
     QFileDialog,
+    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QMenu,
     QToolBar,
     QAbstractItemView,
@@ -59,6 +64,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QFrame,
     QScrollArea,
+    QSpinBox,
 )
 from PyQt5.QtCore import (
     QAbstractTableModel,
@@ -72,11 +78,16 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import (
     QColor,
+    QFont,
     QKeySequence,
 )
 
 
 from ..ui.geometry import fit_to_screen
+
+logger = logging.getLogger(__name__)
+
+_ROOT = QModelIndex()  # the one parent of a flat table model
 
 LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 SEARCH_PAUSE_MS = 250  # the search runs once typing pauses this long
@@ -87,7 +98,26 @@ _ALIVE = set()  # running threads, which can outlive the window on a dead disk
 
 
 class LogTableWidget(QTableView):
-    """Custom QTableView that prevents horizontal auto-scrolling during navigation."""
+    """Custom QTableView that prevents horizontal auto-scrolling during navigation.
+    The message column takes the spare width, and is as wide as its longest
+    message, with the table scrolling, when that does not fit."""
+
+    MESSAGE = 3
+    _message_width = 0
+
+    def fit_message_column(self):
+        """To call when the messages shown change."""
+        self._message_width = self.sizeHintForColumn(self.MESSAGE)
+        self._stretch_message_column()
+
+    def _stretch_message_column(self):
+        header = self.horizontalHeader()
+        others = sum(header.sectionSize(column) for column in range(self.MESSAGE))
+        header.setStretchLastSection(others + self._message_width <= self.viewport().width())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._stretch_message_column()
 
     def rowCount(self):
         return self.model().rowCount()
@@ -152,10 +182,11 @@ class LogFileLoader(QThread):
     loaded = pyqtSignal(object, object)  # entries, how many bytes were read
     failed = pyqtSignal(object)
 
-    def __init__(self, path, task):
+    def __init__(self, path, task, whole=False):
         super().__init__()
         self.path = path
         self.task = task
+        self.whole = whole  # True: nothing follows the file, so take all of it
         self.stop = False
         _ALIVE.add(self)
         self.finished.connect(lambda: _ALIVE.discard(self))
@@ -169,6 +200,8 @@ class LogFileLoader(QThread):
             count = 0
             with open(self.path, "rb") as f:
                 for raw in f:
+                    if not raw.endswith(b"\n") and not self.whole:
+                        break  # still being written: the monitor takes it from here
                     position += len(raw)
                     for line in text_lines(raw):
                         record = parse_log_line(line)
@@ -199,6 +232,7 @@ class LogMonitorThread(QThread):
         self.running = True
         self.last_file_position = 0
         self.last_file_check = 0
+        self._unfinished = None  # the file's size when its last line had no end yet
         self.file_check_interval = 0.5  # Check file every 0.5 seconds
         self.following = True  # False: the file is left alone (Auto-refresh off)
         self.generation = 0  # bumped when another file or position is set
@@ -229,7 +263,7 @@ class LogMonitorThread(QThread):
                 # Small sleep to reduce CPU usage
                 time.sleep(0.01)
             except Exception as e:
-                print(f"Error in log monitor thread: {e}")
+                logger.warning(f"Error in log monitor thread: {e}")
 
     def _check_log_file(self):
         """Check if the log file has changed and process new entries."""
@@ -239,15 +273,27 @@ class LogMonitorThread(QThread):
                 log_file = self.log_file
                 position = self.last_file_position
 
+            size = os.path.getsize(log_file)
+            if size < position:
+                position = 0  # cut back or started afresh: all of it is new
+
             # If file size has increased, read the new content
-            if os.path.getsize(log_file) > position:
+            if size > position:
                 with open(log_file, "rb") as f:
                     # Move to the last position we read
                     f.seek(position)
 
                     # Read new lines
                     new_lines = f.readlines()
-                    position = f.tell()
+
+                # A last line without its end is being written: left for the
+                # next look, unless it has stopped growing (a file that just
+                # doesn't end in a line feed)
+                if new_lines and not new_lines[-1].endswith(b"\n"):
+                    if size != self._unfinished:
+                        self._unfinished = size
+                        new_lines.pop()
+                position += sum(len(raw) for raw in new_lines)
 
                 with self._lock:
                     if generation != self.generation:
@@ -259,7 +305,7 @@ class LogMonitorThread(QThread):
                 if records:
                     self.logs_received.emit(generation, records)
         except Exception as e:
-            print(f"Error checking log file: {e}")
+            logger.warning(f"Error checking log file: {e}")
 
     def set_log_file(self, log_file):
         """Set the log file to monitor."""
@@ -279,107 +325,66 @@ class LogMonitorThread(QThread):
         self.wait(2000)
 
 
+def paint_empty_cell(option, index, painter, delegate):
+    """A cell's selection, hover and rule as the stylesheet draws them, with
+    no text."""
+    cell = QStyleOptionViewItem(option)
+    delegate.initStyleOption(cell, index)
+    cell.text = ""
+    style = cell.widget.style() if cell.widget else QApplication.style()
+    style.drawControl(QStyle.CE_ItemViewItem, cell, painter, cell.widget)
+
+
 class LogLevelDelegate(QStyledItemDelegate):
-    """Custom delegate for rendering log level cells with background colors."""
+    """The level cell: the word, on a tone's ground for what needs attention."""
 
-    # Theme-aware level colors
-    LEVEL_COLORS_DARK = {
-        "DEBUG": (
-            QColor(80, 80, 100),
-            QColor(200, 200, 200),
-        ),  # Muted blue bg, light text
-        "INFO": (
-            QColor(50, 80, 50),
-            QColor(180, 255, 180),
-        ),  # Dark green bg, light green text
-        "WARNING": (
-            QColor(120, 100, 40),
-            QColor(255, 240, 100),
-        ),  # Dark yellow bg, bright yellow text
-        "ERROR": (
-            QColor(120, 50, 50),
-            QColor(255, 150, 150),
-        ),  # Dark red bg, light red text
-        "CRITICAL": (
-            QColor(150, 40, 40),
-            QColor(255, 100, 100),
-        ),  # Darker red bg, bright red text
+    # level: (text, ground, bold)
+    LEVEL_LOOK = {
+        "DEBUG": ("text_secondary", None, False),
+        "INFO": ("text", None, False),
+        "WARNING": ("text", "warning_soft", False),
+        "ERROR": ("text", "error_soft", False),
+        "CRITICAL": ("text", "error_soft", True),
     }
-
-    LEVEL_COLORS_LIGHT = {
-        "DEBUG": (
-            QColor(200, 200, 220),
-            QColor(60, 60, 80),
-        ),  # Light gray bg, dark text
-        "INFO": (
-            QColor(200, 240, 200),
-            QColor(20, 80, 20),
-        ),  # Light green bg, dark green text
-        "WARNING": (
-            QColor(255, 240, 180),
-            QColor(120, 90, 0),
-        ),  # Light yellow bg, dark yellow text
-        "ERROR": (
-            QColor(255, 200, 200),
-            QColor(150, 30, 30),
-        ),  # Light red bg, dark red text
-        "CRITICAL": (QColor(255, 150, 150), QColor(120, 0, 0)),  # Red bg, dark red text
-    }
-
-    def __init__(self, theme="dark", parent=None):
-        super().__init__(parent)
-        self.theme = theme
-        self.level_colors = (
-            self.LEVEL_COLORS_DARK if theme == "dark" else self.LEVEL_COLORS_LIGHT
-        )
-
-    def set_theme(self, theme):
-        """Update the theme and colors."""
-        self.theme = theme
-        self.level_colors = (
-            self.LEVEL_COLORS_DARK if theme == "dark" else self.LEVEL_COLORS_LIGHT
-        )
 
     def paint(self, painter, option, index):
         """Custom painting for log level cells."""
         level = index.data()
-        if level in self.level_colors:
-            bg_color, text_color = self.level_colors[level]
-
-            # Fill background
-            if option.state & QStyle.State_Selected:
-                # When selected, blend the level color with the selection color or just use selection
-                # For high contrast, we use the selection color
-                painter.fillRect(option.rect, option.palette.highlight())
-                painter.setPen(option.palette.highlightedText().color())
-                
-                # Draw a small indicator of the level color on the left
-                indicator_rect = QRect(option.rect.left(), option.rect.top(), 4, option.rect.height())
-                painter.fillRect(indicator_rect, bg_color)
-            else:
-                painter.fillRect(option.rect, bg_color)
-                painter.setPen(text_color)
-
-            # Set up rect for text with padding
-            text_rect = QRect(option.rect)
-            text_rect.setLeft(text_rect.left() + 4)
-
-            # Draw text
-            painter.drawText(text_rect, Qt.AlignVCenter, level)
-        else:
+        if level not in self.LEVEL_LOOK:
             # Fall back to default for unknown levels
             super().paint(painter, option, index)
+            return
+
+        palette = theme_manager.palette
+        text, ground, bold = self.LEVEL_LOOK[level]
+        selected = option.state & QStyle.State_Selected
+        painter.save()
+        if ground and not selected:
+            painter.fillRect(option.rect, QColor(palette[ground]))
+        paint_empty_cell(option, index, painter, self)
+        if ground and selected:
+            # A small indicator of the level's ground on the left
+            painter.fillRect(QRect(option.rect.left(), option.rect.top(), 4, option.rect.height()), QColor(palette[ground]))
+
+        font = QFont(option.font)
+        font.setBold(bold)
+        painter.setFont(font)
+        painter.setPen(QColor(palette["text" if selected else text]))
+        text_rect = QRect(option.rect)
+        text_rect.setLeft(text_rect.left() + SPACE_S)
+        painter.drawText(text_rect, Qt.AlignVCenter, level)
+        painter.restore()
 
 
 class MessageDelegate(QStyledItemDelegate):
-    """Custom delegate for syntax highlighting using HTML and QTextDocument."""
+    """Custom delegate for picking out the values of a message, in one quiet
+    colour, using HTML and QTextDocument."""
 
-    def __init__(self, theme="dark", parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.theme = theme
         import re
 
-        # Professional syntax highlighting patterns (priority-ordered - first match wins)
+        # Syntax highlighting patterns (priority-ordered - first match wins)
         # More specific patterns come first to avoid false positives
         self.patterns = [
             # 1. Quoted strings FIRST - prevent highlighting inside quotes
@@ -479,45 +484,12 @@ class MessageDelegate(QStyledItemDelegate):
             # 15. Function/method names (word followed by parentheses)
             (re.compile(r"\b([a-zA-Z_]\w*)\("), "function"),
         ]
-        self._html_cache = (
-            {}
-        )  # Cache for generated HTML - must init before _update_colors
-        self._update_colors()
+        self._html_cache = {}  # generated HTML, for as long as the theme stays
+        themed(self, self._update_colors)
 
-    def _update_colors(self):
-        """Set colors based on theme (as hex strings for HTML)."""
-        if self.theme == "dark":
-            self.colors = {
-                "path": "#64b4ff",  # Light blue - file paths
-                "number": "#ffb464",  # Bright orange - numbers with units
-                "station": "#dc96ff",  # Magenta/purple - LOFAR stations
-                "string": "#dcdc64",  # Yellow - quoted strings
-                "subband": "#96dc96",  # Light green - subbands
-                "keyword": "#ff6b6b",  # Light red - log levels/status
-                "timestamp": "#78c878",  # Green - timestamps
-                "hash": "#a0a0a0",  # Gray - UUIDs/hashes
-                "function": "#64dcdc",  # Cyan - function names
-                "default": "#c8c8c8",  # Light gray - regular text
-            }
-        else:
-            self.colors = {
-                "path": "#0000b4",  # Blue
-                "number": "#b46400",  # Orange
-                "station": "#8c008c",  # Purple
-                "string": "#786400",  # Dark yellow
-                "subband": "#007800",  # Green
-                "keyword": "#c80000",  # Red
-                "timestamp": "#006400",  # Dark green
-                "hash": "#606060",  # Gray
-                "function": "#006464",  # Dark cyan
-                "default": "#1e1e1e",  # Dark gray
-            }
-        self._html_cache.clear()  # Clear cache on theme change
-
-    def set_theme(self, theme):
-        """Update the theme and colors."""
-        self.theme = theme
-        self._update_colors()
+    def _update_colors(self, palette):
+        self.colors = {"default": palette["text"], "value": palette["text_strong"]}
+        self._html_cache.clear()
 
     def _text_to_html(self, text):
         """Convert text to HTML with syntax highlighting. Uses cache for performance."""
@@ -549,7 +521,7 @@ class MessageDelegate(QStyledItemDelegate):
             if start > pos:
                 html_parts.append(html.escape(text[pos:start]))
             # Add highlighted match
-            color = self.colors[ptype]
+            color = self.colors["value"]
             html_parts.append(
                 f'<span style="color:{color}">{html.escape(text[start:end])}</span>'
             )
@@ -581,22 +553,18 @@ class MessageDelegate(QStyledItemDelegate):
         # Save painter state
         painter.save()
 
-        # Draw background
-        if option.state & QStyle.State_Selected:
-            painter.fillRect(option.rect, option.palette.highlight())
-        else:
-            painter.fillRect(option.rect, option.palette.base())
+        paint_empty_cell(option, index, painter, self)
 
         # Create QTextDocument with HTML
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
+        doc.setDocumentMargin(0)
 
         # Set text color based on selection state
         if option.state & QStyle.State_Selected:
             # When selected, use plain text with explicit selection color for readability
             import html
-            color = option.palette.highlightedText().color().name()
-            doc.setHtml(f'<div style="color: {color}">{html.escape(text)}</div>')
+            doc.setHtml(f'<div style="color: {self.colors["default"]}">{html.escape(text)}</div>')
         else:
             # Normal state: use syntax-highlighted HTML
             html_content = self._text_to_html(text)
@@ -609,7 +577,7 @@ class MessageDelegate(QStyledItemDelegate):
 
         # Translate to cell position with padding
         painter.translate(
-            option.rect.left() + 4,
+            option.rect.left() + SPACE_S,
             option.rect.top() + (option.rect.height() - doc.size().height()) / 2,
         )
 
@@ -631,7 +599,7 @@ class MessageDelegate(QStyledItemDelegate):
         doc.setDefaultFont(option.font)
         doc.setPlainText(text)
 
-        return QSize(int(doc.idealWidth()) + 10, int(doc.size().height()))
+        return QSize(int(doc.idealWidth()) + 2 * SPACE_S, int(doc.size().height()))
 
 
 class LogRows(QAbstractTableModel):
@@ -644,10 +612,10 @@ class LogRows(QAbstractTableModel):
         super().__init__()
         self.log_model = log_model
 
-    def rowCount(self, parent=QModelIndex()):
+    def rowCount(self, parent=_ROOT):
         return 0 if parent.isValid() else len(self.log_model.filtered_logs)
 
-    def columnCount(self, parent=QModelIndex()):
+    def columnCount(self, parent=_ROOT):
         return 0 if parent.isValid() else len(self.KEYS)
 
     def data(self, index, role=Qt.DisplayRole):
@@ -670,13 +638,13 @@ class LogTableModel:
 
     COLUMNS = ["Timestamp", "Level", "Source", "Message"]
 
-    def __init__(self, table_widget, theme="dark"):
+    def __init__(self, table_widget):
         self.table = table_widget
-        self.theme = theme
         self.logs = []
         self.filtered_logs = []
         self._longest_added = 0  # longest message added since the table was rebuilt
         self.filter_level = "DEBUG"  # Show all by default
+        self.tail = 0  # show only the last so many that pass the filters (0: all)
         self.filter_text = ""
         self.use_regex = False  # Regex search mode
         self._regex_pattern = None  # Compiled regex pattern
@@ -689,7 +657,6 @@ class LogTableModel:
         self.rows = LogRows(self)
         self.table.setModel(self.rows)
 
-        # Set stretch for message column
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Timestamp
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Level
@@ -698,12 +665,15 @@ class LogTableModel:
             3, QHeaderView.ResizeToContents
         )  # Message - allow scroll
 
-        # Set custom delegate for level column (theme-aware)
-        self.level_delegate = LogLevelDelegate(theme=self.theme)
+        self.table.setShowGrid(False)
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        # Set custom delegate for level column
+        self.level_delegate = LogLevelDelegate()
         self.table.setItemDelegateForColumn(1, self.level_delegate)
 
         # Set custom delegate for message column (syntax highlighting)
-        self.message_delegate = MessageDelegate(theme=self.theme)
+        self.message_delegate = MessageDelegate()
         self.table.setItemDelegateForColumn(3, self.message_delegate)
 
         # Enable horizontal scrolling for long messages
@@ -734,16 +704,22 @@ class LogTableModel:
             self.rows.beginInsertRows(QModelIndex(), first, first + len(shown) - 1)
             self.filtered_logs.extend(shown)
             self.rows.endInsertRows()
+            excess = len(self.filtered_logs) - self.tail if self.tail else 0
+            if excess > 0:
+                self.rows.beginRemoveRows(QModelIndex(), 0, excess - 1)
+                del self.filtered_logs[:excess]
+                self.rows.endRemoveRows()
             # (measuring the rows is slow in a long log: only when it can matter)
             longest = max(len(entry["message"]) for entry in shown)
             if longest > self._longest_added:
                 self._longest_added = longest
                 self.table.resizeColumnsToContents()
+                self.table.fit_message_column()
 
     def set_logs(self, entries):
         """Replace all logs with ``entries``."""
         self.logs = entries
-        self.filtered_logs = [log for log in entries if self._matches_filter(log)]
+        self.filtered_logs = self._passing()
         self._refresh_table()
 
     def clear(self):
@@ -751,6 +727,16 @@ class LogTableModel:
         self.logs = []
         self.filtered_logs = []
         self._refresh_table()
+
+    def set_tail(self, lines):
+        """Show only the last ``lines`` logs that pass the filters (0: all)."""
+        self.tail = lines
+        self._apply_filters()
+
+    def _passing(self):
+        """The logs to show, under the filters and the tail."""
+        passing = [log for log in self.logs if self._matches_filter(log)]
+        return passing[-self.tail :] if self.tail else passing
 
     def set_filter_level(self, level):
         """Set the minimum log level filter."""
@@ -810,7 +796,7 @@ class LogTableModel:
         selected_log = self.filtered_logs[selected_rows[0]] if selected_rows else None
 
         # Clear and rebuild filtered logs
-        self.filtered_logs = [log for log in self.logs if self._matches_filter(log)]
+        self.filtered_logs = self._passing()
 
         # Rebuild table
         self._refresh_table()
@@ -828,26 +814,20 @@ class LogTableModel:
         self._longest_added = 0
         self.rows.beginResetModel()
         self.rows.endResetModel()
+        self.table.fit_message_column()
 
 
 def write_logs_csv(filename, logs, stop=None):
     """Write ``logs`` to a CSV file, until the event ``stop`` is set."""
-    with open(filename, "w") as f:
-        # Write header
-        f.write(",".join([f'"{col}"' for col in LogTableModel.COLUMNS]) + "\n")
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\n")
+        writer.writerow(LogTableModel.COLUMNS)
 
         # Write data
         for number, log in enumerate(logs):
             if stop is not None and number % LOAD_REPORT_LINES == 0 and stop.is_set():
                 return
-            message = log["message"].replace('"', '""')  # Escape quotes
-            row = [
-                f'"{log["timestamp"]}"',
-                f'"{log["level"]}"',
-                f'"{log["source"]}"',
-                f'"{message}"',
-            ]
-            f.write(",".join(row) + "\n")
+            writer.writerow([log["timestamp"], log["level"], log["source"], log["message"]])
 
 
 class PipelineLoggerGUI(QMainWindow):
@@ -864,7 +844,7 @@ class PipelineLoggerGUI(QMainWindow):
         self.log_queue = Queue()
 
         # Initialize UI
-        self.setWindowTitle("LOFAR Pipeline Logger")
+        self.setWindowTitle("Log viewer")
         self.setMinimumSize(640, 480)
         fit_to_screen(self, 1100, 750)
 
@@ -884,7 +864,7 @@ class PipelineLoggerGUI(QMainWindow):
         self.log_monitor.start()
 
         # Set initial status
-        self.status_bar.showMessage("Ready - No log file selected", 5000)
+        self.status_bar.showMessage("No log file selected", 5000)
 
     def _create_ui(self):
         """Create the user interface components."""
@@ -892,6 +872,8 @@ class PipelineLoggerGUI(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
+        main_layout.setSpacing(SPACE_S)
 
         # Create toolbar
         self._create_toolbar()
@@ -902,8 +884,19 @@ class PipelineLoggerGUI(QMainWindow):
 
         # Create log table
         self.log_table = LogTableWidget()
-        self.log_model = LogTableModel(self.log_table, theme=self.theme)
-        main_layout.addWidget(self.log_table)
+        self.log_model = LogTableModel(self.log_table)
+        self.log_model.filter_level = self.level_combo.currentText()
+
+        # In the table's place while it has no rows
+        self.empty_label = empty_note("")
+        self.log_stack = QStackedWidget()
+        self.log_stack.addWidget(self.empty_label)
+        self.log_stack.addWidget(self.log_table)
+        main_layout.addWidget(self.log_stack, 1)
+        rows = self.log_model.rows
+        for signal in (rows.modelReset, rows.rowsInserted, rows.rowsRemoved):
+            signal.connect(self._show_rows_or_note)
+        self._show_rows_or_note()
 
         # Context menu for table
         self.log_table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -937,10 +930,20 @@ class PipelineLoggerGUI(QMainWindow):
         self.log_count_label = QLabel("0 logs")
         self.status_bar.addPermanentWidget(self.log_count_label)
 
+    def _show_rows_or_note(self):
+        if self.log_model.filtered_logs:
+            self.log_stack.setCurrentWidget(self.log_table)
+            return
+        self.empty_label.setText(
+            "No log lines pass the filters. Clear the filters to see them all"
+            if self.log_model.logs else "Open a log file to see its lines"
+        )
+        self.log_stack.setCurrentWidget(self.empty_label)
+
     def _create_toolbar(self):
         """Create the main toolbar."""
         # Plain labels: the same look in both themes, no stock icons
-        self.toolbar = QToolBar("Main Toolbar")
+        self.toolbar = QToolBar("Main toolbar")
         self.toolbar.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.toolbar.setMovable(False)
         self.addToolBar(self.toolbar)
@@ -952,8 +955,8 @@ class PipelineLoggerGUI(QMainWindow):
             self.toolbar.addAction(act)
             return act
 
-        self.action_open = action("Open", self._open_log_file, "Open a log file (Ctrl+O)")
-        self.action_export = action("Export", self._export_logs, "Save the log as CSV (Ctrl+E)")
+        self.action_open = action("Open…", self._open_log_file, "Open a log file (Ctrl+O)")
+        self.action_export = action("Export…", self._export_logs, "Save the log as CSV (Ctrl+E)")
         self.action_refresh = action("Refresh", self._refresh_monitor, "Read the log file again (F5)")
         self.toolbar.addSeparator()
         self.action_scroll_top = action("Top", self._scroll_to_top, "Scroll to the top (Home)")
@@ -1017,7 +1020,7 @@ class PipelineLoggerGUI(QMainWindow):
                 self._update_error_status(i)
                 return
         # Wrap around to start
-        for i in range(0, current_row):
+        for i in range(0, current_row + 1):
             if self.log_model.filtered_logs[i]["level"] in ("ERROR", "CRITICAL"):
                 self.log_table.selectRow(i)
                 self.log_table.scrollTo(self.log_table.model().index(i, 0))
@@ -1035,7 +1038,7 @@ class PipelineLoggerGUI(QMainWindow):
                 self._update_error_status(i)
                 return
         # Wrap around to end
-        for i in range(len(self.log_model.filtered_logs) - 1, current_row, -1):
+        for i in range(len(self.log_model.filtered_logs) - 1, max(current_row - 1, -1), -1):
             if self.log_model.filtered_logs[i]["level"] in ("ERROR", "CRITICAL"):
                 self.log_table.selectRow(i)
                 self.log_table.scrollTo(self.log_table.model().index(i, 0))
@@ -1062,143 +1065,99 @@ class PipelineLoggerGUI(QMainWindow):
     def _on_tail_mode_changed(self, state):
         """Handle tail mode checkbox change."""
         self.tail_lines_spin.setEnabled(state == Qt.Checked)
-        if state == Qt.Checked:
-            self._apply_tail_filter()
-        else:
-            # Restore full view
-            with self._filtering():
-                self.log_model._apply_filters()
+        self._apply_tail_filter()
 
     def _apply_tail_filter(self):
-        """Apply tail mode filtering to show only last N lines."""
-        if self.tail_check.isChecked():
-            n = self.tail_lines_spin.value()
-            # Get the last N filtered logs
-            self.log_model.filtered_logs = self.log_model.filtered_logs[-n:]
-            self.log_model._refresh_table()
+        """Show only the last N lines (Tail), or all of them."""
+        tail = self.tail_check.isChecked()
+        with self._filtering():
+            self.log_model.set_tail(self.tail_lines_spin.value() if tail else 0)
+        if tail:
             self.log_table.scrollToBottom()
-            self._update_status()
+        self._update_status()
 
     def _show_help_dialog(self):
         """Show help dialog."""
-        is_dark = self.theme == "dark"
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Help - Pipeline Logger")
-        dialog.resize(550, 650)
-        
-        main_layout = QVBoxLayout(dialog)
-        main_layout.setSpacing(0)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        
         # Check if already open
         if self.help_dialog is not None:
             self.help_dialog.raise_()
             self.help_dialog.activateWindow()
             return
 
-        header = QFrame()
-        header.setObjectName("Banner")
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(25, 20, 25, 20)
-        header_layout.setSpacing(8)
-        
-        title = QLabel("LOFAR Pipeline Log Viewer")
-        title.setObjectName("DialogTitle")
-        header_layout.addWidget(title)
-        
-        subtitle = QLabel("Real-time monitoring and analysis of pipeline logs")
-        header_layout.addWidget(subtitle)
-        
-        main_layout.addWidget(header)
-        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Log viewer help")
+        fit_to_screen(dialog, 520, 560)
+
+        main_layout = dialog_layout(dialog)
+
         # Scrollable content area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        
+
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(25, 20, 25, 20)
-        content_layout.setSpacing(20)
-        
-        def add_section(title_text):
-            label = QLabel(title_text)
-            label.setObjectName("SectionTitle")
-            content_layout.addWidget(label)
-            line = QFrame()
-            line.setObjectName("Rule")
-            content_layout.addWidget(line)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(SPACE_M)
+
+        about = QLabel("Real-time monitoring and analysis of pipeline logs")
+        about.setObjectName("Hint")
+        content_layout.addWidget(about)
 
         # Features section
-        add_section("Features")
+        content_layout.addWidget(kicker("Features"))
         features = [
-            ("Real-time Log Monitoring", "Automatic updates as pipeline runs"),
-            ("Advanced Filtering", "Filter by level and source"),
-            ("⌨️ Search & Regex", "Fast search with regular expression support"),
-            ("Tail Mode", "Keep view focused on the latest N log entries"),
-            ("Error Navigation", "Quickly jump between errors and critical logs"),
-            ("Data Export", "Save log history to CSV for external analysis")
+            ("Real-time monitoring", "Automatic updates as the pipeline runs"),
+            ("Filtering", "By level and source"),
+            ("Search and regular expressions", "Fast search through the log"),
+            ("Last lines only", "Keep the view on the latest N log entries"),
+            ("Error navigation", "Jump between errors and critical logs"),
+            ("Export", "Save the log to CSV for analysis elsewhere"),
         ]
-        
-        feat_grid = QGridLayout()
-        feat_grid.setSpacing(12)
-        for i, (f_title, f_desc) in enumerate(features):
+        for f_title, f_desc in features:
             f_item = QLabel(f"<b>{f_title}</b>: {f_desc}")
             f_item.setWordWrap(True)
-            feat_grid.addWidget(f_item, i // 2, i % 2)
-        content_layout.addLayout(feat_grid)
-        
-        # Keyboard Shortcuts
-        add_section("Keyboard Shortcuts")
-        
+            content_layout.addWidget(f_item)
+
+        # Keyboard shortcuts
+        content_layout.addWidget(kicker("Keyboard shortcuts"))
+
         shortcuts = [
             ("Ctrl+O", "Open log file"), ("F5", "Refresh log"),
             ("Ctrl+F", "Focus search"), ("Escape", "Clear filters"),
-            ("Ctrl+T", "Toggle tail mode"), ("Ctrl+E", "Export to CSV"),
+            ("Ctrl+T", "Last lines only"), ("Ctrl+E", "Export to CSV"),
             ("Home", "Scroll to top"), ("End", "Scroll to bottom"),
             ("Ctrl+.", "Next error"), ("Ctrl+,", "Previous error")
         ]
-        
+
         shot_grid = QGridLayout()
         shot_grid.setColumnStretch(1, 1)
         shot_grid.setColumnStretch(3, 1)
-        shot_grid.setSpacing(15)
-        
+        shot_grid.setHorizontalSpacing(SPACE_M)
+        shot_grid.setVerticalSpacing(SPACE_S)
+
         for i, (key, desc) in enumerate(shortcuts):
             row, col = i % 5, (i // 5) * 2
-            
+
             key_pill = QLabel(key)
             key_pill.setAlignment(Qt.AlignCenter)
             key_pill.setObjectName("Key")
-            
+
             desc_label = QLabel(desc)
-            
+
             shot_grid.addWidget(key_pill, row, col)
             shot_grid.addWidget(desc_label, row, col + 1)
-        
+
         content_layout.addLayout(shot_grid)
-        
+
         content_layout.addStretch()
-        
+
         scroll.setWidget(content_widget)
         main_layout.addWidget(scroll)
-        
-        # Bottom bar
-        bottom_bar = QFrame()
-        bottom_layout = QHBoxLayout(bottom_bar)
-        
-        footer = QLabel("SolarViewer Log Utilities • v1.0.0")
-        footer.setObjectName("Hint")
-        bottom_layout.addWidget(footer)
-        bottom_layout.addStretch()
-        
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.close)
-        bottom_layout.addWidget(close_btn)
-        
-        main_layout.addWidget(bottom_bar)
-        
+
+        box, _ = button_bar(secondary=("Close", dialog.close), parent=dialog)
+        main_layout.addWidget(box)
+
         # Make non-modal
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         def on_close():
@@ -1213,9 +1172,11 @@ class PipelineLoggerGUI(QMainWindow):
     def _create_filter_controls(self):
         """Create controls for filtering logs."""
         filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(SPACE_S)
 
         # Log level filter
-        level_label = QLabel("Min Level:")
+        level_label = QLabel("Minimum level")
+        level_label.setObjectName("Hint")
         self.level_combo = QComboBox()
         self.level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
         self.level_combo.setCurrentText("INFO")  # Default to INFO
@@ -1225,31 +1186,28 @@ class PipelineLoggerGUI(QMainWindow):
         filter_layout.addWidget(self.level_combo)
 
         # Search filter
-        search_label = QLabel("Search:")
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search in logs...")
+        self.search_input.setPlaceholderText("Search in logs…")
         self.search_input.textChanged.connect(self._on_search_changed)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._apply_search)
 
-        filter_layout.addWidget(search_label)
         filter_layout.addWidget(self.search_input)
 
         # Regex toggle
-        self.regex_check = QCheckBox("Regex")
+        self.regex_check = QCheckBox("Regular expression")
         self.regex_check.setChecked(False)
         self.regex_check.stateChanged.connect(self._on_regex_changed)
         filter_layout.addWidget(self.regex_check)
 
         # Tail mode
-        filter_layout.addWidget(QLabel("|"))
-        self.tail_check = QCheckBox("Tail")
+        filter_layout.addWidget(vrule())
+        self.tail_check = QCheckBox("Only the last")
+        self.tail_check.setToolTip("Show only the latest lines that pass the filters (Ctrl+T)")
         self.tail_check.setChecked(False)
         self.tail_check.stateChanged.connect(self._on_tail_mode_changed)
         filter_layout.addWidget(self.tail_check)
-
-        from PyQt5.QtWidgets import QSpinBox
 
         self.tail_lines_spin = QSpinBox()
         self.tail_lines_spin.setRange(10, 10000)
@@ -1260,7 +1218,8 @@ class PipelineLoggerGUI(QMainWindow):
         filter_layout.addWidget(self.tail_lines_spin)
 
         # Clear button
-        clear_button = QPushButton("Clear")
+        filter_layout.addWidget(vrule())
+        clear_button = QPushButton("Clear filters")
         clear_button.clicked.connect(self._clear_filters)
         filter_layout.addWidget(clear_button)
 
@@ -1294,6 +1253,8 @@ class PipelineLoggerGUI(QMainWindow):
         with self._filtering():
             self.log_model.set_filter_text(text, use_regex=use_regex)
         self._update_status()
+        if use_regex and text and self.log_model._regex_pattern is None:
+            self.status_bar.showMessage("Not a valid regular expression: searching for the plain text", 5000)
 
     def _on_regex_changed(self, state):
         """Handler for when the regex checkbox changes."""
@@ -1341,7 +1302,7 @@ class PipelineLoggerGUI(QMainWindow):
         """Clear all logs from the display."""
         reply = QMessageBox.question(
             self,
-            "Clear Logs",
+            "Clear logs",
             "Are you sure you want to clear all logs?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -1354,7 +1315,7 @@ class PipelineLoggerGUI(QMainWindow):
     def _export_logs(self):
         """Export logs to a CSV file."""
         filename, _ = QFileDialog.getSaveFileName(
-            self, "Export Logs", "", "CSV Files (*.csv);;All Files (*)"
+            self, "Export logs", "", "CSV files (*.csv);;All files (*)"
         )
 
         if filename:
@@ -1373,12 +1334,12 @@ class PipelineLoggerGUI(QMainWindow):
                 stop.set()
                 self.status_bar.showMessage(f"Cancelled: {filename} is incomplete", 5000)
             except Exception as e:
-                QMessageBox.warning(self, "Export Error", f"Error exporting logs: {e}")
+                QMessageBox.warning(self, "Could not export", f"Error exporting logs: {e}")
 
     def _open_log_file(self):
         """Open an existing log file."""
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Open Log File", "", "Log Files (*.log *.log*);;All Files (*)"
+            self, "Open log file", "", "Log files (*.log *.log*);;All files (*)"
         )
 
         if filename:
@@ -1389,7 +1350,7 @@ class PipelineLoggerGUI(QMainWindow):
         self._load(
             filename,
             f"Monitoring log file: {filename}",
-            lambda e: QMessageBox.warning(self, "Open Error", f"Error opening log file: {e}"),
+            lambda e: QMessageBox.warning(self, "Could not open the file", f"Error opening log file: {e}"),
         )
 
     def _load(self, path, done_text, fail, to_bottom=False):
@@ -1399,7 +1360,7 @@ class PipelineLoggerGUI(QMainWindow):
         self._load_task = begin_activity(
             f"Reading {os.path.basename(path)} (MB)…", self, blocking=False
         )
-        loader = LogFileLoader(path, self._load_task)
+        loader = LogFileLoader(path, self._load_task, whole=not self.log_monitor.following)
         loader.loaded.connect(
             lambda entries, position: loader is self._loader
             and self._loaded(path, entries, position, done_text, to_bottom)
@@ -1414,7 +1375,7 @@ class PipelineLoggerGUI(QMainWindow):
         with self._filtering(len(entries)):
             self.log_model.set_logs(entries)
         self.log_monitor.follow(path, position)
-        if to_bottom:
+        if to_bottom or self.log_model.tail:
             self.log_table.scrollToBottom()
         self.status_bar.showMessage(done_text, 5000)
         self._update_status()
@@ -1448,7 +1409,7 @@ class PipelineLoggerGUI(QMainWindow):
         ]
 
         if selected_rows:
-            copy_action = menu.addAction("Copy Selected")
+            copy_action = menu.addAction("Copy selected")
             copy_action.triggered.connect(self._copy_selected_logs)
 
             menu.addSeparator()
@@ -1484,7 +1445,7 @@ class PipelineLoggerGUI(QMainWindow):
         # For now, just show a message
         QMessageBox.information(
             self,
-            "Start Pipeline",
+            "Start pipeline",
             "This feature is not implemented yet. In the future, it could be used to launch the pipeline directly from the GUI.",
         )
 
@@ -1532,7 +1493,7 @@ def main():
     import os
 
     parser = argparse.ArgumentParser(
-        description="LOFAR Pipeline Log Viewer - View and analyze pipeline log files",
+        description="Log viewer: view and analyze pipeline log files",
         usage="viewlogs [logfile] [--theme {dark,light}]",
     )
     parser.add_argument(

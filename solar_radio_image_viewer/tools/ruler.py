@@ -6,6 +6,7 @@ import logging
 import numpy as np
 from PyQt5.QtCore import Qt
 
+from ..shape_annotations import pixel_scales_deg, world_degrees
 from .geometry import snap_to_axis
 from .preview import contrast_colors, dashed_pen, halo, halo_pen, measure_preview
 
@@ -258,13 +259,7 @@ class RulerMixin:
         """(x, y) pixel scales in arcsec from the WCS; None without a WCS."""
         if not self.current_wcs:
             return None
-        increment = self.current_wcs.increment()["numeric"][0:2]
-        # Check if image uses SOLAR-X/Y (increment is already in arcsec)
-        _hdr = getattr(self, "_cached_fits_header", None) or {}
-        if "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper():
-            return abs(increment[0]), abs(increment[1])
-        to_arcsec = 180 / np.pi * 3600
-        return abs(increment[0]) * to_arcsec, abs(increment[1]) * to_arcsec
+        return tuple(v * 3600 for v in pixel_scales_deg(self.current_wcs))
 
     def _calculate_angular_distance(self, x1, y1, x2, y2):
         """Calculate angular distance between two pixel coordinates using WCS"""
@@ -284,21 +279,8 @@ class RulerMixin:
                 angular_dist = np.sqrt(dx_arcsec**2 + dy_arcsec**2)
 
                 # Get world coordinates for both points
-                world1 = self.current_wcs.toworld([x1, y1, 0, 0])["numeric"]
-                world2 = self.current_wcs.toworld([x2, y2, 0, 0])["numeric"]
-                # Check if SOLAR-X (toworld returns arcsec, not radians)
-                _hdr = getattr(self, "_cached_fits_header", None) or {}
-                _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-                if _is_solar:
-                    ra1_deg = world1[0] / 3600.0 if world1[0] else None
-                    dec1_deg = world1[1] / 3600.0 if world1[1] else None
-                    ra2_deg = world2[0] / 3600.0 if world2[0] else None
-                    dec2_deg = world2[1] / 3600.0 if world2[1] else None
-                else:
-                    ra1_deg = world1[0] * 180 / np.pi if world1[0] else None
-                    dec1_deg = world1[1] * 180 / np.pi if world1[1] else None
-                    ra2_deg = world2[0] * 180 / np.pi if world2[0] else None
-                    dec2_deg = world2[1] * 180 / np.pi if world2[1] else None
+                ra1_deg, dec1_deg = world_degrees(self.current_wcs, x1, y1)
+                ra2_deg, dec2_deg = world_degrees(self.current_wcs, x2, y2)
 
                 # Determine coordinate label names
                 _hdr_lbl = getattr(self, "_cached_fits_header", None) or {}

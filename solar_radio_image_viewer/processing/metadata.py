@@ -6,6 +6,7 @@ import numpy as np
 
 from .dependencies import ASTROPY_AVAILABLE, CASA_AVAILABLE, IA, u
 from .fits_io import is_fits, readable_image_path
+from .maps import beam_arcsec
 
 
 def get_image_metadata(imagename):
@@ -255,8 +256,15 @@ def get_image_metadata(imagename):
                 if "CRVAL1" in header and "CRVAL2" in header:
                     ra_deg = float(header["CRVAL1"])
                     dec_deg = float(header["CRVAL2"])
-                    metadata["image"]["Reference RA"] = format_ra_hms(ra_deg)
-                    metadata["image"]["Reference Dec"] = format_dec_dms(dec_deg)
+                    ctype1 = str(header.get("CTYPE1", "")).upper()
+                    if "HPLN" in ctype1 or "SOLAR" in ctype1:
+                        cunit1 = str(header.get("CUNIT1", "")).lower()
+                        scale = 3600.0 if "deg" in cunit1 else 1.0
+                        metadata["image"]["Reference X"] = f'{ra_deg * scale:.2f}"'
+                        metadata["image"]["Reference Y"] = f'{dec_deg * scale:.2f}"'
+                    else:
+                        metadata["image"]["Reference RA"] = format_ra_hms(ra_deg)
+                        metadata["image"]["Reference Dec"] = format_dec_dms(dec_deg)
 
                 metadata["image"]["Units"] = header.get("BUNIT")
                 metadata["image"]["Data Type"] = f"BITPIX={header.get('BITPIX', 'N/A')}"
@@ -366,9 +374,9 @@ def get_image_metadata(imagename):
                                     if not metadata["observation"].get("Date/Time"):
                                         metadata["observation"]["Date/Time"] = (
                                             format_datetime(
-                                                value.replace("/", "-")
-                                                .replace("-", "-", 2)
-                                                .replace("/", "T", 1)
+                                                value.replace("/", "-", 2).replace(
+                                                    "/", "T", 1
+                                                )
                                             )
                                         )
                                 elif key == "Restoring Beam":
@@ -389,13 +397,13 @@ def get_image_metadata(imagename):
                     if len(refval) >= 2:
                         if _is_solar:
                             # SOLAR-X/Y: values are in arcsec
-                            ra_deg = refval[0] / 3600.0
-                            dec_deg = refval[1] / 3600.0
+                            metadata["image"]["Reference X"] = f'{refval[0]:.2f}"'
+                            metadata["image"]["Reference Y"] = f'{refval[1]:.2f}"'
                         else:
                             ra_deg = refval[0] * 180 / np.pi
                             dec_deg = refval[1] * 180 / np.pi
-                        metadata["image"]["Reference RA"] = format_ra_hms(ra_deg)
-                        metadata["image"]["Reference Dec"] = format_dec_dms(dec_deg)
+                            metadata["image"]["Reference RA"] = format_ra_hms(ra_deg)
+                            metadata["image"]["Reference Dec"] = format_dec_dms(dec_deg)
                 except Exception:
                     pass
 
@@ -433,11 +441,7 @@ def get_image_metadata(imagename):
                 try:
                     beam = ia_tool.restoringbeam()
                     if beam and "major" in beam:
-                        major = beam["major"]["value"]
-                        minor = beam["minor"]["value"]
-                        if beam["major"]["unit"] == "deg":
-                            major *= 3600
-                            minor *= 3600
+                        major, minor = beam_arcsec(beam)
                         metadata["beam"]["Major Axis"] = f"{major:.2f} arcsec"
                         metadata["beam"]["Minor Axis"] = f"{minor:.2f} arcsec"
                         if "positionangle" in beam:

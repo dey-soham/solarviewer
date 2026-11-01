@@ -3,7 +3,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QLineEdit,
     QListWidget,
-    QVBoxLayout,
     QHBoxLayout,
     QWidget,
     QListWidgetItem,
@@ -12,8 +11,10 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QIcon
+from .geometry import fit_to_screen
 from .icons import get_resource_path
-from .styles import get_icon_path, theme_manager, set_hand_cursor
+from .styles import CONTROL_HEIGHT, get_icon_path, theme_manager, set_hand_cursor
+from .widgets import dialog_layout
 
 
 class SearchDialog(QDialog):
@@ -21,17 +22,16 @@ class SearchDialog(QDialog):
 
     def __init__(self, parent=None, all_items=None):
         super().__init__(parent)
-        self.setWindowTitle("Search Colormaps")
-        self.setMinimumWidth(350)
-        self.setMinimumHeight(400)
+        self.setWindowTitle("Search colormaps")
+        fit_to_screen(self, 350, 400)
 
         self.all_items = all_items or []
         self.selected_item = None
 
-        layout = QVBoxLayout(self)
+        layout = dialog_layout(self)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Type to search colormaps...")
+        self.search_edit.setPlaceholderText("Type to search colormaps…")
         self.search_edit.textChanged.connect(self.filter_items)
         layout.addWidget(self.search_edit)
 
@@ -143,7 +143,7 @@ class ColormapSelector(QWidget):
         self.search_button = QPushButton()
         self.search_button.setObjectName("IconOnlyNBGButton")
         self.search_button.setToolTip("Search all colormaps")
-        self.search_button.setFixedSize(26, 26)
+        self.search_button.setFixedSize(CONTROL_HEIGHT, CONTROL_HEIGHT)
         self._update_search_icon()  # Use theme-aware icon
         self.search_button.setIconSize(QSize(16, 16))
         self.search_button.clicked.connect(self.show_search_dialog)

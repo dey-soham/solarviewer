@@ -6,13 +6,13 @@ from pathlib import Path
 from .version import __version__
 
 # Inlined desktop template
-DESKTOP_TEMPLATE = f"""[Desktop Entry]
-Version={__version__}
+DESKTOP_TEMPLATE = """[Desktop Entry]
+Version=1.0
 Type=Application
 Name=SolarViewer
 Comment=Visualize and analyze solar radio images
-Exec={{exec_path}} %F
-Icon={{icon_path}}
+Exec={exec_path} %F
+Icon={icon_path}
 Terminal=false
 Categories=Science;Astronomy;Education;
 Keywords=Solar;Radio;Astronomy;Image;Viewer;
@@ -397,7 +397,7 @@ def _setup_local_bin_symlinks(executable_path):
             print(f"Warning: Could not create symlink {target_link}: {e}")
 
     # Auto-configure PATH if needed
-    if str(bin_dir) not in os.environ["PATH"]:
+    if str(bin_dir) not in os.environ.get("PATH", ""):
         print(f"\nWarning: {bin_dir} is not in your PATH.")
 
         shell = os.environ.get("SHELL", "")

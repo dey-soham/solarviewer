@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-The Solar Data Downloader dialog: a fixed 820×600 window in two columns.
+The Solar Data Downloader dialog: an 820×600 window in two columns.
 The left column holds the decisions in the order they are made (instrument,
 time range, where to save, processing); the right column says what those
 decisions will get, as a live estimate, and turns into progress and a log
@@ -10,6 +10,8 @@ files are solar_data_downloader's; this module only drives them.
 
 import os
 import re
+import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
@@ -61,20 +63,20 @@ from ..ui.download_parts import (
     abandon,
     render_log,
 )
-from ..ui.styles import set_hand_cursor, set_tone, theme_manager
+from ..ui.geometry import fit_to_screen
+from ..ui.icons import themed_icon
+from ..ui.styles import SPACE_L, SPACE_M, SPACE_S, SPACE_XS, set_hand_cursor, set_tone, theme_manager, themed
 from ..ui.widgets import kicker, kicker_row, link_button, rule
 
 try:
     import sunpy  # noqa: F401 (availability check)
     import drms  # noqa: F401 (availability check)
     import astropy  # noqa: F401 (availability check)
-except ImportError as e:
-    print(f"Error: Missing required package: {e.name}")
-    print("Please install the required packages with:")
-    print("  pip install sunpy drms astropy")
-    print("For AIA Level 1.5 calibration, also install:")
-    print("  pip install aiapy")
-    sys.exit(1)
+except ImportError as e:  # the viewer's menu says so; it must not end the viewer
+    raise ImportError(
+        f"Missing required package: {e.name}. Install with: pip install sunpy drms astropy "
+        "(and aiapy for AIA level 1.5)"
+    ) from e
 
 
 # ------------------------------------------------------------------ catalog
@@ -409,13 +411,8 @@ class DownloadWorker(QThread):
     def run(self):
         """Run the download process, relaying its status lines and progress."""
         import json
-        import os
         import queue
-        import re
-        import subprocess
-        import sys
         import threading
-        import time
 
         try:
             # The download runs in a separate process; what it calls travels
@@ -429,6 +426,7 @@ class DownloadWorker(QThread):
                 stderr=subprocess.PIPE,
                 bufsize=0,
                 cwd=_launch_cwd(),
+                start_new_session=True,  # with its worker processes, stopped as one
             )
 
             # One thread per pipe hands over what arrives (works on every
@@ -447,6 +445,7 @@ class DownloadWorker(QThread):
             stdout_buffer = ""
             stderr_buffer = ""
             last_progress_update = time.time()
+            last_stderr = ""
 
             def stdout_line(line):
                 nonlocal files
@@ -464,8 +463,10 @@ class DownloadWorker(QThread):
 
             def stderr_line(line):
                 """A parfive progress update (lines end in \\r or \\n)."""
-                nonlocal last_progress_update
+                nonlocal last_progress_update, last_stderr
                 clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+                if clean_line and "%" not in clean_line:
+                    last_stderr = clean_line
                 current_time = time.time()
                 if current_time - last_progress_update <= 0.5:
                     return
@@ -483,7 +484,7 @@ class DownloadWorker(QThread):
             open_pipes = 2
             while open_pipes:
                 if self._cancelled:
-                    process.terminate()
+                    _stop_process(process)
                     self.error.emit("Download cancelled by user")
                     return
                 try:
@@ -514,10 +515,11 @@ class DownloadWorker(QThread):
                 stdout_line(stdout_buffer.strip())
 
             if process.returncode != 0:
-                self.error.emit("Download failed. Check console for details.")
+                last_stderr = stderr_buffer.strip() or last_stderr
+                self.error.emit(f"Download failed: {last_stderr}" if last_stderr else "Download failed.")
                 return
 
-            self.progress.emit(f"Download complete! {len(files)} files")
+            self.progress.emit(f"Download complete: {len(files)} files")
             self.done.emit(files)
 
         except Exception as e:
@@ -525,6 +527,22 @@ class DownloadWorker(QThread):
 
     def _download_request(self):
         return download_request(self.params)
+
+
+def _stop_process(process):
+    """End the download process and the worker processes it started (they
+    would otherwise wait on, orphaned), and wait for it."""
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)  # its own group: start_new_session
+        else:
+            process.terminate()
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL) if os.name == "posix" else process.kill()
+        process.wait()
+    except ProcessLookupError:
+        pass  # it had just ended
 
 
 def _launch_cwd():
@@ -542,8 +560,8 @@ class ArchiveCount(QThread):
 
     answered = pyqtSignal(str, object)  # the request key; the ISO times, None when the archive did not answer
 
-    def __init__(self, key, params, parent=None):
-        super().__init__(parent)
+    def __init__(self, key, params):
+        super().__init__()
         self.key = key
         self.params = params
         self.process = None
@@ -556,7 +574,6 @@ class ArchiveCount(QThread):
 
     def run(self):
         import json
-        import subprocess
 
         times = None
         try:
@@ -676,7 +693,7 @@ class SolarDataViewerGUI(QDialog):
         self.setWindowTitle("Download solar data")
         self.setWindowFlags(Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
         self.setMinimumSize(820, 600)
-        self.resize(820, 600)
+        fit_to_screen(self, 820, 600)
         self.setModal(False)
         self.viewer = parent if hasattr(parent, "open_path") else None
         self.initial_datetime = initial_datetime
@@ -693,6 +710,9 @@ class SolarDataViewerGUI(QDialog):
         self._count_worker = None
         self._updating = False
         self._window_seconds = 3600
+        self._options_open = False
+        self._done = False  # the progress page shows a finished download
+        self._log_path = ""
         self.base_dir = os.path.join(os.path.expanduser("~"), "solar_data")
 
         outer = QVBoxLayout(self)
@@ -715,33 +735,41 @@ class SolarDataViewerGUI(QDialog):
         self._count_timer.timeout.connect(self._ask_archive)
 
         self.on_instrument_changed(0)
+        themed(self, self._restyle)
         try:
             set_hand_cursor(self)
         except Exception:
             pass
 
+    def _restyle(self, _palette):
+        """Rich text and the log hold the theme's colours: they are written again."""
+        self._show_options_chevron()
+        self.update_summary()
+        if self.side_pages.currentIndex() == 1:
+            self._render_progress(self._done)
+            self._render_log()
+            self._say_log_path()
+
     # ------------------------------------------------------------ the form
     def _build_form(self):
         self.form = QWidget()
         layout = QVBoxLayout(self.form)
-        layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(20)
+        layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
+        layout.setSpacing(SPACE_L)
 
         # Instrument
         block = QVBoxLayout()
-        block.setSpacing(10)
+        block.setSpacing(SPACE_S)
         block.addWidget(kicker("Instrument"))
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(SPACE_S)
         self.instrument_combo = QComboBox()
         for source in SOURCES:
             self.instrument_combo.addItem(source.label)
-        self.instrument_combo.setMinimumHeight(30)
         self.instrument_combo.currentIndexChanged.connect(self.on_instrument_changed)
         row.addWidget(self.instrument_combo, 14)
         self.channel_combo = QComboBox()
         self.channel_combo.setIconSize(QSize(10, 10))
-        self.channel_combo.setMinimumHeight(30)
         self.channel_combo.currentIndexChanged.connect(self.on_channel_changed)
         row.addWidget(self.channel_combo, 10)
         self.level_group, self.level_buttons = _segments(["L2", "L1b"])
@@ -756,20 +784,20 @@ class SolarDataViewerGUI(QDialog):
 
         # Time range
         block = QVBoxLayout()
-        block.setSpacing(10)
+        block.setSpacing(SPACE_S)
         head, _ = kicker_row("Time range", "UTC")
         block.addWidget(head)
         grid = QGridLayout()
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(3)
+        grid.setHorizontalSpacing(SPACE_S)
+        grid.setVerticalSpacing(SPACE_XS)
         self.start_edit, self.end_edit = QLineEdit(), QLineEdit()
         for col, (name, edit) in enumerate((("Start", self.start_edit), ("End", self.end_edit))):
             grid.addWidget(_label(name, "Meta"), 0, col)
             _monospace(edit)
             edit.setPlaceholderText("YYYY-MM-DD HH:MM:SS")
-            edit.setMinimumHeight(30)
             grid.addWidget(edit, 1, col)
-        start = self.initial_datetime or datetime.utcnow().replace(microsecond=0)
+        # Yesterday by default: the archives hold nothing yet for the hour to come
+        start = self.initial_datetime or datetime.utcnow().replace(microsecond=0) - timedelta(days=1)
         self.start_edit.setText(start.strftime(TIME_FORMAT))
         self.end_edit.setText((start + timedelta(hours=1)).strftime(TIME_FORMAT))
         self.start_edit.textEdited.connect(self._start_edited)
@@ -778,7 +806,7 @@ class SolarDataViewerGUI(QDialog):
         attach_date_picker(self.end_edit, self._end_edited, band=lambda: self.times()[0])
         block.addLayout(grid)
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(SPACE_S)
         label = _label("Cadence", "Hint")
         label.setFixedWidth(60)
         row.addWidget(label)
@@ -792,15 +820,14 @@ class SolarDataViewerGUI(QDialog):
 
         # Save to
         block = QVBoxLayout()
-        block.setSpacing(10)
+        block.setSpacing(SPACE_S)
         block.addWidget(kicker("Save to"))
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(SPACE_S)
         self.folder_field = QFrame()
         self.folder_field.setObjectName("Field")
-        self.folder_field.setMinimumHeight(30)
         field_layout = QHBoxLayout(self.folder_field)
-        field_layout.setContentsMargins(10, 0, 10, 0)
+        field_layout.setContentsMargins(SPACE_S, 0, SPACE_S, 0)
         self.folder_label = QLabel()
         self.folder_label.setTextFormat(Qt.RichText)
         field_layout.addWidget(self.folder_label)
@@ -811,7 +838,7 @@ class SolarDataViewerGUI(QDialog):
         row.addWidget(browse)
         block.addLayout(row)
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(SPACE_S)
         label = _label("Source", "Hint")
         label.setFixedWidth(60)
         row.addWidget(label)
@@ -839,18 +866,18 @@ class SolarDataViewerGUI(QDialog):
         self.processing_group = QWidget()
         block = QVBoxLayout(self.processing_group)
         block.setContentsMargins(0, 0, 0, 0)
-        block.setSpacing(8)
+        block.setSpacing(SPACE_S)
         block.addWidget(kicker("Processing"))
         self.processing_row = QFrame()
         self.processing_row.setObjectName("Surface")
         row = QHBoxLayout(self.processing_row)
-        row.setContentsMargins(10, 8, 10, 8)
-        row.setSpacing(8)
+        row.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
+        row.setSpacing(SPACE_S)
         self.calibrate_checkbox = _switch(True)
         self.calibrate_checkbox.toggled.connect(self.on_calibration_changed)
         row.addWidget(self.calibrate_checkbox, 0, Qt.AlignTop)
         text = QVBoxLayout()
-        text.setSpacing(1)
+        text.setSpacing(0)
         self.processing_title = QLabel()
         self.processing_title.setTextFormat(Qt.RichText)
         self.processing_desc = _label("", "Meta")
@@ -859,14 +886,16 @@ class SolarDataViewerGUI(QDialog):
         text.addWidget(self.processing_title)
         text.addWidget(self.processing_desc)
         row.addLayout(text, 1)
-        self.options_link = link_button("Options ▾", self.toggle_options)
+        self.options_link = link_button("Options", self.toggle_options)
+        self.options_link.setLayoutDirection(Qt.RightToLeft)  # the chevron after the word
+        self.options_link.setIconSize(QSize(10, 10))
         row.addWidget(self.options_link, 0, Qt.AlignTop)
         block.addWidget(self.processing_row)
         self.options_row = QWidget()
         options = QGridLayout(self.options_row)
-        options.setContentsMargins(10, 0, 10, 0)
-        options.setHorizontalSpacing(14)
-        options.setVerticalSpacing(6)
+        options.setContentsMargins(SPACE_M, 0, SPACE_M, 0)
+        options.setHorizontalSpacing(SPACE_M)
+        options.setVerticalSpacing(SPACE_S)
         self.psf_checkbox = QCheckBox("PSF deconvolution")
         self.psf_checkbox.setToolTip("Sharpen with the instrument point spread function. Slow: about a minute per image.")
         self.degradation_checkbox = QCheckBox("Degradation correction")
@@ -907,12 +936,12 @@ class SolarDataViewerGUI(QDialog):
         layout.setSpacing(16)
         layout.addWidget(kicker("You'll get"))
         head = QVBoxLayout()
-        head.setSpacing(2)
+        head.setSpacing(SPACE_XS)
         self.count_label = _label("", "DialogTitle")
         self.size_label = _label("", "Hint")
         self.size_label.setWordWrap(True)
         count_row = QHBoxLayout()
-        count_row.setSpacing(10)
+        count_row.setSpacing(SPACE_S)
         count_row.addWidget(self.count_label)
         # sized to the count's capitals in the font the stylesheet gives it
         self.count_label.ensurePolished()
@@ -924,8 +953,8 @@ class SolarDataViewerGUI(QDialog):
         head.addWidget(self.size_label)
         layout.addLayout(head)
         grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(6)
+        grid.setHorizontalSpacing(SPACE_M)
+        grid.setVerticalSpacing(SPACE_XS)
         self.summary_values = {}
         for i, key in enumerate(("Instrument", "Window", "Cadence", "Output")):
             grid.addWidget(_label(key, "Hint"), i, 0, Qt.AlignTop)
@@ -938,7 +967,7 @@ class SolarDataViewerGUI(QDialog):
         layout.addLayout(grid)
         layout.addWidget(rule())
         timeline = QVBoxLayout()
-        timeline.setSpacing(6)
+        timeline.setSpacing(SPACE_XS)
         timeline.addWidget(_label("Timeline · one dot per file", "Meta"))
         self.timeline = Timeline()
         timeline.addWidget(self.timeline)
@@ -961,16 +990,16 @@ class SolarDataViewerGUI(QDialog):
     def _build_progress(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
+        layout.setSpacing(SPACE_M)
         head, self.elapsed_label = kicker_row("Downloading", "0:00 elapsed")
         self.progress_kicker = head.findChild(QLabel, "Kicker")
         _monospace(self.elapsed_label)
         layout.addWidget(head)
         block = QVBoxLayout()
-        block.setSpacing(6)
+        block.setSpacing(SPACE_XS)
         numbers = QHBoxLayout()
-        numbers.setSpacing(8)
+        numbers.setSpacing(SPACE_S)
         self.progress_count = _label("", "DialogTitle")
         self.progress_count.setTextFormat(Qt.RichText)
         self.progress_left = _label("", "Hint")
@@ -985,14 +1014,14 @@ class SolarDataViewerGUI(QDialog):
         block.addWidget(self.progress_bar)
         layout.addLayout(block)
         tiles = QHBoxLayout()
-        tiles.setSpacing(6)
+        tiles.setSpacing(SPACE_S)
         self.tile_values = {}
         for name in ("Fetched", "Processed"):
             tile = QFrame()
             tile.setObjectName("Tile")
             tile_layout = QVBoxLayout(tile)
-            tile_layout.setContentsMargins(9, 7, 9, 7)
-            tile_layout.setSpacing(1)
+            tile_layout.setContentsMargins(SPACE_S, SPACE_XS, SPACE_S, SPACE_XS)
+            tile_layout.setSpacing(0)
             tile_layout.addWidget(_label(name, "Meta"))
             value = _label("—", "Mono")
             tile_layout.addWidget(value)
@@ -1018,8 +1047,8 @@ class SolarDataViewerGUI(QDialog):
         footer.setObjectName("CanvasBar")
         footer.setFixedHeight(52)
         layout = QHBoxLayout(footer)
-        layout.setContentsMargins(20, 0, 20, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(SPACE_L, 0, SPACE_L, 0)
+        layout.setSpacing(SPACE_S)
         self.open_label = _label("Opens in SolarViewer when done", "Meta")
         self.open_switch = _switch(True)
         layout.addWidget(self.open_label)
@@ -1178,15 +1207,18 @@ class SolarDataViewerGUI(QDialog):
         self.update_summary()
 
     def on_calibration_changed(self, on):
-        self.options_row.setVisible(on and self.options_link.text().endswith("▴"))
+        self.options_row.setVisible(on and self._options_open)
         for widget in (self.options_link, self.processing_desc, self.processing_title):
             widget.setEnabled(on)
         self.update_summary()
 
     def toggle_options(self):
-        shown = not self.options_row.isVisibleTo(self)
-        self.options_row.setVisible(shown)
-        self.options_link.setText("Options ▴" if shown else "Options ▾")
+        self._options_open = not self._options_open
+        self.options_row.setVisible(self._options_open)
+        self._show_options_chevron()
+
+    def _show_options_chevron(self):
+        self.options_link.setIcon(QIcon(themed_icon("spinbox_up.png" if self._options_open else "spinbox_down.png")))
 
     def _start_edited(self, text):
         start, _ = self.times()
@@ -1249,7 +1281,7 @@ class SolarDataViewerGUI(QDialog):
     def update_summary(self, *args):
         source = self.source
         palette = theme_manager.palette
-        secondary, muted, link = palette["text_secondary"], palette["disabled"], palette["link"]
+        secondary, link = palette["text_secondary"], palette["link"]
         key = self._request_key()
         if key != self._count_key:  # a new question for the archive
             self._stop_count()
@@ -1266,7 +1298,7 @@ class SolarDataViewerGUI(QDialog):
 
         # the folder
         self.folder_label.setText(
-            _escape(_short_home(self.base_dir)) + _muted(self.output_dir()[len(self.base_dir):], muted)
+            _escape(_short_home(self.base_dir)) + _muted(self.output_dir()[len(self.base_dir):], secondary)
         )
 
         # the processing row
@@ -1318,9 +1350,9 @@ class SolarDataViewerGUI(QDialog):
         self.summary_values["Instrument"].setText(_escape(f"{source.label.split(' · ')[-1]} {channel_text}".strip()))
         if start is not None and end is not None:
             if start.date() == end.date():
-                window_text = f"{start:%H:%M} → {end:%H:%M} UT"
+                window_text = f"{start:%H:%M} → {end:%H:%M} UTC"
             else:
-                window_text = f"{start:%m-%d %H:%M} → {end:%m-%d %H:%M} UT"
+                window_text = f"{start:%m-%d %H:%M} → {end:%m-%d %H:%M} UTC"
         else:
             window_text = "—"
         self.summary_values["Window"].setText(_escape(window_text))
@@ -1397,7 +1429,7 @@ class SolarDataViewerGUI(QDialog):
         if key is None or key != self._count_key or not self.isVisible():
             return
         self._stop_count()
-        self._count_worker = ArchiveCount(key, self.get_download_parameters(), self)
+        self._count_worker = ArchiveCount(key, self.get_download_parameters())
         self._count_worker.answered.connect(self._archive_answered)
         self._count_worker.start()
 
@@ -1410,9 +1442,15 @@ class SolarDataViewerGUI(QDialog):
     def _stop_count(self):
         self._count_timer.stop()
         if self._count_worker is not None:
-            self._count_worker.answered.disconnect()
             self._count_worker.stop()
+            abandon(self._count_worker)  # it ends once its process has
             self._count_worker = None
+
+    def reject(self):
+        """Escape hides the window without a close event (a download goes on,
+        as with Run in background)."""
+        self._stop_count()
+        super().reject()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1471,7 +1509,8 @@ class SolarDataViewerGUI(QDialog):
             self._log_file.write(f"\n# {datetime.utcnow():%Y-%m-%d %H:%M:%S} UT  {params}\n")
         except OSError:
             self._log_file = None
-        self.log_path_label.setText("Full log → " + _muted(_short_home(log_path), theme_manager.palette["link"]))
+        self._log_path = log_path
+        self._say_log_path()
         self._show_progress("Downloading")
         self._set_form_locked(True)
         self._tick()
@@ -1481,6 +1520,9 @@ class SolarDataViewerGUI(QDialog):
         self.download_worker.done.connect(self.download_finished)
         self.download_worker.error.connect(self.download_error)
         self.download_worker.start()
+
+    def _say_log_path(self):
+        self.log_path_label.setText("Full log → " + _muted(_short_home(self._log_path), theme_manager.palette["link"]))
 
     def _show_progress(self, kicker_text):
         self.progress_kicker.setText(kicker_text.upper())
@@ -1508,6 +1550,7 @@ class SolarDataViewerGUI(QDialog):
         self.elapsed_label.setText(f"{elapsed // 60}:{elapsed % 60:02d} elapsed")
 
     def _render_progress(self, done=False):
+        self._done = done
         secondary = theme_manager.palette["text_secondary"]
         total = max(self._total, self._fetched, self._processed)
         preparing = self.calibrate_checkbox.isChecked()
@@ -1518,7 +1561,7 @@ class SolarDataViewerGUI(QDialog):
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(100)
         else:
-            self.progress_count.setText(f"{self._fetched}" + _muted(f" / {total or '?'}", secondary))
+            self.progress_count.setText(f"{self._fetched}" + _muted(f" / {total}" if total else " so far", secondary))
             if total and self._started and self._fetched:
                 per_file = (time.time() - self._started) / float(self._fetched)
                 left = per_file * (total - self._fetched) + (per_file * (total - self._processed) * 0.3 if preparing else 0)
@@ -1565,7 +1608,7 @@ class SolarDataViewerGUI(QDialog):
         m = re.match(r"\[(\d+)/(\d+)\] Processed (.+?) -> (.+)", message)
         if m:
             self._processed = int(m.group(1))
-            message, status = m.group(4).split(", ")[0], "✓"
+            message, status = m.group(4).split(", ")[0], "processed"
         m = re.match(r"\[(\d+)/(\d+)\] Warning: could not process (.+?):", message)
         if m:
             message, status = m.group(3), "not processed"

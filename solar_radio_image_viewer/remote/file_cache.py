@@ -5,13 +5,17 @@ Manages local caching of files downloaded from remote servers.
 Cache is stored in ~/.cache/solarviewer/remote/<host>/<path>
 """
 
+import logging
 import os
 import json
+import shutil
 import threading
 import time
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 from dataclasses import dataclass, asdict
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -76,7 +80,7 @@ class RemoteFileCache:
                 with open(meta_path, "r") as f:
                     data = json.load(f)
                 self._metadata = {k: CacheEntry.from_dict(v) for k, v in data.items()}
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 # Corrupted metadata, start fresh
                 self._metadata = {}
 
@@ -85,8 +89,18 @@ class RemoteFileCache:
         meta_path = self._get_metadata_path()
         with self._lock:
             data = {k: v.to_dict() for k, v in self._metadata.items()}
-            with open(meta_path, "w") as f:
-                json.dump(data, f, indent=2)
+            # (a full disk leaves the last list whole, and fails no download)
+            partial = meta_path.with_name(f"{meta_path.name}.{os.getpid()}.part")
+            try:
+                with open(partial, "w") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(partial, meta_path)
+            except OSError as e:
+                logger.warning(f"Cache list not saved: {e}")
+                try:
+                    os.remove(partial)
+                except OSError:
+                    pass
 
     def _make_cache_key(self, host: str, remote_path: str) -> str:
         """Generate a unique key for a cached file."""
@@ -143,7 +157,10 @@ class RemoteFileCache:
             if entry.remote_mtime != remote_mtime or entry.remote_size != remote_size:
                 # Remote file changed, invalidate cache
                 try:
-                    local_path.unlink()
+                    if local_path.is_dir():  # (fetched again over it, it would mix)
+                        shutil.rmtree(local_path)
+                    else:
+                        local_path.unlink()
                 except Exception:
                     pass
                 del self._metadata[key]
@@ -173,9 +190,14 @@ class RemoteFileCache:
     def remote_source(self, local_path) -> Optional[Tuple[str, str]]:
         """(host, remote path) of the server file ``local_path`` is a
         cached copy of, or None."""
+        # Asked from the GUI thread: one realpath, not one per copy
+        root = os.path.realpath(self.cache_dir)
         local = os.path.realpath(str(local_path))
+        if not local.startswith(root + os.sep):
+            return None
+        relative = os.path.relpath(local, root)
         for entry in list(self._metadata.values()):
-            if os.path.realpath(entry.local_path) == local:
+            if os.path.relpath(entry.local_path, self.cache_dir) == relative:
                 return entry.remote_host, entry.remote_path
         return None
 
@@ -251,8 +273,6 @@ class RemoteFileCache:
                 counted, to be cleared again, but is no longer served: it
                 may be partly gone.
         """
-        import shutil
-
         # SAFETY CHECK: Ensure we are deleting a safe directory
         # We only want to delete inside ~/.cache/solarviewer/remote or similar
         resolved_path = self.cache_dir.resolve()

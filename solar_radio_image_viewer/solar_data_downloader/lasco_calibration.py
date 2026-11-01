@@ -459,7 +459,7 @@ def calibrate(data, header, directory=None, warp=True, blank_missing=True, inner
     within that many solar radii of the occulter centre: 'auto' is
     C2_MASK_RADIUS for C2 and nothing beyond the mask file for C3; 0 or
     None blanks nothing."""
-    detector = _detector(header)
+    _detector(header)  # (refuses anything but C2 and C3)
     directory = cache_dir(directory)
     steps, cards = [], {}
     raw = np.asarray(data, dtype=np.float64)

@@ -19,7 +19,7 @@ class UnitConversionDialog(BatchWindow):
     SUMMARY_ROWS = ("From", "To", "Output", "Speed")
 
     def __init__(self, parent=None):
-        super().__init__(parent, "Convert Units")
+        super().__init__(parent, "Convert units")
         self.input_block()
         layout, _ = self.block("Convert to")
         row, self.unit_buttons, self.unit_note = self.choice_row(
@@ -125,6 +125,12 @@ def _unit_conversion_worker(args):
     import os
     import shutil
     try:
+        # (the output folder can be the input's, and the steps below remove
+        # the output first)
+        if os.path.realpath(infile) == os.path.realpath(outfile):
+            return False, infile, f"Skip {os.path.basename(infile)}: the output would replace it"
+
+        from ..processing.casa_tasks import run_casa_task
         from ..processing.metadata import get_image_metadata
         from ..processing.maps import generate_tb_map, generate_flux_map
         
@@ -145,9 +151,13 @@ def _unit_conversion_worker(args):
         if (is_target_tb and is_current_tb) or (not is_target_tb and is_current_flux):
             # Just copy the file
             if os.path.isdir(infile):
-                if os.path.exists(outfile):
-                    shutil.rmtree(outfile)
-                shutil.copytree(infile, outfile)
+                # The output is FITS, like those of the images converted
+                run_casa_task(
+                    "exportfits",
+                    imagename=os.path.abspath(infile),
+                    fitsimage=os.path.abspath(outfile),
+                    overwrite=True,
+                )
             else:
                 shutil.copy2(infile, outfile)
             return True, infile, f"Copy {os.path.basename(infile)}: Already in desired unit"

@@ -102,6 +102,7 @@ def _cache_put(cache, signature, value):
 
 def coordsys_from_record(record):
     """A new ``casatools.coordsys`` built from ``coordsys.torecord()`` output."""
+    from . import dependencies  # noqa: F401  (sqlite3 goes before casatools)
     from casatools import coordsys
 
     csys = coordsys()

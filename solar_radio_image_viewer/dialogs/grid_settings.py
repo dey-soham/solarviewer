@@ -1,16 +1,12 @@
 from PyQt5.QtWidgets import (
     QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QGroupBox,
-    QLabel,
     QDoubleSpinBox,
-    QGridLayout,
     QComboBox,
 )
 
-from ..ui.widgets import button_bar
+from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import set_hand_cursor
+from .form import color_combo, field_label, form_block
 
 
 class GridSettingsDialog(QDialog):
@@ -18,22 +14,17 @@ class GridSettingsDialog(QDialog):
 
     def __init__(self, parent=None, grid_style=None):
         super().__init__(parent)
-        self.setWindowTitle("Grid Settings")
-        self.setMinimumWidth(350)
+        self.setWindowTitle("Grid settings")
         self.grid_style = grid_style or {}
         self.parent_viewer = parent
         self.setup_ui()
         set_hand_cursor(self)
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
+        layout = dialog_layout(self)
+        style_layout = form_block(layout)
 
         # Color selection
-        color_group = QGroupBox("Color")
-        color_layout = QHBoxLayout(color_group)
-
-        color_label = QLabel("Grid Color:")
-        self.color_combo = QComboBox()
         colors = [
             "white",
             "black",
@@ -45,19 +36,12 @@ class GridSettingsDialog(QDialog):
             "yellow",
             "gray",
         ]
-        for color in colors:
-            self.color_combo.addItem(color)
-        self.color_combo.setCurrentText(self.grid_style.get("color", "white"))
-        color_layout.addWidget(color_label)
-        color_layout.addWidget(self.color_combo)
-        layout.addWidget(color_group)
-
-        # Style settings
-        style_group = QGroupBox("Style")
-        style_layout = QGridLayout(style_group)
+        self.color_combo = color_combo(colors, self.grid_style.get("color", "white"))
+        style_layout.addWidget(field_label("Colour"), 0, 0)
+        style_layout.addWidget(self.color_combo, 0, 1)
 
         # Line style
-        linestyle_label = QLabel("Line Style:")
+        linestyle_label = field_label("Line style")
         self.linestyle_combo = QComboBox()
         linestyles = [
             ("-", "Solid"),
@@ -75,18 +59,17 @@ class GridSettingsDialog(QDialog):
                 self.linestyle_combo.setCurrentIndex(i)
                 break
 
-        style_layout.addWidget(linestyle_label, 0, 0)
-        style_layout.addWidget(self.linestyle_combo, 0, 1)
+        style_layout.addWidget(linestyle_label, 1, 0)
+        style_layout.addWidget(self.linestyle_combo, 1, 1)
 
         # Opacity
-        alpha_label = QLabel("Opacity:")
+        alpha_label = field_label("Opacity")
         self.alpha_spinbox = QDoubleSpinBox()
         self.alpha_spinbox.setRange(0.1, 1.0)
         self.alpha_spinbox.setSingleStep(0.1)
         self.alpha_spinbox.setValue(self.grid_style.get("alpha", 0.5))
-        style_layout.addWidget(alpha_label, 1, 0)
-        style_layout.addWidget(self.alpha_spinbox, 1, 1)
-        layout.addWidget(style_group)
+        style_layout.addWidget(alpha_label, 2, 0)
+        style_layout.addWidget(self.alpha_spinbox, 2, 1)
         box, _ = button_bar(primary=("Apply", self.on_apply), secondary=("Close", self.close))
         layout.addWidget(box)
 
@@ -94,7 +77,7 @@ class GridSettingsDialog(QDialog):
         """Apply settings without closing dialog."""
         try:
             if self.parent_viewer:
-                self.parent_viewer.grid_style["color"] = self.color_combo.currentText()
+                self.parent_viewer.grid_style["color"] = self.color_combo.currentData()
                 self.parent_viewer.grid_style["linestyle"] = (
                     self.linestyle_combo.currentData()
                 )
@@ -110,7 +93,7 @@ class GridSettingsDialog(QDialog):
     def get_settings(self):
         """Return the current settings."""
         return {
-            "color": self.color_combo.currentText(),
+            "color": self.color_combo.currentData(),
             "linestyle": self.linestyle_combo.currentData(),
             "alpha": self.alpha_spinbox.value(),
         }

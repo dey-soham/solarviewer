@@ -111,7 +111,8 @@ def get_time_input(prompt, default=None):
 
 def get_datetime_range():
     """(start, end) as 'YYYY.MM.DD HH:MM:SS' strings."""
-    now = datetime.datetime.utcnow()
+    # Yesterday by default: the archives hold nothing yet for the hour to come
+    now = datetime.datetime.utcnow() - datetime.timedelta(days=1)
     print("\nTime range (UTC):")
     start_date = get_date_input("  Start date", now.strftime("%Y.%m.%d"))
     start_time = get_time_input("  Start time", now.strftime("%H:%M:%S"))

@@ -11,6 +11,7 @@ the Presets menu automatically) and, if it should be applied automatically on
 load, a rule in ``detect_instrument``.
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple, Union
@@ -20,6 +21,8 @@ import numpy as np
 
 from ..processing.colormaps import ensure_solar_colormaps
 from ..ui.busy import busy
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
 # Display ranges
@@ -80,30 +83,30 @@ class AutoRange:
 # Order here is the order in the Presets menu.
 AUTO_RANGES = {
     "minmax": AutoRange(
-        "Auto Min/Max",
+        "Auto min/max",
         "Set display range to data min/max",
         "Set display range to min/max: [{vmin:.4g}, {vmax:.4g}]",
         "F5",
     ),
     "p1_99": AutoRange(
-        "Auto Percentile (1%,99%)",
+        "Auto percentile (1%,99%)",
         "Set display range to 1st and 99th percentiles",
         "Set display range to 1-99 percentile: [{vmin:.4g}, {vmax:.4g}]",
         "F6",
     ),
     "p01_999": AutoRange(
-        "Auto Percentile (0.1%,99.9%)",
+        "Auto percentile (0.1%,99.9%)",
         "Set display range to 0.1st and 99.9th percentiles",
         "Set display range to 0.1st and 99.9th percentiles: "
         "[{vmin:.4g}, {vmax:.4g}]",
     ),
     "p5_95": AutoRange(
-        "Auto Percentile (5%,95%)",
+        "Auto percentile (5%,95%)",
         "Set display range to 5th and 95th percentiles",
         "Set display range to 5th and 95th percentiles: [{vmin:.4g}, {vmax:.4g}]",
     ),
     "median_rms": AutoRange(
-        "Auto Median ± 3×RMS",
+        "Auto median ± 3×RMS",
         "Set display range to median ± 3×RMS",
         "Set display range to median±3×RMS: [{vmin:.4g}, {vmax:.4g}]",
         "F7",
@@ -156,7 +159,7 @@ _MAGNETOGRAM = dict(range=(-1000, 1000), stretch="linear", cmap="gray")
 
 INSTRUMENTS = {
     "AIA": Instrument(
-        "AIA Presets",
+        "AIA presets",
         {
             94: _aia(94, "arcsinh"),
             131: _aia(131),
@@ -173,13 +176,13 @@ INSTRUMENTS = {
         shortcuts={171: "F8"},
     ),
     "HMI": Instrument(
-        "HMI Preset",
+        "HMI preset",
         {None: Preset("HMI", fallback_cmap="gray", **_MAGNETOGRAM)},
         default_variant=None,
         shortcuts={None: "F9"},
     ),
     "EIT": Instrument(
-        "SOHO/EIT Presets",
+        "SOHO/EIT presets",
         {
             w: Preset(f"SOHO EIT {w}", "zero_max", "sqrt", f"sohoeit{w}", "inferno")
             for w in (171, 195, 284, 304)
@@ -187,7 +190,7 @@ INSTRUMENTS = {
         default_variant=171,
     ),
     "LASCO": Instrument(
-        "SOHO/LASCO Presets",
+        "SOHO/LASCO presets",
         {
             # Coronagraph images are shown as the departure from a smooth
             # background in units of the local spread (FNRGF): the corona
@@ -200,7 +203,7 @@ INSTRUMENTS = {
         variant_label="{}",
     ),
     "IRIS": Instrument(
-        "IRIS SJI Presets",
+        "IRIS SJI presets",
         {
             w: Preset(f"IRIS SJI {w}", "zero_p99.5", "sqrt", f"irissji{w}", "viridis")
             for w in (1330, 1400, 2796, 2832)
@@ -208,7 +211,7 @@ INSTRUMENTS = {
         default_variant=1330,
     ),
     "SUVI": Instrument(
-        "GOES SUVI Presets",
+        "GOES SUVI presets",
         {
             w: Preset(
                 f"GOES SUVI {w}", "zero_p99.5", "sqrt", f"goes-rsuvi{w}", "inferno"
@@ -218,7 +221,7 @@ INSTRUMENTS = {
         unknown_variant=Preset("GOES SUVI", "zero_p99.5", "sqrt", "inferno", "inferno"),
     ),
     "STEREO": Instrument(
-        "STEREO Presets",
+        "STEREO presets",
         {
             "EUVI": Preset("STEREO EUVI", "minmax", "sqrt", "sdoaia171", "inferno"),
             "COR1": Preset("STEREO COR1", "p1_99", "sqrt", "soholasco2", "afmhot"),
@@ -228,7 +231,7 @@ INSTRUMENTS = {
         variant_label="{}",
     ),
     "GONG": Instrument(
-        "GONG Preset",
+        "GONG preset",
         {None: Preset("GONG magnetogram", fallback_cmap="gray", **_MAGNETOGRAM)},
         default_variant=None,
         in_menu=False,
@@ -373,7 +376,8 @@ class PresetsMixin:
 
     def _apply_auto_range(self, mode):
         vmin, vmax = compute_range(self.display_data(), mode)
-        self.set_range(vmin, vmax)
+        # (the plot takes what the boxes show: the range clamped to the data)
+        vmin, vmax = self.set_range(vmin, vmax) or (vmin, vmax)
         if hasattr(self, "show_range_preset"):
             self.show_range_preset(mode)
 
@@ -410,7 +414,7 @@ class PresetsMixin:
         gamma = self._current_gamma() if preset.gamma is None else preset.gamma
         cmap = resolve_cmap(preset, self.cmap_combo.currentText())
         if cmap != preset.cmap:
-            print(f"[Warning] {preset.cmap} colormap not available, using {cmap}")
+            logger.warning(f"{preset.cmap} colormap not available, using {cmap}")
             self.show_status_message(
                 f"Warning: {preset.cmap} colormap not available, using {cmap}"
             )
@@ -525,7 +529,7 @@ class PresetMenuMixin:
         from .radial_filter import MODES
 
         preset_menu.addSeparator()
-        radial_menu = QMenu("Radial Filter", self)
+        radial_menu = QMenu("Radial filter", self)
         group = QActionGroup(self)
         group.setExclusive(True)
         self.radial_filter_actions = {}
@@ -544,7 +548,7 @@ class PresetMenuMixin:
             self.radial_filter_actions[mode] = action
         self.radial_filter_actions["off"].setChecked(True)
         radial_menu.addSeparator()
-        self.background_action = QAction("Subtract Background", self, checkable=True)
+        self.background_action = QAction("Subtract background", self, checkable=True)
         self.background_action.setStatusTip(
             "Draw a prepared LASCO image less the F corona and stray light stored with it, leaving the K corona"
         )

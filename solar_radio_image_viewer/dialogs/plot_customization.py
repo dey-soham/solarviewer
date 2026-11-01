@@ -2,21 +2,22 @@ from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
-    QGroupBox,
     QLineEdit,
     QLabel,
     QPushButton,
     QSpinBox,
     QDoubleSpinBox,
-    QGridLayout,
     QComboBox,
     QCheckBox,
     QWidget,
 )
 from PyQt5.QtCore import Qt
 
-from ..ui.widgets import button_bar
-from ..ui.styles import set_hand_cursor
+from ..ui.widgets import button_bar, dialog_layout, link_button, segmented
+from ..ui.styles import SPACE_M, SPACE_S, set_hand_cursor, theme_manager, themed
+from .form import field_label, form_block
+
+SWATCH_SIZE = 20
 
 
 class PlotCustomizationDialog(QDialog):
@@ -25,79 +26,71 @@ class PlotCustomizationDialog(QDialog):
     def __init__(self, parent=None, settings=None, tight_layout_default=False):
         super().__init__(parent)
         self._tight_layout_default = tight_layout_default  # (for Reset)
-        self.setWindowTitle("Plot Customization")
-        self.setMinimumWidth(660)
+        self.setWindowTitle("Plot style")
         self.setMaximumHeight(1280)
         self.settings = settings.copy() if settings else {}
+        self._swatches = {}  # the colour rows' previews and what each shows
         self.setup_ui()
+        themed(self, self._paint_swatches)
         set_hand_cursor(self)
 
     def setup_ui(self):
         from PyQt5.QtWidgets import QTabWidget
 
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setSpacing(8)
-        outer_layout.setContentsMargins(10, 10, 10, 10)
+        outer_layout = dialog_layout(self)
 
         # Create tab widget for organized sections
         tab_widget = QTabWidget()
 
         # ===== TAB 1: TEXT & LABELS =====
         text_tab = QWidget()
-        text_layout = QVBoxLayout(text_tab)
-        text_layout.setSpacing(8)
+        text_layout = self._tab_layout(text_tab)
 
         # Labels Section
-        labels_group = QGroupBox("Labels")
-        labels_layout = QGridLayout(labels_group)
-        labels_layout.setSpacing(8)
+        labels_layout = form_block(text_layout, "Labels", pairs=2, longest="Colorbar ticks")
 
-        labels_layout.addWidget(QLabel("X-Axis:"), 0, 0)
+        labels_layout.addWidget(field_label("X axis"), 0, 0)
         self.xlabel_edit = QLineEdit(self.settings.get("xlabel", ""))
         self.xlabel_edit.setPlaceholderText("Auto")
         labels_layout.addWidget(self.xlabel_edit, 0, 1)
 
-        labels_layout.addWidget(QLabel("Y-Axis:"), 0, 2)
+        labels_layout.addWidget(field_label("Y axis"), 0, 2)
         self.ylabel_edit = QLineEdit(self.settings.get("ylabel", ""))
         self.ylabel_edit.setPlaceholderText("Auto")
         labels_layout.addWidget(self.ylabel_edit, 0, 3)
 
-        labels_layout.addWidget(QLabel("Title:"), 1, 0)
+        labels_layout.addWidget(field_label("Title"), 1, 0)
         self.title_edit = QLineEdit(self.settings.get("title", ""))
         self.title_edit.setPlaceholderText("Auto")
         labels_layout.addWidget(self.title_edit, 1, 1)
 
-        labels_layout.addWidget(QLabel("Colorbar:"), 1, 2)
+        labels_layout.addWidget(field_label("Colorbar"), 1, 2)
         self.colorbar_label_edit = QLineEdit(self.settings.get("colorbar_label", ""))
         self.colorbar_label_edit.setPlaceholderText("e.g., Jy/beam")
         labels_layout.addWidget(self.colorbar_label_edit, 1, 3)
 
-        text_layout.addWidget(labels_group)
-
         # Font Sizes Section (compact grid)
-        fonts_group = QGroupBox("Font Sizes")
-        fonts_layout = QGridLayout(fonts_group)
-        fonts_layout.setSpacing(8)
+        fonts_layout = form_block(text_layout, "Font sizes", pairs=2, longest="Colorbar ticks")
 
-        fonts_layout.addWidget(QLabel("Axis Labels:"), 0, 0)
+        fonts_layout.addWidget(field_label("Axis labels"), 0, 0)
         self.axis_label_size = QSpinBox()
         self.axis_label_size.setRange(1, 50)
         self.axis_label_size.setValue(self.settings.get("axis_label_fontsize", 12))
         fonts_layout.addWidget(self.axis_label_size, 0, 1)
 
-        fonts_layout.addWidget(QLabel("Axis Ticks:"), 0, 2)
+        fonts_layout.addWidget(field_label("Axis ticks"), 0, 2)
         self.axis_tick_size = QSpinBox()
         self.axis_tick_size.setRange(1, 50)
         self.axis_tick_size.setValue(self.settings.get("axis_tick_fontsize", 10))
         fonts_layout.addWidget(self.axis_tick_size, 0, 3)
 
-        fonts_layout.addWidget(QLabel("Title:"), 1, 0)
+        fonts_layout.addWidget(field_label("Title"), 1, 0)
         self.title_size = QSpinBox()
         self.title_size.setRange(1, 50)
         self.title_size.setValue(self.settings.get("title_fontsize", 12))
         fonts_layout.addWidget(self.title_size, 1, 1)
 
-        fonts_layout.addWidget(QLabel("Colorbar:"), 1, 2)
+        fonts_layout.addWidget(field_label("Colorbar"), 1, 2)
         self.colorbar_label_size = QSpinBox()
         self.colorbar_label_size.setRange(1, 50)
         self.colorbar_label_size.setValue(
@@ -105,7 +98,7 @@ class PlotCustomizationDialog(QDialog):
         )
         fonts_layout.addWidget(self.colorbar_label_size, 1, 3)
 
-        fonts_layout.addWidget(QLabel("Colorbar Ticks:"), 2, 0)
+        fonts_layout.addWidget(field_label("Colorbar ticks"), 2, 0)
         self.colorbar_tick_size = QSpinBox()
         self.colorbar_tick_size.setRange(1, 50)
         self.colorbar_tick_size.setValue(
@@ -114,186 +107,121 @@ class PlotCustomizationDialog(QDialog):
         fonts_layout.addWidget(self.colorbar_tick_size, 2, 1)
 
         # Scale buttons
-        scale_layout = QHBoxLayout()
-        scale_layout.addWidget(QLabel("Scale All:"))
-        scale_down_btn = QPushButton("-")
-        scale_down_btn.setFixedWidth(30)
+        fonts_layout.addWidget(field_label("Scale all"), 2, 2)
+        scale_down_btn = QPushButton("\u2212")
+        scale_down_btn.setToolTip("All font sizes one point smaller")
         scale_down_btn.clicked.connect(self._scale_fonts_down)
         scale_up_btn = QPushButton("+")
-        scale_up_btn.setFixedWidth(30)
+        scale_up_btn.setToolTip("All font sizes one point larger")
         scale_up_btn.clicked.connect(self._scale_fonts_up)
-        scale_layout.addWidget(scale_down_btn)
-        scale_layout.addWidget(scale_up_btn)
+        scale_layout = QHBoxLayout()
+        scale_layout.addWidget(segmented([scale_down_btn, scale_up_btn]))
         scale_layout.addStretch()
-        fonts_layout.addLayout(scale_layout, 2, 2, 1, 2)
+        fonts_layout.addLayout(scale_layout, 2, 3)
 
-        text_layout.addWidget(fonts_group)
         text_layout.addStretch()
 
         tab_widget.addTab(text_tab, "Text")
 
         # ===== TAB 2: COLORS & STYLE =====
         style_tab = QWidget()
-        style_layout = QVBoxLayout(style_tab)
-        style_layout.setSpacing(8)
+        style_layout = self._tab_layout(style_tab)
 
         # Colors Section (compact 2-column grid)
-        colors_group = QGroupBox("Colors")
-        colors_layout = QGridLayout(colors_group)
-        colors_layout.setSpacing(6)
+        colors_layout = form_block(style_layout, "Colours", pairs=2, longest="Figure background")
 
         # Row 0: Plot BG, Figure BG
-        colors_layout.addWidget(QLabel("Plot BG:"), 0, 0)
+        colors_layout.addWidget(field_label("Plot background"), 0, 0)
         self.plot_bg_color = self.settings.get("plot_bg_color", "auto")
-        self.plot_bg_preview = QLabel()
-        self.plot_bg_preview.setFixedSize(20, 20)
+        self.plot_bg_preview = self._color_row(
+            colors_layout, 0, 1, self._pick_plot_bg_color, self._set_plot_bg_auto
+        )
         self._update_color_preview(self.plot_bg_preview, self.plot_bg_color)
-        self.plot_bg_btn = QPushButton("...")
-        self.plot_bg_btn.setFixedWidth(30)
-        self.plot_bg_btn.clicked.connect(self._pick_plot_bg_color)
-        self.plot_bg_auto_btn = QPushButton("A")
-        self.plot_bg_auto_btn.setFixedWidth(25)
-        self.plot_bg_auto_btn.setToolTip("Auto")
-        self.plot_bg_auto_btn.clicked.connect(lambda: self._set_plot_bg_auto())
-        plot_bg_row = QHBoxLayout()
-        plot_bg_row.addWidget(self.plot_bg_preview)
-        plot_bg_row.addWidget(self.plot_bg_btn)
-        plot_bg_row.addWidget(self.plot_bg_auto_btn)
-        colors_layout.addLayout(plot_bg_row, 0, 1)
 
-        colors_layout.addWidget(QLabel("Figure BG:"), 0, 2)
+        colors_layout.addWidget(field_label("Figure background"), 0, 2)
         self.figure_bg_color = self.settings.get("figure_bg_color", "auto")
-        self.figure_bg_preview = QLabel()
-        self.figure_bg_preview.setFixedSize(20, 20)
+        self.figure_bg_preview = self._color_row(
+            colors_layout, 0, 3, self._pick_figure_bg_color, self._set_figure_bg_auto
+        )
         self._update_color_preview(self.figure_bg_preview, self.figure_bg_color)
-        self.figure_bg_btn = QPushButton("...")
-        self.figure_bg_btn.setFixedWidth(30)
-        self.figure_bg_btn.clicked.connect(self._pick_figure_bg_color)
-        self.figure_bg_auto_btn = QPushButton("A")
-        self.figure_bg_auto_btn.setFixedWidth(25)
-        self.figure_bg_auto_btn.setToolTip("Auto")
-        self.figure_bg_auto_btn.clicked.connect(lambda: self._set_figure_bg_auto())
-        figure_bg_row = QHBoxLayout()
-        figure_bg_row.addWidget(self.figure_bg_preview)
-        figure_bg_row.addWidget(self.figure_bg_btn)
-        figure_bg_row.addWidget(self.figure_bg_auto_btn)
-        colors_layout.addLayout(figure_bg_row, 0, 3)
 
         # Row 1: Text, Tick
-        colors_layout.addWidget(QLabel("Text:"), 1, 0)
+        colors_layout.addWidget(field_label("Text"), 1, 0)
         self.text_color = self.settings.get("text_color", "auto")
-        self.text_color_preview = QLabel()
-        self.text_color_preview.setFixedSize(20, 20)
+        self.text_color_preview = self._color_row(
+            colors_layout, 1, 1, self._pick_text_color, self._set_text_color_auto
+        )
         self._update_color_preview(self.text_color_preview, self.text_color)
-        self.text_color_btn = QPushButton("...")
-        self.text_color_btn.setFixedWidth(30)
-        self.text_color_btn.clicked.connect(self._pick_text_color)
-        self.text_color_auto_btn = QPushButton("A")
-        self.text_color_auto_btn.setFixedWidth(25)
-        self.text_color_auto_btn.setToolTip("Auto")
-        self.text_color_auto_btn.clicked.connect(self._set_text_color_auto)
-        text_color_row = QHBoxLayout()
-        text_color_row.addWidget(self.text_color_preview)
-        text_color_row.addWidget(self.text_color_btn)
-        text_color_row.addWidget(self.text_color_auto_btn)
-        colors_layout.addLayout(text_color_row, 1, 1)
 
-        colors_layout.addWidget(QLabel("Ticks:"), 1, 2)
+        colors_layout.addWidget(field_label("Ticks"), 1, 2)
         self.tick_color = self.settings.get("tick_color", "auto")
-        self.tick_color_preview = QLabel()
-        self.tick_color_preview.setFixedSize(20, 20)
+        self.tick_color_preview = self._color_row(
+            colors_layout, 1, 3, self._pick_tick_color, self._set_tick_color_auto
+        )
         self._update_color_preview(self.tick_color_preview, self.tick_color)
-        self.tick_color_btn = QPushButton("...")
-        self.tick_color_btn.setFixedWidth(30)
-        self.tick_color_btn.clicked.connect(self._pick_tick_color)
-        self.tick_color_auto_btn = QPushButton("A")
-        self.tick_color_auto_btn.setFixedWidth(25)
-        self.tick_color_auto_btn.setToolTip("Auto")
-        self.tick_color_auto_btn.clicked.connect(self._set_tick_color_auto)
-        tick_color_row = QHBoxLayout()
-        tick_color_row.addWidget(self.tick_color_preview)
-        tick_color_row.addWidget(self.tick_color_btn)
-        tick_color_row.addWidget(self.tick_color_auto_btn)
-        colors_layout.addLayout(tick_color_row, 1, 3)
 
         # Row 2: Border color + width
-        colors_layout.addWidget(QLabel("Border:"), 2, 0)
+        colors_layout.addWidget(field_label("Border"), 2, 0)
         self.border_color = self.settings.get("border_color", "auto")
-        self.border_color_preview = QLabel()
-        self.border_color_preview.setFixedSize(20, 20)
+        self.border_color_preview = self._color_row(
+            colors_layout, 2, 1, self._pick_border_color, self._set_border_color_auto
+        )
         self._update_color_preview(self.border_color_preview, self.border_color)
-        self.border_color_btn = QPushButton("...")
-        self.border_color_btn.setFixedWidth(30)
-        self.border_color_btn.clicked.connect(self._pick_border_color)
-        self.border_color_auto_btn = QPushButton("A")
-        self.border_color_auto_btn.setFixedWidth(25)
-        self.border_color_auto_btn.setToolTip("Auto")
-        self.border_color_auto_btn.clicked.connect(self._set_border_color_auto)
-        border_color_row = QHBoxLayout()
-        border_color_row.addWidget(self.border_color_preview)
-        border_color_row.addWidget(self.border_color_btn)
-        border_color_row.addWidget(self.border_color_auto_btn)
-        colors_layout.addLayout(border_color_row, 2, 1)
 
-        colors_layout.addWidget(QLabel("Border Width:"), 2, 2)
+        colors_layout.addWidget(field_label("Border width"), 2, 2)
         self.border_width = QDoubleSpinBox()
         self.border_width.setRange(0.5, 5.0)
         self.border_width.setSingleStep(0.5)
         self.border_width.setValue(self.settings.get("border_width", 1.0))
         colors_layout.addWidget(self.border_width, 2, 3)
 
-        style_layout.addWidget(colors_group)
-
         # Tick Marks Section (compact)
-        ticks_group = QGroupBox("Tick Marks")
-        ticks_layout = QGridLayout(ticks_group)
-        ticks_layout.setSpacing(8)
+        ticks_layout = form_block(style_layout, "Tick marks", pairs=2, longest="Figure background")
 
-        ticks_layout.addWidget(QLabel("Direction:"), 0, 0)
+        ticks_layout.addWidget(field_label("Direction"), 0, 0)
         self.tick_direction = QComboBox()
-        self.tick_direction.addItems(["in", "out"])
-        self.tick_direction.setCurrentText(self.settings.get("tick_direction", "out"))
+        self.tick_direction.addItem("In", "in")
+        self.tick_direction.addItem("Out", "out")
+        self.tick_direction.setCurrentIndex(
+            self.tick_direction.findData(self.settings.get("tick_direction", "out"))
+        )
         ticks_layout.addWidget(self.tick_direction, 0, 1)
 
-        ticks_layout.addWidget(QLabel("Length:"), 0, 2)
+        ticks_layout.addWidget(field_label("Length"), 0, 2)
         self.tick_length = QSpinBox()
         self.tick_length.setRange(1, 20)
         self.tick_length.setValue(self.settings.get("tick_length", 4))
         ticks_layout.addWidget(self.tick_length, 0, 3)
 
-        ticks_layout.addWidget(QLabel("Width:"), 1, 0)
+        ticks_layout.addWidget(field_label("Width"), 1, 0)
         self.tick_width = QDoubleSpinBox()
         self.tick_width.setRange(0.5, 5.0)
         self.tick_width.setSingleStep(0.5)
         self.tick_width.setValue(self.settings.get("tick_width", 1.0))
         ticks_layout.addWidget(self.tick_width, 1, 1)
 
-        style_layout.addWidget(ticks_group)
         style_layout.addStretch()
 
         tab_widget.addTab(style_tab, "Style")
 
         # ===== TAB 3: PADDING =====
         padding_tab = QWidget()
-        padding_layout = QVBoxLayout(padding_tab)
-        padding_layout.setSpacing(8)
+        padding_layout = self._tab_layout(padding_tab)
 
         # Subplot Margins Section
-        margins_group = QGroupBox("Plot Margins (0.0 - 1.0)")
-        margins_layout = QGridLayout(margins_group)
-        margins_layout.setSpacing(10)
+        margins_layout = form_block(padding_layout, "Plot margins (0 to 1)", pairs=2)
 
         # Left
-        margins_layout.addWidget(QLabel("Left:"), 0, 0)
+        margins_layout.addWidget(field_label("Left"), 0, 0)
         self.pad_left = QDoubleSpinBox()
         self.pad_left.setRange(0.0, 0.5)
         self.pad_left.setSingleStep(0.01)
-        self.pad_left.setDecimals(2)
+        self.pad_left.setDecimals(3)
         self.pad_left.setValue(self.settings.get("pad_left", 0.135))
         margins_layout.addWidget(self.pad_left, 0, 1)
 
         # Right
-        margins_layout.addWidget(QLabel("Right:"), 0, 2)
+        margins_layout.addWidget(field_label("Right"), 0, 2)
         self.pad_right = QDoubleSpinBox()
         self.pad_right.setRange(0.5, 1.0)
         self.pad_right.setSingleStep(0.01)
@@ -302,7 +230,7 @@ class PlotCustomizationDialog(QDialog):
         margins_layout.addWidget(self.pad_right, 0, 3)
 
         # Top
-        margins_layout.addWidget(QLabel("Top:"), 1, 0)
+        margins_layout.addWidget(field_label("Top"), 1, 0)
         self.pad_top = QDoubleSpinBox()
         self.pad_top.setRange(0.5, 1.0)
         self.pad_top.setSingleStep(0.01)
@@ -311,16 +239,16 @@ class PlotCustomizationDialog(QDialog):
         margins_layout.addWidget(self.pad_top, 1, 1)
 
         # Bottom
-        margins_layout.addWidget(QLabel("Bottom:"), 1, 2)
+        margins_layout.addWidget(field_label("Bottom"), 1, 2)
         self.pad_bottom = QDoubleSpinBox()
         self.pad_bottom.setRange(0.0, 0.5)
         self.pad_bottom.setSingleStep(0.01)
         self.pad_bottom.setDecimals(2)
-        self.pad_bottom.setValue(self.settings.get("pad_bottom", 0.05))
+        self.pad_bottom.setValue(self.settings.get("pad_bottom", 0.08))
         margins_layout.addWidget(self.pad_bottom, 1, 3)
 
         # Wspace (width space between subplots)
-        margins_layout.addWidget(QLabel("Wspace:"), 2, 0)
+        margins_layout.addWidget(field_label("Width space"), 2, 0)
         self.pad_wspace = QDoubleSpinBox()
         self.pad_wspace.setRange(0.0, 0.5)
         self.pad_wspace.setSingleStep(0.01)
@@ -330,7 +258,7 @@ class PlotCustomizationDialog(QDialog):
         margins_layout.addWidget(self.pad_wspace, 2, 1)
 
         # Hspace (height space between subplots)
-        margins_layout.addWidget(QLabel("Hspace:"), 2, 2)
+        margins_layout.addWidget(field_label("Height space"), 2, 2)
         self.pad_hspace = QDoubleSpinBox()
         self.pad_hspace.setRange(0.0, 0.5)
         self.pad_hspace.setSingleStep(0.01)
@@ -339,18 +267,11 @@ class PlotCustomizationDialog(QDialog):
         self.pad_hspace.setToolTip("Height space between subplots")
         margins_layout.addWidget(self.pad_hspace, 2, 3)
 
-        padding_layout.addWidget(margins_group)
-
         # Tight Layout Option
-        tight_group = QGroupBox("Layout Options")
-        tight_layout_grid = QGridLayout(tight_group)
-
-        self.use_tight_layout = QCheckBox("Use Tight Layout")
+        self.use_tight_layout = QCheckBox("Use tight layout")
         self.use_tight_layout.setChecked(self.settings.get("use_tight_layout", False))
         self.use_tight_layout.setToolTip("Automatically adjust margins for best fit")
-        tight_layout_grid.addWidget(self.use_tight_layout, 0, 0)
-
-        padding_layout.addWidget(tight_group)
+        padding_layout.addWidget(self.use_tight_layout)
         padding_layout.addStretch()
 
         tab_widget.addTab(padding_tab, "Padding")
@@ -360,34 +281,65 @@ class PlotCustomizationDialog(QDialog):
         box, _ = button_bar(
             primary=("Apply", self.accept),
             secondary=("Close", self.reject),
-            extras=[("Reset to Defaults", self.reset_to_defaults)],
+            extras=[("Reset to defaults", self.reset_to_defaults)],
         )
         outer_layout.addWidget(box)
 
+    @staticmethod
+    def _tab_layout(tab):
+        """A tab's layout, its blocks clear of the tab bar."""
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, SPACE_M, 0, 0)
+        layout.setSpacing(SPACE_M)
+        return layout
+
+    def _color_row(self, grid, row, column, pick, set_auto):
+        """A colour's preview, Choose… and Auto at ``row``, ``column`` of
+        ``grid``. Returns the preview."""
+        preview = QLabel()
+        preview.setFixedSize(SWATCH_SIZE, SWATCH_SIZE)
+        preview.setAlignment(Qt.AlignCenter)
+        auto = link_button("Auto", set_auto)
+        auto.setToolTip("Follow the theme")
+        line = QHBoxLayout()
+        line.setSpacing(SPACE_S)
+        line.addWidget(preview)
+        line.addWidget(link_button("Choose…", pick))
+        line.addWidget(auto)
+        line.addStretch()
+        grid.addLayout(line, row, column)
+        return preview
+
     def _update_color_preview(self, label, color):
         """Update the color preview label."""
-        if color == "auto" or color == "transparent":
-            label.setStyleSheet("background-color: #888888; border: 1px solid #555555;")
-            label.setText("A" if color == "auto" else "T")
-            label.setAlignment(Qt.AlignCenter)
-        else:
-            label.setStyleSheet(
-                f"background-color: {color}; border: 1px solid #555555;"
-            )
-            label.setText("")
+        self._swatches[label] = color
+        self._paint_swatches(theme_manager.palette)
 
-    def _pick_plot_bg_color(self):
-        """Open color picker for plot background."""
-        from PyQt5.QtWidgets import QColorDialog, QPushButton
+    def _paint_swatches(self, palette):
+        """The previews: the colour itself, or A for auto and T for
+        transparent, which have none to show."""
+        for label, color in self._swatches.items():
+            plain = color in ("auto", "transparent")
+            label.setText({"auto": "A", "transparent": "T"}.get(color, ""))
+            label.setToolTip({"auto": "Auto", "transparent": "Transparent"}.get(color, color))
+            label.setStyleSheet(
+                f"QLabel {{ background-color: {palette['surface'] if plain else color};"
+                f" border: 1px solid {palette['text_faint']};"
+                f" color: {palette['text_secondary']}; }}"
+            )
+
+    def _pick_color(self, color, title):
+        """The colour chosen starting from ``color``, or None."""
+        from PyQt5.QtWidgets import QColorDialog
         from PyQt5.QtGui import QColor
 
         initial = (
-            QColor(self.plot_bg_color)
-            if self.plot_bg_color not in ("auto", "transparent")
-            else QColor("#ffffff")
+            QColor(color)
+            if color not in ("auto", "transparent")
+            else QColor(theme_manager.palette["plot_bg"])
         )
         dialog = QColorDialog(initial, self)
-        dialog.setWindowTitle("Select Plot Background Color")
+        dialog.setWindowTitle(title)
         dialog.setOption(QColorDialog.DontUseNativeDialog, True)
 
         # Hide the "Pick Screen Color" button
@@ -396,30 +348,21 @@ class PlotCustomizationDialog(QDialog):
                 btn.hide()
 
         if dialog.exec_() == QColorDialog.Accepted:
-            self.plot_bg_color = dialog.selectedColor().name()
+            return dialog.selectedColor().name()
+        return None
+
+    def _pick_plot_bg_color(self):
+        """Open color picker for plot background."""
+        color = self._pick_color(self.plot_bg_color, "Plot background colour")
+        if color:
+            self.plot_bg_color = color
             self._update_color_preview(self.plot_bg_preview, self.plot_bg_color)
 
     def _pick_figure_bg_color(self):
         """Open color picker for figure background."""
-        from PyQt5.QtWidgets import QColorDialog, QPushButton
-        from PyQt5.QtGui import QColor
-
-        initial = (
-            QColor(self.figure_bg_color)
-            if self.figure_bg_color not in ("auto", "transparent")
-            else QColor("#ffffff")
-        )
-        dialog = QColorDialog(initial, self)
-        dialog.setWindowTitle("Select Figure Background Color")
-        dialog.setOption(QColorDialog.DontUseNativeDialog, True)
-
-        # Hide the "Pick Screen Color" button
-        for btn in dialog.findChildren(QPushButton):
-            if "pick" in btn.text().lower() or "screen" in btn.text().lower():
-                btn.hide()
-
-        if dialog.exec_() == QColorDialog.Accepted:
-            self.figure_bg_color = dialog.selectedColor().name()
+        color = self._pick_color(self.figure_bg_color, "Figure background colour")
+        if color:
+            self.figure_bg_color = color
             self._update_color_preview(self.figure_bg_preview, self.figure_bg_color)
 
     def _set_plot_bg_auto(self):
@@ -434,25 +377,9 @@ class PlotCustomizationDialog(QDialog):
 
     def _pick_text_color(self):
         """Open color picker for text color."""
-        from PyQt5.QtWidgets import QColorDialog, QPushButton
-        from PyQt5.QtGui import QColor
-
-        initial = (
-            QColor(self.text_color)
-            if self.text_color not in ("auto", "transparent")
-            else QColor("#ffffff")
-        )
-        dialog = QColorDialog(initial, self)
-        dialog.setWindowTitle("Select Text Color")
-        dialog.setOption(QColorDialog.DontUseNativeDialog, True)
-
-        # Hide the "Pick Screen Color" button
-        for btn in dialog.findChildren(QPushButton):
-            if "pick" in btn.text().lower() or "screen" in btn.text().lower():
-                btn.hide()
-
-        if dialog.exec_() == QColorDialog.Accepted:
-            self.text_color = dialog.selectedColor().name()
+        color = self._pick_color(self.text_color, "Text colour")
+        if color:
+            self.text_color = color
             self._update_color_preview(self.text_color_preview, self.text_color)
 
     def _set_text_color_auto(self):
@@ -462,25 +389,9 @@ class PlotCustomizationDialog(QDialog):
 
     def _pick_tick_color(self):
         """Open color picker for tick color."""
-        from PyQt5.QtWidgets import QColorDialog, QPushButton
-        from PyQt5.QtGui import QColor
-
-        initial = (
-            QColor(self.tick_color)
-            if self.tick_color not in ("auto", "transparent")
-            else QColor("#ffffff")
-        )
-        dialog = QColorDialog(initial, self)
-        dialog.setWindowTitle("Select Tick Color")
-        dialog.setOption(QColorDialog.DontUseNativeDialog, True)
-
-        # Hide the "Pick Screen Color" button
-        for btn in dialog.findChildren(QPushButton):
-            if "pick" in btn.text().lower() or "screen" in btn.text().lower():
-                btn.hide()
-
-        if dialog.exec_() == QColorDialog.Accepted:
-            self.tick_color = dialog.selectedColor().name()
+        color = self._pick_color(self.tick_color, "Tick colour")
+        if color:
+            self.tick_color = color
             self._update_color_preview(self.tick_color_preview, self.tick_color)
 
     def _set_tick_color_auto(self):
@@ -490,25 +401,9 @@ class PlotCustomizationDialog(QDialog):
 
     def _pick_border_color(self):
         """Open color picker for border color."""
-        from PyQt5.QtWidgets import QColorDialog, QPushButton
-        from PyQt5.QtGui import QColor
-
-        initial = (
-            QColor(self.border_color)
-            if self.border_color not in ("auto", "transparent")
-            else QColor("#ffffff")
-        )
-        dialog = QColorDialog(initial, self)
-        dialog.setWindowTitle("Select Border Color")
-        dialog.setOption(QColorDialog.DontUseNativeDialog, True)
-
-        # Hide the "Pick Screen Color" button
-        for btn in dialog.findChildren(QPushButton):
-            if "pick" in btn.text().lower() or "screen" in btn.text().lower():
-                btn.hide()
-
-        if dialog.exec_() == QColorDialog.Accepted:
-            self.border_color = dialog.selectedColor().name()
+        color = self._pick_color(self.border_color, "Border colour")
+        if color:
+            self.border_color = color
             self._update_color_preview(self.border_color_preview, self.border_color)
 
     def _set_border_color_auto(self):
@@ -553,7 +448,7 @@ class PlotCustomizationDialog(QDialog):
         self._update_color_preview(self.text_color_preview, "auto")
         self._update_color_preview(self.tick_color_preview, "auto")
         self._update_color_preview(self.border_color_preview, "auto")
-        self.tick_direction.setCurrentText("out")
+        self.tick_direction.setCurrentIndex(self.tick_direction.findData("out"))
         self.tick_length.setValue(4)
         self.tick_width.setValue(1.0)
         self.border_width.setValue(1.0)
@@ -561,7 +456,7 @@ class PlotCustomizationDialog(QDialog):
         self.pad_left.setValue(0.135)
         self.pad_right.setValue(1.0)
         self.pad_top.setValue(0.95)
-        self.pad_bottom.setValue(0.05)
+        self.pad_bottom.setValue(0.08)
         self.pad_wspace.setValue(0.2)
         self.pad_hspace.setValue(0.2)
         self.use_tight_layout.setChecked(self._tight_layout_default)
@@ -584,7 +479,7 @@ class PlotCustomizationDialog(QDialog):
             "tick_color": self.tick_color,
             "border_color": self.border_color,
             "border_width": self.border_width.value(),
-            "tick_direction": self.tick_direction.currentText(),
+            "tick_direction": self.tick_direction.currentData(),
             "tick_length": self.tick_length.value(),
             "tick_width": self.tick_width.value(),
             # Padding settings

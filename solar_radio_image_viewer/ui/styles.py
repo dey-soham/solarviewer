@@ -77,6 +77,7 @@ FONT_TITLE = 18  # a window's or dialog's one title
 FONT_HEADLINE = 21  # the empty canvas's one line
 # Spacing steps, in pixels (scaled by Qt with the display)
 SPACE_XS, SPACE_S, SPACE_M, SPACE_L = 4, 8, 12, 16
+CONTROL_HEIGHT = 28  # of a button or input, border included, in pixels
 STATUS_DOT = 7  # the diameter of a status bar button's dot, in pixels
 RADIUS = 6  # of every rounded corner (controls)
 RADIUS_LG = 8  # of containers: segmented groups, cards, menus
@@ -89,6 +90,7 @@ TOKENS = {
     "font_section": FONT_SECTION,
     "font_title": FONT_TITLE,
     "space": (SPACE_XS, SPACE_S, SPACE_M, SPACE_L),
+    "control_height": CONTROL_HEIGHT,
     "radius": RADIUS,
 }
 
@@ -166,6 +168,8 @@ TOKENS = {
 #   DetailMono      the same in monospace, smaller (dates, paths; muted="true")
 # A label or StatusButton can also take a tone with ``set_tone``:
 # "success", "warning" or "error" colour it accordingly, None clears it.
+# A QGroupBox needs no role: it is drawn as a Card with its title inside, in
+# the kicker's style, so its title reads the same as ``kicker()``'s.
 ROLES = (
     "PrimaryButton",
     "LinkButton",
@@ -287,10 +291,10 @@ DARK_PALETTE = {
     "text_strong": "#cfd3e5",  # neutral-300: menus, values
     "text_dim": "#b2b6ca",  # neutral-400: a switch's label while off
     "text_secondary": "#9397ab",  # neutral-500: labels, hints
-    "text_faint": "#75798c",  # neutral-600: folder icons, the path bar's separators, "—"
+    "text_faint": "#9497a6",  # folder icons, the path bar's separators, "—"
     "input_text": "#e9e9ed",
     "disabled": "#595d6c",  # neutral-700
-    "highlight": "#9184d9",  # the accent
+    "highlight": "#9b8fdc",  # the accent (a little above Nocturne's #9184d9, for AA on raised grounds)
     "highlight_hover": "#b5abfc",  # accent-400
     "highlight_soft": "#423a6a",  # accent-800: fills behind the accent, histogram bars within the range
     "highlight_deep": "#5d5294",  # accent-700: a switch's track when on
@@ -301,28 +305,44 @@ DARK_PALETTE = {
     "text_bright": "#f5f4ff",  # accent-100: the chosen segment's text
     "link": "#d2cefd",  # accent-300: link buttons
     "outline": "#595d6c",  # neutral-700: a bordered icon button's edge
-    "accent_hover": "rgba(145, 132, 217, 0.12)",
-    "accent_pressed": "rgba(145, 132, 217, 0.22)",
+    "accent_hover": "rgba(155, 143, 220, 0.12)",
+    "accent_pressed": "rgba(155, 143, 220, 0.22)",
     "highlight_text": "#161826",  # text on the accent
     "success": "#4ade80",
     "warning": "#fbbf24",
     "error": "#f87171",
+    # Grounds behind a tone: a table row or cell, under ordinary text
+    "success_soft": "#1e3a2e",
+    "warning_soft": "#3f3319",
+    "error_soft": "#472730",
     # A connection's dot, a cached file's check: on (green) and off (red),
     # the green the brighter so they differ without hue
     "status_on": "#6fbf8a",
-    "status_off": "#d96a5a",
+    "status_off": "#de7d70",
     "secondary": "#a7a1db",
     "switch_track": "#292b31",  # neutral-900
     "switch_track_hover": "#3f424d",  # neutral-800
     "switch_knob": "#595d6c",  # neutral-700
+    # The splash screen's own golden sun look
+    "brand_gold": "#d4a535",
+    "brand_orange": "#f5a623",
+    "brand_glow": "#ffd700",
+    "brand_glow_mid": "#e8b84a",
+    "brand_glow_edge": "#d4a535",
+    "brand_ground": "#080810",
+    "brand_ground_edge": "#0c0c18",
+    "brand_text": "#f8f8fc",
+    "brand_text_dim": "#7a7a8c",
+    "brand_star": "#ffffff",
+    "brand_shadow": "#000000",
     "plot_bg": "#161826",
     "plot_text": "#e9e9ed",
     "plot_grid": "#3f424d",
     "toolbar_bg": "#161826",
     # Kept for widgets not yet restyled: flat values of the old gradients
-    "highlight_glow": "rgba(145, 132, 217, 0.25)",
-    "button_gradient_start": "#9184d9",
-    "button_gradient_end": "#9184d9",
+    "highlight_glow": "rgba(155, 143, 220, 0.25)",
+    "button_gradient_start": "#9b8fdc",
+    "button_gradient_end": "#9b8fdc",
     "shadow": "rgba(0, 0, 0, 0.55)",
     "pane_colors": PANE_COLORS_DARK,
 }
@@ -348,8 +368,8 @@ LIGHT_PALETTE = {
     "text": "#1d1f2b",
     "text_strong": "#4a4e5e",  # menus, values
     "text_dim": "#5b5f70",  # a segment's text while not chosen
-    "text_secondary": "#6f7386",  # labels, hints, placeholders
-    "text_faint": "#8f93a6",
+    "text_secondary": "#676a7c",  # labels, hints, placeholders
+    "text_faint": "#666a80",
     "input_text": "#1d1f2b",
     "disabled": "#b2b6ca",
     "highlight": "#6a5fb8",  # the accent: outlines, kickers, the tab underline
@@ -366,15 +386,30 @@ LIGHT_PALETTE = {
     "accent_hover": "rgba(106, 95, 184, 0.10)",
     "accent_pressed": "rgba(106, 95, 184, 0.20)",
     "highlight_text": "#ffffff",
-    "success": "#16a34a",
-    "warning": "#d97706",
-    "error": "#dc2626",
-    "status_on": "#2f8f5b",
-    "status_off": "#c84b3c",
+    "success": "#117b38",
+    "warning": "#a15904",
+    "error": "#d02222",
+    "success_soft": "#d7f0e0",
+    "warning_soft": "#f9ebcd",
+    "error_soft": "#fbe0de",
+    "status_on": "#287a4d",
+    "status_off": "#bb4335",
     "secondary": "#5c5783",
     "switch_track": "#6f7386",  # a switch's track when off
     "switch_track_hover": "#5b5f70",
     "switch_knob": "#d6d9e6",  # a switch's knob when off (assets/switch_off_light.svg)
+    # The splash screen's own golden sun look
+    "brand_gold": "#d4a535",
+    "brand_orange": "#f5a623",
+    "brand_glow": "#c47f17",
+    "brand_glow_mid": "#b8860b",
+    "brand_glow_edge": "#a67c00",
+    "brand_ground": "#ffffff",
+    "brand_ground_edge": "#faf8f5",
+    "brand_text": "#1a1a1a",
+    "brand_text_dim": "#6b6b7a",
+    "brand_star": "#ffffff",
+    "brand_shadow": "#000000",
     "plot_bg": "#ffffff",
     "plot_text": "#1d1f2b",
     "plot_grid": "#d7d8de",
@@ -404,9 +439,13 @@ def get_stylesheet(palette, is_dark=True):
     arrow_down = f"{assets}/spinbox_down{suffix}.png"
     switch_on = f"{assets}/switch_on{suffix}.svg"
     switch_off = f"{assets}/switch_off{suffix}.svg"
+    check_on = f"{assets}/check_on{suffix}.svg"
+    radio_on = f"{assets}/radio_on{suffix}.svg"
+
+    def icon(name):
+        return f"url({assets}/{name}{suffix}.svg)"
 
     p = palette
-    on_accent = p["highlight_text"]
     # Nocturne's freestanding rules fade to transparent at both ends
     fading_rule = (
         "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 transparent, "
@@ -989,26 +1028,30 @@ def get_stylesheet(palette, is_dark=True):
         color: {p['error']};
     }}
 
-    /* ===== Group boxes ===== */
+    /* ===== Group boxes: a card with its kicker inside, as Card + kicker() ===== */
     QGroupBox {{
         background-color: {p['surface']};
         border: 1px solid {p['divider']};
         border-radius: {RADIUS_LG}px;
-        margin-top: {SPACE_M}px;
-        padding: {SPACE_S}px;
-        font-weight: 500;
+        margin-top: 0px;
+        padding: {SPACE_L + SPACE_M}px 0px {SPACE_S}px 0px;  /* sides: the layout's SPACE_M, as the title */
+        font-size: {FONT_META}pt;  /* the title's: Qt draws it in the box's font */
+        font-weight: 600;
+        text-transform: uppercase;
     }}
     QGroupBox::title {{
-        subcontrol-origin: margin;
+        subcontrol-origin: padding;
+        subcontrol-position: top left;
         left: {SPACE_M}px;
-        padding: 0 {SPACE_XS}px;
+        top: {SPACE_S + 1}px;
         color: {p['highlight']};
-        background-color: {p['window']};
-        font-size: {FONT_SMALL}pt;
-        font-weight: 600;
+        background-color: transparent;
     }}
-    QDialog QGroupBox::title {{
-        background-color: {p['window']};
+    QGroupBox:disabled {{
+        color: {p['disabled']};
+    }}
+    QGroupBox::title:disabled {{
+        color: {p['disabled']};
     }}
 
     /* ===== Buttons: outlined, never filled ===== */
@@ -1017,8 +1060,8 @@ def get_stylesheet(palette, is_dark=True):
         color: {p['text']};
         border: 1px solid {p['divider']};
         border-radius: {RADIUS}px;
-        padding: {SPACE_XS}px {SPACE_M}px;
-        min-height: 24px;
+        padding: 0px {SPACE_M}px;
+        min-height: {CONTROL_HEIGHT - 2}px;
         font-size: {FONT_SMALL}pt;
         font-weight: 500;
     }}
@@ -1176,8 +1219,13 @@ def get_stylesheet(palette, is_dark=True):
         color: {p['error']};
         border-color: {p['error']};
     }}
+    /* One order everywhere: other actions, Cancel, then the main action */
+    QDialogButtonBox {{
+        button-layout: 3;
+        dialogbuttonbox-buttons-have-icons: 0;
+    }}
     QDialogButtonBox QPushButton {{
-        min-width: 80px;
+        min-width: 56px;
     }}
     QDialogButtonBox QPushButton:default {{
         color: {p['highlight']};
@@ -1230,8 +1278,8 @@ def get_stylesheet(palette, is_dark=True):
         color: {p['input_text']};
         border: 1px solid {p['divider']};
         border-radius: {RADIUS}px;
-        padding: 2px {SPACE_S}px;
-        min-height: 22px;
+        padding: 0px {SPACE_S}px;
+        min-height: {CONTROL_HEIGHT - 2}px;
         selection-background-color: {p['highlight_soft']};
         selection-color: {p['text']};
     }}
@@ -1312,6 +1360,24 @@ def get_stylesheet(palette, is_dark=True):
         selection-color: {p['text']};
     }}
 
+    /* ===== Qt's own dialogs: its stock icons in the theme's colours ===== */
+    QMessageBox {{
+        messagebox-critical-icon: {icon('msg_error')};
+        messagebox-warning-icon: {icon('msg_warning')};
+        messagebox-information-icon: {icon('msg_info')};
+        messagebox-question-icon: {icon('msg_question')};
+    }}
+    QFileDialog {{
+        backward-icon: {icon('fd_back')};
+        forward-icon: {icon('fd_forward')};
+        filedialog-parent-directory-icon: {icon('fd_parent')};
+        filedialog-new-directory-icon: {icon('fd_new_folder')};
+        filedialog-listview-icon: {icon('fd_list')};
+        filedialog-detailedview-icon: {icon('fd_detail')};
+        directory-icon: {icon('fd_folder')};
+        file-icon: {icon('fd_file')};
+    }}
+
     /* ===== Check boxes, radio buttons, switches ===== */
     QCheckBox, QRadioButton {{
         min-height: 22px;
@@ -1333,12 +1399,34 @@ def get_stylesheet(palette, is_dark=True):
         background-color: {p['highlight']};
         border-color: {p['highlight']};
     }}
+    QCheckBox::indicator:checked {{
+        image: url({check_on});
+    }}
+    QAbstractItemView::indicator {{
+        width: 14px;
+        height: 14px;
+        border: 1.5px solid {p['border_light']};
+        border-radius: 3px;
+        background-color: transparent;
+    }}
+    QAbstractItemView::indicator:checked {{
+        background-color: {p['highlight']};
+        border-color: {p['highlight']};
+        image: url({check_on});
+    }}
+    QRadioButton::indicator:checked {{
+        image: url({radio_on});
+    }}
     QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
         border-color: {p['highlight']};
     }}
     QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
         border-color: {p['divider']};
         background-color: transparent;
+    }}
+    QCheckBox::indicator:checked:disabled, QRadioButton::indicator:checked:disabled {{
+        background-color: {p['disabled']};
+        border-color: {p['disabled']};
     }}
     QCheckBox:disabled, QRadioButton:disabled {{
         color: {p['disabled']};
@@ -1461,6 +1549,18 @@ def get_stylesheet(palette, is_dark=True):
     QTabBar#DocumentTabs::tab:hover:!selected {{
         background: {p['hover']};
     }}
+    QTabBar#DocumentTabs::close-button {{
+        image: url({assets}/pane_close{suffix}.svg);
+        subcontrol-position: right;
+        subcontrol-origin: padding;
+        margin-left: 2px;
+        width: 14px;
+        height: 14px;
+    }}
+    QTabBar#DocumentTabs::close-button:hover {{
+        background-color: {p['hover']};
+        border-radius: {SPACE_XS}px;
+    }}
 
     /* ===== Lists, trees, tables ===== */
     QListWidget, QListView, QTreeWidget, QTreeView, QTableWidget, QTableView {{
@@ -1552,6 +1652,16 @@ def get_stylesheet(palette, is_dark=True):
     QMenu::item:disabled {{
         color: {p['disabled']};
         background-color: transparent;
+    }}
+    QMenu::indicator {{
+        width: 14px;
+        height: 14px;
+        left: {SPACE_XS}px;
+    }}
+    QMenu::indicator:checked {{
+        image: url({check_on});
+        background-color: {p['highlight']};
+        border-radius: 3px;
     }}
     QMenu::separator {{
         height: 1px;
@@ -1761,6 +1871,14 @@ def get_icon_path(icon_name):
         return icon_name
     name, ext = icon_name.rsplit(".", 1)
     return f"{name}_light.{ext}"
+
+
+def themed(widget, style):
+    """Call ``style(palette)`` now and on every theme change, for as long as
+    ``widget`` exists: for what cannot be a role (colours for a painter, a
+    plot, rich text)."""
+    style(theme_manager.palette)
+    theme_manager.register_callback(lambda _theme: style(theme_manager.palette), owner=widget)
 
 
 def set_tone(widget, tone):

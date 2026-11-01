@@ -1,5 +1,6 @@
 import sys
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
@@ -13,6 +14,7 @@ from PyQt5.QtGui import QTextCursor
 
 # Thread-safe signal emitter for logging
 from .ui.geometry import fit_to_screen
+from .ui.styles import SPACE_L, SPACE_M, SPACE_S
 
 class LogSignal(QObject):
     text_written = pyqtSignal(str)
@@ -69,7 +71,7 @@ class LogConsole(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Log Console")
+        self.setWindowTitle("Log console")
         fit_to_screen(self, 800, 600)
 
         # Force Window behavior to ensure Maximize works on all WMs
@@ -80,6 +82,7 @@ class LogConsole(QDialog):
         # Setup layout
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         # Log display area
         self.text_edit = QPlainTextEdit()
@@ -90,31 +93,34 @@ class LogConsole(QDialog):
         self.text_edit.setMaximumBlockCount(self.MAX_LINES)
 
         self.text_edit.setObjectName("Console")
+        self.text_edit.setPlaceholderText("Messages appear here as SolarViewer works")
 
         layout.addWidget(self.text_edit)
 
         # Button bar
         btn_bar = QWidget()
         btn_layout = QHBoxLayout(btn_bar)
-        btn_layout.setContentsMargins(8, 8, 8, 8)
+        btn_layout.setContentsMargins(SPACE_L, SPACE_M, SPACE_L, SPACE_M)
+        btn_layout.setSpacing(SPACE_S)
 
         self.btn_clear = QPushButton("Clear")
         self.btn_clear.clicked.connect(self.clear_logs)
 
-        self.btn_copy = QPushButton("Copy All")
+        self.btn_copy = QPushButton("Copy all")
         self.btn_copy.clicked.connect(self.copy_logs)
 
-        self.btn_close = QPushButton("Hide")
+        self.btn_close = QPushButton("Close")
         self.btn_close.clicked.connect(self.hide)
 
-        self.auto_scroll_btn = QPushButton("Auto-scroll: ON")
-        self.auto_scroll_btn.setCheckable(True)
-        self.auto_scroll_btn.setChecked(True)
-        self.auto_scroll_btn.clicked.connect(self.toggle_autoscroll)
+        self.auto_scroll_switch = QCheckBox("Auto-scroll")
+        self.auto_scroll_switch.setObjectName("Switch")
+        self.auto_scroll_switch.setChecked(True)
+        self.auto_scroll_switch.toggled.connect(self.toggle_autoscroll)
 
         btn_layout.addWidget(self.btn_clear)
         btn_layout.addWidget(self.btn_copy)
-        btn_layout.addWidget(self.auto_scroll_btn)
+        btn_layout.addSpacing(SPACE_S)
+        btn_layout.addWidget(self.auto_scroll_switch)
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_close)
 
@@ -146,11 +152,8 @@ class LogConsole(QDialog):
         # Track if last output was a progress line that should be overwritten
         self._last_line_is_progress = False
 
-    def toggle_autoscroll(self):
-        self.auto_scroll = self.auto_scroll_btn.isChecked()
-        self.auto_scroll_btn.setText(
-            f"Auto-scroll: {'ON' if self.auto_scroll else 'OFF'}"
-        )
+    def toggle_autoscroll(self, on):
+        self.auto_scroll = on
         if self.auto_scroll:
             self.text_edit.moveCursor(self.text_edit.textCursor().End)
 

@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from ...ui.background import wait_for
 from ...ui.busy import busy
+from .helpers import hint
 from .planner import PlanSpec
 
 
@@ -32,37 +33,40 @@ class FramesTabMixin:
         scroll.setWidgetResizable(True)
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 12, 8, 12)
+        layout.setSpacing(12)
         scroll.setWidget(content)
 
         form = QFormLayout()
+        form.setVerticalSpacing(8)
         self.frame_start_edit = QLineEdit()
         self.frame_start_edit.setPlaceholderText(
-            "YYYY-MM-DD HH:MM:SS (empty: from the first)"
+            "YYYY-MM-DD HH:MM:SS UTC (empty: from the first)"
         )
-        form.addRow("From:", self.frame_start_edit)
+        form.addRow(hint("From"), self.frame_start_edit)
         self.frame_end_edit = QLineEdit()
         self.frame_end_edit.setPlaceholderText(
-            "YYYY-MM-DD HH:MM:SS (empty: to the last)"
+            "YYYY-MM-DD HH:MM:SS UTC (empty: to the last)"
         )
-        form.addRow("To:", self.frame_end_edit)
+        form.addRow(hint("To"), self.frame_end_edit)
         self.frame_every_spinbox = QSpinBox()
         self.frame_every_spinbox.setRange(1, 1000)
         self.frame_every_spinbox.setPrefix("every ")
         self.frame_every_spinbox.setSuffix(" frame(s)")
-        form.addRow("Use:", self.frame_every_spinbox)
+        form.addRow(hint("Use"), self.frame_every_spinbox)
         layout.addLayout(form)
 
         self.frames_summary_label = QLabel()
+        self.frames_summary_label.setObjectName("SecondaryText")
         layout.addWidget(self.frames_summary_label)
 
         self._excluded_frames = set()
         self.frames_table = QTableWidget(0, 4)
-        self.frames_table.setHorizontalHeaderLabels(["", "Time", "Image", "Contours"])
+        self.frames_table.setHorizontalHeaderLabels(["", "Time (UTC)", "Image", "Contours"])
         self.frames_table.verticalHeader().setVisible(False)
         self.frames_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         header = self.frames_table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         header.setMinimumSectionSize(24)  # the app style's minimum is wide
         header.setSectionResizeMode(0, QHeaderView.Fixed)
         self.frames_table.setColumnWidth(0, 28)
@@ -75,7 +79,7 @@ class FramesTabMixin:
         self.frames_table.setMinimumHeight(220)
         layout.addWidget(self.frames_table, 1)
 
-        include_all = QPushButton("Include All Frames")
+        include_all = QPushButton("Include all frames")
         include_all.clicked.connect(self._include_all_frames)
         layout.addWidget(include_all, 0, Qt.AlignLeft)
         return scroll

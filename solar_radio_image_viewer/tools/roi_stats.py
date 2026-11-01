@@ -19,13 +19,16 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSpinBox,
     QTableWidgetItem,
-    QVBoxLayout,
     QWidget,
 )
 
+from ..shape_annotations import pixel_scales_deg, world_degrees
+from ..dialogs.form import canvas_ground, field_label, stat_row
 from ..ui.busy import busy
 from ..ui.geometry import fit_to_screen
-from ..ui.styles import set_hand_cursor
+from ..ui.plot_theme import style_figure
+from ..ui.styles import FONT_SMALL, SPACE_M, set_hand_cursor, theme_manager
+from ..ui.widgets import button_bar, dialog_layout
 from .preview import contrast_colors
 
 # The histogram redraws this long after the last change of its bins
@@ -393,7 +396,7 @@ class RoiStatsMixin:
 
         # The pixels the statistics are of
         roi_flat = np.asarray(self._roi_values, dtype=float).ravel()
-        roi_flat = roi_flat[~np.isnan(roi_flat)]  # Remove NaNs
+        roi_flat = roi_flat[np.isfinite(roi_flat)]  # (a ratio can be inf too)
 
         if roi_flat.size == 0:
             QMessageBox.warning(
@@ -414,34 +417,36 @@ class RoiStatsMixin:
 
         # Create dialog - resizable
         dialog = QDialog(self)
-        dialog.setWindowTitle("ROI Histogram")
+        dialog.setWindowTitle("ROI histogram")
         set_hand_cursor(dialog)
-        dialog.resize(800, 650)
         dialog.setMinimumSize(600, 400)
-        fit_to_screen(dialog, 600, 400)
-        layout = QVBoxLayout(dialog)
+        fit_to_screen(dialog, 800, 650)
+        layout = dialog_layout(dialog)
 
         # Create figure
-        fig = Figure(figsize=(8, 5))
+        # (constrained: the labels stay in the figure at any window size)
+        fig = Figure(figsize=(8, 5), layout="constrained")
         canvas = FigureCanvas(fig)
+        canvas_ground(canvas)
         layout.addWidget(canvas, stretch=1)  # Make canvas expand
 
         # Controls row 1
         controls_layout1 = QHBoxLayout()
+        controls_layout1.setSpacing(SPACE_M)
 
         # Number of bins
-        controls_layout1.addWidget(QLabel("Bins:"))
+        controls_layout1.addWidget(field_label("Bins"))
         bins_spin = QSpinBox()
         bins_spin.setRange(10, 500)
         bins_spin.setValue(50)
         controls_layout1.addWidget(bins_spin)
 
         # Log scale checkbox
-        log_check = QCheckBox("Log Scale")
+        log_check = QCheckBox("Log scale")
         controls_layout1.addWidget(log_check)
 
         # Show statistics checkbox
-        stats_check = QCheckBox("Show Stats")
+        stats_check = QCheckBox("Show statistics")
         stats_check.setChecked(True)
         controls_layout1.addWidget(stats_check)
 
@@ -450,7 +455,8 @@ class RoiStatsMixin:
 
         # Controls row 2 - Fitting options
         controls_layout2 = QHBoxLayout()
-        controls_layout2.addWidget(QLabel("Fit:"))
+        controls_layout2.setSpacing(SPACE_M)
+        controls_layout2.addWidget(field_label("Fit"))
 
         gaussian_check = QCheckBox("Gaussian")
         controls_layout2.addWidget(gaussian_check)
@@ -466,27 +472,30 @@ class RoiStatsMixin:
 
         layout.addLayout(controls_layout2)
 
-        # Statistics info label
-        stats_label = QLabel()
-        stats_label.setObjectName("Mono")
-        stats_label.setMargin(5)
-        stats_label.setWordWrap(True)
-        layout.addWidget(stats_label)
+        # Statistics
+        stat_row(
+            [
+                ("Min", f"{min_val:.6g}"),
+                ("Max", f"{max_val:.6g}"),
+                ("Mean", f"{mean_val:.6g}"),
+                ("Median", f"{median_val:.6g}"),
+                ("Std dev", f"{std_val:.6g}"),
+                ("Pixels", f"{roi_flat.size:,}"),
+            ],
+            layout,
+        )
 
         # Fit results label
         fit_label = QLabel()
         fit_label.setObjectName("Mono")
-        fit_label.setMargin(5)
+        fit_label.setStyleSheet(f"font-size: {FONT_SMALL}pt;")
         fit_label.setWordWrap(True)
+        fit_label.hide()
         layout.addWidget(fit_label)
 
         # Close button
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        btn_layout.addWidget(close_btn)
-        layout.addLayout(btn_layout)
+        box, _ = button_bar(secondary=("Close", dialog.accept))
+        layout.addWidget(box)
 
         def gaussian(x, amp, mean, sigma):
             return amp * np.exp(-((x - mean) ** 2) / (2 * sigma**2))
@@ -509,8 +518,8 @@ class RoiStatsMixin:
             counts, bins_edges, patches = ax.hist(
                 roi_flat,
                 bins=n_bins,
-                color="#2196F3",
-                edgecolor="#1565C0",
+                color=theme_manager.palette["highlight"],
+                edgecolor=theme_manager.palette["highlight_soft"],
                 alpha=0.7,
                 density=False,
             )
@@ -534,7 +543,7 @@ class RoiStatsMixin:
                     # Plot fit
                     x_fit = np.linspace(min_val, max_val, 300)
                     y_fit = gaussian(x_fit, *popt)
-                    ax.plot(x_fit, y_fit, "r-", linewidth=2, label="Gaussian Fit")
+                    ax.plot(x_fit, y_fit, "r-", linewidth=2, label="Gaussian fit")
 
                     # Calculate chi-square
                     y_pred = gaussian(bin_centers, *popt)
@@ -632,27 +641,17 @@ class RoiStatsMixin:
             if use_log:
                 ax.set_yscale("log")
 
-            ax.set_xlabel("Pixel Value")
+            ax.set_xlabel("Pixel value")
             ax.set_ylabel("Count")
-            ax.set_title(f"ROI Histogram ({roi_flat.size:,} pixels)")
+            ax.set_title(f"ROI histogram ({roi_flat.size:,} pixels)")
             ax.grid(True, alpha=0.3)
 
-            fig.tight_layout()
+            style_figure(fig)
             canvas.draw()
 
-            # Update stats label
-            stats_text = (
-                f"Min: {min_val:.6g}  |  Max: {max_val:.6g}  |  "
-                f"Mean: {mean_val:.6g}  |  Median: {median_val:.6g}  |  "
-                f"Std Dev: {std_val:.6g}  |  Pixels: {roi_flat.size:,}"
-            )
-            stats_label.setText(stats_text)
-
             # Update fit label
-            if fit_results:
-                fit_label.setText("\n".join(fit_results))
-            else:
-                fit_label.setText("")
+            fit_label.setText("\n".join(fit_results))
+            fit_label.setVisible(bool(fit_results))
 
         # Holding the Bins arrows must not queue a redraw per step
         settle = QTimer(dialog)
@@ -673,6 +672,8 @@ class RoiStatsMixin:
 
         # Initial plot
         update_histogram()
+        # (its bars are in the accent, so all of it is drawn again)
+        theme_manager.register_callback(lambda _theme: draw_histogram(), owner=dialog)
 
     # ------------------------------------------------------------------
     # The regions: drawn with the Rectangle and Ellipse tools, kept until
@@ -760,7 +761,7 @@ class RoiStatsMixin:
         count = len(self.regions)
         if count and QMessageBox.question(
             self,
-            "Clear Regions",
+            "Clear regions",
             f"Delete all {count} region{'s' * (count != 1)} on this image?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -1018,42 +1019,23 @@ class RoiStatsMixin:
             try:
                 import astropy.units as u
                 from astropy.coordinates import SkyCoord
-                from astropy.wcs import WCS
 
-                ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
-                ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
-                increment = self.current_wcs.increment()["numeric"][0:2]
-
-                w = WCS(naxis=2)
-                w.wcs.crpix = [
-                    ref_pix[0] + 1,
-                    ref_pix[1] + 1,
-                ]  # CASA 0-indexed -> FITS 1-indexed
+                # (by the projection: RA is not linear in x, it goes as 1 / cos Dec)
+                center_wx, center_wy = world_degrees(
+                    self.current_wcs, (xlow + xhigh) / 2, (ylow + yhigh) / 2
+                )
                 _hdr = getattr(self, "_cached_fits_header", None) or {}
-                _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-                if _is_solar:
-                    w.wcs.crval = [ref_val[0] / 3600.0, ref_val[1] / 3600.0]
-                    w.wcs.cdelt = [increment[0] / 3600.0, increment[1] / 3600.0]
-                else:
-                    w.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
-                    w.wcs.cdelt = [
-                        increment[0] * 180 / np.pi,
-                        increment[1] * 180 / np.pi,
-                    ]
-
-                w1x, w1y = w.wcs_pix2world(xlow, ylow, 0)
-                w2x, w2y = w.wcs_pix2world(xhigh, yhigh, 0)
-
-                center_wx = (w1x + w2x) / 2
-                center_wy = (w1y + w2y) / 2
+                per_x, per_y = pixel_scales_deg(self.current_wcs)
+                w_degrees = (xhigh - xlow) * per_x
+                h_degrees = (yhigh - ylow) * per_y
 
                 ctype1_roi = str(_hdr.get("CTYPE1", "")).upper()
                 if "SOLAR" in ctype1_roi:
                     # SOLAR-X/Y: WCS values are in arcsec (crval was set directly)
                     sx = center_wx * 3600.0  # degrees -> arcsec
                     sy = center_wy * 3600.0
-                    w_arcsec = abs(w2x - w1x) * 3600.0
-                    h_arcsec = abs(w2y - w1y) * 3600.0
+                    w_arcsec = w_degrees * 3600.0
+                    h_arcsec = h_degrees * 3600.0
                     ra_dec_info = (
                         f'Center: SOLAR-X={sx:.1f}", SOLAR-Y={sy:.1f}"'
                         f'\nSize: {w_arcsec:.1f}" × {h_arcsec:.1f}"'
@@ -1064,8 +1046,8 @@ class RoiStatsMixin:
                     center_wy = ((center_wy + 180.0) % 360.0) - 180.0
                     hx = center_wx * 3600.0
                     hy = center_wy * 3600.0
-                    w_arcsec = abs(w2x - w1x) * 3600.0
-                    h_arcsec = abs(w2y - w1y) * 3600.0
+                    w_arcsec = w_degrees * 3600.0
+                    h_arcsec = h_degrees * 3600.0
                     ra_dec_info = (
                         f'Center: HPLN={hx:.1f}", HPLT={hy:.1f}"'
                         f'\nSize: {w_arcsec:.1f}" × {h_arcsec:.1f}"'
@@ -1074,10 +1056,10 @@ class RoiStatsMixin:
                     center_coord = SkyCoord(
                         ra=center_wx * u.degree, dec=center_wy * u.degree
                     )
-                    width = abs(w2x - w1x) * u.degree
-                    height = abs(w2y - w1y) * u.degree
+                    width = w_degrees * u.degree
+                    height = h_degrees * u.degree
                     ra_dec_info = (
-                        f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                        f"Centre: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
                         f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
                         f"\nSize: {width.to(u.arcsec):.1f} × {height.to(u.arcsec):.1f}"
                     )
@@ -1153,37 +1135,14 @@ class RoiStatsMixin:
             try:
                 import astropy.units as u
                 from astropy.coordinates import SkyCoord
-                from astropy.wcs import WCS
 
-                ref_val = self.current_wcs.referencevalue()["numeric"][0:2]
-                ref_pix = self.current_wcs.referencepixel()["numeric"][0:2]
-                increment = self.current_wcs.increment()["numeric"][0:2]
-
-                wcs = WCS(naxis=2)
-                wcs.wcs.crpix = [
-                    ref_pix[0] + 1,
-                    ref_pix[1] + 1,
-                ]  # CASA 0-indexed -> FITS 1-indexed
                 _hdr = getattr(self, "_cached_fits_header", None) or {}
-                _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-                if _is_solar:
-                    wcs.wcs.crval = [ref_val[0] / 3600.0, ref_val[1] / 3600.0]
-                    wcs.wcs.cdelt = [increment[0] / 3600.0, increment[1] / 3600.0]
-                else:
-                    wcs.wcs.crval = [ref_val[0] * 180 / np.pi, ref_val[1] * 180 / np.pi]
-                    wcs.wcs.cdelt = [
-                        increment[0] * 180 / np.pi,
-                        increment[1] * 180 / np.pi,
-                    ]
 
-                # Convert display coordinates to world coordinates
                 # center_x, center_y are in display coordinates (used for WCS)
-                wx_c, wy_c = wcs.wcs_pix2world(center_x, center_y, 0)
+                wx_c, wy_c = world_degrees(self.current_wcs, center_x, center_y)
 
                 # Angular size of the region (along its own axes, as turned)
-                per_x, per_y = abs(increment[0]), abs(increment[1])
-                if not _is_solar:
-                    per_x, per_y = (v * 180 / np.pi * 3600 for v in (per_x, per_y))  # arcsec
+                per_x, per_y = (v * 3600 for v in pixel_scales_deg(self.current_wcs))  # arcsec
                 angular_width = width * np.hypot(per_x * cos_t, per_y * sin_t)
                 angular_height = height * np.hypot(per_x * sin_t, per_y * cos_t)
                 # (turned half a turn, either shape is the same)
@@ -1210,7 +1169,7 @@ class RoiStatsMixin:
                 else:
                     center_coord = SkyCoord(ra=wx_c * u.degree, dec=wy_c * u.degree)
                     ra_dec_info = (
-                        f"Center: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
+                        f"Centre: RA={center_coord.ra.to_string(unit=u.hour, sep=':', precision=1)}, "
                         f"Dec={center_coord.dec.to_string(sep=':', precision=1)}"
                         f'\nSize: {angular_width:.1f}" × {angular_height:.1f}"{turn}'
                     )

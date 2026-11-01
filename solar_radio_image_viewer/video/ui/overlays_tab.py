@@ -15,9 +15,11 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QMessageBox,
     QScrollArea,
+    QToolButton,
     QWidget,
     QFormLayout,
 )
+from PyQt5.QtCore import QSize, Qt
 from ...processing.contour_layers import (
     contour_layer_name,
 )
@@ -32,6 +34,8 @@ from ...processing.plot_style import (
     DEFAULT_PLOT_SETTINGS,
     default_style,
 )
+from ...ui.styles import themed
+from .helpers import hint
 
 
 class OverlaysTabMixin:
@@ -45,34 +49,35 @@ class OverlaysTabMixin:
         overlay_scroll.setWidgetResizable(True)
         overlay_scroll_content = QWidget()
         overlay_layout = QVBoxLayout(overlay_scroll_content)
-        overlay_layout.setContentsMargins(12, 12, 12, 12)
+        overlay_layout.setContentsMargins(0, 12, 8, 12)
         overlay_layout.setSpacing(12)
         overlay_scroll.setWidget(overlay_scroll_content)
 
         # Overlay settings section
-        overlay_group = QGroupBox("Overlay Settings")
+        overlay_group = QGroupBox("Overlay settings")
         overlay_main_layout = QHBoxLayout(overlay_group)
-        overlay_main_layout.setContentsMargins(12, 16, 12, 12)
+        overlay_main_layout.setContentsMargins(12, 4, 12, 4)
 
         # Use a form layout for cleaner organization
         overlay_form = QFormLayout()
         overlay_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        overlay_form.setVerticalSpacing(8)
 
         # Timestamp, Frame number, and Filename as checkboxes with labels
-        self.timestamp_check = QCheckBox("Add Timestamp")
+        self.timestamp_check = QCheckBox("Add timestamp")
         self.timestamp_check.setChecked(True)
         self.timestamp_check.setToolTip("Show date/time information from FITS header")
-        overlay_form.addRow("", self.timestamp_check)
+        overlay_form.addRow(self.timestamp_check)
 
-        self.frame_number_check = QCheckBox("Add Frame Number")
+        self.frame_number_check = QCheckBox("Add frame number")
         self.frame_number_check.setChecked(False)
         self.frame_number_check.setToolTip("Show frame counter (e.g., Frame: 1/100)")
-        overlay_form.addRow("", self.frame_number_check)
+        overlay_form.addRow(self.frame_number_check)
 
-        self.filename_check = QCheckBox("Add Filename")
+        self.filename_check = QCheckBox("Add filename")
         self.filename_check.setChecked(False)
         self.filename_check.setToolTip("Show source filename in the video frame")
-        overlay_form.addRow("", self.filename_check)
+        overlay_form.addRow(self.filename_check)
 
         overlay_main_layout.addLayout(overlay_form)
         overlay_layout.addWidget(overlay_group)
@@ -88,9 +93,10 @@ class OverlaysTabMixin:
 
     def _create_plot_elements_group(self):
         """Solar disk, beam and grid, each with its main-window style dialog."""
-        group = QGroupBox("Solar Disk, Beam and Grid")
+        group = QGroupBox("Solar disk, beam and grid")
         grid = QGridLayout(group)
-        grid.setContentsMargins(12, 16, 12, 12)
+        grid.setContentsMargins(12, 4, 12, 4)
+        grid.setSpacing(8)
         rows = (
             (
                 "show_solar_disk_check",
@@ -129,7 +135,7 @@ class OverlaysTabMixin:
         self.show_annotations_check.setToolTip(
             "Shapes, text and arrows drawn in the main window, at the same\n"
             "sky positions (and sizes in arcsec) in every frame. Taken with\n"
-            "Copy from Main Window (Plot Appearance)."
+            "Copy from main window (Plot appearance)."
         )
         grid.addWidget(self.show_annotations_check, len(rows), 0)
         self.annotations_label = QLabel()
@@ -150,18 +156,19 @@ class OverlaysTabMixin:
         self.show_annotations_check.setEnabled(self.annotations is not None)
         self.show_annotations_check.setChecked(self.annotations is not None)
         self.annotations_label.setText(
-            annotation_counts(self.annotations) if self.annotations else "none copied"
+            annotation_counts(self.annotations) if self.annotations else "None copied"
         )
 
     def _create_appearance_group(self):
         """Plot appearance (main window's Plot Customization) and copying
         the look of the main window."""
-        group = QGroupBox("Plot Appearance")
+        group = QGroupBox("Plot appearance")
         layout = QVBoxLayout(group)
-        layout.setContentsMargins(12, 16, 12, 12)
+        layout.setContentsMargins(12, 4, 12, 4)
+        layout.setSpacing(8)
 
         row = QHBoxLayout()
-        self.appearance_label = QLabel()
+        self.appearance_label = hint("")
         row.addWidget(self.appearance_label, 1)
         customize = QPushButton("Customize…")
         customize.setToolTip(
@@ -176,7 +183,7 @@ class OverlaysTabMixin:
         layout.addLayout(row)
 
         copy_row = QHBoxLayout()
-        copy_btn = QPushButton("Copy from Main Window")
+        copy_btn = QPushButton("Copy from main window")
         copy_btn.setToolTip(
             "Take the solar disk, beam and grid (on/off and style) and the plot\n"
             "appearance of the main window's current tab"
@@ -192,7 +199,7 @@ class OverlaysTabMixin:
         note = QLabel(
             "Opened from the main window, this window starts with the main window's "
             "solar disk, beam, grid and plot appearance. Change them here, or set "
-            "them up in the main window and press Copy from Main Window. "
+            "them up in the main window and press Copy from main window. "
             '"auto" colours are those of the light theme.'
         )
         note.setWordWrap(True)
@@ -204,9 +211,9 @@ class OverlaysTabMixin:
     def _create_line_plot_group(self):
         """The line plot under the image: light curves of the image or of
         contour images, against time."""
-        group = QGroupBox("Line Plot")
+        group = QGroupBox("Line plot")
         layout = QVBoxLayout(group)
-        layout.setContentsMargins(12, 16, 12, 12)
+        layout.setContentsMargins(12, 4, 12, 4)
         layout.setSpacing(8)
 
         self.line_plot_check = QCheckBox("Show a line plot under the image")
@@ -218,9 +225,10 @@ class OverlaysTabMixin:
 
         self.line_plot_curves = [dict(c) for c in default_line_plot()["curves"]]
         self._curve_grid = QGridLayout()
-        self._curve_grid.setHorizontalSpacing(6)
+        self._curve_grid.setHorizontalSpacing(8)
+        self._curve_grid.setVerticalSpacing(8)
         layout.addLayout(self._curve_grid)
-        self.add_curve_btn = QPushButton("Add Curve")
+        self.add_curve_btn = QPushButton("Add curve")
         self.add_curve_btn.clicked.connect(self._add_curve)
         add_row = QHBoxLayout()
         add_row.addWidget(self.add_curve_btn)
@@ -228,14 +236,15 @@ class OverlaysTabMixin:
         layout.addLayout(add_row)
 
         form = QFormLayout()
+        form.setVerticalSpacing(8)
         self.line_plot_x_combo = QComboBox()
-        self.line_plot_x_combo.addItem("Observation time (UT)", "time")
+        self.line_plot_x_combo.addItem("Observation time (UTC)", "time")
         self.line_plot_x_combo.addItem("Frame number", "frame")
         self.line_plot_x_combo.setToolTip(
             "Observation time shows gaps and changes of cadence (frame numbers\n"
             "are used if a frame has no time)"
         )
-        form.addRow("X axis:", self.line_plot_x_combo)
+        form.addRow(hint("X axis"), self.line_plot_x_combo)
         y_row = QHBoxLayout()
         self.line_plot_y_combo = QComboBox()
         self.line_plot_y_combo.addItem("Shared (in the images' unit)", "shared")
@@ -244,18 +253,18 @@ class OverlaysTabMixin:
         self.line_plot_log_check = QCheckBox("Log scale")
         y_row.addWidget(self.line_plot_log_check)
         y_row.addStretch()
-        form.addRow("Y axis:", y_row)
+        form.addRow(hint("Y axis"), y_row)
         self.line_plot_height_spin = QSpinBox()
         self.line_plot_height_spin.setRange(8, 40)
         self.line_plot_height_spin.setValue(default_line_plot()["height"])
         self.line_plot_height_spin.setSuffix(" % of the frame")
-        form.addRow("Height:", self.line_plot_height_spin)
+        form.addRow(hint("Height"), self.line_plot_height_spin)
         layout.addLayout(form)
 
         box_row = QHBoxLayout()
-        self.curve_box_label = QLabel()
+        self.curve_box_label = hint("")
         box_row.addWidget(self.curve_box_label, 1)
-        choose = QPushButton("Choose on Preview")
+        choose = QPushButton("Choose on preview")
         choose.setToolTip('Drag the box for "box" curves on the preview')
         choose.clicked.connect(self._choose_curve_box)
         box_row.addWidget(choose)
@@ -295,6 +304,8 @@ class OverlaysTabMixin:
 
     def _show_curves(self):
         """One row per curve: source, quantity, area and a remove button."""
+        from ...remote.browser_parts import icon
+
         while self._curve_grid.count():
             widget = self._curve_grid.takeAt(0).widget()
             if widget is not None:
@@ -328,9 +339,13 @@ class OverlaysTabMixin:
                 area.addItem(text, key)
             area.setCurrentIndex(max(area.findData(curve.get("area")), 0))
             curve["area"] = area.currentData()
-            remove = QPushButton("✕")
-            remove.setFixedWidth(28)
+            remove = QToolButton()
+            remove.setAutoRaise(True)
+            remove.setCursor(Qt.PointingHandCursor)
+            remove.setFixedSize(28, 28)
+            remove.setIconSize(QSize(15, 15))
             remove.setToolTip("Remove this curve")
+            themed(remove, lambda palette, button=remove: button.setIcon(icon("close", palette)))
 
             def changed(*_, row=row, source=source, quantity=quantity, area=area):
                 curve = self.line_plot_curves[row]
@@ -431,7 +446,7 @@ class OverlaysTabMixin:
         if tab is None or not hasattr(tab, "plot_settings"):
             if notify:
                 QMessageBox.information(
-                    self, "No Image", "Open an image in the main window first."
+                    self, "No image", "Open an image in the main window first."
                 )
             return
         self.solar_disk_style = dict(tab.solar_disk_style)

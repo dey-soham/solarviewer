@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ..processing.fits_io import is_fits
+from ..processing.image_meta import fits_header
 from ..ui.background import Cancelled, run_in_background
 from ..ui.batch import BatchWindow, _escape, _short_home, output_name
 from ..ui.errors import show_error
@@ -45,13 +46,13 @@ def _stem(path):
 class PhaseShiftDialog(BatchWindow):
     """Shifts one image, or a folder of images, to the true solar center."""
 
-    VERB = "Apply Shift"
+    VERB = "Apply shift"
     RUNNING = "Shifting"
     NOUN = ("image", "images")
     SUMMARY_ROWS = ("Image", "Reference", "From", "Method", "Stokes", "Output", "Speed")
 
     def __init__(self, parent=None, imagename=None, batch_mode=False):
-        super().__init__(parent, "Solar Phase Center Shift")
+        super().__init__(parent, "Solar phase centre shift")
         self.imagename = imagename
         folder = os.path.dirname(imagename) if imagename else ""
 
@@ -88,7 +89,6 @@ class PhaseShiftDialog(BatchWindow):
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addWidget(self.row_label("Matching"))
-        self.pattern_edit.setMinimumHeight(30)
         self.pattern_edit.textChanged.connect(self.schedule_summary)
         row.addWidget(self.pattern_edit, 1)
         batch.addLayout(row)
@@ -97,9 +97,9 @@ class PhaseShiftDialog(BatchWindow):
         # Method
         layout, _ = self.block("Method")
         row, self.method_buttons, _ = self.choice_row(
-            "Find Sun by",
+            "Find the Sun by",
             ("Gaussian fit", "Centre of mass"),
-            ("Fit a 2-D Gaussian to the disc", "The centroid of the emission above a threshold"),
+            ("Fit a 2-D Gaussian to the disk", "The centroid of the emission above a threshold"),
             then=self._update_method_options,
         )
         layout.addLayout(row)
@@ -135,7 +135,7 @@ class PhaseShiftDialog(BatchWindow):
         text = QVBoxLayout()
         text.setSpacing(1)
         text.addWidget(QLabel("Move the Sun to the image centre"))
-        desc = QLabel("Shifts the pixels too, so the disc sits in the middle of the image")
+        desc = QLabel("Shifts the pixels too, so the disk sits in the middle of the image")
         desc.setObjectName("Meta")
         desc.setWordWrap(True)
         text.addWidget(desc)
@@ -163,7 +163,6 @@ class PhaseShiftDialog(BatchWindow):
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addWidget(self.row_label("Names"))
-        self.output_pattern_edit.setMinimumHeight(30)
         self.output_pattern_edit.textChanged.connect(self.schedule_summary)
         row.addWidget(self.output_pattern_edit, 1)
         hint = QLabel("* is the input's name")
@@ -215,13 +214,13 @@ class PhaseShiftDialog(BatchWindow):
         self.sigma_widget.setVisible(not self.use_gaussian())
 
     def browse_image(self):
-        path = choose_image(self, "Select Input Image")
+        path = choose_image(self, "Select the input image")
         if path:
             self.image_path_edit.setText(path)
             self.imagename = path
 
     def browse_reference_image(self):
-        path = choose_image(self, "Select Reference Image")
+        path = choose_image(self, "Select the reference image")
         if path:
             self.reference_image_edit.setText(path)
             if not self.dir_edit.text():
@@ -237,7 +236,7 @@ class PhaseShiftDialog(BatchWindow):
     def browse_output(self):
         source = self.image_path_edit.text()
         suggested = self._single_output(source) if source else ""
-        path, _ = QFileDialog.getSaveFileName(self, "Save Output As", suggested, "FITS Files (*.fits)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save the output as", suggested, "FITS files (*.fits)")
         if path:
             self.output_path_edit.setText(path if path.endswith(".fits") else path + ".fits")
 
@@ -309,7 +308,7 @@ class PhaseShiftDialog(BatchWindow):
             elif not self.out_dir_edit.text().strip() or not self.output_pattern_edit.text().strip():
                 info["problem"] = "Choose a folder and names to save to"
         else:
-            info["verb"] = "Apply Shift"
+            info["verb"] = "Apply shift"
             if sources:
                 info["rows"]["Image"] = _escape(os.path.basename(sources[0].rstrip("/")))
             if not sources:
@@ -355,7 +354,7 @@ class PhaseShiftDialog(BatchWindow):
 
             show_error(
                 self,
-                "Calculation Error",
+                "Calculation error",
                 f"Could not work out the phase shift from "
                 f"{os.path.basename(reference)}: {e}\n\nThe reference "
                 "image must show the Sun and have an observation date.",
@@ -374,9 +373,10 @@ class PhaseShiftDialog(BatchWindow):
             if (
                 QMessageBox.question(
                     self,
-                    "No Shift Needed",
+                    "No shift needed",
                     "The Sun already looks centred. Shift anyway?",
                     QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
                 )
                 == QMessageBox.No
             ):
@@ -404,6 +404,7 @@ class PhaseShiftDialog(BatchWindow):
                     "Overwrite?",
                     "Overwrite existing files?\n\n" + "\n".join(existing),
                     QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
                 )
                 == QMessageBox.No
             ):
@@ -438,16 +439,14 @@ def is_helioprojective(imagepath):
         return False
     try:
         if is_fits(imagepath):
-            from astropy.io import fits
-
-            header = fits.getheader(imagepath)
+            header = fits_header(imagepath)
             ctype1 = header.get("CTYPE1", "").upper()
             ctype2 = header.get("CTYPE2", "").upper()
             if "HPLN" in ctype1 or "HPLT" in ctype2 or "SOLAR" in ctype1 or "SOLAR" in ctype2:
                 return True
         if os.path.isdir(imagepath):
             try:
-                from casatools import image as IA
+                from ..processing.dependencies import IA
 
                 ia_tool = IA()
                 ia_tool.open(imagepath)
@@ -527,4 +526,4 @@ def process_single_file_phase_shift(args):
         traceback.print_exc()
         # Try to extract filename from args if possible
         filename = args[0] if args and len(args) > 0 else "Unknown"
-        return (False, filename, f"Process Error: {str(e)}")
+        return (False, filename, f"Process error: {str(e)}")

@@ -806,7 +806,7 @@ class RenderingMixin:
                     self.canvas.draw()
                     return True
                 except Exception as e:
-                    print(f"Fast Path Update Failed: {e}")
+                    logger.debug(f"Fast path update failed: {e}")
             else:
                 # Debugging Mismatch (Optional log, keeping it minimal)
                 pass
@@ -817,14 +817,13 @@ class RenderingMixin:
         # Cache the WCS object if current_wcs hasn't changed.
         wcs_obj = None
         if self.current_wcs:
-            if (not hasattr(self, "_cached_wcs_id")) or (
-                self._cached_wcs_id != id(self.current_wcs)
-            ):
+            # (the object itself: an id can come round again once it is freed)
+            if getattr(self, "_cached_wcs_of", None) is not self.current_wcs:
                 try:
                     self._cached_wcs_obj = self._build_display_wcs(
                         self.current_wcs, fits_flag, header, csys, summary
                     )
-                    self._cached_wcs_id = id(self.current_wcs)
+                    self._cached_wcs_of = self.current_wcs
                 except Exception as e:
                     logger.error(f"Error creating WCS: {e}")
                     self.show_status_message(f"Error creating WCS: {e}")
@@ -964,8 +963,8 @@ class RenderingMixin:
                         ax.set_xlabel("Solar X")
                         ax.set_ylabel("Solar Y")
                     elif header["CTYPE1"] == "SOLAR-X":
-                        ax.set_xlabel(f"Solar X ({header['CUNIT1']})")
-                        ax.set_ylabel(f"Solar Y ({header['CUNIT2']})")
+                        ax.set_xlabel(f"Solar X ({header.get('CUNIT1', 'arcsec')})")
+                        ax.set_ylabel(f"Solar Y ({header.get('CUNIT2', 'arcsec')})")
                     else:
                         ax.set_xlabel("Right Ascension (J2000)")
                         ax.set_ylabel("Declination (J2000)")
@@ -1013,6 +1012,7 @@ class RenderingMixin:
             except Exception as e:
                 logger.error(f"Error setting up WCS axes: {e}")
                 self.show_status_message(f"Error setting up WCS axes: {e}")
+                self.figure.clear()  # (the WCS axes may have been made)
                 ax = self.figure.add_subplot(111)
                 im = ax.imshow(
                     transposed_data,
@@ -1132,7 +1132,8 @@ class RenderingMixin:
                             f"{image_time} | {header['TELESCOP']} {header['INSTRUME']}"
                         )
                     elif header.get("TELESCOP") == "SDO/AIA":
-                        title = f"{image_time} | {header['TELESCOP']} {header['WAVELNTH']} $\\AA$"
+                        wl = header.get("WAVELNTH", "")  # (a converted image may lack it)
+                        title = f"{image_time} | {header['TELESCOP']} {wl} $\\AA$" if wl else f"{image_time} | {header['TELESCOP']}"
                     elif header.get("TELESCOP") == "SDO/HMI":
                         title = f"{image_time} | {header['TELESCOP']}"
                     elif (
@@ -1253,8 +1254,6 @@ class RenderingMixin:
         title), its ticks and labels when the page's Axes switch is on,
         and with the Colorbar switch a strip under it marked with the
         range's ends."""
-        from matplotlib.ticker import FuncFormatter
-
         ax.set_title("")
         if not self.pane_axes:
             ax.set_xlabel("")
@@ -1360,16 +1359,9 @@ class RenderingMixin:
                     pa_deg = float(self.psf["positionangle"]["value"]) - 90
 
                 if self.current_wcs:
-                    cdelt = self.current_wcs.increment()["numeric"][0:2]
-                    if isinstance(cdelt, list):
-                        cdelt = [float(c) for c in cdelt]
-                    _hdr = getattr(self, "_cached_fits_header", None) or {}
-                    _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-                    if _is_solar:
-                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
-                    else:
-                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
-                    dx_deg = abs(cdelt[0])
+                    from ..shape_annotations import pixel_scales_deg
+
+                    dx_deg = pixel_scales_deg(self.current_wcs)[0]
                 else:
                     dx_deg = 1.0 / 3600
 

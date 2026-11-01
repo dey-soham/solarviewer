@@ -29,6 +29,7 @@ from ..coordinates import COORDINATE_NAMES, COORDINATES
 from ..creator import reference_range
 from .helpers import (
     SIZE_PRESETS,
+    hint,
 )
 
 
@@ -43,32 +44,30 @@ class DisplayTabMixin:
         display_scroll.setWidgetResizable(True)
         display_scroll_content = QWidget()
         display_layout = QVBoxLayout(display_scroll_content)
-        display_layout.setContentsMargins(12, 12, 12, 12)
+        display_layout.setContentsMargins(0, 12, 8, 12)
         display_layout.setSpacing(12)
         display_scroll.setWidget(display_scroll_content)
 
         # Reference image for display settings
-        reference_group = QGroupBox("Reference Image")
-        reference_layout = QGridLayout(reference_group)
-        reference_layout.setContentsMargins(12, 16, 12, 12)
-        reference_layout.setHorizontalSpacing(10)
-        reference_layout.setVerticalSpacing(8)
+        reference_group = QGroupBox("Reference image")
+        reference_layout = QHBoxLayout(reference_group)
+        reference_layout.setContentsMargins(12, 4, 12, 4)
+        reference_layout.setSpacing(8)
 
-        reference_layout.addWidget(QLabel("Reference Image:"), 0, 0)
         self.reference_image_edit = QLineEdit()
         self.reference_image_edit.setReadOnly(True)  # Make it read-only
-        reference_layout.addWidget(self.reference_image_edit, 0, 1)
+        reference_layout.addWidget(self.reference_image_edit, 1)
 
-        browse_reference_btn = QPushButton("Browse")
+        browse_reference_btn = QPushButton("Browse…")
         browse_reference_btn.clicked.connect(self.browse_reference_image)
-        reference_layout.addWidget(browse_reference_btn, 0, 2)
+        reference_layout.addWidget(browse_reference_btn)
 
         display_layout.addWidget(reference_group)
 
         # Visualization settings section
         viz_group = QGroupBox("Visualization")
         viz_form = QFormLayout(viz_group)
-        viz_form.setContentsMargins(12, 16, 12, 12)
+        viz_form.setContentsMargins(12, 4, 12, 4)
         viz_form.setVerticalSpacing(8)
         viz_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
@@ -82,7 +81,7 @@ class DisplayTabMixin:
         idx = self.colormap_combo.findText("viridis")
         if idx >= 0:
             self.colormap_combo.setCurrentIndex(idx)
-        viz_form.addRow("Colormap:", self.colormap_combo)
+        viz_form.addRow(hint("Colormap"), self.colormap_combo)
 
         # Stretch
         self.stretch_combo = QComboBox()
@@ -94,7 +93,7 @@ class DisplayTabMixin:
                 "Power",
                 "Arcsinh",
                 "ZScale",
-                "Histogram Equalization",
+                "Histogram equalization",
             ]
         )
         self.stretch_combo.setItemData(
@@ -125,19 +124,19 @@ class DisplayTabMixin:
             Qt.ToolTipRole,
         )
         self.stretch_combo.currentIndexChanged.connect(self.update_gamma_controls)
-        viz_form.addRow("Stretch:", self.stretch_combo)
+        viz_form.addRow(hint("Stretch"), self.stretch_combo)
 
         # Gamma (for power stretch)
         self.gamma_spinbox = QDoubleSpinBox()
         self.gamma_spinbox.setRange(0.1, 10.0)
         self.gamma_spinbox.setSingleStep(0.1)
         self.gamma_spinbox.setValue(1.0)
-        viz_form.addRow("Gamma:", self.gamma_spinbox)
+        viz_form.addRow(hint("Gamma"), self.gamma_spinbox)
 
         # Colorbar option
-        self.colorbar_check = QCheckBox("Show Colorbar")
+        self.colorbar_check = QCheckBox("Show colorbar")
         self.colorbar_check.setChecked(True)
-        viz_form.addRow("", self.colorbar_check)
+        viz_form.addRow(hint(""), self.colorbar_check)
 
         self.difference_combo = QComboBox()
         for text, mode in (
@@ -151,28 +150,28 @@ class DisplayTabMixin:
             "about zero; a diverging colormap (e.g. RdBu_r, coolwarm) suits them.\n"
             "A running difference starts at the second frame."
         )
-        viz_form.addRow("Difference:", self.difference_combo)
+        viz_form.addRow(hint("Difference"), self.difference_combo)
 
         display_layout.addWidget(viz_group)
 
         # Range settings section
-        range_group = QGroupBox("Range Scaling")
+        range_group = QGroupBox("Range scaling")
         range_form = QFormLayout(range_group)
-        range_form.setContentsMargins(12, 16, 12, 12)
+        range_form.setContentsMargins(12, 4, 12, 4)
         range_form.setVerticalSpacing(8)
         range_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         # Range mode selection
         self.range_mode_combo = QComboBox()
-        self.range_mode_combo.addItems(["Fixed Range", "Auto per Frame", "Global Auto"])
-        self.range_mode_combo.setCurrentIndex(1)  # Default to "Auto per Frame"
+        self.range_mode_combo.addItems(["Fixed range", "Auto per frame", "Global auto"])
+        self.range_mode_combo.setCurrentIndex(1)  # Default to "Auto per frame"
         self.range_mode_combo.setToolTip(
-            "Fixed Range: Use the min/max values specified below for all frames\n"
-            "Auto per Frame: Calculate min/max independently for each frame based on percentiles\n"
-            "Global Auto: Calculate min/max once from all frames based on percentiles"
+            "Fixed range: Use the min/max values specified below for all frames\n"
+            "Auto per frame: Calculate min/max independently for each frame based on percentiles\n"
+            "Global auto: Calculate min/max once from all frames based on percentiles"
         )
         self.range_mode_combo.currentIndexChanged.connect(self.toggle_range_mode)
-        range_form.addRow("Mode:", self.range_mode_combo)
+        range_form.addRow(hint("Mode"), self.range_mode_combo)
 
         # Add explanatory label
         """self.range_explanation_label = QLabel(
@@ -185,30 +184,30 @@ class DisplayTabMixin:
         minmax_widget = QWidget()
         minmax_layout = QHBoxLayout(minmax_widget)
         minmax_layout.setContentsMargins(0, 0, 0, 0)
-        minmax_layout.setSpacing(10)
+        minmax_layout.setSpacing(8)
 
-        minmax_layout.addWidget(QLabel("Min:"))
+        minmax_layout.addWidget(hint("Min"))
         self.vmin_spinbox = QDoubleSpinBox()
         self.vmin_spinbox.setRange(-1e10, 1e10)
         self.vmin_spinbox.setDecimals(2)
         self.vmin_spinbox.setValue(0)
         minmax_layout.addWidget(self.vmin_spinbox)
 
-        minmax_layout.addWidget(QLabel("Max:"))
+        minmax_layout.addWidget(hint("Max"))
         self.vmax_spinbox = QDoubleSpinBox()
         self.vmax_spinbox.setRange(-1e10, 1e10)
         self.vmax_spinbox.setDecimals(2)
         self.vmax_spinbox.setValue(3000)
         minmax_layout.addWidget(self.vmax_spinbox)
 
-        range_form.addRow("Values:", minmax_widget)
+        range_form.addRow(hint("Values"), minmax_widget)
 
         # Percentile range used by the two Auto modes
         percentile_widget = QWidget()
         percentile_layout = QHBoxLayout(percentile_widget)
         percentile_layout.setContentsMargins(0, 0, 0, 0)
-        percentile_layout.setSpacing(10)
-        percentile_layout.addWidget(QLabel("Low:"))
+        percentile_layout.setSpacing(8)
+        percentile_layout.addWidget(hint("Low"))
         self.lower_percentile_spinbox = QDoubleSpinBox()
         self.lower_percentile_spinbox.setRange(0, 100)
         self.lower_percentile_spinbox.setDecimals(1)
@@ -216,7 +215,7 @@ class DisplayTabMixin:
         self.lower_percentile_spinbox.setSuffix(" %")
         self.lower_percentile_spinbox.setValue(0)
         percentile_layout.addWidget(self.lower_percentile_spinbox)
-        percentile_layout.addWidget(QLabel("High:"))
+        percentile_layout.addWidget(hint("High"))
         self.upper_percentile_spinbox = QDoubleSpinBox()
         self.upper_percentile_spinbox.setRange(0, 100)
         self.upper_percentile_spinbox.setDecimals(1)
@@ -226,16 +225,16 @@ class DisplayTabMixin:
         percentile_layout.addWidget(self.upper_percentile_spinbox)
         percentile_widget.setToolTip(
             "Auto modes scale each frame (or all frames) from this percentile\n"
-            "range of the pixel values; 0-100 % is the full min-max range"
+            "range of the pixel values; 0–100 % is the full min–max range"
         )
-        range_form.addRow("Percentiles:", percentile_widget)
+        range_form.addRow(hint("Percentiles"), percentile_widget)
 
         display_layout.addWidget(range_group)
 
         # Frame settings section
-        frame_group = QGroupBox("Frame Settings")
+        frame_group = QGroupBox("Frame settings")
         frame_form = QFormLayout(frame_group)
-        frame_form.setContentsMargins(12, 16, 12, 12)
+        frame_form.setContentsMargins(12, 4, 12, 4)
         frame_form.setVerticalSpacing(8)
         frame_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
@@ -243,16 +242,16 @@ class DisplayTabMixin:
         size_widget = QWidget()
         size_layout = QHBoxLayout(size_widget)
         size_layout.setContentsMargins(0, 0, 0, 0)
-        size_layout.setSpacing(10)
+        size_layout.setSpacing(8)
 
-        size_layout.addWidget(QLabel("Width:"))
+        size_layout.addWidget(hint("Width"))
         self.width_spinbox = QSpinBox()
         self.width_spinbox.setRange(0, 7680)
         self.width_spinbox.setValue(0)
         self.width_spinbox.setSpecialValueText("Auto")
         size_layout.addWidget(self.width_spinbox)
 
-        size_layout.addWidget(QLabel("Height:"))
+        size_layout.addWidget(hint("Height"))
         self.height_spinbox = QSpinBox()
         self.height_spinbox.setRange(0, 4320)
         self.height_spinbox.setValue(0)
@@ -263,7 +262,7 @@ class DisplayTabMixin:
             "Frame size in pixels. Auto follows the image's shape: with both on\n"
             "Auto the longer side is 1000 px; set one and the other follows."
         )
-        frame_form.addRow("Size:", size_widget)
+        frame_form.addRow(hint("Size"), size_widget)
 
         self.size_preset_combo = QComboBox()
         for text, height in SIZE_PRESETS:
@@ -272,14 +271,14 @@ class DisplayTabMixin:
             "Frame height in pixels; the width follows the image's shape"
         )
         self.size_preset_combo.activated.connect(self._apply_size_preset)
-        frame_form.addRow("Preset:", self.size_preset_combo)
+        frame_form.addRow(hint("Preset"), self.size_preset_combo)
 
         display_layout.addWidget(frame_group)
 
         # WCS Coordinates section
-        wcs_group = QGroupBox("Coordinate System")
+        wcs_group = QGroupBox("Coordinate system")
         wcs_form = QFormLayout(wcs_group)
-        wcs_form.setContentsMargins(12, 16, 12, 12)
+        wcs_form.setContentsMargins(12, 4, 12, 4)
         wcs_form.setVerticalSpacing(8)
 
         self.coordinates_combo = QComboBox()
@@ -291,31 +290,33 @@ class DisplayTabMixin:
             "(rotated to solar north for helioprojective). Converted images are\n"
             "kept while this window is open, so each is converted once."
         )
-        wcs_form.addRow("Video in:", self.coordinates_combo)
+        wcs_form.addRow(hint("Video in"), self.coordinates_combo)
 
-        self.wcs_coords_check = QCheckBox("Show WCS Coordinates in Video")
+        self.wcs_coords_check = QCheckBox("Show WCS coordinates in video")
         self.wcs_coords_check.setChecked(True)
         self.wcs_coords_check.setToolTip(
             "Display RA/Dec or Solar-X/Solar-Y coordinates instead of pixels"
         )
-        wcs_form.addRow("", self.wcs_coords_check)
+        wcs_form.addRow(hint(""), self.wcs_coords_check)
 
         self.wcs_info_label = QLabel("Axes are labelled in the video's coordinates")
         self.wcs_info_label.setObjectName("SecondaryText")
-        wcs_form.addRow("", self.wcs_info_label)
+        wcs_form.addRow(hint(""), self.wcs_info_label)
 
         display_layout.addWidget(wcs_group)
 
         # Add preset buttons similar to main application
-        presets_group = QGroupBox("Display Presets")
+        presets_group = QGroupBox("Display presets")
         presets_layout = QGridLayout(presets_group)
+        presets_layout.setContentsMargins(12, 4, 12, 4)
+        presets_layout.setSpacing(8)
 
         # Auto range presets
-        auto_minmax_btn = QPushButton("Auto Min/Max")
+        auto_minmax_btn = QPushButton("Auto min/max")
         auto_minmax_btn.clicked.connect(self.apply_auto_minmax)
         presets_layout.addWidget(auto_minmax_btn, 0, 0)
 
-        auto_percentile_btn = QPushButton("Auto Percentile (1-99%)")
+        auto_percentile_btn = QPushButton("Auto percentile (1–99%)")
         auto_percentile_btn.clicked.connect(self.apply_auto_percentile)
         presets_layout.addWidget(auto_percentile_btn, 0, 1)
 
@@ -324,11 +325,11 @@ class DisplayTabMixin:
         presets_layout.addWidget(auto_median_btn, 1, 0)"""
 
         # AIA/HMI Presets
-        aia_preset_btn = QPushButton("AIA 171Å Preset")
+        aia_preset_btn = QPushButton("AIA 171Å preset")
         aia_preset_btn.clicked.connect(self.apply_aia_preset)
         presets_layout.addWidget(aia_preset_btn, 1, 0)
 
-        hmi_preset_btn = QPushButton("HMI Preset")
+        hmi_preset_btn = QPushButton("HMI preset")
         hmi_preset_btn.clicked.connect(self.apply_hmi_preset)
         presets_layout.addWidget(hmi_preset_btn, 1, 1)
 
@@ -492,7 +493,9 @@ class DisplayTabMixin:
                 *args,
             )
         except ConversionError as e:
-            QMessageBox.warning(self, "Cannot Convert", str(e))
+            QMessageBox.warning(self, "Cannot convert", str(e))
+        except ValueError as e:
+            QMessageBox.warning(self, "Could not read the image", str(e))
         except Cancelled:
             self.preview_panel.show_idle("Cancelled")
         return None

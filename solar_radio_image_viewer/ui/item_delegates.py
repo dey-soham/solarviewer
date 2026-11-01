@@ -14,13 +14,7 @@ class DisabledItemDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         # Check if item is disabled
         if not (index.flags() & Qt.ItemIsEnabled):
-            # Get disabled color from theme
-            try:
-                disabled_color = QColor(
-                    theme_manager.palette.get("disabled", "#cccccc")
-                )
-            except Exception:
-                disabled_color = QColor("#cccccc")
+            disabled_color = QColor(theme_manager.palette["disabled"])
 
             # Modify the palette to use disabled color for text
             option.palette.setColor(QPalette.Text, disabled_color)

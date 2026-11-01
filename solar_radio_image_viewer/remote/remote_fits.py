@@ -23,6 +23,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import numpy as np
 
 from .remote_files import BLOCK, Cancelled
+from .ssh_manager import SSHConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +438,8 @@ class RemoteFits:
         with self._index_lock:
             if self._index is not None:
                 self._index.setdefault((offset, axis), set()).add((start, stop))
-        _prune(os.path.dirname(self._dir))
+        with contextlib.suppress(OSError):  # (another process pruning too)
+            _prune(os.path.dirname(self._dir))
 
     def _save(self, path, data):
         partial = f"{path}.{os.getpid()}.part"
@@ -520,6 +522,8 @@ class RemoteArray:
         )
         connection = self._file.files.connection
         connection.ensure_connected()
+        if connection.transport is None:
+            raise SSHConnectionError(connection.last_error or "Not connected to remote server")
         channel = connection.transport.open_session()
         try:
             channel.exec_command(command)
@@ -558,7 +562,10 @@ class RemoteArray:
                 "the server can't compute it: " + (messages[-1] if messages else f"exit {status}")
             )
         head, _, body = bytes(out).partition(b"\n")
-        nb, nf, size = (int(v) for v in head.split())
+        try:
+            nb, nf, size = (int(v) for v in head.split())
+        except ValueError:  # (a login script printing to stdout)
+            raise NotSliceable("the server's answer wasn't understood")
         values = np.frombuffer(zlib.decompress(body[:size]), np.float32)
         mean, peak = values[: nb * nf].reshape(nb, nf), values[nb * nf :].reshape(nb, nf)
         return mean.copy(), peak.copy()

@@ -11,53 +11,47 @@ from datetime import date
 from typing import List, Optional, Dict, Any
 
 
-# Event type definitions with descriptions and icons
+# Event type definitions with descriptions
 EVENT_TYPES = {
     "XRA": {
         "name": "X-ray Flare",
         "description": "Solar X-ray event observed by GOES spacecraft (1-8 Ångström)",
-        "icon": "☀️",
         "category": "xray",
     },
     "FLA": {
         "name": "Optical Flare",
         "description": "Optical flare observed in H-alpha wavelength",
-        "icon": "🔥",
         "category": "optical",
     },
     "RSP": {
         "name": "Sweep Radio Burst",
         "description": "Sweep-frequency radio burst (Type II/III/IV/V)",
-        "icon": "📻",
         "category": "radio",
     },
     "RBR": {
         "name": "Fixed-freq Radio Burst",
         "description": "Fixed-frequency radio burst (245, 410, 610 MHz, etc.)",
-        "icon": "📡",
         "category": "radio",
     },
     "RNS": {
         "name": "Radio Noise Storm",
         "description": "Prolonged enhanced radio emission from sunspot groups",
-        "icon": "🌊",
         "category": "radio",
     },
     "CME": {
         "name": "Coronal Mass Ejection",
         "description": "Massive plasma/magnetic field ejection from corona",
-        "icon": "💥",
         "category": "cme",
     },
 }
 
-# X-ray flare class colors (for UI)
-FLARE_CLASS_COLORS = {
-    "A": "#808080",  # Gray - minor
-    "B": "#4CAF50",  # Green - weak
-    "C": "#FFC107",  # Yellow/Amber - small
-    "M": "#FF9800",  # Orange - moderate
-    "X": "#F44336",  # Red - major
+# X-ray flare class tones (for UI)
+FLARE_CLASS_TONES = {
+    "A": None,  # minor
+    "B": "success",  # weak
+    "C": "warning",  # small
+    "M": "warning",  # moderate
+    "X": "error",  # major
 }
 
 # Observatory codes
@@ -74,6 +68,12 @@ OBSERVATORY_CODES = {
     "RAM": "Ramey",
     "CUL": "Culgoora",
 }
+
+
+def _clock(text: str) -> str:
+    """The HHMM of a time field, without its B (before), A (after) or U
+    (uncertain) mark."""
+    return text.lstrip("ABEU")
 
 
 @dataclass
@@ -101,7 +101,6 @@ class SolarEvent:
             {
                 "name": self.event_type,
                 "description": "Unknown event type",
-                "icon": "❓",
                 "category": "other",
             },
         )
@@ -116,8 +115,7 @@ class SolarEvent:
         """Format begin time as HH:MM."""
         if not self.begin_time or self.begin_time == "////":
             return "—"
-        # Handle B-prefixed times (began before monitoring started)
-        t = self.begin_time.lstrip("B")
+        t = _clock(self.begin_time)
         if len(t) == 4:
             return f"{t[:2]}:{t[2:]}"
         return self.begin_time
@@ -127,8 +125,9 @@ class SolarEvent:
         """Format max time as HH:MM."""
         if not self.max_time or self.max_time == "////":
             return "—"
-        if len(self.max_time) == 4:
-            return f"{self.max_time[:2]}:{self.max_time[2:]}"
+        t = _clock(self.max_time)
+        if len(t) == 4:
+            return f"{t[:2]}:{t[2:]}"
         return self.max_time
 
     @property
@@ -136,8 +135,9 @@ class SolarEvent:
         """Format end time as HH:MM."""
         if not self.end_time or self.end_time == "////":
             return "—"
-        if len(self.end_time) == 4:
-            return f"{self.end_time[:2]}:{self.end_time[2:]}"
+        t = _clock(self.end_time)
+        if len(t) == 4:
+            return f"{t[:2]}:{t[2:]}"
         return self.end_time
 
     @property
@@ -155,8 +155,8 @@ class SolarEvent:
         try:
             if not self.begin_time or not self.end_time:
                 return None
-            begin = self.begin_time.lstrip("B")
-            end = self.end_time
+            begin = _clock(self.begin_time)
+            end = _clock(self.end_time)
             if begin == "////" or end == "////":
                 return None
             begin_mins = int(begin[:2]) * 60 + int(begin[2:])
@@ -186,10 +186,9 @@ class SolarEvent:
         return None
 
     @property
-    def flare_class_color(self) -> str:
-        """Get color for flare class."""
-        letter = self.flare_class_letter
-        return FLARE_CLASS_COLORS.get(letter, "#808080")
+    def flare_class_tone(self) -> Optional[str]:
+        """Get the tone of the flare class."""
+        return FLARE_CLASS_TONES.get(self.flare_class_letter)
 
     @property
     def optical_class(self) -> Optional[str]:
@@ -294,8 +293,10 @@ def parse_events(raw_text: str) -> List[SolarEvent]:
 
             # Times: positions 7-11, 14-18, 24-28 (approximate, use regex)
             # Use regex for more reliable parsing
-            # Event ID can be 3-5 digits (e.g., 250, 4470)
-            pattern = r"(\d{3,5})\s*\+?\s+([B]?\d{4}|////)\s+(\d{4}|////)\s+(\d{4}|////)\s+(\w{3})\s+(\S+)\s+(\w{3})\s+(\S+)\s+(.*)"
+            # Event ID is up to 5 digits (e.g., 40, 250, 4470). Any time can be
+            # marked B, A or U (before, after, uncertain); the fields after
+            # Loc/Frq can be empty.
+            pattern = r"(\d{1,5})\s*\+?\s+([ABEU]?\d{4}|////)\s+([ABEU]?\d{4}|////)\s+([ABEU]?\d{4}|////)\s+(\w{3})\s+(\S+)\s+(\w{3})\s+(\S+)\s*(.*)"
             match = re.match(pattern, line)
 
             if match:

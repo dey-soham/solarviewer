@@ -41,8 +41,10 @@ from PyQt5.QtWidgets import (
 )
 
 from ..ui.activity import ActivityLabel, Spinner
-from ..ui.styles import FONT_META, FONT_SMALL, STATUS_DOT, theme_manager
+from ..ui.styles import CONTROL_HEIGHT, FONT_META, FONT_SMALL, STATUS_DOT, theme_manager
 from ..ui.widgets import kicker, kicker_row, rule
+
+_ROOT = QModelIndex()  # the one parent of a flat table model
 
 # ---------------------------------------------------------------- icons ----
 
@@ -60,9 +62,16 @@ _SHAPES = {
     "check": ('<path d="M5 12l5 5 9-10"/>', 2.4),
     "sort_down": ('<path d="M6 9l6 6 6-6"/>', 2.0),
     "sort_up": ('<path d="M6 15l6-6 6 6"/>', 2.0),
+    "plus": ('<path d="M12 5v14M5 12h14"/>', 1.8),
+    "close": ('<path d="M6 6l12 12M18 6L6 18"/>', 1.8),
 }
 # Filled shapes
-_FILLED = {"folder": '<path d="M3 6h6l2 2h10v11H3z"/>'}
+_FILLED = {
+    "folder": '<path d="M3 6h6l2 2h10v11H3z"/>',
+    "play": '<path d="M7 4.5l13 7.5-13 7.5z"/>',
+    "pause": '<path d="M6 4.5h4.5v15H6zM13.5 4.5H18v15h-4.5z"/>',
+    "more": '<circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/>',
+}
 
 _pixmaps = {}
 
@@ -466,7 +475,7 @@ class PathBar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("PathBar")
-        self.setFixedHeight(30)
+        self.setFixedHeight(CONTROL_HEIGHT)
         self.setCursor(Qt.IBeamCursor)
         self.setToolTip("Click to type a path")
         self._path = "/"
@@ -673,6 +682,8 @@ class PlaceRow(QPushButton):
         painter.drawControl(QStyle.CE_PushButtonBevel, option)  # (its fill and accent bar)
         palette = theme_manager.palette
         colour = palette["text"] if self.property("current") == "true" else palette["text_strong"]
+        if not self.isEnabled():
+            colour = palette["disabled"]
         left, size, height = 6, 14, self.height()
         painter.drawPixmap(
             left, (height - size) // 2, pixmap(self.icon_name, colour, size, self.devicePixelRatioF())
@@ -884,10 +895,10 @@ class FileListModel(QAbstractTableModel):
         self.order = (MODIFIED, Qt.DescendingOrder)
 
     # (QAbstractTableModel)
-    def rowCount(self, parent=QModelIndex()):
+    def rowCount(self, parent=_ROOT):
         return 0 if parent.isValid() else len(self._rows)
 
-    def columnCount(self, parent=QModelIndex()):
+    def columnCount(self, parent=_ROOT):
         return 0 if parent.isValid() else 4
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -1046,6 +1057,7 @@ def count_text(counts, filtering):
 # Each column's room past its content's: the 16px edges, the 12px gaps
 _PADDING = {NAME: (16, 0), TYPE: (12, 0), SIZE: (12, 0), MODIFIED: (12, 16)}
 COLUMN_WIDTHS = {TYPE: 12 + 80, SIZE: 12 + 64, MODIFIED: 12 + 84 + 16}
+TYPE_COLUMN_ROOM = 560  # a narrower list leaves Type out (Selected says it): the names need the room
 
 
 def _content(rect, column):
@@ -1238,6 +1250,7 @@ class FileListView(QTreeView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self.setColumnHidden(TYPE, self.viewport().width() < TYPE_COLUMN_ROOM)
         self._place_busy()
 
     def drawRow(self, painter, option, index):

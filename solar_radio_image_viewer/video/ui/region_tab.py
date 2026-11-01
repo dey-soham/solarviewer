@@ -15,7 +15,9 @@ from PyQt5.QtWidgets import (
     QWidget,
     QFormLayout,
 )
+from ...ui.errors import show_error
 from ..creator import reference_shape
+from .helpers import hint
 
 
 class RegionTabMixin:
@@ -29,17 +31,17 @@ class RegionTabMixin:
         region_scroll.setWidgetResizable(True)
         region_scroll_content = QWidget()
         region_layout = QVBoxLayout(region_scroll_content)
-        region_layout.setContentsMargins(12, 12, 12, 12)
+        region_layout.setContentsMargins(0, 12, 8, 12)
         region_layout.setSpacing(12)
         region_scroll.setWidget(region_scroll_content)
 
-        region_group = QGroupBox("Region Selection")
+        region_group = QGroupBox("Region selection")
         region_main_layout = QVBoxLayout(region_group)
-        region_main_layout.setContentsMargins(12, 16, 12, 12)
+        region_main_layout.setContentsMargins(12, 4, 12, 4)
         region_main_layout.setSpacing(12)
 
         # Enable region selection
-        self.region_enabled = QCheckBox("Enable Region Selection (Zoomed Video)")
+        self.region_enabled = QCheckBox("Enable region selection (zoomed video)")
         self.region_enabled.setChecked(False)
         self.region_enabled.stateChanged.connect(self.toggle_region_controls)
         region_main_layout.addWidget(self.region_enabled)
@@ -59,14 +61,14 @@ class RegionTabMixin:
         self.x_min_spinbox.setRange(0, 10000)
         self.x_min_spinbox.setValue(0)
         x_range_layout.addWidget(self.x_min_spinbox)
-        x_range_layout.addWidget(QLabel("to"))
+        x_range_layout.addWidget(hint("to"))
         self.x_max_spinbox = QSpinBox()
         self.x_max_spinbox.setRange(0, 10000)
         self.x_max_spinbox.setValue(1000)
         x_range_layout.addWidget(self.x_max_spinbox)
-        x_range_layout.addWidget(QLabel("px"))
+        x_range_layout.addWidget(hint("px"))
         x_range_layout.addStretch()
-        coord_form.addRow("X Range:", x_range_widget)
+        coord_form.addRow(hint("X range"), x_range_widget)
 
         # Y range
         y_range_widget = QWidget()
@@ -78,14 +80,14 @@ class RegionTabMixin:
         self.y_min_spinbox.setRange(0, 10000)
         self.y_min_spinbox.setValue(0)
         y_range_layout.addWidget(self.y_min_spinbox)
-        y_range_layout.addWidget(QLabel("to"))
+        y_range_layout.addWidget(hint("to"))
         self.y_max_spinbox = QSpinBox()
         self.y_max_spinbox.setRange(0, 10000)
         self.y_max_spinbox.setValue(1000)
         y_range_layout.addWidget(self.y_max_spinbox)
-        y_range_layout.addWidget(QLabel("px"))
+        y_range_layout.addWidget(hint("px"))
         y_range_layout.addStretch()
-        coord_form.addRow("Y Range:", y_range_widget)
+        coord_form.addRow(hint("Y range"), y_range_widget)
 
         region_main_layout.addLayout(coord_form)
 
@@ -107,10 +109,10 @@ class RegionTabMixin:
         region_layout.addWidget(region_group)
 
         # Presets group
-        presets_group = QGroupBox("Quick Presets")
+        presets_group = QGroupBox("Quick presets")
         presets_layout = QHBoxLayout(presets_group)
-        presets_layout.setContentsMargins(12, 16, 12, 12)
-        presets_layout.setSpacing(10)
+        presets_layout.setContentsMargins(12, 4, 12, 4)
+        presets_layout.setSpacing(8)
 
         center_25_btn = QPushButton("Center 25%")
         center_25_btn.clicked.connect(lambda: self.set_region_preset(0.25))
@@ -151,7 +153,7 @@ class RegionTabMixin:
         """
         if not self.reference_image:
             QMessageBox.warning(
-                self, "No Reference Image", "Please select a reference image first."
+                self, "No reference image", "Select a reference image first, on the Display tab."
             )
             return
 
@@ -199,7 +201,7 @@ class RegionTabMixin:
             self.schedule_preview()
 
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not set region preset: {str(e)}")
+            show_error(self, "Could not set the region", "The image could not be measured. Try again, or enter the region by hand.", e)
 
     def toggle_region_controls(self, enabled):
         """Enable or disable region controls"""

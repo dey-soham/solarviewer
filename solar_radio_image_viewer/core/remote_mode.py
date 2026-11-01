@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import threading
+import traceback
 from pathlib import Path
 
 from PyQt5.QtCore import QObject, Qt, pyqtSignal
@@ -15,6 +16,7 @@ from PyQt5.QtWidgets import (
 
 from ..ui.activity import track_thread
 from ..ui.background import Cancelled, run_in_thread
+from ..ui.errors import show_error
 from ..ui.styles import set_hand_cursor, set_tone
 
 logger = logging.getLogger(__name__)
@@ -184,7 +186,7 @@ def _clear_cache(key, remote_cache):
                     shutil.rmtree(folder)
         return True
     except Exception as e:
-        print(f"[Cache] Error clearing {key}: {e}")
+        logger.error(f"Error clearing the {key} cache: {e}")
         return False
 
 
@@ -265,14 +267,18 @@ class RemoteModeMixin:
             dialog.show()
 
         except ImportError as e:
-            QMessageBox.warning(
+            show_error(
                 self,
-                "Missing Dependency",
-                f"Remote mode requires paramiko. Install it with:\n\npip install paramiko\n\nError: {e}",
+                "Missing dependency",
+                "Remote mode requires paramiko. Install it with:\n\npip install paramiko",
+                str(e),
             )
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Error", f"Failed to open connection dialog: {e}"
+        except Exception:
+            show_error(
+                self,
+                "Could not open the connection dialog",
+                "The window could not be opened. Try again; the details say what went wrong.",
+                traceback.format_exc(),
             )
 
     def _on_remote_connected(self, connection):
@@ -294,7 +300,7 @@ class RemoteModeMixin:
         be made again from it)."""
         if not self.remote_connection:
             QMessageBox.warning(
-                self, "Not Connected", "Please connect to a remote server first."
+                self, "Not connected", "Please connect to a remote server first."
             )
             return
 
@@ -320,8 +326,13 @@ class RemoteModeMixin:
             self._update_remote_menu_state()
             self._update_remote_status_indicator()
 
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to open remote browser: {e}")
+        except Exception:
+            show_error(
+                self,
+                "Could not open the remote browser",
+                "The window could not be opened. Check the connection and try again.",
+                traceback.format_exc(),
+            )
 
     def _on_remote_server_changed(self, connection):
         """The remote browser connected to another server: it replaces the
@@ -378,7 +389,7 @@ class RemoteModeMixin:
                     f"Connected: {self.remote_connection.connection_info}"
                 )
             else:
-                self.connect_remote_act.setText("Connect to Remote Server...")
+                self.connect_remote_act.setText("Connect…")
 
         if hasattr(self, "browse_remote_act"):
             self.browse_remote_act.setVisible(connected)
@@ -432,12 +443,14 @@ class RemoteModeMixin:
         from PyQt5.QtWidgets import (
             QCheckBox,
             QDialog,
-            QGroupBox,
+            QFrame,
             QHBoxLayout,
             QLabel,
             QPushButton,
             QVBoxLayout,
         )
+
+        from ..ui.widgets import dialog_layout
 
         # Check if dialog is already open
         if hasattr(self, "_cache_manager_dialog") and self._cache_manager_dialog:
@@ -463,15 +476,10 @@ class RemoteModeMixin:
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.finished.connect(lambda: setattr(self, "_cache_manager_dialog", None))
 
-        dialog.setWindowTitle("Cache Manager")
+        dialog.setWindowTitle("Cache manager")
         set_hand_cursor(dialog)
         dialog.setMinimumWidth(500)
-        layout = QVBoxLayout(dialog)
-
-        # Header
-        header = QLabel("Cache Manager")
-        header.setObjectName("DialogTitle")
-        layout.addWidget(header)
+        layout = dialog_layout(dialog)
 
         desc = QLabel("Select which caches to clear. This action cannot be undone.")
         desc.setWordWrap(True)
@@ -484,11 +492,15 @@ class RemoteModeMixin:
 
         for key, name, size, count, description in cache_info:
             if size > 0:  # Only show categories that have data
-                group = QGroupBox()
+                group = QFrame()
+                group.setObjectName("Card")
                 group_layout = QVBoxLayout(group)
+                group_layout.setContentsMargins(12, 8, 12, 8)
+                group_layout.setSpacing(4)
 
                 # Checkbox with name and size
-                cb = QCheckBox(f"{name} ({self._format_size(size)}, {count} files)")
+                files = "1 file" if count == 1 else f"{count} files"
+                cb = QCheckBox(f"{name} ({self._format_size(size)}, {files})")
                 cb.setChecked(False)
                 checkboxes[key] = cb
                 group_layout.addWidget(cb)
@@ -496,7 +508,8 @@ class RemoteModeMixin:
                 # Description
                 desc_label = QLabel(description)
                 desc_label.setObjectName("Hint")
-                desc_label.setIndent(desc_label.fontMetrics().horizontalAdvance("    "))
+                desc_label.setWordWrap(True)
+                desc_label.setIndent(cb.sizeHint().height())  # under the name, past the box
                 group_layout.addWidget(desc_label)
 
                 layout.addWidget(group)
@@ -507,15 +520,14 @@ class RemoteModeMixin:
             no_cache.setObjectName("Hint")
             no_cache.setAlignment(Qt.AlignCenter)
             layout.addWidget(no_cache)
-        else:
-            # Total size
-            total_label = QLabel(f"<b>Total: {self._format_size(total_size)}</b>")
-            layout.addWidget(total_label)
+
+        layout.addStretch()
 
         # Buttons
         btn_layout = QHBoxLayout()
 
-        select_all_btn = QPushButton("Select All")
+        select_all_btn = QPushButton("Select all")
+        select_all_btn.setAutoDefault(False)
         select_all_btn.clicked.connect(
             lambda: [
                 cb.setChecked(True) for cb in checkboxes.values() if cb.isEnabled()
@@ -523,13 +535,20 @@ class RemoteModeMixin:
         )
         btn_layout.addWidget(select_all_btn)
 
+        if checkboxes:
+            total_label = QLabel(f"Total: {self._format_size(total_size)}")
+            total_label.setObjectName("Hint")
+            btn_layout.addWidget(total_label)
+
         btn_layout.addStretch()
 
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setAutoDefault(False)
         cancel_btn.clicked.connect(dialog.reject)
         btn_layout.addWidget(cancel_btn)
 
-        clear_btn = QPushButton("Clear Selected")
+        clear_btn = QPushButton("Clear selected")
+        clear_btn.setAutoDefault(False)
         set_tone(clear_btn, "error")
 
         def do_clear():
@@ -545,7 +564,7 @@ class RemoteModeMixin:
             # Confirm before clearing
             reply = QMessageBox.question(
                 self,
-                "Confirm Clear",
+                "Clear the selected caches?",
                 f"Are you sure you want to clear the selected caches ({len(selected_keys)})?\n\nThis action cannot be undone.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
@@ -556,7 +575,7 @@ class RemoteModeMixin:
             if "masks" in selected_keys:
                 reply = QMessageBox.warning(
                     self,
-                    "Clear Masks",
+                    "Clear the masks?",
                     "Clearing the dynamic spectrum masks forgets the masks drawn on "
                     "every spectrum (File > Save Masks keeps a copy). Clear them?",
                     QMessageBox.Yes | QMessageBox.No,
@@ -594,13 +613,13 @@ class RemoteModeMixin:
                 self.statusBar().showMessage(f"Cleared: {', '.join(cleared)}", 5000)
                 QMessageBox.information(
                     self,
-                    "Cache Cleared",
+                    "Caches cleared",
                     "Successfully cleared:\n• " + "\n• ".join(cleared),
                 )
                 self._update_cache_menu_item()
                 dialog.accept()
             else:
-                QMessageBox.warning(self, "Error", "Failed to clear selected caches.")
+                QMessageBox.warning(self, "Could not clear the caches", "The selected caches were not cleared. Check that no other window is using them and try again.")
 
         clear_btn.clicked.connect(do_clear)
         btn_layout.addWidget(clear_btn)
@@ -651,9 +670,9 @@ class RemoteModeMixin:
         self._cache_measurer.deleteLater()
         self._cache_measurer = None
         if total_size is None:
-            self.clear_cache_act.setText("Manage Cache...")
+            self.clear_cache_act.setText("Manage cache…")
         else:
-            self.clear_cache_act.setText(f"Manage Cache ({self._format_size(total_size)})")
+            self.clear_cache_act.setText(f"Manage cache ({self._format_size(total_size)})")
 
     def _check_connection_health(self):
         """Periodically check connection health and auto-reconnect if needed."""

@@ -188,10 +188,14 @@ def box_rms(contour_data, rms_box):
     box can't be used): the noise that sigma levels are multiples of."""
     try:
         region = contour_data[rms_box[0] : rms_box[1], rms_box[2] : rms_box[3]]
-        return np.sqrt(np.nanmean(region**2))
+        region = region[np.isfinite(region)]
+        rms = np.sqrt(np.mean(region**2)) if region.size else 0.0
+        if rms > 0:
+            return rms
+        logger.warning("The RMS box has no signal, using std")
     except Exception as e:
         logger.warning(f"Could not calculate RMS from box, using std: {e}")
-        return np.nanstd(contour_data)
+    return np.nanstd(contour_data)
 
 
 def contour_levels(layer, contour_data, abs_max=None, rms=None):

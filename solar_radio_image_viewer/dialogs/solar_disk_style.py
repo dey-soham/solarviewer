@@ -1,5 +1,5 @@
 """
-Solar disk style: the controls of the main window's Solar Disk Settings
+Solar disk style: the controls of the main window's Solar disk settings
 Style tab, and a dialog with only them (used by the Create Video window).
 """
 
@@ -8,16 +8,13 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
-    QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
     QVBoxLayout,
     QWidget,
 )
 
-from ..ui.widgets import button_bar
+from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import set_hand_cursor
+from .form import color_combo, field_label, form_block
 
 _COLORS = ["yellow", "white", "red", "green", "blue", "cyan", "magenta", "black"]
 _LINESTYLES = [("-", "Solid"), ("--", "Dashed"), (":", "Dotted"), ("-.", "Dash-dot")]
@@ -35,58 +32,48 @@ class SolarDiskStyleWidget(QWidget):
         style_layout = QVBoxLayout(self)
         style_layout.setContentsMargins(0, 0, 0, 0)
 
+        line_layout = form_block(style_layout)
+
         # Color selection
-        color_group = QGroupBox("Color")
-        color_layout = QHBoxLayout(color_group)
-        self.color_combo = QComboBox()
-        self.color_combo.addItems(_COLORS)
-        if self.color_combo.findText(style["color"]) < 0:
-            self.color_combo.addItem(style["color"])
-        self.color_combo.setCurrentText(style["color"])
-        color_layout.addWidget(QLabel("Disk Color:"))
-        color_layout.addWidget(self.color_combo)
-        style_layout.addWidget(color_group)
+        extra = [] if style["color"] in _COLORS else [style["color"]]
+        self.color_combo = color_combo(_COLORS + extra, style["color"])
+        line_layout.addWidget(field_label("Colour"), 0, 0)
+        line_layout.addWidget(self.color_combo, 0, 1)
 
         # Line style
-        line_group = QGroupBox("Line Style")
-        line_layout = QGridLayout(line_group)
         self.linestyle_combo = QComboBox()
         for style_code, style_name in _LINESTYLES:
             self.linestyle_combo.addItem(style_name, style_code)
         index = self.linestyle_combo.findData(style["linestyle"])
         if index >= 0:
             self.linestyle_combo.setCurrentIndex(index)
-        line_layout.addWidget(QLabel("Line Style:"), 0, 0)
-        line_layout.addWidget(self.linestyle_combo, 0, 1)
+        line_layout.addWidget(field_label("Line style"), 1, 0)
+        line_layout.addWidget(self.linestyle_combo, 1, 1)
 
         # Line width
         self.linewidth_spinbox = QDoubleSpinBox()
         self.linewidth_spinbox.setRange(0.5, 5.0)
         self.linewidth_spinbox.setSingleStep(0.5)
         self.linewidth_spinbox.setValue(style["linewidth"])
-        line_layout.addWidget(QLabel("Line Width:"), 1, 0)
-        line_layout.addWidget(self.linewidth_spinbox, 1, 1)
+        line_layout.addWidget(field_label("Line width"), 2, 0)
+        line_layout.addWidget(self.linewidth_spinbox, 2, 1)
 
         # Alpha/transparency
         self.alpha_spinbox = QDoubleSpinBox()
         self.alpha_spinbox.setRange(0.1, 1.0)
         self.alpha_spinbox.setSingleStep(0.1)
         self.alpha_spinbox.setValue(style["alpha"])
-        line_layout.addWidget(QLabel("Opacity:"), 2, 0)
-        line_layout.addWidget(self.alpha_spinbox, 2, 1)
-        style_layout.addWidget(line_group)
+        line_layout.addWidget(field_label("Opacity"), 3, 0)
+        line_layout.addWidget(self.alpha_spinbox, 3, 1)
 
         # Center marker toggle
-        center_marker_group = QGroupBox("Center Marker")
-        center_marker_layout = QVBoxLayout(center_marker_group)
-        self.show_center_checkbox = QCheckBox("Show center marker (+)")
+        self.show_center_checkbox = QCheckBox("Show centre marker (+)")
         self.show_center_checkbox.setChecked(style.get("show_center", True))
-        center_marker_layout.addWidget(self.show_center_checkbox)
-        style_layout.addWidget(center_marker_group)
+        line_layout.addWidget(self.show_center_checkbox, 4, 1)
 
     def get_style(self):
         return {
-            "color": self.color_combo.currentText(),
+            "color": self.color_combo.currentData(),
             "linestyle": self.linestyle_combo.currentData(),
             "linewidth": self.linewidth_spinbox.value(),
             "alpha": self.alpha_spinbox.value(),
@@ -100,10 +87,9 @@ class SolarDiskStyleDialog(QDialog):
 
     def __init__(self, parent=None, solar_disk_style=None):
         super().__init__(parent)
-        self.setWindowTitle("Solar Disk Style")
-        self.setMinimumWidth(350)
+        self.setWindowTitle("Solar disk style")
         self.parent_viewer = parent
-        layout = QVBoxLayout(self)
+        layout = dialog_layout(self)
         self.style_widget = SolarDiskStyleWidget(solar_disk_style or {}, self)
         layout.addWidget(self.style_widget)
         box, _ = button_bar(primary=("Apply", self.on_apply), secondary=("Close", self.close))

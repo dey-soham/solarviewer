@@ -11,12 +11,10 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
-    QVBoxLayout,
 )
 
 from .geometry import snap_to_axis
@@ -24,8 +22,14 @@ from .preview import contrast_colors, dashed_pen, halo, halo_pen, measure_previe
 
 logger = logging.getLogger(__name__)
 
+from ..dialogs.form import canvas_ground, field_label, form_block, stat_row
+from ..shape_annotations import pixel_scales_deg, world_degrees
 from ..ui.busy import busy
+from ..ui.errors import show_error
 from ..ui.geometry import fit_to_screen
+from ..ui.plot_theme import follow_theme
+from ..ui.styles import set_hand_cursor, themed
+from ..ui.widgets import button_bar, dialog_layout, segmented
 
 
 class ProfileMixin:
@@ -91,46 +95,30 @@ class ProfileMixin:
         from PyQt5.QtWidgets import (
             QButtonGroup,
             QDialog,
-            QHBoxLayout,
-            QLabel,
-            QPushButton,
             QRadioButton,
-            QVBoxLayout,
         )
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Profile Cut Method")
-        dialog.resize(300, 150)
-        layout = QVBoxLayout(dialog)
-
-        layout.addWidget(QLabel("Select profile cut method:"))
+        dialog.setWindowTitle("Profile cut method")
+        set_hand_cursor(dialog)
+        layout = dialog_layout(dialog)
 
         # Radio buttons for method selection
         btn_group = QButtonGroup(dialog)
 
         line_radio = QRadioButton(
-            "Line Mode - Click two points (hold Shift to snap H/V)"
+            "Line: click two points (hold Shift to snap H/V)"
         )
         line_radio.setChecked(self._profile_method == "line")
         btn_group.addButton(line_radio)
         layout.addWidget(line_radio)
 
         radial_radio = QRadioButton(
-            "Radial Mode - Click center, set angle (plots both directions)"
+            "Radial: click the centre, set the angle (plots both directions)"
         )
         radial_radio.setChecked(self._profile_method == "radial")
         btn_group.addButton(radial_radio)
         layout.addWidget(radial_radio)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        cancel_btn = QPushButton("Cancel")
-        ok_btn = QPushButton("OK")
-        ok_btn.setDefault(True)
-        btn_layout.addStretch()
-        btn_layout.addWidget(cancel_btn)
-        btn_layout.addWidget(ok_btn)
-        layout.addLayout(btn_layout)
 
         def on_ok():
             self._profile_method = "line" if line_radio.isChecked() else "radial"
@@ -142,10 +130,12 @@ class ProfileMixin:
             self._profile_mode = False
             self.set_region_mode(self.region_mode)  # (back to Pan, Rectangle or Ellipse)
 
-        ok_btn.clicked.connect(on_ok)
-        cancel_btn.clicked.connect(dialog.reject)
+        box, _ = button_bar(primary=("Continue", on_ok), secondary=("Cancel", dialog.reject))
+        layout.addWidget(box)
         dialog.rejected.connect(on_cancel)
 
+        # (toggling the tool under it would connect the clicks twice)
+        dialog.setModal(True)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
 
@@ -154,7 +144,7 @@ class ProfileMixin:
 
         if self._profile_method == "line":
             self.show_status_message(
-                "Line Profile: Click first point (Shift to snap H/V)"
+                "Line profile: click the first point (Shift to snap H/V)"
             )
             # Connect click and motion events for line mode
             self._profile_click_cid = self.canvas.mpl_connect(
@@ -164,7 +154,7 @@ class ProfileMixin:
                 "motion_notify_event", self._profile_line_on_motion
             )
         else:  # radial
-            self.show_status_message("Radial Profile: Click center point")
+            self.show_status_message("Radial profile: click the centre")
             self._profile_click_cid = self.canvas.mpl_connect(
                 "button_press_event", self._profile_radial_on_click
             )
@@ -293,61 +283,46 @@ class ProfileMixin:
     def _show_profile_coordinate_dialog(self, x1, y1, x2, y2):
         """Show dialog to edit/confirm profile cut coordinates"""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Profile Cut Coordinates")
-        dialog.resize(400, 200)
-        layout = QVBoxLayout(dialog)
+        dialog.setWindowTitle("Profile cut coordinates")
+        set_hand_cursor(dialog)
+        layout = dialog_layout(dialog)
 
         # Instructions
-        layout.addWidget(
-            QLabel("Edit coordinates if needed, then click 'Extract Profile':")
-        )
+        hint = QLabel("The end points of the cut, in pixels. Correct them here if needed.")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         # Coordinate inputs
-        coord_layout = QGridLayout()
+        coord_layout = form_block(layout, pairs=2)
 
-        coord_layout.addWidget(QLabel("Start X:"), 0, 0)
+        coord_layout.addWidget(field_label("Start X"), 0, 0)
         x1_spin = QDoubleSpinBox()
         x1_spin.setRange(0, 10000)
         x1_spin.setDecimals(1)
         x1_spin.setValue(x1)
         coord_layout.addWidget(x1_spin, 0, 1)
 
-        coord_layout.addWidget(QLabel("Start Y:"), 0, 2)
+        coord_layout.addWidget(field_label("Start Y"), 0, 2)
         y1_spin = QDoubleSpinBox()
         y1_spin.setRange(0, 10000)
         y1_spin.setDecimals(1)
         y1_spin.setValue(y1)
         coord_layout.addWidget(y1_spin, 0, 3)
 
-        coord_layout.addWidget(QLabel("End X:"), 1, 0)
+        coord_layout.addWidget(field_label("End X"), 1, 0)
         x2_spin = QDoubleSpinBox()
         x2_spin.setRange(0, 10000)
         x2_spin.setDecimals(1)
         x2_spin.setValue(x2)
         coord_layout.addWidget(x2_spin, 1, 1)
 
-        coord_layout.addWidget(QLabel("End Y:"), 1, 2)
+        coord_layout.addWidget(field_label("End Y"), 1, 2)
         y2_spin = QDoubleSpinBox()
         y2_spin.setRange(0, 10000)
         y2_spin.setDecimals(1)
         y2_spin.setValue(y2)
         coord_layout.addWidget(y2_spin, 1, 3)
-
-        layout.addLayout(coord_layout)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(dialog.reject)
-        btn_layout.addWidget(cancel_btn)
-
-        extract_btn = QPushButton("Extract Profile")
-        extract_btn.setDefault(True)
-        btn_layout.addWidget(extract_btn)
-
-        layout.addLayout(btn_layout)
 
         def do_extract():
             dialog.accept()
@@ -359,7 +334,10 @@ class ProfileMixin:
             ax = self.figure.axes[0] if self.figure.axes else None
             if ax:
                 if self._profile_line is not None:
-                    self._profile_line.remove()
+                    try:
+                        self._profile_line.remove()
+                    except Exception:
+                        pass  # (the figure was redrawn while the dialog was open)
                 line, shadow = contrast_colors(self)
                 (self._profile_line,) = ax.plot(
                     [fx1, fx2],
@@ -376,7 +354,11 @@ class ProfileMixin:
             # Extract and show profile
             self._extract_and_show_profile(fx1, fy1, fx2, fy2)
 
-        extract_btn.clicked.connect(do_extract)
+        box, _ = button_bar(
+            primary=("Extract profile", do_extract), secondary=("Cancel", dialog.reject)
+        )
+        layout.addWidget(box)
+        dialog.rejected.connect(self._clear_profile)  # (the start point's dot)
 
         # Reset for next measurement
         self._profile_start = None
@@ -387,72 +369,67 @@ class ProfileMixin:
     def _show_radial_profile_dialog(self, cx, cy):
         """Show dialog for radial profile - set angle and length from center"""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Radial Profile Settings")
-        dialog.resize(450, 300)
-        layout = QVBoxLayout(dialog)
+        dialog.setWindowTitle("Radial profile settings")
+        set_hand_cursor(dialog)
+        layout = dialog_layout(dialog)
+        form = form_block(layout)
 
         # Center coordinates (editable)
         center_layout = QHBoxLayout()
-        center_layout.addWidget(QLabel("Center:"))
+        center_layout.setSpacing(8)
         cx_spin = QDoubleSpinBox()
         cx_spin.setRange(0, 10000)
         cx_spin.setDecimals(1)
         cx_spin.setValue(cx)
-        cx_spin.setPrefix("X: ")
+        cx_spin.setPrefix("X ")
         center_layout.addWidget(cx_spin)
         cy_spin = QDoubleSpinBox()
         cy_spin.setRange(0, 10000)
         cy_spin.setDecimals(1)
         cy_spin.setValue(cy)
-        cy_spin.setPrefix("Y: ")
+        cy_spin.setPrefix("Y ")
         center_layout.addWidget(cy_spin)
-        layout.addLayout(center_layout)
+        form.addWidget(field_label("Centre"), 0, 0)
+        form.addLayout(center_layout, 0, 1)
 
         # Angle input
-        angle_layout = QHBoxLayout()
-        angle_layout.addWidget(QLabel("Angle (deg):"))
         angle_spin = QDoubleSpinBox()
         angle_spin.setRange(0, 180)
         angle_spin.setDecimals(1)
+        angle_spin.setSuffix("°")
         angle_spin.setValue(0)
         angle_spin.setToolTip(
-            "0° = East-West, 90° = North-South (profile extends both ways from center)"
+            "0° = East-West, 90° = North-South (profile extends both ways from the centre)"
         )
-        angle_layout.addWidget(angle_spin)
-        layout.addLayout(angle_layout)
+        form.addWidget(field_label("Angle"), 1, 0)
+        form.addWidget(angle_spin, 1, 1)
 
         # Quick angle buttons
-        quick_layout = QHBoxLayout()
-        quick_layout.addWidget(QLabel("Quick:"))
+        quick_buttons = []
         for angle in [0, 45, 90, 135, 180]:
             btn = QPushButton(f"{angle}°")
-            btn.setFixedWidth(45)
             btn.clicked.connect(lambda checked, a=angle: angle_spin.setValue(a))
-            quick_layout.addWidget(btn)
-        quick_layout.addStretch()
-        layout.addLayout(quick_layout)
+            quick_buttons.append(btn)
+        form.addWidget(segmented(quick_buttons, stretch=True), 2, 1)
 
         # Length input
-        length_layout = QHBoxLayout()
-        length_layout.addWidget(QLabel("Length (pixels):"))
         length_spin = QDoubleSpinBox()
         length_spin.setRange(1, 5000)
         length_spin.setDecimals(1)
+        length_spin.setSuffix(" px")
         length_spin.setValue(100)
-        length_layout.addWidget(length_spin)
-        layout.addLayout(length_layout)
+        form.addWidget(field_label("Length"), 3, 0)
+        form.addWidget(length_spin, 3, 1)
 
         # Explanatory note
-        note_label = QLabel(
-            "ℹ️ Length extends ±{} pixels from center (total {} pixels)"
-        )
+        note_label = QLabel()
         note_label.setObjectName("Hint")
-        layout.addWidget(note_label)
+        form.addWidget(note_label, 4, 1)
 
         def update_note():
             L = length_spin.value()
             note_label.setText(
-                f"ℹ️ Length extends ±{L:.0f} pixels from center (total {2 * L:.0f} pixels)"
+                f"±{L:.0f} px from the centre, {2 * L:.0f} px in all"
             )
 
         length_spin.valueChanged.connect(update_note)
@@ -525,18 +502,6 @@ class ProfileMixin:
         # Initial preview
         update_preview()
 
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(dialog.reject)
-        btn_layout.addWidget(cancel_btn)
-
-        extract_btn = QPushButton("Extract Profile")
-        extract_btn.setDefault(True)
-        btn_layout.addWidget(extract_btn)
-        layout.addLayout(btn_layout)
-
         def do_extract():
             dialog.accept()
             c_x, c_y = cx_spin.value(), cy_spin.value()
@@ -599,7 +564,10 @@ class ProfileMixin:
             # Extract profile (radial mode - center at 0)
             self._extract_and_show_profile(x1, y1, x2, y2, is_radial=True)
 
-        extract_btn.clicked.connect(do_extract)
+        box, _ = button_bar(
+            primary=("Extract profile", do_extract), secondary=("Cancel", dialog.reject)
+        )
+        layout.addWidget(box)
 
         def on_reject():
             # Clear preview line on cancel
@@ -633,7 +601,7 @@ class ProfileMixin:
             is_radial: If True, distances are centered at 0 (from -half to +half)
         """
         if self.current_image_data is None:
-            QMessageBox.warning(self, "No Data", "No image data loaded")
+            QMessageBox.warning(self, "No data", "No image data loaded")
             return
 
         # The dialog asking for it has closed: nothing shows until the plot opens
@@ -653,45 +621,38 @@ class ProfileMixin:
 
         # Extract profile using bilinear interpolation
         # Note: map_coordinates expects (row, col) = (y, x) for image data
+        # (NaN off the image: zeros there would be fake flux, and a fake
+        # baseline for the FWHM)
         profile = map_coordinates(
-            self.current_image_data, [x_coords, y_coords], order=1
+            self.current_image_data, [x_coords, y_coords], order=1, cval=np.nan
         )
 
         # Calculate distance array
         if self.current_wcs:
             try:
-                increment = self.current_wcs.increment()["numeric"][0:2]
-                # Check if image uses SOLAR-X/Y (increment is already in arcsec)
-                _hdr = getattr(self, "_cached_fits_header", None) or {}
-                _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-                if _is_solar:
-                    scale = abs(increment[0])  # already arcsec/pixel
-                else:
-                    scale = abs(increment[0]) * 180 / np.pi * 3600  # arcsec/pixel
+                # (the pixels need not be square)
+                scale_x, scale_y = (v * 3600 for v in pixel_scales_deg(self.current_wcs))
+                length = np.hypot((x2 - x1) * scale_x, (y2 - y1) * scale_y)
 
                 if is_radial:
                     # Radial mode: center at 0, from -half_dist to +half_dist
-                    half_dist = (pixel_dist * scale) / 2
+                    half_dist = length / 2
                     distances = np.linspace(-half_dist, half_dist, num_points)
                 else:
                     # Line mode: from 0 to end
-                    distances = np.linspace(0, pixel_dist * scale, num_points)
+                    distances = np.linspace(0, length, num_points)
                 dist_unit = "arcsec"
 
                 # Get WCS world coordinates for secondary axis
                 # Convert pixel coords to world coords, point by point: a point
                 # off the sky raises here, where toworldmany carries on and
                 # gives wrong numbers for the whole line
-                other_axes = [0] * (self.current_wcs.naxes() - 2)
-                world = np.array(
+                world_coords = np.array(
                     [
-                        self.current_wcs.toworld([px, py] + other_axes)["numeric"][:2]
+                        world_degrees(self.current_wcs, px, py)
                         for px, py in zip(x_coords, y_coords)
                     ]
                 )
-                # world[:, 0] and world[:, 1] are RA, Dec in radians (or arcsec for SOLAR-X)
-                to_deg = 1 / 3600.0 if _is_solar else 180 / np.pi
-                world_coords = world * to_deg
                 wcs_available = True
             except Exception as e:
                 self.show_status_message(f"WCS conversion error: {e}")
@@ -730,14 +691,15 @@ class ProfileMixin:
     ):
         """Show dialog with profile plot - single plot with dual x-axes (distance + WCS)"""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Flux Profile")
-        dialog.resize(800, 550)
+        dialog.setWindowTitle("Flux profile")
+        set_hand_cursor(dialog)
         dialog.setMinimumSize(600, 400)
-        fit_to_screen(dialog, 600, 400)
-        layout = QVBoxLayout(dialog)
+        fit_to_screen(dialog, 800, 600)
+        layout = dialog_layout(dialog)
 
         # Create figure with single plot
-        fig = Figure(figsize=(8, 5))
+        # (constrained: the labels stay in the figure at any window size)
+        fig = Figure(figsize=(8, 5), layout="constrained")
         canvas = FigureCanvas(fig)
         layout.addWidget(canvas, stretch=1)
 
@@ -745,7 +707,8 @@ class ProfileMixin:
         ax = fig.add_subplot(111)
         ax.plot(distances, profile, "b-", linewidth=1.5)
         ax.fill_between(distances, profile, alpha=0.3)
-        ax.set_xlabel(f"Distance from start ({dist_unit})")
+        origin = "centre" if distances[0] < 0 else "start"
+        ax.set_xlabel(f"Distance from {origin} ({dist_unit})")
         ax.set_ylabel("Flux")
         ax.set_title(f"Profile from ({x1:.1f}, {y1:.1f}) to ({x2:.1f}, {y2:.1f})")
         ax.grid(True, alpha=0.3)
@@ -839,7 +802,7 @@ class ProfileMixin:
                     color="red",
                     linestyle="--",
                     alpha=0.7,
-                    label=f"Half Max = {half_max:.4g}",
+                    label=f"Half max = {half_max:.4g}",
                 )
                 ax.plot(
                     [fwhm_left, fwhm_right],
@@ -871,7 +834,7 @@ class ProfileMixin:
                 print("=" * 50 + "\n")
         except ValueError as e:
             # Not a single clear peak: say why there is no FWHM
-            ax.text(
+            note = ax.text(
                 0.99,
                 0.98,
                 f"No FWHM: {str(e)[0].lower()}{str(e)[1:]}",
@@ -879,8 +842,8 @@ class ProfileMixin:
                 ha="right",
                 va="top",
                 fontsize=8,
-                alpha=0.7,
             )
+            themed(dialog, lambda palette: note.set_color(palette["text_secondary"]))
         except Exception:
             logger.exception("FWHM measurement failed")
 
@@ -920,55 +883,52 @@ class ProfileMixin:
                     ax2.set_xlabel("Dec (deg)")
 
             # Set the same data limits as main axis but mapped to WCS values
+            # (both without margins, or the two scales would not line up)
+            ax.set_xlim(distances[0], distances[-1])
             ax2.set_xlim(wcs_vals[0], wcs_vals[-1])
 
-        fig.tight_layout()
+        follow_theme(dialog, fig, canvas)
+        canvas_ground(canvas)
 
         # Statistics with FWHM
-        fwhm_str = f"FWHM: {fwhm_value:.3f} {dist_unit}" if fwhm_value else "FWHM: N/A"
-        stats_text = (
-            f"Min: {np.nanmin(profile):.6g}  |  Max: {np.nanmax(profile):.6g}  |  "
-            f"Mean: {np.nanmean(profile):.6g}  |  Std: {np.nanstd(profile):.6g}  |  "
-            f"{fwhm_str}  |  Points: {len(profile)}"
+        stat_row(
+            [
+                ("Min", f"{np.nanmin(profile):.6g}"),
+                ("Max", f"{np.nanmax(profile):.6g}"),
+                ("Mean", f"{np.nanmean(profile):.6g}"),
+                ("Std", f"{np.nanstd(profile):.6g}"),
+                ("FWHM", f"{fwhm_value:.3f} {dist_unit}" if fwhm_value else "—"),
+                ("Points", str(len(profile))),
+            ],
+            layout,
         )
-        stats_label = QLabel(stats_text)
-        stats_label.setObjectName("Mono")
-        stats_label.setMargin(5)
-        stats_label.setWordWrap(True)
-        layout.addWidget(stats_label)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-
-        # Save CSV button
-        save_btn = QPushButton("Save CSV")
 
         def save_csv():
             from PyQt5.QtWidgets import QFileDialog
 
             filepath, _ = QFileDialog.getSaveFileName(
-                dialog, "Save Profile", "", "CSV Files (*.csv)"
+                dialog, "Save the profile", "", "CSV files (*.csv)"
             )
             if filepath:
-                with open(filepath, "w") as f:
-                    f.write(
-                        f"# Profile from ({x1:.1f}, {y1:.1f}) to ({x2:.1f}, {y2:.1f})\n"
+                try:
+                    with open(filepath, "w") as f:
+                        f.write(
+                            f"# Profile from ({x1:.1f}, {y1:.1f}) to ({x2:.1f}, {y2:.1f})\n"
+                        )
+                        f.write(f"Distance_{dist_unit},Flux\n")
+                        for d, p in zip(distances, profile):
+                            f.write(f"{d},{p}\n")
+                except OSError as e:
+                    show_error(
+                        dialog, "Save failed", f"Could not save the profile:\n{e}"
                     )
-                    f.write(f"Distance_{dist_unit},Flux\n")
-                    for d, p in zip(distances, profile):
-                        f.write(f"{d},{p}\n")
+                    return
                 self.show_status_message(f"Profile saved to {filepath}")
 
-        save_btn.clicked.connect(save_csv)
-        btn_layout.addWidget(save_btn)
-
-        btn_layout.addStretch()
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        btn_layout.addWidget(close_btn)
-
-        layout.addLayout(btn_layout)
+        box, _ = button_bar(
+            secondary=("Close", dialog.accept), extras=[("Save CSV…", save_csv)]
+        )
+        layout.addWidget(box)
 
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()

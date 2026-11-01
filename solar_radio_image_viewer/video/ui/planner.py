@@ -178,7 +178,7 @@ class FramePlanner(QObject):
                 if job.future is not None:
                     self._settle(job.future, exception=e)
                     continue
-                result = PlanResult(problem=("Could Not Read the Frames", str(e)))
+                result = PlanResult(problem=("Could not read the frames", str(e)))
             if job.future is not None:
                 self._settle(job.future, result=result)
             elif not self._stopped:
@@ -241,7 +241,7 @@ class FramePlanner(QObject):
             if spec.remote is not None:
                 self._say(job, f"Checking the image on {spec.remote.label}…")
             if not path or not on_disk(path):
-                result.problem = ("No Image", "Choose the image shown in every frame.")
+                result.problem = ("No image", "Choose the image shown in every frame.")
                 return result
             image_files, is_series = [path], False
         else:
@@ -259,7 +259,7 @@ class FramePlanner(QObject):
             try:
                 bounds.append(datetime.fromisoformat(text.replace("T", " ")) if text else None)
             except ValueError:
-                result.problem = ("Invalid Time", f"{name}: use YYYY-MM-DD HH:MM:SS")
+                result.problem = ("Invalid time", f"{name}: use YYYY-MM-DD HH:MM:SS")
                 return result
 
         scanned = []
@@ -271,15 +271,16 @@ class FramePlanner(QObject):
                 if spec.remote is not None:
                     found, error = self._server_list(job, folder, pattern)
                     if error:
-                        result.problem = ("Could Not Read the Folder", error)
+                        result.problem = ("Could not read the folder", error)
                         return result
                     layer["series_files"] = self._sorted_by_time(job, found)
                 else:
-                    path = os.path.join(folder, pattern)
+                    path = os.path.join(glob.escape(folder), pattern)
                     layer["series_files"] = self._sorted_by_time(job, glob.glob(path))
-                    if layer.get("enabled", True) and not layer["series_files"]:
-                        result.problem = ("No Contour Files", f"No files match {path}")
-                        return result
+                if layer.get("enabled", True) and not layer["series_files"]:
+                    path = posixpath.join(folder, pattern)
+                    result.problem = ("No contour files", f"No files match {path}")
+                    return result
             scanned.append(layer)
 
         plan = frame_plan(
@@ -292,13 +293,13 @@ class FramePlanner(QObject):
             times_of=lambda paths: self._times_of(job, paths),
         )
         if not plan["image_files"]:
-            result.problem = ("No Frames", "No frames in the chosen time range.")
+            result.problem = ("No frames", "No frames in the chosen time range.")
             return result
         result.plan = plan
 
         keep = [i for i, f in enumerate(plan["driver_files"]) if f not in spec.excluded]
         if not keep:
-            result.problem = ("No Frames", "All frames are unticked in the Frames tab.")
+            result.problem = ("No frames", "All frames are unticked in the Frames tab.")
             return result
         layers = []
         for layer in plan["layers"]:
@@ -311,8 +312,8 @@ class FramePlanner(QObject):
             [plan["image_files"][i] for i in keep],
             {"difference": spec.difference, "contour_layers": layers},
         )
-        if not files:
-            result.problem = ("No Frames", "A running difference needs at least two frames.")
+        if spec.difference == "running" and "difference_files" not in options:
+            result.problem = ("No frames", "A running difference needs at least two frames.")
             return result
         result.files = files
         result.updates = options
@@ -326,15 +327,15 @@ class FramePlanner(QObject):
             return self._server_input_files(job)
         if not spec.folder or not os.path.isdir(spec.folder):
             return [], (
-                "Invalid Directory",
-                "The specified input directory does not exist.",
+                "Invalid folder",
+                "The input folder does not exist. Choose one on the Input tab.",
             )
         if not spec.pattern.strip():
-            return [], ("No Pattern", "Enter a file pattern, e.g. *.fits or *.image")
+            return [], ("No pattern", "Enter a file pattern, e.g. *.fits or *.image")
         input_path = os.path.join(spec.folder, spec.pattern)
-        files = glob.glob(input_path)
+        files = glob.glob(os.path.join(glob.escape(spec.folder), spec.pattern))
         if not files:
-            return [], ("No Files Found", f"No files match the pattern: {input_path}")
+            return [], ("No files found", f"No files match the pattern: {input_path}")
         invalid = [os.path.basename(f) for f in files if not is_image(f)]
         if invalid:
             msg = (
@@ -342,10 +343,10 @@ class FramePlanner(QObject):
                 "FITS files and CASA images are supported."
             )
             if len(invalid) > 5:
-                msg += "\n\nExamples:\n" + "\n".join(invalid[:5]) + "\n..."
+                msg += "\n\nExamples:\n" + "\n".join(invalid[:5]) + "\n…"
             else:
                 msg += "\n\nFiles:\n" + "\n".join(invalid)
-            return [], ("Invalid File Extensions", msg)
+            return [], ("Invalid file extensions", msg)
 
         if spec.sort == "filename":
             files.sort()
@@ -361,14 +362,14 @@ class FramePlanner(QObject):
         spec = job.spec
         folder, pattern = spec.folder, spec.pattern.strip()
         if not folder:
-            return [], ("No Folder", "Choose the folder of the images on the server.")
+            return [], ("No folder", "Choose the folder of the images on the server.")
         if not pattern:
-            return [], ("No Pattern", "Enter a file pattern, e.g. *.fits or *.image")
+            return [], ("No pattern", "Enter a file pattern, e.g. *.fits or *.image")
         files, error = self._server_list(job, folder, pattern)
         if error:
-            return [], ("Could Not Read the Folder", error)
+            return [], ("Could not read the folder", error)
         if not files:
-            return [], ("No Files Found", f"No images match {pattern} in {folder} on the server")
+            return [], ("No files found", f"No images match {pattern} in {folder} on the server")
         if spec.sort == "date/time":
             files = self._sorted_by_time(job, files)
         elif spec.sort == "extension":

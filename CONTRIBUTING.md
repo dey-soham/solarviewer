@@ -84,6 +84,14 @@ code that runs during that teardown can crash it (`ui/qt_exit.py` says why).
 An event filter installed on the whole application must come off first:
 pass its removal to `ui/qt_exit.before_qt_exit()`.
 
+**Look.** Colours, type sizes and spacing come from `ui/styles.py`: style a
+widget by its class or a role (`setObjectName`), not with a stylesheet of its
+own or a literal colour. What cannot be a role (a painter, a plot, rich text)
+reads the palette through `themed(widget, style)`, so it follows a theme
+change; plots in a window use `ui/plot_theme.py`. Windows of their own
+process start with `create_app(theme)` like the main one. Dialogs end in
+`ui/widgets.button_bar`, the main action last.
+
 **Settings and files.** Recently opened images live in `QSettings`
 (`ui/recent_files.py`); temporary files go in the system temporary folder
 and are removed when their tab closes (`SolarRadioImageTab.cleanup`).

@@ -9,7 +9,6 @@ follow it. While a base product is chosen the dropdown just says "More".
 """
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPainter
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QComboBox,

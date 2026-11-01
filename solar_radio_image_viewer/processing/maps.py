@@ -19,6 +19,16 @@ def _first_plane(ia):
     return ia.getchunk(blc=[0] * len(shape), trc=trc).reshape(shape[:2])
 
 
+def beam_arcsec(beam):
+    """The (major, minor) axes in arcsec of a CASA restoring beam."""
+    from astropy import units as u
+
+    return tuple(
+        (beam[axis]["value"] * u.Unit(beam[axis]["unit"])).to_value(u.arcsec)
+        for axis in ("major", "minor")
+    )
+
+
 def generate_tb_map(imagename, outfile=None, flux_data=None):
     """
     Generate brightness temperature map from flux-calibrated image.
@@ -99,13 +109,7 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
             # Get beam info
             beam = ia.restoringbeam()
             if beam and "major" in beam:
-                major = beam["major"]["value"]
-                minor = beam["minor"]["value"]
-                if beam["major"]["unit"] == "arcsec":
-                    pass  # already in arcsec
-                elif beam["major"]["unit"] == "deg":
-                    major *= 3600
-                    minor *= 3600
+                major, minor = beam_arcsec(beam)
             else:
                 ia.close()
                 return None, "Beam parameters not found in CASA image"
@@ -177,11 +181,11 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                         else:
                             tb_data_save = tb_data
                 else:
-                    # 2D data
-                    if original_data.shape != tb_data.shape:
-                        tb_data_save = tb_data.T
-                    else:
-                        tb_data_save = tb_data
+                    # 2D data: from the file, in its order (tb_data may be [x, y],
+                    # which a square image's shape does not tell)
+                    tb_data_save = (
+                        1.222e6 * original_data / (freq_ghz**2) / (major * minor)
+                    )
 
                 new_hdu = fits.PrimaryHDU(data=tb_data_save, header=new_header)
                 new_hdu.header.add_history(
@@ -204,17 +208,10 @@ def generate_tb_map(imagename, outfile=None, flux_data=None):
                         "Converted to brightness temperature with SolarViewer"
                     )
 
-                    # Check for multi-Stokes
-                    if original_data.ndim >= 3:
-                        # Full Stokes - convert all planes
-                        tb_data_save = (
-                            1.222e6 * original_data / (freq_ghz**2) / (major * minor)
-                        )
-                    else:
-                        if original_data.shape != tb_data.shape:
-                            tb_data_save = tb_data.T
-                        else:
-                            tb_data_save = tb_data
+                    # All planes, in the file's order
+                    tb_data_save = (
+                        1.222e6 * original_data / (freq_ghz**2) / (major * minor)
+                    )
                     new_hdu = fits.PrimaryHDU(data=tb_data_save, header=new_header)
                     new_hdu.header.add_history(
                         "Brightness temperature map generated with SolarViewer"
@@ -314,13 +311,7 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
             # Get beam info
             beam = ia.restoringbeam()
             if beam and "major" in beam:
-                major = beam["major"]["value"]
-                minor = beam["minor"]["value"]
-                if beam["major"]["unit"] == "arcsec":
-                    pass
-                elif beam["major"]["unit"] == "deg":
-                    major *= 3600
-                    minor *= 3600
+                major, minor = beam_arcsec(beam)
             else:
                 ia.close()
                 return None, "Beam parameters not found in CASA image"
@@ -389,10 +380,11 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                         else:
                             flux_data_save = flux_data
                 else:
-                    if original_data.shape != flux_data.shape:
-                        flux_data_save = flux_data.T
-                    else:
-                        flux_data_save = flux_data
+                    # 2D data: from the file, in its order (flux_data may be
+                    # [x, y], which a square image's shape does not tell)
+                    flux_data_save = (
+                        original_data * (freq_ghz**2) * (major * minor) / 1.222e6
+                    )
 
                 new_hdu = fits.PrimaryHDU(data=flux_data_save, header=new_header)
                 new_hdu.header.add_history(
@@ -415,15 +407,10 @@ def generate_flux_map(imagename, outfile=None, tb_data=None):
                         "Converted from brightness temperature with SolarViewer"
                     )
 
-                    if original_data.ndim >= 3:
-                        flux_data_save = (
-                            original_data * (freq_ghz**2) * (major * minor) / 1.222e6
-                        )
-                    else:
-                        if original_data.shape != flux_data.shape:
-                            flux_data_save = flux_data.T
-                        else:
-                            flux_data_save = flux_data
+                    # All planes, in the file's order
+                    flux_data_save = (
+                        original_data * (freq_ghz**2) * (major * minor) / 1.222e6
+                    )
 
                     new_hdu = fits.PrimaryHDU(data=flux_data_save, header=new_header)
                     new_hdu.header.add_history(

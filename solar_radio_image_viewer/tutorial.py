@@ -8,11 +8,11 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QListWidget,
     QListWidgetItem,
     QStackedWidget,
     QFrame,
+    QGroupBox,
     QScrollArea,
     QWidget,
 )
@@ -20,6 +20,8 @@ from PyQt5.QtCore import Qt
 
 
 from .ui.geometry import fit_to_screen, fit_width_to_text
+from .ui.styles import SPACE_L, SPACE_M, SPACE_S, SPACE_XS
+from .ui.widgets import button_bar
 
 
 class TutorialDialog(QDialog):
@@ -33,7 +35,7 @@ class TutorialDialog(QDialog):
         set_hand_cursor(self)
 
     def _setup_ui(self):
-        self.setWindowTitle("SolarViewer Tutorial")
+        self.setWindowTitle("SolarViewer tutorial")
         self.setMinimumSize(720, 520)
         fit_to_screen(self, 950, 700)
 
@@ -62,28 +64,24 @@ class TutorialDialog(QDialog):
         layout.setContentsMargins(12, 15, 12, 15)
         layout.setSpacing(8)
 
-        header = QLabel("Tutorial")
-        header.setObjectName("DialogTitle")
-        layout.addWidget(header)
-
         # Navigation list
         self.nav_list = QListWidget()
         self.nav_list.setObjectName("NavList")
-        fit_width_to_text(self.nav_list, "Stokes Parameters..........")
+        fit_width_to_text(self.nav_list, "Stokes parameters..........")
 
         # Add navigation items
         sections = [
-            "Getting Started",
-            "Opening Images",
-            "Display Settings",
-            "Stokes Parameters",
+            "Getting started",
+            "Opening images",
+            "Display settings",
+            "Stokes parameters",
             "Navigation",
-            "Fitting Tools",
-            "Contour Overlays",
-            "Regions & Export",
-            "Remote Access",
-            "Dynamic Spectra",
-            "Advanced Tools",
+            "Fitting tools",
+            "Contour overlays",
+            "Regions and export",
+            "Remote access",
+            "Dynamic spectra",
+            "Advanced tools",
         ]
 
         for title in sections:
@@ -92,18 +90,14 @@ class TutorialDialog(QDialog):
         self.nav_list.currentRowChanged.connect(self._on_section_changed)
         layout.addWidget(self.nav_list, 1)
 
-        # Close button at bottom
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
-
         return sidebar
 
     def _create_content_area(self):
         """Create the main content area with stacked pages."""
         container = QFrame()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(0, 0, SPACE_L, SPACE_L)
+        layout.setSpacing(SPACE_M)
 
         self.content_stack = QStackedWidget()
 
@@ -121,6 +115,8 @@ class TutorialDialog(QDialog):
         self.content_stack.addWidget(self._create_advanced_tools())
 
         layout.addWidget(self.content_stack)
+        box, _ = button_bar(secondary=("Close", self.accept))
+        layout.addWidget(box)
         return container
 
     def _on_section_changed(self, index):
@@ -131,7 +127,7 @@ class TutorialDialog(QDialog):
         """Create a scrollable page with title."""
         page = QFrame()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setContentsMargins(SPACE_L, SPACE_L, 0, 0)
         layout.setSpacing(0)
 
         # Title
@@ -144,7 +140,6 @@ class TutorialDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setWidget(content_widget)
 
         layout.addWidget(scroll, 1)
@@ -186,16 +181,11 @@ class TutorialDialog(QDialog):
 
     def _create_info_box(self, title, items):
         """Create an info box with bullet points."""
-        box = QFrame()
-        box.setObjectName("Card")
+        box = QGroupBox(title)
 
         layout = QVBoxLayout(box)
-        layout.setContentsMargins(18, 15, 18, 15)
-        layout.setSpacing(10)
-
-        header = QLabel(title)
-        header.setObjectName("SectionTitle")
-        layout.addWidget(header)
+        layout.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
+        layout.setSpacing(SPACE_S)
 
         for item in items:
             item_label = QLabel(f"• {item}")
@@ -207,7 +197,7 @@ class TutorialDialog(QDialog):
     # ==================== Section Pages ====================
 
     def _create_getting_started(self):
-        """Getting Started section."""
+        """Getting started section."""
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 15, 15)
@@ -239,16 +229,16 @@ class TutorialDialog(QDialog):
         layout.addSpacing(10)
 
         # Quick start steps
-        quick_title = QLabel("Quick Start")
+        quick_title = QLabel("Quick start")
         quick_title.setObjectName("SectionTitle")
         layout.addWidget(quick_title)
 
         layout.addWidget(
             self._create_step(
                 1,
-                "Open an Image",
-                "Use File → Open Image (Ctrl+O) for a FITS file or a CASA image, "
-                "or File → Open Recent for one you opened before. "
+                "Open an image",
+                "Use File → Open image (Ctrl+O) for a FITS file or a CASA image, "
+                "or File → Open recent for one you opened before. "
                 "You can also drag and drop files onto the window.",
             )
         )
@@ -256,7 +246,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 2,
-                "Adjust Display",
+                "Adjust the display",
                 "Use the bar above the image for the colormap and stretch, and the inspector's Display tab to configure "
                 "stretch function, and min/max values. Use F5 (Auto), F6 (1-99%), "
                 "or F7 (Med±3σ) for quick presets.",
@@ -277,13 +267,13 @@ class TutorialDialog(QDialog):
             self._create_step(
                 4,
                 "Analyze",
-                "Use Tools menu for metadata, fitting, and analysis. "
-                "Use File menu for various export options including FITS, HPC FITS, and figures.",
+                "Use the Image menu for metadata and fitting. "
+                "Use the File menu for various export options including FITS, HPC FITS, and figures.",
             )
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Getting Started", content)
+        return self._create_scroll_page("Getting started", content)
 
     def _create_opening_images(self):
         """Opening Images section."""
@@ -293,9 +283,9 @@ class TutorialDialog(QDialog):
         layout.setSpacing(15)
 
         intro = QLabel(
-            "File → Open Image (Ctrl+O) opens both kinds of image: a FITS file is "
+            "File → Open image (Ctrl+O) opens both kinds of image: a FITS file is "
             "picked as in any file dialog, a CASA image by opening its folder "
-            "(double-click it, or select it and press Open). File → Open Recent "
+            "(double-click it, or select it and press Open). File → Open recent "
             "lists the images opened lately."
         )
         intro.setWordWrap(True)
@@ -304,7 +294,7 @@ class TutorialDialog(QDialog):
         # CASA Images
         layout.addWidget(
             self._create_info_box(
-                "CASA Images",
+                "CASA images",
                 [
                     "Native format for radio interferometry data",
                     "Supports .im and .image directories",
@@ -317,7 +307,7 @@ class TutorialDialog(QDialog):
         # FITS Files
         layout.addWidget(
             self._create_info_box(
-                "FITS Files",
+                "FITS files",
                 [
                     "Standard astronomical FITS format",
                     "Compressed .fits.gz files supported",
@@ -330,7 +320,7 @@ class TutorialDialog(QDialog):
         # Remote Access
         layout.addWidget(
             self._create_info_box(
-                "Remote Files (Ctrl+Shift+R)",
+                "Remote files (Ctrl+Shift+R)",
                 [
                     "Connect to servers via SSH/SFTP",
                     "Browse remote directories",
@@ -355,7 +345,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Opening Images", content)
+        return self._create_scroll_page("Opening images", content)
 
     def _create_display_settings(self):
         """Display Settings section."""
@@ -386,7 +376,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 2,
-                "Stretch Function",
+                "Stretch function",
                 "Apply scaling transformations: Linear, Log, Sqrt, Squared, Power, "
                 "Sinh, Asinh. For Gamma stretch, adjust the gamma value in the field below.",
                 "Log and Sqrt work well for high dynamic range radio images",
@@ -397,7 +387,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 3,
-                "Min/Max Range",
+                "Min/max range",
                 "Set display range manually or use preset buttons: "
                 "Auto (full range), 1-99% (percentile clipping), Med±3σ (median-based).",
                 "Scroll over Min/Max fields to adjust values incrementally",
@@ -407,9 +397,9 @@ class TutorialDialog(QDialog):
         # Presets
         layout.addWidget(
             self._create_info_box(
-                "Preset Shortcuts",
+                "Preset shortcuts",
                 [
-                    "F5 - Auto Min/Max (full data range)",
+                    "F5 - Auto min/max (full data range)",
                     "F6 - 1-99% percentile clipping",
                     "F7 - Median ± 3×RMS",
                     "F8 - SDO/AIA 171 Å preset",
@@ -421,7 +411,7 @@ class TutorialDialog(QDialog):
         # Instrument Presets
         layout.addWidget(
             self._create_info_box(
-                "Instrument Presets (Presets Menu)",
+                "Instrument presets (Image → Display presets)",
                 [
                     "SDO/AIA: 94, 131, 171, 193, 211, 304, 335, 1600, 1700, 4500 Å",
                     "SDO/HMI: Magnetogram and continuum",
@@ -433,7 +423,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Display Settings", content)
+        return self._create_scroll_page("Display settings", content)
 
     def _create_stokes_params(self):
         """Stokes Parameters section."""
@@ -451,7 +441,7 @@ class TutorialDialog(QDialog):
         # What are Stokes params
         layout.addWidget(
             self._create_info_box(
-                "Stokes Parameters",
+                "Stokes parameters",
                 [
                     "I - Total intensity (always available)",
                     "Q - Linear polarization (horizontal vs vertical)",
@@ -467,7 +457,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 1,
-                "Select Stokes Parameter",
+                "Select a Stokes parameter",
                 "Use the Stokes buttons in the bar above the image (I, Q, U, V; the derived products under More). "
                 "Unavailable parameters are automatically grayed out based on your data.",
             )
@@ -476,7 +466,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 2,
-                "Threshold Masking",
+                "Threshold masking",
                 "When viewing Q, U, or V, enable threshold masking to hide regions "
                 "where |V|/I is below the threshold. Default is 0.01 (1%).",
                 "Helps focus on regions with significant polarization",
@@ -486,14 +476,14 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 3,
-                "RMS Box Configuration",
+                "RMS box configuration",
                 "Click the gear button next to Stokes to configure the RMS calculation box. "
                 "This affects RMS-based statistics and the Med±3σ preset.",
             )
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Stokes Parameters", content)
+        return self._create_scroll_page("Stokes parameters", content)
 
     def _create_navigation(self):
         """Navigation section."""
@@ -511,7 +501,7 @@ class TutorialDialog(QDialog):
         # Mouse controls
         layout.addWidget(
             self._create_info_box(
-                "Mouse Controls",
+                "Mouse controls",
                 [
                     "Scroll wheel or pinch - Zoom about the pointer",
                     "Middle-drag - Pan the view (left-drag too, with the Pan tool)",
@@ -525,7 +515,7 @@ class TutorialDialog(QDialog):
         # Keyboard navigation
         layout.addWidget(
             self._create_info_box(
-                "View Controls",
+                "View controls",
                 [
                     "R - Reset view to full image",
                     "1 - Zoom to 1°×1° field of view",
@@ -542,7 +532,7 @@ class TutorialDialog(QDialog):
         # File navigation
         layout.addWidget(
             self._create_info_box(
-                "File Navigation",
+                "File navigation",
                 [
                     "[ - Previous file in directory",
                     "] - Next file in directory",
@@ -555,7 +545,7 @@ class TutorialDialog(QDialog):
         # Status bar
         layout.addWidget(
             self._create_info_box(
-                "Status Bar Information",
+                "Status bar information",
                 [
                     "Pixel coordinates (x, y)",
                     "World coordinates (RA/Dec or helioprojective)",
@@ -585,7 +575,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 1,
-                "2D Gaussian Fitting (Ctrl+G)",
+                "2D Gaussian fitting (Ctrl+G)",
                 "Fit a 2D elliptical Gaussian to point sources. "
                 "Via Image → Fit 2D Gaussian. Select a region containing the source. "
                 "Results include: position, FWHM (major/minor), position angle, peak and integrated flux.",
@@ -596,7 +586,7 @@ class TutorialDialog(QDialog):
         # Tips
         layout.addWidget(
             self._create_info_box(
-                "Fitting Tips",
+                "Fitting tips",
                 [
                     "Draw a selection rectangle around the source region first",
                     "Check the residual image to assess fit quality",
@@ -608,7 +598,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Fitting Tools", content)
+        return self._create_scroll_page("Fitting tools", content)
 
     def _create_contours(self):
         """Contour Overlays section."""
@@ -627,7 +617,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 1,
-                "Open Contour Settings",
+                "Open the contour settings",
                 "Right-click on the image and select 'Contour Settings', or use the "
                 "Contours switch in the inspector's Display tab.",
             )
@@ -636,7 +626,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 2,
-                "Select Contour Source",
+                "Select the contour source",
                 "Choose 'Self' to contour the current image, or 'External' to load "
                 "a different CASA or FITS image for contours.",
             )
@@ -645,7 +635,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 3,
-                "Configure Contour Levels",
+                "Configure the contour levels",
                 "Set levels as fractions (0.1, 0.3, 0.5, 0.7, 0.9), absolute values, "
                 "or RMS multiples. Enable 'Negative contours' for dashed negative lines.",
             )
@@ -654,7 +644,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 4,
-                "Customize Appearance",
+                "Customize the appearance",
                 "Choose contour color, line width (0.5-3.0), and line style. "
                 "Enable 'Show contour labels' to display level values.",
             )
@@ -663,7 +653,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 5,
-                "Add More Layers",
+                "Add more layers",
                 "Use '+ Add' or 'Duplicate' in the Layers list to overlay up to ten "
                 "contour sets, e.g. Stokes I and V of one file, or several files. "
                 "Each layer has its own source, levels and colour; untick a layer "
@@ -674,7 +664,7 @@ class TutorialDialog(QDialog):
 
         layout.addWidget(
             self._create_info_box(
-                "Coordinate Matching",
+                "Coordinate matching",
                 [
                     "Contours automatically aligned to the base image",
                     "Works across RA/Dec ↔ Helioprojective transformations",
@@ -685,7 +675,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Contour Overlays", content)
+        return self._create_scroll_page("Contour overlays", content)
 
     def _create_regions_export(self):
         """Regions and Export section."""
@@ -701,10 +691,10 @@ class TutorialDialog(QDialog):
         # Region operations
         layout.addWidget(
             self._create_info_box(
-                "Region Operations",
+                "Region operations",
                 [
-                    "Export Sub-Image (Ctrl+Shift+S): Save selected region as new image",
-                    "Export ROI as Region (Ctrl+R): Save as CASA region file",
+                    "Export region as sub-image (Ctrl+Shift+S): Save the selected region as a new image",
+                    "Export region as CASA region (Ctrl+R): Save as a CASA region file",
                 ],
             )
         )
@@ -712,13 +702,13 @@ class TutorialDialog(QDialog):
         # Export options
         layout.addWidget(
             self._create_info_box(
-                "Export Options (File Menu)",
+                "Export options (File menu)",
                 [
-                    "Export Figure (Ctrl+S or Ctrl+E): Save as PNG, PDF, or SVG with colorbar",
-                    "Export as FITS (Ctrl+Shift+F): Convert to standard FITS",
-                    "Export as CASA Image: Save in CASA format",
-                    "Export TB Map: Convert to brightness temperature FITS",
-                    "Export as HPC FITS (Ctrl+H): Helioprojective coordinates",
+                    "Export figure (Ctrl+S or Ctrl+E): Save as PNG, PDF, or SVG with colorbar",
+                    "Export image as FITS (Ctrl+Shift+F): Convert to standard FITS",
+                    "Export image as CASA image: Save in CASA format",
+                    "Export image as brightness temperature FITS: Convert to brightness temperature FITS",
+                    "Export image as helioprojective FITS (Ctrl+H): Helioprojective coordinates",
                 ],
             )
         )
@@ -726,16 +716,16 @@ class TutorialDialog(QDialog):
         # Annotations
         layout.addWidget(
             self._create_info_box(
-                "Annotations (Annotations Menu)",
+                "Annotations (Image → Annotate)",
                 [
-                    "Add Text Annotation (Ctrl+T): Place text labels",
-                    "Add Arrow Annotation (Ctrl+Shift+A): Draw arrows to features",
+                    "Add text (Ctrl+T): Place text labels",
+                    "Add arrow (Ctrl+Shift+A): Draw arrows to features",
                 ],
             )
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Regions & Export", content)
+        return self._create_scroll_page("Regions and export", content)
 
     def _create_remote_access(self):
         """Remote Access section."""
@@ -751,8 +741,8 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 1,
-                "Connect to Server (Ctrl+Shift+R)",
-                "File → Connect to Remote Server. Enter hostname, port (default 22), "
+                "Connect to a server (Ctrl+Shift+R)",
+                "File → Remote server → Connect…. Enter hostname, port (default 22), "
                 "username, and choose password or SSH key authentication.",
             )
         )
@@ -760,7 +750,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 2,
-                "Save Connection Profile",
+                "Save a connection profile",
                 "Save frequently used connections for quick access. "
                 "Profiles store hostname, port, and username (not passwords).",
             )
@@ -769,8 +759,8 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 3,
-                "Browse and Open Files",
-                "After connecting, File → Open Remote FITS File becomes available. "
+                "Browse and open files",
+                "After connecting, File → Remote server → Open remote image… becomes available. "
                 "Navigate directories, use path auto-complete, and select files to open.",
             )
         )
@@ -778,9 +768,9 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 4,
-                "Cache Management",
+                "Cache management",
                 "Downloaded files are cached locally for faster access. "
-                "Use File → Clear Remote Cache to free disk space.",
+                "Use File → Manage cache… to free disk space.",
             )
         )
 
@@ -796,7 +786,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Remote Access", content)
+        return self._create_scroll_page("Remote access", content)
 
     def _create_dynamic_spectra(self):
         """Dynamic Spectra section."""
@@ -817,8 +807,8 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 1,
-                "Open a Spectrum Like Any File",
-                "File → Open Image or Open Dynamic Spectrum, Open Recent, a drop "
+                "Open a spectrum like any file",
+                "File → Open image or Open dynamic spectrum, Open recent, a drop "
                 "on the window, or the command line: SolarViewer reads the "
                 "FITS headers and sends a dynamic spectrum to its viewer. "
                 "Opening another spectrum reuses the same window.",
@@ -850,7 +840,7 @@ class TutorialDialog(QDialog):
         layout.addWidget(
             self._create_step(
                 4,
-                "See the Image at a Time",
+                "See the image at a time",
                 "With the Image tool, click a time in the spectrum: SolarViewer "
                 "shows its image nearest that time from the current tab's "
                 "folder (or the frequency folder beside it). An image opened "
@@ -860,9 +850,9 @@ class TutorialDialog(QDialog):
 
         layout.addWidget(
             self._create_info_box(
-                "Making Spectra",
+                "Making spectra",
                 [
-                    "Apps → Create Dynamic Spectra: from Measurement Sets "
+                    "Apps → Create dynamic spectra…: from Measurement Sets "
                     "(.ms or .MS; one per subband or one multi-channel MS), on "
                     "this computer or on a server (Run on → Server, optionally "
                     "as a Slurm job)",
@@ -875,7 +865,7 @@ class TutorialDialog(QDialog):
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Dynamic Spectra", content)
+        return self._create_scroll_page("Dynamic spectra", content)
 
     def _create_advanced_tools(self):
         """Advanced Tools section."""
@@ -891,11 +881,11 @@ class TutorialDialog(QDialog):
         # Tools Menu
         layout.addWidget(
             self._create_info_box(
-                "Tools Menu",
+                "Image and Tools menus",
                 [
-                    "Image Metadata (Ctrl+M): View complete image metadata",
-                    "Solar Phase Center Shift (Ctrl+P): Align phase center with Sun",
-                    "Create Video: Create animations from FITS sequences",
+                    "Image metadata (Ctrl+M): View complete image metadata",
+                    "Solar phase center shift (Ctrl+P): Align phase center with Sun",
+                    "Create video: Create animations from FITS sequences",
                 ],
             )
         )
@@ -903,9 +893,9 @@ class TutorialDialog(QDialog):
         # Solar Activity Viewer
         layout.addWidget(
             self._create_info_box(
-                "Solar Activity Viewer",
+                "Solar activity viewer",
                 [
-                    "Access via Apps → Solar Activity Viewer or the activity icon at the top of the inspector",
+                    "Access via Apps → Solar activity viewer or the activity icon at the top of the inspector",
                     "NOAA solar event reports and active regions",
                     "Solar conditions summary and CME alerts",
                     "GOES X-ray flux plots",
@@ -917,9 +907,9 @@ class TutorialDialog(QDialog):
         # Helioviewer Browser
         layout.addWidget(
             self._create_info_box(
-                "Helioviewer Browser",
+                "Helioviewer browser",
                 [
-                    "Access via Apps → Helioviewer Browser or the sun icon at the top of the inspector",
+                    "Access via Apps → Helioviewer browser or the sun icon at the top of the inspector",
                     "Browse solar images by time range",
                     "Multiple instruments: SDO, SOHO, STEREO, GOES, Solar Orbiter",
                     "Frame-by-frame navigation with time slider",
@@ -931,10 +921,10 @@ class TutorialDialog(QDialog):
         # Data Downloaders
         layout.addWidget(
             self._create_info_box(
-                "Data Downloaders (Download Menu)",
+                "Data downloaders (Download menu)",
                 [
-                    "Non-radio Solar Data: SDO, SOHO, STEREO, GOES, IRIS archives",
-                    "Radio Solar Data: Learmonth and other radio data with FITS conversion",
+                    "Solar data: SDO, SOHO, STEREO, GOES, IRIS archives",
+                    "Radio spectra: Learmonth and other radio data with FITS conversion",
                 ],
             )
         )
@@ -942,10 +932,10 @@ class TutorialDialog(QDialog):
         # Multi-Tab
         layout.addWidget(
             self._create_info_box(
-                "Multi-Tab Comparison (Tabs Menu)",
+                "Multi-tab comparison (File menu)",
                 [
-                    "Add New Tab (Ctrl+N): Open multiple images",
-                    "Close Tab (Ctrl+W): Close current tab",
+                    "New tab (Ctrl+N): Open multiple images",
+                    "Close tab (Ctrl+W): Close current tab",
                     "Each tab has independent display settings",
                 ],
             )
@@ -954,14 +944,14 @@ class TutorialDialog(QDialog):
         # View Options
         layout.addWidget(
             self._create_info_box(
-                "View Options (View Menu)",
+                "View options (View menu)",
                 [
-                    "Toggle Dark/Light Mode (Ctrl+D)",
-                    "Fullscreen Mode (F11)",
-                    "Preferences: UI scale adjustment",
+                    "Switch to dark or light mode (Ctrl+D)",
+                    "Toggle fullscreen (F11)",
+                    "File → Preferences…: UI scale",
                 ],
             )
         )
 
         layout.addStretch()
-        return self._create_scroll_page("Advanced Tools", content)
+        return self._create_scroll_page("Advanced tools", content)

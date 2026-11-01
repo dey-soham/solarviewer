@@ -5,12 +5,19 @@ CME Alerts Parser - Fetches Coronal Mass Ejection data from NASA DONKI API.
 Data source:
 - NASA DONKI (Space Weather Database of Notifications, Knowledge, Information)
 - Endpoint: kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/CME
+- CDAW LASCO CME catalogue, when DONKI cannot be reached
 """
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict
+
+CDAW_URL = (
+    "https://cdaw.gsfc.nasa.gov/CME_list/UNIVERSAL_ver2/"
+    "{year}_{month:02d}/univ{year}_{month:02d}.html"
+)
 
 
 @dataclass
@@ -22,13 +29,14 @@ class CMEEvent:
     source_location: str  # e.g., "S17W72"
     active_region: Optional[str]
     speed: float  # km/s
-    half_angle: float  # degrees (angular width)
-    latitude: float
-    longitude: float
-    is_earth_directed: bool
+    half_angle: float  # degrees (half the angular width)
+    latitude: Optional[float]
+    longitude: Optional[float]
+    is_earth_directed: Optional[bool]  # None: not known
     earth_arrival_time: Optional[datetime]
     note: str
     analysis_link: str
+    source: str = "DONKI"  # or "CDAW", which gives no position
 
     @property
     def speed_category(self) -> str:
@@ -43,17 +51,11 @@ class CMEEvent:
             return "Extreme"
 
     @property
-    def color_code(self) -> str:
-        """Get color based on speed and Earth-directed status."""
+    def tone(self) -> str:
+        """Get the tone for the speed and Earth-directed status."""
         if self.is_earth_directed:
-            if self.speed >= 1500:
-                return "#F44336"  # Red - fast Earth-directed
-            elif self.speed >= 1000:
-                return "#FF9800"  # Orange
-            else:
-                return "#FFC107"  # Amber
-        else:
-            return "#4CAF50"  # Green - not Earth-directed
+            return "error" if self.speed >= 1500 else "warning"
+        return "success"
 
     @property
     def start_time_str(self) -> str:
@@ -140,8 +142,8 @@ def parse_cme_events(raw_data: List[Dict]) -> List[CMEEvent]:
 
             speed = best_analysis.get("speed", 0) or 0
             half_angle = best_analysis.get("halfAngle", 0) or 0
-            latitude = best_analysis.get("latitude", 0) or 0
-            longitude = best_analysis.get("longitude", 0) or 0
+            latitude = best_analysis.get("latitude")
+            longitude = best_analysis.get("longitude")
             note = best_analysis.get("note", "") or ""
             analysis_link = best_analysis.get("link", "")
 
@@ -167,15 +169,19 @@ def parse_cme_events(raw_data: List[Dict]) -> List[CMEEvent]:
                                 pass
 
             # Determine if likely Earth-directed based on longitude
-            if abs(longitude) < 45:  # CME centered within ±45° of Sun-Earth line
+            # (the analysis may give no position)
+            if longitude is not None and abs(longitude) < 45:  # CME centered within ±45° of Sun-Earth line
                 is_earth_directed = True
 
             # Format source location
-            lat_hem = "N" if latitude >= 0 else "S"
-            lon_hem = "E" if longitude <= 0 else "W"
-            source_location = (
-                f"{lat_hem}{abs(int(latitude))}{lon_hem}{abs(int(longitude))}"
-            )
+            if latitude is None or longitude is None:
+                source_location = "—"
+            else:
+                lat_hem = "N" if latitude >= 0 else "S"
+                lon_hem = "E" if longitude <= 0 else "W"
+                source_location = (
+                    f"{lat_hem}{abs(int(latitude))}{lon_hem}{abs(int(longitude))}"
+                )
 
             active_region = cme.get("activeRegionNum")
             if active_region:
@@ -206,11 +212,79 @@ def parse_cme_events(raw_data: List[Dict]) -> List[CMEEvent]:
     return events
 
 
+def parse_cdaw_page(html: str, page_url: str = "") -> List[CMEEvent]:
+    """The CMEs of one month's page of the CDAW LASCO catalogue. It measures
+    them in the plane of the sky, so it gives no source position and cannot
+    say whether one is Earth-directed."""
+    events = []
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S | re.I):
+        cells = [
+            re.sub(r"<[^>]+>", "", cell).strip()
+            for cell in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S | re.I)
+        ]
+        if len(cells) < 5:
+            continue
+        try:
+            start_time = datetime.strptime(f"{cells[0]} {cells[1]}", "%Y/%m/%d %H:%M:%S")
+        except ValueError:
+            continue  # not a row of the table
+        # A width can read ">206" (a lower limit), and "----" means not measured
+        width = re.search(r"\d+", cells[3])
+        speed = re.search(r"\d+", cells[4])
+        halo = "halo" in cells[2].lower()
+        events.append(
+            CMEEvent(
+                activity_id=f"{start_time.isoformat()}-CME-CDAW",
+                start_time=start_time,
+                source_location="—",
+                active_region=None,
+                speed=float(speed.group()) if speed else 0,
+                half_angle=float(width.group()) / 2 if width else 0,
+                latitude=None,
+                longitude=None,
+                is_earth_directed=None,
+                earth_arrival_time=None,
+                note="Halo CME" if halo else "",
+                analysis_link=page_url,
+                source="CDAW",
+            )
+        )
+    return events
+
+
+def fetch_cdaw_cmes(event_date: date, days_range: int = 3) -> Optional[List[CMEEvent]]:
+    """The CMEs around ``event_date`` from the CDAW catalogue, newest first,
+    or None if none of its pages could be had. A page appears some months
+    after the fact."""
+    from ..utils import get_global_session
+
+    first = event_date - timedelta(days=days_range)
+    last = event_date + timedelta(days=days_range)
+    months = {(day.year, day.month) for day in (first, last)}
+    session = get_global_session()
+    events = None
+    for year, month in sorted(months):
+        url = CDAW_URL.format(year=year, month=month)
+        try:
+            response = session.get(url)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"CDAW CME catalogue fetch error: {e}")
+            continue
+        events = (events or []) + parse_cdaw_page(response.text, url)
+    if events is None:
+        return None
+    events = [e for e in events if first <= e.start_time.date() <= last]
+    events.sort(key=lambda e: e.start_time, reverse=True)
+    return events
+
+
 def fetch_and_parse_cme_events(
     event_date: date, days_range: int = 3
 ) -> Optional[List[CMEEvent]]:
     """
-    Fetch and parse CME events for a date range.
+    Fetch and parse CME events for a date range: from DONKI, or the CDAW
+    catalogue when DONKI cannot be reached.
 
     Args:
         event_date: Center date to search around
@@ -221,7 +295,7 @@ def fetch_and_parse_cme_events(
     """
     raw_data = fetch_cme_data(event_date, days_range)
     if raw_data is None:
-        return None
+        return fetch_cdaw_cmes(event_date, days_range)
     if not raw_data:
         return []
     return parse_cme_events(raw_data)
@@ -238,7 +312,7 @@ if __name__ == "__main__":
     if events:
         print(f"Found {len(events)} CME events:")
         for e in events[:5]:
-            earth_str = "🌍 Earth-directed" if e.is_earth_directed else ""
+            earth_str = "Earth-directed" if e.is_earth_directed else ""
             print(
                 f"  {e.start_time_str} | {e.speed:.0f} km/s ({e.speed_category}) | {e.source_location} {earth_str}"
             )

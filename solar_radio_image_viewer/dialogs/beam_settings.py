@@ -1,15 +1,11 @@
 from PyQt5.QtWidgets import (
     QDialog,
-    QVBoxLayout,
-    QGroupBox,
-    QLabel,
     QDoubleSpinBox,
-    QGridLayout,
-    QComboBox,
 )
 
-from ..ui.widgets import button_bar
+from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import set_hand_cursor
+from .form import color_combo, field_label, form_block
 
 
 class BeamSettingsDialog(QDialog):
@@ -17,23 +13,20 @@ class BeamSettingsDialog(QDialog):
 
     def __init__(self, parent=None, beam_style=None):
         super().__init__(parent)
-        self.setWindowTitle("Beam Settings")
-        self.setMinimumWidth(350)
+        self.setWindowTitle("Beam settings")
         self.beam_style = beam_style or {}
         self.parent_viewer = parent
         self.setup_ui()
         set_hand_cursor(self)
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
+        layout = dialog_layout(self)
 
         # Color selection
-        color_group = QGroupBox("Colors")
-        color_layout = QGridLayout(color_group)
+        color_layout = form_block(layout, "Colours")
 
         # Edge color
-        edge_label = QLabel("Edge Color:")
-        self.edge_combo = QComboBox()
+        edge_label = field_label("Edge colour")
         colors = [
             "black",
             "white",
@@ -45,28 +38,21 @@ class BeamSettingsDialog(QDialog):
             "yellow",
             "gray",
         ]
-        for color in colors:
-            self.edge_combo.addItem(color)
-        self.edge_combo.setCurrentText(self.beam_style.get("edgecolor", "black"))
+        self.edge_combo = color_combo(colors, self.beam_style.get("edgecolor", "black"))
         color_layout.addWidget(edge_label, 0, 0)
         color_layout.addWidget(self.edge_combo, 0, 1)
 
         # Face color
-        face_label = QLabel("Fill Color:")
-        self.face_combo = QComboBox()
-        for color in colors:
-            self.face_combo.addItem(color)
-        self.face_combo.setCurrentText(self.beam_style.get("facecolor", "white"))
+        face_label = field_label("Fill colour")
+        self.face_combo = color_combo(colors, self.beam_style.get("facecolor", "white"))
         color_layout.addWidget(face_label, 1, 0)
         color_layout.addWidget(self.face_combo, 1, 1)
-        layout.addWidget(color_group)
 
         # Style settings
-        style_group = QGroupBox("Style")
-        style_layout = QGridLayout(style_group)
+        style_layout = form_block(layout, "Style")
 
         # Line width
-        linewidth_label = QLabel("Edge Width:")
+        linewidth_label = field_label("Edge width")
         self.linewidth_spinbox = QDoubleSpinBox()
         self.linewidth_spinbox.setRange(0.5, 5.0)
         self.linewidth_spinbox.setSingleStep(0.5)
@@ -75,14 +61,13 @@ class BeamSettingsDialog(QDialog):
         style_layout.addWidget(self.linewidth_spinbox, 0, 1)
 
         # Opacity
-        alpha_label = QLabel("Opacity:")
+        alpha_label = field_label("Opacity")
         self.alpha_spinbox = QDoubleSpinBox()
         self.alpha_spinbox.setRange(0.1, 1.0)
         self.alpha_spinbox.setSingleStep(0.1)
         self.alpha_spinbox.setValue(self.beam_style.get("alpha", 0.4))
         style_layout.addWidget(alpha_label, 1, 0)
         style_layout.addWidget(self.alpha_spinbox, 1, 1)
-        layout.addWidget(style_group)
         box, _ = button_bar(primary=("Apply", self.on_apply), secondary=("Close", self.close))
         layout.addWidget(box)
 
@@ -91,10 +76,10 @@ class BeamSettingsDialog(QDialog):
         try:
             if self.parent_viewer:
                 self.parent_viewer.beam_style["edgecolor"] = (
-                    self.edge_combo.currentText()
+                    self.edge_combo.currentData()
                 )
                 self.parent_viewer.beam_style["facecolor"] = (
-                    self.face_combo.currentText()
+                    self.face_combo.currentData()
                 )
                 self.parent_viewer.beam_style["linewidth"] = (
                     self.linewidth_spinbox.value()
@@ -111,8 +96,8 @@ class BeamSettingsDialog(QDialog):
     def get_settings(self):
         """Return the current settings."""
         return {
-            "edgecolor": self.edge_combo.currentText(),
-            "facecolor": self.face_combo.currentText(),
+            "edgecolor": self.edge_combo.currentData(),
+            "facecolor": self.face_combo.currentData(),
             "linewidth": self.linewidth_spinbox.value(),
             "alpha": self.alpha_spinbox.value(),
         }

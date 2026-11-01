@@ -3,12 +3,12 @@ Batch coordinate transformation: images between RA/Dec and helioprojective
 (HPC) coordinates.
 """
 
-import glob
 import os
 import traceback
 import uuid
 
 from ..processing.fits_io import is_fits
+from ..processing.image_meta import fits_header
 from ..ui.batch import BatchWindow, _escape, _short_home, output_name
 
 SYSTEMS = (("Helioprojective", "HPC", "hpc"), ("RA/Dec", "RADEC", "radec"))
@@ -40,6 +40,12 @@ def process_single_file_coordsys(args):
             "error": None,
             "skipped": False,  # True if already in target format and just copied
         }
+
+        # (the output folder can be the input's, and copying a CASA image
+        # removes the output first)
+        if os.path.realpath(input_file) == os.path.realpath(output_path):
+            result["error"] = "The output would replace the input"
+            return result
 
         # Check coordinate system
         already_hpc = is_already_hpc(input_file)
@@ -132,9 +138,7 @@ def is_already_hpc(imagepath):
     try:
         # For FITS files, check the header
         if is_fits(imagepath):
-            from astropy.io import fits
-
-            header = fits.getheader(imagepath)
+            header = fits_header(imagepath)
             ctype1 = header.get("CTYPE1", "").upper()
             ctype2 = header.get("CTYPE2", "").upper()
 
@@ -150,7 +154,7 @@ def is_already_hpc(imagepath):
         # For CASA images, check coordinate system
         if os.path.isdir(imagepath):
             try:
-                from casatools import image as IA
+                from ..processing.dependencies import IA
 
                 ia_tool = IA()
                 ia_tool.open(imagepath)
@@ -180,7 +184,7 @@ class CoordinateTransformationDialog(BatchWindow):
     SUMMARY_ROWS = ("From", "To", "Stokes", "Output", "Speed")
 
     def __init__(self, parent=None, current_file=None):
-        super().__init__(parent, "Transform Coordinates")
+        super().__init__(parent, "Transform coordinates")
         self.current_file = current_file
         folder = os.path.dirname(current_file) if current_file else ""
         pattern = f"*{os.path.splitext(current_file)[1]}" if current_file and os.path.splitext(current_file)[1] else "*.fits"
@@ -309,7 +313,7 @@ class CoordinateTransformationDialog(BatchWindow):
             if result.get("skipped"):
                 self.log(f"{name}: already in these coordinates, copied", "copied")
             else:
-                self.log(f"{name} → {os.path.basename(result['output_path'])}", "✓")
+                self.log(f"{name} → {os.path.basename(result['output_path'])}")
             return True
         self.log(f"{name}: {result['error'] or 'unknown error'}", "failed")
         return False

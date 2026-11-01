@@ -257,7 +257,7 @@ def _write_report(report_path, when, fatal, details, notes=(), language="python"
     # Paths, the user name and host names are left out of what users share
     report_content = scrub("\n".join(report_lines))
 
-    with open(report_path, "w") as f:
+    with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_content)
 
 
@@ -460,6 +460,8 @@ def _show_message(title, text, informative, detailed=None):
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QMessageBox
 
+    from .ui.errors import word_details_button
+
     dialog = QMessageBox(_main_window)
     dialog.setIcon(QMessageBox.Warning)
     dialog.setWindowTitle(title)
@@ -467,8 +469,10 @@ def _show_message(title, text, informative, detailed=None):
     dialog.setInformativeText(informative)
     if detailed:
         dialog.setDetailedText(detailed)
+        word_details_button(dialog)
     dialog.setTextInteractionFlags(Qt.TextSelectableByMouse)
     dialog.setStandardButtons(QMessageBox.Ok)
+    dialog.setDefaultButton(QMessageBox.Ok)  # (not Show Details, which comes first)
     dialog.setWindowModality(Qt.NonModal)
     dialog.setAttribute(Qt.WA_DeleteOnClose)
 

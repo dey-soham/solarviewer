@@ -10,6 +10,7 @@ timeout), the footer showing it with Cancel to abort.
 import dataclasses
 import getpass
 import json
+import logging
 import os
 import re
 import threading
@@ -18,7 +19,7 @@ import traceback
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt5.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QPointF, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
@@ -46,9 +47,10 @@ from PyQt5.QtWidgets import (
 
 from ..ui.activity import ActivityLabel, Spinner
 from ..ui.background import Cancelled, run_in_thread
-from ..ui.styles import theme_manager
-from ..ui.widgets import kicker, rule, segmented
-from .browser_parts import waited
+from ..ui.geometry import fit_to_screen
+from ..ui.styles import MONO_FAMILY, RADIUS, SPACE_L, SPACE_M, SPACE_S, SPACE_XS, set_tone, theme_manager, themed
+from ..ui.widgets import button_bar, dialog_layout, kicker, rule, segmented
+from .browser_parts import ElidedLabel, PlaceRow, SmallLink, icon, waited
 from .ssh_manager import (
     ConnectionProfile,
     SSHConnection,
@@ -68,15 +70,12 @@ except ImportError:  # (passwords and passphrases are then not remembered)
     keyring = None
 
 KEYRING_SERVICE = "solarviewer-ssh"
-ERROR_TEXT = "#e08a7c"  # error text under a field (the palette's error is for dots)
 FORM_LABEL_WIDTH = 76
+
+logger = logging.getLogger(__name__)
 
 # [user@]host[:port]
 _TARGET = re.compile(r"^(?:(?P<user>[^@\s:]+)@)?(?P<host>\[[^\]\s]+\]|[^@\s:]+)(?::(?P<port>\d+))?$")
-
-
-def _palette(key):
-    return theme_manager.palette[key]
 
 
 def _relative_time(stamp):
@@ -256,17 +255,18 @@ class _ConnectThread(QThread):
 
 
 class _Mark(QWidget):
-    """A 7px dot, or a check, in one colour (a profile's state, a result's)."""
+    """A 7px dot, or a check, in one palette colour (a profile's state, a
+    result's), read when painted so that it follows the theme."""
 
-    def __init__(self, colour=None, check=False, size=7, parent=None):
+    def __init__(self, colour="border_light", check=False, size=7, parent=None):
         super().__init__(parent)
-        self._colour = QColor(colour or "#3f424d")
+        self._colour = colour
         self._check = check
         self._size = size
         self.setFixedSize(size if not check else 12, 12)
 
     def set_state(self, colour, check=False):
-        self._colour = QColor(colour)
+        self._colour = colour
         self._check = check
         self.setFixedWidth(12 if check else self._size)
         self.update()
@@ -274,12 +274,13 @@ class _Mark(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        colour = QColor(theme_manager.palette[self._colour])
         if self._check:
-            painter.setPen(QPen(self._colour, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setPen(QPen(colour, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.drawPolyline(QPointF(1.5, 6.5), QPointF(4.8, 9.5), QPointF(10.2, 3))
         else:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(self._colour)
+            painter.setBrush(colour)
             d = self._size
             painter.drawEllipse(QRectF(0, (self.height() - d) / 2, d, d))
         painter.end()
@@ -306,15 +307,15 @@ class _ProfileRow(QFrame):
         layout.setContentsMargins(6, 7, 6, 7)
         layout.setSpacing(8)
 
-        colour = {"connected": _palette("status_on"), "failed": _palette("status_off")}.get(
-            state, _palette("border_light")
-        )
-        layout.addWidget(_Mark(colour), 0, Qt.AlignTop | Qt.AlignVCenter)
+        mark = _Mark({"connected": "status_on", "failed": "status_off"}.get(state, "border_light"))
+        mark.setToolTip({"connected": "Connected", "failed": "The last attempt failed"}.get(state, ""))
+        layout.addWidget(mark, 0, Qt.AlignTop | Qt.AlignVCenter)
 
         text = QVBoxLayout()
         text.setSpacing(1)
-        self.name = QLabel(profile.name)
-        self.name.setObjectName("ProfileName")
+        self.name = ElidedLabel(profile.name)
+        self.name.setObjectName("DetailValue")
+        self.name.setToolTip(profile.name)
         host = profile.host.rsplit("@", 1)[-1]
         second = (
             f"{profile.username + '@' if profile.username else ''}{host}"
@@ -322,7 +323,7 @@ class _ProfileRow(QFrame):
             else _relative_time(profile.last_used)
         )
         self.sub = QLabel()
-        self.sub.setObjectName("ProfileSub")
+        self.sub.setObjectName("Meta")
         self.sub.setText(self.sub.fontMetrics().elidedText(second, Qt.ElideRight, 140))
         self.sub.setToolTip(second if selected else "")
         text.addWidget(self.name)
@@ -330,10 +331,11 @@ class _ProfileRow(QFrame):
         layout.addLayout(text, 1)
 
         self.more = QToolButton()
-        self.more.setObjectName("RowMore")
-        self.more.setText("⋯")
+        self.more.setAutoRaise(True)
         self.more.setCursor(Qt.PointingHandCursor)
-        self.more.setFixedSize(22, 22)
+        self.more.setFixedSize(24, 24)
+        self.more.setIconSize(QSize(14, 14))
+        themed(self.more, lambda palette: self.more.setIcon(icon("more", palette, 14)))
         self.more.setToolTip("More")
         policy = self.more.sizePolicy()
         policy.setRetainSizeWhenHidden(True)
@@ -381,9 +383,8 @@ class _ImportDialog(QDialog):
     def __init__(self, hosts, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Import from ~/.ssh/config")
-        self.setMinimumWidth(340)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Add these hosts as saved servers:"))
+        layout = dialog_layout(self)
+        layout.addWidget(QLabel("Hosts to add as saved servers"))
         self.list = QListWidget()
         for name in hosts:
             item = QListWidgetItem(name)
@@ -391,18 +392,7 @@ class _ImportDialog(QDialog):
             item.setCheckState(Qt.Checked)
             self.list.addItem(item)
         layout.addWidget(self.list)
-        row = QHBoxLayout()
-        row.addStretch()
-        cancel = QPushButton("Cancel")
-        cancel.setAutoDefault(False)
-        cancel.clicked.connect(self.reject)
-        add = QPushButton("Add")
-        add.setObjectName("PrimaryButton")
-        add.setDefault(True)
-        add.clicked.connect(self.accept)
-        row.addWidget(cancel)
-        row.addWidget(add)
-        layout.addLayout(row)
+        layout.addWidget(button_bar(primary=("Add", self.accept), secondary=("Cancel", self.reject))[0])
 
     def chosen(self):
         return [
@@ -438,7 +428,6 @@ class ConnectionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Connect to remote server")
-        self.setFixedSize(760, 430)
         self.setModal(True)
 
         self._ssh_connection: Optional[SSHConnection] = None
@@ -455,11 +444,12 @@ class ConnectionDialog(QDialog):
         self._load_profiles()
 
         self._build()
-        self._apply_style()
+        themed(self, self._apply_style)
         self._rebuild_sidebar()
         self._agent_answered.connect(self._on_agent_answered)
         self._keyring_answered.connect(self._on_keyring_answered)
         self._select_initial()
+        fit_to_screen(self, 760, self.sizeHint().height())
         _in_background(self._ask_agent)
 
         try:
@@ -485,10 +475,10 @@ class ConnectionDialog(QDialog):
 
     def _build_sidebar(self):
         self.sidebar = QFrame()
-        self.sidebar.setObjectName("ConnSidebar")
+        self.sidebar.setObjectName("Sidebar")
         self.sidebar.setFixedWidth(208)
         layout = QVBoxLayout(self.sidebar)
-        layout.setContentsMargins(10, 14, 10, 12)
+        layout.setContentsMargins(10, 14, 10, 14)
         layout.setSpacing(6)
 
         heading = kicker("Saved servers")
@@ -508,28 +498,24 @@ class ConnectionDialog(QDialog):
         layout.addWidget(scroll, 1)
 
         layout.addWidget(rule())
-        self.new_btn = QPushButton("+  New connection")
-        self.new_btn.setObjectName("NewConnection")
-        self.new_btn.setCursor(Qt.PointingHandCursor)
-        self.new_btn.setAutoDefault(False)
+        self.new_btn = PlaceRow("plus", "New connection", "")
         self.new_btn.clicked.connect(lambda: self._select(-1))
         layout.addWidget(self.new_btn)
 
-        note = QLabel(
-            f'Reads hosts from ~/.ssh/config · <a href="import" style="color: '
-            f'{_palette("link")}; text-decoration: none;">Import</a>'
-        )
+        line = QHBoxLayout()
+        line.setContentsMargins(6, 4, 0, 0)
+        note = QLabel("Hosts in ~/.ssh/config")
         note.setObjectName("Meta")
-        note.setWordWrap(True)
-        note.setContentsMargins(6, 4, 0, 0)
-        note.setCursor(Qt.PointingHandCursor)
-        note.linkActivated.connect(lambda _l: self._import_ssh_config())
-        layout.addWidget(note)
+        line.addWidget(note)
+        line.addStretch()
+        self.import_link = SmallLink("Import", self._import_ssh_config)
+        self.import_link.setToolTip("Add the hosts in ~/.ssh/config as saved servers")
+        line.addWidget(self.import_link)
+        layout.addLayout(line)
         return self.sidebar
 
     def _field(self, mono=True, placeholder=""):
         edit = QLineEdit()
-        edit.setFixedHeight(30)
         if mono:
             edit.setObjectName("MonoEdit")
         edit.setPlaceholderText(placeholder)
@@ -537,14 +523,14 @@ class ConnectionDialog(QDialog):
 
     def _label(self, text, width=FORM_LABEL_WIDTH):
         label = QLabel(text)
-        label.setObjectName("FormLabel")
+        label.setObjectName("Hint")
         if width:
             label.setFixedWidth(width)
         return label
 
     def _error_label(self):
         label = QLabel()
-        label.setObjectName("FieldError")
+        set_tone(label, "error")  # (a role's colour would win over the tone)
         label.setWordWrap(True)
         label.hide()
         return label
@@ -558,8 +544,8 @@ class ConnectionDialog(QDialog):
     def _build_form(self):
         form = QFrame()
         layout = QVBoxLayout(form)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(18)
+        layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
+        layout.setSpacing(SPACE_M)
 
         # --- Server
         server = QVBoxLayout()
@@ -604,12 +590,10 @@ class ConnectionDialog(QDialog):
             button = QPushButton(text)
             button.setCheckable(True)
             button.setAutoDefault(False)
-            button.setFixedHeight(24)
             self.auth_group.addButton(button)
             self.auth_buttons[key] = button
             buttons.append(button)
         track = segmented(buttons, role="HeaderSegmented")
-        track.setFixedHeight(28)
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(track)
@@ -622,26 +606,30 @@ class ConnectionDialog(QDialog):
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(SPACE_S)
         self.agent_status = ActivityLabel()
         self.agent_status.label.setObjectName("Meta")
         self.agent_status.label.setWordWrap(True)
         box.addWidget(self.agent_status)
+        self.agent_box = QFrame()
+        self.agent_box.setObjectName("Field")
+        keys = QVBoxLayout(self.agent_box)
+        keys.setContentsMargins(SPACE_S, SPACE_XS, SPACE_S, SPACE_XS)
         self.agent_keys = QLabel()
-        self.agent_keys.setObjectName("AgentKeys")
         self.agent_keys.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        box.addWidget(self.agent_keys)
+        keys.addWidget(self.agent_keys)
+        box.addWidget(self.agent_box)
         box.addStretch()
         self.auth_stack.addWidget(page)
         # key file
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(6)
+        box.setSpacing(SPACE_S)
         key_row = QHBoxLayout()
         key_row.setSpacing(8)
         self.key_path_edit = self._field(placeholder=_default_key_path())
         self.browse_key_btn = QPushButton("Browse…")
-        self.browse_key_btn.setFixedHeight(30)
         self.browse_key_btn.setAutoDefault(False)
         self.browse_key_btn.clicked.connect(self._browse_key_file)
         key_row.addWidget(self.key_path_edit, 1)
@@ -711,14 +699,14 @@ class ConnectionDialog(QDialog):
 
     def _build_footer(self):
         footer = QFrame()
-        footer.setObjectName("ConnFooter")
+        footer.setObjectName("CanvasBar")
         footer.setFixedHeight(52)
         layout = QHBoxLayout(footer)
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(8)
 
         self.test_btn = QPushButton("Test connection")
-        self.test_btn.setObjectName("LinkButton")
+        self.test_btn.setObjectName("GhostButton")
         self.test_btn.setAutoDefault(False)
         self.test_btn.clicked.connect(self._test_connection)
         layout.addWidget(self.test_btn)
@@ -734,7 +722,6 @@ class ConnectionDialog(QDialog):
         self._busy_timer.setInterval(1000)
         self._busy_timer.timeout.connect(self._update_busy_text)
         self.result_label = QLabel()
-        self.result_label.setObjectName("Meta")
         self.result_label.setTextFormat(Qt.PlainText)
         layout.addWidget(self.result_label, 1)
 
@@ -750,88 +737,27 @@ class ConnectionDialog(QDialog):
         layout.addWidget(self.connect_btn)
         return footer
 
-    def _apply_style(self):
-        p = theme_manager.palette
+    def _apply_style(self, p):
+        """What the shared roles lack: a saved server is a QFrame of labels,
+        so it takes PlaceRow's look here, and the monospace fields."""
         self.setStyleSheet(f"""
-            QFrame#ConnSidebar {{
-                background-color: {p['surface']};
-                border-right: 1px solid {p['border_light']};
-            }}
-            QFrame#ConnFooter {{
-                border-top: 1px solid {p['border_light']};
-            }}
             QScrollArea#ConnRows, QScrollArea#ConnRows > QWidget > QWidget {{
                 background: transparent;
             }}
             QFrame#ProfileRow {{
                 background: transparent;
-                border-radius: 6px;
+                border-left: 2px solid transparent;
+                border-radius: {RADIUS}px;
             }}
             QFrame#ProfileRow:hover {{
                 background-color: {p['hover']};
             }}
             QFrame#ProfileRow[selected="true"] {{
                 background-color: {p['window']};
-                border-left: 2px solid {p['highlight']};
-                border-top-left-radius: 0px;
-                border-bottom-left-radius: 0px;
-            }}
-            QLabel#ProfileName {{
-                font-size: 12px;
-                color: {p['text']};
-                background: transparent;
-            }}
-            QLabel#ProfileSub {{
-                font-size: 11px;
-                color: {p['text_secondary']};
-                background: transparent;
-            }}
-            QToolButton#RowMore {{
-                border: none;
-                border-radius: 4px;
-                background: transparent;
-                color: {p['text_dim']};
-                font-size: 14px;
-            }}
-            QToolButton#RowMore:hover {{
-                background-color: {p['pressed']};
-                color: {p['text']};
-            }}
-            QPushButton#NewConnection {{
-                text-align: left;
-                border: none;
-                background: transparent;
-                color: {p['link']};
-                font-size: 12px;
-                font-weight: 400;
-                padding: 7px 6px;
-                border-radius: 6px;
-            }}
-            QPushButton#NewConnection:hover {{
-                background-color: {p['hover']};
-            }}
-            QPushButton#NewConnection[selected="true"] {{
-                background-color: {p['window']};
-            }}
-            QLabel#FormLabel {{
-                font-size: 12px;
-                color: {p['text_dim']};
-            }}
-            QLabel#FieldError {{
-                font-size: 11px;
-                color: {ERROR_TEXT};
-            }}
-            QLabel#AgentKeys {{
-                font-family: monospace;
-                font-size: 11px;
-                color: {p['text_secondary']};
-                background-color: {p['surface']};
-                border-radius: 6px;
-                padding: 7px 9px;
+                border-left-color: {p['highlight']};
             }}
             QLineEdit#MonoEdit {{
-                font-family: monospace;
-                font-size: 12px;
+                font-family: {MONO_FAMILY};
             }}
         """)
 
@@ -860,8 +786,14 @@ class ConnectionDialog(QDialog):
             row.deleteRequested.connect(self._delete_profile)
             row.copyRequested.connect(self._copy_ssh_command)
             self.rows_layout.addWidget(row)
+        if not self._profiles:
+            empty = QLabel("Servers you save show here.")
+            empty.setObjectName("Meta")
+            empty.setWordWrap(True)
+            empty.setContentsMargins(6, 0, 0, 0)
+            self.rows_layout.addWidget(empty)
         self.rows_layout.addStretch()
-        self.new_btn.setProperty("selected", "true" if self._selected < 0 else "false")
+        self.new_btn.setProperty("current", "true" if self._selected < 0 else "false")
         self.new_btn.style().unpolish(self.new_btn)
         self.new_btn.style().polish(self.new_btn)
 
@@ -1001,21 +933,21 @@ class ConnectionDialog(QDialog):
             lines = self._agent_lines
             if not self._agent_known:
                 self.agent_status.start("Checking the SSH agent…")
-                self.agent_keys.hide()
+                self.agent_box.hide()
             elif lines is None:
                 self.agent_status.stop("No agent found")
-                self.agent_keys.hide()
+                self.agent_box.hide()
             else:
                 n = len(lines)
                 self.agent_status.stop(f"Agent running · {n} key{'s' if n != 1 else ''} loaded")
                 shown = lines[:4] + ([f"+ {n - 4} more"] if n > 4 else [])
                 self.agent_keys.setText("\n".join(shown))
-                self.agent_keys.setVisible(bool(lines))
+                self.agent_box.setVisible(bool(lines))
 
     def _browse_key_file(self):
         start = self.key_path_edit.text().strip() or str(Path.home() / ".ssh")
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select SSH private key", os.path.expanduser(start), "All Files (*)"
+            self, "Select SSH private key", os.path.expanduser(start), "All files (*)"
         )
         if path:
             self.key_path_edit.setText(path)
@@ -1035,10 +967,12 @@ class ConnectionDialog(QDialog):
         unless it is empty or the text was just pasted."""
         text = self.host_edit.text().strip()
         match = _TARGET.match(text)
-        if not match or (match.group("user") is None and match.group("port") is None):
+        if not match or (
+            match.group("user") is None and match.group("port") is None and not text.startswith("[")
+        ):
             return
         self.host_edit.blockSignals(True)
-        self.host_edit.setText(match.group("host"))
+        self.host_edit.setText(match.group("host").strip("[]"))  # ([::1]: an IPv6 address)
         self.host_edit.blockSignals(False)
         if match.group("user") and (pasted or not self.username_edit.text().strip()):
             self.username_edit.setText(match.group("user"))
@@ -1114,26 +1048,33 @@ class ConnectionDialog(QDialog):
                 if profile.auth_type == "key" and not profile.key_path:
                     profile.auth_type = "agent"  # (it used the agent or default keys)
                 self._profiles.append(profile)
-        except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             self._profiles = []
 
     def _save_profiles(self):
         """Save connection profiles to disk (never their passwords)."""
-        self.PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
         data = []
         for p in self._profiles:
             d = dataclasses.asdict(p)
             d.pop("password", None)
             data.append(d)
-        with open(self.PROFILES_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        # (a full disk leaves the last list whole, and no connection lost)
+        partial = self.PROFILES_FILE.with_name(self.PROFILES_FILE.name + ".part")
+        try:
+            self.PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(partial, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(partial, self.PROFILES_FILE)
+        except OSError as e:
+            logger.warning(f"Saved servers not written: {e}")
 
     def _load_state(self):
         try:
             with open(self.STATE_FILE, "r") as f:
-                return json.load(f)
-        except (OSError, json.JSONDecodeError):
+                state = json.load(f)
+        except (OSError, ValueError):
             return {}
+        return state if isinstance(state, dict) else {}
 
     def _save_state(self, **state):
         try:
@@ -1186,7 +1127,7 @@ class ConnectionDialog(QDialog):
 
     def _rename_profile(self, index):
         profile = self._profiles[index]
-        name, ok = QInputDialog.getText(self, "Rename", "Name:", text=profile.name)
+        name, ok = QInputDialog.getText(self, "Rename", "Name", text=profile.name)
         name = name.strip()
         if ok and name:
             profile.name = name
@@ -1311,20 +1252,17 @@ class ConnectionDialog(QDialog):
             self._busy_timer.start()
         else:
             self._busy_timer.stop()
-        p = theme_manager.palette
         if state == "idle" or busy:
             self.result_mark.hide()
         elif state == "ok":
-            self.result_mark.set_state(p["status_on"], check=True)
+            self.result_mark.set_state("status_on", check=True)
             self.result_mark.show()
         else:
-            self.result_mark.set_state(p["status_off"])
+            self.result_mark.set_state("status_off")
             self.result_mark.show()
         self.result_label.setText(message if state != "idle" else "")
         self.result_label.setToolTip(detail)
-        self.result_label.setStyleSheet(
-            f"color: {p['text_strong']};" if state == "failed" else ""
-        )
+        set_tone(self.result_label, "error" if state == "failed" else None)
 
     def _update_busy_text(self):
         self.result_label.setText(waited(self._busy_text, self._busy_since))
@@ -1384,7 +1322,7 @@ class ConnectionDialog(QDialog):
             self._passphrase = saved
             return True
         text, ok = QInputDialog.getText(
-            self, "Passphrase", f"Passphrase for {os.path.basename(path)}:", QLineEdit.Password
+            self, "Passphrase", f"Passphrase for {os.path.basename(path)}", QLineEdit.Password
         )
         if not ok:
             return False
@@ -1498,7 +1436,11 @@ class ConnectionDialog(QDialog):
             self._set_result("idle")  # (the wait is now on the user)
             self.result_label.setText("Check the server’s key to go on")
             if self._trust(error):
-                trust_host_key(error.hostname, error.key)
+                try:
+                    trust_host_key(error.hostname, error.key)
+                except OSError as e:
+                    self._set_result("failed", "Couldn’t save the server’s key", str(e))
+                    return
                 self._start(test, params)
                 return
             self._set_result("failed", "Server key not trusted", str(error))
@@ -1516,7 +1458,7 @@ class ConnectionDialog(QDialog):
         kind = next((k for k in ("ed25519", "ecdsa") if k in key_type), "rsa")
         answer = QMessageBox.question(
             self,
-            "Unknown Server",
+            "Unknown server",
             f"SolarViewer does not know the server {e.hostname} yet.\n\n"
             f"Its {key_type} key fingerprint is:\n{e.fingerprint}\n\n"
             "Continue only if this matches the server's fingerprint (on the "

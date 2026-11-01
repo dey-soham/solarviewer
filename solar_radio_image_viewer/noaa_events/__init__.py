@@ -5,7 +5,7 @@ NOAA Solar Events module - Fetch and display NOAA solar events.
 from .noaa_events import (
     SolarEvent,
     EVENT_TYPES,
-    FLARE_CLASS_COLORS,
+    FLARE_CLASS_TONES,
     fetch_events_raw,
     parse_events,
     fetch_and_parse_events,
@@ -21,7 +21,7 @@ from .noaa_events_gui import (
 __all__ = [
     "SolarEvent",
     "EVENT_TYPES",
-    "FLARE_CLASS_COLORS",
+    "FLARE_CLASS_TONES",
     "fetch_events_raw",
     "parse_events",
     "fetch_and_parse_events",

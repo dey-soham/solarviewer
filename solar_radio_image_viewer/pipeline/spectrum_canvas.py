@@ -10,7 +10,6 @@ import os
 import re
 import warnings
 import numpy as np
-import numpy.ma as ma
 from datetime import datetime, timedelta
 from PyQt5.QtWidgets import (
     QWidget,
@@ -24,17 +23,26 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QColor, QFont
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, Normalize, PowerNorm
 from ..ui.background import Cancelled
 from ..ui.busy import busy
-from ..ui.styles import palette_for as get_palette
+from ..ui.geometry import fit_to_screen
+from ..ui.styles import FONT_META, FONT_SMALL, MONO_FAMILY, palette_for as get_palette, themed
+from ..ui.widgets import dialog_layout
 import pyqtgraph as pg
 from pyqtgraph import ColorMap
 
 from .spectra_common import _channel_medians
 logger = logging.getLogger(__name__)
+
+
+def tick_font():
+    """A plot's tick values: monospace, in the meta size."""
+    font = QFont(MONO_FAMILY, FONT_META)
+    font.setStyleHint(QFont.TypeWriter)
+    return font
 
 
 def _write_replacing(fileName, write, cancelled):
@@ -333,7 +341,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         # share of each channel when the automatic flags are on
         self.graphics_widget = pg.GraphicsLayoutWidget()
         self.graphics_widget.setFocusPolicy(Qt.StrongFocus)  # (for the arrow keys)
-        self.graphics_widget.setBackground("#161826")
+        self.graphics_widget.setBackground(self._theme_palette()["window"])
         grid = self.graphics_widget.ci.layout
         # (room above for the top tick labels, half of each sticking out)
         grid.setContentsMargins(0, 8, 0, 0)
@@ -519,14 +527,11 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 tick_values = np.linspace(vmin, vmax, 5)
 
             # Create custom tick labels for the colorbar axis
-            # Map raw values (vmin..vmax) to normalized positions (0..255)
+            # Map raw values to normalized positions (0..255): where the
+            # colour of that value is on the bar, in the scaling shown
             ticks = []
             for v in tick_values:
-                # Calculate the position in normalized [0, 255] space
-                norm_pos = (
-                    float((v - vmin) / (vmax - vmin) * 255.0) if vmax != vmin else 0.0
-                )
-                ticks.append((norm_pos, f"{v:.3g}"))
+                ticks.append((float(self._apply_scaling(v)) * 255.0, f"{v:.3g}"))
 
             self.colorbar_axis.setTicks([ticks])
 
@@ -1209,7 +1214,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 f"Freq slice at {time_label}",
             ]
             choice, ok = QInputDialog.getItem(
-                None, "Cross Section", "Which slice to plot?", options, 0, False
+                None, "Cross section", "Which slice to plot?", options, 0, False
             )
             if not ok:
                 return
@@ -1234,9 +1239,6 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
     def _show_profile(self, values, at_label, along_time):
         """A window with the profile and Save CSV / Save Plot buttons."""
-        theme_name = getattr(self.main_window, "current_theme", "dark")
-        palette = get_palette(theme_name)
-        text_color = palette.get("text", "white")
         values = np.asarray(values, dtype=np.float64)
         axis = self._time_axis if along_time else self._freq_axis
         if axis is not None:
@@ -1252,21 +1254,30 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         win = QWidget()
         win.setWindowTitle(title)
-        win.resize(800, 500)
-        layout = QVBoxLayout(win)
-        layout.setContentsMargins(6, 6, 6, 6)
+        fit_to_screen(win, 800, 500)
+        layout = dialog_layout(win)
         axis_items = {}
         if along_time and axis is not None:
             axis_items["bottom"] = TimeAxisItem(orientation="bottom")
             axis_items["bottom"].enableAutoSIPrefix(False)
         plot = pg.PlotWidget(title=title, axisItems=axis_items)
-        plot.setBackground(palette.get("base", "#1e1e2e"))
-        for side in ("left", "bottom"):
-            plot.getAxis(side).setPen(text_color)
-            plot.getAxis(side).setTextPen(text_color)
-        plot.setLabel("left", "Intensity", color=text_color)
-        plot.setLabel("bottom", x_label, color=text_color)
-        plot.plot(x, values, pen=pg.mkPen(palette.get("highlight", "#6366f1"), width=1.8))
+        curve = plot.plot(x, values)
+
+        def style(p):
+            # As the spectrum's own axes (_apply_canvas_theme_colors)
+            plot.setBackground(p["window"])
+            plot.setTitle(title, color=p["text_secondary"], size=f"{FONT_SMALL}pt")
+            for side, label in (("left", "Intensity"), ("bottom", x_label)):
+                axis = plot.getAxis(side)
+                axis.setPen(pg.mkPen(QColor(0, 0, 0, 0)))
+                axis.setTextPen(p["text_dim"])
+                axis.setTickFont(tick_font())
+                axis.setStyle(tickLength=0, tickTextOffset=8)
+                axis.setLabel(label, color=p["text_secondary"], **{"font-size": f"{FONT_META}pt"})
+            plot.getViewBox().setBorder(pg.mkPen(p["plot_grid"], width=1))
+            curve.setPen(pg.mkPen(p["highlight"], width=1.8))
+
+        themed(win, style)
         layout.addWidget(plot, 1)
 
         buttons = QHBoxLayout()
@@ -1274,11 +1285,11 @@ class PyQtGraphSpectrumCanvas(QWidget):
         win.saved_note.setObjectName("Hint")
         buttons.addWidget(win.saved_note)
         buttons.addStretch()
-        csv_btn = QPushButton("Save CSV")
+        csv_btn = QPushButton("Save CSV…")
         csv_btn.clicked.connect(
             lambda: self._save_profile_csv(win, x, values, at_label, along_time, axis is not None)
         )
-        plot_btn = QPushButton("Save Plot")
+        plot_btn = QPushButton("Save plot…")
         plot_btn.clicked.connect(
             lambda: self._save_profile_plot(win, x, values, at_label, title, x_label, along_time, axis is not None)
         )
@@ -1309,7 +1320,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
     def _save_profile_csv(self, parent, x, values, at_label, along_time, has_axis):
         fileName, _ = QFileDialog.getSaveFileName(
-            parent, "Save Profile as CSV",
+            parent, "Save profile as CSV",
             self._profile_file_stem(at_label, along_time) + ".csv", "CSV (*.csv)",
         )
         if not fileName:
@@ -1331,7 +1342,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
     def _save_profile_plot(self, parent, x, values, at_label, title, x_label, along_time, has_axis):
         fileName, chosen = QFileDialog.getSaveFileName(
-            parent, "Save Profile Plot",
+            parent, "Save profile plot",
             self._profile_file_stem(at_label, along_time) + ".png",
             "PNG (*.png);;PDF (*.pdf);;SVG (*.svg);;JPEG (*.jpg)",
         )
@@ -1349,7 +1360,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
             parent.saved_note.setText("Cancelled")
             return
         except (OSError, ValueError) as e:
-            QMessageBox.warning(parent, "Save Plot", f"Could not save:\n{e}")
+            QMessageBox.warning(parent, "Save plot", f"Could not save:\n{e}")
             return
         parent.saved_note.setText(f"Saved {os.path.basename(fileName)}")
         self.logger.info(f"Profile plot saved to {fileName}")
@@ -1479,7 +1490,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
     def _style_date_label(self):
         p = self._theme_palette()
         self.date_label.setText(
-            getattr(self, "_date_text", ""), color=p["text_secondary"], size="8pt"
+            getattr(self, "_date_text", ""), color=p["text_secondary"], size=f"{FONT_META}pt"
         )
 
     def _apply_canvas_theme_colors(self):
@@ -1490,10 +1501,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
         p = self._theme_palette()
         self.graphics_widget.setBackground(p["window"])
 
-        tick_font = QFont("monospace")
-        tick_font.setStyleHint(QFont.TypeWriter)
-        tick_font.setPointSize(8)
-        edge = p["border_light"]
+        ticks = tick_font()
+        edge = p["plot_grid"]
         for axis in (
             self.plot_item.getAxis("left"),
             self.plot_item.getAxis("bottom"),
@@ -1502,11 +1511,11 @@ class PyQtGraphSpectrumCanvas(QWidget):
         ):
             axis.setPen(pg.mkPen(QColor(0, 0, 0, 0)))
             axis.setTextPen(p["text_dim"])
-            axis.setTickFont(tick_font)
+            axis.setTickFont(ticks)
             axis.setStyle(tickLength=0, tickTextOffset=8)
         self.colorbar_plot.getAxis("bottom").setPen(pg.mkPen(QColor(0, 0, 0, 0)))
         left = self.plot_item.getAxis("left")
-        left.setLabel(text="MHz", color=p["text_secondary"], **{"font-size": "8pt"})
+        left.setLabel(text="MHz", color=p["text_secondary"], **{"font-size": f"{FONT_META}pt"})
         self.plot_item.vb.setBorder(pg.mkPen(edge, width=1))
         self.flag_plot.vb.setBorder(pg.mkPen(edge, width=1))
         self._style_date_label()
@@ -1514,7 +1523,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
         # The crosshair: text at 55%; the chip on the ground at 86% (the
         # dark theme's colours over a dark image, the light theme's over
         # a light one, whatever the theme)
-        ink, ground = ("#1d1f2b", "#ffffff") if self._image_is_light else ("#e9e9ed", "#161826")
+        over = get_palette("light" if self._image_is_light else "dark")
+        ink, ground = over["text"], over["plot_bg"]
         line = QColor(ink)
         line.setAlphaF(0.55)
         for item in (self.cross_v, self.cross_h):
@@ -1524,7 +1534,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self.chip.fill = pg.mkBrush(ground)
         self.chip.border = pg.mkPen(None)
         self.chip.setColor(ink)
-        self.chip.setFont(QFont(tick_font))
+        self.chip.setFont(ticks)
 
 
 class OverviewStrip(QWidget):
@@ -1542,7 +1552,7 @@ class OverviewStrip(QWidget):
 
     EDGE = 5  # px either side of an outline's edge that grab it
 
-    VEIL = 0.55  # the ground's opacity over the parts not shown
+    VEIL = 0.55  # the black's opacity over the parts not shown
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1654,13 +1664,15 @@ class OverviewStrip(QWidget):
         clip = QPainterPath()
         clip.addRoundedRect(rect, 4, 4)
         painter.setClipPath(clip)
-        painter.fillRect(rect, QColor(p["surface"]))
+        painter.fillRect(rect, QColor(p["plot_bg"]))
         if self._image is not None:
             painter.drawImage(rect, self._image)
 
-        # The veil, but over the part shown
-        veil = QColor(p["window"])
+        # The veil, but over the part shown: black whatever the theme, as
+        # the image's own ground is, so that it dims and never greys it
+        veil = QColor(Qt.black)
         veil.setAlphaF(self.VEIL)
+        over_image = get_palette("dark")
         x0 = rect.left() + self._view[0] * rect.width()
         x1 = rect.left() + self._view[1] * rect.width()
         whole = self._view[1] - self._view[0] >= 0.999
@@ -1673,33 +1685,32 @@ class OverviewStrip(QWidget):
             if x1 - x0 < 4:
                 x0, x1 = (x0 + x1) / 2 - 2, (x0 + x1) / 2 + 2
             painter.setClipping(False)
-            painter.setPen(QPen(QColor("#e7e5fe"), 2))  # (accent-200: over the image in both themes)
+            painter.setPen(QPen(QColor(over_image["highlight_knob"]), 2))
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(QRectF(x0 + 1, rect.top() + 1, x1 - x0 - 2, rect.height() - 2))
             painter.setClipPath(clip)
 
         # The kicker
         if self._image is not None:
-            font = QFont(self.font())
-            font.setPointSize(7)
+            font = QFont(self.font().family(), FONT_META)
             font.setLetterSpacing(QFont.PercentageSpacing, 110)
             painter.setFont(font)
             text = ("Whole file" + (f" · {self._span}" if self._span else "")).upper()
             box = painter.fontMetrics().boundingRect(text)
-            backing = QColor(p["window"])
-            backing.setAlphaF(0.7)
+            backing = QColor(Qt.black)
+            backing.setAlphaF(self.VEIL)
             painter.setPen(Qt.NoPen)
             painter.setBrush(backing)
             # (the advance counts the letter spacing; the bounding box does not)
             advance = painter.fontMetrics().horizontalAdvance(text)
             painter.drawRoundedRect(QRectF(rect.left() + 3, rect.top() + 3, advance + 10, box.height() + 2), 3, 3)
-            painter.setPen(QColor(p["text_strong"]))
+            painter.setPen(QColor(over_image["text_strong"]))
             painter.drawText(QRectF(rect.left() + 7, rect.top() + 4, rect.width() - 12, box.height()),
                              Qt.AlignLeft | Qt.AlignVCenter, text)
 
         # The edge
         painter.setClipping(False)
-        painter.setPen(QPen(QColor(p["border_light"]), 1))
+        painter.setPen(QPen(QColor(p["plot_grid"]), 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(rect, 4, 4)
         painter.end()

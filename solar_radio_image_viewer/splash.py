@@ -14,7 +14,7 @@ from PyQt5.QtCore import Qt, QRectF, QTimer, QPointF
 import os
 import math
 import time
-from .ui.styles import theme_manager
+from .ui.styles import FONT_BODY, FONT_SMALL, theme_manager
 
 
 FRAME_S = 0.03  # between frames of the animation
@@ -25,12 +25,6 @@ class ModernSplashScreen(QSplashScreen):
     A premium branded splash screen for SolarViewer.
     Adapts to dark/light theme with golden sun accents and subtle animations.
     """
-
-    # Brand colors - golden sun theme (consistent across themes)
-    SOLAR_GOLD = "#d4a535"
-    SOLAR_AMBER = "#e8b84a"
-    SOLAR_ORANGE = "#f5a623"
-    CORONA_GLOW = "#ffd700"
 
     def __init__(self, pixmap=None, version="1.0.0"):
         if not pixmap:
@@ -68,20 +62,14 @@ class ModernSplashScreen(QSplashScreen):
 
     def _setup_colors(self):
         """Configure colors based on theme."""
-        if self.is_dark:
-            # Dark theme - space black with warm glow
-            self.bg_primary = QColor("#080810")
-            self.bg_secondary = QColor("#0c0c18")
-            self.text_primary = QColor("#f8f8fc")
-            self.text_secondary = QColor("#7a7a8c")
-            self.border_alpha = 96
-        else:
-            # Light theme - clean white with warm accents
-            self.bg_primary = QColor("#ffffff")
-            self.bg_secondary = QColor("#faf8f5")
-            self.text_primary = QColor("#1a1a1a")
-            self.text_secondary = QColor("#6b6b7a")
-            self.border_alpha = 80
+        self.palette_keys = theme_manager.palette
+        self.bg_primary = QColor(self.palette_keys["brand_ground"])
+        self.bg_secondary = QColor(self.palette_keys["brand_ground_edge"])
+        self.text_primary = QColor(self.palette_keys["brand_text"])
+        self.text_secondary = QColor(self.palette_keys["brand_text_dim"])
+        self.solar_gold = self.palette_keys["brand_gold"]
+        self.solar_orange = self.palette_keys["brand_orange"]
+        self.border_alpha = 96 if self.is_dark else 80
 
     def _load_icon(self):
         """Load the app icon."""
@@ -186,10 +174,8 @@ class ModernSplashScreen(QSplashScreen):
         # Outer shadow
         for i in range(3, 0, -1):
             shadow_rect = rect.adjusted(-i * 2, -i * 2, i * 2, i * 2)
-            if self.is_dark:
-                shadow_color = QColor(0, 0, 0, 40 * (4 - i))
-            else:
-                shadow_color = QColor(0, 0, 0, 20 * (4 - i))
+            shadow_color = QColor(self.palette_keys["brand_shadow"])
+            shadow_color.setAlpha((40 if self.is_dark else 20) * (4 - i))
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(shadow_color))
             painter.drawRoundedRect(shadow_rect, 16 + i, 16 + i)
@@ -206,7 +192,9 @@ class ModernSplashScreen(QSplashScreen):
 
         # Subtle star field effect (dark theme only)
         if self.is_dark:
-            painter.setPen(QPen(QColor(255, 255, 255, 15), 1))
+            star_color = QColor(self.palette_keys["brand_star"])
+            star_color.setAlpha(15)
+            painter.setPen(QPen(star_color, 1))
             star_positions = [
                 (0.1, 0.2),
                 (0.85, 0.15),
@@ -223,7 +211,7 @@ class ModernSplashScreen(QSplashScreen):
                 painter.drawPoint(int(x), int(y))
 
         # Golden border accent
-        border_color = QColor(self.SOLAR_GOLD)
+        border_color = QColor(self.solar_gold)
         border_color.setAlpha(self.border_alpha)
 
         painter.setBrush(Qt.NoBrush)
@@ -240,28 +228,25 @@ class ModernSplashScreen(QSplashScreen):
         pulse = 0.7 + 0.3 * math.sin(self._glow_phase)
         corona_size = 90 + 15 * math.sin(self._glow_phase * 0.7)
 
+        glow1, glow2, glow3 = (
+            self.palette_keys[key] for key in ("brand_glow", "brand_glow_mid", "brand_glow_edge")
+        )
         if self.is_dark:
             # Dark theme: vibrant orange/gold corona like the original
             corona = QRadialGradient(center_x, center_y, corona_size)
-            corona.setColorAt(
-                0, QColor(self.CORONA_GLOW + hex(int(40 * pulse))[2:].zfill(2))
-            )
-            corona.setColorAt(
-                0.3, QColor(self.SOLAR_AMBER + hex(int(25 * pulse))[2:].zfill(2))
-            )
-            corona.setColorAt(
-                0.6, QColor(self.SOLAR_GOLD + hex(int(12 * pulse))[2:].zfill(2))
-            )
+            corona.setColorAt(0, QColor(glow1 + hex(int(40 * pulse))[2:].zfill(2)))
+            corona.setColorAt(0.3, QColor(glow2 + hex(int(25 * pulse))[2:].zfill(2)))
+            corona.setColorAt(0.6, QColor(glow3 + hex(int(12 * pulse))[2:].zfill(2)))
             corona.setColorAt(1, Qt.transparent)
         else:
             # Light theme: darker golden/bronze glow for contrast on white
             corona = QRadialGradient(center_x, center_y, corona_size)
             # Darker, more saturated colors for visibility
-            glow1 = QColor("#c47f17")  # Darker bronze center
+            glow1 = QColor(glow1)  # Darker bronze center
             glow1.setAlpha(int(100 * pulse))
-            glow2 = QColor("#b8860b")  # Dark goldenrod
+            glow2 = QColor(glow2)  # Dark goldenrod
             glow2.setAlpha(int(65 * pulse))
-            glow3 = QColor("#a67c00")  # Deep gold
+            glow3 = QColor(glow3)  # Deep gold
             glow3.setAlpha(int(35 * pulse))
             corona.setColorAt(0, glow1)
             corona.setColorAt(0.35, glow2)
@@ -295,14 +280,10 @@ class ModernSplashScreen(QSplashScreen):
             # Restore painter state
             painter.restore()
         else:
-            # Fallback
-            painter.setPen(QColor(self.SOLAR_GOLD))
-            painter.setFont(QFont("Segoe UI Emoji", 44))
-            painter.drawText(
-                QRectF(rect.left(), center_y - 30, rect.width(), 60),
-                Qt.AlignCenter,
-                "☀",
-            )
+            # Fallback: the sun's disc
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(self.solar_gold))
+            painter.drawEllipse(QPointF(center_x, center_y), 24, 24)
 
     def _draw_text(self, painter, rect, icon_y):
         """Draw title and version."""
@@ -325,8 +306,8 @@ class ModernSplashScreen(QSplashScreen):
         version_y = title_y + 32
         version_text = f"v{self.version}"
 
-        painter.setPen(QColor(self.SOLAR_GOLD))
-        version_font = QFont("Inter", 10)
+        painter.setPen(QColor(self.solar_gold))
+        version_font = QFont("Inter", FONT_BODY)
         version_font.setWeight(QFont.Medium)
         painter.setFont(version_font)
 
@@ -346,7 +327,7 @@ class ModernSplashScreen(QSplashScreen):
         status_y = rect.bottom() - bottom_pad - bar_height - 22
 
         painter.setPen(self.text_secondary)
-        status_font = QFont("Inter", 9)
+        status_font = QFont("Inter", FONT_SMALL)
         painter.setFont(status_font)
 
         text_rect = QRectF(rect.left() + pad_x, status_y, rect.width() - 2 * pad_x, 18)
@@ -354,7 +335,7 @@ class ModernSplashScreen(QSplashScreen):
 
         # Percentage
         if self.progress > 0:
-            painter.setPen(QColor(self.SOLAR_GOLD))
+            painter.setPen(QColor(self.solar_gold))
             painter.drawText(
                 text_rect, Qt.AlignRight | Qt.AlignVCenter, f"{int(self.progress)}%"
             )
@@ -380,8 +361,8 @@ class ModernSplashScreen(QSplashScreen):
 
             # Gradient from gold to amber
             fill_grad = QLinearGradient(fill_rect.left(), 0, fill_rect.right(), 0)
-            fill_grad.setColorAt(0, QColor(self.SOLAR_GOLD))
-            fill_grad.setColorAt(1, QColor(self.SOLAR_ORANGE))
+            fill_grad.setColorAt(0, QColor(self.solar_gold))
+            fill_grad.setColorAt(1, QColor(self.solar_orange))
 
             painter.setBrush(QBrush(fill_grad))
             painter.drawRoundedRect(fill_rect, 1.5, 1.5)

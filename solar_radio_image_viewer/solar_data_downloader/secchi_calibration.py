@@ -46,7 +46,6 @@ import sys
 import tempfile
 import time
 import urllib.request
-import warnings
 from datetime import datetime, timedelta, timezone
 
 import numpy as np

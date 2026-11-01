@@ -1,8 +1,9 @@
 """
 Pieces every window is built from, so they all read the same way.
 
-- ``button_bar``: the row of buttons at the bottom of a dialog, laid out
-  the platform's way, with the one main action outlined in the accent
+- ``dialog_layout``: a dialog's outer layout, with the usual margins
+- ``button_bar``: the row of buttons at the bottom of a dialog, with the one
+  main action last and outlined in the accent
 - ``section``: a titled block inside a dialog or panel, lighter than a
   group box (no border), for grouping within an already framed area
 - ``kicker``: a block's small-capitals heading in the accent
@@ -10,6 +11,7 @@ Pieces every window is built from, so they all read the same way.
 - ``link_button``: a text button in the accent with no border
 - ``toggle_row``: a switch with its name and settings button on a surface
 - ``vrule``: a short vertical line between groups in a bar
+- ``empty_note``: what an area without content says, in the middle of it
 - ``StatusDotButton``: a status bar button led by a green or red dot
 """
 
@@ -26,14 +28,23 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from .styles import SPACE_S, STATUS_DOT, theme_manager
+from .styles import SPACE_L, SPACE_M, SPACE_S, STATUS_DOT, theme_manager
+
+
+def dialog_layout(dialog):
+    """``dialog``'s vertical layout: 16px margins, 12px between blocks."""
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
+    layout.setSpacing(SPACE_M)
+    return layout
 
 
 def button_bar(primary=None, secondary=None, extras=(), parent=None):
     """A dialog's buttons: ``primary`` ("Apply", slot) is the main action,
     outlined in the accent and the default; ``secondary`` ("Cancel", slot)
     closes or cancels; ``extras`` [("Reset", slot), ...] are other actions,
-    kept to the left. The platform decides the order on the right.
+    kept to the left, with ``secondary`` then ``primary`` at the right (the
+    stylesheet's button-layout, the same on every platform).
 
     Returns (box, buttons) with ``buttons`` the created QPushButtons by
     their text, for enabling, hiding or renaming later.
@@ -187,6 +198,16 @@ def vrule(height=20, parent=None):
     return line
 
 
+def empty_note(text, parent=None):
+    """``text`` in muted type, centred: what an empty list or plot area says
+    ("No data loaded", "Choose a table to see its solutions")."""
+    label = QLabel(text, parent)
+    label.setObjectName("Hint")
+    label.setAlignment(Qt.AlignCenter)
+    label.setWordWrap(True)
+    return label
+
+
 class _UnitPlacer(QObject):
     """Keeps an inline unit at the right end of its entry as it resizes."""
 
@@ -225,10 +246,9 @@ def inline_unit(entry, unit):
 
 class StatusDotButton(QPushButton):
     """A StatusButton led by a round dot, as modern status bars show a
-    connection: green while ``on`` (``set_on``), red while off (the
-    palette's status_on and status_off, as the remote browser's). Its
-    text still names the state, so the dot's colour is never the only
-    sign of it."""
+    connection: green while ``on`` (``set_on``), quiet while off, the
+    state it rests in. Its text still names the state, so the dot's
+    colour is never the only sign of it."""
 
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
@@ -245,7 +265,7 @@ class StatusDotButton(QPushButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(theme_manager.palette["status_on" if self._on else "status_off"]))
+        painter.setBrush(QColor(theme_manager.palette["status_on" if self._on else "text_faint"]))
         radius = STATUS_DOT / 2
         # Where the text would begin without it (inside the 1px border),
         # level with the middle of the capitals

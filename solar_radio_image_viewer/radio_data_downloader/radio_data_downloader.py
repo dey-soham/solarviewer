@@ -601,7 +601,7 @@ def rstn_spectrum(
         if not os.path.exists(raw):
             _say(progress, f"Downloading {item['name']}")
             fetch(item["url"], raw, should_stop)
-        raw_paths.append(raw)
+            raw_paths.append(raw)  # (a file that was already there stays)
         if counts:
             counts(i + 1, i, total)
         times, freqs, levels = read_srs(raw)
@@ -854,13 +854,13 @@ def ecallisto_spectra(
         try:
             if not os.path.exists(raw):
                 fetch(item["url"], raw, should_stop)
+                raw_paths.append(raw)  # (a file that was already there stays)
         except Cancelled:
             raise
         except Exception as e:
             _say(progress, f"Could not download {item['name']}: {e}")
             continue
         fetched += 1
-        raw_paths.append(raw)
         if counts:
             counts(fetched, 0, total)
         _say(progress, f"Downloaded {item['name']}")
@@ -964,7 +964,7 @@ def download_and_convert_ecallisto(start_time: str, end_time: str, observatory: 
 def _hhmm(day, text, after=None):
     """``text`` (HHMM or HH:MM, maybe B-prefixed) on ``day`` as a datetime;
     past midnight when it is before ``after``."""
-    text = text.lstrip("BEU").replace(":", "")
+    text = text.lstrip("ABEU").replace(":", "")
     if not re.fullmatch(r"\d{4}", text):
         return None
     hour, minute = int(text[:2]), int(text[2:])
@@ -979,13 +979,16 @@ def _hhmm(day, text, after=None):
 def radio_bursts(day):
     """The radio bursts reported on ``day``: dicts with start, end (UT
     datetimes), type ("III", "II"...), stations (e-CALLISTO station names
-    or RSTN station names) and source ("e-CALLISTO" or "NOAA"). Lists that
-    cannot be fetched give nothing."""
+    or RSTN station names) and source ("e-CALLISTO" or "NOAA"). A list that
+    cannot be fetched gives nothing; raises OSError when neither could."""
     from ..noaa_events import noaa_events
 
     bursts = []
+    answered = False
     try:
-        for b in noaa_events.fetch_and_parse_ecallisto_bursts(day):
+        raw = noaa_events.fetch_ecallisto_bursts_raw(day)
+        answered = bool(raw)
+        for b in noaa_events.parse_ecallisto_bursts(raw or "", day):
             start = _hhmm(day, b.begin_time)
             end = _hhmm(day, b.end_time, after=start)
             if start is None:
@@ -997,7 +1000,9 @@ def radio_bursts(day):
         pass
     try:
         names = {site["code"]: name for name, site in RSTN_SITES.items()}
-        for e in noaa_events.fetch_and_parse_events(day) or []:
+        events = noaa_events.fetch_and_parse_events(day)
+        answered = answered or events is not None
+        for e in events or []:
             if e.event_type != "RSP" or e.observatory not in names or not e.begin_time:
                 continue
             start = _hhmm(day, e.begin_time)
@@ -1009,6 +1014,8 @@ def radio_bursts(day):
                            "stations": [names[e.observatory]], "source": "NOAA"})
     except Exception:
         pass
+    if not answered:
+        raise OSError(f"No burst list could be read for {day}")
     return sorted(bursts, key=lambda b: b["start"])
 
 

@@ -40,7 +40,7 @@ class MainWindowMixin:
                 self.colormap_combo.addItem(colormap)
             self.colormap_combo.setCurrentText(colormap)
 
-        stretch = {"histeq": "Histogram Equalization", "zscale": "ZScale"}.get(
+        stretch = {"histeq": "Histogram equalization", "zscale": "ZScale"}.get(
             text("stretch_combo"), text("stretch_combo").capitalize()
         )
         index = self.stretch_combo.findText(stretch)
@@ -69,7 +69,7 @@ class MainWindowMixin:
         imagename = getattr(tab, "imagename", None)
         if tab is None or getattr(tab, "current_image_data", None) is None:
             QMessageBox.information(
-                self, "No Image", "Open an image in the main window first."
+                self, "No image", "Open an image in the main window first."
             )
             return
 

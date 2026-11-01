@@ -42,7 +42,7 @@ class DocumentTabBar(QTabBar):
         if index >= 0:
             # A modal dialog rather than in-place editing (which crashed)
             new_text, ok = QInputDialog.getText(
-                self, "Edit Tab Name", "Enter new tab name:", text=self.tabText(index)
+                self, "Edit tab name", "Enter new tab name:", text=self.tabText(index)
             )
             if ok and new_text:
                 self.setTabText(index, new_text)
@@ -194,22 +194,5 @@ class DocumentTabs(QStackedWidget):
         self._bar.setTabsClosable(closable)
 
     def refresh_theme(self):
-        """The add and close icons are pictures of the theme."""
+        """The add icon is a picture of the theme (the close icons come with the role)."""
         self.add_tab_button.setIcon(QIcon(themed_icon("add_tab_default.png")))
-        close_default = themed_icon("close_tab_default.png")
-        close_hover = themed_icon("close_tab_hover.png")
-        self._bar.setStyleSheet(
-            f"""
-            QTabBar::close-button {{
-                image: url("{close_default}");
-                subcontrol-position: right;
-                subcontrol-origin: padding;
-                margin-left: 2px;
-                width: 14px;
-                height: 14px;
-            }}
-            QTabBar::close-button:hover {{
-                image: url("{close_hover}");
-            }}
-            """
-        )

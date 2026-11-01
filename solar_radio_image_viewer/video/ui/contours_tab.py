@@ -24,6 +24,7 @@ from ...processing.contour_layers import (
     new_contour_layer,
 )
 from ...ui.busy import busy
+from .helpers import hint
 
 
 class ContoursTabMixin:
@@ -35,8 +36,8 @@ class ContoursTabMixin:
         scroll.setWidgetResizable(True)
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 12, 8, 12)
+        layout.setSpacing(12)
         scroll.setWidget(content)
 
         info = QLabel(
@@ -57,24 +58,24 @@ class ContoursTabMixin:
         layout.addWidget(self.contour_layer_list)
 
         buttons = QHBoxLayout()
-        edit_btn = QPushButton("Edit Layers...")
+        edit_btn = QPushButton("Edit layers…")
         edit_btn.setToolTip("Add, change or remove contour layers, and set the legend")
         edit_btn.clicked.connect(self._edit_contour_layers)
         buttons.addWidget(edit_btn)
-        copy_btn = QPushButton("Copy from Main Window")
+        copy_btn = QPushButton("Copy from main window")
         copy_btn.setToolTip(
             "Use the contour layers of the image open in the main window"
         )
         copy_btn.clicked.connect(self._copy_viewer_contours)
         buttons.addWidget(copy_btn)
-        clear_btn = QPushButton("Remove All")
+        clear_btn = QPushButton("Remove all")
         clear_btn.clicked.connect(lambda: self._set_contour_layers([]))
         buttons.addWidget(clear_btn)
         buttons.addStretch()
         layout.addLayout(buttons)
 
         levels_row = QHBoxLayout()
-        levels_row.addWidget(QLabel("Levels from:"))
+        levels_row.addWidget(hint("Levels from"))
         self.contour_level_combo = QComboBox()
         for text, mode in (
             ("Each frame", "frame"),
@@ -115,7 +116,7 @@ class ContoursTabMixin:
                 f"{contour_layer_name(layer, 'Image')}  —  {kinds.get(layer.get('source'), '')}{state}"
             )
         if not self.contour_layers:
-            self.contour_layer_list.addItem("No contours")
+            self.contour_layer_list.addItem("No contour layers. Use Edit layers… to add one.")
 
     def _edit_contour_layers(self):
         layers = self.contour_layers or [new_contour_layer()]
@@ -153,7 +154,7 @@ class ContoursTabMixin:
         layers = getattr(tab, "contour_layers", None)
         if not layers:
             QMessageBox.information(
-                self, "No Contours", "The main window has no contour layers."
+                self, "No contours", "The main window has no contour layers."
             )
             return
         enabled = tab.show_contours_checkbox.isChecked()

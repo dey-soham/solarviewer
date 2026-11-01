@@ -18,7 +18,7 @@ class FormatConversionDialog(BatchWindow):
     SUMMARY_ROWS = ("From", "To", "Output", "Speed")
 
     def __init__(self, parent=None, current_file=None):
-        super().__init__(parent, "Convert Image Format")
+        super().__init__(parent, "Convert image format")
         self.current_file = current_file
         folder = os.path.dirname(current_file) if current_file else ""
         self.input_block(folder, "*.image")
@@ -137,16 +137,21 @@ def _format_conversion_worker(args):
         # FITS files are always individual files.
         is_source_fits = os.path.isfile(infile_abs)
         is_source_casa = os.path.isdir(infile_abs)
-        
+
+        # (the output folder can be the input's, and the steps below remove
+        # the output first)
+        if os.path.realpath(infile_abs) == os.path.realpath(outfile_abs):
+            return False, infile, f"Skip {os.path.basename(infile)}: the output would replace it"
+
         if is_target_fits and is_source_fits:
             shutil.copy2(infile_abs, outfile_abs)
-            return True, infile, f"Skip (already FITS) -> Copied {os.path.basename(infile)}"
+            return True, infile, f"Copied {os.path.basename(infile)} (already FITS)"
             
         if not is_target_fits and is_source_casa:
             if os.path.exists(outfile_abs):
                 shutil.rmtree(outfile_abs)
             shutil.copytree(infile_abs, outfile_abs)
-            return True, infile, f"Skip (already CASA) -> Copied {os.path.basename(infile)}"
+            return True, infile, f"Copied {os.path.basename(infile)} (already a CASA image)"
 
         # In a separate process
         if is_target_fits:
@@ -164,7 +169,7 @@ def _format_conversion_worker(args):
         except CasaTaskError as e:
             return False, infile, f"Error converting {os.path.basename(infile)}: {e}"
 
-        return True, infile, f"Converted {os.path.basename(infile)} -> {'FITS' if is_target_fits else 'CASA'}"
+        return True, infile, f"Converted {os.path.basename(infile)} to {'FITS' if is_target_fits else 'a CASA image'}"
         
     except Exception as e:
         return False, infile, f"Failed {os.path.basename(infile)}: {str(e)}"

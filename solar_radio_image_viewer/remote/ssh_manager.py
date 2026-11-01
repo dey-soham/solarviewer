@@ -205,9 +205,14 @@ class SSHConnection:
         """Load ~/.ssh/config if it exists."""
         config_path = Path.home() / ".ssh" / "config"
         if config_path.exists():
-            self._ssh_config = SSHConfig()
-            with open(config_path) as f:
-                self._ssh_config.parse(f)
+            config = SSHConfig()
+            try:
+                with open(config_path) as f:
+                    config.parse(f)
+            except Exception as e:  # (a file paramiko can't read needn't stop us)
+                logger.warning(f"[SSH] Ignoring ~/.ssh/config: {e}")
+                return
+            self._ssh_config = config
 
     def _resolve_host(self, host: str) -> dict:
         """
@@ -222,16 +227,19 @@ class SSHConnection:
         }
 
         if self._ssh_config:
-            config = self._ssh_config.lookup(host)
-            if "hostname" in config:
-                result["hostname"] = config["hostname"]
-            if "port" in config:
-                result["port"] = int(config["port"])
-            if "user" in config:
-                result["user"] = config["user"]
-            if "identityfile" in config:
-                # Take the first identity file
-                result["identityfile"] = os.path.expanduser(config["identityfile"][0])
+            try:
+                config = self._ssh_config.lookup(host)
+                if "hostname" in config:
+                    result["hostname"] = config["hostname"]
+                if "port" in config:
+                    result["port"] = int(config["port"])
+                if "user" in config:
+                    result["user"] = config["user"]
+                if "identityfile" in config:
+                    # Take the first identity file
+                    result["identityfile"] = os.path.expanduser(config["identityfile"][0])
+            except Exception as e:  # (a bad Port, or a Match paramiko can't run)
+                logger.warning(f"[SSH] ~/.ssh/config entry of {host} not used in full: {e}")
 
         return result
 
@@ -305,10 +313,11 @@ class SSHConnection:
                 connect_kwargs["allow_agent"] = False
             elif actual_key and os.path.exists(actual_key):
                 # When explicit key is provided, disable agent to avoid hardware token issues
+                # (a key only named by ~/.ssh/config may be one the agent holds unlocked)
                 connect_kwargs["key_filename"] = actual_key
                 if passphrase:
                     connect_kwargs["passphrase"] = passphrase
-                connect_kwargs["allow_agent"] = False
+                connect_kwargs["allow_agent"] = key_path is None
             else:
                 # Only use agent when no explicit credentials provided
                 connect_kwargs["allow_agent"] = True
@@ -320,8 +329,25 @@ class SSHConnection:
             if transport:
                 transport.set_keepalive(30)  # Send keep-alive every 30 seconds
 
-            # Open SFTP channel
-            self._sftp = self._client.open_sftp()
+            # Open SFTP channel. It has no timeout of its own: closing the
+            # connection after ``timeout`` ends the wait.
+            timed_out = threading.Event()
+
+            def give_up():
+                timed_out.set()
+                self.abort()
+
+            watchdog = threading.Timer(timeout, give_up)
+            watchdog.daemon = True
+            watchdog.start()
+            try:
+                self._sftp = self._client.open_sftp()
+            except Exception:
+                if timed_out.is_set():
+                    raise SSHConnectionError(f"Timed out: no SFTP session after {timeout:.0f} s")
+                raise
+            finally:
+                watchdog.cancel()
 
             self._host = actual_host
             self._port = actual_port
@@ -357,6 +383,9 @@ class SSHConnection:
         except paramiko.SSHException as e:
             self._cleanup()
             raise SSHConnectionError(f"SSH error: {e}")
+        except SSHConnectionError:
+            self._cleanup()
+            raise
         except Exception as e:
             self._cleanup()
             raise SSHConnectionError(f"Connection failed: {e}")

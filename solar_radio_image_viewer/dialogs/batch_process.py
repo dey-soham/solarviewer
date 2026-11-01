@@ -1,5 +1,5 @@
 """
-Batch Processing: the flux of each image in a list, measured in a worker
+Batch processing: the flux of each image in a list, measured in a worker
 process, with progress and Stop.
 """
 
@@ -13,9 +13,13 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QVBoxLayout,
 )
 
+from PyQt5.QtCore import Qt
+
 from ..ui.batch import BatchWindow
+from ..ui.widgets import empty_note
 
 
 def measure_flux(task):
@@ -25,31 +29,36 @@ def measure_flux(task):
         from ..processing.image_data import get_pixel_values_from_image
 
         pix, _, _ = get_pixel_values_from_image(imagename, "I", threshold)
-        flux = float(np.sum(pix))
+        flux = float(np.nansum(pix))  # (blanked pixels hold no flux)
         return True, f"threshold={threshold}, flux={flux:.2f}"
     except Exception as e:
         return False, f"ERROR - {str(e)}"
 
 
 class BatchProcessDialog(BatchWindow):
-    VERB = "Run Process"
-    RUNNING = "Processing"
+    VERB = "Measure"
+    RUNNING = "Measuring"
     NOUN = ("image", "images")
     SUMMARY_ROWS = ("Threshold",)
 
     def __init__(self, parent=None):
-        super().__init__(parent, "Batch Processing")
+        super().__init__(parent, "Batch processing")
         self._results = []
         layout, _ = self.block("Images")
         self.image_list = QListWidget()
         layout.addWidget(self.image_list)
-        self.add_button = QPushButton("Add Image")
+        # (over the list, whose items it does not stop being clicked)
+        self.empty_label = empty_note("Add the CASA images to measure")
+        self.empty_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        QVBoxLayout(self.image_list.viewport()).addWidget(self.empty_label)
+        self.add_button = QPushButton("Add image…")
         self.add_button.setAutoDefault(False)
-        self.remove_button = QPushButton("Remove Selected")
+        self.remove_button = QPushButton("Remove selected")
         self.remove_button.setAutoDefault(False)
         ctrl_layout = QHBoxLayout()
         ctrl_layout.addWidget(self.add_button)
         ctrl_layout.addWidget(self.remove_button)
+        ctrl_layout.addStretch()
         layout.addLayout(ctrl_layout)
         self.threshold_spin = QSpinBox()
         self.threshold_spin.setRange(1, 9999)
@@ -68,7 +77,7 @@ class BatchProcessDialog(BatchWindow):
 
     def add_image(self):
         directory = QFileDialog.getExistingDirectory(
-            self, "Select a CASA Image Directory"
+            self, "Select a CASA image folder"
         )
         if directory:
             self.image_list.addItem(directory)
@@ -90,7 +99,9 @@ class BatchProcessDialog(BatchWindow):
             "sub": "with their total flux",
             "rows": {"Threshold": str(self.threshold_spin.value())},
             "files": images,
+            "verb": f"Measure {n} image{'s' if n != 1 else ''}" if images else "Measure",
         }
+        self.empty_label.setVisible(not images)
         if not images:
             info["problem"] = "Add the images to process"
         return info
@@ -118,4 +129,4 @@ class BatchProcessDialog(BatchWindow):
 
     def batch_finished(self, aborted):
         if not aborted:
-            QMessageBox.information(self, "Batch Results", "\n".join(self._results))
+            QMessageBox.information(self, "Batch results", "\n".join(self._results))

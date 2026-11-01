@@ -9,6 +9,7 @@ button that names what it opens. A server's files are fetched into the
 RemoteFileCache before they are opened. The pieces are in browser_parts.
 """
 
+import logging
 import os
 import posixpath
 import socket
@@ -73,6 +74,8 @@ from ..ui.activity import ActivityLabel
 from ..ui.geometry import fit_to_screen
 from ..ui.styles import set_hand_cursor, theme_manager
 from ..ui.widgets import segmented
+
+logger = logging.getLogger(__name__)
 
 # Seconds a listing or a header read waits for the server to say anything.
 # (The fast listing says nothing until it has walked the folder.)
@@ -261,7 +264,21 @@ except Exception as exc:
 
                 out_data = stdout.read().decode("utf-8").strip()
                 stderr.read()
+                # (recv_exit_status never gives up on a server that closes
+                # its output and sends no status: closing the channel ends it)
+                timed_out = threading.Event()
+
+                def give_up(channel=self._channel):
+                    timed_out.set()
+                    _close_later(channel)
+
+                watchdog = threading.Timer(SERVER_TIMEOUT, give_up)
+                watchdog.daemon = True
+                watchdog.start()
                 exit_status = stdout.channel.recv_exit_status()
+                watchdog.cancel()
+                if timed_out.is_set():
+                    raise socket.timeout()
 
                 if self._cancelled:
                     return
@@ -291,11 +308,11 @@ except Exception as exc:
                         self.finished.emit(entries)
                         return  # Success!
                     except Exception as e:
-                        print(f"[SSH-List] Fast path JSON parse failed: {e}")
+                        logger.debug(f"[SSH-List] Fast path JSON parse failed: {e}")
                 else:
-                    print("[SSH-List] Fast path failed, falling back to SFTP")
+                    logger.debug("[SSH-List] Fast path failed, falling back to SFTP")
             except Exception as e:
-                print(f"[SSH-List] Fast path exception: {e}, falling back to SFTP")
+                logger.debug(f"[SSH-List] Fast path exception: {e}, falling back to SFTP")
                 self.partial = isinstance(e, socket.timeout)
 
             if self._cancelled:
@@ -304,7 +321,7 @@ except Exception as exc:
                 _close_later(self._channel)  # (timed out: its command may run on)
 
             # FALLBACK: Use SFTP loop (slow for large dirs)
-            print(f"[SSH-List] SFTP fallback: listing {self.path}")
+            logger.debug(f"[SSH-List] SFTP fallback: listing {self.path}")
             # Create our own SFTP channel for this thread
             if self.connection.is_connected():
                 self._sftp = self.connection.open_sftp()
@@ -353,7 +370,7 @@ except Exception as exc:
                 self.finished.emit(entries)
 
         except Exception as e:
-            print(f"[SSH-List] ERROR: {e}")
+            logger.warning(f"[SSH-List] {e}")
             if not self._cancelled:
                 if isinstance(e, socket.timeout):
                     self.error.emit(f"the server did not answer for {SERVER_TIMEOUT} s")
@@ -728,7 +745,7 @@ class RemoteFileBrowser(QDialog):
         self._connected_seen = connection.is_connected()
 
         self.setModal(True)
-        self.setMinimumSize(760, 480)
+        self.setMinimumSize(880, 480)
         fit_to_screen(self, 1040, 660)
         self._build()
         self._update_title()
@@ -919,7 +936,7 @@ class RemoteFileBrowser(QDialog):
         row.setContentsMargins(16, 0, 16, 0)
         row.setSpacing(8)
         key = "⌘L" if sys.platform == "darwin" else "Ctrl+L"
-        self._hint = f"Double-click a folder to open it · {key} to type a path"
+        self._hint = f"Select an image, or double-click a folder to open it · {key} to type a path"
         self.hint_label = QLabel(self._hint)
         self.hint_label.setObjectName("Meta")
         row.addWidget(self.hint_label, 1)
@@ -1025,6 +1042,8 @@ class RemoteFileBrowser(QDialog):
     def _load_initial_directory(self):
         """The folder last shown on this server (its home folder if that
         is gone), else its home folder."""
+        if self.source != "remote":
+            return  # (Local chosen before this ran)
         last = RemoteFileBrowser._last_paths.get(self.connection.host)
         if last:
             self._navigate(last, remember=False, fallback=True)
@@ -1131,8 +1150,10 @@ class RemoteFileBrowser(QDialog):
         if wanted is not None and self.source == "remote":
             self._navigate(home, remember=wanted[0])
 
-    def _set_source(self, source):
-        """Browse the server's files ("remote") or this computer's ("local")."""
+    def _set_source(self, source, load_initial=False):
+        """Browse the server's files ("remote") or this computer's ("local");
+        ``load_initial``: a server just connected to, not the folder shown
+        before on another."""
         self.remote_button.setChecked(source == "remote")
         self.local_button.setChecked(source == "local")
         if source == self.source:
@@ -1147,8 +1168,11 @@ class RemoteFileBrowser(QDialog):
                 last = QSettings("SolarViewer", "SolarViewer").value("last_image_folder", "")
                 start = last if last and os.path.isdir(str(last)) else os.path.expanduser("~")
             self._navigate(str(start), remember=False)
-        else:
+        elif not load_initial:
             self._navigate(self.current_path, remember=False)
+        else:
+            self.current_path = "/"
+            self._load_initial_directory()
 
     def _focus_filter(self):
         self.filter_edit.setFocus(Qt.ShortcutFocusReason)
@@ -1433,7 +1457,9 @@ class RemoteFileBrowser(QDialog):
             )
         self.open_button.setText(text)
         self.open_button.setEnabled(enabled and self._clear_thread is None)
-        self.open_button.setToolTip(entry.path if entry is not None else "")
+        self.open_button.setToolTip(
+            entry.path if entry is not None else "" if enabled else "Select an image first"
+        )
         self.hint_label.setText(hint)
 
     # ----------------------------------------------------------- details ----
@@ -1663,12 +1689,16 @@ class RemoteFileBrowser(QDialog):
             return
         self._cancel_listing()
         self._auto_timer.stop()
+        if self._home_thread is not None:  # (it answers for the last server)
+            _silence(self._home_thread)
+            self._home_thread = None
+        self._home_wanted = None
         self.connection = made[0]
         self._back["remote"] = []
         self.serverChanged.emit(self.connection)
         self._update_connection()
         if self.source != "remote":
-            self._set_source("remote")
+            self._set_source("remote", load_initial=True)
             return
         self.current_path = "/"
         self._load_initial_directory()
@@ -1696,7 +1726,7 @@ class RemoteFileBrowser(QDialog):
 
         files = "1 file" if count == 1 else f"{count} files"
         answer = QMessageBox.question(
-            self, "Clear Cache",
+            self, "Clear cache",
             f"Delete the copies of {files} ({size_text(size)}) fetched from servers?\n\n"
             "They are fetched again when next opened.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
@@ -1723,7 +1753,7 @@ class RemoteFileBrowser(QDialog):
         self._refresh_details()
         self._update_open_button()
         if error:
-            QMessageBox.warning(self, "Clear Cache", f"Couldn’t clear the cache:\n\n{error}")
+            QMessageBox.warning(self, "Clear cache", f"Couldn’t clear the cache:\n\n{error}")
 
     # ----------------------------------------------------------- opening ----
 
@@ -1782,7 +1812,7 @@ class RemoteFileBrowser(QDialog):
         if not self.connection.is_connected():
             self._update_connection()
             QMessageBox.warning(
-                self, "Not Connected",
+                self, "Not connected",
                 "The connection to the server was lost. Reconnect (on the left) and try again.",
             )
             return
@@ -1870,10 +1900,16 @@ class RemoteFileBrowser(QDialog):
         if _deleted(self):
             return
         entry = self._download_entry
-        self._download_thread = None
+        thread, self._download_thread = self._download_thread, None
+        cache, target = self.cache, self._download_target
+        discard = lambda: RemoteFileBrowser._discard_partial(cache, target, entry.is_dir, entry.name)
+        if thread.isRunning():
+            _base_finished(thread).connect(discard)
+        else:
+            discard()
         self._set_downloading(False)
         self._update_connection()
-        QMessageBox.warning(self, "Download Failed", f"Couldn’t fetch {entry.name}:\n\n{error_msg}")
+        QMessageBox.warning(self, "Download failed", f"Couldn’t fetch {entry.name}:\n\n{error_msg}")
 
     def _stop_download(self):
         """Stop fetching: what was fetched so far is deleted once the

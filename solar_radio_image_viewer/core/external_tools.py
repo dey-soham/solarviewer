@@ -4,19 +4,22 @@ Launching downloaders, Helioviewer browser and pipeline tools.
 
 import logging
 import time
+import traceback
 
 from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QMessageBox
 
 from ..ui.activity import begin_activity
 from ..ui.background import Cancelled, run_in_thread
 from ..ui.busy import busy
+from ..ui.errors import show_error
 from ..ui.styles import theme_manager
 from ..processing.fits_io import is_fits, readable_image_path
 from ..ui.recent_files import remember_image
 from ..processing.image_meta import casa_obs_time
 
 logger = logging.getLogger(__name__)
+
+MISSING_HINT = "Make sure all required dependencies are installed and try again."
 
 # The tools that tell this window when they are up (pipeline/viewer_link.py);
 # how long to wait for that, in seconds (as ToolLink.note_launch)
@@ -56,13 +59,8 @@ class ExternalToolsMixin:
                 # Try to extract datetime from current tab
                 initial_datetime = self._get_current_tab_datetime()
                 launch_downloader_gui(self, initial_datetime=initial_datetime)
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to launch Solar Data Downloader GUI: {str(e)}\n\n"
-                "Please make sure all required dependencies are installed.",
-            )
+        except Exception:
+            show_error(self, "Could not open the Solar Data Downloader", MISSING_HINT, traceback.format_exc())
 
     def launch_radio_data_downloader_gui(self):
         """Launch the Radio Solar Data Downloader GUI."""
@@ -75,13 +73,8 @@ class ExternalToolsMixin:
                 # Try to extract datetime from current tab
                 initial_datetime = self._get_current_tab_datetime()
                 launch_radio_downloader_gui(self, initial_datetime=initial_datetime)
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to launch Radio Data Downloader GUI: {str(e)}\n\n"
-                "Please make sure all required dependencies are installed.",
-            )
+        except Exception:
+            show_error(self, "Could not open the Radio Data Downloader", MISSING_HINT, traceback.format_exc())
 
     def _get_current_tab_datetime(self):
         """Extract observation datetime from the current tab's image, if available."""
@@ -131,7 +124,7 @@ class ExternalToolsMixin:
                 # Check if it's a CASA image (directory or non-FITS file)
                 if not is_fits(imagename):
                     try:
-                        from casatools import image as IA
+                        from ..processing.dependencies import IA
 
                         ia_tool = IA()
                         ia_tool.open(readable_image_path(imagename))
@@ -172,7 +165,7 @@ class ExternalToolsMixin:
             venv_path = os.path.dirname(os.path.dirname(python_path))
             activate_script = os.path.join(venv_path, "bin", "activate")
 
-            self.statusBar().showMessage("Launching Radio Data Downloader CLI...")
+            self.statusBar().showMessage("Launching Solar Data Downloader CLI…")
 
             # Check if package directory is writable for the shell script
             if os.access(cli_dir, os.W_OK):
@@ -184,7 +177,7 @@ class ExternalToolsMixin:
             with open(temp_script, "w") as f:
                 f.write(f"""#!/bin/bash
 source "{activate_script}"
-python3 "{cli_script}"
+"{python_path}" "{cli_script}"
 read -p "Press Enter to close..."
 """)
             os.chmod(temp_script, 0o755)
@@ -224,7 +217,7 @@ read -p "Press Enter to close..."
                     else:  # xterm and others
                         cmd = [terminal, "-e", f"bash {temp_script}"]
 
-                    self.statusBar().showMessage(f"Launching in {terminal}...")
+                    self.statusBar().showMessage(f"Launching in {terminal}…")
                     launch_cwd = (
                         os.getcwd()
                         if os.access(os.getcwd(), os.W_OK)
@@ -238,10 +231,11 @@ read -p "Press Enter to close..."
                         if process.returncode is not None and process.returncode != 0:
                             raise Exception(f"Terminal {terminal} failed to start")
                     except subprocess.TimeoutExpired:
-                        # Process is still running after 1 second, which is good
-                        self.statusBar().showMessage(f"Launched CLI in {terminal}")
-                        logger.info(f"Successfully launched CLI in {terminal}")
-                        return
+                        pass  # still running after 1 second, which is good
+                    # (gnome-terminal hands over to its server and exits at once)
+                    self.statusBar().showMessage(f"Launched CLI in {terminal}")
+                    logger.info(f"Successfully launched CLI in {terminal}")
+                    return
 
                 except Exception as term_error:
                     logger.error(f"Error launching {terminal}: {str(term_error)}")
@@ -256,13 +250,14 @@ read -p "Press Enter to close..."
                 raise Exception(f"Unsupported platform: {sys.platform}")
 
         except Exception as e:
-            error_msg = (
-                f"Failed to launch Solar Data Downloader CLI: {str(e)}\n\n"
-                "Please try running the CLI directly from a terminal:\n"
-                f"cd {cli_dir} && source {activate_script} && python3 {cli_script}"
+            logger.error(f"Failed to launch Solar Data Downloader CLI: {str(e)}")
+            show_error(
+                self,
+                "Could not open the Solar Data Downloader CLI",
+                "Try running it directly from a terminal:\n"
+                f"cd {cli_dir} && source {activate_script} && python3 {cli_script}",
+                traceback.format_exc(),
             )
-            logger.error(f"{error_msg}")
-            QMessageBox.critical(self, "Error", error_msg)
 
     def open_helioviewer_browser(self):
         """Open Helioviewer browser window."""
@@ -275,7 +270,7 @@ read -p "Press Enter to close..."
             ):
                 QMessageBox.warning(
                     self,
-                    "Connection Error",
+                    "Connection error",
                     "Could not connect to the Helioviewer API.\nPlease check your internet connection and try again.",
                 )
                 return
@@ -287,11 +282,12 @@ read -p "Press Enter to close..."
                 browser.show()
         except Cancelled:
             self.statusBar().showMessage("Cancelled")
-        except Exception as e:
-            from PyQt5.QtWidgets import QMessageBox
-
-            QMessageBox.critical(
-                self, "Error", f"Failed to open Helioviewer Browser:\n{str(e)}"
+        except Exception:
+            show_error(
+                self,
+                "Could not open the Helioviewer browser",
+                "The window could not be opened. Try again; the details say what went wrong.",
+                traceback.format_exc(),
             )
 
     def _get_clean_qt_env(self):
@@ -404,13 +400,14 @@ read -p "Press Enter to close..."
             )
             self._show_tool_starting(tool, display_name, process)
             return True
-        except Exception as e:
-            error_message = f"Error launching {display_name}: {str(e)}"
-            logger.error(f"{error_message}")
-            import traceback
-
-            traceback.print_exc()
-            QMessageBox.critical(self, "Error", error_message)
+        except Exception:
+            logger.exception(f"Could not start {display_name}")
+            show_error(
+                self,
+                f"Could not start {display_name}",
+                "The program did not start. Check the installation and try again.",
+                traceback.format_exc(),
+            )
             return False
 
     def _show_tool_starting(self, tool, display_name, process):

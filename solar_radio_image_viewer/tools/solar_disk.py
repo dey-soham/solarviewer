@@ -4,15 +4,11 @@ Solar disk overlay: auto-detection, manual settings and drawing.
 
 import logging
 import matplotlib.pyplot as plt
-import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
-    QGroupBox,
-    QHBoxLayout,
     QLabel,
     QMessageBox,
     QSpinBox,
@@ -21,9 +17,12 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..dialogs.form import field_label, form_block
 from ..dialogs.solar_disk_style import SolarDiskStyleWidget
 from ..processing.image_meta import casa_obs_time
-from ..ui.styles import set_hand_cursor
+from ..shape_annotations import pixel_scales_deg
+from ..ui.styles import SPACE_M, set_hand_cursor
+from ..ui.widgets import button_bar, dialog_layout
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +158,7 @@ class SolarDiskMixin:
     def set_solar_disk_center(self):
         """Show non-modal solar disk settings dialog."""
         if self.current_image_data is None:
-            QMessageBox.warning(self, "No Image", "Please load an image first.")
+            QMessageBox.warning(self, "No image", "Please load an image first.")
             return
 
         # If dialog already exists and is visible, just raise it
@@ -175,10 +174,9 @@ class SolarDiskMixin:
         nx, ny = self.current_image_data.shape  # the image is indexed [x, y]
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Solar Disk Settings")
+        dialog.setWindowTitle("Solar disk settings")
         set_hand_cursor(dialog)
-        dialog.setMinimumWidth(400)
-        layout = QVBoxLayout(dialog)
+        layout = dialog_layout(dialog)
 
         # Store reference to prevent garbage collection
         self._solar_disk_dialog = dialog
@@ -189,6 +187,7 @@ class SolarDiskMixin:
         # Style tab (formerly Appearance tab)
         style_tab = QWidget()
         style_layout = QVBoxLayout(style_tab)
+        style_layout.setContentsMargins(0, SPACE_M, 0, 0)
 
         style_widget = SolarDiskStyleWidget(self.solar_disk_style)
         style_layout.addWidget(style_widget)
@@ -197,21 +196,21 @@ class SolarDiskMixin:
         # Position tab
         position_tab = QWidget()
         position_layout = QVBoxLayout(position_tab)
+        position_layout.setContentsMargins(0, SPACE_M, 0, 0)
+        position_layout.setSpacing(SPACE_M)
 
         # Auto-compute toggle
-        auto_group = QGroupBox("Auto-Compute")
-        auto_layout = QVBoxLayout(auto_group)
-        auto_checkbox = QCheckBox("Auto-compute from FITS header")
+        auto_checkbox = QCheckBox("Compute from the FITS header")
         auto_checkbox.setToolTip(
             "Automatically compute the Sun's position and apparent\n"
             "diameter from the observation date in the FITS header."
         )
         auto_checkbox.setChecked(self.solar_disk_auto_compute)
-        auto_layout.addWidget(auto_checkbox)
+        position_layout.addWidget(auto_checkbox)
         auto_info = QLabel("")
+        auto_info.setObjectName("Hint")
         auto_info.setWordWrap(True)
-        auto_layout.addWidget(auto_info)
-        position_layout.addWidget(auto_group)
+        position_layout.addWidget(auto_info)
 
         viewer_ref = self
 
@@ -276,12 +275,12 @@ class SolarDiskMixin:
                     x_spinbox.setValue(int(round(cx)))
                     y_spinbox.setValue(int(round(cy)))
                     auto_info.setText(
-                        f"HPC image: center set to (0,0)\n"
+                        f"HPC image: centre set to (0, 0)\n"
                         f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
                     )
                 else:
                     if wcs_obj is None:
-                        auto_info.setText("No WCS available for RA/DEC conversion.")
+                        auto_info.setText("No WCS available for the RA/Dec conversion.")
                         return False
                     from astropy.coordinates import get_sun
 
@@ -293,7 +292,7 @@ class SolarDiskMixin:
                     x_spinbox.setValue(int(round(cx)))
                     y_spinbox.setValue(int(round(cy)))
                     auto_info.setText(
-                        f"Sun RA={ra_deg:.4f}° DEC={dec_deg:.4f}°\n"
+                        f"Sun RA {ra_deg:.4f}°, Dec {dec_deg:.4f}°\n"
                         f"Pixel ({cx:.1f}, {cy:.1f})\n"
                         f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
                     )
@@ -315,49 +314,44 @@ class SolarDiskMixin:
         auto_checkbox.toggled.connect(on_auto_toggle)
 
         # Center coordinates
-        center_group = QGroupBox("Disk Center")
-        center_layout = QHBoxLayout(center_group)
+        center_layout = form_block(position_layout, pairs=2)
 
-        x_label = QLabel("X coordinate:")
+        x_label = field_label("Centre X")
         x_spinbox = QSpinBox()
         x_spinbox.setRange(-nx * 5, nx * 5)
         if self.solar_disk_center is not None:
             x_spinbox.setValue(int(round(self.solar_disk_center[0])))
         else:
             x_spinbox.setValue(nx // 2)
-        center_layout.addWidget(x_label)
-        center_layout.addWidget(x_spinbox)
+        center_layout.addWidget(x_label, 0, 0)
+        center_layout.addWidget(x_spinbox, 0, 1)
 
-        y_label = QLabel("Y coordinate:")
+        y_label = field_label("Centre Y")
         y_spinbox = QSpinBox()
         y_spinbox.setRange(-ny * 5, ny * 5)
         if self.solar_disk_center is not None:
             y_spinbox.setValue(int(round(self.solar_disk_center[1])))
         else:
             y_spinbox.setValue(ny // 2)
-        center_layout.addWidget(y_label)
-        center_layout.addWidget(y_spinbox)
-
-        position_layout.addWidget(center_group)
+        center_layout.addWidget(y_label, 0, 2)
+        center_layout.addWidget(y_spinbox, 0, 3)
 
         # Diameter
-        size_group = QGroupBox("Disk Size")
-        size_layout = QHBoxLayout(size_group)
-        diameter_label = QLabel("Diameter (arcmin):")
+        diameter_label = field_label("Diameter")
         diameter_spinbox = QDoubleSpinBox()
         diameter_spinbox.setRange(1.0, 100.0)
         diameter_spinbox.setDecimals(2)
         diameter_spinbox.setSingleStep(0.1)
+        diameter_spinbox.setSuffix(" arcmin")
         diameter_spinbox.setValue(self.solar_disk_diameter_arcmin)
-        size_layout.addWidget(diameter_label)
-        size_layout.addWidget(diameter_spinbox)
-        position_layout.addWidget(size_group)
+        center_layout.addWidget(diameter_label, 1, 0)
+        center_layout.addWidget(diameter_spinbox, 1, 1, 1, 3)
 
         position_layout.addStretch()
 
         # Add tabs to tab widget
         tab_widget.addTab(style_tab, "Style")
-        tab_widget.addTab(position_tab, "Configure")
+        tab_widget.addTab(position_tab, "Position")
 
         layout.addWidget(tab_widget)
 
@@ -382,8 +376,9 @@ class SolarDiskMixin:
                 viewer.solar_disk_style.update(style_widget.get_style())
 
                 # Directly update solar disk without full replot for instant feedback
-                ax = viewer.figure.gca()
-                viewer._update_solar_disk_position(ax)
+                ax = viewer._nav_axes()
+                if ax is not None:
+                    viewer._update_solar_disk_position(ax)
                 viewer.canvas.draw_idle()
                 viewer.show_status_message("Solar disk settings applied")
             except RuntimeError:
@@ -401,12 +396,7 @@ class SolarDiskMixin:
             if hasattr(viewer, "_solar_disk_dialog"):
                 viewer._solar_disk_dialog = None
 
-        # Create button box with Apply and Close
-        button_box = QDialogButtonBox()
-        apply_btn = button_box.addButton("Apply", QDialogButtonBox.ApplyRole)
-        close_btn = button_box.addButton("Close", QDialogButtonBox.RejectRole)
-        apply_btn.clicked.connect(on_apply)
-        close_btn.clicked.connect(on_close)
+        button_box, _ = button_bar(primary=("Apply", on_apply), secondary=("Close", on_close))
         layout.addWidget(button_box)
 
         # Set up for non-modal behavior
@@ -457,17 +447,7 @@ class SolarDiskMixin:
                 center_x, center_y = self.solar_disk_center
                 if self.current_wcs:
                     radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
-                    cdelt = self.current_wcs.increment()["numeric"][0:2]
-                    if isinstance(cdelt, list):
-                        cdelt = [float(c) for c in cdelt]
-                    _hdr = getattr(self, "_cached_fits_header", None) or {}
-                    _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-                    if _is_solar:
-                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
-                    else:
-                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
-                    dx_deg = abs(cdelt[0])
-                    radius_pix = radius_deg / dx_deg
+                    radius_pix = radius_deg / pixel_scales_deg(self.current_wcs)[0]
                 else:
                     radius_pix = min(self.current_image_data.shape) / 8
 
@@ -538,18 +518,7 @@ class SolarDiskMixin:
 
                 if self.current_wcs:
                     radius_deg = (self.solar_disk_diameter_arcmin / 60.0) / 2.0
-                    cdelt = self.current_wcs.increment()["numeric"][0:2]
-                    if isinstance(cdelt, list):
-                        cdelt = [float(c) for c in cdelt]
-                    # Check if image uses SOLAR-X/Y (increment is in arcsec, not radians)
-                    _hdr = getattr(self, "_cached_fits_header", None) or {}
-                    _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-                    if _is_solar:
-                        cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
-                    else:
-                        cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
-                    dx_deg = abs(cdelt[0])
-                    radius_pix = radius_deg / dx_deg
+                    radius_pix = radius_deg / pixel_scales_deg(self.current_wcs)[0]
                 else:
                     radius_pix = min(data.shape) / 8
 

@@ -14,10 +14,15 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QInputDialog,
+    QWidget,
 )
-import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
 
 from ..ui.busy import busy
+from ..ui.geometry import fit_to_screen
+from ..ui.plot_theme import figure_toolbar, follow_theme
+from ..ui.widgets import dialog_layout
 from .spectra_common import rebin
 logger = logging.getLogger(__name__)
 
@@ -25,14 +30,16 @@ logger = logging.getLogger(__name__)
 def _compared(original, cleaned, scale):
     """``original`` and ``cleaned`` as masked arrays, and the limits of each
     in the same scaling as the view (``scale``); off the GUI thread."""
-    low, high = {"0-100%": (0, 100), "0.1-99.9%": (0.1, 99.9), "0.5-99.5%": (0.5, 99.5)}.get(
+    low, high = {"0-100%": (0, 100), "0.1-99.9%": (0.1, 99.9), "0.5-99.5%": (0.5, 99.5), "5-95%": (5, 95)}.get(
         scale, (1, 99)
     )
     limits = []
     arrays = [ma.masked_invalid(original), ma.masked_invalid(cleaned)]
     for array in arrays:
         values = array.compressed()
-        if (low, high) == (0, 100):
+        if not values.size:  # (all of it masked)
+            limits.append((0.0, 1.0))
+        elif (low, high) == (0, 100):
             limits.append((values.min(), values.max()))
         else:
             limits.append((np.percentile(values, low), np.percentile(values, high)))
@@ -66,15 +73,15 @@ class SpectraSavingMixin:
         if self._nav_mode == "Full" or (self._nav_mode == "Windowed" and self._total_pages <= 1):
             return "shown"
         box = QMessageBox(self)
-        box.setWindowTitle("Save Cleaned FITS")
+        box.setWindowTitle("Save cleaned FITS")
         box.setText("Save the whole file, or only what is shown?")
         box.setInformativeText(
             "The whole file is cleaned and saved page by page (masks, "
             "averaging and normalisation as shown), never all in memory."
         )
-        whole = box.addButton("Whole File", QMessageBox.AcceptRole)
+        whole = box.addButton("Whole file", QMessageBox.AcceptRole)
         shown = box.addButton(
-            "This Range" if self._nav_mode == "Range" else "This Page", QMessageBox.AcceptRole
+            "This range" if self._nav_mode == "Range" else "This page", QMessageBox.AcceptRole
         )
         box.addButton(QMessageBox.Cancel)
         box.setDefaultButton(whole)
@@ -89,11 +96,23 @@ class SpectraSavingMixin:
         # (the widgets and what is shown, read here: the writing is off the GUI thread)
         settings = self._rfi_settings() if self._rfi_enabled else None
         if extent == "shown":
+            # With the automatic flags, from the page as read: what is shown
+            # may not have them yet (or as a tint), and a saved file has them
             shown = (self._original_data, self._time_axis, self._freq_axis)
-            self._server_work(
-                f"Saving {os.path.basename(fileName)}…",
-                lambda _, cancelled: self._write_cleaned(fileName, *shown, settings, cancelled),
-            )
+            raw, times = self._shown_raw[:2]
+            flags = self._rfi_page_flags
+
+            def write(_, cancelled):
+                data, time_axis, freq_axis = shown
+                if settings is not None:
+                    start = int(np.searchsorted(self._full_time_axis, times[0]))
+                    noise = self._noise_image() if settings.noise else None
+                    data = self._clean_rows(
+                        raw.copy(), times, start, settings, noise, cancelled, flags
+                    )
+                self._write_cleaned(fileName, data, time_axis, freq_axis, settings, cancelled)
+
+            self._server_work(f"Saving {os.path.basename(fileName)}…", write)
             return
         self._server_work(
             "Saving the whole file…",
@@ -108,7 +127,7 @@ class SpectraSavingMixin:
         if extent is None:
             return
         fileName, _ = QFileDialog.getSaveFileName(
-            self, "Save Cleaned FITS", "", "FITS Files (*.fits)"
+            self, "Save cleaned FITS", "", "FITS files (*.fits)"
         )
         if not fileName:
             return
@@ -155,7 +174,7 @@ class SpectraSavingMixin:
             return
         path = posixpath.join(picked[0], name)
         if self._remote is not None and path == self._remote.path:
-            QMessageBox.warning(self, "Save to Server", "That is the file opened: choose another name.")
+            QMessageBox.warning(self, "Save to server", "That is the file opened: choose another name.")
             return
         try:
             exists = self._server_work("Checking the server…", lambda *_: files.exists(path))
@@ -378,7 +397,6 @@ class SpectraSavingMixin:
 
         full_time = self._full_time_axis
         noise = self._noise_image() if settings is not None and settings.noise else None
-        fill_mode = self._rfi_options["fill"]
         done = 0
         for s, e in chunks:
             if cancelled():
@@ -389,28 +407,41 @@ class SpectraSavingMixin:
                 raw = image.read(key, cache=False) if hasattr(image, "read") else image[key]
             data = np.array(raw if time_major else raw.T, dtype=np.float32)
             data[np.isinf(data)] = np.nan
-            flags = None
-            if settings is not None:
-                from .rfi_flagging import flag_page
-
-                finite = data[np.isfinite(data)]
-                if not finite.size or float(finite.min()) >= 0:
-                    with reporting(None, cancelled):
-                        stddev = self._noise_rows(noise, s, e, cache=False) if noise is not None else None
-                    flags = self._apply_keeps(flag_page(data, settings, stddev), full_time[s:e])
-                    data[flags] = np.nan
-            data = self._apply_masks(data, full_time[s:e])
-            if settings is not None and fill_mode != "blank" and flags is not None and flags.any():
-                from .rfi_flagging import fill_flagged
-
-                fill = flags & ~self._masked(data.shape, full_time[s:e])
-                data = fill_flagged(data, fill, fill_mode, self._rfi_options["reach"])
-            data = self._binned(data)
-            if self._is_bandpass_enabled:
-                data = self._apply_bandpass_to_data(data)
+            data = self._clean_rows(data, full_time[s:e], s, settings, noise, cancelled)
             stream.write(np.ascontiguousarray(data, dtype=">f4"))
             done += e - s
             progress(done * nf * 4, total * nf * 4)
+
+    def _clean_rows(self, data, times, start, settings, noise, cancelled, flags=None):
+        """``data`` (the file's rows from ``start``, at ``times``; changed)
+        cleaned as set: flagged (``flags``, if already known), masked, filled,
+        averaged and normalised."""
+        from ..remote.remote_fits import reporting
+
+        fill_mode = self._rfi_options["fill"]
+        if settings is not None:
+            from .rfi_flagging import flag_page
+
+            finite = data[np.isfinite(data)]
+            if not finite.size or float(finite.min()) >= 0:
+                if flags is None:
+                    with reporting(None, cancelled):
+                        stddev = None
+                        if noise is not None:
+                            stddev = self._noise_rows(noise, start, start + len(data), cache=False)
+                    flags = flag_page(data, settings, stddev)
+                flags = self._apply_keeps(flags, times)
+                data[flags] = np.nan
+        data = self._apply_masks(data, times)
+        if settings is not None and fill_mode != "blank" and flags is not None and flags.any():
+            from .rfi_flagging import fill_flagged
+
+            fill = flags & ~self._masked(data.shape, times)
+            data = fill_flagged(data, fill, fill_mode, self._rfi_options["reach"])
+        data = self._binned(data)
+        if self._is_bandpass_enabled:
+            data = self._apply_bandpass_to_data(data)
+        return data
 
     def compareOriginalCleaned(self):
         if self._shown_raw is None or self._original_data is None:
@@ -429,9 +460,10 @@ class SpectraSavingMixin:
                 QMessageBox.critical(self, "Error", f"Failed to compare:\n{e}")
             return
         with busy("Drawing the comparison…", self):
-            fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
-            axes[0].set_title("Original Unmodified")
-            axes[1].set_title("Current Cleaned")
+            fig = Figure(figsize=(12, 5), tight_layout=True)
+            axes = fig.subplots(1, 2, sharey=True)
+            axes[0].set_title("Original, unmodified")
+            axes[1].set_title("Current, cleaned")
             norm1 = self.canvas.get_normalization(orig_vmin, orig_vmax)
             norm2 = self.canvas.get_normalization(cle_vmin, cle_vmax)
             im1 = axes[0].imshow(
@@ -442,13 +474,20 @@ class SpectraSavingMixin:
                 cle_ma.T, origin="lower", aspect="auto", norm=norm2, cmap=self.canvas._cmap
             )
             fig.colorbar(im2, ax=axes[1], label="")
-            axes[0].set_xlabel("Time Index")
-            axes[1].set_xlabel("Time Index")
-            axes[0].set_ylabel("Frequency Index")
-            axes[1].set_ylabel("Frequency Index")
-            fig.suptitle("Original vs Cleaned")
-            fig.tight_layout()
-            fig.show()
+            axes[0].set_xlabel("Time index")
+            axes[1].set_xlabel("Time index")
+            axes[0].set_ylabel("Frequency index")
+
+            win = QWidget()
+            win.setWindowTitle("Original vs cleaned")
+            fit_to_screen(win, 1100, 520)
+            layout = dialog_layout(win)
+            canvas = FigureCanvasQTAgg(fig)
+            layout.addWidget(canvas, 1)
+            layout.addWidget(figure_toolbar(canvas, win))
+            follow_theme(win, fig, canvas)
+            self.canvas._popups.append(win)  # (closed with the viewer)
+            win.show()
 
     def revertToOriginal(self):
         """Remove all masks, drawn and extended, and the Keep regions (Undo

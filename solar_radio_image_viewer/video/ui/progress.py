@@ -5,9 +5,11 @@ A dialog for one long job that can be cancelled.
 from collections import namedtuple
 
 from PyQt5.QtCore import QThread, QTimer, Qt, pyqtSignal
-from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QProgressBar, QVBoxLayout
+from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QProgressBar
 
 from ...ui.activity import ActivityLabel
+from ...ui.geometry import fit_to_screen
+from ...ui.widgets import dialog_layout
 
 
 class WorkDialog(QDialog):
@@ -25,20 +27,23 @@ class WorkDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setWindowModality(Qt.WindowModal)
-        self.setMinimumWidth(420)
         self.cancelling = False
         self._cancelling_text = cancelling_text
         self._finished = False
-        layout = QVBoxLayout(self)
+        layout = dialog_layout(self)
         self.status = ActivityLabel(text, self)
         self.status.label.setWordWrap(True)
         layout.addWidget(self.status)
         self.bar = QProgressBar(self)
+        self.bar.setObjectName("ThinProgress")
+        self.bar.setTextVisible(False)
         self.bar.setRange(0, 0)
         layout.addWidget(self.bar)
         self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Cancel).setAutoDefault(False)  # (no accent on it)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
+        fit_to_screen(self, 420, self.sizeHint().height())
 
     def set_text(self, text):
         if not self.cancelling:

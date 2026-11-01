@@ -27,10 +27,10 @@ from .recent_files import recent_images
 from .styles import theme_manager
 from .widgets import kicker, link_button
 
-HEADLINE = "Drop a FITS, CASA image or dynamic spectrum anywhere on this canvas."
+HEADLINE = "Drop a FITS or CASA image anywhere on this canvas."
 NOTE = (
-    "Regions, statistics and the cursor readout appear in the inspector "
-    "once an image is loaded."
+    "A dynamic spectrum opens in its own viewer. Regions, statistics and the "
+    "cursor readout appear in the inspector once an image is loaded."
 )
 RECENT_SHOWN = 4
 
@@ -182,7 +182,7 @@ class EmptyCanvas(QWidget):
         column.addSpacing(2)
         column.addLayout(buttons)
         column.addStretch()
-        outer.addWidget(words, 3)
+        outer.addWidget(words, 5)
 
         # The recent files
         self.recent = QWidget()

@@ -90,7 +90,7 @@ from PyQt5.QtGui import QCursor, QKeySequence
 
 from ..ui.app import apply_theme
 from ..ui.busy import busy
-from ..ui.styles import palette_for as get_palette, theme_manager
+from ..ui.styles import CONTROL_HEIGHT, FONT_META, palette_for as get_palette, theme_manager, themed
 from ..ui.cursor_readout import CursorReadout
 from ..ui.empty_canvas import EmptyCanvas
 from ..ui.histogram import LevelsHistogram
@@ -132,7 +132,7 @@ class MainWindow(
     def __init__(self, theme="dark"):
         super(MainWindow, self).__init__()
         free_modal_dialogs(self)  # (its settings, browsers... move on their own)
-        self.setWindowTitle("Dynamic Spectra Viewer")
+        self.setWindowTitle("Dynamic spectra viewer")
         # 1440 x 900 as the screen allows; never less than 1180 x 780
         fit_to_screen(self, 1440, 900)
         self.setMinimumSize(1180, 780)
@@ -144,10 +144,6 @@ class MainWindow(
         # shows images at the times clicked here, and sends spectra to open
         self.link = ViewerLink("dynamic_spectrum_viewer", self)
         self.link.message.connect(self._on_link_message)
-
-        # Widgets styled in the theme's colours, restyled when it changes:
-        # (widget, style sheet as a function of the palette)
-        self._themed_widgets = []
 
         # Data placeholders
         self.hdul = None  # Store FITS handle to keep memmap alive
@@ -245,8 +241,8 @@ class MainWindow(
         self._createMainWidgets()
         self._createStatusBar()
 
-        self._themed(self, self._viewer_style)
         self._applyStyle()
+        themed(self, self._restyle)
         self.setAcceptDrops(True)
         self._updateNavigationStats()  # Ensure initial navigation state is correct
 
@@ -273,29 +269,29 @@ class MainWindow(
 
     # ------------------------- Actions and Menu -------------------------------
     def _createActions(self):
-        self.openAct = QAction("&Open FITS...", self)
+        self.openAct = QAction("&Open FITS…", self)
         self.openAct.setShortcut("Ctrl+O")
         self.openAct.triggered.connect(self.openFile)
 
-        self.openRemoteAct = QAction("Open from Se&rver...", self)
+        self.openRemoteAct = QAction("Open from se&rver…", self)
         self.openRemoteAct.setShortcut("Ctrl+Shift+O")
         self.openRemoteAct.setStatusTip(
             "Open a FITS file on an SSH server (read in pieces)"
         )
         self.openRemoteAct.triggered.connect(self.openRemote)
 
-        self.saveMasksAct = QAction("Save &Masks...", self)
+        self.saveMasksAct = QAction("Save &masks…", self)
         self.saveMasksAct.setStatusTip("Save the masks as times and frequencies")
         self.saveMasksAct.triggered.connect(self.saveMasks)
-        self.loadMasksAct = QAction("&Load Masks...", self)
+        self.loadMasksAct = QAction("&Load masks…", self)
         self.loadMasksAct.setStatusTip("Add masks saved before (this file or another)")
         self.loadMasksAct.triggered.connect(self.loadMasks)
 
-        self.saveRemoteAct = QAction("Save to Ser&ver...", self)
+        self.saveRemoteAct = QAction("Save to ser&ver…", self)
         self.saveRemoteAct.setStatusTip("Save the cleaned data to a folder on an SSH server")
         self.saveRemoteAct.triggered.connect(self.saveCleanedToServer)
 
-        self.saveAct = QAction("&Save FITS...", self)
+        self.saveAct = QAction("&Save FITS…", self)
         self.saveAct.setShortcut("Ctrl+S")
         self.saveAct.triggered.connect(self.saveCleanedData)
 
@@ -303,11 +299,11 @@ class MainWindow(
         self.exitAct.setShortcut("Ctrl+Q")
         self.exitAct.triggered.connect(self.close)
 
-        self.compareAct = QAction("Compare &Original vs Cleaned", self)
+        self.compareAct = QAction("Compare &original vs cleaned", self)
         self.compareAct.setShortcut("Ctrl+Shift+C")
         self.compareAct.triggered.connect(self.compareOriginalCleaned)
 
-        self.revertAct = QAction("&Revert to Original", self)
+        self.revertAct = QAction("&Revert to original", self)
         self.revertAct.setShortcut("Ctrl+R")
         self.revertAct.triggered.connect(self.revertToOriginal)
 
@@ -324,7 +320,7 @@ class MainWindow(
 
         # Delete the selected mask or Keep region (selected by a click with
         # the Mask or Keep tool); typing in a box keeps its own Delete
-        self.deleteRegionAct = QAction("&Delete Region", self)
+        self.deleteRegionAct = QAction("&Delete region", self)
         self.deleteRegionAct.setShortcuts([QKeySequence(Qt.Key_Delete), QKeySequence(Qt.Key_Backspace)])
         self.deleteRegionAct.setStatusTip("Remove the selected mask or Keep region")
         self.deleteRegionAct.setEnabled(False)
@@ -337,12 +333,12 @@ class MainWindow(
         self.addAction(self.deselectAct)
 
         # New action for viewing metadata
-        self.rangeAct = QAction("&Time Range...", self)
+        self.rangeAct = QAction("&Time range…", self)
         self.rangeAct.setShortcut("Ctrl+T")
         self.rangeAct.setStatusTip("Show the data between two times")
         self.rangeAct.triggered.connect(self.showRangeControls)
 
-        self.gotoAct = QAction("&Go to Time...", self)
+        self.gotoAct = QAction("&Go to time…", self)
         self.gotoAct.setShortcut("Ctrl+G")
         self.gotoAct.triggered.connect(
             lambda: (self.gotoEdit.setFocus(), self.gotoEdit.selectAll())
@@ -350,33 +346,33 @@ class MainWindow(
 
         # As in SolarViewer: + and - zoom, R resets the view; [ and ] go to
         # the previous and next page (its previous and next file)
-        self.zoomInAct = QAction("Zoom &In", self)
+        self.zoomInAct = QAction("Zoom &in", self)
         self.zoomInAct.setShortcuts([QKeySequence("+"), QKeySequence("="), QKeySequence.ZoomIn])
         self.zoomInAct.triggered.connect(lambda: self.canvas.zoom_by(0.8))
-        self.zoomOutAct = QAction("Zoom &Out", self)
+        self.zoomOutAct = QAction("Zoom &out", self)
         self.zoomOutAct.setShortcuts([QKeySequence("-"), QKeySequence.ZoomOut])
         self.zoomOutAct.triggered.connect(lambda: self.canvas.zoom_by(1.25))
-        self.resetViewAct = QAction("&Reset View", self)
+        self.resetViewAct = QAction("&Reset view", self)
         self.resetViewAct.setShortcut(QKeySequence("R"))
         self.resetViewAct.triggered.connect(lambda: self.canvas.reset_view())
-        self.prevPageAct = QAction("&Previous Page", self)
+        self.prevPageAct = QAction("&Previous page", self)
         self.prevPageAct.setShortcut(QKeySequence("["))
         self.prevPageAct.triggered.connect(self.onPrevPage)
-        self.nextPageAct = QAction("&Next Page", self)
+        self.nextPageAct = QAction("&Next page", self)
         self.nextPageAct.setShortcut(QKeySequence("]"))
         self.nextPageAct.triggered.connect(self.onNextPage)
 
-        self.viewMetaAct = QAction("View &Metadata", self)
+        self.viewMetaAct = QAction("View &metadata", self)
         self.viewMetaAct.triggered.connect(self.viewMetadata)
 
-        self.swapAct = QAction("S&wap Time and Frequency", self)
+        self.swapAct = QAction("S&wap time and frequency", self)
         self.swapAct.setStatusTip(
             "Use the image's other axis as time (square images)"
         )
         self.swapAct.triggered.connect(self.swapTimeAndFrequency)
         self.swapAct.setEnabled(False)
 
-        self.overviewAct = QAction("&Overview from Every Sample on Server Files", self, checkable=True)
+        self.overviewAct = QAction("&Overview from every sample on server files", self, checkable=True)
         self.overviewAct.setChecked(
             QSettings("SolarViewer", "DynamicSpectrumViewer").value("overview_remote", False, type=bool)
         )
@@ -389,7 +385,7 @@ class MainWindow(
 
         self.overviewContrastActs = []  # (action, (low, high)) of the presets
 
-        self.smoothAct = QAction("&Average Samples When Zoomed Out", self, checkable=True)
+        self.smoothAct = QAction("&Average samples when zoomed out", self, checkable=True)
         self.smoothAct.setChecked(True)
         self.smoothAct.setStatusTip(
             "Average the samples under each screen pixel"
@@ -408,7 +404,7 @@ class MainWindow(
         fileMenu = menubar.addMenu("&File")
         fileMenu.addAction(self.openAct)
         fileMenu.addAction(self.openRemoteAct)
-        self.recentMenu = fileMenu.addMenu("Open &Recent")
+        self.recentMenu = fileMenu.addMenu("Open &recent")
         self.recentMenu.aboutToShow.connect(self._fill_recent_menu)
         fileMenu.addSeparator()
         fileMenu.addAction(self.saveAct)
@@ -442,7 +438,7 @@ class MainWindow(
         viewMenu.addAction(self.overviewAct)
         self._build_overview_contrast_menu(viewMenu)
         # The file's other images of the spectrum's shape (e.g. LOFAR's noise)
-        self.imageMenu = viewMenu.addMenu("&Data Shown")
+        self.imageMenu = viewMenu.addMenu("&Data shown")
         self.imageMenu.menuAction().setStatusTip(
             "Show another image in the file (e.g. its noise, STDDEV)"
         )
@@ -453,11 +449,6 @@ class MainWindow(
         toolsMenu = menubar.addMenu("&Tools")
         toolsMenu.addAction(self.compareAct)
         toolsMenu.addAction(self.revertAct)
-
-        # The file shown, at the right (the plot has no title)
-        self.fileLabel = QLabel()
-        self.fileLabel.setObjectName("FileName")
-        menubar.setCornerWidget(self.fileLabel, Qt.TopRightCorner)
 
     def _fill_recent_menu(self):
         """File > Open Recent: the spectra opened lately, then Clear."""
@@ -473,7 +464,7 @@ class MainWindow(
             menu.addAction("No recent spectra").setEnabled(False)
             return
         menu.addSeparator()
-        menu.addAction("Clear Recent", self._clear_recent)
+        menu.addAction("Clear recent", self._clear_recent)
 
     def _clear_recent(self):
         clear_recent_spectra()
@@ -708,21 +699,25 @@ class MainWindow(
         return bar
 
     def _pager(self):
-        """« ‹ page / pages › » (Pages mode)."""
-        self.firstBtn = QPushButton("«")
-        self.firstBtn.setToolTip("First Page")
+        """First, previous, page / pages, next, last (Pages mode)."""
+        self.firstBtn = QPushButton()
+        self.firstBtn.setToolTip("First page")
         self.firstBtn.clicked.connect(self.onFirstPage)
-        self.prevBtn = QPushButton("‹")
-        self.prevBtn.setToolTip("Previous Page")
+        self.prevBtn = QPushButton()
+        self.prevBtn.setToolTip("Previous page")
         self.prevBtn.clicked.connect(self.onPrevPage)
-        self.nextBtn = QPushButton("›")
-        self.nextBtn.setToolTip("Next Page")
+        self.nextBtn = QPushButton()
+        self.nextBtn.setToolTip("Next page")
         self.nextBtn.clicked.connect(self.onNextPage)
-        self.lastBtn = QPushButton("»")
-        self.lastBtn.setToolTip("Last Page")
+        self.lastBtn = QPushButton()
+        self.lastBtn.setToolTip("Last page")
         self.lastBtn.clicked.connect(self.onLastPage)
-        for button in (self.firstBtn, self.prevBtn, self.nextBtn, self.lastBtn):
+        for button, name in (
+            (self.firstBtn, "first"), (self.prevBtn, "prev"), (self.nextBtn, "next"), (self.lastBtn, "last"),
+        ):
             button.setObjectName("NavButton")
+            button.setIcon(spectra_icon(name, self._palette))
+            self._icon_buttons.append((button, name))
         self.pageLabel = QLabel()
         self.pageLabel.setAlignment(Qt.AlignCenter)
         self.pageLabel.setTextFormat(Qt.RichText)
@@ -776,7 +771,7 @@ class MainWindow(
             label.setObjectName("Meta")
             group.addWidget(label)
             tools = segmented(buttons)
-            tools.setFixedHeight(30)
+            tools.setFixedHeight(CONTROL_HEIGHT)
             group.addWidget(tools)
             layout.addLayout(group)
         self.panBtn.setChecked(True)
@@ -796,7 +791,6 @@ class MainWindow(
             "sun", "Image at cursor", "Open the solar image at the cursor time in SolarViewer",
             checkable=False,
         )
-        self.imageAtTimeBtn.setFixedHeight(30)
         self.imageAtTimeBtn.clicked.connect(self.onImageAtTime)
         if not self.link.connected:
             self.imageAtTimeBtn.setEnabled(False)
@@ -814,7 +808,7 @@ class MainWindow(
         reset = self._tool_button("reset", "", "Reset view", checkable=False)
         reset.clicked.connect(self.canvas.reset_view)
         zoom = segmented([zoomIn, zoomOut, reset])
-        zoom.setFixedHeight(30)
+        zoom.setFixedHeight(CONTROL_HEIGHT)
         layout.addWidget(zoom)
         self._update_tool_hint()
         return bar
@@ -1291,8 +1285,12 @@ class MainWindow(
         self.pageStatus.setContentsMargins(10, 0, 8, 0)
         self.cleanStatus.setContentsMargins(8, 0, 0, 0)
         self.toolStatus.setContentsMargins(0, 0, 10, 0)
+        self.fileLabel = QLabel()  # the file shown (the plot has no title)
+        self.fileLabel.setObjectName("FileName")
+        self.fileLabel.setContentsMargins(0, 0, 8, 0)
         self.statusBar().addWidget(self.pageStatus)
         self.statusBar().addWidget(self.cleanStatus)
+        self.statusBar().addPermanentWidget(self.fileLabel)
         self.statusBar().addPermanentWidget(self.toolStatus)
         self._update_status_summary()
 
@@ -1301,19 +1299,14 @@ class MainWindow(
         return self._time_text(index)[:8]
 
     def _update_status_summary(self):
-        """The file's name in the menu bar, the span shown, and the status
-        bar's summary (after any change of page, cleaning or tool)."""
+        """The file's name, the span shown, and the status bar's summary
+        (after any change of page, cleaning or tool)."""
         if not hasattr(self, "toolStatus"):
             return
         name = os.path.basename(self.current_filename) if self.current_filename else ""
         if name and self._previewing():
             name += "  ·  loading full resolution…"
-        if name != self.fileLabel.text():
-            self.fileLabel.setText(name)
-            # (the menu bar sizes its corner widget only when laid out)
-            self.fileLabel.setMinimumWidth(self.fileLabel.sizeHint().width())
-            self.menuBar().resize(self.menuBar().width() + 1, self.menuBar().height())
-            self.menuBar().resize(self.width(), self.menuBar().height())
+        self.fileLabel.setText(name)
 
         times = self._full_time_axis
         span = ""
@@ -1350,11 +1343,6 @@ class MainWindow(
         )
         self.toolStatus.setText(self._TOOL_NAMES.get(getattr(self, "_active_tool", "pan"), ""))
 
-    def _themed(self, widget, style):
-        """Style ``widget`` by ``style(palette)``, now and on each theme change."""
-        self._themed_widgets.append((widget, style))
-        widget.setStyleSheet(style(self._palette))
-
     def _viewer_style(self, p):
         """What only this window has: the step cards, the field labels, the
         file name, the chosen tool in the accent, the toolbar's type."""
@@ -1365,8 +1353,6 @@ class MainWindow(
             QLabel#FileName {{
                 color: {p["text_dim"]};
                 font-family: monospace;
-                font-size: 9pt;
-                padding-right: 16px;
             }}
             QLabel#FieldLabel {{ color: {p["text_dim"]}; font-size: 9pt; }}
             QLabel#Mono[dim="true"] {{ color: {p["text_dim"]}; font-size: 9pt; }}
@@ -1389,7 +1375,7 @@ class MainWindow(
             QFrame#HeaderSegmented QPushButton {{ font-size: 9pt; }}
             QFrame#CanvasBar QFrame#Segmented QPushButton {{
                 font-size: 9pt;
-                min-height: 24px;
+                min-height: 20px;
                 padding: 0px 10px;
             }}
             QFrame#CanvasBar QFrame#Segmented QPushButton:checked {{
@@ -1410,7 +1396,7 @@ class MainWindow(
             QLabel#StepName {{ color: {p["text"]}; font-size: 9pt; }}
             QLabel#StepDot {{
                 color: {p["text_dim"]};
-                font-size: 7pt;
+                font-size: {FONT_META}pt;
                 border: 1px solid {p["disabled"]};
                 border-radius: 9px;
             }}
@@ -1438,11 +1424,13 @@ class MainWindow(
         """Apply the global application theme."""
         theme_manager.set_theme(self.current_theme)
         apply_theme()
+        self._restyle(get_palette(self.current_theme))
 
-        # The window's own colours, and the icons drawn in them
-        self._palette = get_palette(self.current_theme)
-        for widget, style in self._themed_widgets:
-            widget.setStyleSheet(style(self._palette))
+    def _restyle(self, palette):
+        """The window's own colours, and the icons drawn in them."""
+        self.current_theme = theme_manager.current_theme
+        self._palette = palette
+        self.setStyleSheet(self._viewer_style(palette))
         for button, name in self._icon_buttons:
             button.setIcon(spectra_icon(name, self._palette))
         self._gotoIcon.setIcon(spectra_icon("clock", self._palette, 13))
@@ -1514,7 +1502,7 @@ class MainWindow(
         values are black and white."""
         from PyQt5.QtWidgets import QActionGroup
 
-        menu = viewMenu.addMenu("Overview &Contrast")
+        menu = viewMenu.addMenu("Overview &contrast")
         menu.setStatusTip("Percentiles of the overview strip's values shown as black and white")
         group = QActionGroup(self)
         current = self._overview_percentiles()

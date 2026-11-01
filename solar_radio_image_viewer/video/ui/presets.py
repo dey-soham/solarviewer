@@ -2,13 +2,14 @@
 Saving and loading all settings (presets for the window and the command line).
 """
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QLineEdit,
     QFileDialog,
     QComboBox,
     QCheckBox,
     QMessageBox,
-    QRadioButton,
+    QPushButton,
 )
 from ..lightcurve import (
     default_line_plot,
@@ -87,7 +88,7 @@ class PresetsMixin:
                 widgets[name] = widget.text()
             elif isinstance(widget, QComboBox):
                 widgets[name] = widget.currentText()
-            elif isinstance(widget, (QCheckBox, QRadioButton)):
+            elif isinstance(widget, (QCheckBox, QPushButton)):
                 widgets[name] = widget.isChecked()
             else:
                 widgets[name] = widget.value()
@@ -119,7 +120,7 @@ class PresetsMixin:
             self._use_server(None)
             QMessageBox.information(
                 self,
-                "Images on a Server",
+                "Images on a server",
                 f"These settings use images on {server.get('label', server.get('host'))}. "
                 "Connect to it in the main window, then load them again.",
             )
@@ -132,10 +133,13 @@ class PresetsMixin:
             if isinstance(widget, QLineEdit):
                 widget.setText(value)
             elif isinstance(widget, QComboBox):
-                if widget.findText(value) < 0:
+                # (any case: older files say "Fixed Range")
+                index = widget.findText(value, Qt.MatchFixedString)
+                if index < 0:
                     widget.addItem(value)
-                widget.setCurrentText(value)
-            elif isinstance(widget, (QCheckBox, QRadioButton)):
+                    index = widget.count() - 1
+                widget.setCurrentIndex(index)
+            elif isinstance(widget, (QCheckBox, QPushButton)):
                 widget.setChecked(bool(value))
             else:
                 widget.setValue(value)
@@ -176,7 +180,7 @@ class PresetsMixin:
 
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Video Settings",
+            "Save video settings",
             self.get_smart_start_directory(),
             "Video settings (*.json)",
         )
@@ -198,15 +202,19 @@ class PresetsMixin:
             if self.remote is not None:
                 # Paths on that server, not here
                 state["video"]["server"] = self.remote.label
-        with open(path, "w") as f:
-            json.dump(state, f, indent=1, default=list)
+        try:
+            text = json.dumps(state, indent=1, default=list)
+            with open(path, "w") as f:
+                f.write(text)
+        except (OSError, TypeError, ValueError) as e:
+            QMessageBox.warning(self, "Could not save settings", str(e))
 
     def load_settings(self):
         import json
 
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Load Video Settings",
+            "Load video settings",
             self.get_smart_start_directory(),
             "Video settings (*.json)",
         )
@@ -216,6 +224,9 @@ class PresetsMixin:
             with open(path) as f:
                 state = json.load(f)
         except (OSError, ValueError) as e:
-            QMessageBox.warning(self, "Could Not Load Settings", str(e))
+            QMessageBox.warning(self, "Could not load settings", str(e))
+            return
+        if not isinstance(state, dict):
+            QMessageBox.warning(self, "Could not load settings", "This isn’t a file of video settings.")
             return
         self._apply_settings_state(state)

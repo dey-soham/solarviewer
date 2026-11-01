@@ -195,26 +195,14 @@ def observation_time(header, filepath=None):
             r"(\d{4}[-_]\d{2}[-_]\d{2})",
             r"(\d{8})",
         ]
-        formats = [
-            "%Y-%m-%d-%H-%M-%S",
-            "%Y_%m_%d_%H_%M_%S",
-            "%Y-%m-%dT%H-%M-%S",
-            "%Y_%m_%dT%H_%M_%S",
-            "%Y%m%d_%H%M%S",
-            "%Y%m%d-%H%M%S",
-            "%Y%m%dT%H%M%S",
-            "%Y-%m-%d",
-            "%Y_%m_%d",
-            "%Y%m%d",
-        ]
         for pattern in patterns:
             match = re.search(pattern, filename)
             if match:
-                for fmt in formats:
-                    try:
-                        return datetime.strptime(match.group(1), fmt)
-                    except ValueError:
-                        continue
+                digits = re.sub(r"\D", "", match.group(1))
+                try:
+                    return datetime.strptime(digits, "%Y%m%d%H%M%S" if len(digits) == 14 else "%Y%m%d")
+                except ValueError:
+                    continue
     return None
 
 
@@ -370,6 +358,8 @@ def reference_range(path, options, mode):
     "minmax", "percentile" (1st and 99th) or "rms" (median ± 3×RMS). For a
     worker process: the image stays there."""
     data, _ = load_frame_data(path, options)
+    if data is None or not np.isfinite(data).any():
+        raise ValueError(f"{os.path.basename(path)} has no values to take a range from.")
     if mode == "minmax":
         return float(np.nanmin(data)), float(np.nanmax(data))
     if mode == "percentile":
@@ -383,6 +373,8 @@ def reference_range(path, options, mode):
 def reference_shape(path, options):
     """(rows, columns) of frame image ``path``, for a worker process."""
     data, _ = load_frame_data(path, options)
+    if data is None:
+        raise ValueError(f"{os.path.basename(path)} could not be read.")
     return tuple(data.shape)
 
 
@@ -419,6 +411,7 @@ def process_image(
 
         if data is None:
             logger.warning(f"Could not load data from {file_path}")
+            report("Frame not shown: its image could not be read")
             return create_error_frame(
                 options, "Could not load data", frame_idx, os.path.basename(file_path)
             )
@@ -426,6 +419,7 @@ def process_image(
         # Check for blank/all-NaN data
         if np.all(np.isnan(data)) or np.nanmax(data) == np.nanmin(data):
             logger.warning(f"Blank or constant data in {file_path}")
+            report("Frame not shown: its image is blank or constant")
             return create_error_frame(
                 options, "Blank/constant data", frame_idx, os.path.basename(file_path)
             )
@@ -480,7 +474,8 @@ def process_image(
         line_plot = line_plot_options(options)
         frame = _frame_figure(
             (width, height, frame_wcs is not None, line_plot["height"] if line_plot else 0,
-             data.shape, bool(options.get("colorbar", False))),
+             data.shape, bool(options.get("colorbar", False)),
+             repr(options.get("plot_settings"))),  # (colours and fonts a figure keeps)
             frame_wcs,
             options.get("reuse_figures", True),
         )
@@ -685,6 +680,7 @@ def process_image(
 
     except Exception as e:
         logger.error(f"Error processing image {file_path}: {e}")
+        report(f"Frame not drawn: {e}")
         _frame_figures.clear()  # may be half drawn
         return create_error_frame(
             options, f"Error: {str(e)[:30]}", frame_idx, os.path.basename(file_path)
@@ -724,8 +720,10 @@ class _FrameFigure:
         )
         if frame_wcs is not None:
             ax.reset_wcs(frame_wcs)
-        for artist in list(ax.collections) + list(ax.patches) + list(ax.lines) + list(ax.texts):
-            artist.remove()
+        # (one at a time: removing contours removes their labels from ax.texts)
+        for artists in (ax.collections, ax.patches, ax.lines, ax.texts):
+            for artist in list(artists):
+                artist.remove()
         if ax.get_legend() is not None:
             ax.get_legend().remove()
         ax.dataLim = Bbox.null()
@@ -742,7 +740,7 @@ _frame_figures = {}
 
 def _frame_figure(key, frame_wcs, reuse=True):
     """A figure for a frame of layout ``key`` (frame size, WCS axes or not,
-    line plot height (0: none), data shape, colorbar): the previous
+    line plot height (0: none), data shape, colorbar, plot settings): the previous
     frame's, cleared, if it had the same layout, else a new one."""
     frame = _frame_figures.get(key) if reuse else None
     if frame is None:
@@ -921,7 +919,8 @@ def calculate_global_stats(files, options):
 
 
 def _global_range(results):
-    ranges = [r["range"] for r in results if r.get("range")]
+    # (a frame of NaNs has no range, and would blank every other frame)
+    ranges = [r["range"] for r in results if r.get("range") and np.all(np.isfinite(r["range"]))]
     if not ranges:
         return None
     return (min(low for low, _ in ranges), max(high for _, high in ranges))
@@ -1952,8 +1951,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.preset:
-        with open(args.preset) as f:
-            video = json.load(f).get("video")
+        try:
+            with open(args.preset) as f:
+                video = json.load(f).get("video")
+        except (OSError, ValueError, AttributeError) as e:
+            parser.error(f"can't read the preset: {e}")
         if not video:
             parser.error("the preset has no frames (its settings had a problem when saved)")
         if video.get("server"):

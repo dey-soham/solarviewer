@@ -33,6 +33,7 @@ except ImportError:
 
 from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.stokes import (
+    fits_stokes_axis,
     fits_stokes_labels,
     read_planes,
     stokes_product,
@@ -41,6 +42,8 @@ from ..processing.stokes import (
 
 rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
+
+KNOWN_OBSERVATORIES = ("LOFAR", "MWA", "MEERKAT", "GMRT", "UGMRT")
 
 
 def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observatory=None):
@@ -245,17 +248,11 @@ def convert_to_hpc_planes(
         metadata_dict = ia_tool.summary(list=False, verbose=True)
         lat, long, height, observatory = extract_telescope_position(metadata_dict)
         ia_tool.close()
-        if (
-            observatory.upper() == "LOFAR"
-            or observatory.upper() == "MWA"
-            or observatory.upper() == "MEERKAT"
-            or observatory.upper() == "GMRT"
-            or observatory.upper() == "UGMRT"
-        ):
-            pass
-        else:
+        if str(observatory).upper() not in KNOWN_OBSERVATORIES:
             observatory = None
         POS = get_Earthlocation(fits_file=fits_file, observatory=observatory)
+        if POS is None:
+            raise RuntimeError("The image does not say where the telescope was")
         gcrs = SkyCoord(POS.get_gcrs(obstime))
         reference_coord = SkyCoord(
             header["CRVAL1"] * u.Unit(header["CUNIT1"]),
@@ -393,17 +390,11 @@ def convert_to_hpc_planes(
         metadata_dict = ia_tool.summary(list=False, verbose=True)
         lat, long, height, observatory = extract_telescope_position(metadata_dict)
         ia_tool.close()
-        if (
-            observatory.upper() == "LOFAR"
-            or observatory.upper() == "MWA"
-            or observatory.upper() == "MEERKAT"
-            or observatory.upper() == "GMRT"
-            or observatory.upper() == "UGMRT"
-        ):
-            pass
-        else:
+        if str(observatory).upper() not in KNOWN_OBSERVATORIES:
             observatory = None
         POS = get_Earthlocation(fits_file=fits_file, observatory=observatory)
+        if POS is None:
+            raise RuntimeError("The image does not say where the telescope was")
         gcrs = SkyCoord(POS.get_gcrs(obstime))
         reference_coord = SkyCoord(
             header["CRVAL1"] * u.Unit(header["CUNIT1"]),
@@ -429,7 +420,7 @@ def convert_to_hpc_planes(
             ),
             scale=u.Quantity([cdelta_1, cdelta_2] * u.arcsec / u.pix),
             rotation_angle=P_angle,
-            wavelength=freq.to(u.MHz).round(2),
+            wavelength=freq.to(u.MHz).round(2) if freq is not None else None,
             observatory=observatory,
         )
         new_header["DATE-OBS"] = header.get("DATE-OBS", obstime.isot)
@@ -663,9 +654,8 @@ def convert_and_save_hpc(
         logger.error("Cannot convert to helioprojective coordinates without sunpy")
         return False
 
+    temp_filename = None
     try:
-        not_fits_flag = False
-
         # Fix: use AND instead of OR to check if NOT a FITS file
         if not is_fits(input_fits_file):
             temp_filename = os.path.join(
@@ -674,7 +664,6 @@ def convert_and_save_hpc(
             input_fits_file = convert_casaimage_to_fits(
                 imagename=input_fits_file, fitsname=temp_filename
             )
-            not_fits_flag = True
 
         # Get BUNIT from original file BEFORE any processing
         original_bunit = None
@@ -696,10 +685,6 @@ def convert_and_save_hpc(
             height=height,
             observatory=observatory,
         )
-        if not_fits_flag:
-            # Remove the unique temp file
-            if os.path.exists(input_fits_file):
-                os.remove(input_fits_file)
 
         if map_obj is None:
             logger.error("Failed to convert to helioprojective coordinates")
@@ -728,6 +713,9 @@ def convert_and_save_hpc(
 
         traceback.print_exc()
         return False
+    finally:
+        if temp_filename and os.path.exists(temp_filename):
+            os.remove(temp_filename)
 
 
 def convert_and_save_hpc_all_stokes(
@@ -776,8 +764,8 @@ def convert_and_save_hpc_all_stokes(
         logger.error("Cannot convert to helioprojective coordinates without sunpy")
         return False
 
+    temp_filename = None
     try:
-        not_fits_flag = False
         original_input = input_fits_file
 
         if not is_fits(input_fits_file):
@@ -788,34 +776,32 @@ def convert_and_save_hpc_all_stokes(
             input_fits_file = convert_casaimage_to_fits(
                 imagename=input_fits_file, fitsname=temp_filename
             )
-            not_fits_flag = True
 
         # Check how many Stokes parameters are available
         hdu = fits.open(input_fits_file)
         header = hdu[0].header
-        ndim = header["NAXIS"]
 
         # Get BUNIT early before temp file is deleted
         original_bunit = header.get("BUNIT", None)
         if original_bunit:
             pass
 
-        # Find Stokes axis
-        stokes_axis_fits = None
-        num_stokes = 1
-        for i in range(1, ndim + 1):
-            if header.get(f"CTYPE{i}", "").upper() == "STOKES":
-                stokes_axis_fits = i
-                num_stokes = header[f"NAXIS{i}"]
-                break
+        # The planes by their labels: an image may hold I and V, or LL alone
+        stokes_list = fits_stokes_labels(header)
+        stokes_axis_fits = fits_stokes_axis(header)
+        if stokes_axis_fits is not None:
+            stokes_axis_cards = {
+                key: header.get(f"{key}{stokes_axis_fits}", 1.0)
+                for key in ("CRVAL", "CDELT", "CRPIX")
+            }
         hdu.close()
 
-        if stokes_axis_fits is None or num_stokes == 1:
+        if stokes_list is None or len(stokes_list) == 1:
             # Single Stokes - just use regular conversion
             return convert_and_save_hpc(
                 input_fits_file=original_input,
                 output_fits_file=output_fits_file,
-                Stokes="I",
+                Stokes=stokes_list[0] if stokes_list else "I",
                 thres=thres,
                 lat=lat,
                 long=long,
@@ -826,7 +812,6 @@ def convert_and_save_hpc_all_stokes(
             )
 
         # Convert each Stokes parameter
-        stokes_list = ["I", "Q", "U", "V"][:num_stokes]
         stokes_maps = []
         reference_header = None
 
@@ -848,16 +833,7 @@ def convert_and_save_hpc_all_stokes(
                 if reference_header is None:
                     reference_header = dict(map_obj.meta)
             else:
-                logger.error(f"Failed to convert Stokes {stokes}, using zeros")
-                if stokes_maps:
-                    stokes_maps.append(np.zeros_like(stokes_maps[0]))
-                else:
-                    raise RuntimeError(f"Failed to convert first Stokes {stokes}")
-
-        if not_fits_flag:
-            # Remove the temp file
-            if os.path.exists(input_fits_file):
-                os.remove(input_fits_file)
+                raise RuntimeError(f"Failed to convert Stokes {stokes}")
 
         if not stokes_maps:
             logger.error("No Stokes maps were successfully converted")
@@ -901,9 +877,8 @@ def convert_and_save_hpc_all_stokes(
         new_header["NAXIS"] = 3
         new_header["NAXIS3"] = len(stokes_maps)
         new_header["CTYPE3"] = "STOKES"
-        new_header["CRVAL3"] = 1.0
-        new_header["CDELT3"] = 1.0
-        new_header["CRPIX3"] = 1.0
+        for key, value in stokes_axis_cards.items():
+            new_header[f"{key}3"] = value
         new_header["CUNIT3"] = ""
 
         # Preserve BUNIT from original file
@@ -931,6 +906,9 @@ def convert_and_save_hpc_all_stokes(
 
         traceback.print_exc()
         return False
+    finally:
+        if temp_filename and os.path.exists(temp_filename):
+            os.remove(temp_filename)
 
 
 def convert_hpc_to_radec(
@@ -969,7 +947,10 @@ def convert_hpc_to_radec(
 
         # Load the HPC FITS file
         with afits.open(input_fits_file) as hdul:
-            hpc_data = hdul[0].data.copy()
+            # Float, at the data's own precision: the rotation fills the
+            # corners with NaN
+            hpc_data = hdul[0].data
+            hpc_data = hpc_data.astype(np.result_type(hpc_data.dtype, np.float32))
             hpc_header = hdul[0].header.copy()
 
         # Check if it's actually HPC
@@ -1068,6 +1049,17 @@ def convert_hpc_to_radec(
 
         rmin, rmax = np.where(rows)[0][[0, -1]]
         cmin, cmax = np.where(cols)[0][[0, -1]]
+
+        # The reference pixel of the new header is the Sun's: (0, 0) of the
+        # HPC image, carried through the rotation, which turns about the
+        # middle of the array and not about CRPIX
+        centre1 = (hpc_data.shape[-1] - 1) / 2
+        centre2 = (hpc_data.shape[-2] - 1) / 2
+        offset1 = crpix1 - 1 - hpc_header.get("CRVAL1", 0.0) / cdelt1 - centre1
+        offset2 = crpix2 - 1 - hpc_header.get("CRVAL2", 0.0) / cdelt2 - centre2
+        turn = np.deg2rad(-p_angle)
+        crpix1 = centre1 + 1 + offset1 * np.cos(turn) + offset2 * np.sin(turn)
+        crpix2 = centre2 + 1 - offset1 * np.sin(turn) + offset2 * np.cos(turn)
 
         # Add small padding to avoid over-cropping due to interpolation edge effects
         padding = 0  # pixels

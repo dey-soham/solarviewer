@@ -17,8 +17,8 @@ import time
 from datetime import datetime, timedelta
 
 try:
-    from PyQt5.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, pyqtSignal
-    from PyQt5.QtGui import QDesktopServices
+    from PyQt5.QtCore import QObject, QSettings, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
+    from PyQt5.QtGui import QDesktopServices, QIcon
     from PyQt5.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -64,7 +64,9 @@ from ..ui.download_parts import (
     _switch,
     render_log,
 )
-from ..ui.styles import set_hand_cursor, set_tone, theme_manager
+from ..ui.geometry import fit_to_screen
+from ..ui.icons import themed_icon
+from ..ui.styles import SPACE_L, SPACE_M, SPACE_S, SPACE_XS, set_hand_cursor, set_tone, theme_manager, themed
 from ..ui.widgets import kicker, kicker_row, link_button, rule
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -94,7 +96,7 @@ BURST_TYPES = {
 
 def _hours_text(hours):
     first, last = hours
-    return f"{first:02d}–{last:02d} UT"
+    return f"{first:02d}–{last:02d} UTC"
 
 
 def _years_text(site):
@@ -228,7 +230,7 @@ class RadioDataDownloaderGUI(QDialog):
         self.setWindowTitle("Download radio spectra")
         self.setWindowFlags(Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
         self.setMinimumSize(820, 600)
-        self.resize(820, 600)
+        fit_to_screen(self, 820, 600)
         self.setModal(False)
         self.viewer = parent if hasattr(parent, "open_spectrum") else None
         self.initial_datetime = initial_datetime
@@ -245,6 +247,7 @@ class RadioDataDownloaderGUI(QDialog):
         self._count_key = None
         self._count_worker = None
         self._bursts = {}  # day tuple -> bursts
+        self._bursts_failed = set()  # day tuples no list answered for
         self._burst_worker = None
         self._burst_days = None
         self._show_all_bursts = False
@@ -253,6 +256,9 @@ class RadioDataDownloaderGUI(QDialog):
         self._burst_stations = []  # or one of these (a burst picked from the list saw them)
         self._updating = False
         self._window_seconds = 3600
+        self._options_open = False
+        self._done = False  # the progress page shows a finished download
+        self._log_path = ""
         self.base_dir = self._setting("base_dir", os.path.join(os.path.expanduser("~"), "solar_data"))
 
         outer = QVBoxLayout(self)
@@ -277,10 +283,20 @@ class RadioDataDownloaderGUI(QDialog):
         network = self._setting("network", "rstn")
         self._pick(self.network_buttons, self.network_buttons[NETWORKS.index(network) if network in NETWORKS else 0])
         self.on_network_changed()
+        themed(self, self._restyle)
         try:
             set_hand_cursor(self)
         except Exception:
             pass
+
+    def _restyle(self, _palette):
+        """Rich text and the log hold the theme's colours: they are written again."""
+        self._show_options_chevron()
+        self.on_processing_changed(self.process_switch.isChecked())
+        if self.side_pages.currentIndex() == 1:
+            self._render_progress(self._done)
+            render_log(self.log_view, self._log_lines)
+            self._say_log_path()
 
     # ------------------------------------------------------------ settings
     def _setting(self, key, default):
@@ -313,15 +329,15 @@ class RadioDataDownloaderGUI(QDialog):
     def _build_form(self):
         self.form = QWidget()
         layout = QVBoxLayout(self.form)
-        layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(20)
+        layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
+        layout.setSpacing(SPACE_L)
 
         # Station
         block = QVBoxLayout()
-        block.setSpacing(10)
+        block.setSpacing(SPACE_S)
         block.addWidget(kicker("Station"))
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(SPACE_S)
         self.network_group, self.network_buttons = _segments(["RSTN", "e-CALLISTO"])
         self.network_buttons[0].setToolTip(
             "The US Air Force's Radio Solar Telescope Network spectrographs:\n"
@@ -343,7 +359,6 @@ class RadioDataDownloaderGUI(QDialog):
         self.ecallisto_combo.setToolTip("The stations with files in this window, as the archive lists them")
         self.ecallisto_combo.currentIndexChanged.connect(self.on_station_changed)
         for combo in (self.rstn_combo, self.ecallisto_combo):
-            combo.setMinimumHeight(30)
             self.station_pages.addWidget(combo)
         self.station_pages.setFixedHeight(self.rstn_combo.sizeHint().height())
         row.addWidget(self.station_pages, 1)
@@ -355,11 +370,11 @@ class RadioDataDownloaderGUI(QDialog):
 
         # Time range
         block = QVBoxLayout()
-        block.setSpacing(10)
+        block.setSpacing(SPACE_S)
         head, _ = kicker_row("Time range", "UTC")
         block.addWidget(head)
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(SPACE_S)
         self.mode_group, self.mode_buttons = _segments(["Whole day", "Time range"])
         for button in self.mode_buttons:
             button.clicked.connect(lambda _=False, b=button: self._pick(self.mode_buttons, b, self.on_mode_changed))
@@ -373,13 +388,12 @@ class RadioDataDownloaderGUI(QDialog):
         day_page = QWidget()
         grid = QGridLayout(day_page)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(3)
+        grid.setHorizontalSpacing(SPACE_S)
+        grid.setVerticalSpacing(SPACE_XS)
         grid.addWidget(_label("Day", "Meta"), 0, 0)
         self.day_edit = QLineEdit()
         _monospace(self.day_edit)
         self.day_edit.setPlaceholderText("YYYY-MM-DD")
-        self.day_edit.setMinimumHeight(30)
         self.day_edit.textEdited.connect(self._day_edited)
         attach_date_picker(self.day_edit, self._day_edited, fmt=DAY_FORMAT)
         grid.addWidget(self.day_edit, 1, 0)
@@ -390,14 +404,13 @@ class RadioDataDownloaderGUI(QDialog):
         range_page = QWidget()
         grid = QGridLayout(range_page)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(3)
+        grid.setHorizontalSpacing(SPACE_S)
+        grid.setVerticalSpacing(SPACE_XS)
         self.start_edit, self.end_edit = QLineEdit(), QLineEdit()
         for col, (name, edit) in enumerate((("Start", self.start_edit), ("End", self.end_edit))):
             grid.addWidget(_label(name, "Meta"), 0, col)
             _monospace(edit)
             edit.setPlaceholderText("YYYY-MM-DD HH:MM:SS")
-            edit.setMinimumHeight(30)
             grid.addWidget(edit, 1, col)
         self.start_edit.textEdited.connect(self._start_edited)
         self.end_edit.textEdited.connect(self._end_edited)
@@ -425,15 +438,14 @@ class RadioDataDownloaderGUI(QDialog):
 
         # Save to
         block = QVBoxLayout()
-        block.setSpacing(10)
+        block.setSpacing(SPACE_S)
         block.addWidget(kicker("Save to"))
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(SPACE_S)
         self.folder_field = QFrame()
         self.folder_field.setObjectName("Field")
-        self.folder_field.setMinimumHeight(30)
         field_layout = QHBoxLayout(self.folder_field)
-        field_layout.setContentsMargins(10, 0, 10, 0)
+        field_layout.setContentsMargins(SPACE_S, 0, SPACE_S, 0)
         self.folder_label = QLabel()
         self.folder_label.setTextFormat(Qt.RichText)
         field_layout.addWidget(self.folder_label)
@@ -447,18 +459,18 @@ class RadioDataDownloaderGUI(QDialog):
 
         # Processing
         block = QVBoxLayout()
-        block.setSpacing(8)
+        block.setSpacing(SPACE_S)
         block.addWidget(kicker("Processing"))
         self.processing_row = QFrame()
         self.processing_row.setObjectName("Surface")
         row = QHBoxLayout(self.processing_row)
-        row.setContentsMargins(10, 8, 10, 8)
-        row.setSpacing(8)
+        row.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
+        row.setSpacing(SPACE_S)
         self.process_switch = _switch(True)
         self.process_switch.toggled.connect(self.on_processing_changed)
         row.addWidget(self.process_switch, 0, Qt.AlignTop)
         text = QVBoxLayout()
-        text.setSpacing(1)
+        text.setSpacing(0)
         self.processing_title = QLabel()
         self.processing_title.setTextFormat(Qt.RichText)
         self.processing_desc = _label("", "Meta")
@@ -467,14 +479,16 @@ class RadioDataDownloaderGUI(QDialog):
         text.addWidget(self.processing_title)
         text.addWidget(self.processing_desc)
         row.addLayout(text, 1)
-        self.options_link = link_button("Options ▾", self.toggle_options)
+        self.options_link = link_button("Options", self.toggle_options)
+        self.options_link.setLayoutDirection(Qt.RightToLeft)  # the chevron after the word
+        self.options_link.setIconSize(QSize(10, 10))
         row.addWidget(self.options_link, 0, Qt.AlignTop)
         block.addWidget(self.processing_row)
         self.options_row = QWidget()
         options = QGridLayout(self.options_row)
-        options.setContentsMargins(10, 0, 10, 0)
-        options.setHorizontalSpacing(14)
-        options.setVerticalSpacing(6)
+        options.setContentsMargins(SPACE_M, 0, SPACE_M, 0)
+        options.setHorizontalSpacing(SPACE_M)
+        options.setVerticalSpacing(SPACE_S)
         self.flag_channels_box = QCheckBox("Flag bad channels")
         self.flag_channels_box.setToolTip("Blank the frequency channels known to carry interference, then fill them in")
         self.flag_calibration_box = QCheckBox("Flag calibration periods")
@@ -519,16 +533,16 @@ class RadioDataDownloaderGUI(QDialog):
     def _build_summary(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
+        layout.setSpacing(SPACE_M)
         layout.addWidget(kicker("You'll get"))
         head = QVBoxLayout()
-        head.setSpacing(2)
+        head.setSpacing(SPACE_XS)
         self.count_label = _label("", "DialogTitle")
         self.size_label = _label("", "Hint")
         self.size_label.setWordWrap(True)
         count_row = QHBoxLayout()
-        count_row.setSpacing(10)
+        count_row.setSpacing(SPACE_S)
         count_row.addWidget(self.count_label)
         self.count_label.ensurePolished()
         self.archive_spinner = Spinner(max(12, int(self.count_label.fontMetrics().capHeight() * 0.9)))
@@ -539,8 +553,8 @@ class RadioDataDownloaderGUI(QDialog):
         head.addWidget(self.size_label)
         layout.addLayout(head)
         grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(6)
+        grid.setHorizontalSpacing(SPACE_M)
+        grid.setVerticalSpacing(SPACE_XS)
         self.summary_values = {}
         for i, key in enumerate(("Station", "Window", "Observes", "Output")):
             name = _label(key, "Hint")
@@ -555,7 +569,7 @@ class RadioDataDownloaderGUI(QDialog):
         self.timeline_box = QWidget()
         timeline = QVBoxLayout(self.timeline_box)
         timeline.setContentsMargins(0, 0, 0, 0)
-        timeline.setSpacing(6)
+        timeline.setSpacing(SPACE_XS)
         timeline.addWidget(_label("Timeline · one dot per 15 min file", "Meta"))
         self.timeline = Timeline()
         timeline.addWidget(self.timeline)
@@ -569,12 +583,12 @@ class RadioDataDownloaderGUI(QDialog):
         layout.addWidget(self.timeline_box)
         layout.addWidget(rule())
         bursts = QVBoxLayout()
-        bursts.setSpacing(6)
+        bursts.setSpacing(SPACE_XS)
         self.bursts_head = _label("", "Meta")
         self.bursts_head.setTextFormat(Qt.RichText)
         self.bursts_head.setWordWrap(True)
         bursts_row = QHBoxLayout()
-        bursts_row.setSpacing(6)
+        bursts_row.setSpacing(SPACE_S)
         bursts_row.addWidget(self.bursts_head, 1)
         self.bursts_spinner = Spinner(12)
         self.bursts_spinner.setToolTip("Asking the burst lists")
@@ -598,16 +612,16 @@ class RadioDataDownloaderGUI(QDialog):
     def _build_progress(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
+        layout.setSpacing(SPACE_M)
         head, self.elapsed_label = kicker_row("Downloading", "0:00 elapsed")
         self.progress_kicker = head.findChild(QLabel, "Kicker")
         _monospace(self.elapsed_label)
         layout.addWidget(head)
         block = QVBoxLayout()
-        block.setSpacing(6)
+        block.setSpacing(SPACE_XS)
         numbers = QHBoxLayout()
-        numbers.setSpacing(8)
+        numbers.setSpacing(SPACE_S)
         self.progress_count = _label("", "DialogTitle")
         self.progress_count.setTextFormat(Qt.RichText)
         self.progress_left = _label("", "Hint")
@@ -622,14 +636,14 @@ class RadioDataDownloaderGUI(QDialog):
         block.addWidget(self.progress_bar)
         layout.addLayout(block)
         tiles = QHBoxLayout()
-        tiles.setSpacing(6)
+        tiles.setSpacing(SPACE_S)
         self.tile_values = {}
         for name in ("Fetched", "Converted"):
             tile = QFrame()
             tile.setObjectName("Tile")
             tile_layout = QVBoxLayout(tile)
-            tile_layout.setContentsMargins(9, 7, 9, 7)
-            tile_layout.setSpacing(1)
+            tile_layout.setContentsMargins(SPACE_S, SPACE_XS, SPACE_S, SPACE_XS)
+            tile_layout.setSpacing(0)
             tile_layout.addWidget(_label(name, "Meta"))
             value = _label("—", "Mono")
             tile_layout.addWidget(value)
@@ -655,8 +669,8 @@ class RadioDataDownloaderGUI(QDialog):
         footer.setObjectName("CanvasBar")
         footer.setFixedHeight(52)
         layout = QHBoxLayout(footer)
-        layout.setContentsMargins(20, 0, 20, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(SPACE_L, 0, SPACE_L, 0)
+        layout.setSpacing(SPACE_S)
         self.open_label = _label("Opens in the Dynamic Spectrum Viewer when done", "Meta")
         self.open_switch = _switch(True)
         layout.addWidget(self.open_label)
@@ -801,7 +815,7 @@ class RadioDataDownloaderGUI(QDialog):
             self.mode_note.setText(f"its observing day, about {_hours_text(site['hours'])}")
         else:
             self.station_note.setText(f"{ECALLISTO_NOTE} · 15 min files · {rdd.ECALLISTO_FIRST_YEAR} to now")
-            self.mode_note.setText("00:00 to 24:00 UT")
+            self.mode_note.setText("00:00 to 24:00 UTC")
             station = self.ecallisto_combo.currentData()
             if station and station != "*":
                 self._wanted_station = station
@@ -847,9 +861,12 @@ class RadioDataDownloaderGUI(QDialog):
             self.update_summary()
 
     def toggle_options(self):
-        shown = not self.options_row.isVisibleTo(self)
-        self.options_row.setVisible(shown)
-        self.options_link.setText("Options ▴" if shown else "Options ▾")
+        self._options_open = not self._options_open
+        self.options_row.setVisible(self._options_open)
+        self._show_options_chevron()
+
+    def _show_options_chevron(self):
+        self.options_link.setIcon(QIcon(themed_icon("spinbox_up.png" if self._options_open else "spinbox_down.png")))
 
     def _day_edited(self, text):
         self.update_summary()
@@ -998,6 +1015,7 @@ class RadioDataDownloaderGUI(QDialog):
             return
         self._burst_days = days
         self._show_all_bursts = False
+        self._bursts_failed.discard(days)  # asked again when the form comes back to them
         if days in self._bursts:
             self._render_bursts()
             return
@@ -1008,13 +1026,17 @@ class RadioDataDownloaderGUI(QDialog):
 
     def _bursts_answered(self, days, bursts):
         self._burst_worker = None
-        self._bursts[days] = [] if isinstance(bursts, Exception) else bursts
+        if isinstance(bursts, Exception):
+            self._bursts_failed.add(days)
+        else:
+            self._bursts[days] = bursts
         if days == self._burst_days:
             self._render_bursts()
 
     def _render_bursts(self):
         days = self._burst_days
-        self.bursts_spinner.setVisible(bool(days) and days not in self._bursts)
+        failed = days in self._bursts_failed
+        self.bursts_spinner.setVisible(bool(days) and days not in self._bursts and not failed)
         if not days:
             self.bursts_head.setText("")
             self.bursts_label.setText("")
@@ -1030,7 +1052,8 @@ class RadioDataDownloaderGUI(QDialog):
         source = f"reported by {_escape(station)}" if rstn else "seen by e-CALLISTO"
         if bursts is None:
             self.bursts_head.setText(f"Bursts {source} · {when}")
-            self.bursts_label.setText(_muted("Asking the burst lists…", secondary))
+            text = "The burst lists could not be reached" if failed else "Asking the burst lists…"
+            self.bursts_label.setText(_muted(text, secondary))
             return
         # RSTN: NOAA's reports of this station; e-CALLISTO: its network's
         # list. A whole day keeps the bursts in it.
@@ -1094,6 +1117,8 @@ class RadioDataDownloaderGUI(QDialog):
         else:
             station = self.station()
             if station == "":
+                if not answer:  # the archive holds nothing in this window
+                    out["files"] = out["spectra"] = 0
                 return out
             files = [f for f in answer if station is None or f["station"].upper() == station.upper()]
             out["files"] = len(files)
@@ -1138,23 +1163,23 @@ class RadioDataDownloaderGUI(QDialog):
         set_tone(self.size_label, None)
         spectra = est["spectra"]
         if bad_window:
-            self.count_label.setText("—")
+            self._say_count("—")
             self.size_label.setText("Choose a day or a window that ends after it starts")
             set_tone(self.size_label, "error")
         elif failed:
-            self.count_label.setText("?")
+            self._say_count("Unknown", "Hint")
             self.size_label.setText("The archive could not be reached; it is asked again when the form changes")
             set_tone(self.size_label, "error")
         elif est["files"] is None:
-            self.count_label.setText("…")
+            self._say_count("…")
             self.size_label.setText("checking the archive…")
         elif spectra == 0:
-            self.count_label.setText("No data")
+            self._say_count("No data")
             self.size_label.setText(self._no_data_reason())
             set_tone(self.size_label, "warning")
         else:
             noun = "spectrum" if spectra == 1 else "spectra"
-            self.count_label.setText(f"{spectra} {noun}")
+            self._say_count(f"{spectra} {noun}")
             n = est["files"]
             self.size_label.setText(
                 f"from {n} file{'s' if n > 1 else ''} · ≈ {_size_text(est['size_mb'])} · "
@@ -1186,7 +1211,7 @@ class RadioDataDownloaderGUI(QDialog):
             put("Window", f"{self.day():%Y-%m-%d}" + _muted(" · its observing day", secondary))
         else:
             fmt = "%m-%d %H:%M"
-            put("Window", f"{start:{fmt}} → {end:{fmt if end.date() != start.date() else '%H:%M'}} UT")
+            put("Window", f"{start:{fmt}} → {end:{fmt if end.date() != start.date() else '%H:%M'}} UTC")
         put("Output", "Dynamic spectrum FITS" + _muted(" · for the Dynamic Spectrum Viewer", secondary))
 
         # the e-CALLISTO files across the window
@@ -1220,10 +1245,20 @@ class RadioDataDownloaderGUI(QDialog):
             self.download_button.setText(f"Download {spectra} {noun}")
         else:
             self.download_button.setText("Download")
-        self.download_button.setEnabled(ready or (not bad_window and est["files"] is None and not failed))
+        # (e-CALLISTO with no station listed yet would mean every station)
+        self.download_button.setEnabled(
+            ready or (not bad_window and est["files"] is None and not failed and station != "")
+        )
         self.download_button.setToolTip("" if ready else "Waiting for the archive" if checking else "Nothing to download")
         self._ask_bursts(start, end)
         self._render_bursts()
+
+    def _say_count(self, text, role="DialogTitle"):
+        self.count_label.setText(text)
+        if self.count_label.objectName() != role:
+            self.count_label.setObjectName(role)
+            self.count_label.style().unpolish(self.count_label)
+            self.count_label.style().polish(self.count_label)
 
     def _no_data_reason(self):
         if self.network() == "ecallisto":
@@ -1291,7 +1326,8 @@ class RadioDataDownloaderGUI(QDialog):
             self._log_file.write(f"\n# {datetime.utcnow():%Y-%m-%d %H:%M:%S} UT  {params}\n")
         except OSError:
             self._log_file = None
-        self.log_path_label.setText("Full log → " + _muted(_short_home(log_path), theme_manager.palette["link"]))
+        self._log_path = log_path
+        self._say_log_path()
         self.progress_kicker.setText("DOWNLOADING")
         self.side_pages.setCurrentIndex(1)
         for button in (self.cancel_button, self.download_button, self.open_button, self.folder_button):
@@ -1311,6 +1347,9 @@ class RadioDataDownloaderGUI(QDialog):
         self.download_worker.error.connect(self.download_error)
         self.download_worker.start()
 
+    def _say_log_path(self):
+        self.log_path_label.setText("Full log → " + _muted(_short_home(self._log_path), theme_manager.palette["link"]))
+
     def _set_form_locked(self, locked):
         self.form.setEnabled(not locked)
         if locked:
@@ -1327,6 +1366,7 @@ class RadioDataDownloaderGUI(QDialog):
         self.elapsed_label.setText(f"{elapsed // 60}:{elapsed % 60:02d} elapsed")
 
     def _render_progress(self, done=False):
+        self._done = done
         secondary = theme_manager.palette["text_secondary"]
         total = max(self._total, self._fetched)
         if done:
@@ -1337,7 +1377,7 @@ class RadioDataDownloaderGUI(QDialog):
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(100)
         else:
-            self.progress_count.setText(f"{self._fetched}" + _muted(f" / {total or '?'} files", secondary))
+            self.progress_count.setText(f"{self._fetched}" + _muted(f" / {total} files" if total else " files so far", secondary))
             if total and self._started and self._fetched:
                 per_file = (time.time() - self._started) / float(self._fetched)
                 left = per_file * (total - self._fetched)
@@ -1366,7 +1406,7 @@ class RadioDataDownloaderGUI(QDialog):
             except OSError:
                 pass
         status = ""
-        for prefix, mark in (("Downloaded ", "✓"), ("Wrote ", "written")):
+        for prefix, mark in (("Downloaded ", "downloaded"), ("Wrote ", "written")):
             if message.startswith(prefix):
                 message, status = message[len(prefix):], mark
         self._log(message, status)

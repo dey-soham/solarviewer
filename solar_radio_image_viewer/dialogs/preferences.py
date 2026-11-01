@@ -12,8 +12,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 
 from ..ui.geometry import fit_width_to_text
-from ..ui.widgets import button_bar
-from ..ui.styles import set_hand_cursor
+from ..ui.widgets import button_bar, dialog_layout
+from ..ui.styles import SPACE_M, SPACE_XS, set_hand_cursor
 
 
 class PreferencesDialog(QDialog):
@@ -33,19 +33,19 @@ class PreferencesDialog(QDialog):
         set_hand_cursor(self)
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(15)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout = dialog_layout(self)
 
         # UI Scale group
-        scale_group = QGroupBox("UI Scale")
+        scale_group = QGroupBox("UI scale")
         scale_layout = QVBoxLayout(scale_group)
+        scale_layout.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
 
         # Description label
         desc_label = QLabel(
             "Adjust the UI scale factor for high-DPI displays.\n"
             "Default is 1.0 (100%). Increase for larger UI elements."
         )
+        desc_label.setObjectName("Hint")
         desc_label.setWordWrap(True)
         scale_layout.addWidget(desc_label)
 
@@ -89,7 +89,9 @@ class PreferencesDialog(QDialog):
 
         # Preset buttons row
         preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("Presets:"))
+        presets_label = QLabel("Presets")
+        presets_label.setObjectName("Hint")
+        preset_layout.addWidget(presets_label)
 
         presets = [
             ("75%", 0.75),
@@ -149,7 +151,7 @@ class PreferencesDialog(QDialog):
         if abs(scale - current_scale) > 0.01:
             reply = QMessageBox.question(
                 self,
-                "Restart Required",
+                "Restart required",
                 f"UI scale changed to {scale:.2f}x.\n\n"
                 "The application needs to restart for changes to take effect.\n\n"
                 "Would you like to restart now?",
@@ -179,16 +181,23 @@ class PreferencesDialog(QDialog):
         import sys
         import os
 
-        # Get the current executable and arguments
+        # The command as it was typed: sys.argv loses a "python -m"
         python = sys.executable
-        args = sys.argv[:]
+        args = sys.orig_argv[1:]
+        self.settings.sync()  # (exec does not wait for QSettings to write)
 
-        # Quit current app
+        def start_new_instance():
+            os.execv(python, [python] + args)
+
         app = QApplication.instance()
         if app:
+            # Connected last, so that what is already waiting for the quit
+            # (the batch runner, a pip update) still runs. Closing the windows
+            # stops the workers and removes the tabs' temporary files.
+            app.aboutToQuit.connect(start_new_instance)
+            app.closeAllWindows()
             app.quit()
-
-        # Start new instance
-        os.execv(python, [python] + args)
+        else:
+            start_new_instance()
 
 

@@ -20,7 +20,12 @@ from ..ui.busy import busy
 from ..processing.fits_io import is_fits
 from ..processing.image_meta import casa_info, coordsys_from_record, fits_header
 from ..processing.prefetch import image_prefetcher
-from ..processing.image_data import default_rms_box, read_image, read_new_image
+from ..processing.image_data import (
+    default_rms_box,
+    downsample_factor,
+    read_image,
+    read_new_image,
+)
 from ..processing.stokes import StokesUnavailable, missing_planes, uses_rms
 from ..ui.errors import show_error
 
@@ -68,7 +73,6 @@ class LoadingMixin:
     def _full_resolution(self, imagename, target_size):
         """(the [x, y] sky shape of the file, the downsample factor of the
         plane shown), from the image's cached metadata."""
-        from ..processing.image_data import downsample_factor
         from ..processing.image_meta import sky_axes
 
         summary = casa_info(imagename).summary
@@ -88,6 +92,49 @@ class LoadingMixin:
         if full is not None:
             xhigh, yhigh = min(xhigh, full[0]), min(yhigh, full[1])
         return int(xlow), int(xhigh), int(ylow), int(yhigh)
+
+    def _rescale_for_fast_load(self):
+        """Fast load was switched and the plane shown will have other pixels:
+        everything kept in its pixels goes with them, before the read takes
+        the RMS box and the plot the regions. Returns (the downsample factor
+        to come, what puts everything back)."""
+        before = getattr(self, "_downsample", 1) or 1
+        full = getattr(self, "_full_image_shape", None)
+        # (the astropy reader, without a coordinate system, never downsamples)
+        after = before
+        if full is not None and self.current_wcs is not None:
+            after = downsample_factor(full, self._load_target_size())
+        ratio = before / after
+
+        rms_box, corners = list(self.current_rms_box), [(r, r.corners) for r in self.regions]
+        layers = [(layer, layer.get("rms_box")) for layer in self.contour_layers]
+        keys = [
+            (s, ("center_x", "center_y") + (("width", "height") if s.get("unit", "pixels") == "pixels" else ()))
+            for s in self.shape_annotations
+        ]
+        keys += [(a, ("x", "y")) for a in self.text_annotations]
+        keys += [(a, ("x1", "y1", "x2", "y2")) for a in self.arrow_annotations]
+        marks = [(item, dict(item)) for item, _keys in keys]
+
+        def restore():
+            self.current_rms_box = rms_box
+            for region, box in corners:
+                region.corners = box
+            for layer, box in layers:
+                layer["rms_box"] = box
+            for item, values in marks:
+                item.update(values)
+
+        if ratio != 1:
+            self.current_rms_box = [round(v * ratio) for v in rms_box]
+            for region, box in corners:
+                region.corners = tuple(v * ratio for v in box)
+            for layer, box in layers:
+                if box is not None and layer["source"] == "same":
+                    layer["rms_box"] = tuple(round(v * ratio) for v in box)
+            for item, names in keys:
+                item.update({name: item[name] * ratio for name in names if name in item})
+        return after, restore
 
     def _load_target_size(self):
         """Max dimension to downsample loads to in fast load mode, 0 for none."""
@@ -255,15 +302,15 @@ class LoadingMixin:
 
                     if is_kelvin:
                         self.tb_btn.setText("FLUX")
-                        self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
+                        self.tb_btn.setToolTip("Convert to flux (Jy/beam) view")
                     elif is_jy_beam:
                         self.tb_btn.setText("TB")
                         self.tb_btn.setToolTip(
-                            "Convert to Brightness Temperature (K)"
+                            "Convert to brightness temperature (K)"
                         )
                     else:
                         self.tb_btn.setText("FLUX")
-                        self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
+                        self.tb_btn.setToolTip("Convert to flux (Jy/beam) view")
 
                     # Reset TB mode when loading new image (not when loading TB temp)
                     if (
@@ -287,7 +334,7 @@ class LoadingMixin:
                         self.hpc_btn.setToolTip("Convert to RA/DEC coordinates")
                     else:
                         self.hpc_btn.setText("HPC")
-                        self.hpc_btn.setToolTip("Convert to Helioprojective view")
+                        self.hpc_btn.setToolTip("Convert to helioprojective view")
             else:
                 # Try to get header from CASA image
                 try:
@@ -335,16 +382,16 @@ class LoadingMixin:
 
                         if is_kelvin:
                             self.tb_btn.setText("FLUX")
-                            self.tb_btn.setToolTip("Convert to Flux (Jy/beam) view")
+                            self.tb_btn.setToolTip("Convert to flux (Jy/beam) view")
                         elif is_jy_beam:
                             self.tb_btn.setText("TB")
                             self.tb_btn.setToolTip(
-                                "Convert to Brightness Temperature (K)"
+                                "Convert to brightness temperature (K)"
                             )
                         else:
                             self.tb_btn.setText("TB")
                             self.tb_btn.setToolTip(
-                                "Convert to Brightness Temperature (K)"
+                                "Convert to brightness temperature (K)"
                             )
 
                         if (
@@ -367,7 +414,7 @@ class LoadingMixin:
                             self.hpc_btn.setToolTip("Convert to RA/DEC coordinates")
                         else:
                             self.hpc_btn.setText("HPC")
-                            self.hpc_btn.setToolTip("Convert to Helioprojective view")
+                            self.hpc_btn.setToolTip("Convert to helioprojective view")
 
                 except Exception as casa_err:
                     logger.warning(f"[TB] CASA header extraction error: {casa_err}")
@@ -432,12 +479,12 @@ class LoadingMixin:
             elif isinstance(e, StokesUnavailable):
                 # e.g. "The image has no Stokes Q plane (its planes are I, V)."
                 QMessageBox.warning(
-                    self, "Stokes Not Available", f"Cannot show Stokes {stokes}.\n\n{e}"
+                    self, "Stokes not available", f"Cannot show Stokes {stokes}.\n\n{e}"
                 )
             else:
                 show_error(
                     self,
-                    "Could Not Load Stokes",
+                    "Could not load Stokes",
                     f"Stokes {stokes} could not be loaded:\n\n{e}",
                     traceback.format_exc(),
                 )
@@ -516,7 +563,7 @@ class LoadingMixin:
             why = f"Stokes {requested} needs {', '.join(missing)}, which the image lacks"
         QMessageBox.warning(
             self,
-            "Stokes Parameter Unavailable",
+            "Stokes parameter unavailable",
             f"{why} (its planes are {', '.join(available)}).\n\n"
             f"Showing Stokes {shown}.",
         )

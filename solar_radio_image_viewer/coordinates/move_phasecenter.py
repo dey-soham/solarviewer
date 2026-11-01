@@ -601,24 +601,21 @@ class SolarPhaseCenter:
         # Convert CASA image to FITS at the start for unified processing
         is_casa_image = os.path.isdir(imagename)
         temp_fits_file = None
-        working_fits = imagename
+        working_fits = imagename if is_casa_image else readable_image_path(imagename)
 
         if is_casa_image:
             print("Converting CASA image to FITS for processing...")
             image_path = os.path.dirname(os.path.abspath(imagename))
             temp_fits_file = f"{image_path}/temp_phase_calc_{os.getpid()}.fits"
-            try:
-                exportfits_subprocess(
-                    imagename=imagename,
-                    fitsimage=temp_fits_file,
-                    dropdeg=False,
-                    dropstokes=False,
-                    overwrite=True,
-                )
-                working_fits = temp_fits_file
-            except Exception as e:
-                print(f"Error exporting CASA to FITS: {e}")
-                return result
+            # (a failure raises: an empty result would read as no shift needed)
+            exportfits_subprocess(
+                imagename=imagename,
+                fitsimage=temp_fits_file,
+                dropdeg=False,
+                dropstokes=False,
+                overwrite=True,
+            )
+            working_fits = temp_fits_file
         # Now work exclusively with FITS file
         header = fits.getheader(working_fits)
 
@@ -722,7 +719,7 @@ class SolarPhaseCenter:
             circular_mask = self.create_circular_mask(
                 data_binary.shape[0],
                 data_binary.shape[1],
-                center=(int(data_binary.shape[0] / 2), int(data_binary.shape[1] / 2)),
+                center=(int(data_binary.shape[1] / 2), int(data_binary.shape[0] / 2)),
                 radius=int(5 / (self.cellsize / 3600.0)),
             )
             data_binary[~circular_mask] = 0
@@ -780,8 +777,8 @@ class SolarPhaseCenter:
                         maxfev=5000,
                     )
 
-                    apparent_pix_x = int(popt[1])
-                    apparent_pix_y = int(popt[2])
+                    apparent_pix_x = int(round(popt[1]))
+                    apparent_pix_y = int(round(popt[2]))
                     print(
                         f"Gaussian fit center: pixel ({apparent_pix_x}, {apparent_pix_y})"
                     )
@@ -793,8 +790,8 @@ class SolarPhaseCenter:
             # Method 2: Center of mass (fallback or default)
             if apparent_pix_x is None:
                 cy, cx = ndi.center_of_mass(data_binary)
-                apparent_pix_x = int(cx)
-                apparent_pix_y = int(cy)
+                apparent_pix_x = int(round(cx))
+                apparent_pix_y = int(round(cy))
 
             # Convert pixel position to world coordinates using WCS
             w = WCS(working_fits)
@@ -839,8 +836,10 @@ class SolarPhaseCenter:
 
         # Determine if shift is needed
         if result["true_ra"] is not None and apparent_ra is not None:
+            # (the two RAs can differ by a full turn: 350 and -10 deg)
+            delta_ra = (result["true_ra"] - apparent_ra + 180) % 360 - 180
             offset = np.sqrt(
-                (result["true_ra"] - apparent_ra) ** 2
+                (delta_ra * np.cos(np.deg2rad(apparent_dec))) ** 2
                 + (result["true_dec"] - apparent_dec) ** 2
             )
             # Shift is needed if offset is more than 1 cell
@@ -1478,11 +1477,14 @@ class SolarPhaseCenter:
                         cpix1 = phase_result["apparent_pix_x"]
                         cpix2 = phase_result["apparent_pix_y"]
                     else:
-                        cpix1 = int(header["CRPIX1"])
-                        cpix2 = int(header["CRPIX2"])
+                        cpix1 = int(header["CRPIX1"]) - 1  # (FITS counts from 1)
+                        cpix2 = int(header["CRPIX2"]) - 1
 
                     # Create the visually centered image directly as the final output
-                    self.visually_center_image(temp_fits, output_file, cpix1, cpix2)
+                    if not self.visually_center_image(
+                        temp_fits, output_file, cpix1, cpix2
+                    ):
+                        raise RuntimeError("could not write the centered image")
 
                     # Cleanup temp
                     if os.path.exists(temp_fits):
@@ -1619,13 +1621,16 @@ def main():
         # Use provided coordinates
         ra = args.ra
         dec = args.dec
+        phase_result = None
         needs_shift = True
         print(f"Using provided coordinates: RA = {ra} deg, DEC = {dec} deg")
     elif args.imagename:
         # Calculate from image
-        ra, dec, needs_shift = spc.cal_solar_phaseshift(
+        phase_result = spc.cal_solar_phaseshift(
             imagename=args.imagename, fit_gaussian=args.fit_gaussian, sigma=args.sigma
         )
+        ra, dec = phase_result["true_ra"], phase_result["true_dec"]
+        needs_shift = phase_result["needs_shift"]
         print(f"Calculated solar center: RA = {ra} deg, DEC = {dec} deg")
         print(f"Phase shift needed: {needs_shift}")
     else:
@@ -1655,6 +1660,7 @@ def main():
                 args.output_pattern,
                 args.stokes,
                 args.visual_center,
+                phase_result=phase_result,
             )
             if success_count == total_count:
                 print(f"Successfully applied phase shift to all {total_count} files")
@@ -1681,7 +1687,11 @@ def main():
             target = args.imagename
 
         result = spc.shift_phasecenter(
-            imagename=target, ra=ra, dec=dec, stokes=args.stokes
+            imagename=target,
+            ra=ra,
+            dec=dec,
+            stokes=args.stokes,
+            phase_result=phase_result,
         )
 
         if result == 0:
@@ -1691,8 +1701,8 @@ def main():
             if args.visual_center and args.output:
                 # Get the reference pixel values from the shifted image
                 header = fits.getheader(target)
-                crpix1 = int(header["CRPIX1"])
-                crpix2 = int(header["CRPIX2"])
+                crpix1 = int(header["CRPIX1"]) - 1  # (FITS counts from 1)
+                crpix2 = int(header["CRPIX2"]) - 1
 
                 # Generate output filename for visually centered image
                 visual_output = (
@@ -1722,8 +1732,8 @@ def main():
         if args.visual_center:
             # Need to get current reference pixels
             header = fits.getheader(args.output)
-            crpix1 = int(header["CRPIX1"])
-            crpix2 = int(header["CRPIX2"])
+            crpix1 = int(header["CRPIX1"]) - 1  # (FITS counts from 1)
+            crpix2 = int(header["CRPIX2"]) - 1
 
             # Generate output filename for visually centered image
             visual_output = (

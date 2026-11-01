@@ -385,18 +385,12 @@ class CanvasMixin:
             xcenter = (xlim[0] + xlim[1]) / 2
             ycenter = (ylim[0] + ylim[1]) / 2
 
-            cdelt = self.current_wcs.increment()["numeric"][0:2]
-            if isinstance(cdelt, list):
-                cdelt = [float(c) for c in cdelt]
-            _hdr = getattr(self, "_cached_fits_header", None) or {}
-            _is_solar = "SOLAR-X" in str(_hdr.get("CTYPE1", "")).upper()
-            if _is_solar:
-                cdelt = np.array(cdelt) / 3600.0  # arcsec -> degrees
-            else:
-                cdelt = np.array(cdelt) * 180 / np.pi  # radians -> degrees
+            from ..shape_annotations import pixel_scales_deg
+
+            dx_deg, dy_deg = pixel_scales_deg(self.current_wcs)
             arcmin_60_deg = 60.0 / 60.0
-            pixels_x = arcmin_60_deg / abs(cdelt[0])
-            pixels_y = arcmin_60_deg / abs(cdelt[1])
+            pixels_x = arcmin_60_deg / dx_deg
+            pixels_y = arcmin_60_deg / dy_deg
 
             self._animate_view(
                 ax,
@@ -724,7 +718,7 @@ class CanvasMixin:
         if ax is None or self.current_image_data is None:
             label.setText("—")
             return
-        width = self.current_image_data.shape[-1]
+        width = self.current_image_data.shape[0]  # planes are [x, y]
         x0, x1 = ax.get_xlim()
         shown = abs(x1 - x0)
         if shown > 0 and width:

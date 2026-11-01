@@ -26,6 +26,7 @@ from ..creator import (
 from .helpers import (
     OUTPUT_FORMATS,
     _format_duration,
+    hint,
 )
 from .progress import Job
 
@@ -58,14 +59,14 @@ class OutputTabMixin:
         output_scroll.setWidgetResizable(True)
         output_scroll_content = QWidget()
         output_layout = QVBoxLayout(output_scroll_content)
-        output_layout.setContentsMargins(12, 12, 12, 12)
+        output_layout.setContentsMargins(0, 12, 8, 12)
         output_layout.setSpacing(12)
         output_scroll.setWidget(output_scroll_content)
 
         # File output section
-        file_group = QGroupBox("Output File")
+        file_group = QGroupBox("Output file")
         file_form = QFormLayout(file_group)
-        file_form.setContentsMargins(12, 16, 12, 12)
+        file_form.setContentsMargins(12, 4, 12, 4)
         file_form.setVerticalSpacing(8)
         file_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
@@ -77,35 +78,35 @@ class OutputTabMixin:
         self.output_file_edit = QLineEdit()
         file_layout.addWidget(self.output_file_edit)
 
-        browse_output_btn = QPushButton("Browse")
+        browse_output_btn = QPushButton("Browse…")
         browse_output_btn.clicked.connect(self.browse_output_file)
         file_layout.addWidget(browse_output_btn)
 
-        file_form.addRow("Path:", file_widget)
+        file_form.addRow(hint("Path"), file_widget)
 
         self.format_combo = QComboBox()
         for text, ext in OUTPUT_FORMATS:
             self.format_combo.addItem(text, ext)
         self.format_combo.setToolTip(
             "MP4 plays almost everywhere; WebM is smaller for the same quality;\n"
-            "PNG frames saves each frame as name_0001.png, name_0002.png, ..."
+            "PNG frames saves each frame as name_0001.png, name_0002.png, …"
         )
         self.format_combo.currentIndexChanged.connect(self._on_format_changed)
         self.output_file_edit.textChanged.connect(self._sync_format_to_path)
-        file_form.addRow("Format:", self.format_combo)
+        file_form.addRow(hint("Format"), self.format_combo)
         output_layout.addWidget(file_group)
 
         # Video settings section
-        video_group = QGroupBox("Video Settings")
+        video_group = QGroupBox("Video settings")
         video_form = QFormLayout(video_group)
-        video_form.setContentsMargins(12, 16, 12, 12)
+        video_form.setContentsMargins(12, 4, 12, 4)
         video_form.setVerticalSpacing(8)
         video_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         self.fps_spinbox = QSpinBox()
         self.fps_spinbox.setRange(1, 60)
         self.fps_spinbox.setValue(10)
-        video_form.addRow("Frames Per Second:", self.fps_spinbox)
+        video_form.addRow(hint("Frames per second"), self.fps_spinbox)
 
         self.quality_combo = QComboBox()
         self.quality_combo.addItems(list(QUALITY_CRF))
@@ -116,12 +117,12 @@ class OutputTabMixin:
             "High: hard to tell from the frames themselves\n"
             "Lossless: exact pixels, large files (MP4 lossless may not play everywhere)"
         )
-        video_form.addRow("Quality:", self.quality_combo)
+        video_form.addRow(hint("Quality"), self.quality_combo)
 
         self.estimate_label = QLabel()
         self.estimate_label.setObjectName("SecondaryText")
         self.estimate_label.setWordWrap(True)
-        video_form.addRow("Result:", self.estimate_label)
+        video_form.addRow(hint("Result"), self.estimate_label)
         self._estimate = None  # (settings, frame, bytes of that frame alone)
         self._estimate_job = None
         self._estimate_timer = QTimer(self)
@@ -136,20 +137,20 @@ class OutputTabMixin:
         # Performance section
         perf_group = QGroupBox("Performance")
         perf_form = QFormLayout(perf_group)
-        perf_form.setContentsMargins(12, 16, 12, 12)
+        perf_form.setContentsMargins(12, 4, 12, 4)
         perf_form.setVerticalSpacing(8)
         perf_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        self.multiprocessing_check = QCheckBox("Use Multiprocessing")
+        self.multiprocessing_check = QCheckBox("Use multiprocessing")
         self.multiprocessing_check.setChecked(True)
-        perf_form.addRow("", self.multiprocessing_check)
+        perf_form.addRow(hint(""), self.multiprocessing_check)
 
         max_cores = multiprocessing.cpu_count()
         self.cores_spinbox = QSpinBox()
         self.cores_spinbox.setRange(1, max_cores)
         self.cores_spinbox.setValue(max(1, max_cores - 1))
         self.cores_spinbox.setEnabled(self.multiprocessing_check.isChecked())
-        perf_form.addRow("CPU Cores:", self.cores_spinbox)
+        perf_form.addRow(hint("CPU cores"), self.cores_spinbox)
 
         self.multiprocessing_check.stateChanged.connect(
             lambda state: self.cores_spinbox.setEnabled(state == Qt.Checked)
@@ -172,9 +173,10 @@ class OutputTabMixin:
 
         filepath, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Video As",
+            "Save video as",
             start_dir,
-            "MP4 Files (*.mp4);;AVI Files (*.avi);;GIF Files (*.gif);;All Files (*.*)",
+            "MP4 files (*.mp4);;WebM files (*.webm);;GIF files (*.gif);;AVI files (*.avi);;"
+            "PNG frames (*.png);;All files (*.*)",
         )
 
         if filepath:

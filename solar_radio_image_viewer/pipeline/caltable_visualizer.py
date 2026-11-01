@@ -13,23 +13,25 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QMessageBox,
     QShortcut,
+    QStackedWidget,
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QKeySequence
+from PyQt5.QtGui import QColor, QKeySequence, QPalette
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 # NOTE: casacore is loaded via subprocess to completely isolate it from Qt
 from pathlib import Path
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import io
 import subprocess
 import os
-from matplotlib import rcParams
 
 from ..ui.background import Cancelled, run_in_background, run_in_thread
 from ..ui.busy import busy
-from ..ui.styles import set_hand_cursor, theme_manager
+from ..ui.plot_theme import figure_toolbar, follow_theme, style_figure
+from ..ui.styles import SPACE_M, SPACE_S, set_hand_cursor, theme_manager, themed
+from ..ui.widgets import button_bar, dialog_layout, empty_note, kicker, vrule
+from .spectra_icons import icon as spectra_icon
 
 
 _READ_CALTABLE_SCRIPT = """
@@ -39,12 +41,12 @@ from casacore.tables import table
 
 path, with_spectral_window = sys.argv[1], sys.argv[2] == "1"
 arrays = {}
-tb = table(path, readonly=True)
+tb = table(path, readonly=True, ack=False)
 arrays["solutions"] = tb.getcol("CPARAM")
 arrays["flag"] = tb.getcol("FLAG")
 tb.close()
 if with_spectral_window:
-    tb = table(path + "/SPECTRAL_WINDOW", readonly=True)
+    tb = table(path + "/SPECTRAL_WINDOW", readonly=True, ack=False)
     arrays["chan_freq"] = tb.getcol("CHAN_FREQ")
     tb.close()
 buffer = io.BytesIO()
@@ -57,6 +59,33 @@ from ..ui.geometry import fit_to_screen
 
 READ_TIMEOUT_S = 300
 SNR_WORKER_CHANNELS = 2000  # below this the SNR is under a second or so: not worth a worker
+PLOT_FONT_LEGEND = 8
+
+# (section, rows of (name, what it does), the role of the name)
+HELP = (
+    ("Tabs", (
+        ("Bandpass", "Bandpass calibration solutions: amplitude or phase vs frequency"),
+        ("Crossphase", "Crossphase calibration with a polynomial fit"),
+        ("Selfcal", "Self-calibration solutions: amplitude or phase vs antenna"),
+    ), "Hint"),
+    ("Navigation", (
+        ("]", "Next page"),
+        ("[", "Previous page"),
+        ("}", "Last page (Shift+])"),
+        ("{", "First page (Shift+[)"),
+    ), "Key"),
+    ("Mode and file", (
+        ("T", "Toggle amplitude or phase"),
+        ("Ctrl+O", "Open a table or file for the current tab"),
+        ("Ctrl+Q", "Quit"),
+    ), "Key"),
+    ("Tab switching", (
+        ("1", "Bandpass tab"),
+        ("2", "Crossphase tab"),
+        ("3", "Selfcal tab"),
+    ), "Key"),
+    ("Help", (("F1", "Show this dialog"),), "Key"),
+)
 
 
 def read_caltable_safe(table_path, read_spectral_window=False, timeout=READ_TIMEOUT_S, on_start=None):
@@ -114,12 +143,12 @@ def read_crossphase(path):
     crossphase = np.array(loaded_caltable[1, :], dtype=float)
     cross_flags = loaded_caltable[2, :]
 
-    median_crossphase = np.median(crossphase)
+    median_crossphase = np.nanmedian(crossphase)
     absolute_deviation = np.abs(crossphase - median_crossphase)
-    mad = np.median(absolute_deviation)
+    mad = np.nanmedian(absolute_deviation)
 
     threshold = 10 * mad
-    mask = absolute_deviation <= threshold
+    mask = absolute_deviation <= threshold  # (NaN: left out)
 
     cross_freq_filtered = cross_freq[mask]
     crossphase_filtered = crossphase[mask]
@@ -130,7 +159,7 @@ def read_crossphase(path):
 
     residuals = crossphase_filtered - crossphase_fit
     sse = np.sum(residuals**2)
-    sst = np.sum((crossphase_filtered - np.mean(crossphase)) ** 2)
+    sst = np.sum((crossphase_filtered - np.mean(crossphase_filtered)) ** 2)
 
     return {
         "cross_freq": cross_freq,
@@ -164,11 +193,34 @@ def snr_estimate(xx_sols, yy_sols):
     return snr
 
 
+def plot_stack(canvas, note):
+    """``canvas`` with ``note`` in its place until there is something to plot."""
+    stack = QStackedWidget()
+    stack.addWidget(empty_note(note))
+    stack.addWidget(canvas)
+
+    def ground(palette):
+        # (Matplotlib paints the canvas white under the figure, which shows
+        # in a thin line at the edge at a fractional display scale)
+        canvas.setPalette(QPalette(QColor(palette["window"])))
+
+    themed(canvas, ground)
+    return stack
+
+
+def controls_row(canvas_toolbar):
+    """The row under a plot, led by its toolbar (which takes the spare width)."""
+    row = QHBoxLayout()
+    row.setSpacing(SPACE_S)
+    row.addWidget(canvas_toolbar, 1)
+    return row
+
+
 class VisualizationApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Bandpass and Crossphase Visualizer")
-        fit_to_screen(self, 860, 810)
+        self.setWindowTitle("Bandpass and crossphase visualizer")
+        fit_to_screen(self, 1000, 810)
 
         # Variables for bandpass
         self.bandpass_solutions = None
@@ -185,7 +237,10 @@ class VisualizationApp(QMainWindow):
         self.plot_mode = "Amplitude"  # Default mode for bandpass
         self.xx_sols = None
         self.yy_sols = None
-        self.shown_view = "Per-Antenna"  # the view on the canvas
+        self.shown_view = "Per antenna"  # the view on the canvas
+        self.selfcal_xx = None  # (its own: the Bandpass tab keeps its table)
+        self.selfcal_yy = None
+        self.selfcal_mode = "Amplitude"
 
         # Variables for crossphase
         self.crossphase_file = None
@@ -199,7 +254,6 @@ class VisualizationApp(QMainWindow):
 
         # Variables for selfcal
         self.selfcal_directory = None
-        # self.plot_mode is reused for selfcal as well
 
         # Create GUI elements
         self.create_widgets()
@@ -228,6 +282,7 @@ class VisualizationApp(QMainWindow):
             QKeySequence("Ctrl+O"), self, self.open_current_tab
         )  # Open directory/file
         QShortcut(QKeySequence("Ctrl+Q"), self, self.close)  # Quit
+        QShortcut(QKeySequence("F1"), self, self.show_shortcuts_dialog)  # Help
 
         # Tab switching
         QShortcut(
@@ -244,7 +299,8 @@ class VisualizationApp(QMainWindow):
         """Toggle mode based on current tab."""
         current_tab = self.tab_control.currentIndex()
         if current_tab == 0:  # Bandpass
-            self.toggle_bandpass_mode()
+            if self.plot_button.isEnabled():  # (not every view has the two modes)
+                self.toggle_bandpass_mode()
         elif current_tab == 2:  # Selfcal
             self.toggle_selfcal_mode()
 
@@ -260,63 +316,34 @@ class VisualizationApp(QMainWindow):
 
     def show_shortcuts_dialog(self):
         """Show dialog with keyboard shortcuts and usage documentation."""
-        from PyQt5.QtWidgets import QDialog, QTextEdit
+        from PyQt5.QtWidgets import QDialog
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Help - Caltable Visualizer")
-        dialog.resize(500, 500)
+        dialog.setWindowTitle("Caltable visualizer help")
+        layout = dialog_layout(dialog)
 
-        layout = QVBoxLayout(dialog)
+        about = QLabel("A tool for visualizing LOFAR calibration tables.")
+        about.setObjectName("Hint")
+        layout.addWidget(about)
 
-        text = QTextEdit()
-        text.setReadOnly(True)
-        text.setHtml(
-            """
-        <h2>Caltable Visualizer</h2>
-        <p>A tool for visualizing LOFAR calibration tables.</p>
-        
-        <h3>Features</h3>
-        <ul>
-            <li><b>Bandpass:</b> View bandpass calibration solutions (amplitude/phase vs frequency)</li>
-            <li><b>Crossphase:</b> View crossphase calibration with polynomial fit</li>
-            <li><b>Selfcal:</b> View self-calibration solutions (amplitude/phase vs antenna)</li>
-        </ul>
-        
-        <hr>
-        <h2>Keyboard Shortcuts</h2>
-        
-        <h3>Navigation</h3>
-        <table>
-            <tr><td width="100"><b>]</b></td><td>Next page</td></tr>
-            <tr><td><b>[</b></td><td>Previous page</td></tr>
-            <tr><td><b>}</b> (Shift+])</td><td>Last page</td></tr>
-            <tr><td><b>{</b> (Shift+[)</td><td>First page</td></tr>
-        </table>
-        
-        <h3>Mode & File</h3>
-        <table>
-            <tr><td width="100"><b>T</b></td><td>Toggle Amplitude/Phase mode</td></tr>
-            <tr><td><b>Ctrl+O</b></td><td>Open directory/file (current tab)</td></tr>
-            <tr><td><b>Ctrl+Q</b></td><td>Quit application</td></tr>
-        </table>
-        
-        <h3>Tab Switching</h3>
-        <table>
-            <tr><td width="100"><b>1</b></td><td>Bandpass tab</td></tr>
-            <tr><td><b>2</b></td><td>Crossphase tab</td></tr>
-            <tr><td><b>3</b></td><td>Selfcal tab</td></tr>
-        </table>
-        
-        <h3>Help</h3>
-        <table>
-            <tr><td width="100"><b>F1</b></td><td>Show this dialog</td></tr>
-        </table>
-        
-        <hr>
-        <p><i>Part of Solar Radio Image Viewer LOFAR Tools</i></p>
-        """
-        )
-        layout.addWidget(text)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(SPACE_M)
+        grid.setVerticalSpacing(SPACE_S)
+        grid.setColumnStretch(1, 1)
+        row = 0
+        for title, rows, role in HELP:
+            grid.addWidget(kicker(title), row, 0, 1, 2)
+            row += 1
+            for key, text in rows:
+                name = QLabel(key)
+                name.setObjectName(role)
+                grid.addWidget(name, row, 0, Qt.AlignLeft)
+                grid.addWidget(QLabel(text), row, 1)
+                row += 1
+        layout.addLayout(grid)
+
+        box, _ = button_bar(secondary=("Close", dialog.accept), parent=dialog)
+        layout.addWidget(box)
 
         dialog.exec_()
 
@@ -325,16 +352,11 @@ class VisualizationApp(QMainWindow):
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_M)
 
         # Tabs
         self.tab_control = QTabWidget(self)
         main_layout.addWidget(self.tab_control)
-
-        # self.help_button = QPushButton("?")
-        # self.help_button.setToolTip("Help & Shortcuts (F1)")
-        # self.help_button.setFixedSize(10, 10)
-        # self.help_button.clicked.connect(self.show_shortcuts_dialog)
-        # self.tab_control.setCornerWidget(self.help_button, Qt.TopRightCorner)
 
         # Bandpass tab
         self.bandpass_tab = QWidget()
@@ -352,70 +374,57 @@ class VisualizationApp(QMainWindow):
         self.create_selfcal_widgets()
 
     def create_bandpass_widgets(self):
-        # Instead of icons, use text labels
         layout = QVBoxLayout(self.bandpass_tab)
+        layout.setContentsMargins(0, SPACE_M, 0, 0)
+        layout.setSpacing(SPACE_S)
 
         # Bandpass directory selection
         dir_frame = QHBoxLayout()
         self.dir_label = QLabel("No caltable selected")
-        self.dir_label.setAlignment(Qt.AlignCenter)
+        self.dir_label.setObjectName("DetailMono")
         dir_frame.addWidget(self.dir_label)
 
         dir_frame.addStretch()
 
-        select_button = QPushButton("Load")
-        # select_button.setFixedSize(100, 30)
+        select_button = QPushButton("Load…")
         select_button.clicked.connect(self.select_bandpass_directory)
         dir_frame.addWidget(select_button)
         layout.addLayout(dir_frame)
 
         # Bandpass canvas
-        self.bandpass_canvas_frame = QWidget()
-        layout.addWidget(self.bandpass_canvas_frame)
         self.create_bandpass_canvas()
+        layout.addWidget(self.bandpass_stack, 1)
 
-        # Add navigation toolbar
-        self.toolbar_bandpass = NavigationToolbar(self.bandpass_canvas, self)
-        layout.addWidget(self.toolbar_bandpass)
+        # Navigation toolbar, plot mode and pages in one row
+        self.toolbar_bandpass = figure_toolbar(self.bandpass_canvas, self)
+        control_frame = controls_row(self.toolbar_bandpass)
 
-        # Bandpass navigation and plot mode
-        control_frame = QHBoxLayout()
-        self.plot_button = QPushButton("Phase")
+        self.plot_button = QPushButton("Show phase")
+        self.plot_button.setToolTip("Switch between amplitude and phase (T)")
         self.plot_button.clicked.connect(self.toggle_bandpass_mode)
         control_frame.addWidget(self.plot_button)
 
-        # self.first_button = QPushButton(QIcon(str(icon_path) + "/first.svg"), "")  # Replace "icons/first.png" with your icon path
-        self.first_button = QPushButton("|◄")
-        self.first_button.setToolTip("First page")
-        self.first_button.clicked.connect(self.first_bandpass_page)
-        self.first_button.setEnabled(False)
-        control_frame.addWidget(self.first_button)
+        pager = QHBoxLayout()
+        pager.setSpacing(0)
+        self.first_button = self._page_button("First page ({)", self.first_bandpass_page)
+        self.prev_button = self._page_button("Previous page ([)", self.prev_bandpass_page)
+        self.next_button = self._page_button("Next page (])", self.next_bandpass_page)
+        self.last_button = self._page_button("Last page (})", self.last_bandpass_page)
+        buttons = (("first", self.first_button), ("prev", self.prev_button),
+                   ("next", self.next_button), ("last", self.last_button))
+        for _name, button in buttons:
+            pager.addWidget(button)
+        control_frame.addLayout(pager)
 
-        # self.prev_button = QPushButton(QIcon(str(icon_path) + "/prev.svg"), "")  # Replace "icons/prev.png" with your icon path
-        self.prev_button = QPushButton("◄")
-        self.prev_button.setToolTip("Previous page")
-        self.prev_button.clicked.connect(self.prev_bandpass_page)
-        self.prev_button.setEnabled(False)
-        control_frame.addWidget(self.prev_button)
+        def tint(palette):
+            for name, button in buttons:
+                button.setIcon(spectra_icon(name, palette))
 
-        # self.next_button = QPushButton(QIcon(str(icon_path) + "/next.svg"), "")  # Replace "icons/next.png" with your icon path
-        self.next_button = QPushButton("►")
-        self.next_button.setToolTip("Next page")
-        self.next_button.clicked.connect(self.next_bandpass_page)
-        self.next_button.setEnabled(False)
-        control_frame.addWidget(self.next_button)
-
-        # self.last_button = QPushButton(QIcon(str(icon_path) + "/last.svg"), "")  # Replace "icons/last.png" with your icon path
-        self.last_button = QPushButton("►|")
-        self.last_button.setToolTip("Last page")
-        self.last_button.clicked.connect(self.last_bandpass_page)
-        self.last_button.setEnabled(False)
-        control_frame.addWidget(self.last_button)
-
-        control_frame.addStretch()
+        themed(self, tint)
+        control_frame.addWidget(vrule())
 
         # Plot settings
-        control_frame.addWidget(QLabel("Plots per page:"))
+        control_frame.addWidget(self._hint("Plots per page"))
         self.plot_size_menu = QComboBox()
         self.plot_size_menu.addItems(["2x2", "3x3", "4x4", "5x5"])
         self.plot_size_menu.setCurrentText("3x3")
@@ -423,17 +432,17 @@ class VisualizationApp(QMainWindow):
         control_frame.addWidget(self.plot_size_menu)
 
         # Plot type selector
-        control_frame.addWidget(QLabel("View:"))
+        control_frame.addWidget(self._hint("View"))
         self.plot_type_combo = QComboBox()
         self.plot_type_combo.addItems(
             [
-                "Per-Antenna",  # Current paginated view
+                "Per antenna",  # Current paginated view
                 "Waterfall",  # Heatmap (antenna vs freq)
-                "Median Diff",  # Deviation from median
-                "Phase Unwrapped",  # Continuous phase
-                "RMS per Antenna",  # Bar chart
-                "SNR Heatmap",  # SNR per antenna/channel
-                "Closure Phases",  # Triangle closure
+                "Median difference",  # Deviation from median
+                "Unwrapped phase",  # Continuous phase
+                "RMS per antenna",  # Bar chart
+                "SNR heatmap",  # SNR per antenna/channel
+                "Closure phases",  # Triangle closure
             ]
         )
         self.plot_type_combo.currentIndexChanged.connect(self._on_plot_type_changed)
@@ -441,27 +450,46 @@ class VisualizationApp(QMainWindow):
 
         layout.addLayout(control_frame)
 
+    @staticmethod
+    def _hint(text):
+        label = QLabel(text)
+        label.setObjectName("Hint")
+        return label
+
+    @staticmethod
+    def _page_button(tip, slot):
+        button = QPushButton()
+        button.setObjectName("NavButton")
+        button.setToolTip(tip)
+        button.clicked.connect(slot)
+        button.setEnabled(False)
+        return button
+
     def create_bandpass_canvas(self):
         self.bandpass_figure = Figure(figsize=(8, 6), tight_layout=True)
         self.bandpass_axes = self.bandpass_figure.subplots(
             self.plot_rows, self.plot_cols
         )
         self.bandpass_canvas = FigureCanvas(self.bandpass_figure)
-        layout = QGridLayout(self.bandpass_canvas_frame)
-        layout.addWidget(self.bandpass_canvas)
+        follow_theme(self, self.bandpass_figure, self.bandpass_canvas)
+        self.bandpass_stack = plot_stack(
+            self.bandpass_canvas, "Load a calibration table to see its solutions"
+        )
 
     def create_crossphase_widgets(self):
         layout = QVBoxLayout(self.crossphase_tab)
+        layout.setContentsMargins(0, SPACE_M, 0, 0)
+        layout.setSpacing(SPACE_S)
 
         # Crossphase file selection
         file_frame = QHBoxLayout()
         self.file_label = QLabel("No caltable selected")
-        self.file_label.setAlignment(Qt.AlignCenter)
+        self.file_label.setObjectName("DetailMono")
         file_frame.addWidget(self.file_label)
 
         file_frame.addStretch()
 
-        select_button = QPushButton("Load")
+        select_button = QPushButton("Load…")
         select_button.clicked.connect(self.select_crossphase_file)
         file_frame.addWidget(select_button)
         layout.addLayout(file_frame)
@@ -470,82 +498,70 @@ class VisualizationApp(QMainWindow):
         self.crossphase_figure = Figure(figsize=(8, 4), tight_layout=True)
         self.crossphase_ax = self.crossphase_figure.add_subplot(111)
         self.crossphase_canvas = FigureCanvas(self.crossphase_figure)
-        layout.addWidget(self.crossphase_canvas)
+        follow_theme(self, self.crossphase_figure, self.crossphase_canvas)
+        self.crossphase_stack = plot_stack(
+            self.crossphase_canvas, "Load a crossphase file to see its fit"
+        )
+        layout.addWidget(self.crossphase_stack, 1)
         # Add navigation toolbar
-        self.toolbar_crossphase = NavigationToolbar(self.crossphase_canvas, self)
-        layout.addWidget(self.toolbar_crossphase)
+        self.toolbar_crossphase = figure_toolbar(self.crossphase_canvas, self)
+        layout.addLayout(controls_row(self.toolbar_crossphase))
 
     def create_selfcal_widgets(self):
         layout = QVBoxLayout(self.selfcal_tab)
+        layout.setContentsMargins(0, SPACE_M, 0, 0)
+        layout.setSpacing(SPACE_S)
 
         # Selfcal directory selection
         dir_frame = QHBoxLayout()
         self.selfcal_dir_label = QLabel("No caltable selected")
-        self.selfcal_dir_label.setAlignment(Qt.AlignCenter)
+        self.selfcal_dir_label.setObjectName("DetailMono")
         dir_frame.addWidget(self.selfcal_dir_label)
 
         dir_frame.addStretch()
 
-        select_button = QPushButton("Load")
+        select_button = QPushButton("Load…")
         select_button.clicked.connect(self.select_selfcal_directory)
         dir_frame.addWidget(select_button)
         layout.addLayout(dir_frame)
 
         # Selfcal canvas
-        self.selfcal_canvas_frame = QWidget()
-        layout.addWidget(self.selfcal_canvas_frame)
-        self.create_selfcal_canvas()
-
-        # Add navigation toolbar for selfcal
-        self.toolbar_selfcal = NavigationToolbar(self.selfcal_canvas, self)
-        layout.addWidget(self.toolbar_selfcal)
-
-        # Selfcal plot mode
-        control_frame = QHBoxLayout()
-        self.selfcal_plot_button = QPushButton(
-            "Plot Phase vs Antenna"
-        )  # Initial text assuming default is Amplitude
-        self.selfcal_plot_button.clicked.connect(self.toggle_selfcal_mode)
-        control_frame.addWidget(self.selfcal_plot_button)
-
-        # Add other controls if needed, e.g., if pagination was desired for selfcal
-        # For now, selfcal plots all antennas at once.
-
-        layout.addLayout(control_frame)
-
-    def create_selfcal_canvas(self):
         self.selfcal_figure = Figure(figsize=(8, 6), tight_layout=True)
         self.selfcal_ax = self.selfcal_figure.add_subplot(111)
         self.selfcal_canvas = FigureCanvas(self.selfcal_figure)
-        layout = QGridLayout(
-            self.selfcal_canvas_frame
-        )  # Use QGridLayout for consistency
-        layout.addWidget(self.selfcal_canvas)
+        follow_theme(self, self.selfcal_figure, self.selfcal_canvas)
+        self.selfcal_stack = plot_stack(
+            self.selfcal_canvas, "Load a self-calibration table to see its solutions"
+        )
+        layout.addWidget(self.selfcal_stack, 1)
+
+        # Navigation toolbar and plot mode in one row
+        self.toolbar_selfcal = figure_toolbar(self.selfcal_canvas, self)
+        control_frame = controls_row(self.toolbar_selfcal)
+        self.selfcal_plot_button = QPushButton("Show phase")  # (amplitude comes first)
+        self.selfcal_plot_button.setToolTip("Switch between amplitude and phase (T)")
+        self.selfcal_plot_button.clicked.connect(self.toggle_selfcal_mode)
+        control_frame.addWidget(self.selfcal_plot_button)
+        layout.addLayout(control_frame)
 
     def select_bandpass_directory(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Bandpass Table")
+        directory = QFileDialog.getExistingDirectory(self, "Select bandpass table")
         if directory:
             self.load_bandpass_table(directory)
 
     def update_plot_grid(self):
+        # (the same antenna stays in view, on the page that now holds it)
+        first_antenna = self.current_page * self.antennas_per_page
         size_str = self.plot_size_menu.currentText()
         self.plot_rows, self.plot_cols = map(int, size_str.split("x"))
         self.antennas_per_page = self.plot_rows * self.plot_cols
 
+        self.current_page = first_antenna // self.antennas_per_page
         with busy("Drawing the plots…", self):
-            # Remove old layout properly
-            old_layout = self.bandpass_canvas_frame.layout()
-            if old_layout is not None:
-                while old_layout.count():
-                    item = old_layout.takeAt(0)
-                    widget = item.widget()
-                    if widget is not None:
-                        widget.deleteLater()
-                QWidget().setLayout(old_layout)
-
-            # Re-create bandpass canvas
-            self.create_bandpass_canvas()
-            self.plot_bandpass_page()
+            self._restore_grid_axes()
+            if self.xx_sols is not None:
+                self.plot_bandpass_page()
+        self.update_navigation_buttons()
 
     def _read_table(self, path, read_spectral_window):
         """The arrays of a caltable, or None if it failed (said in a message)
@@ -590,57 +606,48 @@ class VisualizationApp(QMainWindow):
         self.num_antennas = self.xx_sols.shape[0]
         self.current_page = 0
 
-        # Enable/disable navigation buttons based on data
-        self.update_navigation_buttons()
-        with busy("Drawing the plots…", self):
-            self.plot_bandpass_page()
+        # What the canvas shows is the last table's, whichever view it is
+        self.shown_view = "Per antenna"
+        self._on_plot_type_changed(label="Drawing the plots…")
         return True
 
     def toggle_bandpass_mode(self):
         if self.plot_mode == "Amplitude":
             self.plot_mode = "Phase"
-            self.plot_button.setText("Amplitude")
+            self.plot_button.setText("Show amplitude")
         else:
             self.plot_mode = "Amplitude"
-            self.plot_button.setText("Phase")
+            self.plot_button.setText("Show phase")
         self._on_plot_type_changed()  # Re-plot with current view type
 
-    def _on_plot_type_changed(self):
+    def _on_plot_type_changed(self, _index=None, label=None):
         """Handle plot type ComboBox change - route to appropriate plot method."""
         if self.xx_sols is None:
             return  # No data loaded
 
         plot_type = self.plot_type_combo.currentText()
         snr = None
-        if plot_type == "SNR Heatmap":
+        if plot_type == "SNR heatmap":
             snr = self._compute_snr()
             if snr is None:
                 self.plot_type_combo.blockSignals(True)
                 self.plot_type_combo.setCurrentText(self.shown_view)
                 self.plot_type_combo.blockSignals(False)
-                return
+                if label is None:
+                    return
+                plot_type = self.shown_view  # (a table just loaded must show)
 
         self.shown_view = plot_type
-        with busy(f"Drawing {plot_type}…", self):
+        self.bandpass_stack.setCurrentWidget(self.bandpass_canvas)
+        with busy(label or f"Drawing {plot_type}…", self):
             # Enable/disable navigation buttons based on plot type
-            is_per_antenna = plot_type == "Per-Antenna"
-            self.first_button.setEnabled(is_per_antenna and self.current_page > 0)
-            self.prev_button.setEnabled(is_per_antenna and self.current_page > 0)
-            self.next_button.setEnabled(
-                is_per_antenna
-                and self.current_page
-                < int(np.ceil(self.num_antennas / self.antennas_per_page)) - 1
-            )
-            self.last_button.setEnabled(
-                is_per_antenna
-                and self.current_page
-                < int(np.ceil(self.num_antennas / self.antennas_per_page)) - 1
-            )
+            is_per_antenna = plot_type == "Per antenna"
+            self.update_navigation_buttons()
             self.plot_size_menu.setEnabled(is_per_antenna)
 
             # Enable/disable amplitude/phase toggle based on applicable views
             # Phase Unwrapped, RMS, SNR, and Closure don't use amplitude/phase mode
-            toggle_applicable = plot_type in ["Per-Antenna", "Waterfall", "Median Diff"]
+            toggle_applicable = plot_type in ["Per antenna", "Waterfall", "Median difference"]
             self.plot_button.setEnabled(toggle_applicable)
 
             # Check if we WERE in single-axis mode before changing the flag
@@ -650,22 +657,22 @@ class VisualizationApp(QMainWindow):
             self._single_axis_mode = not is_per_antenna
 
             # If switching TO Per-Antenna from single-axis, need to restore grid
-            if plot_type == "Per-Antenna" and was_single_axis:
+            if plot_type == "Per antenna" and was_single_axis:
                 self._restore_grid_axes()
 
-            if plot_type == "Per-Antenna":
+            if plot_type == "Per antenna":
                 self.plot_bandpass_page()
             elif plot_type == "Waterfall":
                 self.plot_bandpass_waterfall()
-            elif plot_type == "Median Diff":
+            elif plot_type == "Median difference":
                 self.plot_bandpass_median_diff()
-            elif plot_type == "Phase Unwrapped":
+            elif plot_type == "Unwrapped phase":
                 self.plot_bandpass_unwrapped_phase()
-            elif plot_type == "RMS per Antenna":
+            elif plot_type == "RMS per antenna":
                 self.plot_rms_per_antenna()
-            elif plot_type == "SNR Heatmap":
+            elif plot_type == "SNR heatmap":
                 self.plot_snr_heatmap(snr)
-            elif plot_type == "Closure Phases":
+            elif plot_type == "Closure phases":
                 self.plot_closure_phases()
 
     def _compute_snr(self):
@@ -738,17 +745,21 @@ class VisualizationApp(QMainWindow):
 
                 ax.set_title(f"Antenna {ant_idx}")
                 ax.set_xlim(self.bandpass_freqs[0], self.bandpass_freqs[-1])
-                ax.set_xlabel("Frequency (MHz)")
-                ax.grid(linestyle="--", linewidth=0.5, color="grey", alpha=0.5)
-                # ax.legend() # Add legend to each subplot
-
-        # Add a single legend to the figure if any plots were made, or handle it per subplot as above.
-        # If using per-subplot legends, a figure-level legend might be redundant or require careful placement.
-        # For now, per-subplot legends are enabled.
+                # The axes names once: on the left column, and under the
+                # lowest plot of each column
+                if idx % self.plot_cols:
+                    ax.set_ylabel("")
+                if idx + self.plot_cols >= self.antennas_per_page or ant_idx + self.plot_cols >= self.num_antennas:
+                    ax.set_xlabel("Frequency (MHz)")
+                ax.grid(linestyle="--", linewidth=0.5)
 
         self.bandpass_figure.suptitle(
-            f"{self.plot_mode} vs Frequency - Page {self.current_page + 1} of {int(np.ceil(self.num_antennas / self.antennas_per_page))}\n X: Blue, Y: Orange"
+            f"{self.plot_mode} vs frequency, page {self.current_page + 1} of {int(np.ceil(self.num_antennas / self.antennas_per_page))}\nX blue, Y orange"
         )
+        self._draw_bandpass()
+
+    def _draw_bandpass(self):
+        style_figure(self.bandpass_figure)
         self.bandpass_canvas.draw()
 
     def _setup_single_axes(self):
@@ -793,8 +804,8 @@ class VisualizationApp(QMainWindow):
         ax.set_xlabel("Frequency (MHz)")
         ax.set_ylabel("Antenna")
         self.bandpass_figure.colorbar(im, ax=ax, label=label)
-        self.bandpass_figure.suptitle(f"Waterfall - {label}")
-        self.bandpass_canvas.draw()
+        self.bandpass_figure.suptitle(f"Waterfall: {label.lower()}")
+        self._draw_bandpass()
 
     def plot_bandpass_median_diff(self):
         """Plot deviation from median bandpass per antenna."""
@@ -829,8 +840,8 @@ class VisualizationApp(QMainWindow):
         ax.set_xlabel("Frequency (MHz)")
         ax.set_ylabel("Antenna")
         self.bandpass_figure.colorbar(im, ax=ax, label=f"Δ {label} from median")
-        self.bandpass_figure.suptitle(f"Deviation from Median - {label}")
-        self.bandpass_canvas.draw()
+        self.bandpass_figure.suptitle(f"Deviation from median: {label.lower()}")
+        self._draw_bandpass()
 
     def plot_bandpass_unwrapped_phase(self):
         """Plot unwrapped phase (continuous, no 360° jumps)."""
@@ -851,11 +862,11 @@ class VisualizationApp(QMainWindow):
             )
 
         ax.set_xlabel("Frequency (MHz)")
-        ax.set_ylabel("Unwrapped Phase (°)")
-        ax.legend(loc="upper right", fontsize=8)
-        ax.grid(True, alpha=0.3)
-        self.bandpass_figure.suptitle("Unwrapped Phase vs Frequency")
-        self.bandpass_canvas.draw()
+        ax.set_ylabel("Unwrapped phase (°)")
+        ax.legend(loc="upper right", fontsize=PLOT_FONT_LEGEND)
+        ax.grid(True)
+        self.bandpass_figure.suptitle("Unwrapped phase vs frequency")
+        self._draw_bandpass()
 
     def plot_rms_per_antenna(self):
         """Bar chart of RMS amplitude variation per antenna."""
@@ -879,9 +890,8 @@ class VisualizationApp(QMainWindow):
         )
 
         ax.set_xlabel("Antenna")
-        ax.set_ylabel("RMS Amplitude")
-        ax.legend()
-        ax.grid(True, alpha=0.3, axis="y")
+        ax.set_ylabel("RMS amplitude")
+        ax.grid(True, axis="y")
 
         # Highlight outliers (> 2 sigma from median)
         median_rms = np.nanmedian(np.concatenate([rms_xx, rms_yy]))
@@ -889,9 +899,10 @@ class VisualizationApp(QMainWindow):
         ax.axhline(
             median_rms + 2 * std_rms, color="red", linestyle="--", label="2σ threshold"
         )
+        ax.legend(fontsize=PLOT_FONT_LEGEND)
 
-        self.bandpass_figure.suptitle("RMS Amplitude per Antenna")
-        self.bandpass_canvas.draw()
+        self.bandpass_figure.suptitle("RMS amplitude per antenna")
+        self._draw_bandpass()
 
     def plot_snr_heatmap(self, snr):
         """Heatmap of SNR estimate per antenna/channel."""
@@ -915,23 +926,17 @@ class VisualizationApp(QMainWindow):
         ax.set_xlabel("Frequency (MHz)")
         ax.set_ylabel("Antenna")
         self.bandpass_figure.colorbar(im, ax=ax, label="SNR estimate")
-        self.bandpass_figure.suptitle("SNR Heatmap (Antenna vs Frequency)")
-        self.bandpass_canvas.draw()
+        self.bandpass_figure.suptitle("SNR heatmap (antenna vs frequency)")
+        self._draw_bandpass()
 
     def plot_closure_phases(self):
         """Plot closure phases for antenna triplets."""
         ax = self._setup_single_axes()
 
         if self.num_antennas < 3:
-            ax.text(
-                0.5,
-                0.5,
-                "Need at least 3 antennas for closure phases",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-            )
-            self.bandpass_canvas.draw()
+            note = self.bandpass_stack.widget(0)
+            note.setText("Need at least 3 antennas for closure phases")
+            self.bandpass_stack.setCurrentWidget(note)
             return
 
         # Get phases for X polarization
@@ -958,16 +963,22 @@ class VisualizationApp(QMainWindow):
         ax.bar(range(len(closure_phases)), closure_phases, color="#2ca02c", alpha=0.8)
         ax.set_xticks(range(len(triplet_labels)))
         ax.set_xticklabels(triplet_labels, rotation=45, ha="right", fontsize=8)
-        ax.set_xlabel("Antenna Triplet")
-        ax.set_ylabel("Closure Phase (°)")
-        ax.axhline(0, color="gray", linestyle="--", alpha=0.5)
-        ax.grid(True, alpha=0.3, axis="y")
+        ax.set_xlabel("Antenna triplet")
+        ax.set_ylabel("Closure phase (°)")
+        ax.axhline(0, color=theme_manager.palette["text_secondary"], linestyle="--", alpha=0.5)
+        ax.grid(True, axis="y")
 
         self.bandpass_figure.suptitle(
-            "Closure Phases (should be ~0 for good calibration)"
+            "Closure phases (should be ~0 for good calibration)"
         )
         self.bandpass_figure.tight_layout()
-        self.bandpass_canvas.draw()
+        self._draw_bandpass()
+
+    def _pages(self):
+        """Whether the bandpass is shown a page at a time (the keys work
+        whatever is shown; there are no pages without a table, or in the
+        other views)."""
+        return self.xx_sols is not None and self.shown_view == "Per antenna"
 
     def _show_page(self, page):
         self.current_page = page
@@ -976,36 +987,37 @@ class VisualizationApp(QMainWindow):
             self.plot_bandpass_page()
 
     def next_bandpass_page(self):
-        if self.current_page < int(np.ceil(self.num_antennas / self.antennas_per_page)):
+        if self._pages() and self.current_page + 1 < int(np.ceil(self.num_antennas / self.antennas_per_page)):
             self._show_page(self.current_page + 1)
         self.update_navigation_buttons()
 
     def prev_bandpass_page(self):
-        if self.current_page > 0:
+        if self._pages() and self.current_page > 0:
             self._show_page(self.current_page - 1)
         self.update_navigation_buttons()
 
     def first_bandpass_page(self):
-        if self.current_page != 0:
+        if self._pages() and self.current_page != 0:
             self._show_page(0)
         self.update_navigation_buttons()
 
     def last_bandpass_page(self):
         last_page = int(np.ceil(self.num_antennas / self.antennas_per_page)) - 1
-        if self.current_page != last_page:
+        if self._pages() and self.current_page != last_page:
             self._show_page(last_page)
         self.update_navigation_buttons()
 
     def update_navigation_buttons(self):
         total_pages = int(np.ceil(self.num_antennas / self.antennas_per_page))
-        self.first_button.setEnabled(self.current_page > 0)
-        self.prev_button.setEnabled(self.current_page > 0)
-        self.next_button.setEnabled(self.current_page + 1 < total_pages)
-        self.last_button.setEnabled(self.current_page + 1 < total_pages)
+        pages = self._pages()
+        self.first_button.setEnabled(pages and self.current_page > 0)
+        self.prev_button.setEnabled(pages and self.current_page > 0)
+        self.next_button.setEnabled(pages and self.current_page + 1 < total_pages)
+        self.last_button.setEnabled(pages and self.current_page + 1 < total_pages)
 
     def select_selfcal_directory(self):
         directory = QFileDialog.getExistingDirectory(
-            self, "Select Self-calibration Table"
+            self, "Select self-calibration table"
         )
         if directory:
             self.load_selfcal_table(directory)
@@ -1024,52 +1036,38 @@ class VisualizationApp(QMainWindow):
 
         self.selfcal_dir_label.setText(str(caltable))  # Update selfcal specific label
         self.selfcal_directory = caltable
-        self.xx_sols = xx_sols
-        self.yy_sols = yy_sols
-        self.num_antennas = self.xx_sols.shape[0]
+        self.selfcal_xx = xx_sols
+        self.selfcal_yy = yy_sols
         with busy("Drawing the plot…", self):
             self.plot_selfcal_page()
         return True
 
     def toggle_selfcal_mode(self):
-        if self.plot_mode == "Amplitude":
-            self.plot_mode = "Phase"
-            self.selfcal_plot_button.setText(
-                "Plot Amplitude vs Antenna"
-            )  # Update selfcal button
+        if self.selfcal_mode == "Amplitude":
+            self.selfcal_mode = "Phase"
+            self.selfcal_plot_button.setText("Show amplitude")
         else:
-            self.plot_mode = "Amplitude"
-            self.selfcal_plot_button.setText(
-                "Plot Phase vs Antenna"
-            )  # Update selfcal button
+            self.selfcal_mode = "Amplitude"
+            self.selfcal_plot_button.setText("Show phase")
         if self.selfcal_directory:  # Only plot if data is loaded
             with busy("Drawing the plot…", self):
                 self.plot_selfcal_page()
 
     def plot_selfcal_page(self):
         if (
-            not self.selfcal_directory or self.xx_sols is None
+            not self.selfcal_directory or self.selfcal_xx is None
         ):  # Check if data is loaded
-            # Optionally, display a message on the canvas or clear it
-            self.selfcal_ax.clear()
-            self.selfcal_ax.text(
-                0.5,
-                0.5,
-                "No data loaded. Select a selfcal directory.",
-                horizontalalignment="center",
-                verticalalignment="center",
-                transform=self.selfcal_ax.transAxes,
-            )
-            self.selfcal_canvas.draw()
+            self.selfcal_stack.setCurrentIndex(0)
             return
 
+        self.selfcal_stack.setCurrentWidget(self.selfcal_canvas)
         self.selfcal_ax.clear()
         # Plot Gains vs Antenna
-        antennas = np.arange(self.num_antennas)
-        if self.plot_mode == "Amplitude":
+        antennas = np.arange(self.selfcal_xx.shape[0])
+        if self.selfcal_mode == "Amplitude":
             self.selfcal_ax.plot(
                 antennas,
-                np.abs(self.xx_sols[:, 0]),
+                np.abs(self.selfcal_xx[:, 0]),
                 "+",
                 color="#1f77b4",
                 label="X",
@@ -1077,7 +1075,7 @@ class VisualizationApp(QMainWindow):
             )
             self.selfcal_ax.plot(
                 antennas,
-                np.abs(self.yy_sols[:, 0]),
+                np.abs(self.selfcal_yy[:, 0]),
                 "+",
                 color="#ff7f0e",
                 label="Y",
@@ -1087,7 +1085,7 @@ class VisualizationApp(QMainWindow):
         else:
             self.selfcal_ax.plot(
                 antennas,
-                np.angle(self.xx_sols[:, 0], deg=True),
+                np.angle(self.selfcal_xx[:, 0], deg=True),
                 "+",
                 color="#1f77b4",
                 label="X",
@@ -1095,7 +1093,7 @@ class VisualizationApp(QMainWindow):
             )
             self.selfcal_ax.plot(
                 antennas,
-                np.angle(self.yy_sols[:, 0], deg=True),
+                np.angle(self.selfcal_yy[:, 0], deg=True),
                 "+",
                 color="#ff7f0e",
                 label="Y",
@@ -1103,22 +1101,20 @@ class VisualizationApp(QMainWindow):
             )
             self.selfcal_ax.set_ylabel("Phase (\u00b0)")
 
-        self.selfcal_ax.set_title(f"{self.plot_mode} vs Antenna")
-        self.selfcal_ax.set_xlabel("Antenna Number")
-        self.selfcal_ax.grid(linestyle="--", linewidth=0.5, color="grey", alpha=0.5)
-        self.selfcal_ax.legend()
+        self.selfcal_ax.set_xlabel("Antenna number")
+        self.selfcal_ax.grid(linestyle="--", linewidth=0.5)
+        self.selfcal_ax.legend(fontsize=PLOT_FONT_LEGEND)
 
-        self.selfcal_figure.suptitle(
-            f"Selfcal Gains - {self.plot_mode} vs Antenna", fontsize=14
-        )
+        self.selfcal_figure.suptitle(f"Selfcal gains: {self.selfcal_mode.lower()} vs antenna")
+        style_figure(self.selfcal_figure)
         self.selfcal_canvas.draw()
 
     def select_crossphase_file(self):
         file, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Crossphase Caltable",
+            "Select crossphase table",
             "",
-            "kcross Files (*.kcross);;Numpy Files (*.npy);;All Files (*)",
+            "kcross files (*.kcross);;NumPy files (*.npy);;All files (*)",
         )
         if file:
             self.load_crossphase_file(file)
@@ -1135,6 +1131,7 @@ class VisualizationApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load caltable:\n{str(e)}")
             return False
+        self.file_label.setText(str(caltable))
         self.crossphase_file = caltable
         for name, value in fit.items():
             setattr(self, name, value)
@@ -1143,6 +1140,7 @@ class VisualizationApp(QMainWindow):
         return True
 
     def plot_crossphase(self):
+        self.crossphase_stack.setCurrentWidget(self.crossphase_canvas)
         self.crossphase_ax.clear()
 
         self.crossphase_ax.plot(self.cross_freq, self.crossphase, "+", label="Data")
@@ -1156,17 +1154,18 @@ class VisualizationApp(QMainWindow):
             self.cross_freq_filtered,
             self.crossphase_fit - 3 * self.cross_std_residuals,
             self.crossphase_fit + 3 * self.cross_std_residuals,
-            color="gray",
+            color=theme_manager.palette["text_secondary"],
             alpha=0.3,
-            label=r"Fit Error ($3\sigma$)",
+            label=r"Fit error ($3\sigma$)",
         )
 
         self.crossphase_ax.set_xlabel("Frequency (MHz)")
         self.crossphase_ax.set_ylabel("Crossphase (deg)")
-        self.crossphase_ax.grid(linestyle="--", linewidth=0.5, color="grey", alpha=0.5)
-        self.crossphase_ax.legend()
+        self.crossphase_ax.grid(linestyle="--", linewidth=0.5)
+        self.crossphase_ax.legend(fontsize=PLOT_FONT_LEGEND)
 
-        self.crossphase_figure.suptitle("Crossphase vs Frequency", fontsize=14)
+        self.crossphase_figure.suptitle("Crossphase vs frequency")
+        style_figure(self.crossphase_figure)
         self.crossphase_canvas.draw()
 
 
@@ -1174,17 +1173,13 @@ def main():
     """Entry point for viewcaltable command."""
     import argparse
 
-    import seaborn as sns
-
     from ..ui.app import create_app
 
-    parser = argparse.ArgumentParser(description="Bandpass and Crossphase Visualizer")
+    parser = argparse.ArgumentParser(description="Bandpass and crossphase visualizer")
     parser.add_argument("--theme", choices=["dark", "light"], default=None)
     args = parser.parse_args()
 
     app = create_app(args.theme)
-    sns.set_theme(style="darkgrid")
-    rcParams.update(theme_manager.matplotlib_params)
 
     window = VisualizationApp()
     window.show()

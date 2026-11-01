@@ -251,7 +251,7 @@ def fits_image_path(path):
 def casa_observation_date(path):
     """Observation date (ISO string) of CASA image ``path``, or None, read
     from its coordinates without exporting the image."""
-    from casatools import image
+    from .dependencies import IA as image
 
     tool = image()
     try:
@@ -282,7 +282,7 @@ def _export_casa_image(path, fits_path):
     """Write CASA image ``path`` to FITS file ``fits_path``, leaving out
     extra keywords that clash with those written from the image itself
     (``path`` is not changed)."""
-    from casatools import image
+    from .dependencies import IA as image
 
     tool = image()
     tool.open(path)

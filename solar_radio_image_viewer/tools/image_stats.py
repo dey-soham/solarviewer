@@ -9,18 +9,17 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIntValidator
 from PyQt5.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
-    QGridLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QSlider,
     QTableWidgetItem,
-    QVBoxLayout,
 )
 
+from ..dialogs.form import field_label, form_block
 from ..ui.busy import busy
 from ..ui.styles import set_hand_cursor
+from ..ui.widgets import button_bar, dialog_layout
 
 
 MIN_BOX_PIXELS = 25  # a noise box with fewer measured pixels than this is not used
@@ -68,6 +67,8 @@ class ImageStatsMixin:
     ``contour_layers``, ``image_info_label``, ``image_stats_table``,
     ``imagename``, ``on_visualization_changed``, ``show_status_message``
     """
+
+    _rms_dialog = None  # the open RMS box dialog
 
     def show_image_stats(self, rms_box=None):
         if self.current_image_data is None:
@@ -122,28 +123,30 @@ class ImageStatsMixin:
 
     def show_rms_box_dialog(self):
         """Show a dialog for configuring the RMS box settings"""
+        # One at a time: its fields are kept on the tab
+        if self._rms_dialog is not None:
+            self._rms_dialog.raise_()
+            self._rms_dialog.activateWindow()
+            return
         dialog = QDialog(self)
-        dialog.setWindowTitle("RMS Box Settings")
+        dialog.setWindowTitle("RMS box settings")
         set_hand_cursor(dialog)
-        dialog.setMinimumWidth(400)
 
         # Create layout
-        layout = QVBoxLayout(dialog)
+        layout = dialog_layout(dialog)
 
         # Add a description label
         description = QLabel(
-            "Set the region used for RMS calculation. This affects dynamic range calculations, "
-            "thresholding for derived Stokes parameters (Lfrac, Vfrac, Q/I, etc.), and other statistics. "
-            "Changes will be applied to the current image and all future Stokes parameter selections."
+            "The region the RMS is measured in, for the dynamic range and the "
+            "thresholds of derived Stokes. Applies to this image and later Stokes choices."
         )
         description.setWordWrap(True)
         description.setObjectName("Hint")
         layout.addWidget(description)
 
         # Create grid layout for RMS box inputs
-        rms_grid = QGridLayout()
-        rms_grid.setVerticalSpacing(10)
-        rms_grid.setHorizontalSpacing(10)
+        rms_grid = form_block(layout)
+        rms_grid.setColumnStretch(1, 0)
 
         # Create input fields for RMS box coordinates
         self.dialog_rms_x1_entry = QLineEdit(str(self.current_rms_box[0]))
@@ -214,30 +217,26 @@ class ImageStatsMixin:
         self.dialog_rms_y2_entry.textChanged.connect(self.update_dialog_rms_box)
 
         # Add widgets to grid layout
-        rms_grid.addWidget(QLabel("X1:"), 0, 0)
+        rms_grid.addWidget(field_label("X1"), 0, 0)
         rms_grid.addWidget(self.dialog_rms_x1_entry, 0, 1)
         rms_grid.addWidget(self.dialog_rms_x1_slider, 0, 2)
 
-        rms_grid.addWidget(QLabel("X2:"), 1, 0)
+        rms_grid.addWidget(field_label("X2"), 1, 0)
         rms_grid.addWidget(self.dialog_rms_x2_entry, 1, 1)
         rms_grid.addWidget(self.dialog_rms_x2_slider, 1, 2)
 
-        rms_grid.addWidget(QLabel("Y1:"), 2, 0)
+        rms_grid.addWidget(field_label("Y1"), 2, 0)
         rms_grid.addWidget(self.dialog_rms_y1_entry, 2, 1)
         rms_grid.addWidget(self.dialog_rms_y1_slider, 2, 2)
 
-        rms_grid.addWidget(QLabel("Y2:"), 3, 0)
+        rms_grid.addWidget(field_label("Y2"), 3, 0)
         rms_grid.addWidget(self.dialog_rms_y2_entry, 3, 1)
         rms_grid.addWidget(self.dialog_rms_y2_slider, 3, 2)
 
         # Set column stretching to make sliders take most of the space
         rms_grid.setColumnStretch(2, 1)
 
-        layout.addLayout(rms_grid)
-
         # Add buttons
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-
         def on_apply():
             try:
                 self.apply_dialog_rms_box(dialog)
@@ -247,12 +246,13 @@ class ImageStatsMixin:
                 )
                 dialog.close()
 
-        button_box.accepted.connect(on_apply)
-        button_box.rejected.connect(dialog.close)
+        button_box, _ = button_bar(primary=("Apply", on_apply), secondary=("Cancel", dialog.close))
         layout.addWidget(button_box)
 
         # Show the dialog as non-modal
         dialog.setAttribute(Qt.WA_DeleteOnClose)
+        self._rms_dialog = dialog
+        dialog.destroyed.connect(lambda: setattr(self, "_rms_dialog", None))
         dialog.show()
 
     def update_dialog_rms_box(self):
@@ -299,7 +299,7 @@ class ImageStatsMixin:
         if self.current_image_data is None or is_splash:
             QMessageBox.warning(
                 self,
-                "No Image Loaded",
+                "No image loaded",
                 "Please load an image before changing RMS box settings.",
             )
             dialog.reject()
@@ -313,7 +313,7 @@ class ImageStatsMixin:
             # Ensure x1 < x2 and y1 < y2
             if x1 >= x2 or y1 >= y2:
                 QMessageBox.warning(
-                    self, "Invalid RMS Box", "Please ensure that X1 < X2 and Y1 < Y2."
+                    self, "Invalid RMS box", "Please ensure that X1 < X2 and Y1 < Y2."
                 )
                 return
 
@@ -323,7 +323,7 @@ class ImageStatsMixin:
                 if x2 > height or y2 > width:
                     QMessageBox.warning(
                         self,
-                        "Invalid RMS Box",
+                        "Invalid RMS box",
                         f"RMS box exceeds image dimensions ({height}x{width}).",
                     )
                     return
@@ -351,6 +351,6 @@ class ImageStatsMixin:
         except ValueError:
             QMessageBox.warning(
                 self,
-                "Invalid Input",
+                "Invalid input",
                 "Please enter valid integer values for the RMS box coordinates.",
             )

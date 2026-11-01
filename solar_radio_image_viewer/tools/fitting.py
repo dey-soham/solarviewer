@@ -93,7 +93,7 @@ class FittingMixin:
         """Fit a 2D Gaussian to the current image using CASA's imfit task."""
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or not current_tab.imagename:
-            QMessageBox.warning(self, "No Image", "Please load an image first.")
+            QMessageBox.warning(self, "No image", "Please load an image first.")
             return
 
         # A region selected (and on the image) to fit in
@@ -124,7 +124,7 @@ class FittingMixin:
         # Ask user about zero-level offset
         reply = QMessageBox.question(
             self,
-            "Fitting Options",
+            "Fitting options",
             f"{note}Fit zero-level offset (background)?\n\n"
             "Yes: Fit a constant background level\n"
             "No: Assume zero background",
@@ -196,7 +196,7 @@ class FittingMixin:
             if returncode != 0:
                 error_msg = stderr or stdout or "Unknown error"
                 QMessageBox.warning(
-                    self, "Fit Error", f"imfit subprocess failed:\n{error_msg}"
+                    self, "Fit error", f"imfit subprocess failed:\n{error_msg}"
                 )
                 if os.path.exists(result_file):
                     os.remove(result_file)
@@ -204,7 +204,7 @@ class FittingMixin:
 
             # Read results from temp file
             if not os.path.exists(result_file):
-                QMessageBox.warning(self, "Fit Error", "No results from fitting")
+                QMessageBox.warning(self, "Fit error", "No results from fitting")
                 return
 
             with open(result_file, "r") as f:
@@ -216,7 +216,7 @@ class FittingMixin:
                 error = output.get("error", "Unknown error")
                 tb = output.get("traceback", "")
                 logger.error(f"Fitting failed: {error}\n{tb}")
-                QMessageBox.warning(self, "Fit Error", f"Fitting failed: {error}")
+                QMessageBox.warning(self, "Fit error", f"Fitting failed: {error}")
                 return
 
             results = output.get("results", {})
@@ -225,7 +225,7 @@ class FittingMixin:
             if "major_arcsec" not in results:
                 QMessageBox.warning(
                     self,
-                    "Fit Failed",
+                    "Fit failed",
                     "No Gaussian component could be fitted in the selected region.\n\n"
                     "Try a region that is better centred on the source"
                     + (", or fit without the zero-level offset." if dooff else "."),
@@ -451,9 +451,14 @@ class FittingMixin:
             end_busy()
 
             # GUI message (compact version)
+            position = f"{ra_hms}, {dec_dms}"
+            if current_tab._is_already_hpc():
+                # (imfit's longitude and latitude are Solar-X and Y here)
+                solar_x = ((ra_deg + 180.0) % 360.0 - 180.0) * 3600.0
+                position = f'Solar-X {solar_x:.1f}", Solar-Y {dec_deg * 3600.0:.1f}"'
             msg = (
                 f"2D Gaussian Fit:\n"
-                f"Position: {ra_hms}, {dec_dms}\n"
+                f"Position: {position}\n"
                 f"Size: {format_smart_arcsec(major_arcsec)} × {format_smart_arcsec(minor_arcsec)}\n"
                 f"PA: {pa_deg:.1f}°\n"
                 f"Flux: {flux:.4g} {flux_unit}"
@@ -461,7 +466,7 @@ class FittingMixin:
                 f"{deconv_theta_info}"
             )
 
-            QMessageBox.information(self, "Fit Result", msg)
+            QMessageBox.information(self, "Fit result", msg)
             self.statusBar().showMessage("Gaussian fit completed", 3000)
 
         except subprocess.TimeoutExpired:
@@ -475,7 +480,7 @@ class FittingMixin:
             traceback.print_exc()
             show_error(
                 self,
-                "Gaussian Fit Failed",
+                "Gaussian fit failed",
                 f"The Gaussian fit failed: {e}\n\nTry a box drawn around a single, "
                 "isolated source, a little larger than it.",
                 traceback.format_exc(),

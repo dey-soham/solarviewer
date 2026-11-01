@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QTableWidget,
@@ -18,17 +17,49 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QDialog,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QPixmap
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon, QPixmap, QTransform
 from ..ui.activity import ActivityLabel
 from ..ui.download_parts import abandon
-from ..ui.styles import set_hand_cursor
+from ..ui.icons import themed_icon
+from ..ui.styles import CONTROL_HEIGHT, SPACE_L, SPACE_S, set_hand_cursor, theme_manager, themed
+from ..ui.widgets import button_bar, dialog_layout, empty_note
 
 from .workers import ImageLoader, ImageUrlResolver
 logger = logging.getLogger(__name__)
 
 
 from ..ui.geometry import fit_to_screen
+
+TONE_ROLE = Qt.UserRole + 1  # the palette key of a table cell's text
+
+
+def source_note(html):
+    """A footer naming the data's sources. Qt fixes the colour of a link when
+    it parses the text, so the text is set again on a theme change."""
+    label = QLabel()
+    label.setObjectName("Hint")
+    label.setOpenExternalLinks(True)
+    themed(label, lambda palette: label.setText(html.replace("<a ", f"<a style='color:{palette['link']}' ")))
+    return label
+
+
+def set_cell_tone(item, tone):
+    """Colour a table cell by a palette key, or ``None`` for the plain colour;
+    ``follow_cell_tones`` keeps it through a theme change."""
+    item.setData(TONE_ROLE, tone)
+    item.setData(Qt.ForegroundRole, QColor(theme_manager.palette[tone]) if tone else None)
+
+
+def follow_cell_tones(table):
+    def style(palette):
+        for row in range(table.rowCount()):
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                if item is not None and item.data(TONE_ROLE):
+                    item.setData(Qt.ForegroundRole, QColor(palette[item.data(TONE_ROLE)]))
+
+    themed(table, style)
 
 
 def megabytes_text(done, total):
@@ -80,7 +111,7 @@ class FullImageViewer(QDialog):
 
     def __init__(self, parent, title, page_url):
         super().__init__(parent)
-        self.setWindowTitle(f"{title} - High Resolution")
+        self.setWindowTitle(f"{title}: high resolution")
         self.setWindowFlags(
             Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
         )
@@ -88,7 +119,7 @@ class FullImageViewer(QDialog):
         self.page_url = page_url
         set_hand_cursor(self)
 
-        layout = QVBoxLayout(self)
+        layout = dialog_layout(self)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(
@@ -103,13 +134,8 @@ class FullImageViewer(QDialog):
         self.scroll.setWidget(self.img_label)
         layout.addWidget(self.scroll)
 
-        # Close btn
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        close = QPushButton("Close")
-        close.clicked.connect(self.accept)
-        btn_layout.addWidget(close)
-        layout.addLayout(btn_layout)
+        buttons, _ = button_bar(secondary=("Close", self.accept))
+        layout.addWidget(buttons)
 
         # Close, the window's X and Escape all end here
         self.finished.connect(self._leave_workers)
@@ -136,7 +162,7 @@ class FullImageViewer(QDialog):
 
             if not full_url:
                 self.img_label.stop_loading()
-                self.img_label.setText("Failed to resolve high-res image.")
+                self.img_label.setText("Could not find the high-resolution image.")
                 return
 
             self.img_label.start_loading("Downloading the image…")
@@ -186,7 +212,7 @@ class FullImageViewer(QDialog):
                 else:
                     self.scroll.setWidgetResizable(True)  # Center it
             else:
-                self.img_label.setText("Failed to load image data.")
+                self.img_label.setText("The image could not be read.")
         except RuntimeError:
             pass
 
@@ -211,28 +237,36 @@ class CollapsibleSection(QWidget):
         self.header = QPushButton()
 
         self.header.setObjectName("SectionHeader")
+        self.header.setIconSize(QSize(12, 12))
         self.update_header(title, icon, count)
+        themed(self.header, lambda palette: self._show_chevron())
         self.header.clicked.connect(self.toggle)
         layout.addWidget(self.header)
 
         # Content container
         self.content = QWidget()
         self.content_layout = QVBoxLayout(self.content)
-        self.content_layout.setContentsMargins(0, 5, 0, 5)
+        self.content_layout.setContentsMargins(0, SPACE_S, 0, 0)
         layout.addWidget(self.content)
 
         self.title = title
         self.icon = icon
 
     def update_header(self, title: str, icon: str = "", count: int = 0):
-        arrow = "▼" if not self.is_collapsed else "▶"
-        count_str = f" [{count}]" if count > 0 else ""
-        self.header.setText(f"{arrow}  {icon} {title} {count_str}")
+        count_str = f" · {count}" if count > 0 else ""
+        self.header.setText(f"{icon} {title}{count_str}".strip())
+
+    def _show_chevron(self):
+        chevron = QPixmap(themed_icon("spinbox_down.png"))
+        if self.is_collapsed:
+            chevron = chevron.transformed(QTransform().rotate(-90), Qt.SmoothTransformation)
+        self.header.setIcon(QIcon(chevron))
 
     def toggle(self):
         self.is_collapsed = not self.is_collapsed
         self.content.setVisible(not self.is_collapsed)
         self.update_header(self.title, self.icon, getattr(self, "_count", 0))
+        self._show_chevron()
 
         # Update size policy based on state
         if self.is_collapsed:
@@ -250,49 +284,91 @@ class CollapsibleSection(QWidget):
         self.content_layout.addWidget(widget)
 
 
+def _sort_key(text):
+    """Numbers (45%, 120°, 1.5E-02, 90 min) in order of size, before any text."""
+    try:
+        return (0, float(text.removesuffix(" min").rstrip("%°")), "")
+    except ValueError:
+        return (1, 0.0, text)
+
+
+class _EventItem(QTableWidgetItem):
+    def __lt__(self, other):
+        return _sort_key(self.text()) < _sort_key(other.text())
+
+
 class EventTable(QTableWidget):
     """Custom table widget for displaying events."""
 
-    def __init__(self, columns: list, parent=None):
+    def __init__(self, columns: list, parent=None, empty_text=""):
         super().__init__(parent)
         self.setColumnCount(len(columns))
         self.setHorizontalHeaderLabels(columns)
-        self.horizontalHeader().setStretchLastSection(True)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self._filling = False
         self.verticalHeader().setVisible(False)
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableWidget.SelectRows)
         self.setEditTriggers(QTableWidget.NoEditTriggers)
+        # Rows stay in the order they were added until a header is clicked
+        self.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         self.setSortingEnabled(True)
         self.setShowGrid(False)
 
         # Allow table to grow
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Better row height
-        self.verticalHeader().setDefaultSectionSize(32)
+        self.verticalHeader().setDefaultSectionSize(CONTROL_HEIGHT)
 
-        # Modern table styling handled by global stylesheet
-        pass
+        # What the table says while it has no rows
+        self.empty_note = empty_note(empty_text, self.viewport())
+        self.model().rowsInserted.connect(self._show_empty_note)
+        self.model().rowsRemoved.connect(self._show_empty_note)
+
+        follow_cell_tones(self)
+
+    def set_empty_text(self, text):
+        self.empty_note.setText(text)
+
+    def _show_empty_note(self):
+        self.empty_note.setVisible(self.rowCount() == 0)
+
+    def fit_columns(self):
+        """Each column as wide as what it holds, and what is left of the width
+        shared out, so a scroll bar only shows when they do not fit."""
+        self.resizeColumnsToContents()
+        header = self.horizontalHeader()
+        spare = self.viewport().width() - header.length()
+        if spare > 0:
+            columns = self.columnCount()
+            for col in range(columns):
+                extra = spare // columns + (spare % columns if col == columns - 1 else 0)
+                header.resizeSection(col, header.sectionSize(col) + extra)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.empty_note.setGeometry(self.viewport().rect().adjusted(SPACE_L, 0, -SPACE_L, 0))
+        self.fit_columns()
 
     @contextmanager
     def filling(self):
         """For adding many rows: each one costs a sort and a resize of every
         column otherwise, which grows with the rows already there."""
         sorting = self.isSortingEnabled()
-        header = self.horizontalHeader()
         self.setSortingEnabled(False)
         self.setUpdatesEnabled(False)
-        header.setSectionResizeMode(QHeaderView.Interactive)
+        self._filling = True
         try:
             yield
         finally:
-            header.setSectionResizeMode(QHeaderView.ResizeToContents)
+            self._filling = False
+            self.fit_columns()
             self.setSortingEnabled(sorting)
             self.setUpdatesEnabled(True)
 
-    def add_event_row(self, values: list, colors: dict = None, tooltips: dict = None):
-        """Add a row with optional cell coloring and tooltips."""
+    def add_event_row(self, values: list, tones: dict = None, tooltips: dict = None):
+        """Add a row with optional cell tones (palette keys) and tooltips."""
         # Temporarily disable sorting to prevent row movement during insertion
         sorting_enabled = self.isSortingEnabled()
         self.setSortingEnabled(False)
@@ -300,13 +376,14 @@ class EventTable(QTableWidget):
         row = self.rowCount()
         self.insertRow(row)
         for col, value in enumerate(values):
-            item = QTableWidgetItem(str(value))
-            item.setTextAlignment(Qt.AlignCenter)
-            if colors and col in colors:
-                item.setForeground(QColor(colors[col]))
+            item = _EventItem(str(value))
+            if tones and tones.get(col):
+                set_cell_tone(item, tones[col])
             if tooltips and col in tooltips:
                 item.setToolTip(str(tooltips[col]))
             self.setItem(row, col, item)
 
         # Re-enable sorting
         self.setSortingEnabled(sorting_enabled)
+        if not self._filling:
+            self.fit_columns()

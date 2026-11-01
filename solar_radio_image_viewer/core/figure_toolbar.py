@@ -10,12 +10,12 @@ from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QToolButton,
 )
-from PyQt5.QtCore import QSize, Qt
-from PyQt5.QtGui import QIcon
-from ..ui.icons import get_resource_path, themed_icon
+from PyQt5.QtCore import QPointF, QSize, Qt
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from ..ui.icons import get_resource_path, launcher_icon, themed_icon
+from ..ui.styles import SPACE_S, themed
 from ..ui.widgets import segmented
 from ..tools import (
     RegionMode,
@@ -24,6 +24,34 @@ from ..tools import (
 logger = logging.getLogger(__name__)
 
 ICON_SIZE = QSize(16, 16)
+NAV_ICON = 14  # the file navigation's icons, which share the bar's narrowest gap
+NAV_WIDTH = 22  # of a file navigation button
+
+# The file navigation's marks: lines on a 16px grid, drawn as the SVG icons are
+NAV_MARKS = {
+    "first": (((11, 4), (7, 8), (11, 12)), ((4.5, 4), (4.5, 12))),
+    "prev": (((10, 4), (6, 8), (10, 12)),),
+    "next": (((6, 4), (10, 8), (6, 12)),),
+    "last": (((5, 4), (9, 8), (5, 12)), ((11.5, 4), (11.5, 12))),
+}
+
+
+def _nav_icon(marks, palette):
+    """An icon of ``marks`` in the theme, greyed while its button is disabled."""
+    icon = QIcon()
+    for mode, colour in ((QIcon.Normal, "text_strong"), (QIcon.Disabled, "disabled")):
+        for scale in (1, 2):
+            pixmap = QPixmap(NAV_ICON * scale, NAV_ICON * scale)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.scale(pixmap.width() / 16, pixmap.height() / 16)
+            painter.setPen(QPen(QColor(palette[colour]), 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            for line in marks:
+                painter.drawPolyline(*[QPointF(x, y) for x, y in line])
+            painter.end()
+            icon.addPixmap(pixmap, mode)
+    return icon
 
 
 class FigureToolbarMixin:
@@ -50,6 +78,18 @@ class FigureToolbarMixin:
         return action
 
     @staticmethod
+    def _nav_button(tip, slot, marks=None):
+        button = QToolButton()
+        button.setAutoRaise(True)
+        button.setFixedWidth(NAV_WIDTH)
+        button.setIconSize(QSize(NAV_ICON, NAV_ICON))
+        button.setToolTip(tip)
+        button.clicked.connect(slot)
+        if marks is not None:
+            themed(button, lambda palette: button.setIcon(_nav_icon(marks, palette)))
+        return button
+
+    @staticmethod
     def _tool_button(action):
         button = QToolButton()
         button.setDefaultAction(action)
@@ -64,7 +104,7 @@ class FigureToolbarMixin:
         bar.setObjectName("CanvasBar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(12, 6, 12, 6)
-        layout.setSpacing(10)
+        layout.setSpacing(SPACE_S)
         action_group = QActionGroup(self)
 
         # The tools: pan (the default), regions, the ruler and the profile
@@ -113,19 +153,19 @@ class FigureToolbarMixin:
         # core.compare.ImagePage, which moves them into the active pane's bar)
         self.page_tools_slot = QHBoxLayout()
         self.page_tools_slot.setContentsMargins(0, 0, 0, 0)
-        self.page_tools_slot.setSpacing(10)
+        self.page_tools_slot.setSpacing(SPACE_S)
         layout.addLayout(self.page_tools_slot)
         layout.addStretch()
 
         # File navigation, in the middle
         nav = QHBoxLayout()
         nav.setSpacing(0)
-        self._first_file_btn = QPushButton("|◄")
-        self._first_file_btn.setToolTip("Go to first file")
-        self._first_file_btn.clicked.connect(self._on_first_file)
-        self._prev_file_btn = QPushButton("◀")
-        self._prev_file_btn.setToolTip("Previous file in directory ([)")
-        self._prev_file_btn.clicked.connect(self._on_prev_file)
+        self._first_file_btn = self._nav_button(
+            "Go to first file", self._on_first_file, NAV_MARKS["first"]
+        )
+        self._prev_file_btn = self._nav_button(
+            "Previous file in directory ([)", self._on_prev_file, NAV_MARKS["prev"]
+        )
         self._file_pos_label = QLabel("—/—")
         self._file_pos_label.setObjectName("Meta")
         self._file_pos_label.setAlignment(Qt.AlignCenter)
@@ -134,20 +174,19 @@ class FigureToolbarMixin:
         self._file_pos_label.setMinimumWidth(
             self._file_pos_label.fontMetrics().horizontalAdvance("00/000") + 8
         )
-        self._next_file_btn = QPushButton("▶")
-        self._next_file_btn.setToolTip("Next file in directory (])")
-        self._next_file_btn.clicked.connect(self._on_next_file)
-        self._last_file_btn = QPushButton("►|")
-        self._last_file_btn.setToolTip("Go to last file")
-        self._last_file_btn.clicked.connect(self._on_last_file)
-        self._filter_btn = QPushButton()
+        self._next_file_btn = self._nav_button(
+            "Next file in directory (])", self._on_next_file, NAV_MARKS["next"]
+        )
+        self._last_file_btn = self._nav_button(
+            "Go to last file", self._on_last_file, NAV_MARKS["last"]
+        )
+        self._filter_btn = self._nav_button("Set file filter pattern", self._show_filter_dialog)
         self._filter_btn.setIcon(QIcon(themed_icon("filter.svg")))
-        self._filter_btn.setIconSize(QSize(14, 14))
-        self._filter_btn.setToolTip("Set file filter pattern")
-        self._filter_btn.clicked.connect(self._show_filter_dialog)
-        self._playlist_btn = QPushButton("☰")
-        self._playlist_btn.setToolTip("Show all files in directory")
-        self._playlist_btn.clicked.connect(self._show_playlist_dialog)
+        self._playlist_btn = self._nav_button("Show all files in directory", self._show_playlist_dialog)
+        themed(
+            self._playlist_btn,
+            lambda _palette: self._playlist_btn.setIcon(launcher_icon("fd_list.svg", NAV_ICON)),
+        )
         for button in (
             self._first_file_btn,
             self._prev_file_btn,
@@ -164,22 +203,20 @@ class FigureToolbarMixin:
             self._filter_btn,
             self._playlist_btn,
         ):
-            if isinstance(widget, QPushButton):
-                widget.setObjectName("NavButton")
             nav.addWidget(widget)
         layout.addLayout(nav)
         layout.addStretch()
 
         # Zoom at the right: in, how far in, out, reset, one degree
         self.zoom_in_action = self._tool_action(
-            get_resource_path("assets/zoom_in.png"), "Zoom In (+)", self.zoom_in
+            get_resource_path("assets/zoom_in.png"), "Zoom in (+)", self.zoom_in
         )
         self.zoom_out_action = self._tool_action(
-            get_resource_path("assets/zoom_out.png"), "Zoom Out (-)", self.zoom_out
+            get_resource_path("assets/zoom_out.png"), "Zoom out (-)", self.zoom_out
         )
         self.reset_view_action = self._tool_action(
             get_resource_path("assets/reset.png"),
-            "Reset View (R)",
+            "Reset view (R)",
             lambda: self.reset_view(show_status_message=True, animate=True),
         )
         self.zoom_60arcmin_action = self._tool_action(
@@ -200,6 +237,6 @@ class FigureToolbarMixin:
         # Room at the right end for the page's layout controls
         self.page_controls_slot = QHBoxLayout()
         self.page_controls_slot.setContentsMargins(0, 0, 0, 0)
-        self.page_controls_slot.setSpacing(10)
+        self.page_controls_slot.setSpacing(SPACE_S)
         layout.addLayout(self.page_controls_slot)
         return bar

@@ -13,11 +13,19 @@ from PyQt5.QtGui import QImage
 from . import noaa_events as ne
 
 from .cache import _noaa_cache
+from ..version import __version__
+
 logger = logging.getLogger(__name__)
 
 FETCH_STAGES = 6
 THUMBNAIL_SIZE = 320
 CHUNK_BYTES = 64 * 1024
+
+
+def _still_growing(day):
+    """Whether the lists for ``day`` can still gain entries: SWPC's for today
+    and a CME window of three days to either side."""
+    return (datetime.utcnow().date() - day).days <= 3
 
 
 class Stopped(BaseException):
@@ -107,7 +115,7 @@ class ImageLoader(StoppableThread):
         import requests
 
         with requests.get(
-            url, timeout=60, headers={"User-Agent": "Mozilla/5.0"}, stream=True
+            url, timeout=60, headers={"User-Agent": f"SolarViewer/{__version__} (python-requests)"}, stream=True
         ) as response:
             if response.status_code != 200:
                 raise RuntimeError(f"HTTP {response.status_code}")
@@ -173,7 +181,7 @@ class ImageSaver(ImageLoader):
     saved = pyqtSignal(str)
 
     def __init__(self, url, path):
-        super().__init__(url)
+        super().__init__(url, page_url=url)  # a page, for SolarMonitor images
         self.path = path
 
     def run(self):
@@ -181,6 +189,8 @@ class ImageSaver(ImageLoader):
         try:
             data = self.fetch()
             self.check_stop()
+            if data.lstrip()[:1] == b"<":  # the page, when its image was not found
+                raise RuntimeError("The archive sent a web page, not an image")
             with open(partial, "wb") as f:
                 f.write(data)
             os.replace(partial, self.path)
@@ -214,7 +224,8 @@ class FetchWorker(StoppableThread):
     def __init__(self, event_date: date, force_refresh: bool = False):
         super().__init__()
         self.event_date = event_date
-        self.force_refresh = force_refresh
+        # The lists of the last days still grow: what was saved then is partial
+        self.force_refresh = force_refresh or _still_growing(event_date)
         self._stage = 0
 
     def _say(self, message, stage=None):
@@ -273,7 +284,8 @@ class FetchWorker(StoppableThread):
                     self._say("Fetching solar conditions…", 3)
                     from ..solar_context import realtime_data as rt
                     conditions = rt.fetch_conditions_for_date(self.event_date)
-                    if conditions:
+                    # (it comes back empty, not None, when the sources fail)
+                    if conditions and (conditions.kp_index is not None or conditions.f107_flux is not None):
                         cache.save_conditions(self.event_date, conditions)
                 except Exception as cond_err:
                     print(f"Solar conditions fetch failed: {cond_err}")
@@ -289,7 +301,8 @@ class FetchWorker(StoppableThread):
                     self._say("Fetching CME alerts…", 4)
                     from ..solar_context import cme_alerts as cme
                     cmes = cme.fetch_and_parse_cme_events(self.event_date)
-                    if cmes:
+                    # (not the stand-in, or DONKI's would never be fetched again)
+                    if cmes and cmes[0].source == "DONKI":
                         cache.save_cmes(self.event_date, cmes)
                 except Exception as cme_err:
                     print(f"CME fetch failed: {cme_err}")
@@ -340,8 +353,17 @@ class FetchWorker(StoppableThread):
                     print(f"e-CALLISTO bursts fetch failed: {eb_err}")
                     ecallisto_bursts = []
 
+            # What was saved earlier beats nothing when a refresh fails
             if ecallisto_bursts is None:
-                ecallisto_bursts = []
+                ecallisto_bursts = cache.load_ecallisto_bursts(self.event_date) or []
+            if conditions is None or (conditions.kp_index is None and conditions.f107_flux is None):
+                conditions = cache.load_conditions(self.event_date) or conditions
+            if events is None:
+                events = cache.load_events(self.event_date)
+            if active_regions is None:
+                active_regions = cache.load_active_regions(self.event_date)
+            if cmes is None or (cmes and cmes[0].source != "DONKI"):
+                cmes = cache.load_cmes(self.event_date) or cmes
 
             self.check_stop()
             self.done.emit(events, active_regions, conditions, cmes, images, ecallisto_bursts)
@@ -462,7 +484,8 @@ class DHSpectraWorker(StoppableThread):
         """``source`` has been dealt with: the next, unless told to stop."""
         self.check_stop()
         self._sources_done += 1
-        total = 7 if self.event_datetime.year <= 2014 else 6  # with STEREO-B
+        year = self.event_datetime.year
+        total = 5 if year < 2007 else 7 if year <= 2014 else 6  # with the STEREOs
         self.source_ended.emit(source)
         self.sources_done.emit(self._sources_done, total)
 
@@ -554,62 +577,60 @@ class DHSpectraWorker(StoppableThread):
                         errors.append(err_msg)
             self._source_done('wind')
             
-            # Check if date is before STEREO mission
+            # STEREO only for dates after its launch; the other sources go further back
             if dt_obj.year < 2007:
                 self.progress.emit("Date predates STEREO mission (launched Oct 2006)")
-                self.done.emit(results, errors)
-                return
-            
-            # === STEREO-A ===
-            cached_sta = cache.load_spectra(event_date, 'stereo_a')
-            if not self.force_refresh and cached_sta:
-                self.progress.emit("Loading STEREO-A from cache…")
-                results['stereo_a'] = str(cached_sta)
-                self.result_ready.emit('stereo_a', str(cached_sta))
             else:
-                self.progress.emit("Searching for STEREO-A data…")
-                try:
-                    stereo_dir_url = f"{swaves_url}{date_path}/"
-                    req = urllib.request.urlopen(stereo_dir_url, timeout=15)
-                    html = req.read().decode('utf-8')
+                # === STEREO-A ===
+                cached_sta = cache.load_spectra(event_date, 'stereo_a')
+                if not self.force_refresh and cached_sta:
+                    self.progress.emit("Loading STEREO-A from cache…")
+                    results['stereo_a'] = str(cached_sta)
+                    self.result_ready.emit('stereo_a', str(cached_sta))
+                else:
+                    self.progress.emit("Searching for STEREO-A data…")
+                    try:
+                        stereo_dir_url = f"{swaves_url}{date_path}/"
+                        req = urllib.request.urlopen(stereo_dir_url, timeout=15)
+                        html = req.read().decode('utf-8')
                     
-                    if swaves_url == self.SWAVES_URL:
-                        # Old format (2007-2017): swaves2A (2 = 7h plot)
-                        pattern_a = re.compile(r'href="([^"]*swaves2A\.png)"', re.IGNORECASE)
-                    else:
-                        # New format (2018+): sta_waves_7h (7-hour coverage)
-                        pattern_a = re.compile(r'href="([^"]*sta_waves_7h[^"]*\.png)"', re.IGNORECASE)
-                    
-                    matches_a = sorted(pattern_a.findall(html))
-                    
-                    if matches_a:
-                        self.progress.emit("Stitching STEREO-A images…")
-                        stitched_data = self._stitch_images(stereo_dir_url, matches_a)
-                        if stitched_data:
-                            sta_file = cache.save_spectra(event_date, 'stereo_a', stitched_data)
-                            results['stereo_a'] = str(sta_file)
-                            self.result_ready.emit('stereo_a', str(sta_file))
-                            self.progress.emit("STEREO-A stitched data saved!")
+                        if swaves_url == self.SWAVES_URL:
+                            # Old format (2007-2017): swaves2A (2 = 7h plot)
+                            pattern_a = re.compile(r'href="([^"]*swaves2A\.png)"', re.IGNORECASE)
                         else:
-                            # Fallback to single image if stitching fails
-                            best_a = self._find_latest_image(matches_a)
-                            if best_a:
-                                sta_url = f"{stereo_dir_url}{best_a}"
-                                req = urllib.request.urlopen(sta_url, timeout=30)
-                                data = req.read()
-                                sta_file = cache.save_spectra(event_date, 'stereo_a', data)
+                            # New format (2018+): sta_waves_7h (7-hour coverage)
+                            pattern_a = re.compile(r'href="([^"]*sta_waves_7h[^"]*\.png)"', re.IGNORECASE)
+                    
+                        matches_a = sorted(pattern_a.findall(html))
+                    
+                        if matches_a:
+                            self.progress.emit("Stitching STEREO-A images…")
+                            stitched_data = self._stitch_images(stereo_dir_url, matches_a)
+                            if stitched_data:
+                                sta_file = cache.save_spectra(event_date, 'stereo_a', stitched_data)
                                 results['stereo_a'] = str(sta_file)
                                 self.result_ready.emit('stereo_a', str(sta_file))
-                                self.progress.emit("STEREO-A 7h data found (stitching failed)!")
+                                self.progress.emit("STEREO-A stitched data saved!")
+                            else:
+                                # Fallback to single image if stitching fails
+                                best_a = self._find_latest_image(matches_a)
+                                if best_a:
+                                    sta_url = f"{stereo_dir_url}{best_a}"
+                                    req = urllib.request.urlopen(sta_url, timeout=30)
+                                    data = req.read()
+                                    sta_file = cache.save_spectra(event_date, 'stereo_a', data)
+                                    results['stereo_a'] = str(sta_file)
+                                    self.result_ready.emit('stereo_a', str(sta_file))
+                                    self.progress.emit("STEREO-A 7h data found (stitching failed)!")
                             
-                except Exception as e:
-                    err_msg = f"STEREO-A: {str(e)[:50]}"
-                    self.progress.emit(err_msg)
-                    errors.append(err_msg)
-            self._source_done('stereo_a')
+                    except Exception as e:
+                        err_msg = f"STEREO-A: {str(e)[:50]}"
+                        self.progress.emit(err_msg)
+                        errors.append(err_msg)
+                self._source_done('stereo_a')
             
             # === STEREO-B (only for dates before 2014) ===
-            if dt_obj.year <= 2014:
+            if 2007 <= dt_obj.year <= 2014:
                 cached_stb = cache.load_spectra(event_date, 'stereo_b')
                 if not self.force_refresh and cached_stb:
                     self.progress.emit("Loading STEREO-B from cache…")

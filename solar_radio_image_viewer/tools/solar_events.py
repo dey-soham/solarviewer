@@ -82,7 +82,7 @@ class SolarEventsMixin:
 
                 QMessageBox.warning(
                     self,
-                    "Date Not Found",
+                    "Date not found",
                     "Could not extract date from the current image.\n\n"
                     "Supported formats:\n"
                     "• FITS files with DATE-OBS header\n"
@@ -133,12 +133,12 @@ class SolarEventsMixin:
             if not reachable:
                 QMessageBox.warning(
                     self,
-                    "Connection Error",
+                    "Connection error",
                     "Could not connect to the Helioviewer API.\nPlease check your internet connection and try again.",
                 )
                 return
 
-            from datetime import datetime, timedelta
+            from datetime import timedelta
 
             from PyQt5.QtCore import QDateTime
 
@@ -157,7 +157,7 @@ class SolarEventsMixin:
                     initial_start = QDateTime(start_dt)
                     initial_end = QDateTime(end_dt)
                     self.show_status_message(
-                        f"Opening Helioviewer Browser for {obs_datetime} (±30 min)"
+                        f"Opening the Helioviewer browser for {obs_datetime} (±30 min)"
                     )
                 else:
                     self.show_status_message(
@@ -177,5 +177,5 @@ class SolarEventsMixin:
 
             traceback.print_exc()
             QMessageBox.warning(
-                self, "Error", f"Could not open Helioviewer Browser: {str(e)}"
+                self, "Error", f"Could not open the Helioviewer browser: {str(e)}"
             )

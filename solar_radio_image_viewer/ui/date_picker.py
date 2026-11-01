@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from .styles import FONT_META, FONT_SMALL, RADIUS, RADIUS_LG, theme_manager
+from .styles import CONTROL_HEIGHT, FONT_META, FONT_SMALL, RADIUS, RADIUS_LG, theme_manager
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 FIRST_YEAR = 1990  # before any of the archives
@@ -333,7 +333,6 @@ class TimeEdit(QLineEdit):
         self.setFont(font)
         self.setAlignment(Qt.AlignCenter)
         self.setFixedWidth(self.fontMetrics().horizontalAdvance("00:00:00") + 28)
-        self.setMinimumHeight(28)
         self.setToolTip("Hours : minutes : seconds (UTC)\nThe arrow keys or the wheel step the part under the cursor")
 
     def value(self):
@@ -399,7 +398,7 @@ class DateTimePopup(QFrame):
             button.setObjectName("PickerArrow")
             button.setCursor(Qt.PointingHandCursor)
             button.setToolTip(tip)
-            button.setFixedSize(28, 28)
+            button.setFixedSize(CONTROL_HEIGHT, CONTROL_HEIGHT)
         head.addWidget(self.title_button)
         head.addStretch()
         head.addWidget(self.prev_button)

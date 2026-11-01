@@ -5,6 +5,7 @@ Create Video, the solar events viewer, metadata and the log.
 
 import logging
 import os
+import traceback
 
 from PyQt5.QtWidgets import (
     QMessageBox,
@@ -17,6 +18,8 @@ from ..ui.busy import busy
 from ..ui.errors import show_error
 
 logger = logging.getLogger(__name__)
+
+OPEN_FAILED = "The window could not be opened. Try again; the details say what went wrong."
 
 
 class WindowDialogsMixin:
@@ -39,10 +42,10 @@ class WindowDialogsMixin:
             console.raise_()
             console.activateWindow()
         except ImportError:
-            self.statusBar().showMessage("Error: Log Console module not found")
+            self.statusBar().showMessage("Could not open the log console: its module is missing")
         except Exception as e:
             logger.error(f"Failed to open log console: {e}")
-            self.statusBar().showMessage(f"Error opening log console: {e}")
+            self.statusBar().showMessage(f"Could not open the log console: {e}")
 
     def show_batch_dialog(self):
         from ..dialogs import BatchProcessDialog
@@ -62,7 +65,7 @@ class WindowDialogsMixin:
     def show_metadata(self):
         current_tab = self.tab_widget.currentWidget()
         if not current_tab or not current_tab.imagename:
-            QMessageBox.warning(self, "No Image", "No image loaded")
+            QMessageBox.warning(self, "No image", "No image loaded")
             return
 
         try:
@@ -91,11 +94,9 @@ class WindowDialogsMixin:
         except Cancelled:
             self.statusBar().showMessage("Cancelled")
         except Exception as e:
-            import traceback
-
             show_error(
                 self,
-                "Metadata Unavailable",
+                "Metadata unavailable",
                 f"Could not read the image's metadata: {e}",
                 traceback.format_exc(),
             )
@@ -147,64 +148,33 @@ class WindowDialogsMixin:
             current_file = current_tab.imagename if current_tab else None
 
             # Import and show dialog
-            with busy("Opening Create Video…", self):
+            with busy("Opening Create video…", self):
                 from ..video.dialog import VideoCreationDialog
 
                 # Store reference to prevent garbage collection
                 self._video_dialog = VideoCreationDialog(self, current_file)
                 self._video_dialog.show()
-        except Exception as e:
-            # Show error message with details
-            from PyQt5.QtWidgets import QMessageBox
-
-            error_message = f"Error opening video creation dialog: {str(e)}"
-            logger.error(f"{error_message}")
-            QMessageBox.critical(self, "Error", error_message)
+        except Exception:
+            logger.exception("Could not open Create video")
+            show_error(self, "Could not open Create video", OPEN_FAILED, traceback.format_exc())
 
     def show_noaa_events_viewer(self):
         """Show the NOAA Solar Events Viewer."""
         try:
             from ..noaa_events import show_noaa_events_viewer
-            from datetime import datetime
 
-            # Try to get date from currently open FITS file
-            initial_date = None
+            # The date of the open image, if there is one
             current_tab = self.tab_widget.currentWidget()
-            if current_tab and hasattr(current_tab, "header") and current_tab.header:
-                header = current_tab.header
-                # Try common date keywords
-                for key in ["DATE-OBS", "DATE_OBS", "DATE", "T_OBS"]:
-                    if key in header:
-                        date_str = header[key]
-                        try:
-                            # Parse various date formats
-                            if "T" in str(date_str):
-                                dt = datetime.fromisoformat(
-                                    str(date_str).replace("Z", "+00:00").split("+")[0]
-                                )
-                                initial_date = dt.date()
-                            elif "-" in str(date_str):
-                                initial_date = datetime.strptime(
-                                    str(date_str)[:10], "%Y-%m-%d"
-                                ).date()
-                            elif "/" in str(date_str):
-                                initial_date = datetime.strptime(
-                                    str(date_str)[:10], "%Y/%m/%d"
-                                ).date()
-                            if initial_date:
-                                break
-                        except (ValueError, TypeError):
-                            continue
+            with busy("Reading the observation date…", self):
+                when = current_tab._observation_datetime() if current_tab else None
+            initial_date = when.date() if when is not None else None
 
             # Show the viewer
             self._noaa_events_viewer = show_noaa_events_viewer(self, initial_date)
 
-        except Exception as e:
-            from PyQt5.QtWidgets import QMessageBox
-
-            error_message = f"Error opening NOAA Events Viewer: {str(e)}"
-            logger.error(f"{error_message}")
-            QMessageBox.critical(self, "Error", error_message)
+        except Exception:
+            logger.exception("Could not open the solar activity viewer")
+            show_error(self, "Could not open the solar activity viewer", OPEN_FAILED, traceback.format_exc())
 
     def show_unit_conversion_dialog(self):
         """Show the dialog for batch unit conversion"""
@@ -222,10 +192,9 @@ class WindowDialogsMixin:
             )
             self._open_dialogs.append(dialog)
             dialog.show()
-        except Exception as e:
-            error_message = f"Error opening unit conversion dialog: {str(e)}"
-            logger.error(f"{error_message}")
-            QMessageBox.critical(self, "Error", error_message)
+        except Exception:
+            logger.exception("Could not open Convert units")
+            show_error(self, "Could not open Convert units", OPEN_FAILED, traceback.format_exc())
 
     def show_format_conversion_dialog(self):
         """Show the dialog for batch format conversion (CASA \u2194 FITS)"""
@@ -243,10 +212,9 @@ class WindowDialogsMixin:
             )
             self._open_dialogs.append(dialog)
             dialog.show()
-        except Exception as e:
-            error_message = f"Error opening format conversion dialog: {str(e)}"
-            logger.error(f"{error_message}")
-            QMessageBox.critical(self, "Error", error_message)
+        except Exception:
+            logger.exception("Could not open Convert image format")
+            show_error(self, "Could not open Convert image format", OPEN_FAILED, traceback.format_exc())
 
     def show_coordinate_transformation_dialog(self):
         """Show the dialog for batch coordinate transformation"""
@@ -269,8 +237,6 @@ class WindowDialogsMixin:
             )
             self._open_dialogs.append(dialog)
             dialog.show()
-        except Exception as e:
-            # Show error message with details
-            error_message = f"Error opening coordinate transformation dialog: {str(e)}"
-            logger.error(f"{error_message}")
-            QMessageBox.critical(self, "Error", error_message)
+        except Exception:
+            logger.exception("Could not open Transform coordinates")
+            show_error(self, "Could not open Transform coordinates", OPEN_FAILED, traceback.format_exc())

@@ -74,19 +74,16 @@ class KpIndexData:
             return "Quiet"
 
     @property
-    def color_code(self) -> str:
-        """Get color code for Kp value."""
+    def tone(self) -> Optional[str]:
+        """Get the tone of the Kp value (None when very quiet)."""
         kp = self.kp_max
         if kp >= 7:
-            return "#F44336"  # Red
-        elif kp >= 5:
-            return "#FF9800"  # Orange
+            return "error"
         elif kp >= 4:
-            return "#FFC107"  # Amber
+            return "warning"
         elif kp >= 2:
-            return "#4CAF50"  # Green
-        else:
-            return "#2196F3"  # Blue (very quiet)
+            return "success"
+        return None
 
 
 @dataclass
@@ -240,8 +237,10 @@ def parse_daily_geomagnetic_indices(text: str) -> Dict[date, KpIndexData]:
         # Format: YYYY MM DD  A  K K K K K K K K  A  K K K K K K K K  A  Kp Kp Kp Kp Kp Kp Kp Kp
         # We want the planetary (Estimated) Kp values at the end
         try:
+            # The local K fields run together when missing ("2-1-1-1"), so
+            # the planetary values are counted from the end of the line
             parts = line.split()
-            if len(parts) < 30:
+            if len(parts) < 12:
                 continue
 
             year = int(parts[0])
@@ -259,9 +258,12 @@ def parse_daily_geomagnetic_indices(text: str) -> Dict[date, KpIndexData]:
             for i in range(-8, 0):
                 try:
                     kp = float(parts[i])
-                    kp_values.append(kp)
+                    if kp >= 0:  # -1.00: not measured yet
+                        kp_values.append(kp)
                 except ValueError:
-                    kp_values.append(0.0)
+                    pass
+            if not kp_values:
+                continue
 
             # Get planetary A index (before the 8 Kp values)
             try:

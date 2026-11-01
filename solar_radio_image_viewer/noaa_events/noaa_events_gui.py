@@ -8,6 +8,7 @@ import os
 import re
 from datetime import datetime, date, timedelta
 from typing import Optional
+import logging
 
 # Qt imports
 try:
@@ -34,7 +35,7 @@ except ImportError:
 try:
     # Try relative imports (when run as module)
     from . import noaa_events as ne
-    from ..ui.styles import theme_manager, set_hand_cursor
+    from ..ui.styles import SPACE_L, SPACE_M, SPACE_S, theme_manager, set_hand_cursor
 except ImportError:
     # Fallback for standalone execution
     # Add project root to path to allow absolute imports
@@ -47,12 +48,12 @@ except ImportError:
         sys.path.insert(0, project_root)
 
     from solar_radio_image_viewer.noaa_events import noaa_events as ne
-    from solar_radio_image_viewer.ui.styles import theme_manager, set_hand_cursor
+    from solar_radio_image_viewer.ui.styles import SPACE_L, SPACE_M, SPACE_S, theme_manager, set_hand_cursor
 from .cache import _noaa_cache
 from .conditions_tab import ConditionsTabMixin
 from .context_images_tab import ContextImagesTabMixin
 from .radio_spectra_tab import RadioSpectraTabMixin
-from .widgets import CollapsibleSection, EventTable
+from .widgets import CollapsibleSection, EventTable, source_note
 from .workers import FetchWorker
 from ..processing.fits_io import is_fits
 from ..processing.image_meta import casa_info, casa_obs_time, fits_header
@@ -63,9 +64,12 @@ from ..ui.background import Cancelled, run_in_background
 from ..ui.busy import busy
 from ..ui.date_picker import attach_date_picker
 from ..ui.download_parts import abandon
+from ..ui.errors import show_error
 from ..ui.geometry import fit_to_screen
 
-DATE_FORMAT = "%Y.%m.%d"
+logger = logging.getLogger(__name__)
+
+DATE_FORMAT = "%Y-%m-%d"
 CANCEL_NOTE_MS = 4000  # how long "Cancelled" stays beside the buttons
 
 
@@ -76,7 +80,7 @@ class NOAAEventsViewer(
 
     def __init__(self, parent=None, initial_date: Optional[date] = None):
         super().__init__(parent)
-        self.setWindowTitle("Solar Activity Viewer")
+        self.setWindowTitle("Solar activity")
         fit_to_screen(self, 1000, 800)
 
         # Network Manager for image downloading
@@ -114,9 +118,10 @@ class NOAAEventsViewer(
     def selected_date(self) -> Optional[date]:
         """The date in the field; if it is not one, None, and it says so."""
         try:
-            return datetime.strptime(self.date_edit.text().strip(), DATE_FORMAT).date()
+            # (YYYY.MM.DD, the form it had, still reads)
+            return datetime.strptime(self.date_edit.text().strip().replace(".", "-"), DATE_FORMAT).date()
         except ValueError:
-            self.summary_label.setText("Enter the date as YYYY.MM.DD.")
+            self.summary_label.setText("Enter the date as YYYY-MM-DD.")
             return None
 
     def closeEvent(self, event):
@@ -181,27 +186,27 @@ class NOAAEventsViewer(
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setSpacing(16)
-        layout.setContentsMargins(20, 16, 20, 16)
-
-        # Modern button styles from theme_manager
+        layout.setSpacing(SPACE_M)
+        layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
 
         # Top bar: date selection
         top_bar = QHBoxLayout()
-        top_bar.setSpacing(12)
+        top_bar.setSpacing(SPACE_S)
 
-        date_label = QLabel("Date:")
+        date_label = QLabel("Date")
+        date_label.setObjectName("Hint")
         top_bar.addWidget(date_label)
 
         self.date_edit = QLineEdit()
         self.date_edit.setMinimumWidth(130)
+        self.date_edit.setMaximumWidth(180)
         attach_date_picker(self.date_edit, lambda text: None, fmt=DATE_FORMAT)
         # Styles handled by global stylesheet
         top_bar.addWidget(self.date_edit)
 
         # Get date from current tab button
-        self.get_date_btn = QPushButton("From Tab")
-        self.get_date_btn.setToolTip("Get date from currently open image/FITS file")
+        self.get_date_btn = QPushButton("From tab")
+        self.get_date_btn.setToolTip("Take the date from the image or FITS file open now")
         self.get_date_btn.clicked.connect(self.get_date_from_parent_tab)
         if not self.parent():
             self.get_date_btn.setEnabled(False)
@@ -224,35 +229,32 @@ class NOAAEventsViewer(
         self._note_timer.setInterval(CANCEL_NOTE_MS)
         self._note_timer.timeout.connect(self._show_jobs)
 
+        self.plot_goes_btn = QPushButton("Plot GOES X-ray flux")
+        self.plot_goes_btn.setObjectName("GhostButton")
+        self.plot_goes_btn.setToolTip("Plot the GOES X-ray light curve for this date")
+        self.plot_goes_btn.clicked.connect(self.plot_goes_xray)
+        top_bar.addWidget(self.plot_goes_btn)
+
         self.fetch_btn = QPushButton("Fetch")
         self.fetch_btn.setObjectName("PrimaryButton")
         self.fetch_btn.clicked.connect(self.fetch_data)
         top_bar.addWidget(self.fetch_btn)
 
-        self.plot_goes_btn = QPushButton("Plot GOES X-ray Flux")
-        self.plot_goes_btn.setToolTip("Plot the GOES X-ray light curve for this date")
-        self.plot_goes_btn.clicked.connect(self.plot_goes_xray)
-        top_bar.addWidget(self.plot_goes_btn)
-
         layout.addLayout(top_bar)
 
-        # Modern summary bar - subtle styling
         self.summary_frame = QFrame()
 
         self.summary_frame.setObjectName("Card")
         summary_layout = QHBoxLayout(self.summary_frame)
-        summary_layout.setContentsMargins(16, 10, 16, 10)
+        summary_layout.setContentsMargins(SPACE_M, SPACE_S, SPACE_M, SPACE_S)
 
-        self.summary_label = QLabel(
-            "Select a date and click 'Fetch' to view solar activity."
-        )
+        self.summary_label = QLabel("Pick a date and press Fetch to see that day's solar activity.")
         self.summary_label.setObjectName("Hint")
         self.summary_label.setWordWrap(True)
         summary_layout.addWidget(self.summary_label)
 
         layout.addWidget(self.summary_frame)
 
-        # Modern tab styling handled by global stylesheet
         self.tabs = QTabWidget()
 
         self._create_events_tab()
@@ -274,29 +276,32 @@ class NOAAEventsViewer(
         # Tab 1: Solar Events (existing content)
         events_tab = QWidget()
         events_layout = QVBoxLayout(events_tab)
-        events_layout.setContentsMargins(16, 12, 16, 12)
-        events_layout.setSpacing(10)
+        events_layout.setContentsMargins(0, SPACE_M, 0, 0)
+        events_layout.setSpacing(SPACE_S)
 
         # X-ray Flares section
-        self.xray_section = CollapsibleSection("X-ray Flares")
+        self.xray_section = CollapsibleSection("X-ray flares")
         self.xray_table = EventTable(
-            ["Time (UT)", "Class", "Peak Flux", "Region", "Duration", "Observatory"]
+            ["Time (UTC)", "Class", "Integrated flux (J/m²)", "Region", "Duration", "Observatory"],
+            empty_text="Fetch a date to see its X-ray flares",
         )
         self.xray_section.add_widget(self.xray_table)
         events_layout.addWidget(self.xray_section)
 
         # Optical Flares section
-        self.optical_section = CollapsibleSection("Optical Flares (H-alpha)")
+        self.optical_section = CollapsibleSection("Optical flares (H-alpha)")
         self.optical_table = EventTable(
-            ["Time (UT)", "Class", "Location", "Region", "Notes", "Observatory"]
+            ["Time (UTC)", "Class", "Location", "Region", "Notes", "Observatory"],
+            empty_text="Fetch a date to see its optical flares",
         )
         self.optical_section.add_widget(self.optical_table)
         events_layout.addWidget(self.optical_section)
 
         # Radio Events section
-        self.radio_section = CollapsibleSection("Radio Events")
+        self.radio_section = CollapsibleSection("Radio events")
         self.radio_table = EventTable(
-            ["Type", "Time (UT)", "Frequency", "Particulars", "Region", "Observatory"]
+            ["Type", "Time (UTC)", "Frequency", "Particulars", "Region", "Observatory"],
+            empty_text="Fetch a date to see its radio events",
         )
         self.radio_section.add_widget(self.radio_table)
         events_layout.addWidget(self.radio_section)
@@ -314,12 +319,10 @@ class NOAAEventsViewer(
         events_layout.addWidget(self.events_bottom_spacer)
 
         # Solar Events credits label
-        events_credits_label = QLabel(
-            'Data Sources: <a href="https://solarmonitor.org/">SolarMonitor.org</a> (NOAA/SWPC), '
+        events_credits_label = source_note(
+            'Data sources: <a href="https://solarmonitor.org/">SolarMonitor.org</a> (NOAA/SWPC), '
             '<a href="https://soleil.i4ds.ch/solarradio/">e-CALLISTO</a> (C. Monstein)'
         )
-        events_credits_label.setOpenExternalLinks(True)
-        events_credits_label.setObjectName("Hint")
         events_layout.addWidget(events_credits_label)
 
         # Initial logic check
@@ -337,8 +340,8 @@ class NOAAEventsViewer(
         # Tab 2: Active Regions
         ar_tab = QWidget()
         ar_layout = QVBoxLayout(ar_tab)
-        ar_layout.setContentsMargins(16, 12, 16, 12)
-        ar_layout.setSpacing(10)
+        ar_layout.setContentsMargins(0, SPACE_M, 0, 0)
+        ar_layout.setSpacing(SPACE_S)
 
         # Active regions table
         self.ar_table = EventTable(
@@ -347,30 +350,28 @@ class NOAAEventsViewer(
                 "Location",
                 "Area",
                 "McIntosh",
-                "Mag Type",
+                "Mag type",
                 "C%",
                 "M%",
                 "X%",
-                "Flare Potential",
-            ]
+                "Flare potential",
+            ],
+            empty_text="Fetch a date to see its active regions and flare probabilities",
         )
         ar_layout.addWidget(self.ar_table)
 
         # AR info label
-        self.ar_info_label = QLabel(
-            "Fetch data to view active sunspot regions and flare probabilities."
-        )
+        self.ar_info_label = QLabel()
         self.ar_info_label.setWordWrap(True)
         self.ar_info_label.setObjectName("Hint")
+        self.ar_info_label.hide()
         ar_layout.addWidget(self.ar_info_label)
 
         # Active Regions credits label
-        ar_credits_label = QLabel(
-            'Data Source: <a href="https://solarmonitor.org/">SolarMonitor.org</a> '
-            "(NOAA/SWPC Solar Region Summary & ARM Flare Forecasts)"
+        ar_credits_label = source_note(
+            'Data source: <a href="https://solarmonitor.org/">SolarMonitor.org</a> '
+            "(NOAA/SWPC Solar Region Summary &amp; ARM Flare Forecasts)"
         )
-        ar_credits_label.setOpenExternalLinks(True)
-        ar_credits_label.setObjectName("Hint")
         ar_layout.addWidget(ar_credits_label)
 
         # ar_layout.addStretch()
@@ -380,29 +381,29 @@ class NOAAEventsViewer(
         ar_scroll.setWidgetResizable(True)
         ar_scroll.setFrameShape(QFrame.NoFrame)
         ar_scroll.setWidget(ar_tab)
-        self.tabs.addTab(ar_scroll, "Active Regions")
+        self.tabs.addTab(ar_scroll, "Active regions")
 
     def _create_cme_tab(self):
         """CMEs tab."""
         # Tab 4: CME Alerts
         cme_tab = QWidget()
         cme_layout = QVBoxLayout(cme_tab)
-        cme_layout.setContentsMargins(16, 12, 16, 12)
-        cme_layout.setSpacing(10)
+        cme_layout.setContentsMargins(0, SPACE_M, 0, 0)
+        cme_layout.setSpacing(SPACE_S)
 
         # CME table
         self.cme_table = EventTable(
             [
-                "Time (UT)",
+                "Time (UTC)",
                 "Speed (km/s)",
                 "Source",
-                "Width",
-                "Earth Dir.",
-            ]
+                "Half angle",
+                "Earth-directed",
+            ],
+            empty_text="Fetch a date to see the CMEs around it",
         )
         cme_layout.addWidget(self.cme_table)
 
-        # CME info label - theme-aware
         self.cme_info_label = QLabel(
             "CME data from NASA DONKI (±3 days from selected date)"
         )
@@ -411,12 +412,10 @@ class NOAAEventsViewer(
         cme_layout.addWidget(self.cme_info_label)
 
         # CME credits label with link
-        cme_credits_label = QLabel(
-            'Data Source: <a href="https://kauai.ccmc.gsfc.nasa.gov/DONKI/">NASA DONKI</a> '
+        cme_credits_label = source_note(
+            'Data source: <a href="https://kauai.ccmc.gsfc.nasa.gov/DONKI/">NASA DONKI</a> '
             "(Space Weather Database Of Notifications, Knowledge, Information)"
         )
-        cme_credits_label.setOpenExternalLinks(True)
-        cme_credits_label.setObjectName("Hint")
         cme_layout.addWidget(cme_credits_label)
 
         # Make CME tab scrollable
@@ -562,7 +561,7 @@ class NOAAEventsViewer(
             if max_class:
                 flare_part += f" (Max: {max_class})"
             summary_parts.append(flare_part)
-        else:
+        elif events is not None:  # None: the list could not be fetched
             summary_parts.append("Flares: 0")
 
         # 4. CMEs
@@ -571,7 +570,7 @@ class NOAAEventsViewer(
             earth_directed = sum(1 for cme in cmes if cme.is_earth_directed)
             cme_text = f"CMEs: {cme_count}"
             if earth_directed > 0:
-                cme_text += f" ({earth_directed})"
+                cme_text += f" ({earth_directed} Earth-directed)"
             summary_parts.append(cme_text)
         elif cmes is not None:
             summary_parts.append("CMEs: 0")
@@ -579,7 +578,7 @@ class NOAAEventsViewer(
         if not summary_parts:
             self.summary_label.setText("No data available for this date.")
         else:
-            self.summary_label.setText(" | ".join(summary_parts))
+            self.summary_label.setText(" · ".join(summary_parts))
 
     def on_fetch_error(self, error_msg):
         """Handle fetch error."""
@@ -592,10 +591,12 @@ class NOAAEventsViewer(
             if not self.isVisible() and not self.parent():
                 return
 
-            from PyQt5.QtWidgets import QMessageBox
-
-            self.summary_label.setText(f"Error fetching data: {error_msg}")
-            QMessageBox.critical(self, "Fetch Error", "Failed to fetch data")
+            self.summary_label.setText(f"Could not fetch the data: {error_msg}")
+            show_error(
+                self, "Could not fetch the data",
+                "The data for this date could not be fetched. Check the connection and try again.",
+                error_msg,
+            )
         except RuntimeError:
             pass
 
@@ -610,10 +611,16 @@ class NOAAEventsViewer(
         self.optical_section.set_count(0)
         self.radio_section.set_count(0)
 
+    def _say_when_empty(self, fetched):
+        self.xray_table.set_empty_text("No X-ray flares on this date" if fetched else "Could not fetch the X-ray flares")
+        self.optical_table.set_empty_text("No optical flares on this date" if fetched else "Could not fetch the optical flares")
+        self.radio_table.set_empty_text("No radio events on this date" if fetched else "Could not fetch the radio events")
+
     def display_events(self, events, ecallisto_bursts=None):
         """Display events in categorized tables."""
         ecallisto_bursts = ecallisto_bursts or []
         self.clear_tables()
+        self._say_when_empty(events is not None)
 
         if events is None:
             self.summary_label.setText("No data could be fetched.")
@@ -644,7 +651,7 @@ class NOAAEventsViewer(
         # Populate X-ray table
         self.xray_section.set_count(xray_count)
         with self.xray_table.filling():
-            for event in sorted(categories["xray"], key=lambda e: e.begin_time or "9999"):
+            for event in sorted(categories["xray"], key=_time_order):
                 duration = (
                     f"{event.duration_minutes} min" if event.duration_minutes else "—"
                 )
@@ -655,9 +662,9 @@ class NOAAEventsViewer(
                     else "—"
                 )
 
-                color_col = {}
+                tones = {}
                 if event.flare_class_letter in ["M", "X"]:
-                    color_col[1] = event.flare_class_color
+                    tones[1] = event.flare_class_tone
 
                 self.xray_table.add_event_row(
                     [
@@ -668,14 +675,14 @@ class NOAAEventsViewer(
                         duration,
                         event.observatory_name,
                     ],
-                    color_col,
+                    tones,
                 )
 
         # Populate Optical table
         self.optical_section.set_count(optical_count)
         with self.optical_table.filling():
             for event in sorted(
-                categories["optical"], key=lambda e: e.begin_time or "9999"
+                categories["optical"], key=_time_order
             ):
                 optical_class = event.optical_class or "—"
                 notes_parts = event.particulars.split()[1:] if event.particulars else []
@@ -705,12 +712,12 @@ class NOAAEventsViewer(
                 'particulars': e.particulars,
                 'region': e.active_region or "—",
                 'obs': e.observatory_name,
-                'sort_time': e.begin_time or "9999"
+                'sort_time': _time_order(e)
             })
             
         for b in ecallisto_bursts:
             all_radio_events.append({
-                'type': 'RBR',
+                'type': 'RSP',
                 'time': b.time_range,
                 'freq': "—",
                 'particulars': b.burst_type,
@@ -740,10 +747,6 @@ class NOAAEventsViewer(
 
                 self.radio_table.add_event_row(display_values, tooltips=tooltips)
 
-        # Resize columns to fit contents and scroll to top
-        self.xray_table.resizeColumnsToContents()
-        self.optical_table.resizeColumnsToContents()
-        self.radio_table.resizeColumnsToContents()
         self.xray_table.scrollToTop()
         self.optical_table.scrollToTop()
         self.radio_table.scrollToTop()
@@ -753,22 +756,26 @@ class NOAAEventsViewer(
         self.ar_table.setRowCount(0)
 
         if regions is None or len(regions) == 0:
-            self.ar_info_label.setText(
-                "No active regions data available for this date."
+            text = (
+                "Could not fetch the active regions for this date."
+                if regions is None
+                else "No active regions data available for this date."
             )
-            self.ar_info_label.show()
+            self.ar_table.set_empty_text(text)
+            self.ar_info_label.setText(text)
+            self.ar_info_label.hide()
             return
 
-        # self.ar_info_label.hide()
         self.ar_info_label.setText(f"Found {len(regions)} active regions.")
+        self.ar_info_label.show()
 
-        # Color coding for risk levels
-        risk_colors = {
-            "Very High": "#F44336",  # Red
-            "High": "#FF9800",  # Orange
-            "Moderate": "#FFC107",  # Amber
-            "Low": "#4CAF50",  # Green
-            "Quiet": "#9E9E9E",  # Grey
+        # Tones of the risk levels
+        risk_tones = {
+            "Very High": "error",
+            "High": "warning",
+            "Moderate": "warning",
+            "Low": "success",
+            "Quiet": "text_secondary",
         }
 
         with self.ar_table.filling():
@@ -779,16 +786,15 @@ class NOAAEventsViewer(
                 x_prob = f"{region.prob_x}%" if region.prob_x is not None else "—"
 
                 risk = region.flare_risk_level
-                risk_color = risk_colors.get(risk, "#9E9E9E")
 
-                # Add row with color for risk level column
-                color_col = {8: risk_color}
+                # Add row with a tone for the risk level column
+                tones = {8: risk_tones.get(risk, "text_secondary")}
 
-                # Also color M% and X% if they're significant
+                # Also M% and X% if they're significant
                 if region.prob_m and region.prob_m >= 20:
-                    color_col[6] = "#FF9800"
+                    tones[6] = "warning"
                 if region.prob_x and region.prob_x >= 5:
-                    color_col[7] = "#F44336"
+                    tones[7] = "error"
 
                 self.ar_table.add_event_row(
                     [
@@ -802,10 +808,9 @@ class NOAAEventsViewer(
                         x_prob,
                         risk,
                     ],
-                    color_col,
+                    tones,
                 )
 
-        self.ar_table.resizeColumnsToContents()
         self.ar_table.scrollToTop()
 
     def display_cme_events(self, cmes):
@@ -813,15 +818,26 @@ class NOAAEventsViewer(
         self.cme_table.setRowCount(0)
 
         if cmes is None or len(cmes) == 0:
-            self.cme_info_label.setText(
-                "No CME activity detected in the ±3 day range for this date."
+            text = (
+                "Could not fetch the CMEs for this date."
+                if cmes is None
+                else "No CME activity detected in the ±3 day range for this date."
             )
+            self.cme_table.set_empty_text(text)
+            self.cme_info_label.setText(text)
             self.cme_info_label.show()
             return
 
-        self.cme_info_label.setText(
-            f"Found {len(cmes)} CME events (±3 days from selected date)"
-        )
+        if cmes[0].source == "CDAW":
+            self.cme_info_label.setText(
+                f"Found {len(cmes)} CME events (±3 days from selected date) in the "
+                "CDAW LASCO catalogue. NASA DONKI could not be reached, so their "
+                "source and Earth direction are not known."
+            )
+        else:
+            self.cme_info_label.setText(
+                f"Found {len(cmes)} CME events (±3 days from selected date)"
+            )
 
         with self.cme_table.filling():
             for cme in cmes:
@@ -829,25 +845,25 @@ class NOAAEventsViewer(
                 time_str = cme.start_time.strftime("%Y-%m-%d %H:%M")
                 speed_str = f"{cme.speed:.0f}"
                 width_str = f"{cme.half_angle:.0f}°" if cme.half_angle else "—"
-                earth_str = "Yes" if cme.is_earth_directed else "No"
+                earth_str = (
+                    "—" if cme.is_earth_directed is None
+                    else "Yes" if cme.is_earth_directed else "No"
+                )
 
-                # Color coding
-                color_col = {}
+                tones = {}
 
-                # Color Earth-directed column
+                # The Earth-directed column
                 if cme.is_earth_directed:
-                    color_col[4] = "#FF9800"  # Orange for Earth-directed
-                    if cme.speed >= 1000:
-                        color_col[4] = "#F44336"  # Red for fast Earth-directed
+                    tones[4] = "error" if cme.speed >= 1000 else "warning"
 
-                # Color speed column based on category
-                speed_colors = {
-                    "Slow": "#4CAF50",
-                    "Moderate": "#FFC107",
-                    "Fast": "#FF9800",
-                    "Extreme": "#F44336",
+                # The speed column, by category
+                speed_tones = {
+                    "Slow": "success",
+                    "Moderate": "warning",
+                    "Fast": "warning",
+                    "Extreme": "error",
                 }
-                color_col[1] = speed_colors.get(cme.speed_category, "#9E9E9E")
+                tones[1] = speed_tones.get(cme.speed_category, "text_secondary")
 
                 self.cme_table.add_event_row(
                     [
@@ -857,10 +873,9 @@ class NOAAEventsViewer(
                         width_str,
                         earth_str,
                     ],
-                    color_col,
+                    tones,
                 )
 
-        self.cme_table.resizeColumnsToContents()
         self.cme_table.scrollToTop()
 
     def get_date_from_parent_tab(self):
@@ -873,7 +888,7 @@ class NOAAEventsViewer(
             parent = self.parent()
             if parent is None:
                 QMessageBox.information(
-                    self, "Info", "No parent viewer found. Please open an image first."
+                    self, "No image", "No parent viewer found. Open an image first."
                 )
                 return
 
@@ -883,7 +898,7 @@ class NOAAEventsViewer(
                 current_tab = parent.tab_widget.currentWidget()
 
             if current_tab is None:
-                QMessageBox.information(self, "Info", "No image is currently open.")
+                QMessageBox.information(self, "No image", "No image is currently open.")
                 return
 
             extracted_date = None
@@ -891,9 +906,7 @@ class NOAAEventsViewer(
             imagename = getattr(current_tab, "imagename", None)
 
             # Method 1: Try FITS header from tab attribute first
-            header = None
-            if hasattr(current_tab, "header") and current_tab.header:
-                header = current_tab.header
+            header = getattr(current_tab, "current_header", None) or None
 
             # Method 1b: If no header attribute, read FITS/FTS file directly
             if header is None and imagename:
@@ -905,7 +918,7 @@ class NOAAEventsViewer(
                     except Cancelled:
                         raise
                     except Exception as fits_err:
-                        print(f"FITS header read failed: {fits_err}")
+                        logger.warning("FITS header read failed: %s", fits_err)
 
             # Extract date from header
             if header is not None:
@@ -943,11 +956,12 @@ class NOAAEventsViewer(
                     except Cancelled:
                         raise
                     except Exception as casa_err:
-                        print(f"CASA date extraction failed: {casa_err}")
+                        logger.warning("CASA date extraction failed: %s", casa_err)
 
             # Method 3: Try filename parsing (e.g., 20231002_image.fits)
             if extracted_date is None and imagename:
-                filename = imagename
+                # The file's own name first: a folder's digits say less
+                filename = f"{os.path.basename(imagename)} {imagename}"
                 # Try various date patterns in filename
                 patterns = [
                     r"(\d{4})(\d{2})(\d{2})",  # YYYYMMDD
@@ -977,7 +991,7 @@ class NOAAEventsViewer(
             else:
                 QMessageBox.information(
                     self,
-                    "Info",
+                    "No date found",
                     "Could not extract date from the current image.\n\n"
                     "Supported formats:\n"
                     "• FITS files with DATE-OBS header\n"
@@ -988,7 +1002,7 @@ class NOAAEventsViewer(
         except Cancelled:
             self.summary_label.setText("Cancelled")
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Error extracting date: {str(e)}")
+            show_error(self, "No date found", "Could not read the date of the current image.", e)
 
     def _parse_date_string(self, date_str: str) -> Optional[date]:
         """Parse various date string formats."""
@@ -1043,6 +1057,11 @@ class NOAAEventsViewer(
         """Set the date from a FITS file's DATE-OBS."""
         if fits_date:
             self._set_date(fits_date)
+
+
+def _time_order(event):
+    """Sort key: an event's begin time, without the mark it may carry."""
+    return ne._clock(event.begin_time or "9999")
 
 
 def show_noaa_events_viewer(parent=None, initial_date: Optional[date] = None):

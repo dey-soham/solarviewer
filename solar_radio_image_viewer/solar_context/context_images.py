@@ -345,10 +345,13 @@ def fetch_context_images(
     """
     if use_helioviewer:
         images = fetch_from_helioviewer(event_date, progress)
-        if images:
+        # The list is built whether or not Helioviewer answers: it is the
+        # image times that show it did
+        if any(image.image_date for image in images):
             return images
         # Fall back to SolarMonitor if Helioviewer fails
         print("Helioviewer fetch failed, falling back to SolarMonitor")
+        return fetch_from_solarmonitor(event_date) or images
 
     return fetch_from_solarmonitor(event_date)
 
@@ -371,6 +374,7 @@ def resolve_full_image_url(page_url: str) -> Optional[str]:
     except ImportError:
         from solar_radio_image_viewer.utils import get_global_session
 
+    try:
         session = get_global_session()
         response = session.get(page_url)
         if response.status_code != 200:

@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QToolButton,
     QWidget,
     QSlider,
     QSizePolicy,
@@ -27,6 +28,7 @@ from ..lightcurve import (
     line_plot_options,
 )
 from ...ui.activity import ActivityLabel
+from ...ui.widgets import segmented
 
 
 
@@ -331,12 +333,13 @@ class PreviewImage(QLabel):
         super().paintEvent(event)
         if self._box is not None:
             from PyQt5.QtGui import QColor, QPainter, QPen
+            from ...ui.styles import theme_manager
 
             painter = QPainter(self)
-            # Orange of the colour-blind safe palette, seen on light and dark
-            pen = QPen(QColor("#e69f00"), 2, Qt.DashLine)
-            painter.setPen(pen)
-            painter.setBrush(QColor(230, 159, 0, 40))
+            colour = QColor(theme_manager.palette["highlight"])
+            painter.setPen(QPen(colour, 2, Qt.DashLine))
+            colour.setAlpha(40)
+            painter.setBrush(colour)
             painter.drawRect(self._box)
             painter.end()
 
@@ -391,19 +394,20 @@ class PreviewPanel(QWidget):
         # Zoom buttons as in the main window; they set the video's region
         self.zoom_buttons = {}
         self._zoom_icons = {}
+        self.play_button = QToolButton()
         for name, icon, tip in (
             ("in", "zoom_in.png", "Zoom in: show the middle half of the region"),
             ("out", "zoom_out.png", "Zoom out: show twice the region"),
             ("reset", "reset.png", "Show the whole image (no region)"),
             ("degree", "zoom_60arcmin.png", "1°×1°: show 1°×1° around the middle of the region"),
         ):
-            button = QPushButton()
-            button.setObjectName("IconOnlyButton")
+            button = QToolButton()
+            button.setAutoRaise(True)
             self._zoom_icons[name] = icon
-            button.setIconSize(QSize(20, 20))
+            button.setIconSize(QSize(16, 16))
             button.setToolTip(tip)
-            header_row.addWidget(button)
             self.zoom_buttons[name] = button
+        header_row.addWidget(segmented(list(self.zoom_buttons.values())))
         layout.addLayout(header_row)
         self._update_icons()
         from ...ui.styles import theme_manager, set_tone
@@ -411,6 +415,8 @@ class PreviewPanel(QWidget):
         theme_manager.register_callback(self._update_icons)
 
         self.image_label = PreviewImage()
+        self.image_label.setObjectName("Hint")
+        self.image_label.setWordWrap(True)
         self.image_label.setToolTip("Drag a box to show only that part of the image")
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setMinimumSize(320, 240)
@@ -425,8 +431,8 @@ class PreviewPanel(QWidget):
 
         # How far along, when that is known (images fetched, frames read)
         self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("ThinProgress")
         self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(6)
         self.progress_bar.hide()
         layout.addWidget(self.progress_bar)
 
@@ -443,7 +449,7 @@ class PreviewPanel(QWidget):
         self.remote_note.setObjectName("SecondaryText")
         self.remote_note.setWordWrap(True)
         remote_row.addWidget(self.remote_note, 1)
-        self.render_all_button = QPushButton("Render All Frames")
+        self.render_all_button = QPushButton("Render all frames")
         self.render_all_button.setToolTip(
             "Fetch every frame's images from the server, so all frames can be\n"
             "previewed and played (they stay cached for the video)"
@@ -459,9 +465,12 @@ class PreviewPanel(QWidget):
         self.show_remote(False)
 
         controls = QHBoxLayout()
-        self.play_button = QPushButton("▶ Play")
         self.play_button.setCheckable(True)
+        self.play_button.setAutoRaise(True)
+        self.play_button.setCursor(Qt.PointingHandCursor)
+        self.play_button.setIconSize(QSize(15, 15))
         self.play_button.setToolTip("Play the preview at the video's frame rate")
+        self.play_button.toggled.connect(self._update_icons)
         controls.addWidget(self.play_button)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, 0)
@@ -469,6 +478,8 @@ class PreviewPanel(QWidget):
         self.slider.setToolTip("Frame to preview (arrow keys step one frame)")
         controls.addWidget(self.slider, 1)
         self.frame_label = QLabel()
+        self.frame_label.setObjectName("DetailMono")
+        self.frame_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.frame_label.setMinimumWidth(110)
         controls.addWidget(self.frame_label)
         layout.addLayout(controls)
@@ -512,10 +523,15 @@ class PreviewPanel(QWidget):
 
     def _update_icons(self, *_):
         """Icons for the current (light or dark) theme."""
+        from ...remote.browser_parts import icon
         from ...ui.icons import themed_icon
+        from ...ui.styles import theme_manager
 
         for name, button in self.zoom_buttons.items():
             button.setIcon(QIcon(themed_icon(self._zoom_icons[name])))
+        self.play_button.setIcon(
+            icon("pause" if self.play_button.isChecked() else "play", theme_manager.palette)
+        )
 
     def release(self):
         """Stop following theme changes (the window is closing)."""

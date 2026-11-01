@@ -10,7 +10,6 @@ import posixpath
 from PyQt5.QtWidgets import (
     QComboBox,
     QHBoxLayout,
-    QLabel,
     QMessageBox,
     QPushButton,
 )
@@ -46,7 +45,6 @@ class RemoteSourceMixin:
 
     def _create_images_on_row(self):
         row = QHBoxLayout()
-        row.addWidget(QLabel("Images on:"))
         self.images_on_combo = QComboBox()
         self.images_on_combo.addItem("This computer", "local")
         self.images_on_combo.addItem("Server", "server")
@@ -113,7 +111,7 @@ class RemoteSourceMixin:
                 self._connect_server()
             else:
                 QMessageBox.information(
-                    self, "Not Connected", "Open this window from the main window to use a server."
+                    self, "Not connected", "Open this window from the main window to use a server."
                 )
             return
         self._use_server(connection)
@@ -215,7 +213,7 @@ class RemoteSourceMixin:
             self.preview_panel.show_idle("Cancelled")
             return None
         except Exception as e:
-            QMessageBox.warning(self, "Could Not Fetch", str(e))
+            QMessageBox.warning(self, "Could not fetch", str(e))
             return None
         if all(copies.values()):
             return copies
@@ -239,11 +237,11 @@ class RemoteSourceMixin:
             )
 
         outcome = run_with_dialog(
-            self, "Fetching from the Server", f"Fetching {what} from {remote.label}…", work
+            self, "Fetching from the server", f"Fetching {what} from {remote.label}…", work
         )
         if outcome.cancelled:
             self.preview_panel.show_idle("Cancelled")
             return None
         if outcome.error:
-            QMessageBox.warning(self, "Could Not Fetch", outcome.error)
+            QMessageBox.warning(self, "Could not fetch", outcome.error)
         return outcome.result

@@ -61,6 +61,7 @@ class PreviewMixin:
             self.create_btn.setEnabled(not problem)
             self.create_btn.setToolTip(problem[1] if problem else "")
         if problem:
+            self._preview_request += 1  # (a frame still on its way is no answer)
             self._preview_files = []
             panel.slider.setEnabled(False)
             panel.frame_label.setText("")
@@ -141,7 +142,7 @@ class PreviewMixin:
         panel.play_button.setToolTip(
             "Play the preview at the video's frame rate"
             if renderer.all_fetched
-            else "Render All Frames first, to play the preview"
+            else "Render all frames first, to play the preview"
         )
 
     def _render_all_frames(self):
@@ -247,7 +248,7 @@ class PreviewMixin:
 
     def _toggle_play(self, playing):
         panel = self.preview_panel
-        panel.play_button.setText("⏸ Pause" if playing else "▶ Play")
+        panel.play_button.setToolTip("Pause" if playing else "Play the preview at the video's frame rate")
         if playing:
             self._play_timer.start(max(40, int(1000 / self.fps_spinbox.value())))
         else:

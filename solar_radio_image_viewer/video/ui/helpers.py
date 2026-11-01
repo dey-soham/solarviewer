@@ -4,6 +4,9 @@ presets, durations, and images of the main window.
 """
 
 import os
+
+from PyQt5.QtWidgets import QLabel
+
 from ...processing.fits_io import is_casa_image
 
 
@@ -23,6 +26,13 @@ SIZE_PRESETS = [
     ("1440 px tall", 1440),
     ("2160 px tall (4K)", 2160),
 ]
+
+
+def hint(text):
+    """A form row's name, or a word between its controls."""
+    label = QLabel(text)
+    label.setObjectName("Hint")
+    return label
 
 
 def _format_duration(seconds):

@@ -17,13 +17,16 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
 from ..ui.activity import ActivityLabel
 from ..ui.download_parts import abandon
-from ..ui.styles import set_tone, theme_manager
+from ..ui.errors import show_error
+from ..ui.styles import SPACE_M, SPACE_S, set_tone
+from ..ui.widgets import empty_note
 
-from .widgets import ClickableLabel, FullImageViewer, megabytes_text
+from .widgets import ClickableLabel, FullImageViewer, megabytes_text, source_note
 from .workers import ImageSaver, ThumbnailLoader
 logger = logging.getLogger(__name__)
 
 MAX_CONCURRENT = 4
+TILE_SIZE = 320  # at most: a tile takes a third of the window on a small screen
 
 
 class ContextImagesTabMixin:
@@ -42,32 +45,35 @@ class ContextImagesTabMixin:
         # Tab 5: Context Images
         images_tab = QWidget()
         images_layout = QVBoxLayout(images_tab)
+        images_layout.setContentsMargins(0, SPACE_M, 0, 0)
+        images_layout.setSpacing(SPACE_S)
 
         self.images_status = ActivityLabel()
+        self.images_status.hide()
         images_layout.addWidget(self.images_status)
 
         images_scroll = QScrollArea()
         images_scroll.setWidgetResizable(True)
+        images_scroll.setFrameShape(QFrame.NoFrame)
         images_scroll_content = QWidget()
         self.images_grid = QVBoxLayout(
             images_scroll_content
         )  # Use VBox for list of cards or Grid
-        self.images_grid.setSpacing(16)
-        self.images_grid.setContentsMargins(16, 12, 16, 12)
+        self.images_grid.setSpacing(SPACE_M)
+        self.images_grid.setContentsMargins(0, 0, 0, 0)
+        self.images_grid.addWidget(empty_note("Fetch a date to see its context images"))
 
         images_scroll.setWidget(images_scroll_content)
         images_layout.addWidget(images_scroll)
 
         # Context Images credits label
-        images_credits_label = QLabel(
-            'Data Source: <a href="https://helioviewer.org/">Helioviewer.org</a> '
+        images_credits_label = source_note(
+            'Data source: <a href="https://helioviewer.org/">Helioviewer.org</a> '
             "(SDO, SOHO, STEREO, GOES imagery)"
         )
-        images_credits_label.setOpenExternalLinks(True)
-        images_credits_label.setObjectName("Hint")
         images_layout.addWidget(images_credits_label)
 
-        self.tabs.addTab(images_tab, "Context Images")
+        self.tabs.addTab(images_tab, "Context images")
 
     def display_context_images(self, images):
         """Display context images."""
@@ -84,30 +90,26 @@ class ContextImagesTabMixin:
         self.images_loaded = self.images_failed = 0
         self.images_total = len(images or [])
         self.images_status.stop()
+        self.images_status.setVisible(bool(images))
         query_date = self.shown_date
 
         if not images:
-            no_data = QLabel("Failed to retrieve context images for this date.")
-            no_data.setAlignment(Qt.AlignCenter)
-            self.images_grid.addWidget(no_data)
+            self.images_grid.addWidget(empty_note("Could not fetch the context images for this date"))
             return
 
-        palette = theme_manager.palette
-        # header = QLabel("Solar Context Imagery (Helioviewer.org / SolarMonitor.org / NASA SDO / SOHO)")
-        # header.setStyleSheet(f"color: {palette['text']}; padding: 10px; opacity: 0.4;")
-        # self.images_grid.addWidget(header)
+        tile = min(TILE_SIZE, max(self.tabs.width() // 3, TILE_SIZE // 2))
 
         # Create a card for each image
         for img in images:
             card = QFrame()
-            # Theme-aware card styling
             card.setObjectName("Card")
             card_layout = QHBoxLayout(card)
-            card_layout.setContentsMargins(10, 10, 10, 10)
+            card_layout.setContentsMargins(SPACE_M, SPACE_M, SPACE_M, SPACE_M)
+            card_layout.setSpacing(SPACE_M)
 
-            # Image container - LARGER thumbnails
+            # Image container
             img_container = QFrame()
-            img_container.setFixedSize(320, 320)  # Increased from 222
+            img_container.setFixedSize(tile, tile)
             img_container.setObjectName("ImageWell")
             img_container_layout = QVBoxLayout(img_container)
             img_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -116,7 +118,7 @@ class ContextImagesTabMixin:
             img_label = ClickableLabel()
             img_label.setAlignment(Qt.AlignCenter)
             img_label.start_loading("Waiting…")
-            img_label.setToolTip("Click to view High Resolution Image")
+            img_label.setToolTip("Click to view the high-resolution image")
             img_label.setCursor(Qt.PointingHandCursor)
 
             # Connect click to viewer
@@ -128,6 +130,7 @@ class ContextImagesTabMixin:
 
             # Info container
             info_layout = QVBoxLayout()
+            info_layout.setSpacing(SPACE_S)
             title = ClickableLabel(img.title)
             title.clicked.connect(lambda i=img: self.show_high_res_image(i))
             title.setCursor(Qt.PointingHandCursor)
@@ -148,10 +151,11 @@ class ContextImagesTabMixin:
 
             if hasattr(img, 'image_date') and img.image_date:
                 time_str = img.image_date.strftime("%Y-%m-%d %H:%M:%S UTC")
-                date_lbl = QLabel(f"Image Time: {time_str}")
+                date_lbl = QLabel(f"Image time: {time_str}")
                 if img.image_date.date() != query_date:
                     set_tone(date_lbl, "warning")
-                    date_lbl.setToolTip("WARNING: This image is from a different date than requested.")
+                    date_lbl.setText(f"{date_lbl.text()} (not the date asked for)")
+                    date_lbl.setToolTip("This image is from a different date than requested.")
                 else:
                     set_tone(date_lbl, "success")
                 info_layout.addWidget(date_lbl)
@@ -160,12 +164,12 @@ class ContextImagesTabMixin:
             info_layout.addWidget(credits_lbl)
 
             # Add save button for high-res image
-            save_btn = QPushButton("Save High-Res")
+            save_btn = QPushButton("Save high-res")
             save_btn.clicked.connect(lambda checked, i=img: self.save_high_res_image(i))
-            info_layout.addWidget(save_btn)
+            info_layout.addWidget(save_btn, 0, Qt.AlignLeft)
             info_layout.addStretch()
 
-            card_layout.addLayout(info_layout)
+            card_layout.addLayout(info_layout, 1)
             self.images_grid.addWidget(card)
 
             # Add to download queue instead of starting immediately
@@ -223,14 +227,14 @@ class ContextImagesTabMixin:
         default_name = f"{img_obj.title.replace(' ', '_')}_{self.shown_date:%Y%m%d}.png"
 
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save High Resolution Image", default_name, "PNG Image (*.png)"
+            self, "Save high-resolution image", default_name, "PNG Image (*.png)"
         )
 
         if not file_path:
             return  # User cancelled
 
         # Ensure .png extension
-        if not file_path.endswith(".png"):
+        if not file_path.lower().endswith(".png"):
             file_path += ".png"
         if file_path in self.image_savers:
             return
@@ -265,15 +269,13 @@ class ContextImagesTabMixin:
         if not self._leave_saver(file_path):
             return
         self.end_job(file_path)
-        QMessageBox.information(self, "Success", f"Image saved to:\n{file_path}")
+        QMessageBox.information(self, "Image saved", f"Image saved to:\n{file_path}")
 
     def _on_save_error(self, file_path, message):
-        from PyQt5.QtWidgets import QMessageBox
-
         if not self._leave_saver(file_path):
             return
         self.end_job(file_path)
-        QMessageBox.critical(self, "Error", f"Failed to save image:\n{message}")
+        show_error(self, "Could not save the image", f"The image could not be saved to:\n{file_path}", message)
 
     def _process_download_queue(self):
         """Start next downloads if under limit."""
@@ -313,10 +315,13 @@ class ContextImagesTabMixin:
         try:
             label.stop_loading()
             if image is not None:
+                tile = label.parentWidget().maximumWidth()
+                if image.width() > tile or image.height() > tile:
+                    image = image.scaled(tile, tile, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 label.setPixmap(QPixmap.fromImage(image))
                 self.images_loaded += 1
             else:
-                label.setText("Format Error")
+                label.setText("Could not read this image")
                 self.images_failed += 1
         except RuntimeError:
             # Widget deleted, ignore
@@ -329,9 +334,9 @@ class ContextImagesTabMixin:
             label.stop_loading()
             # shorten error message
             short = (
-                "Connection Error"
+                "Connection error"
                 if "101" in error_msg or "Unreachable" in str(error_msg)
-                else "Error"
+                else "Could not load this image"
             )
             label.setText(short)
         except RuntimeError:

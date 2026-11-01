@@ -57,7 +57,7 @@ from ..remote.ssh_manager import UnknownHostKey, trust_host_key
 from ..ui.activity import Spinner, begin_activity
 from ..ui.background import Cancelled, run_in_thread
 from ..ui.styles import set_hand_cursor, set_tone
-from ..ui.widgets import button_bar, kicker, link_button, segmented
+from ..ui.widgets import button_bar, dialog_layout, kicker, link_button, rule, segmented
 
 ENGINE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "make_dynamic_spectra.py")
 
@@ -182,7 +182,7 @@ def run_stage_text(log):
 
 def _short(value):
     text = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
-    return text if len(text) <= 80 else text[:77] + "..."
+    return text if len(text) <= 80 else text[:77] + "…"
 
 
 class ProgressTracker:
@@ -529,7 +529,7 @@ def describe_summary(summary, freqres="auto", chanavg=None):
     rows.append(("Spectrum", auto_freq_plan(summary, freqres, chanavg)[1]))
     if summary.get("failed"):
         n = len(summary["failed"])
-        rows.append(("Skipped", f"{n} could not be read: {summary['failed'][0]}" + (" ..." if n > 1 else "")))
+        rows.append(("Skipped", f"{n} could not be read: {summary['failed'][0]}" + (" …" if n > 1 else "")))
     return rows
 
 
@@ -1016,7 +1016,7 @@ class LocalRunner(QThread):
         try:
             proc = subprocess.Popen(
                 self.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                bufsize=1, cwd=_safe_cwd(), start_new_session=(os.name != "nt"),
+                errors="replace", bufsize=1, cwd=_safe_cwd(), start_new_session=(os.name != "nt"),
                 env=dict(os.environ, PYTHONUNBUFFERED="1"),
             )
         except OSError as e:
@@ -1241,12 +1241,10 @@ class DynamicSpectraDialog(QDialog):
         return label
 
     def _setup_ui(self):
-        self.setWindowTitle("Create Dynamic Spectra")
+        self.setWindowTitle("Create dynamic spectra")
         self.resize(*self._default_size())
         self.setMinimumSize(820, 520)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 12, 14, 12)
-        outer.setSpacing(8)
+        outer = dialog_layout(self)
 
         # --- Run on
         row = QHBoxLayout()
@@ -1267,7 +1265,7 @@ class DynamicSpectraDialog(QDialog):
         self.conn_label = QLabel("")
         self.conn_label.setObjectName("Hint")
         row.addWidget(self.conn_label, 1)
-        self.connect_btn = link_button("Connect...")
+        self.connect_btn = link_button("Connect…")
         row.addWidget(self.connect_btn)
         outer.addLayout(row)
 
@@ -1294,20 +1292,21 @@ class DynamicSpectraDialog(QDialog):
         left.setSpacing(10)
         right = QVBoxLayout()
         right.setSpacing(10)
-        cols.addLayout(left, 11)
-        cols.addLayout(right, 10)
+        cols.addLayout(left, 1)
+        cols.addLayout(right, 1)
 
         # Data
         card, lay = self._card("Data")
         drow = QHBoxLayout()
         self.data_edit = QLineEdit()
-        self.data_edit.setPlaceholderText("Folder of MS, an MS, or several (use ;)")
+        self.data_edit.setPlaceholderText("Measurement Sets")
+        self.data_edit.setToolTip("A folder of Measurement Sets, one MS, or several separated by ;")
         self.data_edit.setClearButtonEnabled(True)
         drow.addWidget(self.data_edit, 1)
-        self.browse_btn = QPushButton("Browse...")
+        self.browse_btn = QPushButton("Browse…")
         self.browse_menu = QMenu(self)
-        self.act_folder = self.browse_menu.addAction("Folder of Measurement Sets...")
-        self.act_files = self.browse_menu.addAction("One or more MS...")
+        self.act_folder = self.browse_menu.addAction("Folder of Measurement Sets…")
+        self.act_files = self.browse_menu.addAction("One or more MS…")
         drow.addWidget(self.browse_btn)
         lay.addLayout(drow)
         self.scan_label = QLabel("Choose the data to see what it holds.")
@@ -1330,9 +1329,9 @@ class DynamicSpectraDialog(QDialog):
         card, lay = self._card("Output")
         orow = QHBoxLayout()
         self.output_edit = QLineEdit()
-        self.output_edit.setPlaceholderText("Where to save the FITS file")
+        self.output_edit.setPlaceholderText("FITS file to write")
         orow.addWidget(self.output_edit, 1)
-        self.output_browse_btn = QPushButton("Browse...")
+        self.output_browse_btn = QPushButton("Browse…")
         orow.addWidget(self.output_browse_btn)
         lay.addLayout(orow)
         self.output_where = QLabel("")
@@ -1352,7 +1351,7 @@ class DynamicSpectraDialog(QDialog):
         self.download_edit = QLineEdit()
         self.download_edit.setPlaceholderText("Local folder for the download")
         drow2.addWidget(self.download_edit, 1)
-        self.download_browse_btn = QPushButton("Browse...")
+        self.download_browse_btn = QPushButton("Browse…")
         drow2.addWidget(self.download_browse_btn)
         dl.addLayout(drow2)
         lay.addWidget(self.download_box)
@@ -1535,6 +1534,7 @@ class DynamicSpectraDialog(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setWidget(self.setup)
         outer.addWidget(scroll, 1)
+        outer.addWidget(rule())  # (where the settings go under the footer)
 
         # --- Progress
         self.problem_label = QLabel("")
@@ -1550,14 +1550,10 @@ class DynamicSpectraDialog(QDialog):
         self.progress_bar.setVisible(False)
         prow.addWidget(self.progress_bar, 1)
         outer.addLayout(prow)
-        srow = QHBoxLayout()
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)  # paths can be copied
-        srow.addWidget(self.status_label, 1)
         self.log_toggle = link_button("Show log")
-        srow.addWidget(self.log_toggle, 0, Qt.AlignTop)
-        outer.addLayout(srow)
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("Console")
         self.log_view.setReadOnly(True)
@@ -1568,16 +1564,16 @@ class DynamicSpectraDialog(QDialog):
         outer.addWidget(self.log_view)
 
         box, buttons = button_bar(
-            primary=("Create Dynamic Spectrum", self._create),
+            primary=("Create dynamic spectrum", self._create),
             secondary=("Close", self.close),
         )
-        self.run_btn = buttons["Create Dynamic Spectrum"]
+        self.run_btn = buttons["Create dynamic spectrum"]
         self.close_btn = buttons["Close"]
         # Stop and Open come and go, so they sit beside the bar, not in it
         bottom = QHBoxLayout()
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.clicked.connect(self._stop)
-        self.open_btn = QPushButton("Open in Dynamic Spectrum Viewer")
+        self.open_btn = QPushButton("Open in dynamic spectrum viewer")
         self.open_btn.clicked.connect(self._open_viewer)
         self.retry_btn = QPushButton("Retry download")
         self.retry_btn.clicked.connect(self._retry_download)
@@ -1596,7 +1592,8 @@ class DynamicSpectraDialog(QDialog):
         bottom.addWidget(self.keep_btn)
         bottom.addWidget(self.open_btn)
         bottom.addWidget(self.retry_btn)
-        bottom.addStretch()
+        bottom.addWidget(self.status_label, 1)
+        bottom.addWidget(self.log_toggle)
         bottom.addWidget(box)
         outer.addLayout(bottom)
 
@@ -1622,6 +1619,12 @@ class DynamicSpectraDialog(QDialog):
         ]
         for a, b in zip(order, order[1:]):
             self.setTabOrder(a, b)
+
+        # The form's labels, as on every kicker form
+        for label in self.setup.findChildren(QLabel):
+            if not label.objectName():
+                label.setObjectName("Hint")
+                set_tone(label, None)  # (sized by the rows, so polished already)
 
         tips = {
             self.binwidth_spin: "Width of one time pixel in the spectrum. Larger is smaller and smoother.",
@@ -1775,7 +1778,7 @@ class DynamicSpectraDialog(QDialog):
             self._set_run_on("server", startup_params=params)
         else:
             if self._pref_run_on == "server":
-                self.connect_btn.setText("Connect...")
+                self.connect_btn.setText("Connect…")
             self._set_run_on("local")
 
     def _remote(self):
@@ -1808,6 +1811,8 @@ class DynamicSpectraDialog(QDialog):
         if self._state != IDLE:
             self._sync_run_on_buttons()
             return
+        if kind == "local":
+            self._drop_connect_attempt()  # or its answer would bring the Server view back
         if kind == "server":
             if self._remote() is None:
                 QMessageBox.warning(self, "Server not available", self._server_unavailable_text())
@@ -1854,7 +1859,8 @@ class DynamicSpectraDialog(QDialog):
         self.data_edit.blockSignals(False)
         self.ncpu_spin.blockSignals(True)
         self.ncpu_spin.setValue(
-            int(_get("ncpu_server", SLURM_DEFAULT_CPUS)) if server else int(_get("ncpu_local", 0))
+            self._num("ncpu_server", SLURM_DEFAULT_CPUS, int, 0, 4096) if server
+            else self._num("ncpu_local", 0, int, 0, 4096)
         )
         self.ncpu_spin.blockSignals(False)
         self._summary = None
@@ -1886,17 +1892,17 @@ class DynamicSpectraDialog(QDialog):
             elif self._connected():
                 c = self._conn
                 self.conn_label.setText(f"Connected to {c.username}@{c.host}")
-                self.connect_btn.setText("Change...")
+                self.connect_btn.setText("Change…")
                 self.connect_btn.setVisible(True)
             else:
                 self.conn_label.setText("Not connected")
-                self.connect_btn.setText("Connect...")
+                self.connect_btn.setText("Connect…")
                 self.connect_btn.setVisible(True)
             host = getattr(self._conn, "host", "") if self._connected() else ""
             self.server_btn.setText(f"Server ({host})" if host else "Server")
         else:
             self.conn_label.setText("")
-            self.connect_btn.setText("Connect to a server...")
+            self.connect_btn.setText("Connect to a server…")
             self.connect_btn.setVisible(True)
             self.server_btn.setText(
                 f"Server ({self._conn.host})" if self._connected() else "Server"
@@ -1930,23 +1936,28 @@ class DynamicSpectraDialog(QDialog):
         else:  # cancelled meanwhile: nobody will use this connection
             _Task(conn.disconnect).start()
 
+    def _drop_connect_attempt(self):
+        """Whatever a silent connect reports later is dropped."""
+        self._connect_try += 1
+        self._conn_connecting = False
+
     def _connect_clicked(self):
         if self._conn_connecting:
-            self._connect_try += 1  # whatever the attempt reports later is dropped
-            self._conn_connecting = False
+            self._drop_connect_attempt()
             if self._is_server():
                 self._update_connection_label()
-                self._set_scan_text("Cancelled. Use Connect... to sign in.")
+                self._set_scan_text("Cancelled. Use Connect… to sign in.")
                 self._update_state()
                 return
         self._connect_dialog()  # in the Local view the button says just this
 
     def _silent_failed(self, error):
         self._conn_connecting = False
+        self._scan_timer.stop()  # (nothing to scan yet, and it would cover this)
         self._update_connection_label()
         self._set_scan_text(
             f"Could not reuse the main window's server connection ({error}). "
-            "Use Connect... to sign in.", "warning",
+            "Use Connect… to sign in.", "warning",
         )
         self._update_state()
 
@@ -2897,13 +2908,13 @@ class DynamicSpectraDialog(QDialog):
     # --- remote
 
     def _submitted(self, token, handle):
-        self._submitting = False
         if token != self._run_token or self._state != STARTING or self._closed:
             # Cancelled meanwhile. The submit thread stops the job when it saw the
             # cancel in time; if Stop came after that check, stop it here.
             if handle is not None and handle.job_id not in self._cancelled_jobs:
                 self._cancel_late_job(handle)
             return
+        self._submitting = False
         self._handle = handle
         self._offset = 0
         self._unknown_polls = 0
@@ -3296,7 +3307,7 @@ class DynamicSpectraDialog(QDialog):
         kind = next((k for k in ("ed25519", "ecdsa") if k in key_type), "rsa")
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Question)
-        box.setWindowTitle("Unknown Server")
+        box.setWindowTitle("Unknown server")
         box.setText(
             f"SolarViewer does not know the server {key.hostname} yet.\n\n"
             f"Its {key_type} key fingerprint is:\n{key.fingerprint}\n\n"
@@ -3442,7 +3453,7 @@ class DynamicSpectraDialog(QDialog):
             of = f" of {total}" if total else ""
             text = f"Done - {failed}{of} inputs failed (their columns are left blank).\n{saved}"
             if names:
-                text += "\nFailed: " + ", ".join(names[:5]) + (" ..." if len(names) > 5 else "")
+                text += "\nFailed: " + ", ".join(names[:5]) + (" …" if len(names) > 5 else "")
             text += "\nThe log has the reason for each."
             tone = "warning"
         else:
@@ -3606,6 +3617,7 @@ class DynamicSpectraDialog(QDialog):
         handle = getattr(self, "_resume_handle", None)
         self._forget_persisted(handle)
         self._hide_resume()
+        self._offer_resume()  # the "+n more" that the bar did not name
 
     # ---------------------------- viewer / closing ------------------------
 
@@ -3683,6 +3695,7 @@ class DynamicSpectraDialog(QDialog):
             event.ignore()
             return
         self._closed = True
+        self._drop_connect_attempt()
         self._scan_token += 1  # late scan answers are dropped
         self._end_local_scan()
         self._poll_timer.stop()
@@ -3732,7 +3745,7 @@ def main():
         if key in os.environ:
             del os.environ[key]
 
-    parser = argparse.ArgumentParser(description="Create Dynamic Spectra")
+    parser = argparse.ArgumentParser(description="Create dynamic spectra")
     parser.add_argument("--theme", choices=["dark", "light"], default=None)
     args = parser.parse_args()
 

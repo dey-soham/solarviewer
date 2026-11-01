@@ -16,6 +16,7 @@ from PyQt5.QtGui import QImage, QColor, QPainter, QFont, QPen
 import os
 
 from .ui.busy import busy
+from .ui.errors import show_error
 from .video.ui.progress import run_with_dialog
 
 logger = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ def _export_frames(images, stamps, diff_type):
     for i, image in enumerate(images):
         if diff_type != "None":
             if i > 0:
-                ref_idx = 0 if diff_type == "Base Diff" else i - 1
+                ref_idx = 0 if diff_type == "Base" else i - 1
                 difference = difference_image(image, images[ref_idx])
                 if difference is not None:
                     image = difference
@@ -266,13 +267,13 @@ class HelioviewerExportMixin:
     def save_current_frame(self):
         """Save current frame as PNG."""
         if not self.frames or self.current_frame >= len(self.timestamps):
-            QMessageBox.warning(self, "No Frame", "No frame to save.")
+            QMessageBox.warning(self, "No frame", "No frame to save.")
             return
 
         # Get selected instrument
         selected = self.get_selected_instruments()
         if not selected:
-            QMessageBox.warning(self, "No Instrument", "Please select an instrument.")
+            QMessageBox.warning(self, "No instrument", "Choose an instrument first.")
             return
 
         nickname, _, _, _ = selected[0]
@@ -283,7 +284,7 @@ class HelioviewerExportMixin:
         pixmap = frame_data.get(nickname)
 
         if not pixmap:
-            QMessageBox.warning(self, "No Image", "Current frame image not loaded yet.")
+            QMessageBox.warning(self, "No image", "This frame's image has not loaded yet.")
             return
 
         # Create default filename
@@ -293,7 +294,7 @@ class HelioviewerExportMixin:
         )
 
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Frame", default_name, "PNG Image (*.png)"
+            self, "Save frame", default_name, "PNG Image (*.png)"
         )
 
         if file_path:
@@ -302,29 +303,34 @@ class HelioviewerExportMixin:
                     saved = pixmap.save(file_path, "PNG")
                 if saved:
                     QMessageBox.information(
-                        self, "Save Successful", f"Frame saved to:\n{file_path}"
+                        self, "Frame saved", f"Frame saved to:\n{file_path}"
                     )
                 else:
-                    QMessageBox.warning(
+                    show_error(
                         self,
-                        "Save Failed",
-                        "Failed to save image. Please check file path and permissions.",
+                        "Could not save the frame",
+                        "The image could not be saved. Check the path and its permissions.",
                     )
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Error saving frame:\n{str(e)}")
+                show_error(
+                    self,
+                    "Could not save the frame",
+                    "The image could not be saved. Check the path and its permissions.",
+                    e,
+                )
 
     def export_animation(self):
         """Export animation as GIF or MP4."""
         if len(self.frames) < 2:
             QMessageBox.warning(
-                self, "Insufficient Frames", "Need at least 2 frames for animation."
+                self, "Too few frames", "An animation needs at least 2 frames."
             )
             return
 
         # Get selected instrument
         selected = self.get_selected_instruments()
         if not selected:
-            QMessageBox.warning(self, "No Instrument", "Please select an instrument.")
+            QMessageBox.warning(self, "No instrument", "Choose an instrument first.")
             return
 
         nickname, _, _, _ = selected[0]
@@ -334,7 +340,7 @@ class HelioviewerExportMixin:
 
         formats = ["GIF", "MP4"]
         format_choice, ok = QInputDialog.getItem(
-            self, "Export Format", "Choose export format:", formats, 0, False
+            self, "Export format", "Format", formats, 0, False
         )
 
         if not ok:
@@ -342,7 +348,7 @@ class HelioviewerExportMixin:
 
         # Ask about timestamp overlay
         timestamp_dialog = QMessageBox(self)
-        timestamp_dialog.setWindowTitle("Timestamp Overlay")
+        timestamp_dialog.setWindowTitle("Timestamp overlay")
         timestamp_dialog.setText("Include timestamp on each frame?")
         timestamp_dialog.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         timestamp_dialog.setDefaultButton(QMessageBox.Yes)
@@ -358,24 +364,28 @@ class HelioviewerExportMixin:
             "GIF Image (*.gif)" if format_choice == "GIF" else "MP4 Video (*.mp4)"
         )
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Animation", default_name, file_filter
+            self, "Export animation", default_name, file_filter
         )
 
         if not file_path:
             return
+        if not file_path.lower().endswith(f".{ext}"):  # the encoder goes by it
+            file_path += f".{ext}"
 
-        # Collect frames
+        # Collect frames, with the time of each: some may be missing
         frames_to_export = []
+        frame_times = []
         for idx in sorted(self.frames.keys()):
             frame_data = self.frames[idx]
             pixmap = frame_data.get(nickname)
             if pixmap:
                 frames_to_export.append(pixmap)
+                frame_times.append(self.timestamps[idx])
 
         if len(frames_to_export) < 2:
             QMessageBox.warning(
                 self,
-                "Insufficient Frames",
+                "Too few frames",
                 f"Only {len(frames_to_export)} frame(s) loaded for {nickname}. Need at least 2.",
             )
             return
@@ -385,7 +395,7 @@ class HelioviewerExportMixin:
             images = [pixmap.toImage() for pixmap in frames_to_export]
         stamps = [
             when.toString("yyyy-MM-dd HH:mm:ss") + " UTC" if include_timestamp else ""
-            for when in self.timestamps[: len(images)]
+            for when in frame_times
         ]
 
         # Get animation speed from UI
@@ -407,19 +417,22 @@ class HelioviewerExportMixin:
                 write_mp4(images, stamps, diff_type, file_path, fps, progress, cancelled)
             return True
 
-        outcome = run_with_dialog(self, "Exporting Animation", "Exporting animation…", work)
+        outcome = run_with_dialog(self, "Exporting animation", "Exporting animation…", work)
         if self._close_after_export:
             self.close()
         elif outcome.cancelled and not outcome.result:
             pass  # (nothing was written)
         elif outcome.error:
-            QMessageBox.critical(
-                self, "Export Failed", f"Error exporting animation:\n{outcome.error}"
+            show_error(
+                self,
+                "Could not export the animation",
+                "The animation could not be written. Check the path and the free disk space.",
+                outcome.error,
             )
         else:
             QMessageBox.information(
                 self,
-                "Export Successful",
+                "Animation exported",
                 f"Animation exported to:\n{file_path}\n\n"
                 f"Frames: {len(frames_to_export)}",
             )
@@ -427,18 +440,18 @@ class HelioviewerExportMixin:
     def batch_download(self):
         """Batch download all frames."""
         if not self.frames:
-            QMessageBox.warning(self, "No Data", "No frames to download.")
+            QMessageBox.warning(self, "No frames", "No frames to download.")
             return
 
         # Get selected instrument
         selected = self.get_selected_instruments()
         if not selected:
-            QMessageBox.warning(self, "No Instrument", "Please select an instrument.")
+            QMessageBox.warning(self, "No instrument", "Choose an instrument first.")
             return
 
         nickname, _, _, _ = selected[0]
 
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Download Directory")
+        dir_path = QFileDialog.getExistingDirectory(self, "Choose a folder for the frames")
         if not dir_path:
             return
 
@@ -452,8 +465,8 @@ class HelioviewerExportMixin:
         try:
             os.makedirs(batch_dir, exist_ok=True)
         except Exception as e:
-            QMessageBox.critical(
-                self, "Error", f"Failed to create directory:\n{str(e)}"
+            show_error(
+                self, "Could not create the folder", f"The folder could not be created:\n{batch_dir}", e
             )
             return
 
@@ -486,7 +499,7 @@ class HelioviewerExportMixin:
 
         outcome = run_with_dialog(
             self,
-            "Saving Frames",
+            "Saving frames",
             "Saving frames…",
             lambda progress, cancelled: save_frames(
                 to_save, metadata_lines, batch_dir, progress, cancelled
@@ -495,19 +508,22 @@ class HelioviewerExportMixin:
         if self._close_after_export:
             self.close()
         elif outcome.error:
-            QMessageBox.critical(
-                self, "Error", f"Error during batch download:\n{outcome.error}"
+            show_error(
+                self,
+                "Could not save the frames",
+                f"Saving the frames to this folder failed:\n{batch_dir}",
+                outcome.error,
             )
         elif outcome.cancelled:
             QMessageBox.information(
                 self,
-                "Batch Download Cancelled",
-                f"Saved {outcome.result}/{len(to_save)} frames to:\n{batch_dir}",
+                "Batch download cancelled",
+                f"Saved {outcome.result} of {len(to_save)} frames to:\n{batch_dir}",
             )
         else:
             QMessageBox.information(
                 self,
-                "Batch Download Complete",
-                f"Successfully saved {outcome.result}/{len(to_save)} frames to:\n{batch_dir}\n\n"
+                "Batch download complete",
+                f"Saved {outcome.result} of {len(to_save)} frames to:\n{batch_dir}\n\n"
                 f"Metadata saved to: _metadata.txt",
             )

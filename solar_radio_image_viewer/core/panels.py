@@ -39,7 +39,7 @@ from ..ui.empty_canvas import EmptyCanvas
 from ..ui.geometry import fit_width_to_text
 from ..ui.histogram import LevelsHistogram
 from ..ui.searchable_combobox import ColormapSelector
-from ..ui.icons import get_resource_path, launcher_icon, themed_icon
+from ..ui.icons import launcher_icon, themed_icon
 from ..ui.stokes_picker import StokesPicker
 from ..ui.styles import set_tone
 from ..ui.widgets import (
@@ -277,7 +277,6 @@ class PanelsMixin:
         for idx, tooltip in stretch_tooltips.items():
             self.stretch_combo.setItemData(idx, tooltip, Qt.ToolTipRole)
         layout.addWidget(self.stretch_combo)
-        layout.addStretch(2)
         return bar
 
     def _open_entered_path(self):
@@ -701,9 +700,13 @@ class PanelsMixin:
             # Contour data is reloaded at the new resolution
             self.invalidate_contours()
             if self.current_image_data is not None and self.imagename:
+                factor, restore = self._rescale_for_fast_load()
                 if self.show_contours_checkbox.isChecked() and not self.prepare_contours():
                     self._contours_cancelled()
-                if self.on_visualization_changed() is None:
+                shown = self.on_visualization_changed()
+                if (getattr(self, "_downsample", 1) or 1) != factor:
+                    restore()  # the plane is still the one read before
+                if shown is None:
                     # Cancelled: the image read before is still the one shown
                     self.invalidate_contours()
                     self.downsample_toggle.blockSignals(True)
@@ -730,7 +733,7 @@ class PanelsMixin:
         style_hint = QLabel("Title, labels, fonts, colours, margins")
         style_hint.setObjectName("Hint")
         self.plot_style_btn = link_button("Plot style…", self.show_plot_customization_dialog)
-        self.plot_style_btn.setToolTip("Customize Plot Appearance")
+        self.plot_style_btn.setToolTip("Customize plot appearance")
         link_row(style_hint, self.plot_style_btn)
 
         # Display changes apply as they are made; this reads the image

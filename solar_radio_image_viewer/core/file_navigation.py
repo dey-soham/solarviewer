@@ -15,9 +15,11 @@ from PyQt5.QtWidgets import (
 from ..processing.fits_io import SPECTRUM, fits_kind, is_fits
 from ..ui.activity import track_thread
 from ..ui.background import Cancelled, run_in_thread
+from ..ui.errors import show_error
 from ..ui.open_image import choose_image
 from ..ui.recent_files import forget_image, last_image_folder, remember_image
-from ..ui.styles import set_hand_cursor
+from ..ui.styles import SPACE_S, set_hand_cursor
+from ..ui.widgets import dialog_layout
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,24 @@ from ..ui.geometry import fit_to_screen
 LISTING_TIMEOUT = 60
 # A key's step this soon after the last one ended (s) came in behind it
 STEP_BEHIND_S = 0.015
+
+
+def _is_image_table(path):
+    """Whether the folder ``path`` is a CASA image, however it is named."""
+    try:
+        with open(os.path.join(path, "table.info")) as f:
+            return "Image" in f.readline()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _own_pattern(path):
+    """The glob of what is named like ``path``: by its extension, as written
+    (.FITS, .fit, .fits.gz, .im), or anything if it has none."""
+    stem, extension = os.path.splitext(os.path.basename(path))
+    if extension.lower() in (".gz", ".fz"):
+        extension = os.path.splitext(stem)[1] + extension
+    return f"*{extension}"
 
 
 def _images_in_folder(folder, pattern):
@@ -46,8 +66,8 @@ def _images_in_folder(folder, pattern):
         # Include FITS files
         if is_fits(item_path):
             images.append(item_path)
-        # Include CASA images (directories that look like images)
-        elif os.path.isdir(item_path) and item.endswith(".image"):
+        # Include CASA images (a Measurement Set is a table too)
+        elif _is_image_table(item_path):
             images.append(item_path)
     # Sort alphabetically
     return sorted(images)
@@ -192,11 +212,14 @@ class FileNavigationMixin:
                 if hasattr(main_window, update):
                     getattr(main_window, update)()
 
-        except Exception as e:
-            from PyQt5.QtWidgets import QMessageBox
+        except Exception:
+            import traceback
 
-            QMessageBox.critical(
-                parent or main_window, "Remote Error", f"Failed to open remote browser: {e}"
+            show_error(
+                parent or main_window,
+                "Could not open the remote browser",
+                "The window could not be opened. Check the connection and try again.",
+                traceback.format_exc(),
             )
 
     def show_remote_image(self, main_window, local_path, is_remote, folder):
@@ -258,18 +281,11 @@ class FileNavigationMixin:
         if hasattr(self, "_remote_base_dir"):
             self._remote_base_dir = None
 
-        # Determine base directory and file type
-        if os.path.isdir(self.imagename):
-            # CASA image - use parent directory
-            self._file_base_dir = os.path.dirname(self.imagename)
-            default_pattern = "*.image"
-        else:
-            # FITS file - use containing directory
-            self._file_base_dir = os.path.dirname(self.imagename)
-            if self.imagename.lower().endswith(".fts"):
-                default_pattern = "*.fts"
-            else:
-                default_pattern = "*.fits"
+        # The folder holding the image (a CASA image is a folder, and a path
+        # to one may end in a slash)
+        imagename = self.imagename.rstrip("/")
+        self._file_base_dir = os.path.dirname(imagename)
+        default_pattern = _own_pattern(imagename)
 
         if not self._file_base_dir:
             self._file_base_dir = "."
@@ -648,6 +664,7 @@ except Exception:
             not main_window.remote_connection
             or not main_window.remote_connection.is_connected()
         ):
+            self.show_status_message("Not connected to the server")
             return False
 
         try:
@@ -943,7 +960,7 @@ except Exception:
 
         pattern, ok = QInputDialog.getText(
             self,
-            "File Filter Pattern",
+            "File filter pattern",
             "Enter glob pattern to filter files:\n(e.g., *-image.fits, chunk_*.fits, *.image)",
             text=self._file_filter_pattern,
         )
@@ -1006,7 +1023,6 @@ except Exception:
             QLabel,
             QListWidget,
             QPushButton,
-            QVBoxLayout,
         )
 
         # Check if file list exists
@@ -1029,41 +1045,31 @@ except Exception:
                 self._playlist_dialog = None
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("File List")
+        dialog.setWindowTitle("File list")
         set_hand_cursor(dialog)
-        dialog.setMinimumSize(550, 700)
         fit_to_screen(dialog, 550, 700)
 
         # Store reference to prevent garbage collection
         self._playlist_dialog = dialog
 
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout = dialog_layout(dialog)
 
-        # Header with title and file count
+        # Search box, with the filter and file count beside it
         header_layout = QHBoxLayout()
-        header_layout.setSpacing(12)
+        header_layout.setSpacing(SPACE_S)
 
-        title_label = QLabel("File List")
-        title_label.setObjectName("DialogTitle")
-        header_layout.addWidget(title_label)
-
-        header_layout.addStretch()
+        search_input = QLineEdit()
+        search_input.setPlaceholderText("Search files…")
+        search_input.setClearButtonEnabled(True)
+        header_layout.addWidget(search_input, 1)
 
         info_badge = QLabel(
-            f"Filter: {self._file_filter_pattern}  │  {len(self._file_list)} files"
+            f"Filter: {self._file_filter_pattern} · {len(self._file_list)} files"
         )
         info_badge.setObjectName("Badge")
         header_layout.addWidget(info_badge)
 
         layout.addLayout(header_layout)
-
-        # Search box
-        search_input = QLineEdit()
-        search_input.setPlaceholderText("Search files...")
-        search_input.setClearButtonEnabled(True)
-        layout.addWidget(search_input)
 
         # File list
         file_list_widget = QListWidget()
@@ -1105,7 +1111,7 @@ except Exception:
 
         # Buttons
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(10)
+        btn_layout.setSpacing(SPACE_S)
 
         open_btn = QPushButton("Open")
         open_btn.setObjectName("PrimaryButton")
@@ -1113,6 +1119,7 @@ except Exception:
         open_btn.setCursor(Qt.PointingHandCursor)
 
         close_btn = QPushButton("Close")
+        close_btn.setAutoDefault(False)
         close_btn.setCursor(Qt.PointingHandCursor)
 
         # Store references for use in callbacks
@@ -1191,8 +1198,8 @@ except Exception:
         file_list_widget.itemDoubleClicked.connect(on_double_click)
 
         btn_layout.addStretch()
-        btn_layout.addWidget(open_btn)
         btn_layout.addWidget(close_btn)
+        btn_layout.addWidget(open_btn)
 
         layout.addLayout(btn_layout)
 

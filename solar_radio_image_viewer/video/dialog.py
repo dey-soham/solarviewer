@@ -6,6 +6,7 @@ their names can still be imported from here.
 """
 
 import glob
+import logging
 import os
 import shutil
 import sys
@@ -16,10 +17,8 @@ import psutil
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QDialog,
-    QGroupBox,
     QHBoxLayout,
     QMessageBox,
-    QPushButton,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -34,6 +33,7 @@ from ..processing.plot_style import (
 )
 from .lightcurve import lightcurve_csv_path
 from ..ui.background import Cancelled
+from ..ui.errors import show_error
 from ..ui.free_dialogs import free_modal_dialogs
 
 # The window is put together from these (moved here from this module,
@@ -66,6 +66,14 @@ from .ui.preview import (
 )
 from .ui.progress import WorkDialog
 from .ui.worker import VideoWorker
+
+logger = logging.getLogger(__name__)
+
+
+def _first_output_file(output_file):
+    """The file making ``output_file`` starts: PNG frames are numbered."""
+    stem, ext = os.path.splitext(output_file)
+    return f"{stem}_0001.png" if ext.lower() == ".png" else output_file
 
 
 __all__ = [
@@ -118,7 +126,7 @@ class VideoCreationDialog(
         self.progress_tracker = None
         self.reference_image = None
 
-        self.setWindowTitle("Create Video")
+        self.setWindowTitle("Create video")
         fit_to_screen(self, 1320, 800)
 
         # Preview: rendered in the background, shortly after settings change
@@ -229,8 +237,8 @@ class VideoCreationDialog(
                 self.input_directory_edit.setText(cwd)
                 self.output_file_edit.setText(os.path.join(cwd, "output_video.mp4"))
                 # Check if CWD has any FITS files to set pattern
-                fits_in_cwd = glob.glob(os.path.join(cwd, "*.fits")) + glob.glob(
-                    os.path.join(cwd, "*.fts")
+                fits_in_cwd = glob.glob(os.path.join(glob.escape(cwd), "*.fits")) + glob.glob(
+                    os.path.join(glob.escape(cwd), "*.fts")
                 )
                 if fits_in_cwd:
                     self.input_pattern_edit.setText("*.fits")
@@ -296,26 +304,6 @@ class VideoCreationDialog(
         region_layout = QVBoxLayout(region_tab)  # Layout for the new region tab
         output_layout = QVBoxLayout(output_tab)
 
-        # Start from the main window's view, or set things up below
-        preview_controls_group = QGroupBox("Start")
-        preview_controls_layout = QHBoxLayout(preview_controls_group)
-        preview_controls_layout.setContentsMargins(10, 8, 10, 8)
-        preview_controls_layout.setSpacing(12)
-
-        use_view_btn = QPushButton("Use Current View")
-        use_view_btn.setToolTip(
-            "Take the files, colormap, stretch, range, visible area and\n"
-            "contours of the image open in the main window"
-        )
-        use_view_btn.setEnabled(self._main_window is not None)
-        use_view_btn.clicked.connect(self._use_current_view)
-        preview_controls_layout.addWidget(use_view_btn)
-
-        preview_controls_layout.addStretch()
-
-        # Add preview controls to the main layout first
-        main_layout.addWidget(preview_controls_group)
-
         input_scroll = self._create_input_tab(input_layout)
 
         display_scroll = self._create_display_tab(display_layout)
@@ -345,18 +333,18 @@ class VideoCreationDialog(
         main_layout.addWidget(self.tab_widget)
 
         box, buttons = button_bar(
-            primary=("Create Video", self.create_video),
+            primary=("Create video", self.create_video),
             secondary=("Cancel", self.reject),
             extras=[
-                ("Save Settings...", self.save_settings),
-                ("Load Settings...", self.load_settings),
+                ("Save settings…", self.save_settings),
+                ("Load settings…", self.load_settings),
             ],
         )
-        buttons["Save Settings..."].setToolTip(
+        buttons["Save settings…"].setToolTip(
             "Save all settings (and the frames) as a preset file"
         )
         self.cancel_btn = buttons["Cancel"]
-        self.create_btn = buttons["Create Video"]
+        self.create_btn = buttons["Create video"]
         self.create_btn.setEnabled(False)
         main_layout.addWidget(box)
 
@@ -454,8 +442,8 @@ class VideoCreationDialog(
             if not output_file:
                 QMessageBox.warning(
                     self,
-                    "No Output File",
-                    "Please specify an output file for the video.",
+                    "No output file",
+                    "Enter an output file for the video on the Output tab.",
                 )
                 return
 
@@ -471,28 +459,30 @@ class VideoCreationDialog(
             if not os.path.isdir(output_dir):
                 try:
                     os.makedirs(output_dir)
-                except OSError:
-                    QMessageBox.critical(
+                except OSError as e:
+                    show_error(
                         self,
-                        "Error",
-                        f"Could not create output directory: {output_dir}",
+                        "Could not create the folder",
+                        f"Could not create {output_dir}. Choose another output folder.",
+                        e,
                     )
                     return
 
             if not os.access(output_dir, os.W_OK):
-                QMessageBox.critical(
+                show_error(
                     self,
-                    "Permission Denied",
-                    f"Output directory is not writable: {output_dir}",
+                    "Folder not writable",
+                    f"Cannot write to {output_dir}. Choose another output folder.",
                 )
                 return
 
             # Confirm overwrite if file exists
-            if os.path.exists(output_file):
+            first_file = _first_output_file(output_file)
+            if os.path.exists(first_file):
                 reply = QMessageBox.question(
                     self,
-                    "Confirm Overwrite",
-                    f"File already exists:\n{output_file}\n\nDo you want to overwrite it?",
+                    "Overwrite the file?",
+                    f"File already exists:\n{first_file}\n\nDo you want to overwrite it?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
                 )
@@ -506,7 +496,7 @@ class VideoCreationDialog(
                 if free < 500 * 1024 * 1024:  # Less than 500MB
                     reply = QMessageBox.warning(
                         self,
-                        "Low Disk Space",
+                        "Low disk space",
                         f"Free disk space on {output_dir} is low ({free / (1024 * 1024):.1f} MB).\nVideo creation might fail or produce incomplete files.\n\nDo you want to continue?",
                         QMessageBox.Yes | QMessageBox.No,
                         QMessageBox.No,
@@ -514,7 +504,7 @@ class VideoCreationDialog(
                     if reply == QMessageBox.No:
                         return
             except Exception as e:
-                print(f"Warning: Could not check disk space: {e}")
+                logger.warning(f"Could not check disk space: {e}")
 
             # 2. Memory
             try:
@@ -530,7 +520,7 @@ class VideoCreationDialog(
                 if vm.available < estimated_needed:
                     reply = QMessageBox.warning(
                         self,
-                        "Low Memory",
+                        "Low memory",
                         f"System memory is low ({vm.available / (1024 * 1024 * 1024):.1f} GB available).\nUsing {self.cores_spinbox.value()} cores might cause system instability.\n\nDo you want to continue?",
                         QMessageBox.Yes | QMessageBox.No,
                         QMessageBox.No,
@@ -538,7 +528,7 @@ class VideoCreationDialog(
                     if reply == QMessageBox.No:
                         return
             except Exception as e:
-                print(f"Warning: Could not check memory: {e}")
+                logger.warning(f"Could not check memory: {e}")
 
             # Additional validation for dimensions
             for name, value in (
@@ -548,7 +538,7 @@ class VideoCreationDialog(
                 if value > 0 and value % 2 != 0:
                     QMessageBox.warning(
                         self,
-                        f"Invalid {name}",
+                        f"Invalid {name.lower()}",
                         f"Video {name.lower()} must be an even number.",
                     )
                     return
@@ -567,7 +557,7 @@ class VideoCreationDialog(
 
             # Progress dialog: busy while preparing, then counts frames
             self.progress_dialog = WorkDialog(
-                "Creating Video",
+                "Creating video",
                 "Preparing frames…",
                 self,
                 cancelling_text="Cancelling… (this finishes the frames being drawn first)",
@@ -578,17 +568,18 @@ class VideoCreationDialog(
 
             # Disable the create button while processing
             self.create_btn.setEnabled(False)
-            self.create_btn.setText("Creating Video…")
+            self.create_btn.setText("Creating video…")
 
             # Start the worker thread
             self.worker.start()
 
         except Exception as e:
             self._close_progress_dialog()
-            QMessageBox.critical(
+            show_error(
                 self,
-                "Error",
-                f"Error creating video: {str(e)}",
+                "Could not create the video",
+                "The video could not be started. Check the settings and try again.",
+                e,
             )
 
     def _on_video_status(self, text, done, total):
@@ -630,7 +621,7 @@ class VideoCreationDialog(
             dialog.finish()
             self.progress_dialog = None
         self.create_btn.setEnabled(True)
-        self.create_btn.setText("Create Video")
+        self.create_btn.setText("Create video")
 
     def on_video_creation_cancelled(self):
         """The video was cancelled: nothing was written."""
@@ -639,7 +630,7 @@ class VideoCreationDialog(
             return  # the window is closing: that is what was asked for
         QMessageBox.information(
             self,
-            "Video Cancelled",
+            "Video cancelled",
             "Video creation was cancelled; no file was written.",
         )
 
@@ -649,6 +640,7 @@ class VideoCreationDialog(
 
         problems = self.worker.problems
         csv_path = lightcurve_csv_path(output_file)
+        output_file = _first_output_file(output_file)
         if self._line_plot_settings().get("csv") and os.path.exists(csv_path):
             output_file = f"{output_file}\nLine plot values: {csv_path}"
         if problems:
@@ -659,13 +651,13 @@ class VideoCreationDialog(
             )
             QMessageBox.warning(
                 self._message_parent(),
-                "Video Created, With Problems",
+                "Video created, with problems",
                 f"Video created: {output_file}\n\nSome things could not be drawn:\n{lines}",
             )
             return
         QMessageBox.information(
             self._message_parent(),
-            "Video Created",
+            "Video created",
             f"Video successfully created: {output_file}",
         )
         # self.accept()  # Keep dialog open after creation
@@ -674,10 +666,11 @@ class VideoCreationDialog(
         """Handle error in video creation"""
         self._close_progress_dialog()
 
-        QMessageBox.critical(
+        show_error(
             self._message_parent(),
-            "Error Creating Video",
-            f"Error creating video: {error_message}",
+            "Could not create the video",
+            "The video was not finished. Check the settings and try again.",
+            error_message,
         )
 
 

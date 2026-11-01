@@ -4,7 +4,7 @@ folder). A dynamic spectrum is a FITS file too; the window sends it to the
 Dynamic Spectrum Viewer.
 """
 
-from PyQt5.QtWidgets import QDialog, QFileDialog, QListView, QTreeView
+from PyQt5.QtWidgets import QDialog, QFileDialog, QHeaderView, QListView, QTreeView
 
 from ..processing.fits_io import is_casa_image
 from .busy import busy
@@ -30,6 +30,14 @@ class _ImageDialog(QFileDialog):
         ):
             if view is not None:
                 view.activated.connect(self._on_activated)
+        # Size, type and date whole; the name takes what is left
+        tree = self.findChild(QTreeView, "treeView")
+        if tree is not None:
+            header = tree.header()
+            header.setStretchLastSection(False)
+            header.setSectionResizeMode(0, QHeaderView.Stretch)
+            for column in range(1, header.count()):
+                header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
 
     def _on_activated(self, index):
         # A double-click; Qt's own handler, run first, has gone into the folder
@@ -51,7 +59,7 @@ class _ImageDialog(QFileDialog):
         super().accept()
 
 
-def choose_image(parent, caption="Open Image or Dynamic Spectrum", directory=""):
+def choose_image(parent, caption="Open image or dynamic spectrum", directory=""):
     """A FITS file or CASA image chosen by the user, or "" if cancelled.
 
     A FITS file is chosen as in any file dialog; a CASA image by opening its

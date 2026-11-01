@@ -107,7 +107,7 @@ class HpcViewMixin:
                 end_busy()
                 self._original_imagename = None  # Reset since conversion failed
                 self._conversion_failed(
-                    "Conversion Failed",
+                    "Conversion failed",
                     "Failed to convert to helioprojective coordinates.\n\n"
                     "Please ensure the image has valid RA/DEC coordinate information.",
                 )
@@ -156,13 +156,11 @@ class HpcViewMixin:
         except Exception as e:
             import traceback
 
-            traceback.print_exc()
+            logger.exception("Could not convert to helioprojective")
             end_busy()
             self._original_imagename = None  # Reset on error
-            import traceback
-
             self._conversion_failed(
-                "Conversion Failed",
+                "Conversion failed",
                 f"Could not convert the image to helioprojective coordinates: {e}"
                 "\n\nThe conversion needs the observation time and the observatory "
                 "(DATE-OBS and TELESCOP or OBSGEO in the header).",
