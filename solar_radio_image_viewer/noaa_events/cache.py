@@ -174,9 +174,9 @@ class NOAAEventsCache:
         with open(path, "w") as f:
             json.dump([_serialize_obj(c) for c in cmes], f, default=str)
     
-    def load_cmes(self, event_date: date) -> Optional[list]:
+    def load_cmes(self, event_date: date, filename: str = "cmes.json") -> Optional[list]:
         """Load CME events from cache and reconstruct CMEEvent objects."""
-        path = self._get_cache_path(event_date, "cmes.json")
+        path = self._get_cache_path(event_date, filename)
         if not path.exists():
             return None
         try:
@@ -198,6 +198,33 @@ class NOAAEventsCache:
             return cmes
         except Exception as e:
             print(f"Error loading CMEs cache: {e}")
+            return None
+
+    def save_cdaw_cmes(self, event_date: date, cmes: list):
+        """Save the CDAW stand-in for the CMEs, apart from DONKI's: a date
+        lacking ``cmes.json`` is one DONKI is still asked about."""
+        path = self._get_cache_path(event_date, "cmes_cdaw.json")
+        with open(path, "w") as f:
+            json.dump([_serialize_obj(c) for c in cmes], f, default=str)
+
+    def load_cdaw_cmes(self, event_date: date) -> Optional[list]:
+        return self.load_cmes(event_date, "cmes_cdaw.json")
+
+    # === GOES 1-minute flux ===
+    def save_goes_day(self, event_date: date, flux: list):
+        path = self._get_cache_path(event_date, "goes_1m.json")
+        with open(path, "w") as f:
+            json.dump(flux, f)
+
+    def load_goes_day(self, event_date: date) -> Optional[list]:
+        path = self._get_cache_path(event_date, "goes_1m.json")
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning("Error loading GOES cache: %s", e)
             return None
 
     # === e-CALLISTO Bursts ===
@@ -297,6 +324,11 @@ class NOAAEventsCache:
         return path if path.exists() else None
     
     # === Check what's cached ===
+    def has_events(self, event_date: date) -> bool:
+        """Whether ``event_date`` has been fetched; a date stepped through
+        leaves no folder behind."""
+        return (self.cache_dir / event_date.strftime("%Y/%m/%d") / "events.json").exists()
+
     def get_cached_status(self, event_date: date) -> dict:
         """Check what data is cached for a date."""
         cache_dir = self.get_date_cache_dir(event_date)

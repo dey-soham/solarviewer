@@ -1,20 +1,20 @@
 """
-The solar events viewer's Conditions tab: solar wind, geomagnetic and
-X-ray conditions, and the GOES X-ray plot.
+The solar events viewer's Regions and indices tab: active regions, the
+geomagnetic, solar wind and solar indices, and the GOES X-ray plot.
 """
 
 import logging
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QScrollArea,
     QWidget,
     QVBoxLayout,
     QLabel,
-    QFrame,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
 )
@@ -23,12 +23,50 @@ from ..ui.download_parts import abandon
 from ..ui.errors import show_error
 from ..ui.geometry import fit_to_screen
 from ..ui.plot_theme import figure_toolbar, follow_theme
-from ..ui.styles import SPACE_M, SPACE_S, SPACE_XS, themed
+from ..ui.styles import CONTROL_HEIGHT, SPACE_M, SPACE_S, SPACE_XS, themed
 
-from .widgets import follow_cell_tones, set_cell_tone, source_note
+from .widgets import EventTable, follow_cell_tones, set_cell_tone, source_note
 from .workers import GOESPlotWorker
 logger = logging.getLogger(__name__)
 
+CARD_WIDTH = 360  # of a card of values: a wide window does not spread them apart
+NOT_IN_LIST = "not in the day's region list"
+LEAST_ROWS = 6  # of the regions table, header included
+RISK_TONES = {"Very High": "error", "High": "warning"}
+
+
+def kp_text(value):
+    """A Kp value in the thirds it is given in: 2, 2+, 3-."""
+    thirds = round(value * 3)
+    return f"{(thirds + 1) // 3}" + {0: "", 1: "+", 2: "-"}[thirds % 3]
+
+
+def storm_tone(kp_max):
+    """The one rule for a tone here: none below G1, so that a quiet day reads
+    as quiet."""
+    return "error" if kp_max >= 7 else "warning" if kp_max >= 5 else None
+
+
+def region_key(number):
+    """The event lists give a region's last four digits, the region lists may
+    give five."""
+    return str(number).strip()[-4:]
+
+
+def region_flares(events):
+    """The events of a day by region: {key: (X-ray classes, H-alpha classes,
+    a location)}."""
+    regions = {}
+    for event in events or ():
+        if not event.active_region:
+            continue
+        xray, optical, location = regions.setdefault(region_key(event.active_region), ([], [], [None]))
+        if event.event_type == "XRA":
+            xray.append(event.flare_class or "?")
+        elif event.event_type == "FLA":
+            optical.append(event.optical_class or "?")
+            location[0] = location[0] or event.location_or_freq
+    return regions
 
 
 def _values_card(title, keys):
@@ -58,6 +96,7 @@ def _values_card(title, keys):
     table.setFixedHeight(row_height * len(keys) + 2)
     follow_cell_tones(table)
     card = QGroupBox(title)
+    card.setMaximumWidth(CARD_WIDTH)
     layout = QVBoxLayout(card)
     layout.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
     layout.addWidget(table)
@@ -66,24 +105,46 @@ def _values_card(title, keys):
 
 
 class ConditionsTabMixin:
-    """Builds and fills the Conditions tab.
+    """Builds and fills the Regions and indices tab.
 
     Mixed into :class:`NOAAEventsViewer`; relies on its attributes via ``self``.
 
     Host attributes/methods used:
 
-    ``_cleanup_viewer``, ``begin_job``, ``end_job``, ``goes_worker``,
+    ``_cleanup_viewer``, ``begin_job``, ``end_job``, ``events``, ``goes_worker``,
     ``image_viewers``, ``plot_goes_btn``, ``selected_date``, ``tabs``,
     ``update_job``
     """
 
-    def _create_conditions_tab(self):
-        """Solar Conditions tab: geomagnetic, solar wind and F10.7 cards."""
-        # Tab 3: Solar Conditions (Real-time data)
-        conditions_tab = QWidget()
-        conditions_layout = QVBoxLayout(conditions_tab)
-        conditions_layout.setContentsMargins(0, SPACE_M, 0, 0)
-        conditions_layout.setSpacing(SPACE_S)
+    def _create_regions_tab(self):
+        """The day's regions over the cards of its indices."""
+        page = QWidget()
+        # A short window scrolls here, not down to a table of two rows
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(page)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, SPACE_M, 0, 0)
+        layout.setSpacing(SPACE_S)
+
+        self.ar_table = EventTable(
+            [
+                "AR#",
+                "Location",
+                "Area",
+                "McIntosh",
+                "Mag type",
+                "Flares",
+                "C%",
+                "M%",
+                "X%",
+                "Forecast",
+            ],
+            empty_text="Fetch a date to see its active regions and flare probabilities",
+        )
+        self.ar_table.setMinimumHeight(LEAST_ROWS * CONTROL_HEIGHT)
+        layout.addWidget(self.ar_table, 1)
 
         cards = QHBoxLayout()
         cards.setSpacing(SPACE_M)
@@ -119,31 +180,112 @@ class ConditionsTabMixin:
             ("10.7 cm flux", "Sunspot number", "Sunspot area", "Activity level"),
         )
         cards.addWidget(f107_card, 1)
+        cards.addStretch()
+        layout.addLayout(cards)
 
-        conditions_layout.addLayout(cards)
-
-        self.conditions_info_label = QLabel(
-            "Real-time solar conditions from NOAA SWPC"
-        )
-        self.conditions_info_label.setWordWrap(True)
+        notes = QHBoxLayout()
+        notes.setSpacing(SPACE_M)
+        self.ar_info_label = QLabel()
+        self.ar_info_label.setObjectName("Hint")
+        self.ar_info_label.hide()
+        notes.addWidget(self.ar_info_label)
+        self.conditions_info_label = QLabel()
         self.conditions_info_label.setObjectName("Hint")
-        conditions_layout.addWidget(self.conditions_info_label)
+        notes.addWidget(self.conditions_info_label)
+        notes.addStretch()
+        layout.addLayout(notes)
 
-        conditions_layout.addStretch(1)
+        layout.addWidget(source_note(
+            'Data sources: <a href="https://solarmonitor.org/">SolarMonitor.org</a> '
+            "(NOAA/SWPC Solar Region Summary &amp; ARM Flare Forecasts), "
+            '<a href="https://www.swpc.noaa.gov/">NOAA SWPC</a>'
+        ))
 
-        # Solar Conditions credits label
-        conditions_credits_label = source_note(
-            'Data source: <a href="https://www.swpc.noaa.gov/">NOAA SWPC</a> '
-            "(Space Weather Prediction Center)"
-        )
-        conditions_layout.addWidget(conditions_credits_label)
+        self.tabs.addTab(scroll, "Regions and indices")
 
-        # Make conditions tab scrollable
-        conditions_scroll = QScrollArea()
-        conditions_scroll.setWidgetResizable(True)
-        conditions_scroll.setFrameShape(QFrame.NoFrame)
-        conditions_scroll.setWidget(conditions_tab)
-        self.tabs.addTab(conditions_scroll, "Solar conditions")
+    def display_active_regions(self, regions):
+        """Display active regions in the AR table, with the day's flares of
+        each and a row for a region only the events name."""
+        self.ar_table.setRowCount(0)
+
+        if regions is None or len(regions) == 0:
+            text = (
+                "Could not fetch the active regions for this date."
+                if regions is None
+                else "No active regions data available for this date."
+            )
+            self.ar_table.set_empty_text(text)
+            self.ar_info_label.setText(text)
+            self.ar_info_label.hide()
+            return
+
+        self.ar_info_label.setText(f"{len(regions)} active regions.")
+        self.ar_info_label.show()
+
+        flares = region_flares(self.events)
+        rows = []
+        for region in regions:
+            # Format probabilities
+            c_prob = f"{region.prob_c}%" if region.prob_c is not None else "—"
+            m_prob = f"{region.prob_m}%" if region.prob_m is not None else "—"
+            x_prob = f"{region.prob_x}%" if region.prob_x is not None else "—"
+
+            risk = region.flare_risk_level
+            tones = {9: RISK_TONES.get(risk)}
+
+            # Also M% and X% if they're significant
+            if region.prob_m and region.prob_m >= 20:
+                tones[7] = "warning"
+            if region.prob_x and region.prob_x >= 5:
+                tones[8] = "error"
+
+            count, tip = self._flares_cell(flares.pop(region_key(region.noaa_number), None))
+            rows.append((
+                (-int(count), -region.area),
+                [
+                    f"AR{region.noaa_number}",
+                    region.location,
+                    str(region.area),
+                    region.mcintosh_class,
+                    region.mag_type,
+                    count,
+                    c_prob,
+                    m_prob,
+                    x_prob,
+                    risk,
+                ],
+                tones,
+                {5: tip} if tip else None,
+            ))
+
+        for key, flare in sorted(flares.items()):
+            count, tip = self._flares_cell(flare)
+            rows.append((
+                (-int(count), 0),
+                [f"AR{key}", flare[2][0] or "—", "—", "—", "—", count, "—", "—", "—", NOT_IN_LIST],
+                {9: "text_secondary"},
+                {5: tip} if tip else None,
+            ))
+
+        # What flared first: it is what the day's events are asking about
+        with self.ar_table.filling():
+            for _order, values, tones, tooltips in sorted(rows, key=lambda row: row[0]):
+                self.ar_table.add_event_row(values, tones, tooltips)
+
+        self.ar_table.scrollToTop()
+
+    @staticmethod
+    def _flares_cell(flare):
+        """The count of a region's X-ray flares, and all its classes."""
+        if flare is None:
+            return "0", ""
+        xray, optical, _location = flare
+        parts = []
+        if xray:
+            parts.append("X-ray: " + ", ".join(xray))
+        if optical:
+            parts.append("H-alpha: " + ", ".join(optical))
+        return str(len(xray)), " · ".join(parts)
 
     def display_solar_conditions(self, conditions):
         """Display solar conditions for the selected date."""
@@ -168,12 +310,12 @@ class ConditionsTabMixin:
         if conditions.kp_index:
             kp = conditions.kp_index
             self.geo_ap_label.setText(f"{kp.ap_value}")
-            self.geo_kp_max_label.setText(f"{kp.kp_max:.0f}")
+            self.geo_kp_max_label.setText(kp_text(kp.kp_max))
             self.geo_kp_avg_label.setText(f"{kp.kp_avg:.1f}")
-            self.geo_kp_vals_label.setText(", ".join([f"{v:.0f}" for v in kp.kp_values]))
+            self.geo_kp_vals_label.setText(" ".join(kp_text(v) for v in kp.kp_values))
 
             self.geo_storm_label.setText(f"{kp.storm_level}")
-            set_cell_tone(self.geo_storm_label, kp.tone)
+            set_cell_tone(self.geo_storm_label, storm_tone(kp.kp_max))
         else:
             self.geo_ap_label.setText("—")
             self.geo_kp_max_label.setText("—")
@@ -192,10 +334,7 @@ class ConditionsTabMixin:
 
             status_text = sw.speed_category
             self.sw_status_label.setText(f"{status_text} speed")
-            set_cell_tone(
-                self.sw_status_label,
-                {"High": "error", "Elevated": "warning", "Normal": "success"}.get(status_text),
-            )
+            set_cell_tone(self.sw_status_label, {"High": "error", "Elevated": "warning"}.get(status_text))
         else:
             self.wind_card.hide()
 
@@ -210,26 +349,22 @@ class ConditionsTabMixin:
             self.sunspot_area_label.setText(area_str)
 
             self.f107_activity_label.setText(f"{f107.activity_level}")
-            set_cell_tone(
-                self.f107_activity_label,
-                {
-                    "Very Low": "success",
-                    "Low": "success",
-                    "Moderate": "warning",
-                    "Elevated": "warning",
-                    "High": "error",
-                    "Very High": "error",
-                }.get(f107.activity_level),
-            )
         else:
             self._clear_f107()
+
+    def clear_regions_and_indices(self, text):
+        """Nothing to show yet for this date: ``text`` says how to change that."""
+        self.ar_table.setRowCount(0)
+        self.ar_table.set_empty_text(text)
+        self.ar_info_label.hide()
+        self.display_solar_conditions(None)
+        self.conditions_info_label.setText("")
 
     def _clear_f107(self):
         self.f107_value_label.setText("—")
         self.sunspot_number_label.setText("—")
         self.sunspot_area_label.setText("—")
         self.f107_activity_label.setText("Data unavailable")
-        set_cell_tone(self.f107_activity_label, None)
 
     def plot_goes_xray(self):
         """Fetch and plot GOES X-ray flux for the selected date."""

@@ -1,28 +1,31 @@
 """
-Widgets of the solar events viewer: clickable thumbnails, the full-size
-image viewer, collapsible sections and the events table.
+Widgets of the solar events viewer: clickable thumbnails, the zoomable image
+view, the full-size image viewer and the events table.
 """
 
 import logging
 from contextlib import contextmanager
 from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QGraphicsLineItem,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
+    QGraphicsView,
+    QStackedLayout,
     QLabel,
-    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
     QScrollArea,
     QSizePolicy,
+    QStyle,
+    QStyleOption,
     QDialog,
 )
-from PyQt5.QtCore import QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QIcon, QPixmap, QTransform
+from PyQt5.QtCore import QLineF, QRectF, Qt, pyqtSignal
+from PyQt5.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
 from ..ui.activity import ActivityLabel
 from ..ui.download_parts import abandon
-from ..ui.icons import themed_icon
-from ..ui.styles import CONTROL_HEIGHT, SPACE_L, SPACE_S, set_hand_cursor, theme_manager, themed
+from ..ui.styles import CONTROL_HEIGHT, SPACE_L, SPACE_M, set_hand_cursor, theme_manager, themed
 from ..ui.widgets import button_bar, dialog_layout, empty_note
 
 from .workers import ImageLoader, ImageUrlResolver
@@ -32,6 +35,8 @@ logger = logging.getLogger(__name__)
 from ..ui.geometry import fit_to_screen
 
 TONE_ROLE = Qt.UserRole + 1  # the palette key of a table cell's text
+SORT_ROLE = Qt.UserRole + 2  # what a cell sorts by, when not its text
+GIVE_WAY_WIDTH = 120  # the narrowest a column giving way goes
 
 
 def source_note(html):
@@ -40,8 +45,19 @@ def source_note(html):
     label = QLabel()
     label.setObjectName("Hint")
     label.setOpenExternalLinks(True)
-    themed(label, lambda palette: label.setText(html.replace("<a ", f"<a style='color:{palette['link']}' ")))
+    label.setProperty("html", html)
+    themed(label, lambda palette: _show_source_note(label, palette))
     return label
+
+
+def _show_source_note(label, palette):
+    label.setText(label.property("html").replace("<a ", f"<a style='color:{palette['link']}' "))
+
+
+def set_source_note(label, html):
+    """Change what a ``source_note`` names."""
+    label.setProperty("html", html)
+    _show_source_note(label, theme_manager.palette)
 
 
 def set_cell_tone(item, tone):
@@ -67,6 +83,32 @@ def megabytes_text(done, total):
     if total:
         return f"{done / 1e6:.1f} of {total / 1e6:.1f} MB"
     return f"{done / 1e6:.1f} MB"
+
+
+class ElidedLabel(QLabel):
+    """One line that gives way to what is beside it: cut short with an
+    ellipsis, the whole of it in its tooltip. ``text()`` stays whole."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setToolTip(self.text())
+
+    def setText(self, text):
+        super().setText(text)
+        self.setToolTip(text)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        option = QStyleOption()
+        option.initFrom(self)
+        self.style().drawPrimitive(QStyle.PE_Widget, option, painter, self)
+        text = self.fontMetrics().elidedText(self.text(), Qt.ElideRight, self.contentsRect().width())
+        self.style().drawItemText(
+            painter, self.contentsRect(), Qt.AlignLeft | Qt.AlignVCenter, self.palette(), self.isEnabled(), text,
+            self.foregroundRole(),
+        )
+        painter.end()
 
 
 class ClickableLabel(QLabel):
@@ -106,10 +148,97 @@ class ClickableLabel(QLabel):
             self.loading.move(self.rect().center() - self.loading.rect().center())
 
 
-class FullImageViewer(QDialog):
-    """Dialog to view high-resolution image."""
+class ImageZoomView(QGraphicsView):
+    """One image on the black well: it opens fitted and stays fitted through
+    resizes until it is zoomed. The wheel zooms at the pointer, a drag pans."""
 
-    def __init__(self, parent, title, page_url):
+    hovered = pyqtSignal(float, float)  # image pixels
+    MAX_SCALE = 16.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ImageWell")
+        self.setScene(QGraphicsScene(self))
+        self.setBackgroundBrush(QBrush(QColor("#000000")))
+        self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setMouseTracking(True)
+        self._picture = QGraphicsPixmapItem()
+        self._picture.setTransformationMode(Qt.SmoothTransformation)
+        self.scene().addItem(self._picture)
+        self._marker = QGraphicsLineItem()
+        self._marker.setZValue(1)
+        self._marker.hide()
+        self.scene().addItem(self._marker)
+        self._fitted = True
+        themed(self, self._style_marker)
+
+    def _style_marker(self, palette):
+        pen = QPen(QColor(palette["highlight"]), 1)
+        pen.setCosmetic(True)
+        self._marker.setPen(pen)
+
+    def set_image(self, image):
+        """Show the QImage ``image`` at Fit."""
+        self._picture.setPixmap(QPixmap.fromImage(image))
+        self.scene().setSceneRect(self._picture.boundingRect())
+        self._marker.hide()
+        self.fit()
+
+    def fit(self):
+        """The whole image in view, and so it stays through resizes."""
+        self._fitted = True
+        self.fitInView(self._picture, Qt.KeepAspectRatio)
+
+    def actual_size(self):
+        """One image pixel to one screen pixel."""
+        self._fitted = False
+        self.resetTransform()
+
+    def set_marker(self, image_x):
+        """A vertical line at ``image_x``, ``None`` removes it."""
+        if image_x is None:
+            self._marker.hide()
+            return
+        self._marker.setLine(QLineF(image_x, 0, image_x, self._picture.boundingRect().height()))
+        self._marker.show()
+        if not self._fitted:  # zoomed: the view goes along, at its own height
+            middle = self.mapToScene(self.viewport().rect().center()).y()
+            self.ensureVisible(QRectF(image_x, middle, 1, 1))
+
+    def wheelEvent(self, event):
+        steps = event.angleDelta().y() / 120
+        if not steps or self._picture.pixmap().isNull():
+            return
+        rect = self._picture.boundingRect()
+        least = min(self.viewport().width() / rect.width(), self.viewport().height() / rect.height())
+        scale = self.transform().m11()
+        wanted = min(self.MAX_SCALE, scale * 1.25 ** steps)
+        if wanted <= least:
+            self.fit()  # nothing outside it left to see
+            return
+        self._fitted = False
+        self.scale(wanted / scale, wanted / scale)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._fitted:
+            self.fit()
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        where = self.mapToScene(event.pos())
+        if self.scene().sceneRect().contains(where):
+            self.hovered.emit(where.x(), where.y())
+
+
+class FullImageViewer(QDialog):
+    """Dialog to view high-resolution image. ``save``, if given, is what its
+    Save high-res… button calls."""
+
+    def __init__(self, parent, title, page_url, save=None):
         super().__init__(parent)
         self.setWindowTitle(f"{title}: high resolution")
         self.setWindowFlags(
@@ -121,20 +250,24 @@ class FullImageViewer(QDialog):
 
         layout = dialog_layout(self)
 
+        # The spinner and messages until the image is here, then the image
         self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(
-            True
-        )  # Start resizable, maybe set False when huge image loads?
+        self.scroll.setWidgetResizable(True)
         self.scroll.setObjectName("ImageWell")
 
         self.img_label = ClickableLabel()
         self.img_label.setAlignment(Qt.AlignCenter)
         self.img_label.start_loading("Finding the high-resolution image…")
-
         self.scroll.setWidget(self.img_label)
-        layout.addWidget(self.scroll)
 
-        buttons, _ = button_bar(secondary=("Close", self.accept))
+        self.zoom_view = ImageZoomView()
+        self.well = QStackedLayout()
+        self.well.addWidget(self.scroll)
+        self.well.addWidget(self.zoom_view)
+        layout.addLayout(self.well, 1)
+
+        extras = [("Save high-res…", save)] if save else []
+        buttons, _ = button_bar(secondary=("Close", self.accept), extras=extras)
         layout.addWidget(buttons)
 
         # Close, the window's X and Escape all end here
@@ -197,91 +330,12 @@ class FullImageViewer(QDialog):
             pixmap = QPixmap()
             if pixmap.loadFromData(data):
                 self.img_label.setPixmap(pixmap)
-                self.img_label.adjustSize()
-                # If huge, maybe enable scrollbars
-                self.scroll.setWidgetResizable(
-                    True
-                )
-                # To scroll, widgetResizable is complicated.
-                # If we want scroll, setWidgetResizable(False) implies widget dictates size.
-                if (
-                    pixmap.width() > self.scroll.width()
-                    or pixmap.height() > self.scroll.height()
-                ):
-                    self.scroll.setWidgetResizable(False)  # Let label be big
-                else:
-                    self.scroll.setWidgetResizable(True)  # Center it
+                self.zoom_view.set_image(pixmap.toImage())
+                self.well.setCurrentWidget(self.zoom_view)
             else:
                 self.img_label.setText("The image could not be read.")
         except RuntimeError:
             pass
-
-
-class CollapsibleSection(QWidget):
-    """A collapsible section widget with header and content."""
-
-    toggled = pyqtSignal(bool)
-
-    def __init__(self, title: str, icon: str = "", count: int = 0, parent=None):
-        super().__init__(parent)
-        self.is_collapsed = False
-
-        # Allow expanding vertically
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Header
-        self.header = QPushButton()
-
-        self.header.setObjectName("SectionHeader")
-        self.header.setIconSize(QSize(12, 12))
-        self.update_header(title, icon, count)
-        themed(self.header, lambda palette: self._show_chevron())
-        self.header.clicked.connect(self.toggle)
-        layout.addWidget(self.header)
-
-        # Content container
-        self.content = QWidget()
-        self.content_layout = QVBoxLayout(self.content)
-        self.content_layout.setContentsMargins(0, SPACE_S, 0, 0)
-        layout.addWidget(self.content)
-
-        self.title = title
-        self.icon = icon
-
-    def update_header(self, title: str, icon: str = "", count: int = 0):
-        count_str = f" · {count}" if count > 0 else ""
-        self.header.setText(f"{icon} {title}{count_str}".strip())
-
-    def _show_chevron(self):
-        chevron = QPixmap(themed_icon("spinbox_down.png"))
-        if self.is_collapsed:
-            chevron = chevron.transformed(QTransform().rotate(-90), Qt.SmoothTransformation)
-        self.header.setIcon(QIcon(chevron))
-
-    def toggle(self):
-        self.is_collapsed = not self.is_collapsed
-        self.content.setVisible(not self.is_collapsed)
-        self.update_header(self.title, self.icon, getattr(self, "_count", 0))
-        self._show_chevron()
-
-        # Update size policy based on state
-        if self.is_collapsed:
-            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        else:
-            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-
-        self.toggled.emit(self.is_collapsed)
-
-    def set_count(self, count: int):
-        self._count = count
-        self.update_header(self.title, self.icon, count)
-
-    def add_widget(self, widget):
-        self.content_layout.addWidget(widget)
 
 
 def _sort_key(text):
@@ -294,6 +348,9 @@ def _sort_key(text):
 
 class _EventItem(QTableWidgetItem):
     def __lt__(self, other):
+        mine, theirs = self.data(SORT_ROLE), other.data(SORT_ROLE)
+        if mine is not None and theirs is not None:
+            return mine < theirs
         return _sort_key(self.text()) < _sort_key(other.text())
 
 
@@ -307,6 +364,7 @@ class EventTable(QTableWidget):
         self.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
         self._filling = False
+        self.give_way_column = None  # cut short first when the width runs out
         self.verticalHeader().setVisible(False)
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableWidget.SelectRows)
@@ -332,18 +390,29 @@ class EventTable(QTableWidget):
         self.empty_note.setText(text)
 
     def _show_empty_note(self):
-        self.empty_note.setVisible(self.rowCount() == 0)
+        self.empty_note.setVisible(all(self.isRowHidden(row) for row in range(self.rowCount())))
 
     def fit_columns(self):
         """Each column as wide as what it holds, and what is left of the width
         shared out, so a scroll bar only shows when they do not fit."""
         self.resizeColumnsToContents()
         header = self.horizontalHeader()
+        if header.length() > self.viewport().width():
+            # Most of a header's width is padding for a sort arrow not shown
+            for col in range(self.columnCount()):
+                label = self.horizontalHeaderItem(col).text()
+                header.resizeSection(
+                    col, max(self.sizeHintForColumn(col), header.fontMetrics().horizontalAdvance(label) + SPACE_M)
+                )
         spare = self.viewport().width() - header.length()
-        if spare > 0:
-            columns = self.columnCount()
-            for col in range(columns):
-                extra = spare // columns + (spare % columns if col == columns - 1 else 0)
+        if spare < 0 and self.give_way_column is not None:
+            col = self.give_way_column
+            header.resizeSection(col, max(GIVE_WAY_WIDTH, header.sectionSize(col) + spare))
+            spare = self.viewport().width() - header.length()
+        shown = [col for col in range(self.columnCount()) if not self.isColumnHidden(col)]
+        if spare > 0 and shown:
+            for col in shown:
+                extra = spare // len(shown) + (spare % len(shown) if col == shown[-1] else 0)
                 header.resizeSection(col, header.sectionSize(col) + extra)
 
     def resizeEvent(self, event):
@@ -367,8 +436,9 @@ class EventTable(QTableWidget):
             self.setSortingEnabled(sorting)
             self.setUpdatesEnabled(True)
 
-    def add_event_row(self, values: list, tones: dict = None, tooltips: dict = None):
-        """Add a row with optional cell tones (palette keys) and tooltips."""
+    def add_event_row(self, values: list, tones: dict = None, tooltips: dict = None, keys: dict = None):
+        """Add a row with optional cell tones (palette keys), tooltips and
+        sort keys for the cells whose text does not sort as it should."""
         # Temporarily disable sorting to prevent row movement during insertion
         sorting_enabled = self.isSortingEnabled()
         self.setSortingEnabled(False)
@@ -381,6 +451,8 @@ class EventTable(QTableWidget):
                 set_cell_tone(item, tones[col])
             if tooltips and col in tooltips:
                 item.setToolTip(str(tooltips[col]))
+            if keys and keys.get(col) is not None:
+                item.setData(SORT_ROLE, keys[col])
             self.setItem(row, col, item)
 
         # Re-enable sorting

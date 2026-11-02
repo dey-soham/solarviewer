@@ -6,7 +6,9 @@ spectra.
 
 import logging
 import os
-from datetime import datetime, date
+import re
+import tempfile
+from datetime import datetime, date, timedelta
 from typing import Optional
 from PyQt5.QtCore import QSize, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QImage
@@ -20,6 +22,37 @@ logger = logging.getLogger(__name__)
 FETCH_STAGES = 6
 THUMBNAIL_SIZE = 320
 CHUNK_BYTES = 64 * 1024
+MINUTES_PER_DAY = 24 * 60
+GOES_FILL = 1e-9  # the files' floor: what they hold where they have no value
+
+
+NICT_TRANSITION_DATE = date(2016, 7, 11)  # Yamagawa took over from HiRAS
+
+
+def expected_sources(day):
+    """The spectra that can exist for ``day``, high frequency to low, ground
+    before space."""
+    sources = ["norp", "yamagawa" if day >= NICT_TRANSITION_DATE else "hiras", "orfees", "nda"]
+    if day.year >= 2007:  # STEREO started in October 2006
+        sources.append("stereo_a")
+    if 2007 <= day.year <= 2014:  # STEREO-B fell silent in 2014
+        sources.append("stereo_b")
+    sources.append("wind")
+    return sources
+
+
+# Every source, in the order the worker goes through them
+SPECTRA_NAMES = {
+    'wind': "WIND/WAVES", 'stereo_a': "STEREO-A", 'stereo_b': "STEREO-B", 'norp': "Nobeyama (NORP)",
+    'orfees': "ORFEES", 'nda': "NDA", 'yamagawa': "Yamagawa", 'hiras': "HiRAS",
+}
+
+
+def _failure_kind(error):
+    """Whether ``error`` means the archive has no such file (``no_file``) or
+    it could not be asked (``unreachable``: timeouts, refused, 5xx)."""
+    code = getattr(error, "code", None) or getattr(getattr(error, "response", None), "status_code", None)
+    return "no_file" if code in (403, 404, 410) else "unreachable"
 
 
 def _still_growing(day):
@@ -128,6 +161,18 @@ class ImageLoader(StoppableThread):
                 self.received.emit(done, max(total, done) if total else 0)
 
 
+def thumbnail_image(data):
+    """A card's scaled QImage from a file's bytes, None if they are no image."""
+    image = QImage.fromData(data)
+    if image.isNull():
+        return None
+    return image.scaled(
+        QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE),
+        Qt.KeepAspectRatio,
+        Qt.SmoothTransformation,
+    )
+
+
 class ThumbnailLoader(ImageLoader):
     """A card's image, from the cache if it has it: read, decoded and scaled
     here, so that a dozen of them do not hold up the window."""
@@ -142,10 +187,11 @@ class ThumbnailLoader(ImageLoader):
     def run(self):
         try:
             cached = _noaa_cache.load_thumbnail(self.event_date, self.title)
-            image = self.decoded(cached.read_bytes()) if cached else None
+            image = thumbnail_image(cached.read_bytes()) if cached else None
             if image is None:
                 data = self.fetch()
-                image = self.decoded(data)
+                image = thumbnail_image(data)
+                self.check_stop()
                 if image is not None and self.title:
                     self.save(data)
             self.check_stop()
@@ -154,16 +200,6 @@ class ThumbnailLoader(ImageLoader):
             pass
         except Exception as e:
             self.error.emit(str(e))
-
-    def decoded(self, data):
-        image = QImage.fromData(data)
-        if image.isNull():
-            return None
-        return image.scaled(
-            QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
 
     def save(self, data):
         try:
@@ -212,7 +248,8 @@ class ImageSaver(ImageLoader):
 class FetchWorker(StoppableThread):
     """Worker thread for fetching events, active regions, conditions, CMEs, and images.
     
-    Uses cache when available - only fetches missing data from network.
+    Uses cache when available - only fetches missing data from network, and
+    with ``only_cached`` nothing at all: a date already fetched, on showing it.
     """
 
     done = pyqtSignal(
@@ -221,11 +258,12 @@ class FetchWorker(StoppableThread):
     error = pyqtSignal(str)
     progress = pyqtSignal(str)  # Progress messages
 
-    def __init__(self, event_date: date, force_refresh: bool = False):
+    def __init__(self, event_date: date, force_refresh: bool = False, only_cached: bool = False):
         super().__init__()
         self.event_date = event_date
+        self.only_cached = only_cached
         # The lists of the last days still grow: what was saved then is partial
-        self.force_refresh = force_refresh or _still_growing(event_date)
+        self.force_refresh = not only_cached and (force_refresh or _still_growing(event_date))
         self._stage = 0
 
     def _say(self, message, stage=None):
@@ -251,7 +289,7 @@ class FetchWorker(StoppableThread):
                 self._say("Loading events from cache…", 1)
                 events = cache.load_events(self.event_date)
             
-            if events is None:
+            if events is None and not self.only_cached:
                 self._say("Fetching solar events…", 1)
                 events = ne.fetch_and_parse_events(self.event_date)
                 if events:
@@ -263,7 +301,7 @@ class FetchWorker(StoppableThread):
                 self._say("Loading active regions from cache…", 2)
                 active_regions = cache.load_active_regions(self.event_date)
             
-            if active_regions is None:
+            if active_regions is None and not self.only_cached:
                 try:
                     self._say("Fetching active regions…", 2)
                     from ..solar_context import active_regions as ar
@@ -279,7 +317,7 @@ class FetchWorker(StoppableThread):
                 self._say("Loading conditions from cache…", 3)
                 conditions = cache.load_conditions(self.event_date)
             
-            if conditions is None:
+            if conditions is None and not self.only_cached:
                 try:
                     self._say("Fetching solar conditions…", 3)
                     from ..solar_context import realtime_data as rt
@@ -296,14 +334,16 @@ class FetchWorker(StoppableThread):
                 self._say("Loading CMEs from cache…", 4)
                 cmes = cache.load_cmes(self.event_date)
             
-            if cmes is None:
+            if cmes is None and not self.only_cached:
                 try:
                     self._say("Fetching CME alerts…", 4)
                     from ..solar_context import cme_alerts as cme
                     cmes = cme.fetch_and_parse_cme_events(self.event_date)
-                    # (not the stand-in, or DONKI's would never be fetched again)
+                    # (the stand-in apart, or DONKI's would never be fetched again)
                     if cmes and cmes[0].source == "DONKI":
                         cache.save_cmes(self.event_date, cmes)
+                    elif cmes:
+                        cache.save_cdaw_cmes(self.event_date, cmes)
                 except Exception as cme_err:
                     print(f"CME fetch failed: {cme_err}")
 
@@ -313,12 +353,13 @@ class FetchWorker(StoppableThread):
                 self._say("Loading context images from cache…", 5)
                 images = cache.load_images(self.event_date)
                 
-                # Auto-heal cache for old images missing the timestamp
-                if images and any(not hasattr(img, 'image_date') or img.image_date is None for img in images):
+                # Auto-heal cache for old images whose date cannot be told
+                from ..solar_context import context_images as ci
+                if images and not self.only_cached and any(ci.image_day(img) is None for img in images):
                     self._say("Refreshing the image list for its timestamps…")
                     images = None
             
-            if images is None:
+            if images is None and not self.only_cached:
                 try:
                     self._say("Fetching context images…", 5)
                     from ..solar_context import context_images as ci
@@ -339,7 +380,7 @@ class FetchWorker(StoppableThread):
                 self._say("Loading e-CALLISTO bursts from cache…", 6)
                 ecallisto_bursts = cache.load_ecallisto_bursts(self.event_date)
             
-            if ecallisto_bursts is None:
+            if ecallisto_bursts is None and not self.only_cached:
                 try:
                     # Check if within supported range (2010, 2011, 2020+)
                     if self.event_date.year in [2010, 2011] or self.event_date.year >= 2020:
@@ -363,7 +404,7 @@ class FetchWorker(StoppableThread):
             if active_regions is None:
                 active_regions = cache.load_active_regions(self.event_date)
             if cmes is None or (cmes and cmes[0].source != "DONKI"):
-                cmes = cache.load_cmes(self.event_date) or cmes
+                cmes = cache.load_cmes(self.event_date) or cmes or cache.load_cdaw_cmes(self.event_date)
 
             self.check_stop()
             self.done.emit(events, active_regions, conditions, cmes, images, ecallisto_bursts)
@@ -452,10 +493,84 @@ class GOESPlotWorker(StoppableThread):
             self.error.emit(str(e))
 
 
+def read_goes_day(path, day):
+    """The 1–8 Å flux of ``day`` from a GOES file: one value per minute, ``None``
+    where there is none or it is flagged (the eclipses, above all)."""
+    flux = [None] * MINUTES_PER_DAY
+    try:
+        import h5py
+        import numpy as np
+
+        with h5py.File(path, "r") as f:  # the GOES-16 and later files
+            epoch = datetime(2000, 1, 1, 12)
+            seconds = f["time"][:]
+            values = f["xrsb_flux"][:]
+            flags = f["xrsb_flag"][:] if "xrsb_flag" in f else np.zeros(len(values))
+        start = (datetime.combine(day, datetime.min.time()) - epoch).total_seconds()
+        for second, value, flag in zip(seconds, values, flags):
+            minute = int((second - start) // 60)
+            if 0 <= minute < MINUTES_PER_DAY and not flag and value > GOES_FILL:
+                flux[minute] = float(value)
+        return flux
+    except OSError:
+        pass  # not HDF5: an older satellite's file
+
+    from sunpy.timeseries import TimeSeries
+
+    table = TimeSeries(path).to_dataframe()
+    for when, row in table.iterrows():
+        minute = (when.to_pydatetime() - datetime.combine(day, datetime.min.time())) // timedelta(minutes=1)
+        value = row.get("xrsb")
+        if 0 <= minute < MINUTES_PER_DAY and value > GOES_FILL and not row.get("xrsb_quality", 0):
+            flux[minute] = float(value)
+    return flux
+
+
+class GoesDayWorker(StoppableThread):
+    """The day's GOES 1–8 Å flux for the day band, from the cache or a 1-minute
+    file. It holds nothing up: the tables are shown without waiting for it."""
+
+    ready = pyqtSignal(object, object)  # the date, its flux per minute
+    failed = pyqtSignal(object, str)  # the date, what went wrong
+
+    def __init__(self, event_date: date):
+        super().__init__()
+        self.event_date = event_date
+
+    def run(self):
+        try:
+            flux = _noaa_cache.load_goes_day(self.event_date)
+            if flux is None:
+                flux = self.fetch()
+                self.check_stop()
+                _noaa_cache.save_goes_day(self.event_date, flux)
+            self.check_stop()
+            self.ready.emit(self.event_date, flux)
+        except Stopped:
+            pass
+        except Exception as e:
+            logger.info("GOES 1-minute data for %s: %s", self.event_date, e)
+            self.failed.emit(self.event_date, str(e))
+
+    def fetch(self):
+        from sunpy.net import Fido, attrs as a
+
+        begin = datetime.combine(self.event_date, datetime.min.time())
+        found = Fido.search(a.Time(begin, begin + timedelta(hours=23, minutes=59)), a.Instrument("GOES"), a.Resolution("avg1m"))
+        if len(found) == 0 or len(found[0]) == 0:
+            raise LookupError("No GOES data found for this date")
+        self.check_stop()
+        with tempfile.TemporaryDirectory() as folder:
+            files = Fido.fetch(found[0, 0], path=os.path.join(folder, "{file}"), progress=False)
+            if not files:
+                raise LookupError("The GOES file could not be downloaded")
+            self.check_stop()
+            return read_goes_day(files[0], self.event_date)
+
+
 class DHSpectraWorker(StoppableThread):
-    """Worker thread for fetching DH-band dynamic spectra from CDAW NASA.
+    """Worker thread for fetching the day's radio spectra from their archives.
     
-    Fetches WIND/WAVES (24h full-day, calibrated) and STEREO A/B (7h) spectrograms for the selected date.
     Uses unified cache system - checks cache first before downloading.
     """
 
@@ -464,6 +579,8 @@ class DHSpectraWorker(StoppableThread):
     done = pyqtSignal(dict, list)  # Emits (results_dict, error_list)
     source_ended = pyqtSignal(str)  # this one is dealt with, data or not
     sources_done = pyqtSignal(int, int)  # how many of how many
+    # just before its source_ended: source, "no_file" or "unreachable", detail
+    source_failed = pyqtSignal(str, str, str)
     # Removing error signal as we now accumulate errors in a list
 
     # CDAW server URLs
@@ -474,340 +591,149 @@ class DHSpectraWorker(StoppableThread):
     SWAVES_URL = 'https://cdaw.gsfc.nasa.gov/images/stereo/swaves/'
     SWAVES_URL_NEW = 'https://cdaw.gsfc.nasa.gov/images/stereo/swaves_new/'
 
-    def __init__(self, event_datetime: datetime, force_refresh: bool = False):
+    def __init__(self, event_datetime: datetime, force_refresh: bool = False, sources=None):
         super().__init__()
         self.event_datetime = event_datetime
         self.force_refresh = force_refresh
+        self.sources = sources  # only these, for Try again; None for all
         self._sources_done = 0
 
     def _source_done(self, source):
         """``source`` has been dealt with: the next, unless told to stop."""
         self.check_stop()
         self._sources_done += 1
-        year = self.event_datetime.year
-        total = 5 if year < 2007 else 7 if year <= 2014 else 6  # with the STEREOs
         self.source_ended.emit(source)
-        self.sources_done.emit(self._sources_done, total)
+        self.sources_done.emit(self._sources_done, len(self._wanted()))
+
+    def _wanted(self):
+        expected = expected_sources(self.event_datetime.date())
+        return [s for s in expected if self.sources is None or s in self.sources]
+
+    def _found(self, source, path, results):
+        results[source] = str(path)
+        self.result_ready.emit(source, str(path))
 
     def run(self):
-        """Fetch spectra from CDAW servers, using cache when available."""
-        import urllib.request
-        import urllib.error
-        import re
-        
+        """Fetch spectra from their archives, using cache when available."""
+        cache = _noaa_cache
+        event_date = self.event_datetime.date()
+        results = {source: None for source in SPECTRA_NAMES}
+        errors = []
+        wanted = self._wanted()
         try:
-            cache = _noaa_cache
-            event_date = self.event_datetime.date()
-            results = {
-                'wind': None, 'stereo_a': None, 'stereo_b': None, 
-                'combined': None, 'norp': None, 'orfees': None, 
-                'nda': None, 'yamagawa': None, 'hiras': None
-            }
-            errors = []
-            dt_obj = self.event_datetime
-            date_path = f"{dt_obj.year}/{dt_obj.month:02d}/{dt_obj.day:02d}"
-            date_str = dt_obj.strftime('%Y%m%d')
-            
-            # STEREO URL based on date
-            swaves_url = self.SWAVES_URL_NEW if dt_obj.year >= 2018 else self.SWAVES_URL
-            
-            # === WIND/WAVES ===
-            # Check cache first
-            cached_wind = cache.load_spectra(event_date, 'wind')
-            if not self.force_refresh and cached_wind:
-                self.progress.emit("Loading WIND/WAVES from cache…")
-                results['wind'] = str(cached_wind)
-                self.result_ready.emit('wind', str(cached_wind))
-            else:
-                # Try calibrated L2 source first (test_daily)
-                wind_found = False
-                self.progress.emit("Searching for calibrated WIND/WAVES data…")
-                
-                try:
-                    # Calibrated source: test_daily/YYYY/YYYYMMDD_windwaves__scale_2to6sfu_l2_cdf_v1.jpg
-                    calibrated_filename = f"{date_str}_windwaves__scale_2to6sfu_l2_cdf_v1.jpg"
-                    calibrated_url = f"{self.WAVES_CALIBRATED_URL}{dt_obj.year}/{calibrated_filename}"
-                    
-                    # Try to fetch the calibrated file directly
-                    req = urllib.request.urlopen(calibrated_url, timeout=15)
-                    data = req.read()
-                    wind_file = cache.save_spectra(event_date, 'wind', data)
-                    results['wind'] = str(wind_file)
-                    self.result_ready.emit('wind', str(wind_file))
-                    wind_found = True
-                    self.progress.emit("Calibrated WIND/WAVES data found!")
-                    
-                except Exception:
-                    self.progress.emit("Calibrated source unavailable, trying fallback…")
-                
-                # Fallback to 24h source if calibrated not found
-                if not wind_found:
-                    try:
-                        wind_dir_url = f"{self.WAVES_URL_24H}{date_path}/"
-                        req = urllib.request.urlopen(wind_dir_url, timeout=15)
-                        html = req.read().decode('utf-8')
-                        
-                        # Parse for 24h windwaves PNG files (prefer h2M over h2hk)
-                        pattern = re.compile(r'href="([^"]*windwaves_h2M_sfu_24h\.png)"', re.IGNORECASE)
-                        matches = pattern.findall(html)
-                        
-                        if not matches:
-                            # Fallback to h2hk if h2M not available
-                            pattern = re.compile(r'href="([^"]*windwaves_h2hk_sfu_24h\.png)"', re.IGNORECASE)
-                            matches = pattern.findall(html)
-                        
-                        if matches:
-                            # Get the latest 24h image (last one in the day)
-                            best_match = self._find_latest_image(matches)
-                            if best_match:
-                                wind_url = f"{wind_dir_url}{best_match}"
-                                req = urllib.request.urlopen(wind_url, timeout=30)
-                                data = req.read()
-                                wind_file = cache.save_spectra(event_date, 'wind', data)
-                                results['wind'] = str(wind_file)
-                                self.result_ready.emit('wind', str(wind_file))
-                                wind_found = True
-                                self.progress.emit("WIND/WAVES 24h data found!")
-                        
-                        if not wind_found:
-                            self.progress.emit("No WIND/WAVES data for this date")
-                    except Exception as e:
-                        err_msg = f"WIND/WAVES: {str(e)[:50]}"
-                        self.progress.emit(err_msg)
-                        errors.append(err_msg)
-            self._source_done('wind')
-            
-            # STEREO only for dates after its launch; the other sources go further back
-            if dt_obj.year < 2007:
-                self.progress.emit("Date predates STEREO mission (launched Oct 2006)")
-            else:
-                # === STEREO-A ===
-                cached_sta = cache.load_spectra(event_date, 'stereo_a')
-                if not self.force_refresh and cached_sta:
-                    self.progress.emit("Loading STEREO-A from cache…")
-                    results['stereo_a'] = str(cached_sta)
-                    self.result_ready.emit('stereo_a', str(cached_sta))
+            for source in sorted(wanted, key=list(SPECTRA_NAMES).index):
+                name = SPECTRA_NAMES[source]
+                cached = None if self.force_refresh else cache.load_spectra(event_date, source)
+                if cached:
+                    self.progress.emit(f"Loading {name} from cache…")
+                    self._found(source, cached, results)
                 else:
-                    self.progress.emit("Searching for STEREO-A data…")
-                    try:
-                        stereo_dir_url = f"{swaves_url}{date_path}/"
-                        req = urllib.request.urlopen(stereo_dir_url, timeout=15)
-                        html = req.read().decode('utf-8')
-                    
-                        if swaves_url == self.SWAVES_URL:
-                            # Old format (2007-2017): swaves2A (2 = 7h plot)
-                            pattern_a = re.compile(r'href="([^"]*swaves2A\.png)"', re.IGNORECASE)
-                        else:
-                            # New format (2018+): sta_waves_7h (7-hour coverage)
-                            pattern_a = re.compile(r'href="([^"]*sta_waves_7h[^"]*\.png)"', re.IGNORECASE)
-                    
-                        matches_a = sorted(pattern_a.findall(html))
-                    
-                        if matches_a:
-                            self.progress.emit("Stitching STEREO-A images…")
-                            stitched_data = self._stitch_images(stereo_dir_url, matches_a)
-                            if stitched_data:
-                                sta_file = cache.save_spectra(event_date, 'stereo_a', stitched_data)
-                                results['stereo_a'] = str(sta_file)
-                                self.result_ready.emit('stereo_a', str(sta_file))
-                                self.progress.emit("STEREO-A stitched data saved!")
-                            else:
-                                # Fallback to single image if stitching fails
-                                best_a = self._find_latest_image(matches_a)
-                                if best_a:
-                                    sta_url = f"{stereo_dir_url}{best_a}"
-                                    req = urllib.request.urlopen(sta_url, timeout=30)
-                                    data = req.read()
-                                    sta_file = cache.save_spectra(event_date, 'stereo_a', data)
-                                    results['stereo_a'] = str(sta_file)
-                                    self.result_ready.emit('stereo_a', str(sta_file))
-                                    self.progress.emit("STEREO-A 7h data found (stitching failed)!")
-                            
-                    except Exception as e:
-                        err_msg = f"STEREO-A: {str(e)[:50]}"
-                        self.progress.emit(err_msg)
-                        errors.append(err_msg)
-                self._source_done('stereo_a')
-            
-            # === STEREO-B (only for dates before 2014) ===
-            if 2007 <= dt_obj.year <= 2014:
-                cached_stb = cache.load_spectra(event_date, 'stereo_b')
-                if not self.force_refresh and cached_stb:
-                    self.progress.emit("Loading STEREO-B from cache…")
-                    results['stereo_b'] = str(cached_stb)
-                    self.result_ready.emit('stereo_b', str(cached_stb))
-                else:
-                    try:
-                        stereo_dir_url = f"{swaves_url}{date_path}/"
-                        req = urllib.request.urlopen(stereo_dir_url, timeout=15)
-                        html = req.read().decode('utf-8')
-                        
-                        # Old format: swaves2B (2 = 7h plot)
-                        pattern_b = re.compile(r'href="([^"]*swaves2B\.png)"', re.IGNORECASE)
-                        matches_b = sorted(pattern_b.findall(html))
-                        
-                        if matches_b:
-                            self.progress.emit("Stitching STEREO-B images…")
-                            stitched_data = self._stitch_images(stereo_dir_url, matches_b)
-                            if stitched_data:
-                                stb_file = cache.save_spectra(event_date, 'stereo_b', stitched_data)
-                                results['stereo_b'] = str(stb_file)
-                                self.result_ready.emit('stereo_b', str(stb_file))
-                                self.progress.emit("STEREO-B stitched data saved!")
-                            else:
-                                # Fallback to single image
-                                best_b = self._find_latest_image(matches_b)
-                                if best_b:
-                                    stb_url = f"{stereo_dir_url}{best_b}"
-                                    req = urllib.request.urlopen(stb_url, timeout=30)
-                                    data = req.read()
-                                    stb_file = cache.save_spectra(event_date, 'stereo_b', data)
-                                    results['stereo_b'] = str(stb_file)
-                                    self.result_ready.emit('stereo_b', str(stb_file))
-                                    self.progress.emit("STEREO-B 7h data found (stitching failed)!")
-                                
-                    except Exception as e:
-                        err_msg = f"STEREO-B: {str(e)[:50]}"
-                        self.progress.emit(err_msg)
-                        errors.append(err_msg)
-                self._source_done('stereo_b')
-            
-            # === Nobeyama (NORP) ===
-            cached_norp = cache.load_spectra(event_date, 'norp')
-            if not self.force_refresh and cached_norp:
-                self.progress.emit("Loading Nobeyama (NORP) from cache…")
-                results['norp'] = str(cached_norp)
-                self.result_ready.emit('norp', str(cached_norp))
-            else:
-                self.progress.emit("Searching for Nobeyama (NORP) data…")
-                try:
-                    # https://solar.nro.nao.ac.jp/norp/html/daily/YYYY/MM/plYYMMDD.png
-                    year4 = dt_obj.strftime('%Y')
-                    month = dt_obj.strftime('%m')
-                    year2 = dt_obj.strftime('%y')
-                    date_str2 = dt_obj.strftime('%y%m%d')
-                    norp_url = f"https://solar.nro.nao.ac.jp/norp/html/daily/{year4}/{month}/pl{date_str2}.png"
-                    
-                    req = urllib.request.urlopen(norp_url, timeout=15)
-                    data = req.read()
-                    norp_file = cache.save_spectra(event_date, 'norp', data)
-                    results['norp'] = str(norp_file)
-                    self.result_ready.emit('norp', str(norp_file))
-                    self.progress.emit("Nobeyama (NORP) data found!")
-                except Exception as e:
-                    err_msg = f"Nobeyama (NORP): {str(e)[:50]}"
-                    self.progress.emit(err_msg)
-                    errors.append(err_msg)
-            self._source_done('norp')
-
-            # === ORFEES (Nancay) ===
-            cached_orfees = cache.load_spectra(event_date, 'orfees')
-            if not self.force_refresh and cached_orfees:
-                self.progress.emit("Loading ORFEES from cache…")
-                results['orfees'] = str(cached_orfees)
-                self.result_ready.emit('orfees', str(cached_orfees))
-            else:
-                self.progress.emit("Searching for ORFEES data…")
-                try:
-                    # https://rsdb.obs-nancay.fr/QL/Orfees/orfeesYYYYMMDD.png
-                    url = f"https://rsdb.obs-nancay.fr/QL/Orfees/orfees{event_date.strftime('%Y%m%d')}.png"
-                    import ssl
-                    context = ssl._create_unverified_context()
-                    req = urllib.request.urlopen(url, timeout=15, context=context)
-                    data = req.read()
-                    orfees_file = cache.save_spectra(event_date, 'orfees', data)
-                    results['orfees'] = str(orfees_file)
-                    self.result_ready.emit('orfees', str(orfees_file))
-                    self.progress.emit("ORFEES data found!")
-                except Exception as e:
-                    err_msg = f"ORFEES: {str(e)[:50]}"
-                    self.progress.emit(err_msg)
-                    errors.append(err_msg)
-            self._source_done('orfees')
-
-            # === NDA (Nancay) ===
-            cached_nda = cache.load_spectra(event_date, 'nda')
-            if not self.force_refresh and cached_nda:
-                self.progress.emit("Loading NDA from cache…")
-                results['nda'] = str(cached_nda)
-                self.result_ready.emit('nda', str(cached_nda))
-            else:
-                self.progress.emit("Searching for NDA data…")
-                try:
-                    # https://rsdb.obs-nancay.fr/QL/Nda/NdaP1FYYYYMMDD.png
-                    url = f"https://rsdb.obs-nancay.fr/QL/Nda/NdaP1F{event_date.strftime('%Y%m%d')}.png"
-                    import ssl
-                    context = ssl._create_unverified_context()
-                    req = urllib.request.urlopen(url, timeout=15, context=context)
-                    data = req.read()
-                    nda_file = cache.save_spectra(event_date, 'nda', data)
-                    results['nda'] = str(nda_file)
-                    self.result_ready.emit('nda', str(nda_file))
-                    self.progress.emit("NDA data found!")
-                except Exception as e:
-                    err_msg = f"NDA: {str(e)[:50]}"
-                    self.progress.emit(err_msg)
-                    errors.append(err_msg)
-            self._source_done('nda')
-            # === NICT (Yamagawa or HiRAS) ===
-            from datetime import date
-            NICT_TRANSITION_DATE = date(2016, 7, 11)
-            
-            if event_date >= NICT_TRANSITION_DATE:
-                # Yamagawa
-                cached_yamagawa = cache.load_spectra(event_date, 'yamagawa')
-                if not self.force_refresh and cached_yamagawa:
-                    self.progress.emit("Loading Yamagawa from cache…")
-                    results['yamagawa'] = str(cached_yamagawa)
-                    self.result_ready.emit('yamagawa', str(cached_yamagawa))
-                else:
-                    self.progress.emit("Fetching and stitching Yamagawa data…")
-                    try:
-                        yamagawa_data = self._fetch_nict_spectra('yamagawa', event_date)
-                        if yamagawa_data:
-                            yamagawa_file = cache.save_spectra(event_date, 'yamagawa', yamagawa_data)
-                            results['yamagawa'] = str(yamagawa_file)
-                            self.result_ready.emit('yamagawa', str(yamagawa_file))
-                            self.progress.emit("Yamagawa data stitched!")
-                    except Exception as e:
-                        err_msg = f"Yamagawa: {str(e)[:50]}"
-                        self.progress.emit(err_msg)
-                        errors.append(err_msg)
-            else:
-                # HiRAS
-                cached_hiras = cache.load_spectra(event_date, 'hiras')
-                if not self.force_refresh and cached_hiras:
-                    self.progress.emit("Loading HiRAS from cache…")
-                    results['hiras'] = str(cached_hiras)
-                    self.result_ready.emit('hiras', str(cached_hiras))
-                else:
-                    self.progress.emit("Fetching and stitching HiRAS data…")
-                    try:
-                        hiras_data = self._fetch_nict_spectra('hiras', event_date)
-                        if hiras_data:
-                            hiras_file = cache.save_spectra(event_date, 'hiras', hiras_data)
-                            results['hiras'] = str(hiras_file)
-                            self.result_ready.emit('hiras', str(hiras_file))
-                            self.progress.emit("HiRAS data stitched!")
-                    except Exception as e:
-                        err_msg = f"HiRAS: {str(e)[:50]}"
-                        self.progress.emit(err_msg)
-                        errors.append(err_msg)
-            self._source_done('yamagawa' if event_date >= NICT_TRANSITION_DATE else 'hiras')
-            
+                    self._fetch_source(source, name, results, errors)
+                self._source_done(source)
             self.done.emit(results, errors)
         except Stopped:
             pass
         except Exception as e:
             # Final safety net for the entire worker run
-            if 'results' not in locals():
-                results = {}
-            if 'errors' not in locals():
-                errors = [f"Critical worker error: {str(e)}"]
-            else:
-                errors.append(f"Critical worker error: {str(e)}")
+            errors.append(f"Critical worker error: {str(e)}")
             self.done.emit(results, errors)
-            
+
+    def _fetch_source(self, source, name, results, errors):
+        """Fetch one source; if it brings nothing, say why."""
+        try:
+            data = getattr(self, f"_fetch_{source}")()
+            if data:
+                self._found(source, _noaa_cache.save_spectra(self.event_datetime.date(), source, data), results)
+                self.progress.emit(f"{name} data found!")
+            else:
+                self.progress.emit(f"No {name} data for this date")
+                self.source_failed.emit(source, "no_file", f"No {name} file for this date")
+        except Exception as e:
+            err_msg = f"{name}: {str(e)[:50]}"
+            self.progress.emit(err_msg)
+            errors.append(err_msg)
+            self.source_failed.emit(source, _failure_kind(e), str(e))
+
+    @staticmethod
+    def _read(url, timeout=15, context=None):
+        import urllib.request
+
+        extra = {"context": context} if context is not None else {}
+        return urllib.request.urlopen(url, timeout=timeout, **extra).read()
+
+    def _fetch_wind(self):
+        date_str = self.event_datetime.strftime('%Y%m%d')
+        date_path = self.event_datetime.strftime('%Y/%m/%d')
+        self.progress.emit("Searching for calibrated WIND/WAVES data…")
+        try:
+            # Calibrated source: test_daily/YYYY/YYYYMMDD_windwaves__scale_2to6sfu_l2_cdf_v1.jpg
+            filename = f"{date_str}_windwaves__scale_2to6sfu_l2_cdf_v1.jpg"
+            return self._read(f"{self.WAVES_CALIBRATED_URL}{self.event_datetime.year}/{filename}")
+        except Exception:
+            # Many dates have no calibrated file: only the fallback's answer counts
+            self.progress.emit("Calibrated source unavailable, trying fallback…")
+
+        wind_dir_url = f"{self.WAVES_URL_24H}{date_path}/"
+        html = self._read(wind_dir_url).decode('utf-8')
+        # Parse for 24h windwaves PNG files (prefer h2M over h2hk)
+        matches = re.findall(r'href="([^"]*windwaves_h2M_sfu_24h\.png)"', html, re.IGNORECASE)
+        if not matches:
+            matches = re.findall(r'href="([^"]*windwaves_h2hk_sfu_24h\.png)"', html, re.IGNORECASE)
+        # The latest 24h image: the last one of the day
+        best_match = self._find_latest_image(matches)
+        return self._read(f"{wind_dir_url}{best_match}", timeout=30) if best_match else None
+
+    def _fetch_stereo(self, pattern_new, pattern_old, name):
+        """A day's 7-hour plots side by side, or the latest if they cannot be."""
+        year = self.event_datetime.year
+        swaves_url = self.SWAVES_URL_NEW if year >= 2018 else self.SWAVES_URL
+        stereo_dir_url = f"{swaves_url}{self.event_datetime.strftime('%Y/%m/%d')}/"
+        self.progress.emit(f"Searching for {name} data…")
+        html = self._read(stereo_dir_url).decode('utf-8')
+        pattern = pattern_old if swaves_url == self.SWAVES_URL else pattern_new
+        matches = sorted(re.findall(pattern, html, re.IGNORECASE))
+        if not matches:
+            return None
+        self.progress.emit(f"Stitching {name} images…")
+        stitched = self._stitch_images(stereo_dir_url, matches)
+        if stitched:
+            return stitched
+        best = self._find_latest_image(matches)
+        return self._read(f"{stereo_dir_url}{best}", timeout=30) if best else None
+
+    def _fetch_stereo_a(self):
+        # Old format (2007-2017): swaves2A; new format (2018+): sta_waves_7h
+        return self._fetch_stereo(r'href="([^"]*sta_waves_7h[^"]*\.png)"', r'href="([^"]*swaves2A\.png)"', "STEREO-A")
+
+    def _fetch_stereo_b(self):
+        return self._fetch_stereo(r'href="([^"]*swaves2B\.png)"', r'href="([^"]*swaves2B\.png)"', "STEREO-B")
+
+    def _fetch_norp(self):
+        self.progress.emit("Searching for Nobeyama (NORP) data…")
+        return self._read(self.event_datetime.strftime(
+            "https://solar.nro.nao.ac.jp/norp/html/daily/%Y/%m/pl%y%m%d.png"
+        ))
+
+    def _fetch_nancay(self, url, name):
+        import ssl
+
+        self.progress.emit(f"Searching for {name} data…")
+        return self._read(self.event_datetime.strftime(url), context=ssl._create_unverified_context())
+
+    def _fetch_orfees(self):
+        return self._fetch_nancay("https://rsdb.obs-nancay.fr/QL/Orfees/orfees%Y%m%d.png", "ORFEES")
+
+    def _fetch_nda(self):
+        return self._fetch_nancay("https://rsdb.obs-nancay.fr/QL/Nda/NdaP1F%Y%m%d.png", "NDA")
+
+    def _fetch_yamagawa(self):
+        self.progress.emit("Fetching and stitching Yamagawa data…")
+        return self._fetch_nict_spectra('yamagawa', self.event_datetime.date())
+
+    def _fetch_hiras(self):
+        self.progress.emit("Fetching and stitching HiRAS data…")
+        return self._fetch_nict_spectra('hiras', self.event_datetime.date())
+
     def _fetch_nict_spectra(self, station: str, event_date: date) -> Optional[bytes]:
         """Fetch hourly strips, legend, and range from NICT and stitch them horizontally.
         
@@ -833,13 +759,12 @@ class DHSpectraWorker(StoppableThread):
             prefix = name = "HiRAS"
 
         def download_pil_image(url):
-            try:
-                r = requests.get(url, headers=headers, timeout=10)
-                if r.status_code == 200:
-                    return Image.open(io.BytesIO(r.content))
-            except Exception as e:
-                print(f"Error downloading {url}: {e}")
-            return None
+            """The image, ``None`` if the archive has no such file; a server
+            that fails does not read as an empty archive."""
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code >= 500:
+                raise RuntimeError(f"HTTP {r.status_code} from {url}")
+            return Image.open(io.BytesIO(r.content)) if r.status_code == 200 else None
 
         # 1. Download legend and range
         cb = download_pil_image(f"{fixed_url}/{prefix}_FIXTMIMG_legend.png")
@@ -850,6 +775,7 @@ class DHSpectraWorker(StoppableThread):
 
         # 2. Download 24 hourly images
         hourly_images = []
+        real_hours = 0
         target_size = (450, 600) 
         
         year = event_date.strftime("%Y")
@@ -872,10 +798,14 @@ class DHSpectraWorker(StoppableThread):
                 else:
                     img = Image.new('RGB', target_size, (0, 0, 0))
             else:
+                real_hours += 1
                 if img.size != target_size:
                     target_size = img.size
             
             hourly_images.append(img)
+
+        if not real_hours:
+            return None  # the fixed fallbacks alone are no day of data
 
         # 3. Stitch
         max_height = max(cb.height, ax.height, max(img.height for img in hourly_images))

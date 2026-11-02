@@ -163,14 +163,13 @@ class WindowDialogsMixin:
         try:
             from ..noaa_events import show_noaa_events_viewer
 
-            # The date of the open image, if there is one
+            # The date and time of the open image, if there is one
             current_tab = self.tab_widget.currentWidget()
             with busy("Reading the observation date…", self):
                 when = current_tab._observation_datetime() if current_tab else None
-            initial_date = when.date() if when is not None else None
 
             # Show the viewer
-            self._noaa_events_viewer = show_noaa_events_viewer(self, initial_date)
+            self._noaa_events_viewer = show_noaa_events_viewer(self, when)
 
         except Exception:
             logger.exception("Could not open the solar activity viewer")

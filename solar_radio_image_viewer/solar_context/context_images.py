@@ -4,10 +4,16 @@ Context Images Fetcher - Get solar context imagery from Helioviewer API or Solar
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timezone
 from typing import Callable, List, Optional, Tuple
+import logging
 import re
 from urllib.parse import urljoin
+
+logger = logging.getLogger(__name__)
+
+NOON = time(12, 0)
+ARCHIVE_FOLDER = re.compile(r"/data/(\d{4})/(\d{2})/(\d{2})/")  # SolarMonitor's, by observation date
 
 
 @dataclass
@@ -115,8 +121,45 @@ ESSENTIAL_INSTRUMENTS = [
 ]
 
 
+def image_moment(image) -> Optional[datetime]:
+    """When ``image`` was observed, as a naive UTC datetime, if it says so.
+    (``load_images`` leaves a date it could not parse as a string.)"""
+    moment = getattr(image, "image_date", None)
+    if not isinstance(moment, datetime):
+        return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
+    return moment
+
+
+def image_day(image) -> Optional[date]:
+    """The UTC date ``image`` was observed on, or None if that cannot be
+    proved: Helioviewer's closest image may be from any date, and only a
+    SolarMonitor file's folder dates it without a time."""
+    moment = image_moment(image)
+    if moment is not None:
+        return moment.date()
+    folder = ARCHIVE_FOLDER.search(getattr(image, "thumb_url", None) or "")
+    if folder is None:
+        return None
+    try:
+        return date(*map(int, folder.groups()))
+    except ValueError:
+        return None
+
+
+def images_of_date(images, day: date) -> Tuple[list, list]:
+    """``images`` split into those observed on ``day`` and the others."""
+    kept, left_out = [], []
+    for image in images or []:
+        (kept if image_day(image) == day else left_out).append(image)
+    return kept, left_out
+
+
 def fetch_from_helioviewer(
-    event_date: date, progress: Optional[Callable[[int, int], None]] = None
+    event_date: date,
+    progress: Optional[Callable[[int, int], None]] = None,
+    when: time = NOON,
 ) -> List[ContextImage]:
     """
     Fetch essential context images from Helioviewer API as PNG screenshots.
@@ -124,12 +167,13 @@ def fetch_from_helioviewer(
     Args:
         event_date: Date to fetch images for
         progress: Called with (images looked up, images in all) before each lookup
+        when: The UTC time of day to find the images nearest to
 
     Returns:
         List of ContextImage objects with PNG image URLs
     """
     # Format date for Helioviewer API (ISO 8601 UTC)
-    date_str = f"{event_date.strftime('%Y-%m-%d')}T12:00:00Z"
+    date_str = f"{event_date.strftime('%Y-%m-%d')}T{when.strftime('%H:%M:%S')}Z"
 
     images = []
 
@@ -149,12 +193,12 @@ def fetch_from_helioviewer(
             # LASCO C2: Inner coronagraph - needs MORE FoV than before
             thumb_params = {
                 "date": date_str,
-                "imageScale": "75",
+                "imageScale": "37.5",
                 "layers": layer_path,
                 "x0": "0",
                 "y0": "0",
-                "width": "160",
-                "height": "160",
+                "width": "320",
+                "height": "320",
                 "display": "true",
                 "watermark": "false",
             }
@@ -173,12 +217,12 @@ def fetch_from_helioviewer(
             # LASCO C3: Outer coronagraph - needs A LOT MORE FoV
             thumb_params = {
                 "date": date_str,
-                "imageScale": "240",
+                "imageScale": "120",
                 "layers": layer_path,
                 "x0": "0",
                 "y0": "0",
-                "width": "160",
-                "height": "160",
+                "width": "320",
+                "height": "320",
                 "display": "true",
                 "watermark": "false",
             }
@@ -197,12 +241,12 @@ def fetch_from_helioviewer(
             # Solar disk images - need LESS FoV (less black space)
             thumb_params = {
                 "date": date_str,
-                "imageScale": "15.0",
+                "imageScale": "7.5",
                 "layers": layer_path,
                 "x0": "0",
                 "y0": "0",
-                "width": "160",
-                "height": "160",
+                "width": "320",
+                "height": "320",
                 "display": "true",
                 "watermark": "false",
             }
@@ -236,7 +280,7 @@ def fetch_from_helioviewer(
                 if img_date_str:
                     image_date = datetime.strptime(img_date_str, "%Y-%m-%d %H:%M:%S")
         except Exception as e:
-            print(f"Failed to fetch image date for {nickname}: {e}")
+            logger.warning("Failed to fetch image date for %s: %s", nickname, e)
 
         images.append(
             ContextImage(
@@ -330,6 +374,7 @@ def fetch_context_images(
     event_date: date,
     use_helioviewer: bool = True,
     progress: Optional[Callable[[int, int], None]] = None,
+    when: Optional[time] = None,
 ) -> List[ContextImage]:
     """
     Fetch context images for a given date.
@@ -339,18 +384,23 @@ def fetch_context_images(
         use_helioviewer: If True, use Helioviewer API (default, returns PNG).
                         If False, use SolarMonitor (strict backup only).
         progress: Called with (images looked up, images in all), for Helioviewer
+        when: The UTC time of day to look near, instead of the day's noon list.
+              Helioviewer only: SolarMonitor has one image a day.
 
     Returns:
         List of ContextImage objects
     """
+    if when is not None:
+        return fetch_from_helioviewer(event_date, progress, when)
+
     if use_helioviewer:
         images = fetch_from_helioviewer(event_date, progress)
-        # The list is built whether or not Helioviewer answers: it is the
-        # image times that show it did
-        if any(image.image_date for image in images):
+        # The list is built whether or not Helioviewer answers, and what it
+        # answers may be from another date: only an image of the day will do
+        if any(image_day(image) == event_date for image in images):
             return images
         # Fall back to SolarMonitor if Helioviewer fails
-        print("Helioviewer fetch failed, falling back to SolarMonitor")
+        logger.info("Helioviewer has no image of %s, falling back to SolarMonitor", event_date)
         return fetch_from_solarmonitor(event_date) or images
 
     return fetch_from_solarmonitor(event_date)

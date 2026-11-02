@@ -164,11 +164,12 @@ def create_error_frame(
 STOKES_CODES = {"I": 1, "Q": 2, "U": 3, "V": 4}
 
 
-def observation_time(header, filepath=None):
+def observation_time(header, filepath=None, plain_date=False):
     """Observation time of an image as a datetime, or None if unknown.
 
     From the header (DATE-OBS and its variants, with a separate TIME-OBS if
-    the date has no time), else from a date in the file name.
+    the date has no time), else from a date in the file name. With
+    ``plain_date``, a source that gives no time gives a date, not its 00:00.
     """
     from astropy.time import Time
 
@@ -183,9 +184,11 @@ def observation_time(header, filepath=None):
                 if time_obs:
                     text = f"{text}T{str(time_obs).strip()}"
             try:
-                return Time(text.replace(" ", "T")).to_datetime()
+                when = Time(text.replace(" ", "T")).to_datetime()
             except Exception:
                 continue
+            timed = "T" in text or " " in text
+            return when.date() if plain_date and not timed else when
 
     if filepath:
         filename = os.path.basename(filepath)
@@ -199,10 +202,12 @@ def observation_time(header, filepath=None):
             match = re.search(pattern, filename)
             if match:
                 digits = re.sub(r"\D", "", match.group(1))
+                timed = len(digits) == 14
                 try:
-                    return datetime.strptime(digits, "%Y%m%d%H%M%S" if len(digits) == 14 else "%Y%m%d")
+                    when = datetime.strptime(digits, "%Y%m%d%H%M%S" if timed else "%Y%m%d")
                 except ValueError:
                     continue
+                return when.date() if plain_date and not timed else when
     return None
 
 

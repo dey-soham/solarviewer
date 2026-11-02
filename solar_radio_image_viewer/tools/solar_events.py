@@ -3,6 +3,8 @@ Context lookups for the current image: NOAA events and Helioviewer.
 """
 
 import logging
+from datetime import datetime, time
+
 from ..processing.fits_io import is_fits
 from ..processing.image_meta import casa_info, casa_obs_time, fits_header
 from ..ui.background import Cancelled, run_in_thread
@@ -36,7 +38,7 @@ class SolarEventsMixin:
         """When the current image was taken, as a datetime, or None: from its
         header (as the plot title reads it, so a LASCO date with slashes and a
         separate TIME-OBS count), its CASA coordinate system, or a date in
-        its file name."""
+        its file name; a plain date if the source gives no time."""
         from ..video.creator import observation_time
 
         imagename = getattr(self, "imagename", None)
@@ -55,7 +57,7 @@ class SolarEventsMixin:
                     return t.to_datetime()
             except Exception as e:
                 logger.warning(f"Could not read the CASA observation time: {e}")
-        return observation_time(header, imagename)
+        return observation_time(header, imagename, plain_date=True)
 
     def show_noaa_events_for_current_image(self):
         """Show NOAA Solar Events for the current image date and auto-fetch events."""
@@ -75,9 +77,8 @@ class SolarEventsMixin:
 
             with busy("Reading the observation date…", self):
                 when = self._observation_datetime()
-            extracted_date = when.date() if when is not None else None
 
-            if extracted_date is None:
+            if when is None:
                 from PyQt5.QtWidgets import QMessageBox
 
                 QMessageBox.warning(
@@ -94,17 +95,13 @@ class SolarEventsMixin:
             # Get main window to store reference
             main_window = self.window()
 
-            # Create and show the viewer with the date
+            # At the image's date and time; fetches the lists if they are not here
             with busy("Opening NOAA events…", self):
-                from ..noaa_events.noaa_events_gui import NOAAEventsViewer
+                from ..noaa_events.noaa_events_gui import show_noaa_events_viewer
 
-                viewer = NOAAEventsViewer(self, extracted_date)
+                viewer = show_noaa_events_viewer(self, when)
                 if main_window:
                     main_window._noaa_events_viewer = viewer
-                viewer.show()
-
-            # Auto-fetch events for the extracted date
-            viewer.fetch_data()
 
         except Exception as e:
             from PyQt5.QtWidgets import QMessageBox
@@ -152,6 +149,8 @@ class SolarEventsMixin:
                 initial_end = None
 
                 if obs_datetime:
+                    if not isinstance(obs_datetime, datetime):
+                        obs_datetime = datetime.combine(obs_datetime, time())
                     start_dt = obs_datetime - timedelta(minutes=30)
                     end_dt = obs_datetime + timedelta(minutes=30)
                     initial_start = QDateTime(start_dt)
