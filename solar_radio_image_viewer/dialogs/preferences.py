@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
+from ..ui.app import display_scale, smallest_ui_scale
 from ..ui.geometry import fit_width_to_text
 from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import SPACE_M, SPACE_XS, set_hand_cursor
@@ -28,6 +29,7 @@ class PreferencesDialog(QDialog):
         from PyQt5.QtCore import QSettings
 
         self.settings = QSettings("SolarViewer", "SolarViewer")
+        self.lowest_scale = smallest_ui_scale(display_scale())
 
         self.setup_ui()
         set_hand_cursor(self)
@@ -43,7 +45,8 @@ class PreferencesDialog(QDialog):
         # Description label
         desc_label = QLabel(
             "Adjust the UI scale factor for high-DPI displays.\n"
-            "Default is 1.0 (100%). Increase for larger UI elements."
+            "Default is 1.0 (100%). Increase for larger UI elements.\n"
+            f"The smallest this display can show is {self.lowest_scale:.2f}x."
         )
         desc_label.setObjectName("Hint")
         desc_label.setWordWrap(True)
@@ -52,11 +55,11 @@ class PreferencesDialog(QDialog):
         # Scale slider with value display
         slider_layout = QHBoxLayout()
 
-        # Scale slider - use 5% increments (values 50-200 representing 0.50-2.00)
+        # Scale slider - use 5% increments (values are percentages, up to 200)
         from PyQt5.QtWidgets import QSlider
 
         self.scale_slider = QSlider(Qt.Horizontal)
-        self.scale_slider.setMinimum(50)  # 0.5x
+        self.scale_slider.setMinimum(round(self.lowest_scale * 100))
         self.scale_slider.setMaximum(200)  # 2.0x
         self.scale_slider.setSingleStep(5)  # 5% increments when using arrows
         self.scale_slider.setPageStep(10)  # 10% increments when clicking track
@@ -65,11 +68,11 @@ class PreferencesDialog(QDialog):
 
         # Load current scale value
         current_scale = self.settings.value("ui_scale_factor", 1.0, type=float)
-        self.scale_slider.setValue(int(current_scale * 100))
+        self.scale_slider.setValue(round(current_scale * 100))
 
         # Spinbox for precise value entry
         self.scale_spinbox = QDoubleSpinBox()
-        self.scale_spinbox.setRange(0.5, 2.0)
+        self.scale_spinbox.setRange(self.lowest_scale, 2.0)
         self.scale_spinbox.setSingleStep(0.05)
         self.scale_spinbox.setDecimals(2)
         self.scale_spinbox.setSuffix("x")
@@ -80,9 +83,9 @@ class PreferencesDialog(QDialog):
         self.scale_slider.valueChanged.connect(self._on_slider_changed)
         self.scale_spinbox.valueChanged.connect(self._on_spinbox_changed)
 
-        slider_layout.addWidget(QLabel("0.5x"))
+        slider_layout.addWidget(QLabel(f"{self.lowest_scale:.2f}x"))
         slider_layout.addWidget(self.scale_slider, 1)
-        slider_layout.addWidget(QLabel("2.0x"))
+        slider_layout.addWidget(QLabel("2.00x"))
         slider_layout.addWidget(self.scale_spinbox)
 
         scale_layout.addLayout(slider_layout)
@@ -101,6 +104,8 @@ class PreferencesDialog(QDialog):
             ("175%", 1.75),
         ]
         for label, value in presets:
+            if value < self.lowest_scale:
+                continue
             btn = QPushButton(label)
             btn.clicked.connect(lambda checked, v=value: self._set_scale(v))
             preset_layout.addWidget(btn)
@@ -133,7 +138,7 @@ class PreferencesDialog(QDialog):
         """Update slider when spinbox value changes."""
         # Block signals to prevent feedback loop
         self.scale_slider.blockSignals(True)
-        self.scale_slider.setValue(int(value * 100))
+        self.scale_slider.setValue(round(value * 100))
         self.scale_slider.blockSignals(False)
 
     def _set_scale(self, value):
@@ -143,7 +148,10 @@ class PreferencesDialog(QDialog):
     def _save_and_close(self):
         """Save settings and close dialog."""
         scale = self.scale_spinbox.value()  # Use spinbox for more precise value
-        current_scale = self.settings.value("ui_scale_factor", 1.0, type=float)
+        # (what is in use: a saved value too low for this display is not)
+        current_scale = max(
+            self.settings.value("ui_scale_factor", 1.0, type=float), self.lowest_scale
+        )
 
         self.settings.setValue("ui_scale_factor", scale)
 
