@@ -105,7 +105,7 @@ class ElidedLabel(QLabel):
         self.style().drawPrimitive(QStyle.PE_Widget, option, painter, self)
         text = self.fontMetrics().elidedText(self.text(), Qt.ElideRight, self.contentsRect().width())
         self.style().drawItemText(
-            painter, self.contentsRect(), Qt.AlignLeft | Qt.AlignVCenter, self.palette(), self.isEnabled(), text,
+            painter, self.contentsRect(), int(self.alignment()), self.palette(), self.isEnabled(), text,
             self.foregroundRole(),
         )
         painter.end()
@@ -168,23 +168,32 @@ class ImageZoomView(QGraphicsView):
         self._picture = QGraphicsPixmapItem()
         self._picture.setTransformationMode(Qt.SmoothTransformation)
         self.scene().addItem(self._picture)
-        self._marker = QGraphicsLineItem()
-        self._marker.setZValue(1)
-        self._marker.hide()
-        self.scene().addItem(self._marker)
+        self._marker = self._new_line()
+        self._marker_rest = []  # the lines of a figure with more than one time axis
         self._fitted = True
         themed(self, self._style_marker)
+
+    def _new_line(self):
+        line = QGraphicsLineItem()
+        line.setZValue(1)
+        line.hide()
+        self.scene().addItem(line)
+        return line
+
+    def _lines(self):
+        return [self._marker, *self._marker_rest]
 
     def _style_marker(self, palette):
         pen = QPen(QColor(palette["highlight"]), 1)
         pen.setCosmetic(True)
-        self._marker.setPen(pen)
+        for line in self._lines():
+            line.setPen(pen)
 
     def set_image(self, image):
         """Show the QImage ``image`` at Fit."""
         self._picture.setPixmap(QPixmap.fromImage(image))
         self.scene().setSceneRect(self._picture.boundingRect())
-        self._marker.hide()
+        self.set_marks([])
         self.fit()
 
     def fit(self):
@@ -199,14 +208,24 @@ class ImageZoomView(QGraphicsView):
 
     def set_marker(self, image_x):
         """A vertical line at ``image_x``, ``None`` removes it."""
-        if image_x is None:
-            self._marker.hide()
-            return
-        self._marker.setLine(QLineF(image_x, 0, image_x, self._picture.boundingRect().height()))
-        self._marker.show()
-        if not self._fitted:  # zoomed: the view goes along, at its own height
+        self.set_marks([] if image_x is None else [(image_x, None, None)])
+
+    def set_marks(self, marks):
+        """Vertical lines at ``[(image_x, top row, bottom row)]``, ``None`` rows
+        being the image's own edges, and no others."""
+        while len(self._lines()) < len(marks):
+            self._marker_rest.append(self._new_line())
+            self._style_marker(theme_manager.palette)
+        height = self._picture.boundingRect().height()
+        lines = self._lines()
+        for line, (image_x, top, bottom) in zip(lines, marks):
+            line.setLine(QLineF(image_x, top or 0, image_x, height if bottom is None else bottom))
+            line.show()
+        for line in lines[len(marks):]:
+            line.hide()
+        if marks and not self._fitted:  # zoomed: the view goes along, at its own height
             middle = self.mapToScene(self.viewport().rect().center()).y()
-            self.ensureVisible(QRectF(image_x, middle, 1, 1))
+            self.ensureVisible(QRectF(marks[0][0], middle, 1, 1))
 
     def wheelEvent(self, event):
         steps = event.angleDelta().y() / 120
@@ -238,8 +257,9 @@ class FullImageViewer(QDialog):
     """Dialog to view high-resolution image. ``save``, if given, is what its
     Save high-res… button calls."""
 
-    def __init__(self, parent, title, page_url, save=None):
+    def __init__(self, parent, title, page_url, save=None, event_date=None):
         super().__init__(parent)
+        self.event_date = event_date  # what a file naming its own date has to agree with
         self.setWindowTitle(f"{title}: high resolution")
         self.setWindowFlags(
             Qt.Window | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
@@ -301,7 +321,7 @@ class FullImageViewer(QDialog):
             self.img_label.start_loading("Downloading the image…")
 
             # Download
-            self.downloader = ImageLoader(full_url)
+            self.downloader = ImageLoader(full_url, event_date=self.event_date)
             self.downloader.loaded.connect(self.on_image_loaded)
             self.downloader.error.connect(self.on_image_error)
             self.downloader.received.connect(self.on_image_received)

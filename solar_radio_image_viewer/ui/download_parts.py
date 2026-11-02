@@ -40,6 +40,11 @@ def abandon(worker):
             _abandoned.discard(worker)
 
 
+def abandoned(kind):
+    """How many threads of ``kind`` are still on their way out."""
+    return sum(isinstance(worker, kind) for worker in list(_abandoned))
+
+
 def _import_quietly(names):
     """Import ``names`` ahead of the module that needs them, which reports
     anything missing."""

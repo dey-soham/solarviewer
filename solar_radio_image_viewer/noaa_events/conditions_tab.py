@@ -25,6 +25,8 @@ from ..ui.geometry import fit_to_screen
 from ..ui.plot_theme import figure_toolbar, follow_theme
 from ..ui.styles import CONTROL_HEIGHT, SPACE_M, SPACE_S, SPACE_XS, themed
 
+from .day_records_view import view_switch
+from .indices_view import IndicesPanel, kp_text, storm_tone
 from .widgets import EventTable, follow_cell_tones, set_cell_tone, source_note
 from .workers import GOESPlotWorker
 logger = logging.getLogger(__name__)
@@ -33,18 +35,15 @@ CARD_WIDTH = 360  # of a card of values: a wide window does not spread them apar
 NOT_IN_LIST = "not in the day's region list"
 LEAST_ROWS = 6  # of the regions table, header included
 RISK_TONES = {"Very High": "error", "High": "warning"}
-
-
-def kp_text(value):
-    """A Kp value in the thirds it is given in: 2, 2+, 3-."""
-    thirds = round(value * 3)
-    return f"{(thirds + 1) // 3}" + {0: "", 1: "+", 2: "-"}[thirds % 3]
-
-
-def storm_tone(kp_max):
-    """The one rule for a tone here: none below G1, so that a quiet day reads
-    as quiet."""
-    return "error" if kp_max >= 7 else "warning" if kp_max >= 5 else None
+CONDITIONS_VIEWS = ("Regions", "Indices")
+INDEX_CREDITS = (
+    'Data sources: <a href="https://kp.gfz-potsdam.de/">GFZ Potsdam</a> (Kp, Hp30, Ap, CC BY 4.0), '
+    '<a href="https://wdc.kugi.kyoto-u.ac.jp/dstdir/">WDC Kyoto</a> (Dst), '
+    '<a href="https://omniweb.gsfc.nasa.gov/">NASA OMNI</a> via CDAWeb, '
+    '<a href="https://www.swpc.noaa.gov/">NOAA SWPC</a> via '
+    '<a href="https://iswa.gsfc.nasa.gov/">CCMC iSWA</a> (protons, real-time wind), '
+    '<a href="https://www.ncei.noaa.gov/products/goes-space-environment-monitor">NOAA NCEI</a>'
+)
 
 
 def region_key(number):
@@ -104,6 +103,16 @@ def _values_card(title, keys):
     return card, cells
 
 
+def _scrolled(widget):
+    """``widget`` in a frameless area: a short window scrolls here."""
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setWidget(widget)
+    return scroll
+
+
 class ConditionsTabMixin:
     """Builds and fills the Regions and indices tab.
 
@@ -119,15 +128,26 @@ class ConditionsTabMixin:
     def _create_regions_tab(self):
         """The day's regions over the cards of its indices."""
         page = QWidget()
-        # A short window scrolls here, not down to a table of two rows
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(page)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, SPACE_M, 0, 0)
         layout.setSpacing(SPACE_S)
 
+        regions, indices = _scrolled(self._create_regions_view()), self._create_indices_view()
+        switch, self.conditions_views = view_switch(CONDITIONS_VIEWS, (regions, indices), self)
+        row = QHBoxLayout()
+        row.addWidget(switch)
+        row.addStretch()
+        layout.addLayout(row)
+        layout.addWidget(regions, 1)
+        layout.addWidget(indices, 1)
+        self.tabs.addTab(page, "Regions and indices")
+
+    def _create_regions_view(self):
+        """The day's regions."""
+        view = QWidget()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(SPACE_S)
         self.ar_table = EventTable(
             [
                 "AR#",
@@ -146,6 +166,35 @@ class ConditionsTabMixin:
         self.ar_table.setMinimumHeight(LEAST_ROWS * CONTROL_HEIGHT)
         layout.addWidget(self.ar_table, 1)
 
+        self.ar_info_label = QLabel()
+        self.ar_info_label.setObjectName("Hint")
+        self.ar_info_label.hide()
+        layout.addWidget(self.ar_info_label)
+
+        layout.addWidget(source_note(
+            'Data sources: <a href="https://solarmonitor.org/">SolarMonitor.org</a> '
+            "(NOAA/SWPC Solar Region Summary &amp; ARM Flare Forecasts)"
+        ))
+        return view
+
+    def _create_indices_view(self):
+        """The day's indices on the time column, over the cards that sum them up."""
+        view = QWidget()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(SPACE_S)
+        self.indices = IndicesPanel(self.day_axis)
+        layout.addWidget(self.indices)
+
+        self.records_status = QLabel()
+        self.records_status.setObjectName("Hint")
+        self.records_status.setWordWrap(True)
+        layout.addWidget(self.records_status)
+
+        below = QWidget()
+        below_layout = QVBoxLayout(below)
+        below_layout.setContentsMargins(0, 0, 0, 0)
+        below_layout.setSpacing(SPACE_S)
         cards = QHBoxLayout()
         cards.setSpacing(SPACE_M)
 
@@ -164,9 +213,10 @@ class ConditionsTabMixin:
         self.wind_card, (
             self.sw_speed_label,
             self.sw_density_label,
+            self.sw_bz_label,
             self.sw_temp_label,
             self.sw_status_label,
-        ) = _values_card("Solar wind (real-time)", ("Speed", "Density", "Temperature", "Status"))
+        ) = _values_card("Solar wind (daily)", ("Speed", "Density", "Bz (GSM)", "Temperature", "Status"))
         cards.addWidget(self.wind_card, 1)
         self.wind_card.hide()  # Only show when available
 
@@ -180,28 +230,34 @@ class ConditionsTabMixin:
             ("10.7 cm flux", "Sunspot number", "Sunspot area", "Activity level"),
         )
         cards.addWidget(f107_card, 1)
-        cards.addStretch()
-        layout.addLayout(cards)
 
-        notes = QHBoxLayout()
-        notes.setSpacing(SPACE_M)
-        self.ar_info_label = QLabel()
-        self.ar_info_label.setObjectName("Hint")
-        self.ar_info_label.hide()
-        notes.addWidget(self.ar_info_label)
+        self.forecast_card, (
+            self.fc_issued_label,
+            self.fc_days_label,
+            self.fc_kp_label,
+            self.fc_s1_label,
+            self.fc_r1_label,
+            self.fc_r3_label,
+        ) = _values_card(
+            "SWPC forecast, today only",
+            ("Issued", "For", "Largest Kp", "S1 or greater", "R1-R2", "R3 or greater"),
+        )
+        cards.addWidget(self.forecast_card, 1)
+        self.forecast_card.hide()
+        cards.addStretch()
+        below_layout.addLayout(cards)
+
         self.conditions_info_label = QLabel()
         self.conditions_info_label.setObjectName("Hint")
-        notes.addWidget(self.conditions_info_label)
-        notes.addStretch()
-        layout.addLayout(notes)
+        below_layout.addWidget(self.conditions_info_label)
+        below_layout.addStretch()
 
-        layout.addWidget(source_note(
-            'Data sources: <a href="https://solarmonitor.org/">SolarMonitor.org</a> '
-            "(NOAA/SWPC Solar Region Summary &amp; ARM Flare Forecasts), "
-            '<a href="https://www.swpc.noaa.gov/">NOAA SWPC</a>'
-        ))
-
-        self.tabs.addTab(scroll, "Regions and indices")
+        credits_label = source_note(INDEX_CREDITS)
+        credits_label.setWordWrap(True)
+        below_layout.addWidget(credits_label)
+        # The strips keep the time column whole: only what is under them scrolls
+        layout.addWidget(_scrolled(below), 1)
+        return view
 
     def display_active_regions(self, regions):
         """Display active regions in the AR table, with the day's flares of
@@ -289,6 +345,7 @@ class ConditionsTabMixin:
 
     def display_solar_conditions(self, conditions):
         """Display solar conditions for the selected date."""
+        self.shown_conditions = conditions
         if conditions is None:
             self.conditions_info_label.setText(
                 "Unable to fetch solar conditions data"
@@ -299,12 +356,11 @@ class ConditionsTabMixin:
             self.geo_kp_vals_label.setText("—")
             self.geo_storm_label.setText("—")
             set_cell_tone(self.geo_storm_label, None)
-            self.wind_card.hide()
             self._clear_f107()
             return
 
-        # Update title label to show data source
-        self.conditions_info_label.setText(f"{conditions.data_source}")
+        # What the card of solar indices stands on
+        self.conditions_info_label.setText(f"Daily solar indices: {conditions.data_source}")
 
         # 1. Geomagnetic Data (Kp)
         if conditions.kp_index:
@@ -323,20 +379,6 @@ class ConditionsTabMixin:
             self.geo_kp_vals_label.setText("No data for this date")
             self.geo_storm_label.setText("Data unavailable")
             set_cell_tone(self.geo_storm_label, None)
-
-        # 2. Solar Wind Data (Real-time only)
-        if hasattr(conditions, "solar_wind") and conditions.solar_wind:
-            sw = conditions.solar_wind
-            self.wind_card.show()
-            self.sw_speed_label.setText(f"{sw.speed:.0f} km/s")
-            self.sw_density_label.setText(f"{sw.density:.1f} p/cm³")
-            self.sw_temp_label.setText(f"{sw.temperature:.0f} K")
-
-            status_text = sw.speed_category
-            self.sw_status_label.setText(f"{status_text} speed")
-            set_cell_tone(self.sw_status_label, {"High": "error", "Elevated": "warning"}.get(status_text))
-        else:
-            self.wind_card.hide()
 
         # F10.7 Flux (historical daily data)
         if conditions.f107_flux:

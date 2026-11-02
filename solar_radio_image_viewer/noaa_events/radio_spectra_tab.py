@@ -5,10 +5,11 @@ aligned stack on the window's time column or as the archive's own images.
 An image only joins the stack once its time axis has been read from its pixels
 (:func:`register`). A silent offset is worse than no axis, so anything not
 recognised exactly is refused, and stays available as the archive drew it.
+EOVSA, OVRO-LWA and Learmonth lanes are made from more than one file
+(:mod:`.spectra_reading`), and show the archive's plot in the large view.
 """
 
 import base64
-import hashlib
 import logging
 import os
 import re
@@ -18,10 +19,9 @@ from collections import namedtuple
 from datetime import datetime
 from functools import lru_cache, partial
 from itertools import product
-from typing import NamedTuple
 
 import numpy as np
-from PyQt5.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QPointF, QRectF, QSettings, QSize, Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -75,9 +75,24 @@ from ..ui.styles import (
 )
 from ..ui.widgets import button_bar, dialog_layout, empty_note, kicker, link_button, segmented
 
-from .cache import _noaa_cache
-from .widgets import ImageZoomView, source_note
-from .workers import DHSpectraWorker, StoppableThread, expected_sources
+from .cache import _noaa_cache, keep
+from .spectra_reading import (
+    CONTEXT_SIZE,
+    SMALL_HOURS_UNPROVEN,
+    Registration,
+    _context,
+    _lwa_daily,
+    _xsp,
+    composite_view,
+    grey_of,
+    learmonth_lane,
+    lwa_plot,
+    ovsa_lane,
+    print_of,
+    read_context,
+)
+from .widgets import ElidedLabel, ImageZoomView, set_source_note, source_note
+from .workers import DHSpectraWorker, FileSaver, StoppableThread, _still_growing, expected_sources
 
 logger = logging.getLogger(__name__)
 
@@ -85,24 +100,37 @@ CDAW_PAGE = "https://cdaw.gsfc.nasa.gov/"
 NICT_PAGE = "https://solobs.nict.go.jp/radio/cgi-bin/MainDisplay.pl"
 NANCAY_PAGE = "https://rsdb.obs-nancay.fr/"
 NORP_PAGE = "https://solar.nro.nao.ac.jp/norp/"
+EOVSA_PAGE = "https://ovsa.njit.edu/eovsadata/"
+LWA_PAGE = "https://ovsa.njit.edu/lwa/portal"
+LEARMONTH_PAGE = "https://downloads.sws.bom.gov.au/wdc/wdc_spec/data/learmonth/"
+CALLISTO_PAGE = "https://soleil.i4ds.ch/solarradio/"
 
 Source = namedtuple("Source", "key name top bottom scale save_name archive page space span")
 
 # High frequency to low, ground before space. ``top`` and ``bottom`` are what
-# the archive's own axis shows at the lane's edges once it is high side up.
+# the archive's own axis shows at the lane's edges once it is high side up; a
+# lane whose plot states its own band goes by that. EOVSA's and OVRO-LWA's here
+# are the composite's since 2025.
 SOURCES = (
     Source("norp", "NORP", "200 sfu", "−100 sfu", "1–17 GHz, R+L", "Nobeyama_NORP", "Nobeyama", NORP_PAGE, False, 1),
+    Source("eovsa", "EOVSA", "18 GHz", "1.1 GHz", "sfu, log colour", "EOVSA", "EOVSA", EOVSA_PAGE, False, 1),
     Source("yamagawa", "Yamagawa", "9 GHz", "70 MHz", "0–30 dB", "NICT_Yamagawa", "NICT", NICT_PAGE, False, 3),
     Source("hiras", "HiRAS", "", "", "no colour scale", "NICT_HiRAS", "NICT", NICT_PAGE, False, 3),
     Source("orfees", "ORFEES", "1 GHz", "144 MHz", "no colour scale", "Nancay_ORFEES", "Nançay", NANCAY_PAGE, False, 1),
+    Source("learmonth", "Learmonth", "180 MHz", "25 MHz", "over channel median", "Learmonth", "BoM", LEARMONTH_PAGE, False, 2),
+    Source("lwa", "OVRO-LWA", "85 MHz", "15 MHz", "sfu, log colour", "OVRO_LWA", "OVRO-LWA", LWA_PAGE, False, 1),
     Source("nda", "NDA", "80 MHz", "10 MHz", "no colour scale", "Nancay_NDA", "Nançay", NANCAY_PAGE, False, 1),
     Source("stereo_a", "STEREO-A", "16 MHz", "175 kHz", "no colour scale", "STEREO_A", "CDAW", CDAW_PAGE, True, 2),
     Source("stereo_b", "STEREO-B", "16 MHz", "175 kHz", "no colour scale", "STEREO_B", "CDAW", CDAW_PAGE, True, 2),
     Source("wind", "WIND/WAVES", "14 MHz", "20 kHz", "10²–10⁶ sfu", "WIND_WAVES", "CDAW", CDAW_PAGE, True, 1),
+    Source("context", "EOVSA composite", "", "", "", "EOVSA_composite", "EOVSA", EOVSA_PAGE, False, 1),
 )
 BY_KEY = {source.key: source for source in SOURCES}
 # The order of the contact sheet: wide ones lead their row
-ORIGINALS_ORDER = ("yamagawa", "hiras", "norp", "orfees", "nda", "wind", "stereo_a", "stereo_b")
+ORIGINALS_ORDER = (
+    "yamagawa", "hiras", "learmonth", "norp", "orfees", "nda", "eovsa", "lwa", "context", "wind", "stereo_a", "stereo_b",
+)
+NO_LANE = ("context",)  # a whole plot of its own, seen on the sheet only
 # Drawn with low frequency up; the stack turns these over, nothing else does
 FLIPPED = ("orfees", "nda")
 
@@ -113,63 +141,36 @@ GROUND_RULE = 5  # of the room over the first lane in space, its rule in the mid
 SHEET_GAP = SPACE_S
 CAPTION_HEIGHT = 20
 GUTTER_LINE = 15  # the name's line in a lane's gutter
-GAP_LEAST = 5 / 60  # hours: less than this is an edge of the plot, not a gap
+STACK_MARGIN = 24  # around a saved stack: half of 24:00, centred on the last tick, lies out here
 
 IDLE, WAITING, READY, NO_FILE, UNREACHABLE = "idle", "waiting", "ready", "no file", "unreachable"
 NOT_ALIGNED = "Time axis could not be read"
+UNREAD_TIP = (
+    "A plot joins the stack only once its time axis has been proved, and these stay as the archive drew them: "
+    "click to open. OVRO-LWA's also needs the time table of its FITS, which can come days after the plot."
+)
 NOT_FETCHED = "Not fetched. Press Fetch to load it"
 SPECTRA_EMPTY = "Press Fetch to load the day's spectra"
 LANE_TIP = "Click to set the cursor, drag to zoom, double-click or press Enter to open large"
+NO_DATA = "The archive's plots show no data for this date"
+NO_ROOM = "Could not keep the file: the cache's disk is full or read-only"
+NOT_READY = "Not in the archive's plots yet: this date is recent, and they can come with a later Fetch"
+NOT_YET = "This date is recent, and archives are still adding to it: hours with no data can come with a later Fetch"
+NOT_YET_FIGURE = "This date is recent, and archives are still adding to it"  # no Fetch on paper
+NO_CURSOR = "The cursor is not shown on this plot: its times could not be proved for this date"
+COMPOSITE_INSTEAD = "The composite is shown here, with the cursor: OVRO-LWA's daily plot of this date could not be placed in time"
+DAY_BOUND = 1000  # hours: no time of a day's plot or list comes near it
 _decoding = set()  # threads still at it, which outlive a closed window
 
 
 def hhmm(hours):
+    if not -DAY_BOUND < hours < DAY_BOUND:  # (and not a NaN)
+        return "—"
     minutes = int(round(hours * 60))
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
-class Registration(NamedTuple):
-    """Where the day lies in an image. Each slice is ``(left, right, top,
-    bottom, start, end)``: edges in image pixels, then hours. Where slices
-    overlap the later one is drawn over the earlier."""
-
-    slices: tuple
-
-    def gaps(self):
-        """The parts of the day no slice covers, as ``(start, end)`` hours."""
-        spans = sorted((max(s[4], 0.0), min(s[5], 24.0)) for s in self.slices if s[5] > 0 and s[4] < 24)
-        gaps, reached = [], 0.0
-        for start, end in spans:
-            if start - reached > GAP_LEAST:
-                gaps.append((reached, start))
-            reached = max(reached, end)
-        if 24.0 - reached > GAP_LEAST:
-            gaps.append((reached, 24.0))
-        return gaps
-
-    def shows(self, start, end):
-        return any(s[5] > start and s[4] < end for s in self.slices)
-
-    def image_x(self, hours):
-        """The image column of ``hours``, ``None`` where there is no data."""
-        for left, right, _top, _bottom, start, end in reversed(self.slices):
-            if start <= hours <= end:
-                return left + (hours - start) / (end - start) * (right - left)
-        return None
-
-
-def _grey(image):
-    """``image`` as a 2-D array of bytes."""
-    grey = image.convertToFormat(QImage.Format_Grayscale8)
-    bits = grey.constBits()
-    bits.setsize(grey.byteCount())
-    pixels = np.frombuffer(bits, np.uint8).reshape(grey.height(), grey.bytesPerLine())
-    return pixels[:, : grey.width()].copy()
-
-
-def _print(pixels):
-    """A short name for exactly these pixels, as ink on a ground."""
-    return hashlib.sha1(np.packbits(pixels > 127).tobytes()).hexdigest()[:12]
+_grey, _print = grey_of, print_of
 
 
 def _wind(grey):
@@ -220,11 +221,14 @@ def _yamagawa(grey):
     slices = []
     for a, b in runs:
         left, right = YAMAGAWA_LEFT + YAMAGAWA_HOUR * a, YAMAGAWA_LEFT + YAMAGAWA_HOUR * b
-        left += int(np.flatnonzero(~white[left + 1:left + 40])[0]) + 2
-        right -= int(np.flatnonzero(~white[right - 40:right - 1][::-1])[0]) + 2
+        # (an hour the station left part way through has much more of it)
+        strip = np.flatnonzero(~white[left + 1:right - 1])
+        if not len(strip):
+            continue
+        left, right = left + int(strip[0]) + 2, left + 1 + int(strip[-1])
         hour = lambda x: (x - YAMAGAWA_LEFT) / YAMAGAWA_HOUR
         slices.append((left, right, 1, 557, hour(left), hour(right)))
-    return Registration(tuple(slices))
+    return Registration(tuple(slices)) if slices else None
 
 
 NORP_TICKS = [122, 170, 219, 267, 315, 364, 412, 460, 508, 557, 605]  # 22:00 to 08:00, hourly
@@ -417,15 +421,71 @@ READERS = {
 }
 
 
+def _band_plot(source, reader, grey, day):
+    """A lane's plot on the day: its own, or the composite standing in for it."""
+    if grey.shape != CONTEXT_SIZE:
+        return reader(grey, day)
+    read = read_context(grey, day)
+    return read[source] if read else None
+
+
+# These prove their date too, so they need to know it
+DATED_READERS = {
+    "eovsa": partial(_band_plot, "eovsa", _xsp),
+    "lwa": partial(_band_plot, "lwa", _lwa_daily),
+    "context": _context,
+}
+
+
 def register(source, image, day=None):
     """How ``image`` of ``source`` lies on the day, ``None`` to refuse. Every
     format is known by its exact size and marks, and anything else refuses:
-    older archives can draw the same size differently. ``day`` is for formats
-    that change by date."""
-    reader = READERS.get(source)
-    if reader is None or image.isNull():
+    older archives can draw the same size differently."""
+    if image.isNull():
         return None
-    return reader(_grey(image))
+    if source in DATED_READERS:
+        return DATED_READERS[source](_grey(image), day)
+    reader = READERS.get(source)
+    return None if reader is None else reader(_grey(image))
+
+
+def _plot_loader():
+    """``load(day, kind)`` of cached plots, each decoded once."""
+    plots = {}
+
+    def load(day, kind):
+        if (day, kind) not in plots:
+            path = _noaa_cache.load_spectra(day, kind)
+            image = QImage(str(path)).convertToFormat(QImage.Format_RGB32) if path else QImage()
+            plots[day, kind] = None if image.isNull() else image
+        return plots[day, kind]
+
+    return load
+
+
+def make_lane(source, path, day):
+    """``(image, registration, original)`` of a lane made from several files.
+    ``original`` is ``(image, registration)`` of what the archive itself shows
+    for the day, for the sheet and the large view. No slices: there is no data,
+    the plots say so."""
+    if source == "learmonth":
+        files = [path, _noaa_cache.load_spectra(day, "learmonth_next")]  # the end of the day is in the next file
+        made = learmonth_lane([str(file) for file in files if file], day)
+        if made is None:
+            return QImage(), None, None
+        plot = _noaa_cache.load_spectra(day, "learmonth_plot")
+        drawn = QImage(str(plot)).convertToFormat(QImage.Format_RGB32) if plot else QImage()
+        return made[0], made[1], (made[0], made[1]) if drawn.isNull() else (drawn, None)
+    image = QImage(path).convertToFormat(QImage.Format_RGB32)
+    times = _noaa_cache.load_lwa_times if source == "lwa" else None
+    if (image.height(), image.width()) == CONTEXT_SIZE:  # the composite, standing in for the plot
+        original = (image, composite_view(image, day, _noaa_cache.load_lwa_times))
+    else:
+        original = (image, lwa_plot(image, day, times) if times else register(source, image, day))
+    made = ovsa_lane(source, day, _plot_loader(), times)
+    if made is None:  # nothing to go on but the plot, as the archive drew it
+        return image, None, original
+    return made[0], made[1], original
 
 
 def sheet_image(source, image, registration):
@@ -457,25 +517,65 @@ def kept_hours(registration):
 
 def image_format(path):
     """The file's real format as a suffix: the cache's names do not prove it."""
+    if path.endswith(".srs"):
+        return "srs"
     reader = QImageReader(path)
     reader.setDecideFormatFromContent(True)
     found = bytes(reader.format()).decode().lower()
     return {"jpeg": "jpg"}.get(found, found) or "png"
 
 
+MADE_LANES = ("eovsa", "lwa", "learmonth")
+NICT_LANES = ("yamagawa", "hiras")  # stitched by the hour, which come in over days
+ANSWER_SETTLE_DAYS = 30  # an archive's "no file" stands this long after the date, and until then for a day
+
+
 class SpectrumDecoder(StoppableThread):
     """Decodes one spectrum and reads its axis: Yamagawa's stitched image
     alone is 27 MB."""
 
-    decoded = pyqtSignal(str, str, object, object)  # source, path, QImage, Registration
+    decoded = pyqtSignal(str, str, object, object, object)  # source, path, QImage, Registration, the original
 
     def __init__(self, source, path, day):
         super().__init__()
         self.source, self.path, self.day = source, path, day
 
     def run(self):
-        image = QImage(self.path).convertToFormat(QImage.Format_RGB32)
-        self.decoded.emit(self.source, self.path, image, register(self.source, image, self.day))
+        # An exception out of a thread takes the application with it
+        try:
+            if self.source in MADE_LANES:
+                self.decoded.emit(self.source, self.path, *make_lane(self.source, self.path, self.day))
+                return
+            image = QImage(self.path).convertToFormat(QImage.Format_RGB32)
+            registration = None
+            try:
+                if self.source == "context":
+                    registration = composite_view(image, self.day, _noaa_cache.load_lwa_times)
+                else:
+                    registration = register(self.source, image, self.day)
+            except Exception:
+                logger.exception("The axis of %s could not be read", self.path)
+            self.decoded.emit(self.source, self.path, image, registration, None)
+        except Exception:
+            logger.exception("Could not decode %s", self.path)
+            self.decoded.emit(self.source, self.path, QImage(), None, None)
+
+
+FILE_KINDS = {"srs": "Learmonth levels"}
+
+
+def file_size(size):
+    """``1.1 GB``, in the units a person thinks of a download in."""
+    return f"{size / 1e9:.1f} GB" if size >= 1e9 else f"{size / 1e6:.0f} MB"
+
+
+def load_hidden_lanes():
+    settings = QSettings("SolarViewer", "SolarViewer")
+    return {key for key in (settings.value("solar_activity/hidden_lanes", "") or "").split(",") if key in BY_KEY}
+
+
+def save_hidden_lanes(keys):
+    QSettings("SolarViewer", "SolarViewer").setValue("solar_activity/hidden_lanes", ",".join(sorted(keys)))
 
 
 def _font(size, bold=False, mono=False):
@@ -577,6 +677,7 @@ class SpectrumLane(TimeRow):
         self.state = IDLE
         self.message = NOT_FETCHED
         self.image = self.sheet = self.registration = None
+        self.original = self.original_registration = None  # what the large view shows
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(Qt.CrossCursor)
         self.setToolTip(LANE_TIP)
@@ -591,6 +692,10 @@ class SpectrumLane(TimeRow):
     def full(self):
         return self.has_time() and self.registration.shows(self.axis.start, self.axis.end)
 
+    def unread(self):
+        """It has a plot whose time axis was not proved: named under the stack."""
+        return self.state == READY and self.registration is None
+
     def set_state(self, state, message="", tooltip="", action=""):
         self.state, self.message = state, message
         self.activity.setVisible(state == WAITING)
@@ -604,13 +709,25 @@ class SpectrumLane(TimeRow):
         self.place_children()
         self.update()
 
-    def set_image(self, image, registration):
+    def set_image(self, image, registration, original=None):
+        """``original``: ``(image, registration)`` of the archive's plot, where
+        the lane is not that plot."""
         self.image, self.registration = image, registration
-        self.sheet = sheet_image(self.source.key, image, registration)
-        self.set_state(READY, "" if registration else NOT_ALIGNED, action="" if registration else "Open")
+        self.original, self.original_registration = original or (image, registration)
+        self.sheet = sheet_image(self.source.key, self.original, self.original_registration)
+        note = registration.note if registration else ""
+        self.set_state(READY, "" if registration else NOT_ALIGNED, tooltip=note)
+
+    def band(self):
+        """``(top, bottom, scale)`` of the lane: as its plot states them, if it does."""
+        stated = self.registration
+        source = self.source
+        return (stated and stated.top or source.top, stated and stated.bottom or source.bottom,
+                stated and stated.scale or source.scale)
 
     def clear(self):
         self.image = self.sheet = self.registration = None
+        self.original = self.original_registration = None
         self.set_state(IDLE, NOT_FETCHED)
 
     def _act(self):
@@ -661,18 +778,24 @@ class SpectrumLane(TimeRow):
             painter.drawText(body.adjusted(SPACE_S, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, self.message)
 
     def paint_gutter(self, painter, rect, tall, palette):
-        source = self.source
+        top, bottom, scale = self.band()
         painter.setFont(_font(FONT_SMALL, bold=True))
         painter.setPen(QColor(palette["text"]))
-        painter.drawText(rect, (Qt.AlignTop if tall else Qt.AlignVCenter) | Qt.AlignLeft, source.name)
+        painter.drawText(rect, (Qt.AlignTop if tall else Qt.AlignVCenter) | Qt.AlignLeft, self.source.name)
         if not tall:
             return
-        painter.setFont(_font(FONT_META))
-        painter.setPen(QColor(palette["text_secondary"]))
-        painter.drawText(rect.adjusted(0, GUTTER_LINE, 0, 0), Qt.AlignTop | Qt.AlignLeft, source.scale)
         painter.setFont(_font(FONT_META, mono=True))
-        painter.drawText(rect, Qt.AlignTop | Qt.AlignRight, source.top)
-        painter.drawText(rect, Qt.AlignBottom | Qt.AlignRight, source.bottom)
+        painter.setPen(QColor(palette["text_secondary"]))
+        painter.drawText(rect, Qt.AlignTop | Qt.AlignRight, top)
+        painter.drawText(rect, Qt.AlignBottom | Qt.AlignRight, bottom)
+        room = rect.width()
+        if rect.height() < GUTTER_LINE * 3:  # the band's lower edge is on the same line
+            room -= painter.fontMetrics().horizontalAdvance(bottom) + SPACE_S
+        painter.setFont(_font(FONT_META))
+        painter.drawText(
+            rect.adjusted(0, GUTTER_LINE, 0, 0), Qt.AlignTop | Qt.AlignLeft,
+            painter.fontMetrics().elidedText(scale, Qt.ElideRight, int(room)),
+        )
 
     def paint_time(self, painter, body, start, end, palette):
         hatch = QColor(palette["plot_grid"])
@@ -712,14 +835,28 @@ class SpectrumLane(TimeRow):
                 _chip(painter, (x(shown_a) + x(shown_b)) / 2, body.center().y(), text, palette)
 
 
+def label_places(marks, labels, body, metrics):
+    """``(rect, label)`` of the labels that fit: where no mark lies under one,
+    and clear of the label before it, or a busy day reads as neither."""
+    places = []
+    reached = body.left()
+    for mark, label in zip(marks, labels):
+        words = QRectF(mark.right() + SPACE_XS, 0, metrics.horizontalAdvance(label) + SPACE_XS, body.height())
+        if words.left() >= reached and words.right() <= body.right() and not any(words.intersects(m) for m in marks):
+            places.append((words, label))
+            reached = words.right() + SPACE_XS
+    return places
+
+
 class CallistoLane(TimeRow):
-    """The day's reported e-CALLISTO bursts: marks, as the app holds no
-    spectra of them."""
+    """The day's reported e-CALLISTO bursts, as marks: the network's spectra
+    are a station and a quarter of an hour each, so one is fetched on asking."""
 
     def __init__(self, tab, parent=None):
         super().__init__(tab.day_axis, parent)
         self.bursts = []  # (start, end, label, stations)
         self.setFixedHeight(THIN_LANE)
+        self.tab = tab
         self.setCursor(Qt.CrossCursor)
         # In the tab's footer: on a busy day the marks fill the lane
         self.link = link_button("Get e-CALLISTO FITS…", tab.open_radio_downloader)
@@ -735,15 +872,37 @@ class CallistoLane(TimeRow):
                 logger.info(f"e-CALLISTO burst without a time range: {burst}")
                 continue
             stations = [s.strip() for s in burst.stations.split(",") if s.strip()]
-            self.bursts.append((begin, max(end, begin), f"{burst.burst_type} · {len(stations)} stations", ", ".join(stations)))
+            count = f"{len(stations)} station{'' if len(stations) == 1 else 's'}"
+            kind = burst.burst_type.strip("- ")  # the list has --- for a type not told
+            label = f"{kind} · {count}" if kind else count
+            self.bursts.append((begin, max(end, begin), label, ", ".join(stations)))
         self.update()
+
+    def burst_at(self, x):
+        """The burst nearest to column ``x``, if one is close."""
+        near = [(abs(self.axis.x_of(b[0], self) - x), index) for index, b in enumerate(self.bursts)]
+        distance, index = min(near, default=(None, None))
+        return None if index is None or distance >= 80 else self.bursts[index]
 
     def event(self, event):
         if event.type() == QEvent.ToolTip:
-            near = [b for b in self.bursts if abs(self.axis.x_of(b[0], self) - event.x()) < 80]
-            QToolTip.showText(event.globalPos(), near[0][3] if near else "", self)
+            burst = self.burst_at(event.x())
+            tip = f"{burst[3]}\nDouble-click for a station's spectrum" if burst else ""
+            QToolTip.showText(event.globalPos(), tip, self)
             return True
         return super().event(event)
+
+    def mouseDoubleClickEvent(self, event):
+        burst = self.burst_at(event.x())
+        if burst:
+            self.tab.show_callisto_spectrum(burst)
+
+    def contextMenuEvent(self, event):
+        burst = self.burst_at(event.x())
+        if burst:
+            menu = QMenu(self)
+            menu.addAction(f"Show spectrum of the burst at {hhmm(burst[0])}", lambda: self.tab.show_callisto_spectrum(burst))
+            menu.exec_(event.globalPos())
 
     def paint_row(self, painter, width, height, left, right, start, end, palette):
         body = QRectF(left, 0, right - left, height - LANE_GAP)
@@ -759,15 +918,15 @@ class CallistoLane(TimeRow):
         painter.save()
         painter.setClipRect(body)
         shown = sorted(b for b in self.bursts if b[1] >= start and b[0] <= end)
-        for index, (first, last, label, _stations) in enumerate(shown):
-            x = body.left() + (first - start) * scale
-            mark = QRectF(x, SPACE_XS, max(3, (last - first) * scale), body.height() - SPACE_S)
+        marks = [
+            QRectF(body.left() + (first - start) * scale, SPACE_XS, max(3, (last - first) * scale), body.height() - SPACE_S)
+            for first, last, _label, _stations in shown
+        ]
+        for mark in marks:
             painter.fillRect(mark, QColor(palette["link"]))
-            # A label only where the next mark leaves it room
-            room = body.left() + (shown[index + 1][0] - start) * scale if index + 1 < len(shown) else body.right()
-            if mark.right() + SPACE_XS + painter.fontMetrics().horizontalAdvance(label) + SPACE_XS <= room:
-                painter.setPen(QColor(palette["text"]))
-                painter.drawText(QRectF(mark.right() + SPACE_XS, 0, 200, body.height()), Qt.AlignVCenter, label)
+        painter.setPen(QColor(palette["text"]))
+        for words, label in label_places(marks, [burst[2] for burst in shown], body, painter.fontMetrics()):
+            painter.drawText(words, Qt.AlignVCenter, label)
         painter.restore()
 
 
@@ -810,14 +969,16 @@ class SpectrumTile(QWidget):
         layout.setSpacing(0)
         caption = QHBoxLayout()
         caption.setSpacing(SPACE_S)
-        name = QLabel(source.name)
+        self.name = name = ElidedLabel(source.name)  # whole if it can be, and never clipped
+        name.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)  # the band gives way first
+        name.setMinimumWidth(1)
         name.setFont(_font(FONT_SMALL, bold=True))
         name.setFixedHeight(CAPTION_HEIGHT)  # the sheet counts on this for the well's aspect
-        caption.addWidget(name)
-        caption.addStretch()
-        self.band = QLabel()
+        caption.addWidget(name, 0)
+        self.band = ElidedLabel()  # the name stays whole, the band gives way
         self.band.setObjectName("Meta")
-        caption.addWidget(self.band)
+        self.band.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        caption.addWidget(self.band, 1)
         layout.addLayout(caption)
         self.well = SheetWell(self)
         layout.addWidget(self.well, 1)
@@ -845,8 +1006,13 @@ class SpectrumTile(QWidget):
 
 
 class ContactSheet(QWidget):
-    """The archive's images, in three columns on two kickers. Everything scales
-    together until it fits, so the columns stay aligned with no scroll bar."""
+    """The archive's images, in columns on two kickers. Everything scales
+    together until it fits, so the columns stay aligned with no scroll bar, and
+    there are as many columns as give the largest tiles: a wide window has room
+    for more, side by side."""
+
+    COLUMNS = (3, 4, 5, 6, 7, 8)
+    SHARED_FROM = 6  # columns: from here a wide image gives half its row to others
 
     def __init__(self, tiles, parent=None):
         super().__init__(parent)
@@ -855,42 +1021,56 @@ class ContactSheet(QWidget):
             tile.setParent(self)
         self.kickers = {False: kicker("Ground", self), True: kicker("Spacecraft", self)}
 
-    def _rows(self):
-        """Per group, what is shown in rows of three columns."""
+    @staticmethod
+    def _span(tile, columns):
+        """Columns of ``tile``: a span of 3 is the whole row, or half of it
+        where there are the columns to share it with."""
+        if tile.source.span != 3:
+            return tile.source.span
+        return columns if columns < ContactSheet.SHARED_FROM else columns // 2
+
+    def _rows(self, columns):
+        """Per group, what is shown in rows of ``columns``."""
         groups = {False: [], True: []}
         for key in ORIGINALS_ORDER:
             tile = self.tiles[key]
             if tile.isVisibleTo(self):
                 row = groups[tile.source.space]
-                if not row or sum(t.source.span for t in row[-1]) + tile.source.span > 3:
+                if not row or sum(self._span(t, columns) for t in row[-1]) + self._span(tile, columns) > columns:
                     row.append([])
                 row[-1].append(tile)
         return groups
 
     @staticmethod
-    def _height(row, width):
+    def _height(row, width, columns):
         """Of the images in ``row``. A 2:1 column sets it unless the row is
         one wide image, which has an aspect of its own."""
-        if row[0].source.span == 3:
+        if len(row) == 1 and row[0].source.span == 3 and columns < ContactSheet.SHARED_FROM:
             return width / row[0].aspect()
-        return (width - 2 * SHEET_GAP) / 6
+        return (width - (columns - 1) * SHEET_GAP) / (2 * columns)
 
-    def arrange(self):
-        groups = self._rows()
+    def _fit(self, columns):
+        """``(width, groups)`` of the sheet at ``columns``."""
+        groups = self._rows(columns)
         rows = sum(len(g) for g in groups.values())
         shown = sum(1 for g in groups.values() if g)
         fixed = shown * (self.kickers[False].sizeHint().height() + SPACE_XS) + rows * CAPTION_HEIGHT
         fixed += (rows + shown) * SHEET_GAP
 
         def heights(width):
-            return sum(self._height(row, width) for g in groups.values() for row in g)
+            return sum(self._height(row, width, columns) for g in groups.values() for row in g)
 
         width = self.width()
         if rows and heights(width) > self.height() - fixed:
             width = (self.height() - fixed) / (heights(width) / width)
-        width = max(int(width), 120)
+        return max(int(width), 120), groups
+
+    def arrange(self):
+        fits = {columns: self._fit(columns) for columns in self.COLUMNS}
+        columns = max(fits, key=lambda c: (fits[c][0] - (c - 1) * SHEET_GAP) / c)
+        width, groups = fits[columns]
         x0, y = (self.width() - width) // 2, 0
-        column = (width - 2 * SHEET_GAP) / 3
+        column = (width - (columns - 1) * SHEET_GAP) / columns
         for space, group in groups.items():
             label = self.kickers[space]
             label.setVisible(bool(group))
@@ -899,10 +1079,10 @@ class ContactSheet(QWidget):
             label.setGeometry(x0, y, width, label.sizeHint().height())
             y += label.height() + SPACE_XS
             for row in group:
-                height = round(self._height(row, width)) + CAPTION_HEIGHT
+                height = round(self._height(row, width, columns)) + CAPTION_HEIGHT
                 x = x0
                 for tile in row:
-                    span = tile.source.span
+                    span = self._span(tile, columns)
                     tile_width = round(span * column + (span - 1) * SHEET_GAP)
                     tile.setGeometry(round(x), y, tile_width, height)
                     x += tile_width + SHEET_GAP
@@ -928,6 +1108,11 @@ class SpectrumViewer(QDialog):
         layout = dialog_layout(self)
         self.view = ImageZoomView(self)
         layout.addWidget(self.view, 1)
+        self.note = QLabel()  # what the plot's own axes would mislead about
+        self.note.setObjectName("Hint")
+        self.note.setWordWrap(True)
+        self.note.hide()
+        layout.addWidget(self.note)
 
         self.previous_btn = self._icon_button("Previous source (Left)", lambda: self.step(-1))
         self.next_btn = self._icon_button("Next source (Right)", lambda: self.step(1))
@@ -975,15 +1160,34 @@ class SpectrumViewer(QDialog):
         self.key = key
         date = self.tab._spectra_date
         self.setWindowTitle(f"{lane.source.name} · {date:%Y-%m-%d}" if date else lane.source.name)
-        self.view.set_image(lane.image)
+        self.view.set_image(self.shown()[0])
+        self.show_note()
         self.show_marker()
+
+    def shown(self):
+        """``(image, registration, note)`` of the source on show. OVRO-LWA's
+        plot can fail where the composite's panel is proved, whose time the
+        cursor can then be on; if that fails too, the plot says it has none."""
+        lane = self.tab.spectrum_lanes[self.key]
+        registration = lane.original_registration
+        if self.key != "lwa" or registration is not None:
+            return lane.original, registration, registration.note if registration else ""
+        composite = self.tab.spectrum_lanes["context"]
+        drawn = composite.original_registration
+        if composite.original is not None and drawn is not None and len(drawn.panels) == 2:
+            return composite.original, drawn, " · ".join(filter(None, (COMPOSITE_INSTEAD, drawn.note)))
+        return lane.original, None, NO_CURSOR
+
+    def show_note(self):
+        self.note.setText(self.shown()[2])
+        self.note.setVisible(bool(self.note.text()))
 
     def show_marker(self):
         if self.key is None:
             return
-        registration = self.tab.spectrum_lanes[self.key].registration
+        registration = self.shown()[1]
         hours = self.tab.day_axis.cursor
-        self.view.set_marker(None if registration is None or hours is None else registration.image_x(hours))
+        self.view.set_marks([] if registration is None or hours is None else registration.marks(hours))
 
     def step(self, by):
         """To the next image in frequency order, round and round."""
@@ -1004,6 +1208,9 @@ class RadioSpectraTabMixin:
         self._spectra_paths = {}
         self._spectrum_viewer = None
         self._lanes_coming = set()  # the sources of a date that is decoding, which keep the lanes' heights
+        self._lanes_hidden = load_hidden_lanes()
+        self._fits_saver = None
+        self._callisto_view = None
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(0, SPACE_M, 0, 0)
@@ -1026,6 +1233,10 @@ class RadioSpectraTabMixin:
             button.clicked.connect(self._show_spectra_page)
         self.aligned_btn.setChecked(True)
         top.addWidget(segmented([self.aligned_btn, self.originals_btn]))
+        self.lanes_btn = QPushButton("Lanes")
+        self.lanes_btn.setToolTip("Choose the sources on the stack")
+        self.lanes_btn.clicked.connect(self._lanes_menu)
+        top.addWidget(self.lanes_btn)
         self.save_stack_btn = QPushButton("Save stack…")
         self.save_stack_btn.setToolTip("Save the stack as shown as a PNG for a paper or slide")
         self.save_stack_btn.clicked.connect(self.save_spectra_stack)
@@ -1060,19 +1271,27 @@ class RadioSpectraTabMixin:
         self.spectra_pages.addWidget(self.contact_sheet)
         layout.addWidget(self.spectra_pages, 1)
 
+        self.spectra_note = source_note("")
+        self.spectra_note.setOpenExternalLinks(False)
+        self.spectra_note.setWordWrap(True)
+        self.spectra_note.setToolTip(UNREAD_TIP)
+        self.spectra_note.linkActivated.connect(self.open_spectrum)
+        layout.addWidget(self.spectra_note)
         footer = QHBoxLayout()
         footer.setSpacing(SPACE_M)
-        self.spectra_note = QLabel()
-        self.spectra_note.setObjectName("Hint")
-        footer.addWidget(self.spectra_note)
         footer.addWidget(self.callisto_lane.link)
         credits_label = source_note(
-            'Data sources: <a href="https://cdaw.gsfc.nasa.gov/">CDAW NASA</a>, '
+            'Data: <a href="https://cdaw.gsfc.nasa.gov/">CDAW NASA</a>, '
             '<a href="https://solar.nro.nao.ac.jp/norp/">NoRP</a>, '
             '<a href="https://rsdb.obs-nancay.fr/">Nançay</a>, '
-            '<a href="https://solobs.nict.go.jp/radio/cgi-bin/MainDisplay.pl">NICT</a>'
+            '<a href="https://solobs.nict.go.jp/radio/cgi-bin/MainDisplay.pl">NICT</a>, '
+            f'<a href="{EOVSA_PAGE}">EOVSA</a>, '
+            f'<a href="{LWA_PAGE}">OVRO-LWA</a>, '
+            f'<a href="{LEARMONTH_PAGE}">BoM Learmonth</a>, '
+            f'<a href="{CALLISTO_PAGE}">e-CALLISTO</a>'
         )
         credits_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        credits_label.setWordWrap(True)  # a long list of archives must not widen the window
         footer.addWidget(credits_label, 1)
         layout.addLayout(footer)
 
@@ -1086,6 +1305,22 @@ class RadioSpectraTabMixin:
 
     def _rows(self):
         return [*self.spectrum_lanes.values(), self.callisto_lane]
+
+    def _lanes_menu(self):
+        """The sources of this date to have on the stack; all of them to begin
+        with. What is taken off stays on the sheet."""
+        menu = QMenu(self)
+        for key in self._spectra_keys():
+            if key not in NO_LANE:
+                action = menu.addAction(BY_KEY[key].name, partial(self._toggle_lane, key))
+                action.setCheckable(True)
+                action.setChecked(key not in self._lanes_hidden)
+        menu.exec_(self.lanes_btn.mapToGlobal(self.lanes_btn.rect().bottomLeft()))
+
+    def _toggle_lane(self, key):
+        self._lanes_hidden ^= {key}
+        save_hidden_lanes(self._lanes_hidden)
+        self._arrange_spectra()
 
     def _on_spectra_window(self):
         self._arrange_spectra()
@@ -1116,13 +1351,14 @@ class RadioSpectraTabMixin:
         least = 0  # the height all of them take with an image: a zoom leaves the window's least height alone
         for source in SOURCES:
             lane = self.spectrum_lanes[source.key]
-            shown = source.key in keys
+            exists = source.key in keys
+            shown = exists and source.key not in NO_LANE and source.key not in self._lanes_hidden and not lane.unread()
             lane.setVisible(shown)
             lane.rule_above = shown and source.space and first_space
             first_space = first_space and not (shown and source.space)
             if shown:
                 least += LEAST_LANE + (GROUND_RULE if lane.rule_above else 0)
-            if self._lanes_coming:
+            if self._lanes_coming or not shown:
                 pass  # they change once, when all of them are in
             elif lane.full():
                 lane.setMinimumHeight(LEAST_LANE + (GROUND_RULE if lane.rule_above else 0))
@@ -1133,30 +1369,62 @@ class RadioSpectraTabMixin:
                 self.spectra_stack_layout.setStretchFactor(lane, 0)
             tile = self.spectrum_tiles[source.key]
             tile.band.setText(self._tile_band(lane))
-            tile.setVisible(shown and (lane.image is not None or lane.state == WAITING))
+            tile.setVisible(exists and (lane.original is not None or lane.state == WAITING))
             tile.well.set_image(lane.sheet)
             tile.activity.setVisible(lane.state == WAITING)
             if lane.state == WAITING:
                 tile.activity.start(lane.message)
                 tile.activity.adjustSize()
-        self.spectra_stack.setMinimumHeight(least)
-        ended = "STEREO began in 2006" if "stereo_a" not in keys else "STEREO-B ended in 2014" if "stereo_b" not in keys else ""
-        self.spectra_note.setText(ended)
+        # (the empty page has no lanes to make room for)
+        self.spectra_stack.setMinimumHeight(least if self._any_lane_in_use() else 0)
+        self._say_spectra_notes()
         self.contact_sheet.arrange()
         self.save_all_btn.setEnabled(bool(self._spectra_paths))
         self._show_spectra_page()
 
+    def _say_spectra_notes(self):
+        keys = self._spectra_keys()
+        on_sheet = self.originals_btn.isChecked()  # every image has its tile there: only what a plot hides is said
+        ended = "STEREO began in 2006" if "stereo_a" not in keys else "STEREO-B ended in 2014" if "stereo_b" not in keys else ""
+        notes = [ended] if ended and not on_sheet else []
+        notes += [
+            lane.registration.note for key, lane in self.spectrum_lanes.items()
+            if lane.registration and lane.registration.note and (on_sheet or key not in NO_LANE)
+        ]
+        day = self._spectra_date
+        if not on_sheet and day and _still_growing(day) and any(
+            lane.has_time() and lane.registration.gaps() for key, lane in self.spectrum_lanes.items() if key in NICT_LANES
+        ):
+            notes.append(NOT_YET)
+        unread = [
+            f'<a href="{key}">{lane.source.name}</a>' for key, lane in self.spectrum_lanes.items()
+            if lane.unread() and key in keys and key not in NO_LANE and key not in self._lanes_hidden
+        ]
+        if unread and not on_sheet:
+            notes.insert(0, f"Not on the time axis: {', '.join(unread)}")
+        set_source_note(self.spectra_note, " · ".join(dict.fromkeys(notes)))
+        self.spectra_note.setVisible(bool(notes))
+
+    def _any_lane_in_use(self):
+        return any(lane.state != IDLE for lane in self.spectrum_lanes.values())
+
     def _tile_band(self, lane):
         source = lane.source
-        band = source.scale if source.key == "norp" else f"{source.bottom}–{source.top}" if source.top else ""
+        top, bottom, scale = lane.band()
+        drawn = lane.original_registration
+        if drawn is not None and drawn.top:  # the sheet shows the plot, which can have a wider band
+            top, bottom = drawn.top, drawn.bottom
+        band = scale if source.key == "norp" else f"{bottom}–{top}" if top else ""
+        if bottom.split()[-1:] == top.split()[-1:] and source.key != "norp":
+            band = band.replace(f" {top.split()[-1]}–", "–", 1) if top else band
         if source.key == "yamagawa" and lane.registration is not None:
             band += f" · {kept_hours(lane.registration)}"
         return band
 
     def _show_spectra_page(self):
         lanes = self.spectrum_lanes.values()
-        busy = any(lane.state != IDLE for lane in lanes)
-        if not busy:
+        self._say_spectra_notes()
+        if not self._any_lane_in_use():
             page = self.spectra_empty
         else:
             page = self.contact_sheet if self.originals_btn.isChecked() else self.spectra_stack
@@ -1169,7 +1437,7 @@ class RadioSpectraTabMixin:
     def _say_spectra_status(self):
         if self.originals_btn.isChecked():
             lanes = [self.spectrum_lanes[key] for key in self._spectra_keys()]
-            have = [lane for lane in lanes if lane.image is not None]
+            have = [lane for lane in lanes if lane.original is not None]
             text = f"{len(have)} of {len(lanes)} sources, as the archives drew them"
             missing = [lane.source.name for lane in lanes if lane.state in (NO_FILE, UNREACHABLE)]
             if missing:
@@ -1243,7 +1511,7 @@ class RadioSpectraTabMixin:
     def _show_cached_spectra(self, day):
         """What the cache holds for ``day``, and no request. The large view
         stays open and goes over to the date when it is in."""
-        paths = {key: _noaa_cache.load_spectra(day, key) for key in expected_sources(day)}
+        paths = {key: _noaa_cache.load_spectra_or_context(day, key) for key in expected_sources(day)}
         self._lanes_coming = {key for key, path in paths.items() if path}
         self.clear_dh_spectra_ui(keep_viewer=True)
         self._spectra_date = day
@@ -1251,6 +1519,9 @@ class RadioSpectraTabMixin:
             self._spectra_paths[key] = str(paths[key])
             self.spectrum_lanes[key].set_state(WAITING, "Loading…")
             self._decode_spectrum(key, str(paths[key]))
+        for key in _noaa_cache.load_no_file_answers(day, ANSWER_SETTLE_DAYS):
+            if key in paths and not paths[key]:
+                self.spectrum_lanes[key].set_state(NO_FILE, self._no_file_text(key))
         self._arrange_spectra()
         if not self._lanes_coming:
             self._viewer_to_date()
@@ -1274,18 +1545,24 @@ class RadioSpectraTabMixin:
         _decoding.add(decoder)
         decoder.start()
 
-    def _on_spectrum_decoded(self, source, path, image, registration):
+    def _on_spectrum_decoded(self, source, path, image, registration, original=None):
         if self._spectra_paths.get(source) != path:
             return  # another date's by now
         lane = self.spectrum_lanes[source]
-        if image.isNull():
+        if image.isNull() and registration is not None:
             self._spectra_paths.pop(source)
-            lane.set_state(NO_FILE, f"The {lane.source.name} file could not be read")
+            lane.set_state(NO_FILE, self._absent_text(source, NO_DATA))
+        elif image.isNull():
+            self._spectra_paths.pop(source)
+            lane.set_state(UNREACHABLE, f"The {lane.source.name} file could not be read", action="Try again")
         else:
-            lane.set_image(image, registration)
+            lane.set_image(image, registration, original)
         last = source in self._lanes_coming and len(self._lanes_coming) == 1
         self._lanes_coming.discard(source)
         self._arrange_spectra()
+        viewer = self._spectrum_viewer
+        if source == "context" and viewer is not None and viewer.isVisible() and viewer.key == "lwa":
+            viewer.show_source("lwa")  # it can stand in for the plot
         if last:
             self.spectra_stack_layout.activate()  # all of it at once, not a size at a time
             self._viewer_to_date()
@@ -1308,7 +1585,7 @@ class RadioSpectraTabMixin:
         """Cancel: what has arrived stays, and what was here already comes back."""
         self.stop_dh_spectra()
         for key in expected_sources(self._spectra_date):
-            path = _noaa_cache.load_spectra(self._spectra_date, key)
+            path = _noaa_cache.load_spectra_or_context(self._spectra_date, key)
             if path and key not in self._spectra_paths:
                 self._spectra_paths[key] = str(path)
                 self.spectrum_lanes[key].set_state(WAITING, "Loading…")
@@ -1321,10 +1598,25 @@ class RadioSpectraTabMixin:
         if self.dh_worker is not None:
             self._say_no_file(source)
 
+    def _no_file_text(self, source):
+        return self._absent_text(source, f"No file in the {BY_KEY[source].archive} archive for this date")
+
+    def _absent_text(self, source, final):
+        """``final`` for a date with nothing to show, unless EOVSA or OVRO-LWA
+        may simply not have got to it: past the latest date it gave when it was
+        asked, or recent. Its latest date can come before its spectra do."""
+        day = self._spectra_date
+        if source not in ("eovsa", "lwa") or day is None:
+            return final
+        latest = _noaa_cache.load_archive_latest(day).get(source)
+        if latest is not None and day > latest:
+            return f"Not processed yet: {BY_KEY[source].name}'s latest date was {latest} when asked"
+        return NOT_READY if _still_growing(day) else final
+
     def _say_no_file(self, source):
         lane = self.spectrum_lanes[source]
         if lane.state == WAITING and source not in self._spectra_paths:
-            lane.set_state(NO_FILE, f"No file in the {lane.source.archive} archive for this date")
+            lane.set_state(NO_FILE, self._no_file_text(source))
             self._arrange_spectra()
 
     def on_dh_source_failed(self, source, kind, detail):
@@ -1333,6 +1625,9 @@ class RadioSpectraTabMixin:
         lane = self.spectrum_lanes[source]
         if kind == "unreachable":
             lane.set_state(UNREACHABLE, f"Could not reach {lane.source.archive}", detail, "Try again")
+            self._arrange_spectra()
+        elif kind == "no_room":
+            lane.set_state(UNREACHABLE, NO_ROOM, detail, "Try again")
             self._arrange_spectra()
         else:
             self._say_no_file(source)
@@ -1358,13 +1653,21 @@ class RadioSpectraTabMixin:
             return
         self._spectra_paths[source] = path
         self._decode_spectrum(source, path)
+        if source == "lwa" and "context" in self._spectra_paths:  # its times have come: the composite needs them too
+            self._decode_spectrum("context", self._spectra_paths["context"])
 
     def on_dh_spectra_ready(self, results: dict, errors: list):
         if self.dh_worker is None:
             return  # cancelled
         for source in expected_sources(self._spectra_date):
             self._say_no_file(source)
-        self.dh_worker = None
+        lanes = self.spectrum_lanes
+        keep(_noaa_cache.save_no_file_answers, self._spectra_date, [
+            key for key in expected_sources(self._spectra_date) if lanes[key].message == self._no_file_text(key)
+        ])
+        # Its thread is still returning from run(): ``abandon`` keeps it till then
+        worker, self.dh_worker = self.dh_worker, None
+        abandon(worker)
         self.end_job("spectra")
         self.spectra_status_label.setToolTip("\n".join(errors))
         self._arrange_spectra()
@@ -1389,7 +1692,75 @@ class RadioSpectraTabMixin:
         menu.addAction("Save…", lambda: self.save_spectra_image(source))
         menu.addAction("Copy image", lambda: QApplication.clipboard().setImage(lane.image))
         menu.addAction("Open source page", lambda: QDesktopServices.openUrl(QUrl(info.page)))
+        if source in ("eovsa", "context"):
+            menu.addAction("Open EOVSA browser (FITS after registering)", lambda: QDesktopServices.openUrl(QUrl(EOVSA_PAGE)))
+        if source == "lwa":
+            links = _noaa_cache.load_lwa_links(self._spectra_date)
+            if links.get("movie"):
+                menu.addAction("Open the day's imaging movie", lambda: QDesktopServices.openUrl(QUrl(links["movie"])))
+            if links.get("fits"):
+                size = file_size(links["fits_bytes"])
+                menu.addAction(f"Save the day's FITS ({size})…", lambda: self.save_lwa_fits(links["fits"], links["fits_bytes"]))
         menu.exec_(position)
+
+    def show_callisto_spectrum(self, burst):
+        """A station's own spectrum of a reported burst."""
+        from .callisto_view import CallistoView
+
+        day = self._spectra_date or self.selected_date()
+        if day is None:
+            return
+        if self._callisto_view is None:
+            self._callisto_view = CallistoView(self)
+        self._callisto_view.show_burst(day, burst)
+        self._callisto_view.show()
+        self._callisto_view.raise_()
+
+    def save_lwa_fits(self, url, size):
+        """OVRO-LWA's day as FITS, public and large: its size is said before
+        anything starts, and it stays cancellable to the end."""
+        if self._fits_saver is not None:
+            self.say("A FITS file is being saved already")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Save the FITS file?")
+        box.setText(f"This file is {file_size(size)}, and holds the day's OVRO-LWA dynamic spectrum.")
+        box.setInformativeText("It can take a long time. Cancel stops it, and leaves no part of it behind.")
+        box.setStandardButtons(QMessageBox.Save | QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        if box.exec_() != QMessageBox.Save:
+            return
+        target, _ = QFileDialog.getSaveFileName(self, "Save FITS", os.path.basename(url), "FITS file (*.fits)")
+        if not target:
+            return
+        folder = os.path.dirname(target) or "."
+        if shutil.disk_usage(folder).free < size:
+            show_error(self, "Not enough room", f"{file_size(size)} will not fit in:\n{folder}")
+            return
+        self._fits_saver = saver = FileSaver(url, target)
+        saver.received.connect(self._on_fits_received)
+        saver.saved.connect(lambda path: self._on_fits_saved(f"Saved {os.path.basename(path)}"))
+        saver.error.connect(self._on_fits_failed)
+        self.begin_job("fits", f"Saving FITS, {file_size(size)}…", self.cancel_lwa_fits)
+        saver.start()
+
+    def _on_fits_received(self, done, total):
+        if self._fits_saver is not None:
+            self.update_job("fits", f"Saving FITS, {file_size(done)} of {file_size(total or done)}…")
+
+    def _on_fits_saved(self, text):
+        self.cancel_lwa_fits()  # (it is still running, having said how it ended)
+        self.say(text)
+
+    def _on_fits_failed(self, error):
+        self._on_fits_saved("The FITS file was not saved")
+        show_error(self, "Could not save the FITS file", "The download stopped, and nothing was kept.", error)
+
+    def cancel_lwa_fits(self):
+        saver, self._fits_saver = self._fits_saver, None
+        if saver is not None:
+            abandon(saver)
+        self.end_job("fits")
 
     def open_radio_downloader(self):
         """e-CALLISTO's FITS come through the app's one radio downloader."""
@@ -1414,7 +1785,7 @@ class RadioSpectraTabMixin:
             return
         real = image_format(path)
         kinds = [real] if real == "png" else [real, "png"]
-        filters = ";;".join(f"{kind.upper()} image (*.{kind})" for kind in kinds) + ";;All files (*)"
+        filters = ";;".join(f"{FILE_KINDS.get(kind, kind.upper() + ' image')} (*.{kind})" for kind in kinds) + ";;All files (*)"
         target, _ = QFileDialog.getSaveFileName(self, "Save spectrum", self._spectrum_name(source, real), filters)
         if not target:
             return
@@ -1424,7 +1795,7 @@ class RadioSpectraTabMixin:
         try:
             if {"jpeg": "jpg"}.get(suffix, suffix) == real:
                 shutil.copyfile(path, target)
-            elif not QImage(path).save(target):
+            elif not (self.spectrum_lanes[source].image if real == "srs" else QImage(path)).save(target):
                 raise OSError(f"Could not write {suffix} to {target}")
         except OSError as e:
             show_error(self, "Could not save the image", f"The image could not be saved to:\n{target}", str(e))
@@ -1471,15 +1842,32 @@ class RadioSpectraTabMixin:
         else:
             show_error(self, "Could not save the stack", f"The image could not be saved to:\n{target}")
 
+    def stack_caveats(self, lanes):
+        """What a reader of the figure has to know about the data in ``lanes``.
+        The window's notes on what could not be proved are for the window: a
+        figure shows what it shows, and says nothing of what it left out."""
+        notes = [part for lane in lanes for part in getattr(getattr(lane, "registration", None), "note", "").split(" · ")]
+        day = self._spectra_date
+        if day and _still_growing(day) and any(
+            lane.registration.gaps() for lane in lanes if lane in [self.spectrum_lanes[key] for key in NICT_LANES]
+        ):
+            notes.append(NOT_YET_FIGURE)
+        return " · ".join(dict.fromkeys(note for note in notes if note and note != SMALL_HOURS_UNPROVEN))
+
     def render_spectra_stack(self, palette):
         """The stack as now, at twice its size, with what a page needs around
-        it: date, time axis, band labels, credits."""
+        it: date, time axis, band labels, what to know of the data, credits."""
         axis = self.day_axis
         rows = [row for row in self._rows() if row.isVisibleTo(self.spectra_stack)]
+        kept = [row for row in rows if row.has_time() and (row is not self.callisto_lane or row.bursts)]
         left, right = rows[0].column()
         width = int(self.spectra_stack.width())
-        head, foot, margin = 44, 20, SPACE_M
-        height = head + rows[-1].geometry().bottom() + 1 + foot
+        head, foot, margin = 44, 20, STACK_MARGIN
+        caveats = self.stack_caveats(kept)
+        meta = QFontMetrics(_font(FONT_META))
+        said = meta.boundingRect(0, 0, width, 0, Qt.TextWordWrap, caveats).height() if caveats else 0
+        foot += said + SPACE_XS if caveats else 0
+        height = head + sum(row.height() for row in kept) + foot
         image = QImage((width + 2 * margin) * 2, (height + 2 * margin) * 2, QImage.Format_RGB32)
         image.fill(QColor(palette["window"]))
         painter = QPainter(image)
@@ -1492,19 +1880,23 @@ class RadioSpectraTabMixin:
         title = f"{day:%Y-%m-%d} · {hhmm(axis.start)}–{hhmm(axis.end)} UTC · high frequency at the top of each lane"
         painter.drawText(QRectF(0, 0, width, 20), Qt.AlignVCenter | Qt.AlignLeft, title)
         self._paint_ruler(painter, left, right, 20, palette)
-        for row in rows:
+        y = head
+        for row in kept:
             painter.save()
-            painter.translate(0, head + row.y())
+            painter.translate(0, y)
             row.paint_row(painter, width, row.height(), left, right, axis.start, axis.end, palette)
-            if row.has_time() and axis.cursor is not None:
+            if axis.cursor is not None:
                 x = left + (axis.cursor - axis.start) / (axis.end - axis.start) * (right - left)
                 paint_cursor(painter, x, row.height(), left, right, palette)
             painter.restore()
+            y += row.height()
         painter.setPen(QColor(palette["text_secondary"]))
         painter.setFont(_font(FONT_META))
+        if caveats:
+            painter.drawText(QRectF(0, height - foot + SPACE_XS, width, said), Qt.TextWordWrap, caveats)
         painter.drawText(
             QRectF(0, height - foot, width, foot), Qt.AlignBottom | Qt.AlignLeft,
-            "Data: CDAW NASA, NoRP, Nançay, NICT, e-CALLISTO",
+            "Data: CDAW NASA, NoRP, Nançay, NICT, EOVSA, OVRO-LWA, BoM Learmonth, e-CALLISTO",
         )
         painter.end()
         return image
@@ -1519,6 +1911,6 @@ class RadioSpectraTabMixin:
         tick = np.ceil(axis.start / step) * step
         while tick <= axis.end + 1e-6:
             x = left + (tick - axis.start) * per_hour
-            painter.drawText(QRectF(min(x, right - 30) - 30, top, 60, 16), Qt.AlignCenter, hhmm(tick))
+            painter.drawText(QRectF(x - 30, top, 60, 16), Qt.AlignCenter, hhmm(tick))
             painter.drawLine(int(x), top + 16, int(x), top + 22)
             tick += step

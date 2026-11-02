@@ -4,6 +4,7 @@ the cursor, and the time column every time-aligned view shares.
 """
 
 import math
+import re
 from datetime import datetime, time, timedelta
 
 from PyQt5.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, pyqtSignal
@@ -11,6 +12,12 @@ from PyQt5.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen, QPolygonF
 from PyQt5.QtWidgets import QApplication, QToolTip, QWidget
 
 from ..ui.styles import FONT_META, FONT_SMALL, MONO_FAMILY, SPACE_L, SPACE_S, SPACE_XS, theme_manager, themed
+
+
+def flare_size(label):
+    """A flare class as a number, 0 for any other label."""
+    found = re.fullmatch(r"([ABCMX])(\d+(?:\.\d+)?)", label or "")
+    return 10.0 ** "ABCMX".index(found.group(1)) * float(found.group(2)) if found else 0
 
 
 class DayAxis(QObject):
@@ -122,6 +129,9 @@ HINT = "Click to set the cursor. Drag to zoom, double-click for the whole day."
 LINK_INSET = 5  # a link's text sits this far in from the button's edge
 EDGE_ARROW = 6  # the width of the arrow on the edge marker
 EDGE_INSET = 14  # how far it reaches past the column, short of the day map
+PROTON_LOW, PROTON_HIGH = -1, 5  # log10 pfu of the lane: fixed, so that days compare
+S1_PFU = 10.0
+PROTONS_NAME = "Protons ≥10 MeV"
 
 
 def _tick_step(hours, width):
@@ -136,12 +146,28 @@ def _clock(hours):
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
+def _has_flux(value):
+    """Whether a minute of GOES's curve can go on its log axis: a file can
+    hold anything, and a value of nothing or less cannot."""
+    return value is not None and value > 0
+
+
+def goes_reach(flux):
+    """``Curve 16:24–24:00`` of a day's flux missing half an hour or more at an
+    end, "" otherwise: an eclipse's hole in the middle explains itself."""
+    known = [minute for minute, value in enumerate(flux) if _has_flux(value)]
+    if not known or len(flux) != 24 * 60:
+        return ""
+    first, last = known[0], known[-1] + 1
+    return "" if first < 30 and last > 1410 else f"Curve {_clock(first / 60)}–{_clock(last / 60)}"
+
+
 class DayBand(QWidget):
     """The day at a glance, the same on every tab: ruler, GOES 1–8 Å and one
     lane per kind of event. It owns the time column; everything aligned to
     the day reads it through ``DayAxis``."""
 
-    RULER, GOES, GOES_SMALL, LANE = 20, 52, 28, 16
+    RULER, GOES, GOES_SMALL, LANE, PROTONS = 20, 52, 28, 16, 16
 
     def __init__(self, axis, plot_button, whole_day_button, parent=None):
         super().__init__(parent)
@@ -149,6 +175,8 @@ class DayBand(QWidget):
         self.lanes = {}  # lane -> [(begin, end, peak or None, label, tooltip)]
         self.flux = None  # one value per minute, None in a gap
         self.goes_text = ""  # what the GOES lane says while it has no curve
+        self.protons = None  # the day's proton record, see day_records.fetch_protons
+        self.protons_text = ""  # what the proton lane says while it has no curve
         self._goes_height = self.GOES
         self._press = None  # the x a drag started from
         self._drag = None
@@ -171,7 +199,9 @@ class DayBand(QWidget):
         themed(self, lambda palette: self.update())
 
     def _set_height(self):
-        self.setFixedHeight(self.RULER + self._goes_height + SPACE_XS + len(LANES) * (self.LANE + 2) + 2)
+        self.setFixedHeight(
+            self.RULER + self._goes_height + SPACE_XS + len(LANES) * (self.LANE + 2) + self.PROTONS + 2
+        )
 
     def set_compact(self, compact):
         """A small window keeps its height for the tabs."""
@@ -192,6 +222,20 @@ class DayBand(QWidget):
     def set_goes_text(self, text):
         self.flux, self.goes_text = None, text
         self.update()
+
+    def set_protons(self, record):
+        self.protons, self.protons_text = record, ""
+        self.update()
+
+    def set_protons_text(self, text):
+        self.protons, self.protons_text = None, text
+        self.update()
+
+    def proton_flux(self, hours):
+        """The flux in pfu at ``hours``, ``None`` where there is none."""
+        if self.protons is None or not 0 <= hours < 24:
+            return None
+        return self.protons["values"][int(hours * 60 // self.protons["step"])]
 
     def event_hours(self):
         return sorted({item[0] for items in self.lanes.values() for item in items})
@@ -258,6 +302,7 @@ class DayBand(QWidget):
         for name in LANES:
             self._paint_lane(painter, palette, name, y, left, right)
             y += self.LANE + 2
+        self._paint_protons(painter, palette, y, left, right)
         self._paint_cursor(painter, palette, left, right, bottom)
         self._paint_drag(painter, palette, left, right, bottom)
         painter.end()
@@ -297,6 +342,14 @@ class DayBand(QWidget):
             painter.setPen(QColor(palette["highlight"]))
             painter.drawLine(QPointF(left, self.RULER - 2), QPointF(right, self.RULER - 2))
 
+    def _say_goes_reach(self, painter, area):
+        """A curve that stops short of the day's ends says so: an empty stretch
+        beside it looks like a quiet Sun."""
+        reach = goes_reach(self.flux)
+        if reach:
+            painter.setFont(self._font(FONT_META))
+            painter.drawText(area.adjusted(SPACE_S, 0, -SPACE_S, 0), Qt.AlignTop | Qt.AlignRight, reach)
+
     def _paint_goes(self, painter, palette, left, right, top, height):
         painter.setFont(self._font(FONT_SMALL))
         painter.setPen(QColor(palette["text_secondary"]))
@@ -307,10 +360,11 @@ class DayBand(QWidget):
             painter.setFont(self._font(FONT_SMALL))
             painter.drawText(area, Qt.AlignCenter, self.goes_text)
             return
-        known = [v for v in self.flux if v]
+        known = [v for v in self.flux if _has_flux(v)]
         if not known:
             painter.drawText(area, Qt.AlignCenter, "No GOES data for this date")
             return
+        self._say_goes_reach(painter, area)
         low = math.floor(math.log10(min(known)))
         high = max(math.ceil(math.log10(max(known))), low + 2)
         y_of = lambda value: top + height - 1 - (math.log10(value) - low) / (high - low) * (height - 2)
@@ -331,7 +385,7 @@ class DayBand(QWidget):
         painter.setPen(QPen(QColor(GOES_COLOUR), 1.2))
         run = []
         for minute, value in enumerate(self.flux):
-            if value:
+            if _has_flux(value):
                 run.append(QPointF(self.axis.x_of(minute / 60, self), y_of(value)))
             elif run:
                 painter.drawPolyline(QPolygonF(run))
@@ -356,9 +410,9 @@ class DayBand(QWidget):
         }[name]
         painter.save()
         painter.setClipRect(QRectF(left, y, right - left, height + 1))
-        items = self.lanes.get(name, ())
+        spots = []  # (x0, x1, how far the bars reach, label)
         reached = left  # a short event can lie inside the one before it
-        for index, (begin, end, peak, label, _tip) in enumerate(items):
+        for begin, end, peak, label, _tip in self.lanes.get(name, ()):
             if end < self.axis.start or begin > self.axis.end:
                 continue
             x0 = self.axis.x_of(begin, self)
@@ -377,15 +431,121 @@ class DayBand(QWidget):
                     x = self.axis.x_of(peak, self)
                     painter.setPen(QPen(QColor(palette[tick]), 1.5))
                     painter.drawLine(QPointF(x, y + 1), QPointF(x, y + height - 1))
-            painter.setFont(self._font(FONT_META, mono=True))
-            advance = painter.fontMetrics().horizontalAdvance(label)
             reached = max(reached, x1)
-            # A label only where the next event leaves it room
-            room = right if index + 1 == len(items) else self.axis.x_of(items[index + 1][0], self) - SPACE_XS
-            if label and reached + 3 + advance <= room:
-                painter.setPen(QColor(palette["text"]))
-                painter.drawText(QRectF(reached + 3, y, advance + 2, height), Qt.AlignVCenter, label)
+            spots.append((x0, x1, reached, label))
+        self._paint_labels(painter, palette, spots, y, height, left, right)
         painter.restore()
+
+    def _paint_labels(self, painter, palette, spots, y, height, left, right):
+        """The largest flare is labelled first, and always; then the rest, in
+        time order, where they leave each other and the bars room."""
+        painter.setFont(self._font(FONT_META, mono=True))
+        metrics = painter.fontMetrics()
+        first = max(spots, key=lambda spot: flare_size(spot[3]), default=None)
+        order = sorted(spots, key=lambda spot: -flare_size(spot[3]))  # (stable: in time order)
+        taken = []
+
+        def free(a, b, others):
+            return not any(start < b and end > a for start, end in others)
+
+        for spot in order:
+            x0, x1, reach, label = spot
+            if not label:
+                continue
+            width = metrics.horizontalAdvance(label) + 2
+            bars = [(s[0], s[1]) for s in spots if s is not spot]
+            places = [(a, a + width) for a in (reach + 3, x0 - 3 - width) if a >= left and a + width <= right]
+            place = next((p for p in places if free(*p, taken) and free(*p, bars)), None)
+            forced = place is None and spot is first and flare_size(label) > 0
+            if forced:
+                place = next((p for p in places if free(*p, taken)), None)
+            if place is None:
+                continue
+            taken.append(place)
+            box = QRectF(place[0], y, width, height)
+            if forced:  # over the bars beside it
+                painter.fillRect(box.adjusted(0, 2, 0, -2), QColor(palette["surface"]))
+            painter.setPen(QColor(palette["text"]))
+            painter.drawText(box, Qt.AlignVCenter, label)
+
+    def _proton_label(self):
+        """The lane's name, or with a cursor on the lane its reading."""
+        flux = self.proton_flux(self.axis.cursor) if self.axis.cursor is not None else None
+        if flux is None:
+            return PROTONS_NAME
+        return f"≥10 MeV {flux:.0f} pfu" if flux >= 100 else f"≥10 MeV {flux:.3g} pfu"
+
+    def _paint_protons(self, painter, palette, y, left, right):
+        """One thin curve on a fixed log scale, with S1 marked: flat and low
+        on nearly every day, and filled over S1 on a day that matters."""
+        height = self.PROTONS
+        painter.setFont(self._font(FONT_SMALL))
+        painter.setPen(QColor(palette["text_secondary"]))
+        painter.drawText(QRectF(SPACE_L, y, GUTTER - SPACE_S, height), Qt.AlignVCenter, self._proton_label())
+        area = QRectF(left, y, right - left, height)
+        if self.protons is None:
+            painter.drawText(area, Qt.AlignCenter, self.protons_text)
+            return
+        y_of = lambda flux: y + height - 1 - (height - 2) * (
+            (max(math.log10(max(flux, 1e-3)), PROTON_LOW) - PROTON_LOW) / (PROTON_HIGH - PROTON_LOW)
+        )
+        s1 = y_of(S1_PFU)
+        painter.setPen(QPen(QColor(palette["plot_grid"]), 1, Qt.DotLine))
+        painter.drawLine(QPointF(left, s1), QPointF(right, s1))
+        painter.setFont(self._font(FONT_META, mono=True))
+        painter.setPen(QColor(palette["text_faint"]))
+        painter.drawText(QRectF(left - 18, s1 - 7, 15, 14), Qt.AlignRight | Qt.AlignVCenter, "S1")
+
+        painter.save()
+        painter.setClipRect(area)
+        step = self.protons["step"] / 60
+        origin, per_hour = self.axis.x_of(0, self), (right - left) / (self.axis.end - self.axis.start)
+        run, peak = [], None
+        painter.setPen(Qt.NoPen)
+        over = QColor(palette["warning"])
+        over.setAlpha(110)
+        painter.setBrush(over)
+        for index, flux in enumerate(self.protons["values"]):
+            if flux is not None and (peak is None or flux > peak[1]):
+                peak = (index, flux)
+            if flux is not None and flux >= S1_PFU:
+                x = origin + index * step * per_hour
+                painter.drawRect(QRectF(x, y_of(flux), max(step * per_hour, 1.0), y + height - 1 - y_of(flux)))
+        painter.setPen(QPen(QColor(palette["text_secondary"]), 1))
+        painter.setBrush(Qt.NoBrush)
+        for index, flux in enumerate(self.protons["values"]):
+            if flux is not None:
+                run.append(QPointF(origin + index * step * per_hour, y_of(flux)))
+            elif run:
+                painter.drawPolyline(QPolygonF(run))
+                run = []
+        if run:
+            painter.drawPolyline(QPolygonF(run))
+        if peak is not None and peak[1] >= S1_PFU:
+            self._paint_proton_peak(painter, palette, peak, origin + peak[0] * step * per_hour, y, height, right)
+        painter.restore()
+
+    def _paint_proton_peak(self, painter, palette, peak, x, y, height, right):
+        level = sum(peak[1] >= S1_PFU * 10 ** n for n in range(5))
+        text = f"{peak[1]:.0f} pfu S{level}"
+        painter.setFont(self._font(FONT_META, mono=True))
+        width = painter.fontMetrics().horizontalAdvance(text) + 4
+        box = QRectF(x + SPACE_XS if x + SPACE_XS + width <= right else x - SPACE_XS - width, y, width, height)
+        painter.fillRect(box.adjusted(0, 3, 0, -3), QColor(palette["surface"]))
+        painter.setPen(QColor(palette["warning"] if level < 3 else palette["error"]))
+        painter.drawText(box, Qt.AlignCenter, text)
+
+    def _proton_tip(self, x):
+        record, hours = self.protons, self.axis.hours_at(x, self)
+        if record is None:
+            return self.protons_text
+        flux = self.proton_flux(hours)
+        reading = "No value" if flux is None else f"{flux:.3g} pfu"
+        return (
+            f"{_clock(hours)} UTC: {reading} at ≥10 MeV. S1 is 10 pfu.\n"
+            f"{record['satellite']}, {record['source']}."
+            + (f"\n{record['note']}." if record.get("note") else "")
+        )
 
     def _paint_cursor(self, painter, palette, left, right, bottom):
         hours = self.axis.cursor
@@ -513,6 +673,8 @@ class DayBand(QWidget):
                     if x0 <= pos.x() <= max(self.axis.x_of(end, self), x0 + 6) + 3:
                         return tip
             y += self.LANE + 2
+        if y <= pos.y() < y + self.PROTONS and self._in_column(pos.x()):
+            return self._proton_tip(pos.x())
         return HINT if self._in_column(pos.x()) else ""
 
     def event(self, event):

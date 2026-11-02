@@ -8,7 +8,7 @@ from datetime import date, datetime, time, timezone
 from typing import Callable, List, Optional, Tuple
 import logging
 import re
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,15 @@ class ContextImage:
     credits: str = "Helioviewer"  # Credit source
     source_id: Optional[int] = None  # Helioviewer sourceId if applicable
     image_date: Optional[datetime] = None
+    group: str = ""  # one of GROUPS; found from the title if empty
+    proved_day: Optional[date] = None  # the date, for an archive that gives no time
+    key: str = ""  # what its thumbnail is cached under, if not the title
+    span: str = ""  # the time to show, if not image_date's
+    image_end: Optional[datetime] = None  # where an image takes a while to make
+    link: str = ""  # opened in the browser on a click, instead of the large view
+    source_page: str = ""  # the archive's page, for the tile's menu
+    view: str = ""  # where it was seen from, if not from Earth
+    doubt: str = ""  # a sentence, where what the tile says of it cannot be trusted
 
 
 # Essential instruments for context viewing
@@ -121,6 +130,115 @@ ESSENTIAL_INSTRUMENTS = [
 ]
 
 
+# Layers that only ask for their images once their group is on
+EXTRA_INSTRUMENTS = [
+    ("AIA 94", "[SDO,AIA,AIA,94,1,100]", "SDO", "94Å Hot Flare Plasma (Fe XVIII)", 8),
+    ("AIA 131", "[SDO,AIA,AIA,131,1,100]", "SDO", "131Å Flare Plasma (Fe VIII/XXI)", 9),
+    ("AIA 211", "[SDO,AIA,AIA,211,1,100]", "SDO", "211Å Active Region Corona (Fe XIV)", 12),
+    ("SWAP 174", "[PROBA2,SWAP,174,1,100]", "PROBA2", "174Å Corona, wider field than AIA", 32),
+    ("XRT Al-poly", "[Hinode,XRT,Al_poly,Open,1,100]", "Hinode", "Soft X-rays (Al-poly filter)", 48),
+    ("GONG H-alpha", "[GONG,GONG,H-alpha,6562,1,100]", "GONG", "6563Å Chromosphere, ground network", 94),
+    ("AIA 1600", "[SDO,AIA,AIA,1600,1,100]", "SDO", "1600Å Flare Ribbons & Upper Photosphere", 15),
+    ("KCor", "[MLSO,COSMO,KCor,735,1,100]", "MLSO", "Ground Coronagraph (1.05-3 R☉, Polarized Light)", 83),
+    ("PUNCH", "[PUNCH,WFI+NFI,Total Brightness,1,100]", "PUNCH", "Wide Field Mosaic (out to about 180 R☉)", 131),
+    ("COR2-A", "[STEREO_A,SECCHI,COR2,white-light,1,100]", "STEREO_A", "Coronagraph from STEREO-A (2.5-15 R☉)", 29),
+    ("FSI 174", "[SOLO,EUI,FSI,174,1,100]", "SOLO", "174Å Corona from Solar Orbiter (EUI)", 84),
+    ("FSI 304", "[SOLO,EUI,FSI,304,1,100]", "SOLO", "304Å Chromosphere from Solar Orbiter (EUI)", 85),
+]
+
+GROUPS = [
+    ("radio", "Radio"),
+    ("euv", "EUV and X-ray"),
+    ("chromosphere", "Chromosphere and magnetic"),
+    ("coronagraphs", "Coronagraphs"),
+    ("viewpoints", "Other viewpoints"),
+]
+USUAL_GROUPS = ("radio", "euv")  # on until the user says otherwise
+
+GROUP_MEMBERS = {
+    "euv": (
+        "AIA 94", "AIA 131", "AIA 171", "AIA 193", "AIA 211", "AIA 304", "AIA 335",
+        "SUVI 171", "SUVI 304", "SWAP 174", "XRT Al-poly",
+    ),
+    "chromosphere": ("GONG H-alpha", "AIA 1600", "HMI Mag", "HMI Int"),
+    "coronagraphs": ("LASCO C2", "LASCO C3", "KCor", "PUNCH"),
+    "viewpoints": ("EUVI-A 171", "EUVI-A 304", "COR2-A", "FSI 174", "FSI 304"),
+}
+GROUP_OF_TITLE = {title: group for group, titles in GROUP_MEMBERS.items() for title in titles}
+
+# Image scale of the thumbnail (320 px) and of the large view, and the large
+# view's width: Helioviewer scales every instrument to 1 AU, so one scale fits
+# all that show the disk, however far away they are
+DISK_FIELD = (7.5, 1.6, 1600)
+FIELDS = {
+    "LASCO C2": (37.5, 6, 2048),  # Inner coronagraph - needs MORE FoV than before
+    "LASCO C3": (120, 28.0, 2048),  # Outer coronagraph - needs A LOT MORE FoV
+    "SWAP 174": (10.5, 3.2, 1024),  # the corona well above the limb
+    "KCor": (18, 5.6, 1024),
+    "PUNCH": (1040, 162, 2048),
+    "COR2-A": (90, 14, 2048),
+}
+
+# Before these a layer has no image of the date, so it is not asked
+FIRST_DATES = {
+    "SUVI 171": date(2022, 6, 15),
+    "SUVI 304": date(2022, 6, 9),
+    "GONG H-alpha": date(2015, 12, 22),
+    "KCor": date(2013, 9, 30),
+    "PUNCH": date(2025, 6, 22),
+    "FSI 174": date(2020, 5, 12),
+    "FSI 304": date(2020, 5, 12),
+}
+LEAST_FULL_FIELD = 1500  # arcsec: an XRT image narrower than this is of a part of the Sun
+SOLO_TITLES = ("FSI 174", "FSI 304")
+OTHER_VIEW_TITLES = SOLO_TITLES + ("EUVI-A 171", "EUVI-A 304", "COR2-A")
+HEADER_VALUE = "<{}[^>]*>\\s*([-+\\d.eE]+)\\s*<"
+AU_METRES = 1.495978707e11
+# Answered with the file itself, not a page to look for it on
+DIRECT_HOSTS = ("helioviewer.org", "drive.google.com", "ovsa.njit.edu", "badary.iszf.irk.ru")
+
+
+def group_of(image) -> str:
+    """The key of the group ``image`` belongs to, "" for one in none."""
+    return getattr(image, "group", "") or GROUP_OF_TITLE.get(getattr(image, "title", ""), "")
+
+
+def place_in_group(image) -> int:
+    """Where ``image`` goes among its group: as listed, if its group lists it."""
+    titles = GROUP_MEMBERS.get(group_of(image), ())
+    title = getattr(image, "title", "")
+    return titles.index(title) if title in titles else len(titles)
+
+
+def layers_of(groups) -> list:
+    """The layers of ``groups`` that wait for their group to be on."""
+    return [entry for entry in EXTRA_INSTRUMENTS if GROUP_OF_TITLE.get(entry[0]) in groups]
+
+
+def not_started(day: date, groups) -> List[Tuple[str, date]]:
+    """Layers of ``groups`` whose instrument was not yet at work on ``day``."""
+    titles = [entry[0] for entry in ESSENTIAL_INSTRUMENTS + EXTRA_INSTRUMENTS]
+    return [
+        (title, FIRST_DATES[title])
+        for title in titles
+        if title in FIRST_DATES and day < FIRST_DATES[title] and GROUP_OF_TITLE.get(title) in groups
+    ]
+
+
+def is_direct_image(url: str) -> bool:
+    return any(host in (url or "") for host in DIRECT_HOSTS)
+
+
+def refusal(url: str, status: Optional[int] = None) -> str:
+    """Why a download gave no image, for the tile to say. Drive sends a web
+    page, or an error, when a file's download limit is used up."""
+    if "drive.google.com" in (url or "") or "googleusercontent" in (url or ""):
+        return "Google Drive did not send the map. Its download limit may be used up: try later."
+    if status is not None:
+        return f"HTTP {status}"
+    return "The archive sent a web page, not an image"
+
+
 def image_moment(image) -> Optional[datetime]:
     """When ``image`` was observed, as a naive UTC datetime, if it says so.
     (``load_images`` leaves a date it could not parse as a string.)"""
@@ -135,10 +253,14 @@ def image_moment(image) -> Optional[datetime]:
 def image_day(image) -> Optional[date]:
     """The UTC date ``image`` was observed on, or None if that cannot be
     proved: Helioviewer's closest image may be from any date, and only a
-    SolarMonitor file's folder dates it without a time."""
+    SolarMonitor file's folder dates it without a time. An archive that
+    answers for one date alone gives it as ``proved_day``."""
     moment = image_moment(image)
     if moment is not None:
         return moment.date()
+    proved = getattr(image, "proved_day", None)
+    if isinstance(proved, date):
+        return proved
     folder = ARCHIVE_FOLDER.search(getattr(image, "thumb_url", None) or "")
     if folder is None:
         return None
@@ -156,142 +278,121 @@ def images_of_date(images, day: date) -> Tuple[list, list]:
     return kept, left_out
 
 
+def screenshot_url(date_str: str, layer_path: str, scale, size: int) -> str:
+    """A Helioviewer PNG, centred on the Sun, ``size`` pixels wide at ``scale``."""
+    params = {
+        "date": date_str,
+        "imageScale": str(scale),
+        "layers": layer_path,
+        "x0": "0",
+        "y0": "0",
+        "width": str(size),
+        "height": str(size),
+        "display": "true",
+        "watermark": "false",
+    }
+    return f"https://api.helioviewer.org/v2/takeScreenshot/?{urlencode(params)}"
+
+
+def view_from_header(header: str) -> Tuple[str, str]:
+    """Where a spacecraft stood, from an image's FITS header: for the tile and
+    for its tooltip. Stonyhurst longitude is its angle from Earth."""
+    found = re.search(HEADER_VALUE.format("HGLN_OBS"), header)
+    distance = re.search(HEADER_VALUE.format("DSUN_OBS"), header)
+    if found is None:
+        return "", ""
+    angle = float(found.group(1))
+    words = f"{abs(angle):.0f}°{'W' if angle >= 0 else 'E'} of Earth"
+    if distance is None:
+        return words, f"Seen from {words}"
+    return words, f"Seen from {words}, {float(distance.group(1)) / AU_METRES:.2f} AU from the Sun"
+
+
+def _closest_image(session, nickname, date_str, source_id) -> dict:
+    """Helioviewer's closest image to a time, {} if it does not say."""
+    url = f"https://api.helioviewer.org/v2/getClosestImage/?date={date_str}&sourceId={source_id}"
+    try:
+        res = session.get(url, timeout=10)
+        if res.status_code == 200:
+            return res.json()
+    except Exception as e:
+        logger.warning("Failed to fetch image date for %s: %s", nickname, e)
+    return {}
+
+
+def _other_view(session, nickname, image_id) -> Tuple[str, str]:
+    """One more request, for the images that are not seen from Earth."""
+    try:
+        res = session.get(f"https://api.helioviewer.org/v2/getJP2Header/?id={image_id}", timeout=10)
+        if res.status_code == 200:
+            return view_from_header(res.text)
+    except Exception as e:
+        logger.warning("Failed to fetch the viewpoint of %s: %s", nickname, e)
+    return "", ""
+
+
 def fetch_from_helioviewer(
     event_date: date,
     progress: Optional[Callable[[int, int], None]] = None,
     when: time = NOON,
+    layers: Optional[list] = None,
 ) -> List[ContextImage]:
     """
-    Fetch essential context images from Helioviewer API as PNG screenshots.
+    Fetch context images from Helioviewer API as PNG screenshots.
 
     Args:
         event_date: Date to fetch images for
         progress: Called with (images looked up, images in all) before each lookup
         when: The UTC time of day to find the images nearest to
+        layers: Entries of the instrument lists, the essential ones if None
 
     Returns:
         List of ContextImage objects with PNG image URLs
     """
     # Format date for Helioviewer API (ISO 8601 UTC)
     date_str = f"{event_date.strftime('%Y-%m-%d')}T{when.strftime('%H:%M:%S')}Z"
+    chosen = ESSENTIAL_INSTRUMENTS if layers is None else layers
+    chosen = [entry for entry in chosen if event_date >= FIRST_DATES.get(entry[0], date.min)]
 
     images = []
 
-    # Fetch only essential instruments with PNG screenshots
-    for index, entry in enumerate(ESSENTIAL_INSTRUMENTS):
+    for index, entry in enumerate(chosen):
         if progress is not None:
-            progress(index, len(ESSENTIAL_INSTRUMENTS))
+            progress(index, len(chosen))
         nickname, layer_path, observatory, description, source_id = entry
-        # Determine image type for appropriate field of view
-        is_lasco_c2 = "LASCO,C2" in layer_path
-        is_lasco_c3 = "LASCO,C3" in layer_path
+        thumb_scale, full_scale, full_size = FIELDS.get(nickname, DISK_FIELD)
 
-        # Thumbnail parameters - optimized for each image type
-        base_url = "https://api.helioviewer.org/v2/takeScreenshot/"
+        from ..utils import get_global_session
 
-        if is_lasco_c2:
-            # LASCO C2: Inner coronagraph - needs MORE FoV than before
-            thumb_params = {
-                "date": date_str,
-                "imageScale": "37.5",
-                "layers": layer_path,
-                "x0": "0",
-                "y0": "0",
-                "width": "320",
-                "height": "320",
-                "display": "true",
-                "watermark": "false",
-            }
-            full_params = {
-                "date": date_str,
-                "imageScale": "6",
-                "layers": layer_path,
-                "x0": "0",
-                "y0": "0",
-                "width": "2048",
-                "height": "2048",
-                "display": "true",
-                "watermark": "false",
-            }
-        elif is_lasco_c3:
-            # LASCO C3: Outer coronagraph - needs A LOT MORE FoV
-            thumb_params = {
-                "date": date_str,
-                "imageScale": "120",
-                "layers": layer_path,
-                "x0": "0",
-                "y0": "0",
-                "width": "320",
-                "height": "320",
-                "display": "true",
-                "watermark": "false",
-            }
-            full_params = {
-                "date": date_str,
-                "imageScale": "28.0",
-                "layers": layer_path,
-                "x0": "0",
-                "y0": "0",
-                "width": "2048",
-                "height": "2048",
-                "display": "true",
-                "watermark": "false",
-            }
-        else:
-            # Solar disk images - need LESS FoV (less black space)
-            thumb_params = {
-                "date": date_str,
-                "imageScale": "7.5",
-                "layers": layer_path,
-                "x0": "0",
-                "y0": "0",
-                "width": "320",
-                "height": "320",
-                "display": "true",
-                "watermark": "false",
-            }
-            full_params = {
-                "date": date_str,
-                "imageScale": "1.6",
-                "layers": layer_path,
-                "x0": "0",
-                "y0": "0",
-                "width": "1600",
-                "height": "1600",
-                "display": "true",
-                "watermark": "false",
-            }
-
-        # Construct URLs with parameters
-        from urllib.parse import urlencode
-
-        thumb_url = f"{base_url}?{urlencode(thumb_params)}"
-        full_url = f"{base_url}?{urlencode(full_params)}"
+        session = get_global_session()
+        found = _closest_image(session, nickname, date_str, source_id)
 
         image_date = None
         try:
-            from ..utils import get_global_session
-            session = get_global_session()
-            date_url = f"https://api.helioviewer.org/v2/getClosestImage/?date={date_str}&sourceId={source_id}"
-            res = session.get(date_url, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                img_date_str = data.get('date', None)
-                if img_date_str:
-                    image_date = datetime.strptime(img_date_str, "%Y-%m-%d %H:%M:%S")
-        except Exception as e:
-            logger.warning("Failed to fetch image date for %s: %s", nickname, e)
+            if found.get("date"):
+                image_date = datetime.strptime(found["date"], "%Y-%m-%d %H:%M:%S")
+        except ValueError as e:
+            logger.warning("Failed to read image date for %s: %s", nickname, e)
+
+        view = ""
+        if nickname in OTHER_VIEW_TITLES and found.get("id"):
+            view, seen_from = _other_view(session, nickname, found["id"])
+            description = f"{description}. {seen_from}" if seen_from else description
+        field = (found.get("width") or 0) * (found.get("scale") or 0)
+        if nickname.startswith("XRT") and 0 < field < LEAST_FULL_FIELD:
+            description = f"{description}. Pointed at part of the Sun, {field:.0f}″ across"
 
         images.append(
             ContextImage(
                 title=nickname,
-                thumb_url=thumb_url,
-                page_url=full_url,
+                thumb_url=screenshot_url(date_str, layer_path, thumb_scale, 320),
+                page_url=screenshot_url(date_str, layer_path, full_scale, full_size),
                 instrument=observatory,
                 description=description,
                 credits="Helioviewer",
                 source_id=source_id,
-                image_date=image_date
+                image_date=image_date,
+                view=view,
             )
         )
 
@@ -413,9 +514,8 @@ def resolve_full_image_url(page_url: str) -> Optional[str]:
     For Helioviewer URLs, returns the URL directly.
     For SolarMonitor URLs, scrapes the page to find the image.
     """
-    # Check if it's a Helioviewer URL
-    if "helioviewer.org" in page_url:
-        # It's already a direct image URL from Helioviewer
+    # It's already a direct image URL
+    if is_direct_image(page_url):
         return page_url
 
     # Otherwise, it's a SolarMonitor URL - scrape it

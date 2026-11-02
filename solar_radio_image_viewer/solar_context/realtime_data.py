@@ -5,7 +5,8 @@ Solar Conditions Data Fetcher - Fetches solar conditions for a specific date.
 Data sources:
 - Historical Kp Index: services.swpc.noaa.gov/text/daily-geomagnetic-indices.txt (30-day history)
 - Historical F10.7 Flux: services.swpc.noaa.gov/text/daily-solar-indices.txt (30-day history)
-- Current Solar Wind: services.swpc.noaa.gov/products/solar-wind/plasma-7-day.json (7-day only)
+
+The solar wind of a date comes from day_records.py.
 
 Note: For dates older than 30 days, data may not be available from SWPC.
 """
@@ -38,6 +39,9 @@ class SolarWindData:
             return "High"
 
 
+G_NAMES = {1: "Minor", 2: "Moderate", 3: "Strong", 4: "Severe", 5: "Extreme"}
+
+
 @dataclass
 class KpIndexData:
     """Kp geomagnetic index data for a date."""
@@ -59,19 +63,7 @@ class KpIndexData:
     @property
     def storm_level(self) -> str:
         """Get NOAA geomagnetic storm scale level based on max Kp."""
-        kp = self.kp_max
-        if kp >= 9:
-            return "G5 (Extreme)"
-        elif kp >= 8:
-            return "G4 (Severe)"
-        elif kp >= 7:
-            return "G3 (Strong)"
-        elif kp >= 6:
-            return "G2 (Moderate)"
-        elif kp >= 5:
-            return "G1 (Minor)"
-        else:
-            return "Quiet"
+        return storm_words(self.kp_max)
 
     @property
     def tone(self) -> Optional[str]:
@@ -145,6 +137,17 @@ class SolarConditions:
         return " | ".join(parts) if parts else "No data available"
 
 
+def g_scale(kp: float) -> int:
+    """The NOAA G scale's number for a Kp, 0 below G1. SWPC goes by the Kp
+    rounded to a whole number: its forecasts print 4.67 (G1) and 7.67 (G4)."""
+    return max(min(round(kp), 9) - 4, 0)
+
+
+def storm_words(kp: float) -> str:
+    level = g_scale(kp)
+    return f"G{level} ({G_NAMES[level]})" if level else "Quiet"
+
+
 def fetch_json(url: str, timeout: int = 30) -> Optional[Any]:
     """Fetch and parse JSON from URL."""
     try:
@@ -156,56 +159,6 @@ def fetch_json(url: str, timeout: int = 30) -> Optional[Any]:
     except Exception as e:
         print(f"Error fetching {url}: {e}")
         return None
-
-
-def fetch_solar_wind(target_date: Optional[date] = None) -> Optional[SolarWindData]:
-    """
-    Fetch solar wind conditions from SWPC 7-day history.
-
-    Args:
-        target_date: If provided, get the latest data for this specific date.
-                     If None, get the absolute latest data available.
-    """
-    url = "https://services.swpc.noaa.gov/products/solar-wind/plasma-7-day.json"
-    data = fetch_json(url)
-
-    if not data or len(data) < 2:
-        return None
-
-    # Data format: [["time_tag", "density", "speed", "temperature"], [...], ...]
-    # Iterate backwards to find latest valid entry for the target date
-    for entry in reversed(data[1:]):
-        try:
-            timestamp_str = entry[0]
-            timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S.%f")
-
-            # If target_date is specified, verify match
-            if target_date and timestamp.date() != target_date:
-                # Optimized: Since data is chronological, if we see a date NEWER than target, skip.
-                # If we see a date OLDER, we missed our window (data not present).
-                if timestamp.date() > target_date:
-                    continue
-                else:
-                    # Found data older than target, so target date has no data in this file
-                    return None
-
-            # Found potential match (or no target date), check values
-            density = float(entry[1]) if entry[1] else None
-            speed = float(entry[2]) if entry[2] else None
-            temperature = float(entry[3]) if entry[3] else None
-
-            if speed is None or density is None:
-                continue
-
-            return SolarWindData(
-                timestamp=timestamp,
-                speed=speed,
-                density=density,
-                temperature=temperature or 0,
-            )
-        except (ValueError, IndexError):
-            continue
-    return None
 
 
 def fetch_text(url: str, timeout: int = 30) -> Optional[str]:
@@ -332,26 +285,15 @@ def fetch_conditions_for_date(event_date: date) -> SolarConditions:
     1. Geomagnetic & Solar Indices:
        - < 35 days: Daily text files
        - > 35 days: FTP Archive
-    2. Solar Wind (Speed/Density):
-       - < 7 days: 7-day JSON history
-       - > 7 days: Not available (set to None)
     """
     kp_data = None
     f107_data = None
-    solar_wind = None
     data_source = "NOAA SWPC daily indices (30-day archive)"
 
     today = date.today()
     days_ago = (today - event_date).days
 
-    # 1. Fetch Solar Wind (if within 7 days)
-    if 0 <= days_ago <= 7:
-        try:
-            solar_wind = fetch_solar_wind(event_date)
-        except Exception as e:
-            print(f"Solar wind fetch failed: {e}")
-
-    # 2. Fetch Kp/F10.7 Indices
+    # Fetch Kp/F10.7 Indices
     # Fetch from daily files (last 30 days)
     if 0 <= days_ago <= 35:
         # Fetch geomagnetic indices (Kp)
@@ -376,7 +318,6 @@ def fetch_conditions_for_date(event_date: date) -> SolarConditions:
             f107_flux=f107_data,
             is_historical=days_ago > 0,
             data_source=data_source,
-            solar_wind=solar_wind,
         )
 
     # For older data, try FTP archives

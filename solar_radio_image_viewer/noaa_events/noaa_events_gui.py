@@ -57,9 +57,10 @@ from .cache import _noaa_cache
 from .conditions_tab import ConditionsTabMixin
 from .context_images_tab import ContextImagesTabMixin
 from .day_axis import DayAxis, DayBand
+from .day_records_view import VIEW_LABELS, DayRecordsMixin, view_switch
 from .radio_spectra_tab import RadioSpectraTabMixin
 from .widgets import SORT_ROLE, ElidedLabel, EventTable, set_source_note, source_note
-from .workers import FetchWorker, GoesDayWorker
+from .workers import FetchWorker, FileSaver, GoesDayWorker, saved_early
 from ..processing.fits_io import is_fits
 from ..processing.image_meta import casa_info, casa_obs_time, fits_header
 
@@ -81,6 +82,9 @@ CANCEL_NOTE_MS = 4000  # how long "Cancelled" stays beside the buttons
 COMPACT_HEIGHT = 720  # under this window height the day band's GOES lane shrinks
 BAD_DATE = "Enter the date as YYYY-MM-DD."
 NOT_FETCHED = "Nothing fetched for {day} yet. Press Fetch."
+FETCHING_GOES = "Fetching GOES data…"
+GOES_NOT_FETCHED = "GOES data not fetched. Press Fetch to load it"
+EMPTY_LIST = "the event list has nothing for this date"
 NOT_YET = "{day} has not happened yet, so there is nothing to fetch."
 FETCH_HOLDS_DATE = "Staying on {day} during the fetch. From image works after it ends."
 NO_CMES_YET = "The CMEs of this date have not been fetched yet. Press Fetch."
@@ -93,11 +97,15 @@ TIME_MARKS = {"B": "<", "A": ">", "U": "~", "E": "~"}
 MARKS_NOTE = "< before, > after, ~ uncertain"
 CDAW_CREDIT = '<a href="https://cdaw.gsfc.nasa.gov/CME_list/">CDAW LASCO catalogue</a>'
 DONKI_CREDIT = '<a href="https://kauai.ccmc.gsfc.nasa.gov/DONKI/">NASA DONKI</a>'
-EVENT_CREDITS = (
-    'Data sources: <a href="https://solarmonitor.org/">SolarMonitor.org</a> (NOAA/SWPC), '
-    '<a href="https://soleil.i4ds.ch/solarradio/">e-CALLISTO</a> (C. Monstein)'
-)
+EVENT_LIST_CREDIT = '<a href="https://www.swpc.noaa.gov/products/solar-and-geophysical-event-reports">{source}</a>'
+CALLISTO_CREDIT = '<a href="https://soleil.i4ds.ch/solarradio/">e-CALLISTO</a> (C. Monstein)'
 NOTE_LENGTH = 60  # of a CME's note in its row; all of it in the tooltip
+
+
+def _event_credits(events):
+    """The Events tab's sources, naming where the list on show came from."""
+    source = ne.SOURCE_NAMES.get(getattr(events, "source", ""), ne.SOURCE_NAMES["solarmonitor"])
+    return f"Data sources: {EVENT_LIST_CREDIT.format(source=source)}, {CALLISTO_CREDIT}"
 
 
 def _in_the_future(day):
@@ -169,7 +177,7 @@ def day_rows(events, bursts, cmes, day):
                 _frequency_text(event),
                 event.active_region or "—",
                 _detail(event) if kind != "Other" else event.particulars or "—",
-                event.observatory_name,
+                event.observatory_name or "—",
             ],
             "tooltips": {0: MARKS_NOTE} if marked else {},
             "tones": {4: event.flare_class_tone} if event.flare_class_letter in ("M", "X") else {},
@@ -189,7 +197,7 @@ def day_rows(events, bursts, cmes, day):
             ],
             "tooltips": {8: burst.stations},
             "tones": {},
-            "label": burst.burst_type,
+            "label": burst.burst_type.strip("- "),  # the list has --- for a type not told
         })
     for cme in cmes or ():
         if cme.start_time.date() != day:
@@ -232,7 +240,7 @@ def band_lanes(rows):
 
 
 class NOAAEventsViewer(
-    ConditionsTabMixin, RadioSpectraTabMixin, ContextImagesTabMixin, QMainWindow
+    ConditionsTabMixin, DayRecordsMixin, RadioSpectraTabMixin, ContextImagesTabMixin, QMainWindow
 ):
     """Main Solar Activity Viewer window - displays events, active regions, conditions, and CMEs."""
 
@@ -249,6 +257,8 @@ class NOAAEventsViewer(
         self.worker = None
         self.goes_worker = None
         self.goes_day_worker = None
+        self.records_worker = None
+        self.day_records = {}  # of the date on show: key -> record
         self.dh_worker = None
         self.events = []
         self.events_rows = []  # what the Events tab and the band show
@@ -282,7 +292,8 @@ class NOAAEventsViewer(
         set_hand_cursor(self)
 
     def _set_date(self, value):
-        self.date_edit.setText(value.strftime(DATE_FORMAT))
+        # (strftime leaves out the zeros of a year before 1000: it would not read back)
+        self.date_edit.setText(f"{value.year:04d}-{value.month:02d}-{value.day:02d}")
 
     def _date_edited(self, text):
         """A note about a date goes when the field leaves that date."""
@@ -314,7 +325,9 @@ class NOAAEventsViewer(
     def _show_nothing(self, day):
         """The date has no data yet: nothing of another date stays under it."""
         self._leave_goes_day()
+        self._leave_day_records()
         self.shown_date = day
+        self._spectra_date = None  # the lanes go by the date on show
         self.day_axis.set_day(day)
         self.events = []
         text = (NOT_YET if _in_the_future(day) else NOT_FETCHED).format(day=day)
@@ -322,18 +335,25 @@ class NOAAEventsViewer(
         self.clear_tables()
         self._show_rows([])
         self._say_when_empty(text)
+        self._say_events_source(None)
         self.cme_info_label.setText("")
         self.clear_regions_and_indices(text)
         self.clear_context_images()
         self.clear_dh_spectra_ui()
         self.display_ecallisto_bursts([])
         self.day_band.set_goes_text("")
+        self._clear_record_views()
+        self.indices.clear(text)
 
     def _step_day(self, days):
         """Go to the day before or after, at the same clock time."""
         day = self.selected_date()
         if day is not None and self.date_edit.isEnabled():
-            self._set_date(day + timedelta(days=days))
+            try:
+                self._set_date(day + timedelta(days=days))
+            except OverflowError:
+                self.say(f"There is no date {'before' if days < 0 else 'after'} {day}")
+                return
             self._date_committed()
 
     def go_to(self, when):
@@ -374,10 +394,25 @@ class NOAAEventsViewer(
         self._jobs.clear()
         self.stop_dh_spectra()
         self._leave_goes_day()
+        self._leave_day_records()
         self.leave_image_downloads()
+        self.leave_image_lookups()
+        if self._callisto_view is not None:
+            self._callisto_view.reject()
+        for viewer in list(self.image_viewers):
+            viewer.close()  # (each is a window of its own, with its Save tied to this one)
         self._note_timer.stop()
         self._show_jobs()
+        self._let_go_of_images()
         super().closeEvent(event)
+
+    def _let_go_of_images(self):
+        """What a closed window has no use for: a date's lanes alone take a
+        couple of hundred megabytes, and Python can hold on to the window."""
+        self.clear_dh_spectra_ui()
+        self.clear_context_images()
+        self.images_at = {}
+        self.radio_images = []
 
     # What is running, beside the buttons: the fetch, the GOES plot and saved
     # images overlap, and the line lasts until the last of them has ended
@@ -584,8 +619,23 @@ class NOAAEventsViewer(
             self.filter_group.addButton(button)
             buttons.append(button)
         self.filter_group.buttonClicked.connect(lambda button: self._apply_filter())
+        events_filter = segmented(buttons)
+
+        day_view = QWidget()
+        day_layout = QVBoxLayout(day_view)
+        day_layout.setContentsMargins(0, 0, 0, 0)
+        day_layout.setSpacing(SPACE_S)
+        lists_view = self._create_lists_view()
+        switch, self.events_views = view_switch(VIEW_LABELS, (day_view, lists_view), self)
+        self.events_views.buttonClicked.connect(
+            lambda button: self._show_events_filter(events_filter, button.text() == VIEW_LABELS[0])
+        )
+        self._show_events_filter(events_filter, True)
         row = QHBoxLayout()
-        row.addWidget(segmented(buttons))
+        row.addWidget(switch)
+        row.addSpacing(SPACE_M)
+        row.addWidget(events_filter)
+        row.addWidget(self.list_filter)
         row.addStretch()
         layout.addLayout(row)
 
@@ -593,12 +643,24 @@ class NOAAEventsViewer(
         self.events_table.give_way_column = EVENT_COLUMNS.index("Detail")
         self.events_table.itemSelectionChanged.connect(self._event_selected)
         self.events_table.clicked.connect(self._event_selected)  # a row selected already, after Esc
-        layout.addWidget(self.events_table, 1)
+        day_layout.addWidget(self.events_table, 1)
 
-        self.events_credits_label = source_note(EVENT_CREDITS)
-        layout.addWidget(self.events_credits_label)
+        self.events_note = QLabel()  # where the list on show falls short of the final one
+        self.events_note.setObjectName("Hint")
+        self.events_note.setWordWrap(True)
+        self.events_note.hide()
+        day_layout.addWidget(self.events_note)
+        self._events_credits = _event_credits(None)
+        self.events_credits_label = source_note(self._events_credits)
+        day_layout.addWidget(self.events_credits_label)
+        layout.addWidget(day_view, 1)
+        layout.addWidget(lists_view, 1)
 
         self.tabs.addTab(page, "Events")
+
+    def _show_events_filter(self, events_filter, on_events):
+        events_filter.setVisible(on_events)
+        self.list_filter.setVisible(not on_events)
 
     def _create_cme_tab(self):
         """CMEs tab."""
@@ -644,7 +706,7 @@ class NOAAEventsViewer(
 
     def _clear_time(self):
         """Off a drag under way, then the cursor, then the zoom."""
-        if any([row.cancel_drag() for row in (self.day_band, *self._rows())]):
+        if any([row.cancel_drag() for row in (self.day_band, *self._rows(), *self.indices.strips)]):
             return
         if self.day_axis.cursor is None:
             self.day_axis.whole_day()
@@ -664,23 +726,27 @@ class NOAAEventsViewer(
     def _cursor_moved(self):
         """The nearest row comes into view, the selected one of a tie; the
         selection stays the reader's."""
-        hours, table = self.day_axis.cursor, self.events_table
+        hours = self.day_axis.cursor
         if hours is None:
             return
-        rows = [r for r in range(table.rowCount()) if not table.isRowHidden(r) and table.item(r, 0).data(SORT_ROLE) is not None]
-        if rows:
-            selected = {index.row() for index in table.selectionModel().selectedRows()}
-            nearest = min(rows, key=lambda r: (abs(table.item(r, 0).data(SORT_ROLE) - hours), r not in selected))
-            table.scrollToItem(table.item(nearest, 0))
+        for table in (self.events_table, self.lists_table):
+            rows = [r for r in range(table.rowCount()) if not table.isRowHidden(r) and table.item(r, 0).data(SORT_ROLE) is not None]
+            if rows:
+                selected = {index.row() for index in table.selectionModel().selectedRows()}
+                nearest = min(rows, key=lambda r: (abs(table.item(r, 0).data(SORT_ROLE) - hours), r not in selected))
+                table.scrollToItem(table.item(nearest, 0))
 
-    def _load_goes_day(self, day):
-        """Fill the band's GOES lane behind everything else."""
+    def _load_goes_day(self, day, only_cached=True):
+        """Fill the band's GOES lane behind everything else. A curve saved
+        while its day was young is shown, and asked for again on a Fetch."""
         self._leave_goes_day()
         flux = _noaa_cache.load_goes_day(day)
         if flux is not None:  # in at once, with the tables
             self.day_band.set_flux(flux)
-            return
-        self.day_band.set_goes_text("Fetching GOES data…")
+            if only_cached or not saved_early(_noaa_cache.goes_day_path(day), day):
+                return
+        else:
+            self.day_band.set_goes_text(FETCHING_GOES)
         self.goes_day_worker = GoesDayWorker(day)
         self.goes_day_worker.ready.connect(self._goes_day_ready)
         self.goes_day_worker.failed.connect(self._goes_day_failed)
@@ -690,6 +756,11 @@ class NOAAEventsViewer(
         if self.goes_day_worker is not None:
             abandon(self.goes_day_worker)
             self.goes_day_worker = None
+
+    def _cancel_goes_day(self):
+        self._leave_goes_day()
+        if self.day_band.goes_text == FETCHING_GOES:
+            self.day_band.set_goes_text(GOES_NOT_FETCHED)
 
     def _goes_day_ready(self, day, flux):
         if day == self.shown_date:
@@ -734,7 +805,7 @@ class NOAAEventsViewer(
 
         # Clean up old worker if exists
         if self.worker is not None:
-            self.worker.deleteLater()
+            abandon(self.worker)  # (it can be returning from run() still)
 
         self.worker = FetchWorker(day, only_cached=only_cached)
         self.worker.done.connect(self.on_fetch_finished)
@@ -770,6 +841,7 @@ class NOAAEventsViewer(
     def _fetch_cancelled(self):
         """Cancel pressed: the field goes back to the date still on show."""
         self._cancel_fetch()
+        self._cancel_goes_day()
         if self.shown_date is not None:
             self._set_date(self.shown_date)
 
@@ -815,25 +887,31 @@ class NOAAEventsViewer(
                 self.display_cme_events(cmes, fetched=not worker.only_cached)
 
                 # Display images
-                self.display_fetched_images(images)
+                self.display_fetched_images(images, fetched=not worker.only_cached)
 
                 # Update comprehensive summary
                 self._update_comprehensive_summary(events, active_regions, conditions, cmes)
             shown = True
 
-        except RuntimeError:
-            # Widget deleted during update
-            pass
+        except Exception:
+            # (a widget deleted during the update, too.) One date that cannot
+            # be shown must not take the application with it
+            logger.exception("Could not show the data for %s", event_date)
+            try:
+                self.summary_label.setText(f"Could not show the data for {event_date}. The log has the details.")
+            except RuntimeError:
+                pass
         finally:
             self._fetch_ended()
         if shown:
-            self._after_tables(event_date)
+            self._after_tables(event_date, only_cached=worker.only_cached)
 
-    def _after_tables(self, day):
+    def _after_tables(self, day, only_cached=False):
         """One job at a time: the spectra's requests start when the tables are
-        in, and the GOES lane fills behind everything."""
+        in, and the GOES lane and the day's records fill behind everything."""
         self.fetch_dh_spectra(day, only_cached=not self._fetch_spectra)
-        self._load_goes_day(day)
+        self._load_goes_day(day, only_cached)
+        self._ask_day_records(day, only_cached)
 
     def _update_comprehensive_summary(self, events, active_regions, conditions, cmes):
         """Update the main summary label with a comprehensive overview of all data."""
@@ -850,11 +928,14 @@ class NOAAEventsViewer(
                 flare_part += f", max {max_class}"
             summary_parts.append(flare_part)
             summary_parts.append(f"{len(categories.get('optical', []))} H-alpha")
+        elif isinstance(events, ne.EmptyList):
+            summary_parts.append(EMPTY_LIST)
         elif events is not None:  # None: the list could not be fetched
             summary_parts.append("0 flares")
         if events is not None:
             radio = [r for r in self.events_rows if r["kind"] == "Radio"]
-            summary_parts.append(f"{len(radio)} radio")
+            if radio or not isinstance(events, ne.EmptyList):
+                summary_parts.append(f"{len(radio)} radio")
 
         if cmes is not None:
             of_day = [cme for cme in cmes if cme.start_time.date() == day]
@@ -863,12 +944,15 @@ class NOAAEventsViewer(
             if earth_directed > 0:
                 summary_parts.append(f"{earth_directed} Earth-directed")
 
-        if active_regions is not None:
+        if active_regions:  # (none: a file with none, or none to be had)
             summary_parts.append(f"{len(active_regions)} regions")
 
         if conditions and conditions.f107_flux:
             summary_parts.append(f"{conditions.f107_flux.sunspot_number} sunspots")
             summary_parts.append(f"F10.7 {conditions.f107_flux.flux_value:.0f} sfu")
+
+        if ne.is_snapshot(events):
+            summary_parts.append("same-day snapshot")
 
         if not summary_parts:
             self.summary_label.setText("No data available for this date.")
@@ -906,17 +990,26 @@ class NOAAEventsViewer(
     def display_events(self, events, ecallisto_bursts=None, cmes=None):
         """All the day's events in one table, and in the band."""
         self.clear_tables()
+        self._say_events_source(events)
         if events is None:
             self.events_table.set_empty_text("Could not fetch the events")
             self.summary_label.setText("No data could be fetched.")
             self._show_rows([])
             return
-        self.events_table.set_empty_text("No events on this date")
+        self.events_table.set_empty_text(EMPTY_LIST.capitalize() if isinstance(events, ne.EmptyList) else "No events on this date")
         rows = day_rows(events, ecallisto_bursts, cmes, self.shown_date)
         self._show_rows(rows)
         self.events_table.scrollToTop()
         self.events_table.doItemsLayout()  # (the scroll bar's range, for what follows)
         self._cursor_moved()  # a cursor set before the rows were in
+
+    def _say_events_source(self, events):
+        """Which file the list on show is from, and what it may lack."""
+        self._events_credits = _event_credits(events)
+        set_source_note(self.events_credits_label, self._events_credits)
+        note = ne.events_note(events, self.shown_date) if self.shown_date else ""
+        self.events_note.setText(note)
+        self.events_note.setVisible(bool(note))
 
     def _show_rows(self, rows):
         self.events_rows = rows
@@ -963,7 +1056,7 @@ class NOAAEventsViewer(
             self.cme_info_label.setText(f"{counts}, from NASA DONKI.")
         credit = CDAW_CREDIT if cdaw else DONKI_CREDIT
         set_source_note(self.cme_credits_label, f"Data source: {credit}")
-        set_source_note(self.events_credits_label, f"{EVENT_CREDITS}, {credit}")
+        set_source_note(self.events_credits_label, f"{self._events_credits}, {credit}")
 
         with self.cme_table.filling():
             for cme in sorted(cmes, key=lambda c: (c.start_time.date() != day, c.start_time)):
@@ -1229,6 +1322,7 @@ def show_noaa_events_viewer(parent=None, initial_date: Optional[date] = None):
     if viewer is None:
         # The main window's, not a pane's: closing an image must not close this
         viewer = NOAAEventsViewer(None if parent is None else parent.window(), initial_date)
+        viewer.setAttribute(Qt.WA_DeleteOnClose)  # a parent outlives many openings, each with a date's images
         viewer.show()
     else:
         viewer.raise_()
@@ -1263,7 +1357,13 @@ def main():
 
     viewer = NOAAEventsViewer()
     viewer.show()
-    sys.exit(app.exec_())
+    code = app.exec_()
+    # What is left is waiting on a socket, and has nothing to save: Python would
+    # wait for it, up to the longest timeout
+    FileSaver.sweep()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":

@@ -1824,6 +1824,8 @@ class ThemeManager:
         ``owner`` (a QObject; for a bound method, its object) exists."""
         if owner is None:
             owner = getattr(callback, "__self__", None)
+        # (those of a window closed since would hold on to all it had, until the next theme change)
+        self._callbacks = [(c, o) for c, o in self._callbacks if not _qt_deleted(o)]
         if all(registered != callback for registered, _ in self._callbacks):
             self._callbacks.append((callback, owner))
 

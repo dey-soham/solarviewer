@@ -2,13 +2,49 @@
 """
 NOAA Solar Events Parser - Core module for fetching and parsing NOAA solar events.
 
-Data source: https://solarmonitor.org/data/{YYYY}/{MM}/{DD}/meta/noaa_events_raw_{YYYYMMDD}.txt
+SWPC's edited events of a day are recreated until three days after it, so a
+file is told by its own header: its date, and when it was made. Each place
+below can hold an early copy, so the first file made late enough is the one
+used; failing that, the latest one to be had.
+
+Data sources, for files from 1996-07-31:
+    https://services.swpc.noaa.gov/text/solar-geophysical-event-reports.txt (today's)
+    https://www.ngdc.noaa.gov/stp/space-weather/swpc-products/daily_reports/solar_event_reports/
+    ftp://ftp.swpc.noaa.gov/pub/indices/events/ (from 2015-06-29, and the last days)
+    ftp://ftp.swpc.noaa.gov/pub/warehouse/{YYYY}/{YYYY}_events.tar.gz
+    https://solarmonitor.org/data/{YYYY}/{MM}/{DD}/meta/noaa_events_raw_{YYYYMMDD}.txt
 """
 
+import ftplib
+import io
+import logging
 import re
+import tarfile
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
+from urllib.parse import urlsplit
+
+logger = logging.getLogger(__name__)
+
+SWPC_TODAY = "https://services.swpc.noaa.gov/text/solar-geophysical-event-reports.txt"
+NCEI_EVENTS = (
+    "https://www.ngdc.noaa.gov/stp/space-weather/swpc-products/daily_reports/"
+    "solar_event_reports/{day:%Y}/{day:%m}/{day:%Y%m%d}events.txt"
+)
+SWPC_EVENTS = "ftp://ftp.swpc.noaa.gov/pub/indices/events/{day:%Y%m%d}events.txt"
+SWPC_YEAR = "ftp://ftp.swpc.noaa.gov/pub/warehouse/{day:%Y}/{day:%Y}_events.tar.gz"
+SOLARMONITOR_EVENTS = "https://solarmonitor.org/data/{day:%Y}/{day:%m}/{day:%d}/meta/noaa_events_raw_{day:%Y%m%d}.txt"
+EVENTS_FIRST = date(1996, 7, 31)  # the first file of the edited events
+SWPC_FILES_FIRST = date(2015, 6, 29)  # of the folder of single files
+EVENTS_SETTLE_DAYS = 3  # recreated daily until then
+EVENTS_LAST_LOOK_DAYS = 7  # a file older than this has had its last edit, whatever it says
+EVENTS_TIMEOUT = 20  # seconds, of each place asked
+SOURCE_NAMES = {
+    "swpc": "NOAA/SWPC",
+    "ncei": "NOAA/SWPC, from the NCEI archive",
+    "solarmonitor": "NOAA/SWPC, from SolarMonitor's copy",
+}
 
 
 # Event type definitions with descriptions
@@ -57,6 +93,7 @@ FLARE_CLASS_TONES = {
 # Observatory codes
 OBSERVATORY_CODES = {
     "G16": "GOES-16",
+    "G19": "GOES-19",
     "G18": "GOES-18",
     "G17": "GOES-17",
     "G15": "GOES-15",
@@ -68,6 +105,20 @@ OBSERVATORY_CODES = {
     "RAM": "Ramey",
     "CUL": "Culgoora",
 }
+
+
+REGION_COLUMNS = (76, 77, 78)  # where Reg# starts: the files keep to it, 1996 to 2026; a CME's long Loc/Frq can move it
+
+
+# Event ID is up to 5 digits (e.g., 40, 250, 4470). Any time can be marked B, A,
+# C or U (before, after, uncertain); the fields after Loc/Frq can be empty. End
+# and Obs can be empty too, Obs be cut to GOES's 12, run into End as a station's
+# number, or be ////.
+_TIME = r"[ABCEU]?\d{4}|////"
+EVENT_LINE = re.compile(
+    rf"(\d{{1,5}})\s*\+?\s+({_TIME})\s+({_TIME})\s+(?:({_TIME})\s*)?"
+    r"(?:(\w{2,5}|////)\s*)?(\S+)\s+(\w{2,3})\s+(\S+)\s*(.*)"
+)
 
 
 def _clock(text: str) -> str:
@@ -227,40 +278,162 @@ class ECallistoBurst:
         """Get stations as a list."""
         return [s.strip() for s in self.stations.split(",")]
 
-def fetch_events_raw(event_date: date) -> Optional[str]:
-    """
-    Fetch raw NOAA events text from solarmonitor.org.
+class EventFile(str):
+    """The text of a day's events file, and which place it came from."""
 
-    Args:
-        event_date: The date to fetch events for
+    source = ""
 
-    Returns:
-        Raw text content or None if fetch failed
-    """
-    year = event_date.strftime("%Y")
-    month = event_date.strftime("%m")
-    day = event_date.strftime("%d")
-    date_str = event_date.strftime("%Y%m%d")
 
-    url = f"https://solarmonitor.org/data/{year}/{month}/{day}/meta/noaa_events_raw_{date_str}.txt"
+def _utc_today():
+    return datetime.now(timezone.utc).date()
 
+
+def _file_day(text):
+    """The date a file says it is of, ``None`` if it says none."""
+    found = re.search(r"^:Date:\s*(\d{4}) (\d\d) (\d\d)", text, re.M)
+    if found:
+        fields, form = " ".join(found.groups()), "%Y %m %d"
+    else:
+        found = re.search(r"^EDITED EVENTS for (\d{4} \w{3} \d\d)", text, re.M | re.I)
+        fields, form = (found.group(1), "%Y %b %d") if found else (None, None)
+    try:
+        return datetime.strptime(fields, form).date() if fields else None
+    except ValueError:
+        return None
+
+
+def _file_made(text):
+    """The day a file was made, ``None`` if it does not say."""
+    found = re.search(r"^:Created:\s*(\d{4} \w{3} \d\d) \d{4} UT", text, re.M)
+    if found:
+        fields, form = found.group(1), "%Y %b %d"
+    else:
+        found = re.search(r"^\d{4} UT (\d{1,2} \w{3} \d{4})", text, re.M)  # before 1999
+        fields, form = (found.group(1), "%d %b %Y") if found else (None, None)
+    try:
+        return datetime.strptime(fields, form).date() if fields else None
+    except ValueError:
+        return None
+
+
+def _settled(day, made):
+    return made is not None and (made - day).days >= EVENTS_SETTLE_DAYS
+
+
+def _read_web(url):
+    """``url``'s text, fresh, ``None`` if it has no such file. The session's
+    cache would hand back the copy of hours ago."""
     try:
         from ..utils import get_global_session
     except ImportError:
         from solar_radio_image_viewer.utils import get_global_session
 
-    session = get_global_session()
-
     try:
-        response = session.get(url)
-        return response.text
+        return get_global_session().get(url, use_cache=False, timeout=EVENTS_TIMEOUT).text
     except Exception as e:
-        # Handle 404 or other errors
-        if hasattr(e, "response") and e.response is not None:
-            if e.response.status_code == 404:
-                return None  # No events file for this date
-        print(f"Error fetching NOAA events: {e}")
+        if getattr(getattr(e, "response", None), "status_code", None) == 404:
+            return None
+        raise
+
+
+def _read_ftp(url):
+    """``url``'s bytes, ``None`` if the server has no such file."""
+    where = urlsplit(url)
+    chunks = []
+    with ftplib.FTP(where.hostname, timeout=EVENTS_TIMEOUT) as server:
+        server.login()
+        try:
+            server.retrbinary(f"RETR {where.path}", chunks.append)
+        except ftplib.error_perm as e:
+            if str(e).startswith("550"):
+                return None
+            raise
+    return b"".join(chunks)
+
+
+def _read_ftp_text(url):
+    data = _read_ftp(url)
+    return None if data is None else data.decode("latin-1")
+
+
+def _read_year_file(url, day):
+    """``day``'s file out of SWPC's file of a year."""
+    data = _read_ftp(url)
+    if data is None:
         return None
+    with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+        wanted = f"{day:%Y%m%d}events.txt"
+        for member in archive:
+            if member.isfile() and member.name.rsplit("/", 1)[-1] == wanted:
+                return archive.extractfile(member).read().decode("latin-1")
+    return None
+
+
+def _event_places(day):
+    """``(source, read())`` of where ``day``'s file can be, in order."""
+    today = _utc_today()
+    places = []
+    if day == today:
+        places.append(("swpc", lambda: _read_web(SWPC_TODAY)))
+    elif day >= EVENTS_FIRST and day < today:
+        places.append(("ncei", lambda: _read_web(NCEI_EVENTS.format(day=day))))
+    if day >= SWPC_FILES_FIRST:
+        places.append(("swpc", lambda: _read_ftp_text(SWPC_EVENTS.format(day=day))))
+    elif day >= EVENTS_FIRST:
+        places.append(("swpc", lambda: _read_year_file(SWPC_YEAR.format(day=day), day)))
+    return places
+
+
+def fetch_events_raw(event_date: date) -> Optional[str]:
+    """
+    Fetch the raw events file of a date, as an ``EventFile``.
+
+    Args:
+        event_date: The date to fetch events for
+
+    Returns:
+        The best file of the date, "" if an archive sent an empty one, None if
+        there is none or the fetch failed. Nothing is taken for the date's
+        unless it says so.
+    """
+    best, answered, empty = None, True, False
+    for source, read in _event_places(event_date):
+        try:
+            text = read()
+        except (OSError, ValueError, EOFError, ftplib.Error, tarfile.TarError) as e:
+            logger.info("%s has no events file of %s: %s", source, event_date, e)
+            answered = False
+            continue
+        if text is None:
+            continue
+        empty = empty or not text.strip()
+        if _file_day(text) != event_date:
+            continue
+        found = EventFile(text)
+        found.source = source
+        if best is None or (_file_made(found) or date.min) > (_file_made(best) or date.min):
+            best = found
+        # (none fresher can be had: SWPC remakes a recent file once in hours)
+        if _settled(event_date, _file_made(found)) or _file_made(found) == _utc_today():
+            return found
+    if best is not None and answered:
+        return best
+    # SWPC could not be asked: SolarMonitor's copy of a date can be a late one
+    try:
+        text = _read_web(SOLARMONITOR_EVENTS.format(day=event_date))
+    except Exception as e:
+        print(f"Error fetching NOAA events: {e}")
+        return best
+    if text is None:
+        return best
+    if not text.strip():
+        return best if best is not None else ""
+    if _file_day(text) != event_date:
+        return best if best is not None else ("" if empty else None)
+    if best is None or (_file_made(text) or date.min) > (_file_made(best) or date.min):
+        best = EventFile(text)
+        best.source = "solarmonitor"
+    return best
 
 
 def parse_events(raw_text: str) -> List[SolarEvent]:
@@ -277,7 +450,7 @@ def parse_events(raw_text: str) -> List[SolarEvent]:
 
     for line in raw_text.split("\n"):
         # Skip comments and empty lines
-        line = line.strip()
+        raw, line = line, line.strip()
         if not line or line.startswith("#") or line.startswith(":"):
             continue
 
@@ -291,20 +464,14 @@ def parse_events(raw_text: str) -> List[SolarEvent]:
 
             # Check for '+' marker (follow-up event)
 
-            # Times: positions 7-11, 14-18, 24-28 (approximate, use regex)
-            # Use regex for more reliable parsing
-            # Event ID is up to 5 digits (e.g., 40, 250, 4470). Any time can be
-            # marked B, A or U (before, after, uncertain); the fields after
-            # Loc/Frq can be empty.
-            pattern = r"(\d{1,5})\s*\+?\s+([ABEU]?\d{4}|////)\s+([ABEU]?\d{4}|////)\s+([ABEU]?\d{4}|////)\s+(\w{3})\s+(\S+)\s+(\w{3})\s+(\S+)\s*(.*)"
-            match = re.match(pattern, line)
+            match = EVENT_LINE.match(line)
 
             if match:
                 event_id = match.group(1)
                 begin_time = match.group(2) if match.group(2) != "////" else None
                 max_time = match.group(3) if match.group(3) != "////" else None
                 end_time = match.group(4) if match.group(4) != "////" else None
-                observatory = match.group(5)
+                observatory = (match.group(5) or "").strip("/")
                 quality = match.group(6)
                 event_type = match.group(7)
                 location_or_freq = match.group(8)
@@ -312,7 +479,9 @@ def parse_events(raw_text: str) -> List[SolarEvent]:
 
                 # Split rest into particulars and region
                 parts = rest.split()
-                if parts and parts[-1].isdigit() and len(parts[-1]) == 4:
+                # By its column: a burst's peak flux and a shock's speed can
+                # be four digits too, and end the line when it has no region
+                if parts and parts[-1].isdigit() and len(parts[-1]) in (4, 5) and raw.rfind(parts[-1]) in REGION_COLUMNS:
                     active_region = parts[-1]
                     particulars = " ".join(parts[:-1])
                 else:
@@ -332,7 +501,7 @@ def parse_events(raw_text: str) -> List[SolarEvent]:
                         location_or_freq=location_or_freq,
                         particulars=particulars,
                         active_region=active_region,
-                        raw_line=line,
+                        raw_line=raw.rstrip(),  # (the columns of a line start where it does)
                     )
                 )
         except Exception:
@@ -340,6 +509,63 @@ def parse_events(raw_text: str) -> List[SolarEvent]:
             continue
 
     return events
+
+
+class EventList(list):
+    """A date's events, and the file they are from: its ``source``, the day it
+    was ``created``, and whether it is ``final``, past its last edit. ``source``
+    empty: saved before this was noted, from SolarMonitor's snapshot."""
+
+    source = ""
+    created = ""
+    final = False
+
+    def standing(self):
+        """How much this list can be trusted, to compare it with another."""
+        return (self.final, self.created)
+
+
+class EmptyList(EventList):
+    """The archive sent an empty file: nothing is known of the date, which is
+    not the same as a list with no events."""
+
+
+def standing(events):
+    return events.standing() if isinstance(events, EventList) else (False, "")
+
+
+def better_events(fetched, kept):
+    """Which of a list just fetched and one saved earlier to show and keep: a
+    copy made earlier, or none, does not replace what is known."""
+    if kept is None:
+        return fetched
+    if fetched is None or (not fetched and kept and not standing(fetched)[0]):
+        return kept
+    return fetched if standing(fetched) >= standing(kept) else kept
+
+
+def is_snapshot(events):
+    """Whether ``events`` are only known from a copy of SolarMonitor's that
+    can stop short of the day."""
+    return isinstance(events, EventList) and not isinstance(events, EmptyList) and not events.final and events.source in ("", "solarmonitor")
+
+
+def events_note(events, day):
+    """What a reader should know of where ``events`` of ``day`` came from,
+    empty for a final list. Only an ``EventList`` says."""
+    if not isinstance(events, EventList) or events.final or isinstance(events, EmptyList):
+        return ""
+    settles = day + timedelta(days=EVENTS_SETTLE_DAYS)
+    if is_snapshot(events):
+        made = f" of {events.created}" if events.created else ""
+        return (
+            f"SolarMonitor's same-day snapshot{made}: it can miss the day's later events and "
+            "their regions. Press Fetch for SWPC's final list."
+        )
+    made = f", as of {events.created}" if events.created else ""
+    if _utc_today() < settles:
+        return f"SWPC's list so far{made}: it is edited until {settles}."
+    return f"An early copy of SWPC's list{made}. Press Fetch for the final one."
 
 
 def fetch_and_parse_events(event_date: date) -> Optional[List[SolarEvent]]:
@@ -355,7 +581,17 @@ def fetch_and_parse_events(event_date: date) -> Optional[List[SolarEvent]]:
     raw_text = fetch_events_raw(event_date)
     if raw_text is None:
         return None
-    return parse_events(raw_text)
+    if not raw_text.strip():
+        return EmptyList()
+    events = EventList(parse_events(raw_text))
+    made = _file_made(raw_text)
+    events.source = getattr(raw_text, "source", "") or "solarmonitor"
+    events.created = made.isoformat() if made else ""
+    # Past its last look a file stands, as it says or not: 289 of them made early never came again
+    events.final = _settled(event_date, made) or (
+        (_utc_today() - event_date).days > EVENTS_LAST_LOOK_DAYS and events.source != "solarmonitor"
+    )
+    return events
 
 
 def categorize_events(events: List[SolarEvent]) -> Dict[str, List[SolarEvent]]:
@@ -533,13 +769,14 @@ def parse_ecallisto_bursts(raw_text: str, event_date: date) -> List[ECallistoBur
     return bursts
 
 
-def fetch_and_parse_ecallisto_bursts(event_date: date) -> List[ECallistoBurst]:
+def fetch_and_parse_ecallisto_bursts(event_date: date) -> Optional[List[ECallistoBurst]]:
     """
-    Fetch and parse e-CALLISTO bursts for a given date.
+    Fetch and parse e-CALLISTO bursts for a given date, ``None`` if the list
+    could not be had: that says nothing of the date, and what was saved stands.
     """
     raw_text = fetch_ecallisto_bursts_raw(event_date)
     if not raw_text:
-        return []
+        return None
     return parse_ecallisto_bursts(raw_text, event_date)
 
 
