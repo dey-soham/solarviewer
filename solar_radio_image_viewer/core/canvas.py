@@ -531,6 +531,9 @@ class CanvasMixin:
             return
         if None in (press.xdata, press.ydata, release.xdata, release.ydata):
             return
+        # The selector reports a click as well, once it has made a box before
+        if min(abs(release.x - press.x), abs(release.y - press.y)) <= MIN_ZOOM_BOX:
+            return
         xlim, ylim = self._view_target(ax)
         w, h = abs(xlim[1] - xlim[0]), abs(ylim[1] - ylim[0])
         box_w = abs(release.xdata - press.xdata)
