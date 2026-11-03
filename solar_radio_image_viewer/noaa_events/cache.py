@@ -155,6 +155,31 @@ def _good_lwa_times(table):
     )
 
 
+def _good_lwa_movie(record):
+    """A record as the browser's OVRO-LWA loader writes it: a movie on disk
+    is only used for what this says it is."""
+    if not (
+        _has_keys(record, ("url", "etag", "last_modified", "bytes"))
+        and all(isinstance(record[key], str) for key in ("url", "etag", "last_modified"))
+        and _fits(record["bytes"], int) and record["bytes"] > 0
+    ):
+        return False
+    proof = record.get("proof", "")
+    if proof not in ("", "confirmed", "failed"):
+        return False
+    if proof == "confirmed":
+        times = record.get("times")
+        if not (_fits(times, typing.List[str]) and times and _fits(record.get("frames"), int)):
+            return False
+        try:
+            stamps = [datetime.fromisoformat(stamp) for stamp in times]
+        except ValueError:
+            return False
+        if len(stamps) != record["frames"] or stamps != sorted(stamps):
+            return False
+    return True
+
+
 def _good_radio_notes(notes):
     """The notes ``RadioImages`` keeps: the window reads them as they stand."""
     from ..solar_context import radio_images as ri
@@ -594,6 +619,70 @@ class NOAAEventsCache:
             logger.warning("OVRO-LWA's times of %s cannot be read", event_date)
             return None
         return table
+
+    # === OVRO-LWA's daily movie, for the Helioviewer browser ===
+    def lwa_movie_path(self, event_date: date) -> Path:
+        """Where the movie of ``event_date`` is kept, whole."""
+        return self._get_cache_path(event_date, "lwa_movie.mp4")
+
+    def lwa_movie_partial(self, event_date: date) -> Path:
+        """The movie while it comes down: kept, so a cut download goes on."""
+        return self._get_cache_path(event_date, "lwa_movie.mp4.part")
+
+    def save_lwa_movie_record(self, event_date: date, record: dict):
+        """What the movie on disk is: its address, the server's tags for it
+        and, once proved, the time of each frame."""
+        _write_json(self._get_cache_path(event_date, "lwa_movie.json"), record)
+
+    def load_lwa_movie_record(self, event_date: date) -> Optional[dict]:
+        path = self.cache_dir / event_date.strftime("%Y/%m/%d") / "lwa_movie.json"
+        if not _there(path):
+            return None
+        try:
+            with open(path, "r") as f:
+                record = json.load(f)
+        except Exception as e:
+            logger.warning("Error loading OVRO-LWA's movie record: %s", e)
+            return None
+        if not _good_lwa_movie(record):
+            logger.warning("OVRO-LWA's movie record of %s cannot be read", event_date)
+            return None
+        return record
+
+    def save_lwa_partial_record(self, event_date: date, record: dict):
+        """Which movie the partial file is part of, to go on with it."""
+        _write_json(self._get_cache_path(event_date, "lwa_movie.part.json"), record)
+
+    def load_lwa_partial_record(self, event_date: date) -> Optional[dict]:
+        path = self.cache_dir / event_date.strftime("%Y/%m/%d") / "lwa_movie.part.json"
+        if not _there(path):
+            return None
+        try:
+            with open(path, "r") as f:
+                record = json.load(f)
+        except Exception as e:
+            logger.info("Error loading OVRO-LWA's partial movie record: %s", e)
+            return None
+        if not (isinstance(record, dict) and all(isinstance(record.get(k), str) for k in ("url", "etag", "last_modified"))):
+            return None
+        return record
+
+    def drop_lwa_partial_record(self, event_date: date):
+        path = self.cache_dir / event_date.strftime("%Y/%m/%d") / "lwa_movie.part.json"
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.info("Could not remove %s: %s", path, e)
+
+    def cached_lwa_movie(self, event_date: date, url: str) -> Optional[Path]:
+        """The movie on disk, if it is the one at ``url`` and whole."""
+        record = self.load_lwa_movie_record(event_date)
+        path = self.cache_dir / event_date.strftime("%Y/%m/%d") / "lwa_movie.mp4"
+        try:
+            whole = record is not None and record["url"] == url and path.stat().st_size == record["bytes"]
+        except OSError:
+            return None
+        return path if whole else None
 
     # === A day's records: protons, indices, flare lists ===
     def save_day_record(self, event_date: date, key: str, record: dict):

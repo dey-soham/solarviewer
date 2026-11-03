@@ -260,8 +260,38 @@ class HelioviewerExportMixin:
     Host attributes/methods used:
 
     ``_close_after_export``, ``current_frame``, ``diff_type``, ``frames``,
-    ``get_selected_instruments``, ``speed_combo``, ``timestamps``
+    ``get_selected_instruments``, ``speed_combo``, ``timestamps`` and, with
+    OVRO-LWA's frames, ``frame_labels``
     """
+
+    # A frame's time. OVRO-LWA's frames have their own (or none proved, in a clip)
+    def _label_of(self, idx):
+        labels = getattr(self, "frame_labels", [])
+        return labels[idx] if idx < len(labels) else ""
+
+    def time_text(self, idx):
+        """As the window shows it, with the movie an OVRO-LWA frame is from."""
+        when, label = self.timestamps[idx], self._label_of(idx)
+        if not when.isValid():
+            return f"Time not confirmed · {label}" if label else "Time not known"
+        text = f"{when.toString('yyyy-MM-dd HH:mm:ss')} UTC"
+        return f"{text} · {label}" if label else text
+
+    def stamp_text(self, idx):
+        """As it is printed on an exported frame."""
+        when = self.timestamps[idx]
+        if when.isValid():
+            return when.toString("yyyy-MM-dd HH:mm:ss") + " UTC"
+        return self._label_of(idx) or ""
+
+    def name_time(self, idx):
+        """As it goes in a file's name."""
+        when = self.timestamps[idx]
+        return when.toString("yyyyMMdd_HHmmss") if when.isValid() else f"untimed_{idx + 1:04d}"
+
+    def file_stem(self, nickname):
+        safe_name = nickname.replace("/", "_").replace(" ", "_")
+        return f"ovro_{safe_name}" if getattr(self, "frame_labels", []) else f"helioviewer_{safe_name}"
 
     # Export/Save functions
     def save_current_frame(self):
@@ -277,7 +307,6 @@ class HelioviewerExportMixin:
             return
 
         nickname, _, _, _ = selected[0]
-        timestamp = self.timestamps[self.current_frame]
 
         # Get pixmap for current frame
         frame_data = self.frames.get(self.current_frame, {})
@@ -288,10 +317,7 @@ class HelioviewerExportMixin:
             return
 
         # Create default filename
-        safe_name = nickname.replace("/", "_").replace(" ", "_")
-        default_name = (
-            f"helioviewer_{safe_name}_{timestamp.toString('yyyyMMdd_HHmmss')}.png"
-        )
+        default_name = f"{self.file_stem(nickname)}_{self.name_time(self.current_frame)}.png"
 
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Save frame", default_name, "PNG Image (*.png)"
@@ -355,10 +381,8 @@ class HelioviewerExportMixin:
         include_timestamp = timestamp_dialog.exec_() == QMessageBox.Yes
 
         # Get save path
-        safe_name = nickname.replace("/", "_").replace(" ", "_")
-        start_time = self.timestamps[0].toString("yyyyMMdd_HHmmss")
         ext = "gif" if format_choice == "GIF" else "mp4"
-        default_name = f"helioviewer_{safe_name}_{start_time}.{ext}"
+        default_name = f"{self.file_stem(nickname)}_{self.name_time(0)}.{ext}"
 
         file_filter = (
             "GIF Image (*.gif)" if format_choice == "GIF" else "MP4 Video (*.mp4)"
@@ -374,13 +398,13 @@ class HelioviewerExportMixin:
 
         # Collect frames, with the time of each: some may be missing
         frames_to_export = []
-        frame_times = []
+        frame_stamps = []
         for idx in sorted(self.frames.keys()):
             frame_data = self.frames[idx]
             pixmap = frame_data.get(nickname)
             if pixmap:
                 frames_to_export.append(pixmap)
-                frame_times.append(self.timestamps[idx])
+                frame_stamps.append(self.stamp_text(idx))
 
         if len(frames_to_export) < 2:
             QMessageBox.warning(
@@ -393,10 +417,7 @@ class HelioviewerExportMixin:
         # A QImage of each (cheap): the frames stay as they are in the window
         with busy(f"Preparing {len(frames_to_export)} frames…", self):
             images = [pixmap.toImage() for pixmap in frames_to_export]
-        stamps = [
-            when.toString("yyyy-MM-dd HH:mm:ss") + " UTC" if include_timestamp else ""
-            for when in frame_times
-        ]
+        stamps = [stamp if include_timestamp else "" for stamp in frame_stamps]
 
         # Get animation speed from UI
         speed_text = self.speed_combo.currentText()
@@ -458,9 +479,8 @@ class HelioviewerExportMixin:
         # Create subdirectory with timestamp
         from datetime import datetime
 
-        safe_name = nickname.replace("/", "_").replace(" ", "_")
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        batch_dir = os.path.join(dir_path, f"helioviewer_{safe_name}_{timestamp_str}")
+        batch_dir = os.path.join(dir_path, f"{self.file_stem(nickname)}_{timestamp_str}")
 
         try:
             os.makedirs(batch_dir, exist_ok=True)
@@ -471,7 +491,9 @@ class HelioviewerExportMixin:
             return
 
         metadata_lines = []
-        metadata_lines.append("Helioviewer Batch Download")
+        metadata_lines.append(
+            "OVRO-LWA frames (from its daily movies)" if getattr(self, "frame_labels", []) else "Helioviewer Batch Download"
+        )
         metadata_lines.append(f"Instrument: {nickname}")
         metadata_lines.append(
             f"Download Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -485,16 +507,14 @@ class HelioviewerExportMixin:
             to_save = []
             for idx in sorted(self.frames.keys()):
                 pixmap = self.frames[idx].get(nickname)
-                timestamp = self.timestamps[idx] if idx < len(self.timestamps) else None
-                if pixmap:
-                    filename = (
-                        f"frame_{idx:04d}_{timestamp.toString('yyyyMMdd_HHmmss')}.png"
-                    )
+                known = idx < len(self.timestamps)
+                if pixmap and known:
+                    filename = f"frame_{idx:04d}_{self.name_time(idx)}.png"
                 else:
                     filename = f"frame_{idx:04d}_missing.png"
-                when = (
-                    timestamp.toString("yyyy-MM-dd HH:mm:ss") if timestamp else "Unknown"
-                )
+                when = self.stamp_text(idx).removesuffix(" UTC") if known else "Unknown"
+                if known and self._label_of(idx):
+                    when = f"{when} ({self._label_of(idx)})" if self.timestamps[idx].isValid() else when
                 to_save.append((idx, pixmap.toImage() if pixmap else None, when, filename))
 
         outcome = run_with_dialog(

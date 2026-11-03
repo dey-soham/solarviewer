@@ -58,6 +58,11 @@ IMAGE_CREDITS = {
 }
 
 
+def is_lwa_movie(image):
+    """OVRO-LWA's daily movie, which the Helioviewer browser plays."""
+    return bool(image.link) and image.key == "OVRO-LWA movie" and image.proved_day is not None
+
+
 def span_text(minutes):
     """A length of time in words: ``76 min``, ``3 h 10 min``."""
     minutes = abs(minutes)
@@ -864,7 +869,9 @@ class ContextImagesTabMixin:
         for img in images:
             caption = caption_time(img, near, noon=when is None)
             tile = ImageTile(tile_title(img), *caption, "\n".join(image_details(img, near)))
-            if img.link:
+            if is_lwa_movie(img):
+                tile.label.setToolTip("Click to play the movie in the Helioviewer browser")
+            elif img.link:
                 tile.label.setToolTip("Click to open the movie")
             if img.key.startswith("EOVSA"):
                 tile.label.check = tile.check_map
@@ -947,15 +954,34 @@ class ContextImagesTabMixin:
         self._show_current_list()
 
     def _open_image(self, img):
-        """A tile's click: the large view, or a movie in the browser."""
-        if img.link:
+        """A tile's click: the large view, OVRO-LWA's movie in the
+        Helioviewer browser, or another movie in the web browser."""
+        if is_lwa_movie(img):
+            self._play_lwa_movie(img)
+        elif img.link:
             QDesktopServices.openUrl(QUrl(img.link))
         else:
             self.show_high_res_image(img)
 
+    def _play_lwa_movie(self, img):
+        """The movie's frames from its first to its last, at their own times."""
+        from .. import helioviewer_lwa as lwa
+        from ..helioviewer_browser import HelioviewerBrowser
+
+        try:
+            browser = HelioviewerBrowser(self.window(), initial_instrument=lwa.ALL_BANDS, movie_day=img.proved_day)
+        except Exception as e:
+            show_error(self, "Could not open the Helioviewer browser", "The window could not be opened.", e)
+            return
+        browser.setAttribute(Qt.WA_DeleteOnClose)  # its frames go with it
+        browser.show()
+
     def _show_tile_menu(self, tile, pos, img):
         menu = QMenu(tile)
-        if img.link:
+        if is_lwa_movie(img):
+            menu.addAction("Play in the Helioviewer browser", lambda: self._open_image(img))
+            menu.addAction("Open in web browser", lambda: QDesktopServices.openUrl(QUrl(img.link)))
+        elif img.link:
             menu.addAction("Open the movie", lambda: self._open_image(img))
         else:
             menu.addAction("View high resolution", lambda: self.show_high_res_image(img))

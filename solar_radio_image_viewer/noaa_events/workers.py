@@ -40,7 +40,7 @@ GOES_FILL = 1e-9  # the files' floor: what they hold where they have no value
 NICT_TRANSITION_DATE = date(2016, 7, 11)  # Yamagawa took over from HiRAS
 EOVSA_FIRST = date(2017, 1, 1)  # its daily plots start early in 2017
 CONTEXT_FIRST = date(2023, 5, 1)  # the composites start between May and June 2023
-LWA_FIRST = date(2023, 7, 19)  # the portal's first date
+LWA_FIRST = date(2023, 5, 2)  # its first daily spectrum: 2023-05-01 is not there, and 2023-07-19 is the next
 LEARMONTH_FIRST = date(2000, 1, 1)  # as the app's RSTN downloader
 NICT_THREADS = 3  # hours of a station at once, which take a second or two each
 SPECTRA_THREADS = 5  # sources fetched at once; each archive is still asked in turn
@@ -425,10 +425,13 @@ class MovieStillLoader(ThumbnailLoader):
         except (ImportError, RuntimeError) as e:
             raise RuntimeError(MOVIE_NO_STILL) from e
         with tempfile.TemporaryDirectory(prefix="solarviewer-movie-") as folder:
-            movie = os.path.join(folder, "movie.mp4")
+            # The Helioviewer browser's copy, if it has this one
+            saved = _noaa_cache.cached_lwa_movie(self.event_date, self.url) if self.event_date else None
+            movie = str(saved) if saved else os.path.join(folder, "movie.mp4")
             still = os.path.join(folder, "still.png")
-            with open(movie, "wb") as f:
-                self.stream(self.url, f.write)
+            if not saved:
+                with open(movie, "wb") as f:
+                    self.stream(self.url, f.write)
             self.check_stop()
             try:
                 # (ffmpeg writes what it found to stderr, and fails for want of an output)

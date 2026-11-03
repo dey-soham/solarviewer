@@ -61,7 +61,7 @@ SRH_FILE = re.compile(r"corrPlots/\d{4}/srh_(\d{8})_(\d{4})\.png")
 
 LWA_PAGE = "https://ovsa.njit.edu/lwa/portal"
 LWA_MOVIE = "https://ovsa.njit.edu/lwa/portal/preview/movie/{day}"
-LWA_FIRST = date(2023, 7, 19)  # the portal's first date
+LWA_FIRST = date(2023, 5, 2)  # the portal's first date (its avail-dates); 2023-07-19 is the next
 
 MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RELATION = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
@@ -551,7 +551,7 @@ def fetch_lwa_movie(day: date) -> Tuple[List[ContextImage], str]:
             instrument="OVRO-LWA",
             description=(
                 "Daily imaging movie, 34-84 MHz, starting about 14 UT and running into the next UT day. "
-                "The still is one frame of it, and it prints its own time. Click to open the movie."
+                "The still is one frame of it, and it prints its own time. Click to play the movie."
             ),
             credits="OVRO-LWA",
             group="radio",

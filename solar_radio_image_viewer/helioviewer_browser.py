@@ -33,7 +33,9 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (
     Qt,
+    QDate,
     QDateTime,
+    QTime,
     QTimer,
     QSize,
     QPoint,
@@ -45,6 +47,7 @@ from PyQt5.QtGui import QPainter, QPixmap, QColor, QKeySequence, QIcon, QPolygon
 from collections import OrderedDict, deque
 
 TIME_QT_FORMAT = "yyyy-MM-dd HH:mm:ss"
+from . import helioviewer_lwa as lwa
 from .helioviewer_data import ImageDownloader, InstrumentLoader
 from .helioviewer_export import HelioviewerExportMixin, difference_image
 from .ui.activity import ActivityLabel
@@ -98,6 +101,22 @@ def _park(thread):
     _active_threads[:] = [t for t in _active_threads if t.isRunning()]
     if thread.isRunning():
         _active_threads.append(thread)
+
+
+def utc_time(when):
+    """A naive UTC datetime as a UTC QDateTime; an invalid one for None."""
+    if when is None:
+        return QDateTime()
+    return QDateTime(QDate(when.year, when.month, when.day), QTime(when.hour, when.minute, when.second), Qt.UTC)
+
+
+def py_time(value):
+    """A QDateTime as a naive UTC datetime."""
+    value = value.toUTC()
+    day, moment = value.date(), value.time()
+    from datetime import datetime
+
+    return datetime(day.year(), day.month(), day.day(), moment.hour(), moment.minute(), moment.second())
 
 
 from .ui.geometry import fit_to_screen
@@ -229,7 +248,10 @@ class ZoomOverlayFrame(QFrame):
 class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
     """Main browser window for Helioviewer time-series."""
 
-    def __init__(self, parent=None, initial_start=None, initial_end=None):
+    def __init__(self, parent=None, initial_start=None, initial_end=None, initial_instrument=None, movie_day=None):
+        """``initial_instrument`` is the name of the entry to select. With
+        ``movie_day`` (an OVRO-LWA entry), that day's movie loads at once,
+        and the times become those of its first and last frames."""
         super().__init__(parent)
         self.setWindowTitle("Helioviewer browser")
         fit_to_screen(self, 1600, 1000)
@@ -250,8 +272,20 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.max_concurrent_downloads = 8
 
         # Store initial times
+        if movie_day is not None and initial_start is None:
+            # About when the movie runs, until its own times are known
+            initial_start = QDateTime(QDate(movie_day.year, movie_day.month, movie_day.day), QTime(12, 0), Qt.UTC)
+            initial_end = initial_start.addSecs(14 * 3600)
         self.initial_start = initial_start
         self.initial_end = initial_end
+        self.initial_instrument = initial_instrument
+        self.movie_day = movie_day  # for the first load only
+
+        # OVRO-LWA: not Helioviewer's, loaded by one thread of its own
+        self.lwa_loader = None
+        self.lwa_group = None
+        self.frame_labels = []  # with OVRO-LWA frames: which movie each is from
+        self.lwa_notes = []
 
         # Animation timer
         self.animation_timer = QTimer()
@@ -283,6 +317,10 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.setup_shortcuts()
         themed(self, self._style_icons)
         set_hand_cursor(self)
+        if initial_instrument:
+            self._select_named(initial_instrument)
+            if movie_day is not None and initial_instrument in {entry[0] for entry in lwa.entries()}:
+                QTimer.singleShot(0, self.load_time_series)
 
     def init_ui(self):
         """Initialize the user interface."""
@@ -473,9 +511,10 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         self.instruments_note.hide()
         if hasattr(self, "instrument_loader"):  # asked again: the note's Retry
             _park(self.instrument_loader)
-        self.instrument_tree.clear()
+        self._clear_helioviewer_items()
         self.all_instruments = []
-        row = QTreeWidgetItem(self.instrument_tree)
+        row = QTreeWidgetItem()
+        self.instrument_tree.insertTopLevelItem(0, row)
         row.setFlags(Qt.NoItemFlags)
         row.setFirstColumnSpanned(True)
         self.instruments_status = ActivityLabel(parent=self.instrument_tree)
@@ -489,7 +528,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         """Fill the list, grouped by observatory."""
         if self._closing:
             return
-        self.instrument_tree.clear()
+        self._clear_helioviewer_items()
         self.all_instruments = instruments
         if problem:
             self.instruments_problem = problem
@@ -583,12 +622,78 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
                 obs_item.addChild(inst_item)
 
-            self.instrument_tree.addTopLevelItem(obs_item)
+            place = self.instrument_tree.topLevelItemCount()
+            if self.lwa_group is not None:  # it stays last
+                place = self.instrument_tree.indexOfTopLevelItem(self.lwa_group)
+            self.instrument_tree.insertTopLevelItem(place, obs_item)
             obs_item.setFirstColumnSpanned(True)
+
+        if self.lwa_group is None:
+            self._add_lwa_group()
 
         # Expand all by default
         self.instrument_tree.expandAll()
         self._style_instruments(theme_manager.palette)
+        if self.initial_instrument and not self.get_selected_instruments():
+            self._select_named(self.initial_instrument)
+        if self.instrument_tree.selectedItems():  # (OVRO-LWA's, chosen before these came)
+            self.instrument_tree.scrollToItem(self.instrument_tree.selectedItems()[0])
+
+    def _clear_helioviewer_items(self):
+        """Empty the list of all but OVRO-LWA, which is not Helioviewer's."""
+        for i in reversed(range(self.instrument_tree.topLevelItemCount())):
+            item = self.instrument_tree.topLevelItem(i)
+            if item is not self.lwa_group:
+                self.instrument_tree.takeTopLevelItem(i)
+
+    def _add_lwa_group(self):
+        """OVRO-LWA's daily movie: the montage of its 12 bands, and each band."""
+        group = QTreeWidgetItem()
+        group.setText(0, f"{lwa.OBSERVATORY} · not from Helioviewer")
+        group.setToolTip(
+            0,
+            "Owens Valley Radio Observatory Long Wavelength Array: its daily movie, from the "
+            "OVRO-LWA portal (NJIT), not from Helioviewer. Each frame shows at the time it was taken.",
+        )
+        font = group.font(0)
+        font.setBold(True)
+        group.setFont(0, font)
+        for entry in lwa.entries():
+            item = QTreeWidgetItem()
+            item.setText(0, entry[0])
+            item.setText(1, "12 bands, 34-84 MHz" if lwa.view_of(entry) == lwa.MONTAGE else "Radio, one band")
+            item.setText(2, "10-60 s")
+            item.setData(0, Qt.UserRole, entry)
+            item.setToolTip(
+                0,
+                f"{entry[0]}\nFrom OVRO-LWA's daily movie, not from Helioviewer.\n"
+                "Frames come every 10 to 60 s, with gaps.",
+            )
+            group.addChild(item)
+        self.instrument_tree.addTopLevelItem(group)
+        group.setFirstColumnSpanned(True)
+        group.setExpanded(True)
+        self.lwa_group = group
+        self._style_instruments(theme_manager.palette)
+
+    def _entry_named(self, name):
+        for i in range(self.instrument_tree.topLevelItemCount()):
+            group = self.instrument_tree.topLevelItem(i)
+            for j in range(group.childCount()):
+                data = group.child(j).data(0, Qt.UserRole)
+                if data and data[0] == name:
+                    return group.child(j)
+        return None
+
+    def _select_named(self, name):
+        """Select the entry ``name``; Helioviewer's are there once they load."""
+        if self._entry_named(name) is None and name in {entry[0] for entry in lwa.entries()}:
+            self._add_lwa_group()
+        item = self._entry_named(name)
+        if item is not None:
+            self.instrument_tree.clearSelection()
+            item.setSelected(True)
+            self.instrument_tree.scrollToItem(item)
 
     def _say_instruments_problem(self, palette):
         self.instruments_note.setText(
@@ -632,8 +737,13 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
     def on_instrument_selected(self):
         """Handle instrument selection change."""
         self.update_interval_for_instrument()
+        self._allow_difference()
         if self.frames:
             self.display_current_frame()
+
+    def _lwa_selected(self):
+        selected = self.get_selected_instruments()
+        return bool(selected) and lwa.is_lwa(selected[0])
 
     def update_interval_for_instrument(self):
         """Update interval spinner based on selected instrument's cadence."""
@@ -642,6 +752,30 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             nickname, layer_path, observatory, cadence = selected[0]
             # Set interval to instrument cadence
             self.interval_spin.setValue(int(cadence))
+            self.interval_spin.setToolTip(
+                "OVRO-LWA frames come at their own times: the interval keeps frames at least this "
+                f"far apart, and {lwa.LEAST_CADENCE} s keeps them all"
+                if lwa.is_lwa(selected[0]) else "Time between frames"
+            )
+
+    def _allow_difference(self):
+        """No difference images of OVRO-LWA: its movie switches between its
+        original and its refraction corrected images from one frame to the
+        next, and the difference would show the switch, not the Sun."""
+        if self._lwa_selected():
+            if self.diff_combo.currentIndex() != 0:
+                self.diff_combo.setCurrentIndex(0)
+            self.diff_combo.setEnabled(False)
+            self.diff_label.setEnabled(False)
+            self.diff_combo.setToolTip(
+                "Not for OVRO-LWA: its frames switch between original and refraction corrected "
+                "images, so a difference would show the switch, not the Sun"
+            )
+        else:
+            self.diff_combo.setToolTip("Select difference map mode (D)")
+            if not self._loading and self.timestamps:
+                self.diff_combo.setEnabled(True)
+                self.diff_label.setEnabled(True)
 
     def create_image_panel(self, parent_splitter):
         """Create right panel with image grid and floating zoom controls."""
@@ -890,6 +1024,26 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             )
             return
 
+        if lwa.is_lwa(selected_instruments[0]):
+            movie_day, self.movie_day = self.movie_day, None
+            days = start.date().daysTo(end.date()) + 1
+            if movie_day is None and days > lwa.MOST_DAYS:
+                reply = QMessageBox.question(
+                    self,
+                    "Large request",
+                    f"This range covers {days} days of OVRO-LWA movies. Each day is a download of "
+                    f"5 to 20 MB, kept on this computer.\n\nLoad only the first {lwa.MOST_DAYS} days?",
+                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                    QMessageBox.Yes,
+                )
+                if reply == QMessageBox.Cancel:
+                    return
+                if reply == QMessageBox.Yes:
+                    end = start.addDays(lwa.MOST_DAYS)
+                    self._set_time(self.end_datetime, end)
+            self._load_lwa(start, end, selected_instruments[0], movie_day)
+            return
+
         # Check for large frame count
         count = start.secsTo(end) // interval_sec + 1
         if count > 5000:
@@ -952,8 +1106,162 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         # Enable controls (navigation etc) - images will appear as they load
         self.enable_controls()
 
+    def _load_lwa(self, start, end, entry, movie_day=None):
+        """OVRO-LWA's frames between ``start`` and ``end`` (or all of
+        ``movie_day``'s movie), at their own times, by a thread of its own."""
+        if self.crop_mode:
+            self.cancel_crop()
+        self.frames.clear()
+        self.failed_downloads.clear()
+        self.current_frame = 0
+        self.timestamps = []
+        self.frame_labels = []
+        self.lwa_notes = []
+        self.downloads_total = self.downloads_done = 0
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat("")
+        self.load_button.setEnabled(False)
+        self.cancel_button.setVisible(True)
+        self.crop_btn.setEnabled(False)
+        self.diff_combo.setCurrentIndex(0)
+        self.diff_combo.setEnabled(False)
+        self.diff_label.setEnabled(False)
+        self._loading = True
+        self._loading_names = {entry[0]}
+        self.enable_controls()
+        self._show_lwa_status("Asking OVRO-LWA for the movie…")
+
+        loader = lwa.LwaMovieLoader(
+            lwa.view_of(entry),
+            py_time(start),
+            py_time(end),
+            interval=self.interval_spin.value(),
+            side=self.image_size_spin.value(),
+            movie_day=movie_day,
+        )
+        self.lwa_loader = loader
+        loader.stage.connect(lambda text, done, total, l=loader: self._on_lwa_stage(l, text, done, total))
+        loader.planned.connect(lambda plan, l=loader: self._on_lwa_planned(l, entry[0], plan))
+        loader.range_found.connect(lambda first, last, l=loader: self._on_lwa_range(l, first, last))
+        loader.frame_ready.connect(lambda idx, image, l=loader: self._on_lwa_frame(l, entry[0], idx, image))
+        loader.failed.connect(lambda text, l=loader: self._on_lwa_failed(l, text))
+        loader.done.connect(lambda l=loader: self._on_lwa_done(l))
+        loader.start()
+
+    def _show_lwa_status(self, text):
+        """What the OVRO-LWA load is doing, in place of a frame, until it has some."""
+        while self.image_grid.count():
+            child = self.image_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.selection_label = None
+        self.zoom_controls.hide()
+        self.lwa_status = ActivityLabel()
+        self.lwa_status.start(text)
+        self.image_grid.addWidget(self.lwa_status, 1, Qt.AlignCenter)
+
+    def _current_lwa(self, loader):
+        return not self._closing and loader is self.lwa_loader
+
+    def _on_lwa_stage(self, loader, text, done, total):
+        if not self._current_lwa(loader):
+            return
+        if text == "Decoding frames":
+            self.downloads_done = done
+            self.progress_bar.setRange(0, max(total, 1))
+            self.progress_bar.setValue(done)
+            self.progress_bar.setFormat("%v of %m frames")
+            return
+        self.progress_bar.setRange(0, total if total else 0)
+        if total:
+            self.progress_bar.setValue(min(done, total))
+        self.progress_bar.setFormat(text)
+        if not self.timestamps and getattr(self, "lwa_status", None) is not None:
+            try:
+                self.lwa_status.start(text)
+            except RuntimeError:  # gone with the grid
+                pass
+
+    def _on_lwa_planned(self, loader, name, plan):
+        """The frames to come, at their own times: the seekbar knows them all."""
+        if not self._current_lwa(loader):
+            return
+        self.timestamps = [utc_time(when) for when in plan.times]
+        self.frame_labels = [
+            f"from the {day} movie" if when is not None else f"frame {number + 1} of the {day} movie"
+            for when, day, number in zip(plan.times, plan.days, plan.numbers)
+        ]
+        self.lwa_notes = list(plan.notes)
+        self.downloads_total = len(self.timestamps)
+        self.progress_bar.setRange(0, max(self.downloads_total, 1))
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%v of %m frames")
+        if len(self.timestamps) > 1:
+            self.seekbar.setRange(0, 10000)
+        else:
+            self.seekbar.setRange(0, 0)
+        self.seekbar.setValue(0)
+        self.enable_controls()
+
+    def _on_lwa_range(self, loader, first, last):
+        """One day's movie: the times become its own first and last."""
+        if not self._current_lwa(loader):
+            return
+        self._set_time(self.start_datetime, utc_time(first))
+        self._set_time(self.end_datetime, utc_time(last))
+
+    def _on_lwa_frame(self, loader, name, idx, image):
+        if not self._current_lwa(loader) or not self._loading:
+            return
+        self.frames.setdefault(idx, {})[name] = QPixmap.fromImage(image)
+        if idx == self.current_frame:
+            self.display_current_frame()
+
+    def _on_lwa_failed(self, loader, text):
+        if not self._current_lwa(loader):
+            return
+        self.lwa_loader = None
+        _park(loader)  # it may not quite have ended
+        self._loading = False
+        self._end_loading_controls()
+        if self.timestamps:
+            self.display_current_frame()
+        else:
+            self._show_empty("Nothing to show: " + text)
+        QMessageBox.warning(self, "OVRO-LWA", text)
+
+    def _on_lwa_done(self, loader):
+        if not self._current_lwa(loader):
+            return
+        self.lwa_loader = None
+        _park(loader)  # it may not quite have ended
+        self.on_loading_finished()
+
+    def _show_empty(self, text):
+        while self.image_grid.count():
+            child = self.image_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.selection_label = None
+        self.zoom_controls.hide()
+        self.image_grid.addWidget(empty_note(text), 1)
+
+    @staticmethod
+    def _abandon_lwa(loader):
+        """Hear no more from ``loader``, kill its ffmpeg and let it end alone."""
+        for signal in (loader.stage, loader.planned, loader.range_found, loader.frame_ready, loader.failed, loader.done):
+            try:
+                signal.disconnect()
+            except TypeError:
+                pass
+        loader.stop()
+        _park(loader)
+
     def _queue_frames(self, start, interval_sec, count, instruments):
         self.timestamps = [start.addSecs(i * interval_sec) for i in range(count)]
+        self.frame_labels = []
+        self.lwa_notes = []
         for frame_idx in range(count):
             for inst_data in instruments:
                 self.download_queue.append((frame_idx, inst_data))
@@ -1045,6 +1353,9 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
         self._loading = False
         self.download_queue.clear()
+        if self.lwa_loader is not None:
+            self._abandon_lwa(self.lwa_loader)
+            self.lwa_loader = None
         
         # Safely clear loaders and disconnect signals to prevent race conditions
         loaders = self.frame_loaders[:]
@@ -1069,19 +1380,33 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         # Keep a reference alive until the thread actually exits
         _park(loader)
 
-    def on_loading_finished(self, canceled=False):
-        """Handle loading completion or cancellation."""
-        self._loading = False
+    def _end_loading_controls(self):
         self.progress_bar.setVisible(False)
         self.load_button.setEnabled(True)
         self.cancel_button.setVisible(False)
         self.crop_btn.setEnabled(True)  # Enable crop after all loaded
         self.diff_combo.setEnabled(True)  # Enable diff after all loaded
         self.diff_label.setEnabled(True)
+        self._allow_difference()
+
+    def on_loading_finished(self, canceled=False):
+        """Handle loading completion or cancellation."""
+        self._loading = False
+        self._end_loading_controls()
         if self.timestamps:
             self.display_current_frame()  # no longer "loading"
-        
+        else:
+            self._show_empty("Nothing loaded")
+
         summary = f"Loaded {len(self.frames)} frames with selected instruments."
+        if self.frame_labels and self.timestamps:
+            summary = f"Loaded {len(self.frames)} OVRO-LWA frames."
+            loaded = sorted(i for i in self.frames if i < len(self.timestamps))
+            if loaded and self.timestamps[loaded[0]].isValid():
+                summary += (
+                    f"\nFrom {self.timestamps[loaded[0]].toString(TIME_QT_FORMAT)} to "
+                    f"{self.timestamps[loaded[-1]].toString(TIME_QT_FORMAT)} UTC, at their own times."
+                )
         if self.failed_downloads:
             summary += f"\nCould not download: {len(self.failed_downloads)}."
         if canceled:
@@ -1114,7 +1439,6 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
                 child.widget().deleteLater()
         self.selection_label = None
 
-        timestamp = self.timestamps[self.current_frame]
         frame_data = self.frames.get(self.current_frame, {})
 
         # Get selected instrument (single selection)
@@ -1132,10 +1456,16 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         title.setObjectName("SectionTitle")
         self.image_grid.addWidget(title)
 
-        time_label = QLabel(f"{timestamp.toString('yyyy-MM-dd HH:mm:ss')} UTC")
+        time_label = QLabel(self.time_text(self.current_frame))
         time_label.setAlignment(Qt.AlignCenter)
         time_label.setObjectName("Hint")
         self.image_grid.addWidget(time_label)
+        if self.lwa_notes and self.frame_labels and nickname in self._loading_names:
+            notes = QLabel(" ".join(self.lwa_notes))
+            notes.setAlignment(Qt.AlignCenter)
+            notes.setWordWrap(True)
+            notes.setObjectName("Tip")
+            self.image_grid.addWidget(notes)
 
         # Fullscreen image
         pixmap = frame_data.get(nickname)
@@ -1179,7 +1509,7 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
                 img_label.setToolTip(error)
             elif self._loading and nickname in self._loading_names:
                 waiting = ActivityLabel()
-                waiting.start("Downloading this frame…")
+                waiting.start("Decoding this frame…" if self.frame_labels else "Downloading this frame…")
             else:
                 img_label.setText("No data loaded for this instrument")
             img_label.setObjectName("Hint")
@@ -1291,6 +1621,8 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
 
     def cycle_diff_mode(self):
         """Cycle through difference modes."""
+        if self._lwa_selected():
+            return
         count = self.diff_combo.count()
         idx = (self.diff_combo.currentIndex() + 1) % count
         self.diff_combo.setCurrentIndex(idx)
@@ -1448,9 +1780,16 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         for loader in self.frame_loaders:
             self._abandon(loader)
         self.frame_loaders.clear()
+        if self.lwa_loader is not None:
+            self._abandon_lwa(self.lwa_loader)
+            self.lwa_loader = None
         _park(self.instrument_loader)  # (its result finds _closing set)
 
         self.pause_animation()
+        # The frames go now: the theme's hold on the window can outlast it
+        self.frames.clear()
+        if self.testAttribute(Qt.WA_DeleteOnClose):
+            theme_manager.unregister_owner(self)
         event.accept()
 
 
