@@ -12,7 +12,12 @@ if __name__ == "__main__":
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 import numpy as np, matplotlib.pyplot as plt, astropy.units as u
-from astropy.coordinates import SkyCoord, EarthLocation
+from astropy.coordinates import (
+    GCRS,
+    CartesianDifferential,
+    EarthLocation,
+    SkyCoord,
+)
 from astropy.time import Time
 from astropy.io import fits
 from matplotlib import rcParams
@@ -23,7 +28,7 @@ from casatools import image as IA
 
 try:
     import sunpy.map
-    from sunpy.coordinates import Helioprojective
+    from sunpy.coordinates import HeliographicStonyhurst, Helioprojective
     from sunpy.coordinates.sun import P
 
     sunpy_imported = True
@@ -44,6 +49,8 @@ rcParams["axes.linewidth"] = 1.4
 rcParams["font.size"] = 12
 
 KNOWN_OBSERVATORIES = ("LOFAR", "MWA", "MEERKAT", "GMRT", "UGMRT")
+RADEC_HISTORY = "Converted from Helioprojective to RA/Dec with SolarViewer"
+OBSERVER_KEYS = ("HGLN_OBS", "HGLT_OBS", "DSUN_OBS")
 
 
 def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observatory=None):
@@ -97,6 +104,53 @@ def get_Earthlocation(fits_file="", lat=None, long=None, height=None, observator
         except Exception as e:
             logger.error(f"{str(e)}")
     return POS
+
+
+def _at_rest(position, obstime):
+    """``position`` (of a GCRS frame) as an observer, without a velocity:
+    only a telescope's site gives one."""
+    return SkyCoord(
+        position.with_differentials(CartesianDifferential([0, 0, 0] * u.km / u.s)),
+        frame=GCRS(obstime=obstime),
+    )
+
+
+def _observer_from_header(header, obstime):
+    """The observer of the HGLN_OBS, HGLT_OBS and DSUN_OBS in ``header`` in
+    GCRS, or None if they are not all there."""
+    if not all(key in header for key in OBSERVER_KEYS):
+        return None
+    observer = SkyCoord(
+        header["HGLN_OBS"] * u.deg,
+        header["HGLT_OBS"] * u.deg,
+        header["DSUN_OBS"] * u.m,
+        frame=HeliographicStonyhurst(obstime=obstime),
+    )
+    return _at_rest(observer.transform_to(GCRS(obstime=obstime)).cartesian, obstime)
+
+
+def _seen_from(fits_file, header, obstime):
+    """The observer of the image in GCRS, and its observatory if known."""
+    # What convert_hpc_to_radec wrote is as its observer saw it, which is
+    # the Earth's centre for a file from before it recorded that
+    if any(RADEC_HISTORY in str(line) for line in header.get("HISTORY", [])):
+        observer = _observer_from_header(header, obstime)
+        if observer is None:
+            centre = EarthLocation.from_geocentric(0, 0, 0, unit=u.m)
+            observer = SkyCoord(centre.get_gcrs(obstime))
+        return observer, header.get("TELESCOP")
+
+    ia_tool = IA()
+    ia_tool.open(fits_file)
+    metadata_dict = ia_tool.summary(list=False, verbose=True)
+    lat, long, height, observatory = extract_telescope_position(metadata_dict)
+    ia_tool.close()
+    if str(observatory).upper() not in KNOWN_OBSERVATORIES:
+        observatory = None
+    POS = get_Earthlocation(fits_file=fits_file, observatory=observatory)
+    if POS is None:
+        raise RuntimeError("The image does not say where the telescope was")
+    return SkyCoord(POS.get_gcrs(obstime)), observatory
 
 
 def convert_to_hpc(
@@ -243,17 +297,7 @@ def convert_to_hpc_planes(
             else:
                 raise RuntimeError("Could not determine frequency from header")
         obstime = Time(header["date-obs"])
-        ia_tool = IA()
-        ia_tool.open(fits_file)
-        metadata_dict = ia_tool.summary(list=False, verbose=True)
-        lat, long, height, observatory = extract_telescope_position(metadata_dict)
-        ia_tool.close()
-        if str(observatory).upper() not in KNOWN_OBSERVATORIES:
-            observatory = None
-        POS = get_Earthlocation(fits_file=fits_file, observatory=observatory)
-        if POS is None:
-            raise RuntimeError("The image does not say where the telescope was")
-        gcrs = SkyCoord(POS.get_gcrs(obstime))
+        gcrs, observatory = _seen_from(fits_file, header, obstime)
         reference_coord = SkyCoord(
             header["CRVAL1"] * u.Unit(header["CUNIT1"]),
             header["CRVAL2"] * u.Unit(header["CUNIT2"]),
@@ -385,17 +429,7 @@ def convert_to_hpc_planes(
         except Exception as e:
             logger.error(f"Error getting observation time: {e}")
             obstime = None
-        ia_tool = IA()
-        ia_tool.open(fits_file)
-        metadata_dict = ia_tool.summary(list=False, verbose=True)
-        lat, long, height, observatory = extract_telescope_position(metadata_dict)
-        ia_tool.close()
-        if str(observatory).upper() not in KNOWN_OBSERVATORIES:
-            observatory = None
-        POS = get_Earthlocation(fits_file=fits_file, observatory=observatory)
-        if POS is None:
-            raise RuntimeError("The image does not say where the telescope was")
-        gcrs = SkyCoord(POS.get_gcrs(obstime))
+        gcrs, observatory = _seen_from(fits_file, header, obstime)
         reference_coord = SkyCoord(
             header["CRVAL1"] * u.Unit(header["CUNIT1"]),
             header["CRVAL2"] * u.Unit(header["CUNIT2"]),
@@ -428,11 +462,12 @@ def convert_to_hpc_planes(
         new_header["INSTRUME"] = header.get("INSTRUME", "Unknown")
         new_header["OBJECT"] = "Sun"
         new_header["ORIGIN"] = "Solar Radio Image Viewer"
-        try:
+        if freq is not None:
             new_header["FREQ"] = freq.to(u.Hz).value
             new_header["FREQUNIT"] = "Hz"
-        except Exception as e:
-            logger.error(f"Error adding frequency information: {e}")
+        for key in ("WAVELNTH", "WAVEUNIT"):  # (an EUV image's, not a frequency)
+            if key in header:
+                new_header[key] = header[key]
         new_header["WCSNAME"] = "Helioprojective"
         new_header["CTYPE1"] = "HPLN-TAN"
         new_header["CTYPE2"] = "HPLT-TAN"
@@ -446,7 +481,9 @@ def convert_to_hpc_planes(
             original_bpa = header.get("BPA", 0)
             rotated_bpa = original_bpa + P_angle.to(u.deg).value
             new_header["BPA"] = rotated_bpa
-        map = sunpy.map.Map(data, new_header)
+        # Not Map(), whose class for the instrument may want what's not here:
+        # AIA's a wavelength, which an RA/Dec image from before may not have
+        map = sunpy.map.GenericMap(data, new_header)
         # (A fallback here once rotated by the map's own metadata instead,
         # silently; a map that cannot be rotated by the P angle is an error)
         try:
@@ -973,12 +1010,25 @@ def convert_hpc_to_radec(
         p_angle = P(obstime).to(u.deg).value
 
         # Get Sun center in RA/Dec at observation time
-        sun_coord = SkyCoord(
-            0 * u.arcsec,
-            0 * u.arcsec,
-            frame=Helioprojective(obstime=obstime, observer="earth"),
-        )
-        sun_radec = sun_coord.transform_to("gcrs")
+        # (as its observer saw it: 8 arcsec from the Earth's centre, for a
+        # telescope on the ground with the Sun low)
+        observer = _observer_from_header(hpc_header, obstime)
+        if observer is None:
+            sun_coord = SkyCoord(
+                0 * u.arcsec,
+                0 * u.arcsec,
+                frame=Helioprojective(obstime=obstime, observer="earth"),
+            )
+            sun_radec = sun_coord.transform_to("gcrs")
+        else:
+            sun_coord = SkyCoord(
+                0 * u.arcsec,
+                0 * u.arcsec,
+                frame=Helioprojective(obstime=obstime, observer=observer),
+            )
+            sun_radec = sun_coord.transform_to(
+                GCRS(obstime=obstime, obsgeoloc=observer.cartesian.without_differentials())
+            )
         sun_ra = sun_radec.ra.deg
         sun_dec = sun_radec.dec.deg
 
@@ -1133,6 +1183,9 @@ def convert_hpc_to_radec(
             "CRVAL3",
             "CRVAL4",
             "RESTFRQ",
+            "WAVELNTH",
+            "WAVEUNIT",
+            *OBSERVER_KEYS,
         ]:
             if key in hpc_header:
                 new_header[key] = hpc_header[key]
@@ -1209,7 +1262,7 @@ def convert_hpc_to_radec(
 
         # Add conversion history
         new_header.add_history(
-            f"Converted from Helioprojective to RA/Dec with SolarViewer (rotated {-p_angle:.2f} deg)"
+            f"{RADEC_HISTORY} (rotated {-p_angle:.2f} deg)"
         )
 
         # Write output file

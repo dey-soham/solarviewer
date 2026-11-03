@@ -109,7 +109,8 @@ class HpcViewMixin:
                 self._conversion_failed(
                     "Conversion failed",
                     "Failed to convert to helioprojective coordinates.\n\n"
-                    "Please ensure the image has valid RA/DEC coordinate information.",
+                    "The conversion needs RA/Dec coordinates, the observation time and "
+                    "the observatory (DATE-OBS and TELESCOP or OBSGEO in the header).",
                 )
                 return
 
