@@ -214,7 +214,7 @@ class Monitor:
 def _main():
     from PyQt5.QtWidgets import QApplication, QWidget
 
-    # Same scaling as the application (QT_SCALE_FACTOR comes in the environment)
+    # Same scaling as the application (its QT_SCALE_FACTOR is passed in the environment)
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     policy = getattr(Qt, "HighDpiScaleFactorRoundingPolicy", None)
     if policy is not None:

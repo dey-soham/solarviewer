@@ -87,6 +87,11 @@ class _Pipe:
     def start(self):
         path = os.path.abspath(indicator.__file__)
         env = dict(os.environ, QT_QPA_PLATFORM="xcb")
+        # Scaled as the application (which keeps its scale out of os.environ)
+        app = QApplication.instance()
+        scale = app.property("solarviewerUiScale") if app is not None else None
+        if scale is not None:
+            env["QT_SCALE_FACTOR"] = str(scale)
         try:
             self._process = subprocess.Popen(
                 [sys.executable, path],

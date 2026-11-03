@@ -6,15 +6,25 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QDoubleSpinBox,
+    QComboBox,
     QMessageBox,
     QApplication,
 )
 from PyQt5.QtCore import Qt
+import os
+import sys
 
-from ..ui.app import display_scale, smallest_ui_scale
+from ..ui.app import display_scale, saved_window_system, smallest_ui_scale
 from ..ui.geometry import fit_width_to_text
 from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import SPACE_M, SPACE_XS, set_hand_cursor
+
+
+WINDOW_SYSTEM_CHOICES = (
+    ("Automatic", "auto"),
+    ("X11 (XWayland)", "x11"),
+    ("Wayland", "wayland"),
+)
 
 
 class PreferencesDialog(QDialog):
@@ -114,8 +124,11 @@ class PreferencesDialog(QDialog):
 
         layout.addWidget(scale_group)
 
+        if sys.platform.startswith("linux"):
+            layout.addWidget(self._window_system_group())
+
         # Restart notice
-        notice_text = QLabel("Scale changes take effect after the application restarts.")
+        notice_text = QLabel("Changes here take effect after the application restarts.")
         notice_text.setObjectName("Hint")
         notice_text.setWordWrap(True)
         layout.addWidget(notice_text)
@@ -125,6 +138,42 @@ class PreferencesDialog(QDialog):
         # Button box
         box, _ = button_bar(primary=("OK", self._save_and_close), secondary=("Cancel", self.reject))
         layout.addWidget(box)
+
+    def _window_system_group(self):
+        """Wayland or X11, for the next start."""
+        group = QGroupBox("Window system")
+        group_layout = QVBoxLayout(group)
+        group_layout.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
+
+        self.window_system = QComboBox()
+        for label, value in WINDOW_SYSTEM_CHOICES:
+            self.window_system.addItem(label, value)
+        self.window_system.setCurrentIndex(self.window_system.findData(saved_window_system()))
+        row = QHBoxLayout()
+        row.addWidget(self.window_system)
+        now = {"wayland": "Wayland", "xcb": "X11"}.get(QApplication.platformName())
+        if now:
+            in_use = QLabel(f"In use now: {now}")
+            in_use.setObjectName("Hint")
+            row.addWidget(in_use)
+        row.addStretch()
+        group_layout.addLayout(row)
+
+        hint = QLabel(
+            "Wayland gives sharper text on scaled screens, but windows get a plain "
+            "title bar and cannot bring themselves to the front. Automatic uses "
+            "Wayland on GNOME when a screen is scaled."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        group_layout.addWidget(hint)
+        if os.environ.get("QT_QPA_PLATFORM"):
+            # (set by the user: the application never leaves its own there)
+            overruled = QLabel("QT_QPA_PLATFORM is set where SolarViewer starts, and wins over this.")
+            overruled.setObjectName("Hint")
+            overruled.setWordWrap(True)
+            group_layout.addWidget(overruled)
+        return group
 
     def _on_slider_changed(self, value):
         """Update spinbox when slider value changes."""
@@ -154,13 +203,21 @@ class PreferencesDialog(QDialog):
         )
 
         self.settings.setValue("ui_scale_factor", scale)
-
-        # If scale changed, offer to restart
+        changes = []
         if abs(scale - current_scale) > 0.01:
+            changes.append(f"UI scale changed to {scale:.2f}x.")
+        if hasattr(self, "window_system"):
+            system = self.window_system.currentData()
+            if system != saved_window_system():
+                changes.append(f"Window system changed to {self.window_system.currentText()}.")
+            self.settings.setValue("window_system", system)
+
+        # If something changed, offer to restart
+        if changes:
             reply = QMessageBox.question(
                 self,
                 "Restart required",
-                f"UI scale changed to {scale:.2f}x.\n\n"
+                " ".join(changes) + "\n\n"
                 "The application needs to restart for changes to take effect.\n\n"
                 "Would you like to restart now?",
                 QMessageBox.Yes | QMessageBox.No,
