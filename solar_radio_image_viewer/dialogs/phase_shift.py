@@ -374,6 +374,24 @@ class PhaseShiftDialog(BatchWindow):
             self.log(
                 f"Sun at RA {phase_result.get('true_ra', 0):.4f}°, Dec {phase_result.get('true_dec', 0):.4f}°"
             )
+        if phase_result.get("apparent_pix_x") is None or phase_result.get("apparent_pix_y") is None:
+            # (not "no shift needed": there is nothing to tell it by, and every image would fail)
+            name = os.path.basename(reference.rstrip("/"))
+            reason = phase_result.get("not_found") or ""
+            self.log(f"The Sun was not found in {name}" + (f": {reason}" if reason else ""), "failed")
+            self.note_label.setText("Not shifted: the Sun was not found")
+            show_error(
+                self,
+                "The Sun was not found",
+                f"The Sun could not be found in {name}, so there is no shift to work out.\n\n"
+                + (
+                    "Use a reference image that shows the Sun, or find it by Centre of mass."
+                    if self.use_gaussian()
+                    else "Lower the threshold, or use a reference image that shows the Sun."
+                ),
+                reason,
+            )
+            return
         warning = phase_result.get("warning")
         if warning:
             # (found by the Gaussian fit: a burst, or a region far brighter than the disk)

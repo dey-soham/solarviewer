@@ -592,6 +592,8 @@ class SolarPhaseCenter:
             - 'is_hpc': bool - Whether the image is in helioprojective coordinates
             - 'warning': str or None - What tells that the Gaussian was fitted to a
               burst or a bright region and not to the disk (``sun_centre.burst_sign``)
+            - 'not_found': str or None - Why the Sun was not found in the image (the
+              apparent position is then None, and 'needs_shift' says nothing)
         """
         result = {
             "true_ra": None,
@@ -603,6 +605,7 @@ class SolarPhaseCenter:
             "needs_shift": False,
             "is_hpc": False,
             "warning": None,
+            "not_found": None,
         }
 
         # Convert CASA image to FITS at the start for unified processing
@@ -776,6 +779,7 @@ class SolarPhaseCenter:
 
         except Exception as e:
             print(f"Error in apparent position calculation: {e}")
+            result["not_found"] = str(e) or type(e).__name__
             import traceback
 
             traceback.print_exc()
@@ -1586,6 +1590,15 @@ def main():
         phase_result = spc.cal_solar_phaseshift(
             imagename=args.imagename, fit_gaussian=args.fit_gaussian, sigma=args.sigma
         )
+        if phase_result["apparent_pix_x"] is None or phase_result["apparent_pix_y"] is None:
+            # (not "no shift needed": there is nothing to tell it by)
+            reason = phase_result.get("not_found")
+            print(
+                f"Error: the Sun was not found in {args.imagename}"
+                + (f" ({reason})" if reason else "")
+                + ": nothing was shifted"
+            )
+            return
         ra, dec = phase_result["true_ra"], phase_result["true_dec"]
         needs_shift = phase_result["needs_shift"]
         print(f"Calculated solar center: RA = {ra} deg, DEC = {dec} deg")

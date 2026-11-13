@@ -37,7 +37,7 @@
 *   **Ring Fit**: The ring fit now finds rings away from the box centre.
 *   **Solar Disk**: Images without an observation date no longer place the disk at the Sun's position in 1858; when the Sun's position is unknown the status bar says the disk is at the image centre.
 *   **Profiles**: The profile plot says why it shows no FWHM.
-*   **Phase Centre Shift**: The Gaussian fit sees the whole Sun however many pixels it is across. Where the Sun was wider than 100 pixels it saw only the part round the brightest region, and its centre wandered by arcminutes. The Centre of mass threshold is counted in the noise away from the Sun: 10 × RMS used to sit near the peak, so only the brightest patch counted. When the fit lands on a burst, or is pulled by one, a warning says so before anything is shifted.
+*   **Phase Centre Shift**: The Gaussian fit sees the whole Sun however many pixels it is across. Where the Sun was wider than 100 pixels it saw only the part round the brightest region, and its centre wandered by arcminutes. The Centre of mass threshold is counted in the noise away from the Sun: 10 × RMS used to sit near the peak, so only the brightest patch counted. When the fit lands on a burst, or is pulled by one, a warning says so before anything is shifted. A reference image in which the Sun is not found is reported as that; it used to be called already centred.
 
 ### Create Dynamic Spectra
 *   **Runs on Servers**: Apps → Create Dynamic Spectra (also `createds`) can run on an SSH server (Run on = Server) inside the server's container or Python, directly or as a Slurm job for large sets. Only the machine that runs the engine needs python-casacore; Server mode needs paramiko here.
