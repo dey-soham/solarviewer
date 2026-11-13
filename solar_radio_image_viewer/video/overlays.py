@@ -34,13 +34,15 @@ def _pixel_scale_deg(wcs):
     return float(abs(proj_plane_pixel_scales(wcs)[0]))
 
 
-def solar_disk_pixels(header):
+def solar_disk_pixels(header, image=None):
     """(x, y, radius) of the solar disk in pixels of the image with
-    ``header``; raises ValueError saying why it can't be found.
+    ``header`` (the file ``image``, if known: it names the telescope that saw
+    the Sun); raises ValueError saying why it can't be found.
 
     As in the main window: the centre is helioprojective (0, 0), or the
-    Sun's RA/Dec at the observation time, and the radius the Sun's apparent
-    radius from Earth at that time.
+    Sun's RA/Dec at the observation time as the image's telescope saw it
+    (``observer.sun_radec``), and the radius the Sun's apparent radius from
+    Earth at that time.
     """
     from astropy.time import Time
     from sunpy.coordinates.sun import angular_radius
@@ -57,10 +59,10 @@ def solar_disk_pixels(header):
     if kind == "hpc":
         x, y = wcs.wcs_world2pix(0.0, 0.0, 0)
     elif kind == "radec":
-        from astropy.coordinates import get_sun
+        from ..coordinates.observer import sun_radec
 
-        sun = get_sun(when)
-        x, y = wcs.wcs_world2pix(sun.ra.deg, sun.dec.deg, 0)
+        ra, dec, _ = sun_radec(image, header, when)
+        x, y = wcs.wcs_world2pix(ra, dec, 0)
     else:
         raise ValueError("coordinates neither helioprojective nor RA/Dec")
     radius = angular_radius(when).to_value("deg") / _pixel_scale_deg(wcs)
@@ -69,10 +71,10 @@ def solar_disk_pixels(header):
     return float(x), float(y), float(radius)
 
 
-def draw_solar_disk(ax, header, style, region_origin=(0, 0), report=None):
+def draw_solar_disk(ax, header, style, region_origin=(0, 0), report=None, image=None):
     """Draw the solar disk (and centre marker) on frame axes ``ax``."""
     try:
-        x, y, radius = solar_disk_pixels(header)
+        x, y, radius = solar_disk_pixels(header, image)
     except Exception as e:
         if report:
             report(f"Solar disk not drawn: {e}")

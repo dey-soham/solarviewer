@@ -371,8 +371,10 @@ class PhaseShiftDialog(BatchWindow):
         if phase_result["is_hpc"]:
             self.log("Helioprojective image: the Sun goes to (0, 0)")
         else:
+            seen_from = phase_result.get("seen_from")
             self.log(
-                f"Sun at RA {phase_result.get('true_ra', 0):.4f}°, Dec {phase_result.get('true_dec', 0):.4f}°"
+                f"Sun at RA {phase_result.get('true_ra', 0):.4f}°, Dec {phase_result.get('true_dec', 0):.4f}°, "
+                + (f"as seen from {seen_from}" if seen_from else "as seen from the centre of the Earth")
             )
         if phase_result.get("apparent_pix_x") is None or phase_result.get("apparent_pix_y") is None:
             # (not "no shift needed": there is nothing to tell it by, and every image would fail)

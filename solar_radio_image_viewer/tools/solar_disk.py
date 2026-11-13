@@ -80,9 +80,10 @@ class SolarDiskMixin:
                 and self._cached_wcs_obj is not None
             ):
                 try:
-                    from astropy.coordinates import get_sun
                     from astropy.time import Time
                     from sunpy.coordinates.sun import angular_radius
+
+                    from ..coordinates.observer import sun_radec
 
                     date_str = None
                     for key in ["DATE-OBS", "DATE_OBS", "DATE", "STARTOBS", "T_OBS"]:
@@ -98,9 +99,11 @@ class SolarDiskMixin:
                         _reason = "the image has no observation date"
                     else:
                         obs_time = Time(str(date_str))
-                        sun_coord = get_sun(obs_time)
-                        ra_deg = sun_coord.ra.deg
-                        dec_deg = sun_coord.dec.deg
+                        # (as the telescope saw it, so that the disk is where
+                        # the Solar XY view of this image has its (0, 0))
+                        ra_deg, dec_deg, _ = sun_radec(
+                            getattr(self, "imagename", None), _hdr, obs_time
+                        )
                         px, py = self._cached_wcs_obj.wcs_world2pix(ra_deg, dec_deg, 0)
                         cx, cy = float(px), float(py)
                         self.solar_disk_center = (cx, cy)
@@ -282,17 +285,18 @@ class SolarDiskMixin:
                     if wcs_obj is None:
                         auto_info.setText("No WCS available for the RA/Dec conversion.")
                         return False
-                    from astropy.coordinates import get_sun
+                    from ..coordinates.observer import sun_radec
 
-                    sun_coord = get_sun(obs_time)
-                    ra_deg = sun_coord.ra.deg
-                    dec_deg = sun_coord.dec.deg
+                    ra_deg, dec_deg, seen_from = sun_radec(
+                        getattr(viewer_ref, "imagename", None), _hdr, obs_time
+                    )
                     px, py = wcs_obj.wcs_world2pix(ra_deg, dec_deg, 0)
                     cx, cy = float(px), float(py)
                     x_spinbox.setValue(int(round(cx)))
                     y_spinbox.setValue(int(round(cy)))
                     auto_info.setText(
-                        f"Sun RA {ra_deg:.4f}°, Dec {dec_deg:.4f}°\n"
+                        f"Sun RA {ra_deg:.4f}°, Dec {dec_deg:.4f}°"
+                        f" (seen from {seen_from or 'the centre of the Earth'})\n"
                         f"Pixel ({cx:.1f}, {cy:.1f})\n"
                         f"Apparent ⌀ = {diam:.2f}′  ({obs_time.iso[:19]})"
                     )

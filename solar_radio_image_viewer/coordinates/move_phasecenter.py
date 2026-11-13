@@ -267,9 +267,17 @@ class SolarPhaseCenter:
 
         return obs_time
 
-    def get_solar_position(self, obs_time):
+    def get_solar_position(self, obs_time, imagename=None, header=None):
         """
         Get the true RA/DEC of the Sun at the given observation time using ephemeris.
+
+        With ``imagename`` (a FITS file; ``header`` its header, read if not
+        given) it is the Sun as the telescope of that image saw it, as the
+        conversion to helioprojective has it (``observer.sun_radec``), so
+        that the shifted image's Sun is at Solar X = Y = 0. Without one, or
+        for an image that does not say where its telescope was, it is the Sun
+        seen from the Earth's centre. ``self.sun_seen_from`` then names who
+        saw it (None for the Earth's centre).
 
         Parameters
         ----------
@@ -281,19 +289,20 @@ class SolarPhaseCenter:
         tuple (float, float)
             Solar RA and DEC in degrees
         """
-        from astropy.coordinates import get_sun
         from astropy.time import Time
+
+        from .observer import sun_radec
 
         if not isinstance(obs_time, Time):
             obs_time = Time(obs_time, scale="utc")
+        if imagename is not None and header is None:
+            header = fits.getheader(readable_image_path(imagename))
 
-        sun = get_sun(obs_time)
-
-        ra_deg = sun.ra.deg
-        dec_deg = sun.dec.deg
+        ra_deg, dec_deg, self.sun_seen_from = sun_radec(imagename, header, obs_time)
 
         print(
-            f"True solar position (ephemeris): RA = {ra_deg:.6f} deg, DEC = {dec_deg:.6f} deg"
+            f"True solar position (ephemeris, seen from {self.sun_seen_from or 'the centre of the Earth'}): "
+            f"RA = {ra_deg:.6f} deg, DEC = {dec_deg:.6f} deg"
         )
 
         return ra_deg, dec_deg
@@ -594,6 +603,8 @@ class SolarPhaseCenter:
               burst or a bright region and not to the disk (``sun_centre.burst_sign``)
             - 'not_found': str or None - Why the Sun was not found in the image (the
               apparent position is then None, and 'needs_shift' says nothing)
+            - 'seen_from': str or None - Whose Sun 'true_ra' and 'true_dec' are: the
+              image's observatory (or "the telescope"), None for the Earth's centre
         """
         result = {
             "true_ra": None,
@@ -606,6 +617,7 @@ class SolarPhaseCenter:
             "is_hpc": False,
             "warning": None,
             "not_found": None,
+            "seen_from": None,
         }
 
         # Convert CASA image to FITS at the start for unified processing
@@ -684,9 +696,12 @@ class SolarPhaseCenter:
             obs_time = self.get_observation_time(working_fits)
             if obs_time:
                 try:
-                    true_ra, true_dec = self.get_solar_position(obs_time)
+                    true_ra, true_dec = self.get_solar_position(
+                        obs_time, working_fits, header
+                    )
                     result["true_ra"] = true_ra
                     result["true_dec"] = true_dec
+                    result["seen_from"] = self.sun_seen_from
                 except Exception as e:
                     print(f"Error getting solar position from ephemeris: {e}")
                     # Fall back to current phase center

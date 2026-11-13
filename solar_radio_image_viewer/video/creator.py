@@ -565,7 +565,7 @@ def process_image(
                 report(f"Contours not drawn: {e}")
 
         # Solar disk, beam and grid, styled as in the main window
-        _draw_plot_overlays(ax, header, options, region_origin, report)
+        _draw_plot_overlays(ax, header, options, region_origin, report, file_path)
 
         # The line plot's light-curve box
         if line_plot:
@@ -818,9 +818,10 @@ def _keep_labels_in_frame(fig, ax):
         fig.subplots_adjust(left=left, bottom=bottom)
 
 
-def _draw_plot_overlays(ax, header, options, region_origin, report):
+def _draw_plot_overlays(ax, header, options, region_origin, report, image=None):
     """Solar disk, beam and coordinate grid, if chosen (video.overlays), and
-    the main window's annotations (video.annotations)."""
+    the main window's annotations (video.annotations). ``image`` is the
+    frame's file, if it has one."""
     from ..processing.plot_style import (
         DEFAULT_BEAM_STYLE,
         DEFAULT_GRID_STYLE,
@@ -831,7 +832,7 @@ def _draw_plot_overlays(ax, header, options, region_origin, report):
     header = header or {}
     if options.get("show_solar_disk"):
         style = dict(DEFAULT_SOLAR_DISK_STYLE, **(options.get("solar_disk_style") or {}))
-        draw_solar_disk(ax, header, style, region_origin, report)
+        draw_solar_disk(ax, header, style, region_origin, report, image)
     if options.get("show_beam"):
         style = dict(DEFAULT_BEAM_STYLE, **(options.get("beam_style") or {}))
         draw_beam(ax, header, style, report)
