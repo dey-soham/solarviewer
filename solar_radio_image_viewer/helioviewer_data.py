@@ -1,377 +1,343 @@
 """
-Helioviewer data for the browser: the instruments and their cadences, the
-list of data sources from the Helioviewer API, and the threads that fetch
-that list and download one image.
+Helioviewer data for the browser: the frames of a load, as records that
+carry the archive's true time and the request's geometry, and the plan that
+turns a time range and a step into them. Nothing here touches Qt.
+
+All times are naive UTC datetimes. ``x0``/``y0`` are Solar X/Y in
+Helioviewer's normalised arcsec, Y positive north (the request URL turns the
+sign, as Helioviewer counts y0 southward).
 """
 
+import bisect
 import logging
-from PyQt5.QtCore import (
-    QThread,
-    pyqtSignal,
-)
-from PyQt5.QtGui import QImage
-import requests
-from typing import List, Tuple
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Callable, List, Optional, Tuple
+
+from . import helioviewer_api as hv
+from .helioviewer_catalog import Source
 
 logger = logging.getLogger(__name__)
 
-
-# Known instrument cadences (in seconds) - Based on official mission documentation
-INSTRUMENT_CADENCES = {
-    # SDO/AIA - 12s for EUV, 24s for UV, 3600s for visible
-    "AIA 94": 12,
-    "AIA 131": 12,
-    "AIA 171": 12,
-    "AIA 193": 12,
-    "AIA 211": 12,
-    "AIA 304": 12,
-    "AIA 335": 12,
-    "AIA 1600": 24,
-    "AIA 1700": 24,
-    "AIA 4500": 3600,
-    # SDO/HMI - 45s for both magnetogram and continuum
-    "HMI magnetogram": 45,
-    "HMI continuum": 45,
-    # SOHO/EIT - 12 minutes (720s) for all wavelengths
-    "EIT 171": 720,
-    "EIT 195": 720,
-    "EIT 284": 720,
-    "EIT 304": 720,
-    # SOHO/MDI - 96 minutes
-    "MDI magnetogram": 5760,
-    "MDI continuum": 5760,
-    # SOHO/LASCO - 30 minutes for both C2 and C3
-    "LASCO": 1800,
-    "LASCO C2": 1800,
-    "LASCO C3": 1800,
-    # STEREO/SECCHI EUVI - 2.5 minutes (150s)
-    "EUVI": 150,
-    "EUVI 171": 150,
-    "EUVI 195": 150,
-    "EUVI 284": 150,
-    "EUVI 304": 150,
-    # STEREO/SECCHI Coronagraphs
-    "COR1": 300,  # 5 minutes
-    "COR2": 900,  # 15 minutes
-    # GOES/SUVI - 10s for all channels
-    "SUVI": 10,
-    "SUVI 94": 10,
-    "SUVI 131": 10,
-    "SUVI 171": 10,
-    "SUVI 195": 10,
-    "SUVI 284": 10,
-    "SUVI 304": 10,
-    # Solar Orbiter/EUI
-    "EUI": 600,
-    "FSI": 600,  # Full Sun Imager - 10 minutes
-    "HRI": 300,  # High Resolution Imager - 5 minutes
-    # Legacy/Other
-    "SXT": 60,  # Yohkoh SXT
-}
+PLANNED, LOADING, READY, FAILED = "planned", "loading", "ready", "failed"
+HELIOVIEWER = "helioviewer"  # a frame's origin unless another archive's
+SHORT_ANSWER = 0.5  # a JPX list under this share of the archive's count is checked and replaced
+MOST_CLOSEST = 240  # frames a plan may fill one request at a time, when the JPX list fails it
+MOST_WIDTH = 1200  # px, a request's longest side
 
 
-# Whitelist: Only instruments with verified cadence AND FOV parameters
-# Using patterns that match API-returned names
-VERIFIED_INSTRUMENTS = [
-    # SDO - 100% verified
-    "AIA 94",
-    "AIA 131",
-    "AIA 171",
-    "AIA 193",
-    "AIA 211",
-    "AIA 304",
-    "AIA 335",
-    "AIA 1600",
-    "AIA 1700",
-    "AIA 4500",
-    "HMI magnetogram",
-    "HMI continuum",
-    # SOHO - 100% verified
-    "EIT 171",
-    "EIT 195",
-    "EIT 284",
-    "EIT 304",
-    "LASCO/C2 white-light",
-    "LASCO/C3 white-light",  # API format
-    # STEREO - 100% verified (both A and B)
-    "SECCHI/EUVI 171",
-    "SECCHI/EUVI 195",
-    "SECCHI/EUVI 284",
-    "SECCHI/EUVI 304",
-    "SECCHI/COR1 white-light",
-    "SECCHI/COR2 white-light",
-    # GOES/SUVI - 100% verified
-    "SUVI 94",
-    "SUVI 131",
-    "SUVI 171",
-    "SUVI 195",
-    "SUVI 284",
-    "SUVI 304",
-]
+@dataclass
+class View:
+    """The geometry of a request: ``width`` by ``height`` pixels at
+    ``image_scale`` normalised arcsec per pixel, centred ``x0``, ``y0`` arcsec
+    from disk centre (Helioviewer's x0/y0: x east to west, y south to north)."""
+
+    image_scale: float
+    x0: float = 0.0
+    y0: float = 0.0
+    width: int = 1024
+    height: int = 1024
+
+    @classmethod
+    def of_fov(cls, fov_arcsec: float, width_px: int, x0: float = 0.0, y0: float = 0.0, height_px: Optional[int] = None) -> "View":
+        """The view that fits ``fov_arcsec`` across ``width_px`` pixels (at most ``MOST_WIDTH``)."""
+        width_px = max(1, min(int(width_px), MOST_WIDTH))
+        height_px = width_px if height_px is None else max(1, min(int(height_px), MOST_WIDTH))
+        return cls(hv.fov_scale(fov_arcsec, width_px), float(x0), float(y0), width_px, height_px)
+
+    @property
+    def fov(self) -> float:
+        """The field of view across, normalised arcsec."""
+        return self.image_scale * self.width
+
+    def corners(self) -> Tuple[float, float, float, float]:
+        """``(x1, y1, x2, y2)`` in normalised arcsec, left-bottom to right-top."""
+        half_w, half_h = self.image_scale * self.width / 2, self.image_scale * self.height / 2
+        return (self.x0 - half_w, self.y0 - half_h, self.x0 + half_w, self.y0 + half_h)
 
 
-def fetch_all_instruments(on_fallback=None) -> List[Tuple[str, str, str, str]]:
-    """Fetch all available instruments from Helioviewer API. If that fails,
-    ``on_fallback(error)`` is told and the known instruments are returned."""
-    try:
-        url = "https://api.helioviewer.org/v2/getDataSources/"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+@dataclass
+class Frame:
+    """One frame of a load. ``wanted`` is the grid time asked for, ``observed``
+    the archive's time of the image that answers it: everything shown, named
+    or written uses ``observed``. A frame whose image another frame already
+    has (a coarse archive under a fine step) names it in ``duplicate_of`` and
+    is not downloaded again. ``image_id`` is looked up only when needed.
+    ``origin`` is ``HELIOVIEWER`` unless the frame is another archive's
+    (OVRO-LWA's movie), whose geometry is not known: then there is no
+    request URL, no Helioviewer link and no archive image behind it."""
 
-        instruments = []
+    index: int
+    wanted: datetime
+    observed: datetime
+    source_id: int
+    layers: str  # "[10,1,100]"
+    image_scale: float  # normalised arcsec per pixel
+    x0: float = 0.0
+    y0: float = 0.0  # Solar Y of the centre, north positive
+    width: int = 1024
+    height: int = 1024
+    scale_correction: float = 1.0  # true arcsec = normalised × this
+    image_id: Optional[int] = None
+    state: str = PLANNED  # planned, loading, ready, failed
+    duplicate_of: Optional[int] = None  # index of the frame with the same image
+    error: str = ""
+    path: Optional[str] = None  # the PNG on disk, once downloaded
+    pixmap: Any = None  # a QPixmap, made on the GUI thread, once ready
+    origin: str = HELIOVIEWER
 
-        for observatory, obs_data in sorted(data.items()):
-            if not isinstance(obs_data, dict):
-                continue
+    @property
+    def from_helioviewer(self) -> bool:
+        return self.origin == HELIOVIEWER
 
-            for instrument, inst_data in sorted(obs_data.items()):
-                if not isinstance(inst_data, dict):
-                    continue
+    @property
+    def url(self) -> str:
+        return hv.screenshot_url(self.layers, self.observed, self.image_scale, self.x0, self.y0, self.width, self.height)
 
-                # At this level, keys are either measurements (dict with metadata) or detectors (dict of measurements)
-                for key, value in sorted(inst_data.items()):
-                    if not isinstance(value, dict):
-                        continue
+    @property
+    def offset(self) -> float:
+        """``observed - wanted`` in seconds: how far the archive's image is from the time asked for."""
+        return (self.observed - self.wanted).total_seconds()
 
-                    # Check if this is a measurement (has 'sourceId') or a detector level
-                    if "sourceId" in value:
-                        # This is a measurement directly under instrument
-                        measurement = key
-                        source_id = value["sourceId"]
-                        # Layer format is [sourceId,visible,opacity]
-                        layer = f"[{source_id},1,100]"
-                        name = f"{instrument} {measurement}"
+    @property
+    def fov(self) -> float:
+        return self.image_scale * self.width
 
-                        # Determine cadence - try exact match first, then instrument family
-                        cadence = INSTRUMENT_CADENCES.get(
-                            name,  # Try exact: "AIA 171"
-                            INSTRUMENT_CADENCES.get(
-                                instrument, 60  # Try instrument: "AIA"  # Default: 60s
-                            ),
-                        )
+    @property
+    def link(self) -> str:
+        """The same view on helioviewer.org."""
+        return hv.helioviewer_link(self.observed, self.image_scale, self.layers, self.x0, self.y0)
 
-                        instruments.append((name, layer, observatory, cadence))
-                    else:
-                        # This is a detector level, iterate measurements
-                        detector = key
-                        for measurement, meas_data in sorted(value.items()):
-                            if not isinstance(meas_data, dict):
-                                continue
-                            if "sourceId" not in meas_data:
-                                continue
-
-                            source_id = meas_data["sourceId"]
-                            # Layer format is [sourceId,visible,opacity]
-                            layer = f"[{source_id},1,100]"
-                            name = f"{instrument}/{detector} {measurement}"
-
-                            # Determine cadence - try exact match first, then detector, then instrument
-                            cadence = INSTRUMENT_CADENCES.get(
-                                name,  # Try exact: "SECCHI/EUVI 171"
-                                INSTRUMENT_CADENCES.get(
-                                    f"{detector} {measurement}",  # Try: "EUVI 171"
-                                    INSTRUMENT_CADENCES.get(
-                                        detector,  # Try: "EUVI"
-                                        INSTRUMENT_CADENCES.get(
-                                            instrument, 60
-                                        ),  # Default: 60s
-                                    ),
-                                ),
-                            )
-
-                            instruments.append((name, layer, observatory, cadence))
-
-        print(f"Loaded {len(instruments)} instruments from Helioviewer")
-
-        # Filter to only verified instruments
-        verified = []
-        for name, layer, obs, cad in instruments:
-            # Check if instrument name is in verified list
-            # Also check without observatory prefix for STEREO instruments
-            if name in VERIFIED_INSTRUMENTS:
-                verified.append((name, layer, obs, cad))
-                continue
-
-            # For STEREO, also accept if base name matches (e.g., "EUVI 171" from "SECCHI/EUVI 171")
-            if "/" in name:
-                base_name = name.split("/")[-1]  # Get "EUVI 171" from "SECCHI/EUVI 171"
-                if base_name in [
-                    "EUVI 171",
-                    "EUVI 195",
-                    "EUVI 284",
-                    "EUVI 304",
-                    "COR1 white-light",
-                    "COR2 white-light",
-                ]:
-                    verified.append((name, layer, obs, cad))
-
-        print(
-            f"Filtered to {len(verified)} verified instruments (with known cadence & FOV)"
-        )
-        return verified
-    except Exception as e:
-        print(f"Error fetching instruments: {e}")
-        import traceback
-
-        traceback.print_exc()
-        if on_fallback is not None:
-            on_fallback(e)
-        # Transform VERIFIED_INSTRUMENTS to (name, layer_path, observatory, cadence)
-        fallback = []
-        for name in VERIFIED_INSTRUMENTS:
-            # Format: [observatory,instrument,detector,measurement,visible,opacity]
-            
-            obs = ""
-            inst = ""
-            det = ""
-            meas = ""
-            
-            if name.startswith("AIA"):
-                obs, inst, det = "SDO", "AIA", "AIA"
-                meas = name.split(" ")[1]
-            elif name.startswith("HMI"):
-                obs, inst, det = "SDO", "HMI", "HMI"
-                meas = name.split(" ")[1]
-            elif name.startswith("EIT"):
-                obs, inst, det = "SOHO", "EIT", "EIT"
-                meas = name.split(" ")[1]
-            elif name.startswith("LASCO"):
-                obs, inst, det = "SOHO", "LASCO", name.split("/")[1].split(" ")[0]
-                meas = "white-light"
-            elif "EUVI" in name:
-                # Default to STEREO_A for fallback if not specified
-                obs = "STEREO_A"
-                inst = "SECCHI"
-                det = "EUVI"
-                meas = name.split(" ")[1]
-            elif "COR" in name:
-                obs = "STEREO_A"
-                inst = "SECCHI"
-                det = name.split(" ")[1] if "/" not in name else name.split("/")[1].split(" ")[0]
-                meas = "white-light"
-            elif name.startswith("SUVI"):
-                obs, inst, det = "GOES", "SUVI", "SUVI"
-                meas = name.split(" ")[1]
-            else:
-                continue
-                
-            layer = f"[{obs},{inst},{det},{meas},1,100]"
-            cadence = INSTRUMENT_CADENCES.get(
-                name, INSTRUMENT_CADENCES.get(f"{det} {meas}", INSTRUMENT_CADENCES.get(det, INSTRUMENT_CADENCES.get(inst, 60)))
-            )
-            fallback.append((name, layer, obs, cadence))
-
-        return fallback
-
-
-class InstrumentLoader(QThread):
-    """Thread to fetch the list of instruments."""
-
-    # instruments, why they are only the known ones ("" if they are the API's)
-    loaded = pyqtSignal(object, str)
-
-    def run(self):
-        problem = []
-        instruments = fetch_all_instruments(lambda e: problem.append(str(e) or "No answer"))
-        self.loaded.emit(instruments, problem[0] if problem else "")
-
-
-class ImageDownloader(QThread):
-    """Thread to download a single image."""
-
-    # A QImage: a QPixmap can only be made on the GUI thread
-    finished = pyqtSignal(str, QImage)  # instrument, image
-    error = pyqtSignal(str, str)  # instrument, error_msg
-
-    def __init__(self, instrument_name, layer_path, timestamp, width=1000, height=1000):
-        super().__init__()
-        self.instrument_name = instrument_name
-        self.layer_path = layer_path
-        self.timestamp = timestamp
-        self.width = width
-        self.height = height
-        self.running = True
-
-    def stop(self):
-        """Signal the thread to stop."""
-        self.running = False
-
-    def run(self):
-        try:
-            # Determine imageScale based on instrument
-
-            # Parse instrument from layer (format: [sourceId,1,100])
-            # Need to determine instrument type from name passed in
-            inst_lower = self.instrument_name.lower()
-
-            # Base imageScale for 1000x1000 images
-            # Solar disk instruments - tight fit (2.0-4.0)
-            if any(x in inst_lower for x in ["aia", "hmi", "eit", "euvi", "suvi"]):
-                if "hmi continuum" in inst_lower:
-                    base_image_scale = 3.0  # HMI continuum - slightly wider
-                elif "hmi" in inst_lower:
-                    base_image_scale = 2.5  # HMI magnetogram
-                else:
-                    base_image_scale = (
-                        2.5  # AIA, EIT, EUVI, SUVI - fits solar disk in 1000px
-                    )
-
-            # Coronagraphs - wide field
-            elif "lasco" in inst_lower and "c2" in inst_lower:
-                base_image_scale = 12.0  # LASCO C2: fits up to 6 Rsun in 1000px
-            elif "lasco" in inst_lower and "c3" in inst_lower:
-                base_image_scale = 58.0  # LASCO C3: fits up to 30 Rsun in 1000px
-            elif any(x in inst_lower for x in ["cor1", "cor2"]):
-                if "cor1" in inst_lower:
-                    base_image_scale = 6.0  # COR1: ~1.4-4 Rsun
-                else:
-                    base_image_scale = 15.0  # COR2: ~2.5-15 Rsun
-
-            # Other instruments
-            else:
-                base_image_scale = 4.0  # Default moderate zoom
-
-            # Adjust imageScale to maintain FOV for different image sizes
-            # Formula: new_scale = base_scale * (1000 / actual_size)
-            size_factor = 1000.0 / self.width
-            image_scale = str(base_image_scale * size_factor)
-
-            # Build Helioviewer URL
-            from urllib.parse import urlencode
-
-            base_url = "https://api.helioviewer.org/v2/takeScreenshot/"
-            params = {
-                "date": self.timestamp.toString("yyyy-MM-ddTHH:mm:ss") + "Z",
-                "imageScale": image_scale,
-                "layers": self.layer_path,
-                "x0": "0",
-                "y0": "0",
-                "width": str(self.width),
-                "height": str(self.height),
-                "display": "true",
-                "watermark": "false",
+    def provenance(self) -> dict:
+        """What a sidecar records of the frame (its times and origin only
+        when it is not Helioviewer's: the rest would be made up)."""
+        if not self.from_helioviewer:
+            return {
+                "requested": self.wanted.strftime(hv.HEADER_TIME) + "Z",
+                "observed": self.observed.strftime(hv.HEADER_TIME) + "Z",
+                "origin": self.origin,
+                "layers": self.layers,
             }
-            url = f"{base_url}?{urlencode(params)}"
+        return {
+            "requested": self.wanted.strftime(hv.HEADER_TIME) + "Z",
+            "observed": self.observed.strftime(hv.HEADER_TIME) + "Z",
+            "image_id": self.image_id,
+            "source_id": self.source_id,
+            "layers": self.layers,
+            "image_scale": self.image_scale,
+            "x0": self.x0,
+            "y0": self.y0,
+            "width": self.width,
+            "height": self.height,
+            "scale_correction": self.scale_correction,
+            "url": self.url,
+            "helioviewer_link": self.link,
+        }
 
-            if not self.running:
-                return
 
-            # Download image
-            response = requests.get(url, timeout=60)
-            response.raise_for_status()
+@dataclass
+class Plan:
+    """The frames of a load, before any is downloaded."""
 
-            if not self.running:
-                return
+    source: Source
+    start: datetime
+    end: datetime
+    step_s: Optional[int]  # None: every image the archive has
+    view: View
+    frames: List[Frame] = field(default_factory=list)
+    message: str = ""  # Helioviewer's note (it thinned the list), or why the plan fell back
+    by_closest: bool = False  # filled one request at a time, not from the JPX list
+    scale_correction: float = 1.0
+    closest: Optional[hv.Closest] = None  # the first frame's archive record
 
-            qimage = QImage()
-            if qimage.loadFromData(response.content):
-                if self.running:
-                    self.finished.emit(self.instrument_name, qimage)
-            else:
-                if self.running:
-                    self.error.emit(self.instrument_name, "Failed to load image data")
+    @property
+    def downloads(self) -> List[Frame]:
+        """The frames that need their own download: duplicates are left out."""
+        return [frame for frame in self.frames if frame.duplicate_of is None]
 
+    @property
+    def observed_times(self) -> List[datetime]:
+        return [frame.observed for frame in self.frames]
+
+    def order(self, at: Optional[datetime] = None) -> List[Frame]:
+        """The downloads, nearest to ``at`` first (the first frame if None)."""
+        frames = self.downloads
+        if at is None or not frames:
+            return frames
+        return sorted(frames, key=lambda frame: (abs((frame.observed - at).total_seconds()), frame.index))
+
+    def nearest(self, when: datetime) -> Optional[Frame]:
+        """The frame observed nearest ``when``."""
+        if not self.frames:
+            return None
+        return min(self.frames, key=lambda frame: abs((frame.observed - when).total_seconds()))
+
+
+def grid(start: datetime, end: datetime, step_s: int) -> List[datetime]:
+    """The times asked for: ``start``, every ``step_s``, up to ``end``."""
+    step_s = max(1, int(step_s))
+    count = int((end - start).total_seconds() // step_s) + 1
+    return [start + timedelta(seconds=i * step_s) for i in range(max(0, count))]
+
+
+def nearest_time(times: List[datetime], when: datetime) -> datetime:
+    """The entry of the sorted ``times`` nearest ``when``."""
+    place = bisect.bisect_left(times, when)
+    choices = [times[i] for i in (place - 1, place) if 0 <= i < len(times)]
+    return min(choices, key=lambda t: abs((t - when).total_seconds()))
+
+
+def _frames_of(times: List[Tuple[datetime, datetime, Optional[int]]], source: Source, view: View) -> List[Frame]:
+    """Frames of ``(wanted, observed, image_id)`` rows, repeats marked."""
+    frames = []
+    first_of: dict = {}
+    for index, (wanted, observed, image_id) in enumerate(times):
+        key = image_id if image_id is not None else observed
+        frames.append(
+            Frame(
+                index=index,
+                wanted=wanted,
+                observed=observed,
+                source_id=source.source_id,
+                layers=source.layer,
+                image_scale=view.image_scale,
+                x0=view.x0,
+                y0=view.y0,
+                width=view.width,
+                height=view.height,
+                image_id=image_id,
+                duplicate_of=first_of.get(key),
+            )
+        )
+        first_of.setdefault(key, index)
+    return frames
+
+
+def jpx_cadence(source: Source, start: datetime, end: datetime, step_s: Optional[int]) -> int:
+    """The cadence to ask the JPX list at: the archive's own, unless that would
+    pass the server's 1000 frames and the step is coarser."""
+    span = (end - start).total_seconds()
+    cadence = max(1, int(source.cadence))
+    if span / cadence > hv.MOST_JPX_FRAMES and step_s and step_s > cadence:
+        return int(step_s)
+    return cadence
+
+
+def plan_frames(
+    source: Source,
+    start: datetime,
+    end: datetime,
+    step_s: Optional[int],
+    view: View,
+    check: Optional[Callable[[], None]] = None,
+) -> Plan:
+    """The frames of ``source`` between ``start`` and ``end``, one request for
+    their times. ``step_s`` None ("every image") keeps every archive image;
+    a step picks the archive image nearest each grid time (the list is asked
+    a step wider than the range, so the end slots have a nearest too) and
+    marks the repeats, so a coarse archive under a fine step is downloaded
+    once. One
+    ``closest()`` on the first frame gives the load its ``scale_correction``.
+    When the JPX list fails, or holds under half the images the archive
+    counts, the frames are found one request at a time instead (at most
+    ``MOST_CLOSEST`` of them). ``check`` is called between requests, to stop."""
+    if end <= start:
+        raise ValueError("The end must come after the start")
+    plan = Plan(source=source, start=start, end=end, step_s=step_s, view=view)
+    times: List[datetime] = []
+    message = problem = ""
+    # With a step the list is asked a little wider than the grid, so that the
+    # first and last slots can take an archive image just outside the range
+    # when that is the nearest; every image keeps to the range itself
+    pad = timedelta(seconds=max(int(step_s), int(source.cadence))) if step_s else timedelta()
+    lo, hi = start - pad, end + pad
+    try:
+        times, message = hv.frame_times(source.source_id, lo, hi, jpx_cadence(source, lo, hi, step_s))
+    except Exception as e:
+        logger.warning("No frame list from Helioviewer for %s: %s", source.name, e)
+        problem = f"Helioviewer gave no list of images: {e}"
+    if check:
+        check()
+    plan.message = message
+    if not times or _short(times, message, source, lo, hi, step_s):
+        slots = grid(start, end, step_s) if step_s else grid(start, end, source.cadence)
+        if len(slots) <= MOST_CLOSEST:
+            logger.info("JPX list for %s has %d frames; asking frame by frame", source.name, len(times))
+            return _plan_by_closest(plan, slots, check, problem)
+        if not times:
+            plan.message = problem or "Helioviewer gave no images for this range"
+            return plan
+    if step_s:
+        rows = [(wanted, nearest_time(times, wanted), None) for wanted in grid(start, end, step_s)]
+    else:
+        rows = [(observed, observed, None) for observed in times]
+    plan.frames = _frames_of(rows, source, view)
+    _fill_geometry(plan, check)
+    return plan
+
+
+def _short(times, message, source, start, end, step_s) -> bool:
+    """Whether the JPX list looks short: fewer frames than the cadence promises,
+    or thinned by the server while the archive counts twice as many."""
+    expected = (end - start).total_seconds() / max(1, jpx_cadence(source, start, end, step_s)) + 1
+    if len(times) >= hv.MOST_JPX_FRAMES:
+        return False  # the server's cap: nothing more to be had
+    if not message and len(times) >= SHORT_ANSWER * expected:
+        return False
+    try:
+        counted = len(hv.data_coverage(source.source_id, start, end))
+    except Exception as e:
+        logger.info("No coverage count for %s: %s", source.name, e)
+        return False
+    return counted > 0 and len(times) < SHORT_ANSWER * counted
+
+
+def _plan_by_closest(plan: Plan, slots: List[datetime], check, problem: str = "") -> Plan:
+    """Frames one ``getClosestImage`` at a time, repeats of an id marked. The
+    plan's message is Helioviewer's note on the list this replaces, if any;
+    ``problem``, why there was no list, only if this fails too."""
+    rows = []
+    first: Optional[hv.Closest] = None
+    for wanted in slots:
+        if check:
+            check()
+        try:
+            found = hv.closest(plan.source.source_id, wanted)
         except Exception as e:
-            if self.running:
-                self.error.emit(self.instrument_name, str(e))
+            logger.warning("No image near %s for %s: %s", wanted, plan.source.name, e)
+            continue
+        if found.date is None:
+            continue
+        if first is None:
+            first = found
+        rows.append((wanted, found.date, found.id))
+    plan.frames = _frames_of(rows, plan.source, plan.view)
+    plan.by_closest = True
+    if not rows and not plan.message:
+        plan.message = problem or "Helioviewer gave no images for this range"
+    if first is not None:
+        plan.closest = first
+        plan.scale_correction = first.scale_correction
+        for frame in plan.frames:
+            frame.scale_correction = first.scale_correction
+    return plan
+
+
+def _fill_geometry(plan: Plan, check):
+    """One ``closest()`` on the first frame: its id and the load's scale correction."""
+    if not plan.frames:
+        return
+    if check:
+        check()
+    first = plan.frames[0]
+    try:
+        found = hv.closest(plan.source.source_id, first.observed)
+    except Exception as e:
+        logger.warning("No archive record for the first frame of %s: %s", plan.source.name, e)
+        return
+    plan.closest = found
+    plan.scale_correction = found.scale_correction
+    for frame in plan.frames:
+        frame.scale_correction = found.scale_correction
+    if found.id is not None and found.date == first.observed:
+        first.image_id = found.id

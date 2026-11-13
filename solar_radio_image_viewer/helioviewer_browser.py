@@ -1,106 +1,118 @@
-#!/usr/bin/env python3
 """
-Helioviewer Browser - Time-series viewer for solar images from Helioviewer API.
+The Helioviewer browser: solar images around a time, from Helioviewer's
+archive (or OVRO-LWA's daily movie), shown one frame at a time with a
+coordinate frame over them and a time band under them.
+
+The window is a companion to the radio image it was opened from: it opens on
+that image's UTC time, marks it on the band, boxes its field on the frames,
+and can hand a frame back to the viewer. Every time shown is the archive's
+own observed time, never the time asked for. Nothing here opens a message
+box: what is running is one line in the header, beside Cancel.
+
+``open_helioviewer`` is the one way in; ``Target`` is what an opener knows.
+All times are naive UTC datetimes.
 """
 
+import dataclasses
 import logging
+import math
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
+from typing import List, Optional, Tuple
 
+from PyQt5.QtCore import QDate, QDateTime, QPointF, QRectF, QSettings, QSize, QThread, QTime, QTimer, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QPolygonF
 from PyQt5.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFormLayout,
-    QSplitter,
-    QLabel,
-    QPushButton,
-    QLineEdit,
-    QSpinBox,
-    QScrollArea,
+    QAbstractButton,
+    QAbstractItemView,
+    QApplication,
+    QButtonGroup,
     QFrame,
-    QProgressBar,
-    QComboBox,
-    QMessageBox,
-    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QShortcut,
+    QSizePolicy,
+    QSlider,
+    QSplitter,
+    QStackedWidget,
+    QStyledItemDelegate,
     QTreeWidget,
     QTreeWidgetItem,
-    QHeaderView,
-    QRubberBand,
-    QGridLayout,
-    QGraphicsOpacityEffect,
-    QSlider,
-    QShortcut,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import (
-    Qt,
-    QDate,
-    QDateTime,
-    QTime,
-    QTimer,
-    QSize,
-    QPoint,
-    QPointF,
-    QRect,
-    QVariantAnimation,
-)
-from PyQt5.QtGui import QPainter, QPixmap, QColor, QKeySequence, QIcon, QPolygonF
-from collections import OrderedDict, deque
 
-TIME_QT_FORMAT = "yyyy-MM-dd HH:mm:ss"
+from . import helioviewer_api as hv
+from . import helioviewer_catalog as catalog
 from . import helioviewer_lwa as lwa
-from .helioviewer_data import ImageDownloader, InstrumentLoader
+from . import helioviewer_view as hvw
+from .helioviewer_data import FAILED, LOADING, MOST_WIDTH, PLANNED, READY, Frame, Plan, View, plan_frames
 from .helioviewer_export import HelioviewerExportMixin, difference_image
+from .helioviewer_loader import FrameLoader, memory_note
+from .helioviewer_timeline import EventsFetch, FrameBand, Playback, offset_text
+from .noaa_events import cache as noaa_cache
+from .noaa_events.day_axis import GOES_COLOUR, GUTTER
+from .noaa_events.widgets import ElidedLabel, set_source_note, source_note
 from .ui.activity import ActivityLabel
-from .ui.busy import busy
+from .ui.app import SETTINGS
 from .ui.date_picker import attach_date_picker
-from .ui.icons import themed_icon
-from .ui.styles import SPACE_L, SPACE_M, SPACE_S, SPACE_XS, set_hand_cursor, theme_manager, themed
-from .ui.widgets import empty_note, vrule
+from .ui.errors import show_error
+from .ui.geometry import fit_to_screen
+from .ui.icons import themed_icon, transport_icon
+from .ui.styles import FONT_META, FONT_SMALL, MONO_FAMILY, SPACE_L, SPACE_M, SPACE_S, SPACE_XS, set_hand_cursor, set_tone, theme_manager, themed
+from .ui.widgets import empty_note, kicker, link_button, segmented, vrule
 from .video.ui.progress import WorkDialog
 
 logger = logging.getLogger(__name__)
 
-# The playback buttons' shapes on a 16 px square: filled polygons
-_BAR_LEFT = ((3, 3), (5, 3), (5, 13), (3, 13))
-_BAR_RIGHT = ((11, 3), (13, 3), (13, 13), (11, 13))
-TRANSPORT_SHAPES = {
-    "first": (_BAR_LEFT, ((13, 3), (6, 8), (13, 13))),
-    "previous": (((12, 3), (4, 8), (12, 13)),),
-    "play": (((4, 2.5), (13, 8), (4, 13.5)),),
-    "pause": (((4, 3), (7, 3), (7, 13), (4, 13)), ((9, 3), (12, 3), (12, 13), (9, 13))),
-    "next": (((4, 3), (12, 8), (4, 13)),),
-    "last": (((3, 3), (10, 8), (3, 13)), _BAR_RIGHT),
-}
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+TIME_QT_FORMAT = "yyyy-MM-dd HH:mm:ss"
+# (label, compact label, seconds each side of the time; None: the whole UTC day)
+SPANS = (("±15 min", "±15m", 900), ("±30 min", "±30m", 1800), ("±1 h", "±1h", 3600), ("±3 h", "±3h", 10800), ("Day", "Day", None))
+# (label, compact label, seconds between frames; None: every image the archive has)
+STEPS = (("Every image", "All", None), ("1 min", "1m", 60), ("5 min", "5m", 300), ("15 min", "15m", 900), ("1 h", "1h", 3600))
+DIFF_MODES = ("None", "Running", "Base", "Base = radio time")
+FPS_CHOICES = Playback.FPS
+NOTE_MS = 5000  # how long a note holds the activity line
+LINK_NOTE_MS = 15000  # a note with a link ("Show in folder") stays longer
+DIFF_CACHE = 48  # difference pixmaps kept, by (frame, mode, base)
+PNG_BYTES_PER_PIXEL = 1.2  # about what a screenshot takes on the wire
+FAR_S = 3600  # an image this far from the time asked for is said to be far
+DEFAULT_INSTRUMENT = "AIA 171"
+OVERLAY_OPACITY = 60  # % when a second layer is added
+SOURCE_ROLE, GROUP_ROLE, DIM_ROLE, NOTE_ROLE = Qt.UserRole, Qt.UserRole + 1, Qt.UserRole + 2, Qt.UserRole + 3
+SHOWS_LEAST = 96  # px the list keeps for what an instrument shows, whatever the names' length
+HELIOVIEWER_NOTE = (
+    'Images: <a href="https://helioviewer.org/">Helioviewer.org</a> · events: HEK via Helioviewer · '
+    "times are the archive's records"
+)
+LWA_NOTE = (
+    'Images: <a href="https://ovsa.njit.edu/lwa/">OVRO-LWA</a> daily movie (NJIT), not Helioviewer · '
+    "times are the movie's frame list"
+)
+KEY = "helioviewer/browser/{}"
+LWA_ORIGIN = "ovro-lwa"  # Frame.origin of the movie's frames: no Helioviewer geometry, link or archive image
+NARROW_WIDTH = 1100  # under this the band does without its flare lane
+ICON_BUTTON_LEAST = 18 + 2 * SPACE_XS + 4  # px: an icon button never squeezed under its icon
 
-
-def transport_icon(kind, palette):
-    """The icon of a playback button, in the theme's colours."""
-    icon = QIcon()
-    for mode, key in ((QIcon.Normal, "text_strong"), (QIcon.Disabled, "disabled")):
-        for scale in (1, 2):
-            pixmap = QPixmap(16 * scale, 16 * scale)
-            pixmap.fill(Qt.transparent)
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.scale(scale, scale)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(palette[key]))
-            for shape in TRANSPORT_SHAPES[kind]:
-                painter.drawPolygon(QPolygonF([QPointF(x, y) for x, y in shape]))
-            painter.end()
-            icon.addPixmap(pixmap, mode)
-    return icon
-
-# Global list to keep threads alive if window is closed while they are running
-# This prevents "QThread: Destroyed while thread is still running"
-_active_threads = []
+# Threads that outlive the window (a request cannot be interrupted), kept until they end
+_active_threads: List[QThread] = []
 
 
 def _park(thread):
-    """Keep ``thread`` until it ends by itself (nothing can interrupt a request)."""
+    """Keep ``thread`` until it ends by itself."""
     _active_threads[:] = [t for t in _active_threads if t.isRunning()]
-    if thread.isRunning():
+    if thread is not None and thread.isRunning():
         _active_threads.append(thread)
+
+
+# ---------------------------------------------------------------- times
 
 
 def utc_time(when):
@@ -114,537 +126,1196 @@ def py_time(value):
     """A QDateTime as a naive UTC datetime."""
     value = value.toUTC()
     day, moment = value.date(), value.time()
-    from datetime import datetime
-
     return datetime(day.year(), day.month(), day.day(), moment.hour(), moment.minute(), moment.second())
 
 
-from .ui.geometry import fit_to_screen
+def parse_field(text) -> Optional[datetime]:
+    """``2024-05-14 16:15:00`` (seconds and the time optional) as a datetime, or None."""
+    text = (text or "").strip()
+    for fmt in (TIME_FORMAT, "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
 
 
-class InteractiveImageLabel(QLabel):
-    """A QLabel that allows drawing a selection rectangle and panning."""
+def cadence_text(seconds) -> str:
+    """``36 s``, ``12 min``, ``1 h``."""
+    seconds = max(1, int(round(seconds)))
+    if seconds < 90:
+        return f"{seconds} s"
+    if seconds < 90 * 60:
+        return f"{round(seconds / 60):g} min"
+    hours = seconds / 3600
+    return f"{hours:.1f}".rstrip("0").rstrip(".") + " h"
 
-    def __init__(self, parent=None, scroll_area=None):
+
+def span_text(start: datetime, end: datetime) -> str:
+    """``16:00–16:30 UTC``, with the dates when the range crosses midnight."""
+    if start.date() == end.date():
+        return f"{start:%H:%M}–{end:%H:%M} UTC"
+    return f"{start:%Y-%m-%d %H:%M} – {end:%Y-%m-%d %H:%M} UTC"
+
+
+def typical_gap(times: List[datetime]) -> Optional[float]:
+    """The usual seconds between the sorted ``times`` (their median gap)."""
+    gaps = sorted((b - a).total_seconds() for a, b in zip(times, times[1:]) if b > a)
+    if not gaps:
+        return None
+    return gaps[len(gaps) // 2]
+
+
+def megabytes(count: int, width: int, height: int) -> str:
+    """``60 MB``: about what ``count`` screenshots of the size take to download."""
+    mb = count * width * height * PNG_BYTES_PER_PIXEL / 1e6
+    return f"{mb:.0f} MB" if mb >= 10 else f"{mb:.1f} MB"
+
+
+def plan_summary(name: str, plan: Plan, budget: Optional[int] = None) -> str:
+    """``AIA 171 · 16:00–16:30 UTC · 50 images at 36 s · 60 MB``, with what
+    Helioviewer said of the list and what will not fit in ``budget`` bytes of
+    memory (the loader's)."""
+    downloads = plan.downloads
+    parts = [name, span_text(plan.start, plan.end)]
+    count = len(downloads)
+    if not count:
+        parts.append("no images")
+        return " · ".join(parts)
+    images = f"{count} image" + ("s" if count != 1 else "")
+    gap = typical_gap([frame.observed for frame in downloads])
+    if gap:
+        images += f" at {cadence_text(gap)}"
+    repeats = len(plan.frames) - count
+    if repeats:
+        images += f" ({repeats} repeated at this step)"
+    parts.append(images)
+    parts.append(megabytes(count, plan.view.width, plan.view.height))
+    if plan.message:
+        if len(plan.frames) >= hv.MOST_JPX_FRAMES and gap:
+            parts.append(f"Helioviewer gives at most {hv.MOST_JPX_FRAMES} frames: every {cadence_text(gap)}")
+        else:
+            parts.append(plan.message)
+    note = memory_note(plan) if budget is None else memory_note(plan, budget)
+    if note:
+        parts.append(note)
+    return " · ".join(parts)
+
+
+def far_note(at: datetime, nearest: Optional[datetime]) -> str:
+    """``Nearest image is 35 d earlier than asked`` when the archive's nearest
+    image is over ``FAR_S`` from the time asked for, else ""."""
+    if nearest is None:
+        return ""
+    offset = (nearest - at).total_seconds()
+    if abs(offset) <= FAR_S:
+        return ""
+    size = offset_text(abs(offset))[1:]
+    return f"Nearest image is {size} {'earlier' if offset < 0 else 'later'} than asked"
+
+
+# ---------------------------------------------------------------- the opener
+
+
+@dataclass
+class Target:
+    """What an opener knows: the time to centre on, the seconds each side,
+    the radio image's field ``(x1, y1, x2, y2)`` in true arcsec, its mark on
+    the band ``(label, time)``, the entry to select, and an OVRO-LWA day
+    whose movie loads at once."""
+
+    at: Optional[datetime] = None
+    span: Optional[int] = None
+    fov: Optional[Tuple[float, float, float, float]] = None
+    mark: Optional[Tuple[str, datetime]] = None
+    instrument: Optional[str] = None
+    movie_day: Optional[date] = None
+    mark_tip: str = ""
+
+
+def open_helioviewer(parent=None, at=None, span=None, fov=None, mark=None, instrument=None, movie_day=None, mark_tip=""):
+    """Open the browser on ``at`` (a naive UTC datetime), ``span`` seconds each
+    side, boxing ``fov`` and marking ``mark``; with ``at`` the images load at
+    once. Returns the window, shown; it frees its frames when closed."""
+    target = Target(at=at, span=span, fov=fov, mark=mark, instrument=instrument, movie_day=movie_day, mark_tip=mark_tip)
+    browser = HelioviewerBrowser(parent, target)
+    browser.setAttribute(Qt.WA_DeleteOnClose)
+    browser.show()
+    return browser
+
+
+def pane_time(parent) -> Optional[datetime]:
+    """The observation time of the image pane the browser was opened from, or None."""
+    from . import helioviewer_use as use
+
+    pane = use.pane_of(parent)
+    reader = getattr(pane, "_observation_datetime", None)
+    if reader is None:
+        return None
+    try:
+        when = reader()
+    except Exception as e:
+        logger.warning("Could not read the image's time: %s", e)
+        return None
+    if when is not None and not isinstance(when, datetime):
+        when = datetime.combine(when, time())
+    return when
+
+
+# ---------------------------------------------------------------- threads
+
+
+def fetch_sources() -> Tuple[List[catalog.Source], str]:
+    """Helioviewer's full list, or the known one with why."""
+    try:
+        return catalog.catalogue(hv.data_sources()), ""
+    except Exception as e:
+        logger.warning("Could not fetch the instruments from Helioviewer: %s", e)
+        return catalog.fallback_catalogue(), str(e) or "No answer"
+
+
+class SourcesThread(QThread):
+    done = pyqtSignal(object, str)  # sources, why they are only the known ones ("" if Helioviewer's)
+
+    def run(self):
+        sources, problem = fetch_sources()
+        self.done.emit(sources, problem)
+
+
+class _Cancelled(Exception):
+    pass
+
+
+class PlanThread(QThread):
+    """Finds the frames of a load (``plan_frames``), off the GUI thread."""
+
+    done = pyqtSignal(object, str)  # the plan, or None and why
+
+    def __init__(self, source, start, end, step_s, view, parent=None):
         super().__init__(parent)
-        self.rubber_band = None
-        self.origin = QPoint()
-        self.selection_rect = QRect()
-        self.zoom_factor = 1.0
-        self.scroll_area = scroll_area
-        self.pan_last_pos = QPoint()
-        self.panning = False
-        self.crop_mode = False
-        self.setCursor(Qt.ArrowCursor)
+        self.source, self.start_time, self.end_time, self.step_s, self.view = source, start, end, step_s, view
+        self._stop = threading.Event()
+
+    def cancel(self):
+        self._stop.set()
+
+    def _check(self):
+        if self._stop.is_set():
+            raise _Cancelled()
+
+    def run(self):
+        try:
+            plan = plan_frames(self.source, self.start_time, self.end_time, self.step_s, self.view, check=self._check)
+        except _Cancelled:
+            return
+        except Exception as e:
+            logger.warning("Could not plan the frames of %s: %s", self.source.name, e)
+            self.done.emit(None, str(e) or "Helioviewer did not answer")
+            return
+        if not self._stop.is_set():
+            self.done.emit(plan, "")
+
+
+class RetryPlan(Plan):
+    """A plan whose downloads are only the frames that failed or were never fetched."""
+
+    def order(self, at=None):
+        return [frame for frame in super().order(at) if frame.state in (FAILED, PLANNED)]
+
+
+def lwa_frames(plan: lwa.Plan, view_name: str) -> Tuple[List[Frame], dict]:
+    """OVRO-LWA's plan as frames, with the note each carries ("from the
+    2024-05-14 movie"). A clip's unproved frames are spread over their
+    movie's day, as nothing better is known of their times."""
+    frames, notes = [], {}
+    count = max(1, len(plan.times))
+    for index, (when, day, number) in enumerate(zip(plan.times, plan.days, plan.numbers)):
+        if when is None:
+            when = datetime.combine(day, time()) + timedelta(seconds=86400 * (index + 0.5) / count)
+            notes[index] = f"Time not confirmed · frame {number + 1} of the {day} movie"
+        else:
+            notes[index] = f"from the {day} movie"
+        frames.append(
+            Frame(
+                index=index,
+                wanted=when,
+                observed=when,
+                source_id=0,
+                layers=lwa.LAYER + view_name,
+                image_scale=1.0,
+                width=plan.side or 600,
+                height=plan.side or 600,
+                origin=LWA_ORIGIN,
+            )
+        )
+    return frames, notes
+
+
+# ---------------------------------------------------------------- the band with a GOES lane
+
+
+class HelioBand(FrameBand):
+    """The time band with, under its lanes, the GOES 1–8 Å curve of the
+    range's day(s) when Solar Activity has saved it (no fetch here)."""
+
+    GOES = 44  # px: room for the curve and the class letters beside it
+
+    def __init__(self, axis=None, parent=None, inset=SPACE_L):
+        self.goes = {}  # date -> one value per minute, None in a gap
+        super().__init__(axis, parent, inset)
+
+    def set_goes(self, curves):
+        """``{day: flux}`` for the days the range touches; empty for no lane."""
+        self.goes = {day: list(flux) for day, flux in (curves or {}).items() if flux}
+        self._set_height()
+
+    def _set_height(self):
+        super()._set_height()
+        if getattr(self, "goes", None):
+            self.setFixedHeight(self.height() + self.GOES)
+
+    def _goes_points(self):
+        """``[(hours, value)]`` of the curve inside the band's range, in order."""
+        points = []
+        for day in sorted(self.goes):
+            base = (day - self.axis.day).days * 24
+            for minute, value in enumerate(self.goes[day]):
+                hours = base + minute / 60
+                if value is not None and value > 0 and self.axis.first <= hours <= self.axis.last:
+                    points.append((hours, value))
+                elif points and points[-1] is not None:
+                    points.append(None)  # a gap
+        return points
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.goes:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        palette = theme_manager.palette
+        left, right = self.axis.x_of(self.axis.start, self), self.axis.x_of(self.axis.end, self)
+        top = self.height() - 2 - self.GOES
+        painter.setFont(self._font(FONT_SMALL))
+        painter.setPen(QColor(palette["text_secondary"]))
+        painter.drawText(QRectF(self.inset, top, GUTTER - SPACE_S, self.LANE), Qt.AlignVCenter, "GOES 1–8 Å")
+        points = self._goes_points()
+        values = [v for p in points if p is not None for v in (p[1],)]
+        area = QRectF(left, top, right - left, self.GOES)
+        if not values:
+            painter.drawText(area, Qt.AlignCenter, "No GOES data in this range")
+            painter.end()
+            return
+        low = math.floor(math.log10(min(values)))
+        high = max(math.ceil(math.log10(max(values))), low + 2)
+        y_of = lambda value: top + self.GOES - 1 - (math.log10(value) - low) / (high - low) * (self.GOES - 2)
+        painter.setFont(self._font(FONT_META, mono=True))
+        last_label_y = None
+        for name, power in (("A", -8), ("B", -7), ("C", -6), ("M", -5), ("X", -4)):
+            if low <= power <= high:
+                y = y_of(10.0 ** power)
+                painter.setPen(QPen(QColor(palette["plot_grid"]), 1, Qt.DotLine))
+                painter.drawLine(QPointF(left, y), QPointF(right, y))
+                # The letter beside its line, kept inside the lane and clear of the one before
+                label_y = min(max(y, top + 6), top + self.GOES - 6)
+                if last_label_y is None or abs(label_y - last_label_y) >= 11:
+                    painter.setPen(QColor(palette["text_faint"]))
+                    painter.drawText(QRectF(left - 14, label_y - 7, 11, 14), Qt.AlignRight | Qt.AlignVCenter, name)
+                    last_label_y = label_y
+        painter.save()
+        painter.setClipRect(area)
+        painter.setPen(QPen(QColor(GOES_COLOUR), 1.2))
+        run = []
+        for point in points:
+            if point is None:
+                if run:
+                    painter.drawPolyline(QPolygonF(run))
+                run = []
+            else:
+                run.append(QPointF(self.axis.x_of(point[0], self), y_of(point[1])))
+        if run:
+            painter.drawPolyline(QPolygonF(run))
+        painter.restore()
+        painter.end()
+
+
+# ---------------------------------------------------------------- the instrument list
+
+
+class SourceTree(QTreeWidget):
+    """The instruments, grouped by observatory. A Ctrl+click on an entry
+    asks for it as the composite's second layer instead of selecting it."""
+
+    overlay_picked = pyqtSignal(object)  # the item
+    resized = pyqtSignal()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.resized.emit()
 
     def mousePressEvent(self, event):
-        if self.crop_mode and event.button() == Qt.LeftButton:
-            self.setCursor(Qt.CrossCursor)
-            # Selection mode
-            if not self.rubber_band:
-                self.rubber_band = QRubberBand(QRubberBand.Rectangle, self)
-            self.origin = event.pos()
-            self.rubber_band.setGeometry(QRect(self.origin, QSize()))
-            self.rubber_band.show()
-        elif event.button() == Qt.RightButton or (
-            event.button() == Qt.MiddleButton
-        ) or (not self.crop_mode and event.button() == Qt.LeftButton):
-            # Panning mode (Right click, Middle click, or Left click if not cropping)
-            self.panning = True
-            self.pan_last_pos = event.globalPos()
-            self.setCursor(Qt.ClosedHandCursor)
-
-    def mouseMoveEvent(self, event):
-        if self.panning:
-            delta = event.globalPos() - self.pan_last_pos
-            self.pan_last_pos = event.globalPos()
-
-            if self.scroll_area:
-                h_bar = self.scroll_area.horizontalScrollBar()
-                v_bar = self.scroll_area.verticalScrollBar()
-                h_bar.setValue(h_bar.value() - delta.x())
-                v_bar.setValue(v_bar.value() - delta.y())
-        elif self.crop_mode and self.rubber_band and not self.origin.isNull():
-            self.rubber_band.setGeometry(QRect(self.origin, event.pos()).normalized())
-
-    def mouseReleaseEvent(self, event):
-        if self.crop_mode and event.button() == Qt.LeftButton:
-            if self.rubber_band:
-                self.selection_rect = self.rubber_band.geometry()
-        else:
-            self.panning = False
-            self.setCursor(Qt.ArrowCursor)
-
-    def get_selection_rect(self):
-        """Return the selection rectangle relative to the ORIGINAL pixmap scale."""
-        if self.selection_rect.isEmpty() or not self.pixmap():
-            return QRect()
-
-        # Map widget coordinates to current scaled pixmap coordinates
-        pixmap_size = self.pixmap().size()
-        widget_rect = self.rect()
-
-        x_offset = (widget_rect.width() - pixmap_size.width()) // 2
-        y_offset = (widget_rect.height() - pixmap_size.height()) // 2
-
-        # Selection in screen (zoomed) pixels, relative to pixmap top-left
-        selection_zoomed = self.selection_rect.translated(-x_offset, -y_offset)
-
-        # Scale selection back to original image resolution
-        x = int(selection_zoomed.x() / self.zoom_factor)
-        y = int(selection_zoomed.y() / self.zoom_factor)
-        w = int(selection_zoomed.width() / self.zoom_factor)
-        h = int(selection_zoomed.height() / self.zoom_factor)
-
-        # Only the image can be cropped, not the margin around it
-        return QRect(x, y, w, h).intersected(QRect(QPoint(0, 0), pixmap_size / self.zoom_factor))
+        item = self.itemAt(event.pos())
+        if event.button() == Qt.LeftButton and event.modifiers() & Qt.ControlModifier and item is not None and item.data(0, SOURCE_ROLE):
+            self.overlay_picked.emit(item)
+            return
+        super().mousePressEvent(event)
 
 
-class ZoomOverlayFrame(QFrame):
-    """A floating toolbar frame that fades in on hover."""
+class SourceDelegate(QStyledItemDelegate):
+    """Group rows in the strong text, the second and third columns muted, an
+    instrument without images of the day dimmed: by role, so a theme change
+    repaints them without touching the items."""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self.opacity_effect)
-        self.opacity_effect.setOpacity(0.4)  # Default transparency
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        palette = theme_manager.palette
+        if index.data(GROUP_ROLE):
+            option.font.setBold(True)
+            option.palette.setColor(option.palette.Text, QColor(palette["text_strong"]))
+        elif index.data(DIM_ROLE):
+            option.palette.setColor(option.palette.Text, QColor(palette["disabled"]))
+        elif index.column() > 0:
+            option.palette.setColor(option.palette.Text, QColor(palette["text_secondary"]))
+        if index.column() == 2 and index.data(NOTE_ROLE):
+            option.font.setPointSizeF(FONT_META)
 
-    def enterEvent(self, event):
-        self.opacity_effect.setOpacity(1.0)
-        super().enterEvent(event)
 
-    def leaveEvent(self, event):
-        self.opacity_effect.setOpacity(0.4)
-        super().leaveEvent(event)
-
-
-'''class FullImageDialog(QDialog):
-    """Dialog to show full resolution image."""
-
-    def __init__(self, parent, pixmap, title):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        fit_to_screen(self, 1200, 1200)
-
-        layout = QVBoxLayout(self)
-
-        # Scroll area for large image
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-
-        label = QLabel()
-        label.setPixmap(pixmap)
-        label.setAlignment(Qt.AlignCenter)
-
-        scroll.setWidget(label)
-        layout.addWidget(scroll)
-
-        # Close button
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)'''
+# ---------------------------------------------------------------- the window
 
 
 class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
-    """Main browser window for Helioviewer time-series."""
+    """Images around a time: the header picks the time, span and step, the
+    list the instrument, Load finds the frames and downloads them nearest
+    the time first; the band seeks, the footer plays, compares, reframes,
+    zooms and exports."""
 
-    def __init__(self, parent=None, initial_start=None, initial_end=None, initial_instrument=None, movie_day=None):
-        """``initial_instrument`` is the name of the entry to select. With
-        ``movie_day`` (an OVRO-LWA entry), that day's movie loads at once,
-        and the times become those of its first and last frames."""
+    time_chosen = pyqtSignal(object)  # the user chose a time on the band (a datetime)
+
+    def __init__(self, parent=None, target: Optional[Target] = None, loader: Optional[FrameLoader] = None, settings: Optional[QSettings] = None):
         super().__init__(parent)
         self.setWindowTitle("Helioviewer browser")
-        fit_to_screen(self, 1600, 1000)
-
-        # Data storage
-        self.frames = OrderedDict()  # {frame_index: {instrument: pixmap}}
-        self.timestamps = []
-        self.current_frame = 0
-        self.playing = False
-        self.frame_loaders = []
-
-        # Download queue management for parallel loading
-        self.download_queue = deque()  # Queue of (frame_idx, instrument_data)
-        self.active_downloads = 0
-        self.downloads_total = 0
-        self.downloads_done = 0  # those that failed too
-        self.failed_downloads = {}  # (frame_idx, instrument) -> error
-        self.max_concurrent_downloads = 8
-
-        # Store initial times
-        if movie_day is not None and initial_start is None:
-            # About when the movie runs, until its own times are known
-            initial_start = QDateTime(QDate(movie_day.year, movie_day.month, movie_day.day), QTime(12, 0), Qt.UTC)
-            initial_end = initial_start.addSecs(14 * 3600)
-        self.initial_start = initial_start
-        self.initial_end = initial_end
-        self.initial_instrument = initial_instrument
-        self.movie_day = movie_day  # for the first load only
-
-        # OVRO-LWA: not Helioviewer's, loaded by one thread of its own
-        self.lwa_loader = None
-        self.lwa_group = None
-        self.frame_labels = []  # with OVRO-LWA frames: which movie each is from
-        self.lwa_notes = []
-
-        # Animation timer
-        self.animation_timer = QTimer()
-        self.animation_timer.timeout.connect(self.next_frame)
-
-        # Seekbar animation for smooth sliding during playback
-        self.seekbar_anim = QVariantAnimation()
-        self.seekbar_anim.valueChanged.connect(self._update_seekbar_smoothly)
-
-        # Flag to prevent updates during close
+        self.target = target or Target()
+        self.settings = settings if settings is not None else QSettings(*SETTINGS)
+        # What is loaded
+        self.sources: List[catalog.Source] = []
+        self.instruments_problem = ""
+        self.plan: Optional[Plan] = None
+        self.frames: List[Frame] = []
+        self.frame_notes = {}  # index -> what the stamp says after the time (OVRO-LWA's movie)
+        self.current: Optional[int] = None
+        self.loading = False
+        self.lwa_mode = False  # the frames shown are OVRO-LWA's
+        self.lwa_notes: List[str] = []
+        self.region: Optional[hvw.Region] = None  # the reframed field, None for the full one
+        self.overlay: Optional[Tuple[catalog.Source, int]] = None  # the composite's second layer and its opacity
+        self.radio_fov = self.target.fov
+        self.events_rows = None
+        self.diff_mode_name = "None"
+        self.diff_base_index = 0
+        self._diff_cache: "OrderedDict[tuple, QPixmap]" = OrderedDict()
+        self._compact = False
+        self._footer_compact = False
+        self._jobs = OrderedDict()
         self._closing = False
         self._close_after_export = False
+        self._load_at: Optional[datetime] = None
+        # Threads
+        self.loader = loader if loader is not None else FrameLoader(parent=self)
+        self.loader.frame_ready.connect(self._on_frame_ready)
+        self.loader.frame_failed.connect(self._on_frame_failed)
+        self.loader.progress.connect(self._on_progress)
+        self.loader.finished.connect(self._on_finished)
+        self.sources_thread: Optional[SourcesThread] = None
+        self.planner: Optional[PlanThread] = None
+        self.events_thread: Optional[EventsFetch] = None
+        self.lwa_loader: Optional[lwa.LwaMovieLoader] = None
 
-        # Cropping state
-        self.crop_mode = False
-        self.selection_label = None
-
-        # Loading state
-        self._loading = False
-        self._loading_names = set()  # the instruments of the load
-
-        # Zoom state
-        self.zoom_factor = 1.0
-
-        # Base difference state
-        self.diff_type = "None" # "None", "Base", "Running"
-
-        self.init_ui()
-        self.setup_shortcuts()
-        themed(self, self._style_icons)
+        self._build_ui()
+        self._setup_shortcuts()
+        themed(self, self._restyle)
         set_hand_cursor(self)
-        if initial_instrument:
-            self._select_named(initial_instrument)
-            if movie_day is not None and initial_instrument in {entry[0] for entry in lwa.entries()}:
-                QTimer.singleShot(0, self.load_time_series)
+        fit_to_screen(self, 1600, 1000)
+        self._restore_settings()
+        self._apply_target()
+        self.load_instruments()
 
-    def init_ui(self):
-        """Initialize the user interface."""
+    # ------------------------------------------------------------ building
+
+    def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(SPACE_M, SPACE_M, SPACE_M, SPACE_M)
-        main_layout.setSpacing(SPACE_M)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.header = self._build_header()
+        layout.addWidget(self.header)
 
-        # Top panel - Time range controls
-        self.create_time_controls(main_layout)
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(self._build_left())
+        self.splitter.addWidget(self._build_image_column())
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([400, 1000])
+        page = QVBoxLayout()
+        page.setContentsMargins(SPACE_L, SPACE_S, SPACE_L, 0)
+        page.setSpacing(SPACE_S)
+        page.addWidget(self.splitter, 1)
+        layout.addLayout(page, 1)
 
-        # Progress bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        main_layout.addWidget(self.progress_bar)
+        self.footer = self._build_footer()
+        layout.addWidget(self.footer)
+        self.source_line = source_note(HELIOVIEWER_NOTE)
+        self.source_line.setContentsMargins(SPACE_L, SPACE_XS, SPACE_L, SPACE_S)
+        layout.addWidget(self.source_line)
+        # The band takes the keys nothing else uses, so ] and [ step frames
+        central.setFocusPolicy(Qt.ClickFocus)
+        central.setFocusProxy(self.band)
 
-        # Splitter for left/right panels
-        splitter = QSplitter(Qt.Horizontal)
+    def _build_header(self):
+        top = QFrame()
+        top.setObjectName("DayHeader")
+        # The window may be dragged narrower than the row's full labels: the
+        # labels shorten (_fit_labels) and the window stops where the short ones end
+        top.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        themed(top, lambda palette: top.setStyleSheet(
+            f"QFrame#DayHeader {{ background-color: {palette['surface']}; border: none;"
+            f" border-bottom: 1px solid {palette['divider']}; }}"
+        ))
+        column = QVBoxLayout(top)
+        column.setContentsMargins(0, SPACE_M, 0, SPACE_S)
+        column.setSpacing(SPACE_S)
 
-        # Left panel - Instrument filter
-        self.create_instrument_panel(splitter)
+        row = QHBoxLayout()
+        row.setContentsMargins(SPACE_L, 0, SPACE_L, 0)
+        row.setSpacing(SPACE_S)
+        row.addWidget(self._day_button("fd_back.svg", "Day before (Alt+Left)", -1))
+        self.time_edit = QLineEdit()
+        self.time_edit.setToolTip("The time the images are around, UTC: YYYY-MM-DD HH:MM:SS")
+        self.time_edit.setPlaceholderText("YYYY-MM-DD HH:MM:SS")
+        font = QFont(self.time_edit.font())
+        font.setFamily(MONO_FAMILY)
+        self.time_edit.setFont(font)
+        self.time_edit.setMinimumWidth(190)
+        self.time_edit.setMaximumWidth(230)
+        attach_date_picker(self.time_edit, lambda text: self._time_committed())
+        self.time_edit.editingFinished.connect(self._time_committed)
+        self.time_edit.returnPressed.connect(self.load)
+        row.addWidget(self.time_edit)
+        row.addWidget(self._day_button("fd_forward.svg", "Day after (Alt+Right)", 1))
+        self.from_image_btn = QPushButton("From image")
+        self.from_image_btn.setToolTip("Take the time from the image open in SolarViewer")
+        self.from_image_btn.clicked.connect(self.from_image)
+        self.from_image_btn.setVisible(self.parent() is not None)
+        row.addWidget(self.from_image_btn)
+        row.addSpacing(SPACE_XS)
+        self.span_label = QLabel("Span")
+        self.span_label.setObjectName("Hint")
+        row.addWidget(self.span_label)
+        self.span_group, self.span_buttons = self._choice(SPANS, "The images come from this far each side of the time")
+        self.span_group.buttonClicked.connect(lambda _b: self._time_committed())
+        row.addWidget(segmented(self.span_buttons))
+        row.addSpacing(SPACE_XS)
+        self.step_label = QLabel("Step")
+        self.step_label.setObjectName("Hint")
+        row.addWidget(self.step_label)
+        self.step_group, self.step_buttons = self._choice(STEPS, "One frame per step, the archive's image nearest each; Every image keeps them all")
+        row.addWidget(segmented(self.step_buttons))
+        row.addStretch()
+        column.addLayout(row)
 
-        # Right panel - Image grid
-        self.create_image_panel(splitter)
+        line = QHBoxLayout()
+        line.setContentsMargins(SPACE_L, 0, SPACE_L, 0)
+        line.setSpacing(SPACE_S)
+        self.summary_label = ElidedLabel("")
+        line.addWidget(self.summary_label, 1)
+        self.activity_line = ActivityLabel()
+        self.activity_line.label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.activity_line.hide()
+        line.addWidget(self.activity_line, 1)
+        self.note_link = link_button("")
+        self.note_link.hide()
+        line.addWidget(self.note_link)
+        self.retry_link = link_button("Retry", self.load)
+        self.retry_link.hide()
+        line.addWidget(self.retry_link)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.cancel_latest_job)
+        self.cancel_btn.hide()
+        line.addWidget(self.cancel_btn)
+        self.load_btn = QPushButton("Load")
+        self.load_btn.setObjectName("PrimaryButton")
+        self.load_btn.setToolTip("Find the images and download them (Ctrl+L, or Return outside a control)")
+        self.load_btn.clicked.connect(self.load)
+        line.addWidget(self.load_btn)
+        column.addLayout(line)
 
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([460, 1140])
-        main_layout.addWidget(splitter, 1)
+        self._note_timer = QTimer(self)
+        self._note_timer.setSingleShot(True)
+        self._note_timer.timeout.connect(self._note_over)
+        self._note_link_slot = None
+        return top
 
-        # Bottom panel - Animation controls
-        self.create_animation_controls(main_layout)
+    def _day_button(self, icon, tip, days):
+        button = QPushButton()
+        button.setObjectName("IconOnlyNBGButton")
+        button.setIconSize(QSize(18, 18))
+        button.setMinimumWidth(ICON_BUTTON_LEAST)
+        button.setToolTip(tip)
+        themed(button, lambda palette: button.setIcon(QIcon(themed_icon(icon))))
+        button.clicked.connect(lambda: self.step_day(days))
+        return button
 
-    def create_time_controls(self, parent_layout):
-        """Create time range input controls."""
-        group = QGroupBox("Time range (UTC)")
-        layout = QHBoxLayout(group)
-        layout.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
-        layout.setSpacing(SPACE_S)
+    def _choice(self, rows, tip):
+        """Checkable buttons for ``rows`` of (label, compact label, value) in one exclusive group."""
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        buttons = []
+        for i, (label, short, _value) in enumerate(rows):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setToolTip(tip)
+            button.setProperty("labels", (label, short))
+            group.addButton(button, i)
+            buttons.append(button)
+        buttons[0].setChecked(True)
+        return group, buttons
 
-        # Start time
-        layout.addWidget(self._form_label("Start"))
-        self.start_datetime = QLineEdit()
-        self.start_datetime.setMinimumWidth(170)
-        self.start_datetime.setMaximumWidth(220)
-        attach_date_picker(self.start_datetime, lambda text: None, band=lambda: self._picked_time(self.end_datetime))
-        # Default to yesterday 10:00 UTC or initial_start if provided
-        if hasattr(self, "initial_start") and self.initial_start:
-            self._set_time(self.start_datetime, self.initial_start)
-        else:
-            default_start = QDateTime.currentDateTimeUtc().addDays(-1)
-            default_start.setTime(
-                default_start.time().fromString("10:00:00", "HH:mm:ss")
-            )
-            self._set_time(self.start_datetime, default_start)
-        layout.addWidget(self.start_datetime)
-
-        # End time
-        layout.addSpacing(SPACE_S)
-        layout.addWidget(self._form_label("End"))
-        self.end_datetime = QLineEdit()
-        self.end_datetime.setMinimumWidth(170)
-        self.end_datetime.setMaximumWidth(220)
-        attach_date_picker(self.end_datetime, lambda text: None, band=lambda: self._picked_time(self.start_datetime))
-        if hasattr(self, "initial_end") and self.initial_end:
-            self._set_time(self.end_datetime, self.initial_end)
-        else:
-            default_end = self._time_of(self.start_datetime).addSecs(3600)  # 1 hour later
-            self._set_time(self.end_datetime, default_end)
-        layout.addWidget(self.end_datetime)
-
-        # Interval
-        layout.addSpacing(SPACE_S)
-        layout.addWidget(self._form_label("Interval"))
-        self.interval_spin = QSpinBox()
-        self.interval_spin.setRange(10, 3600)
-        self.interval_spin.setValue(30)  # Default 30 seconds
-        self.interval_spin.setSuffix(" s")
-        layout.addWidget(self.interval_spin)
-
-        layout.addStretch()
-
-        self.load_button = QPushButton("Load")
-        self.load_button.setObjectName("PrimaryButton")
-        self.load_button.clicked.connect(self.load_time_series)
-        layout.addWidget(self.load_button)
-
-        # Cancel button (initially hidden)
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.clicked.connect(self.cancel_loading)
-        self.cancel_button.setVisible(False)
-        layout.addWidget(self.cancel_button)
-
-        parent_layout.addWidget(group)
-
-    @staticmethod
-    def _form_label(text):
-        label = QLabel(text)
-        label.setObjectName("Hint")
-        return label
-
-    @staticmethod
-    def _set_time(field, value):
-        field.setText(value.toString(TIME_QT_FORMAT))
-
-    @staticmethod
-    def _time_of(field):
-        """The field's text as a UTC QDateTime (invalid if it does not parse).
-        Local time would shift the frames across a daylight saving change."""
-        value = QDateTime.fromString(field.text().strip() + " UTC", TIME_QT_FORMAT + " t")
-        return value.toUTC() if value.isValid() else value
-
-    def _picked_time(self, field):
-        value = self._time_of(field)
-        return value.toPyDateTime() if value.isValid() else None
-
-    def create_instrument_panel(self, parent_splitter):
-        """Create left panel with instrument filter (tree view grouped by observatory)."""
+    def _build_left(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, SPACE_S, 0)
         layout.setSpacing(SPACE_S)
 
-        # Instrument tree - grouped by observatory
-        self.instrument_tree = QTreeWidget()
-        self.instrument_tree.setHeaderLabels(["Instrument", "Shows", "Cadence"])
-        self.instrument_tree.setColumnCount(3)
-        self.instrument_tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.instrument_tree.header().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.instrument_tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.instrument_tree.header().setStretchLastSection(False)
-        self.instrument_tree.header().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.instrument_tree.setAlternatingRowColors(True)
-        self.instrument_tree.setRootIsDecorated(True)
-        self.instrument_tree.setAnimated(True)
-        self.instrument_tree.setIndentation(SPACE_L)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filter instruments (Ctrl+F)")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self._filter_tree)
+        layout.addWidget(self.filter_edit)
 
-        # Connect selection change
-        self.instrument_tree.itemSelectionChanged.connect(self.on_instrument_selected)
-        layout.addWidget(self.instrument_tree)
+        self.tree = SourceTree()
+        self.tree.setHeaderLabels(["Instrument", "Shows", "Cadence"])
+        self.tree.setColumnCount(3)
+        header = self.tree.header()
+        # The name column is sized to the names (a group's spanned title would widen it): see _size_columns
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        header.setStretchLastSection(False)
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        # The column of what an instrument shows gives way, cut short with an ellipsis, rather than a scrollbar
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.tree.setTextElideMode(Qt.ElideRight)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setRootIsDecorated(True)
+        self.tree.setIndentation(SPACE_L)
+        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tree.setItemDelegate(SourceDelegate(self.tree))
+        self.tree.itemSelectionChanged.connect(self._selection_changed)
+        self.tree.overlay_picked.connect(self._overlay_picked)
+        self.tree.setToolTip("Click an instrument; Ctrl+click another to lay it over as a second layer")
+        self.tree.resized.connect(self._size_columns)
+        self.lwa_group = None
+        layout.addWidget(self.tree, 1)
 
         # Said when the list is not the one Helioviewer gave
-        self.instruments_note = QLabel()
-        self.instruments_note.setObjectName("Tip")
-        self.instruments_note.setWordWrap(True)
-        self.instruments_note.linkActivated.connect(lambda _: self.load_all_instruments())
+        self.instruments_note = QWidget()
+        note = QHBoxLayout(self.instruments_note)
+        note.setContentsMargins(0, 0, 0, 0)
+        note.setSpacing(SPACE_S)
+        self.instruments_note_label = QLabel(
+            "Helioviewer did not answer: these are the usual instruments, and may not all have images."
+        )
+        self.instruments_note_label.setObjectName("Hint")
+        self.instruments_note_label.setWordWrap(True)
+        note.addWidget(self.instruments_note_label, 1)
+        note.addWidget(link_button("Retry", self.load_instruments), 0, Qt.AlignTop)
         self.instruments_note.hide()
         layout.addWidget(self.instruments_note)
 
-        # Load instruments
-        self.load_all_instruments()
+        # The composite's second layer
+        self.overlay_chip = QFrame()
+        self.overlay_chip.setObjectName("Surface")
+        chip = QHBoxLayout(self.overlay_chip)
+        chip.setContentsMargins(9, 5, 7, 5)
+        chip.setSpacing(SPACE_S)
+        self.overlay_label = QLabel("")
+        self.overlay_label.setObjectName("Hint")
+        chip.addWidget(self.overlay_label)
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(20, 100)
+        self.opacity_slider.setValue(OVERLAY_OPACITY)
+        self.opacity_slider.setToolTip("How strongly the second layer shows (20–100 %)")
+        self.opacity_slider.valueChanged.connect(self._opacity_changed)
+        chip.addWidget(self.opacity_slider, 1)
+        self.opacity_label = QLabel(f"{OVERLAY_OPACITY} %")
+        self.opacity_label.setObjectName("DetailMono")
+        chip.addWidget(self.opacity_label)
+        self.overlay_remove = link_button("Remove", self.remove_overlay)
+        chip.addWidget(self.overlay_remove)
+        self.overlay_chip.hide()
+        layout.addWidget(self.overlay_chip)
 
-        settings = QFormLayout()
-        settings.setContentsMargins(0, SPACE_XS, 0, 0)
-        settings.setSpacing(SPACE_S)
-        settings.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        layout.addSpacing(SPACE_XS)
+        layout.addWidget(kicker("Field of view"))
+        self.fov_group = QButtonGroup(self)
+        self.fov_group.setExclusive(True)
+        self.fov_buttons = []
+        presets = list(catalog.FOV_PRESETS) + [("Radio map", None)]
+        for i, (label, arcsec) in enumerate(presets):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setProperty("labels", (label, label))
+            button.setToolTip(
+                "The field of the radio image this browser was opened from" if arcsec is None
+                else f"{hvw.arcsec_text(arcsec)} across ({arcsec / hv.RSUN_ARCSEC:.1f} solar radii)"
+            )
+            self.fov_group.addButton(button, i)
+            self.fov_buttons.append(button)
+        self.fov_buttons[0].setChecked(True)
+        self.fov_buttons[-1].setVisible(self.radio_fov is not None)
+        self.fov_row = segmented(self.fov_buttons)
+        layout.addWidget(self.fov_row)
+        self.fov_hint = QLabel("")
+        self.fov_hint.setObjectName("Hint")
+        self.fov_hint.setWordWrap(True)
+        self.fov_hint.hide()
+        layout.addWidget(self.fov_hint)
 
-        # Image size control
-        self.image_size_spin = QSpinBox()
-        self.image_size_spin.setRange(100, 4000)
-        self.image_size_spin.setValue(600)
-        self.image_size_spin.setSuffix(" px")
-        self.image_size_spin.setToolTip("Image dimensions (100-4000 pixels)")
-        settings.addRow(self._form_label("Image size"), self.image_size_spin)
+        layout.addSpacing(SPACE_XS)
+        self.view = hvw.FrameView(settings=self.settings)
+        self.toggles = hvw.OverlayToggles(self.view)
+        self.toggles.set_radio_available(self.radio_fov is not None)
+        layout.addWidget(self.toggles)
+        return panel
 
-        # Concurrent downloads control
-        self.concurrent_spin = QSpinBox()
-        self.concurrent_spin.setRange(1, 32)
-        self.concurrent_spin.setValue(self.max_concurrent_downloads)
-        self.concurrent_spin.setToolTip("Maximum concurrent downloads (1-32)")
-        self.concurrent_spin.valueChanged.connect(self.on_concurrent_changed)
-        settings.addRow(self._form_label("Downloads at once"), self.concurrent_spin)
-        layout.addLayout(settings)
+    def _build_image_column(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(SPACE_S, 0, 0, 0)
+        layout.setSpacing(SPACE_S)
 
-        parent_splitter.addWidget(panel)
+        caption = QHBoxLayout()
+        caption.setSpacing(SPACE_S)
+        self.caption_name = QLabel("")
+        self.caption_name.setObjectName("SectionTitle")
+        caption.addWidget(self.caption_name)
+        caption.addStretch()
+        self.caption_time = QLabel("")
+        self.caption_time.setObjectName("Mono")
+        caption.addWidget(self.caption_time)
+        self.caption_offset = QLabel("")
+        self.caption_offset.setObjectName("DetailMono")
+        self.caption_offset.setProperty("muted", "true")
+        caption.addWidget(self.caption_offset)
+        caption.addSpacing(SPACE_S)
+        self.caption_count = QLabel("")
+        self.caption_count.setObjectName("Meta")
+        caption.addWidget(self.caption_count)
+        layout.addLayout(caption)
 
-        # Keep reference for compatibility
-        self.instrument_list = self.instrument_tree
+        self.well = QStackedWidget()
+        self.well.addWidget(self.view)
+        self.message = QFrame()
+        self.message.setObjectName("ImageWell")
+        column = QVBoxLayout(self.message)
+        column.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
+        column.addStretch()
+        self.message_label = empty_note("")
+        column.addWidget(self.message_label)
+        self.message_activity = ActivityLabel()
+        self.message_activity.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.message_activity.hide()
+        column.addWidget(self.message_activity, 0, Qt.AlignCenter)
+        links = QHBoxLayout()
+        links.addStretch()
+        self.details_link = link_button("Show details…", self._show_frame_error)
+        self.details_link.hide()
+        links.addWidget(self.details_link)
+        self.frame_retry_link = link_button("Retry", self.retry_failed)
+        self.frame_retry_link.hide()
+        links.addWidget(self.frame_retry_link)
+        links.addStretch()
+        column.addLayout(links)
+        column.addStretch()
+        self.well.addWidget(self.message)
+        layout.addWidget(self.well, 1)
 
-    def on_concurrent_changed(self, value):
-        """Update maximum concurrent downloads."""
-        self.max_concurrent_downloads = value
+        self.readout = hvw.Readout(self.view)
+        layout.addWidget(self.readout)
+        self.band = HelioBand()
+        self.band.current_changed.connect(self.show_frame)
+        self.band.cursor_set.connect(self._cursor_set)
+        layout.addWidget(self.band)
 
-    def load_all_instruments(self):
-        """Ask Helioviewer for all available instruments, on a thread: the
-        window opens at once, with a spinner in the list until they are in."""
-        self.instruments_problem = None
+        self.view.zoom_changed.connect(lambda _scale: self._zoom_changed())
+        self.view.reframe_requested.connect(self._reframe_requested)
+        self.view.reframe_ended.connect(self._reframe_ended)
+        self.view.set_radio_field(self.radio_fov, self._radio_label())
+        return panel
+
+    def _build_footer(self):
+        bar = QFrame()
+        bar.setObjectName("CanvasBar")
+        bar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(SPACE_M, 6, SPACE_M, 6)
+        layout.setSpacing(SPACE_S)
+
+        self.transport_buttons = []
+        buttons = []
+        for attribute, kind, tip, slot in (
+            ("first_btn", "first", "First frame (Shift+[, Home)", self.first_frame),
+            ("prev_btn", "previous", "Previous frame ([)", self.prev_frame),
+            ("play_btn", "play", "Play (P, Space)", self.toggle_play),
+            ("next_btn", "next", "Next frame (])", self.next_frame),
+            ("last_btn", "last", "Last frame (Shift+], End)", self.last_frame),
+        ):
+            button = QPushButton()
+            button.setObjectName("IconOnlyNBGButton")
+            button.setIconSize(QSize(16, 16))
+            button.setMinimumWidth(ICON_BUTTON_LEAST)
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            button.setEnabled(False)
+            setattr(self, attribute, button)
+            self.transport_buttons.append((button, kind))
+            buttons.append(button)
+        layout.addWidget(segmented(buttons))
+        self.playback = Playback(self.band)
+        self.playback.changed.connect(self._playing_changed)
+        self.playback.fps_changed.connect(self._fps_changed)
+        self.fps_group = QButtonGroup(self)
+        self.fps_group.setExclusive(True)
+        self.fps_buttons = []
+        for fps in FPS_CHOICES:
+            button = QPushButton(str(fps))
+            button.setCheckable(True)
+            button.setToolTip(f"{fps} frames a second (> and < change the speed)")
+            self.fps_group.addButton(button, fps)
+            self.fps_buttons.append(button)
+        self.fps_group.buttonClicked.connect(lambda button: self.playback.set_fps(self.fps_group.id(button)))
+        layout.addWidget(segmented(self.fps_buttons))
+        self.fps_label = QLabel("fps")
+        self.fps_label.setObjectName("Meta")
+        layout.addWidget(self.fps_label)
+        self._check_fps(self.playback.fps)
+
+        layout.addWidget(vrule())
+        self.diff_group = QButtonGroup(self)
+        self.diff_group.setExclusive(True)
+        self.diff_buttons = []
+        for i, mode in enumerate(DIFF_MODES):
+            button = QPushButton(mode)
+            button.setCheckable(True)
+            button.setProperty("labels", (mode, {"Base = radio time": "Base=radio", "Running": "Run"}.get(mode, mode)))
+            self.diff_group.addButton(button, i)
+            self.diff_buttons.append(button)
+        self.diff_buttons[0].setChecked(True)
+        self.diff_buttons[0].setToolTip("The frames as they are (D cycles the modes)")
+        self.diff_buttons[1].setToolTip("Each frame minus the one before it")
+        self.diff_buttons[2].setToolTip("Each frame minus a base frame")
+        self.diff_buttons[3].setToolTip("Each frame minus the one nearest the radio image's time")
+        self.diff_buttons[3].setVisible(self.target.mark is not None)
+        self.diff_group.buttonClicked.connect(lambda button: self.set_diff_mode(DIFF_MODES[self.diff_group.id(button)]))
+        self.diff_row = segmented(self.diff_buttons)
+        layout.addWidget(self.diff_row)
+        self.diff_hint = QLabel("")
+        self.diff_hint.setObjectName("Hint")
+        self.diff_hint.hide()
+        layout.addWidget(self.diff_hint)
+        self.set_base_link = link_button("Set base here", self.set_base_here)
+        self.set_base_link.setToolTip("Make the frame shown the base the others are compared with")
+        self.set_base_link.hide()
+        layout.addWidget(self.set_base_link)
+        self.reframe_btn = QPushButton("Reframe")
+        self.reframe_btn.setProperty("labels", ("Reframe", "Region"))
+        self.reframe_btn.setCheckable(True)
+        self.reframe_btn.setToolTip("Drag a box on the image to load that region at full detail (G)")
+        self.reframe_btn.toggled.connect(self._reframe_toggled)
+        layout.addWidget(self.reframe_btn)
+        self.full_field_link = link_button("Back to full field", self.back_to_full_field)
+        self.full_field_link.setProperty("labels", ("Back to full field", "Full field"))
+        self.full_field_link.hide()
+        layout.addWidget(self.full_field_link)
+        layout.addStretch()
+
+        self.zoom_buttons = []
+        cluster = []
+        for icon, tip, slot in (("zoom_in.png", "Zoom in (+)", self.zoom_in),):
+            cluster.append(self._zoom_button(icon, tip, slot))
+        self.zoom_label = QLabel("—")
+        self.zoom_label.setObjectName("Meta")
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        self.zoom_label.setMinimumWidth(self.zoom_label.fontMetrics().horizontalAdvance("0000%"))
+        self.zoom_label.setToolTip("Image pixels to screen pixels")
+        cluster.append(self.zoom_label)
+        cluster.append(self._zoom_button("zoom_out.png", "Zoom out (-)", self.zoom_out))
+        cluster.append(self._zoom_button("reset.png", "Fit the frame to the window (R)", self.fit))
+        layout.addWidget(segmented(cluster))
+
+        self.save_btn = QPushButton("Save frame")
+        self.save_btn.setProperty("labels", ("Save frame", "Save"))
+        self.save_btn.setToolTip("Save the frame shown as a PNG, with a JSON record of what it is (Ctrl+S)")
+        self.save_btn.clicked.connect(self.save_current_frame)
+        layout.addWidget(self.save_btn)
+        self.export_btn = QPushButton("Export…")
+        self.export_btn.setProperty("labels", ("Export…", "Export"))
+        self.export_btn.setToolTip("The frames as an MP4, a GIF or PNG files (Ctrl+E)")
+        self.export_btn.clicked.connect(lambda: self.export_animation())
+        layout.addWidget(self.export_btn)
+        self.use_btn = QPushButton("Use in viewer")
+        self.use_btn.setProperty("labels", ("Use in viewer", "Use"))
+        self.use_btn.setToolTip("The frame shown as a FITS file in SolarViewer")
+        self.use_btn.setMenu(self.use_in_viewer_menu())
+        layout.addWidget(self.use_btn)
+        self.link_btn = QPushButton("Copy Helioviewer link")
+        self.link_btn.setProperty("labels", ("Copy Helioviewer link", "Copy link"))
+        self.link_btn.setToolTip("The same view on helioviewer.org, to the clipboard")
+        self.link_btn.clicked.connect(self.copy_helioviewer_link)
+        layout.addWidget(self.link_btn)
+        return bar
+
+    def _zoom_button(self, icon, tip, slot):
+        button = QPushButton()
+        button.setObjectName("IconOnlyNBGButton")
+        button.setIconSize(QSize(18, 18))
+        button.setMinimumWidth(ICON_BUTTON_LEAST)
+        button.setToolTip(tip)
+        button.clicked.connect(slot)
+        self.zoom_buttons.append((button, icon))
+        return button
+
+    def _setup_shortcuts(self):
+        # Space and Return are not window shortcuts: a focused button, switch
+        # or field keeps them (see keyPressEvent for when nothing does); the
+        # band's own Space and < > reach Playback directly
+        for keys, slot in (
+            ("P", self.toggle_play),
+            ("]", self.next_frame),
+            ("[", self.prev_frame),
+            ("Shift+]", self.last_frame),
+            ("Shift+[", self.first_frame),
+            ("Home", self.first_frame),
+            ("End", self.last_frame),
+            ("Alt+]", lambda: self.band.step_flare(1)),
+            ("Alt+[", lambda: self.band.step_flare(-1)),
+            ("+", self.zoom_in),
+            ("=", self.zoom_in),
+            ("-", self.zoom_out),
+            ("R", self.fit),
+            (">", lambda: self.playback.step_fps(1)),
+            (".", lambda: self.playback.step_fps(1)),
+            ("<", lambda: self.playback.step_fps(-1)),
+            (",", lambda: self.playback.step_fps(-1)),
+            ("D", self.cycle_diff_mode),
+            ("G", self.reframe_btn.toggle),
+            ("Ctrl+S", self.save_current_frame),
+            ("Ctrl+E", lambda: self.export_animation()),
+            ("Ctrl+L", self.load),
+            ("Ctrl+F", lambda: (self.filter_edit.setFocus(), self.filter_edit.selectAll())),
+            ("Alt+Left", lambda: self.step_day(-1)),
+            ("Alt+Right", lambda: self.step_day(1)),
+            ("Esc", self._escape),
+            ("Ctrl+Q", self.close),
+        ):
+            QShortcut(QKeySequence(keys), self).activated.connect(slot)
+
+    def keyPressEvent(self, event):
+        """Space plays and Return loads when no control took the key (a
+        focused button, switch or field keeps its own)."""
+        focus = QApplication.focusWidget()
+        # A button or a field lets Return through to here: the button's is not a Load, the field's loaded already
+        taken = isinstance(focus, (QAbstractButton, QLineEdit))
+        if event.key() == Qt.Key_Space and event.modifiers() == Qt.NoModifier:
+            self.toggle_play()
+            event.accept()
+        elif event.key() in (Qt.Key_Return, Qt.Key_Enter) and event.modifiers() in (Qt.NoModifier, Qt.KeypadModifier) and not taken:
+            self.load()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def _restyle(self, palette):
+        """What holds a colour of its own: the icons."""
+        for button, kind in self.transport_buttons:
+            button.setIcon(transport_icon(kind, palette))
+        self.play_btn.setIcon(transport_icon("pause" if self.playback.playing else "play", palette))
+        for button, icon in self.zoom_buttons:
+            button.setIcon(QIcon(themed_icon(icon)))
+        self.tree.viewport().update()
+
+    def _restore_settings(self):
+        span = self.settings.value(KEY.format("span"), 3600)
+        step = self.settings.value(KEY.format("step"), "")
+        self._check_choice(self.span_group, SPANS, None if span in ("", None, "None") else int(span))
+        self._check_choice(self.step_group, STEPS, None if step in ("", None, "None") else int(step))
+        fps = self.settings.value(KEY.format("fps"), 4, type=int)
+        self.playback.set_fps(fps)
+        sizes = self.settings.value(KEY.format("splitter"))
+        if sizes:
+            try:
+                self.splitter.setSizes([int(s) for s in sizes])
+            except (TypeError, ValueError):
+                pass
+
+    @staticmethod
+    def _check_choice(group, rows, value):
+        for i, (_label, _short, held) in enumerate(rows):
+            if held == value:
+                group.button(i).setChecked(True)
+                return
+
+    def _apply_target(self):
+        """The opener's time, span, mark and instrument."""
+        target = self.target
+        at = target.at
+        if at is None and target.movie_day is not None:
+            at = datetime.combine(target.movie_day, time(12))
+            self._check_choice(self.span_group, SPANS, None)
+        if at is None:
+            at = datetime.now(timezone.utc).replace(tzinfo=None, second=0, microsecond=0)
+        if target.span is not None:
+            # The span first: the time sets the band's range from it
+            nearest = min((row for row in SPANS if row[2] is not None), key=lambda row: abs(row[2] - target.span))
+            self._check_choice(self.span_group, SPANS, nearest[2])
+        self.set_time(at)
+        if target.mark is not None:
+            label, when = target.mark
+            tip = f"{target.mark_tip} · {when:%Y-%m-%d %H:%M:%S} UTC" if target.mark_tip else ""
+            self.band.set_mark(label, when, tip)
+        self.diff_buttons[3].setVisible(target.mark is not None)
+        self._show_empty()
+        if target.movie_day is not None:
+            # OVRO-LWA's movie needs nothing from Helioviewer: it loads now
+            self.select_named(target.instrument or lwa.ALL_BANDS) or self.select_named(lwa.ALL_BANDS)
+            QTimer.singleShot(0, self.load)
+
+    # ------------------------------------------------------------ the activity line
+
+    def begin_job(self, key, text, cancel):
+        """Show ``text`` until ``end_job(key)``; ``cancel()`` is what Cancel calls."""
+        self._jobs[key] = [text, cancel]
+        self._note_timer.stop()
+        self._show_jobs()
+
+    def update_job(self, key, text):
+        if key in self._jobs:
+            self._jobs[key][0] = text
+            self._show_jobs()
+
+    def end_job(self, key):
+        self._jobs.pop(key, None)
+        self._show_jobs()
+
+    def _show_jobs(self):
+        """The latest job is the one shown, and the one Cancel stops."""
+        running = bool(self._jobs)
+        self.cancel_btn.setVisible(running)
+        self.load_btn.setEnabled("plan" not in self._jobs)
+        if self._note_timer.isActive():
+            pass  # a note has the line for now
+        elif running:
+            self.activity_line.start(list(self._jobs.values())[-1][0])
+            self.activity_line.show()
+            self.note_link.hide()
+        else:
+            self.activity_line.stop()
+            self.activity_line.hide()
+            self.note_link.hide()
+        self.summary_label.setVisible(self.activity_line.isHidden())
+
+    def cancel_latest_job(self):
+        if not self._jobs:
+            return
+        key = list(self._jobs)[-1]
+        cancel = self._jobs[key][1]
+        self._jobs.pop(key)
+        cancel()
+        self._show_jobs()  # (Cancel goes, Load comes back, whatever the cancel said)
+
+    def say(self, text, link=None):
+        """A short note in the activity line, gone after a few seconds;
+        ``link`` is ``(label, callable)`` for a link after it."""
+        self.activity_line.stop(text)
+        self.activity_line.show()
+        if link is not None:
+            label, slot = link
+            self.note_link.setText(label)
+            if self._note_link_slot is not None:
+                self.note_link.clicked.disconnect(self._note_link_slot)
+            self._note_link_slot = slot
+            self.note_link.clicked.connect(slot)
+            self.note_link.show()
+        else:
+            self.note_link.hide()
+        self._note_timer.start(LINK_NOTE_MS if link else NOTE_MS)
+        self.summary_label.hide()
+
+    def _note_over(self):
+        if self._note_link_slot is not None:
+            try:
+                self.note_link.clicked.disconnect(self._note_link_slot)
+            except TypeError:
+                pass
+            self._note_link_slot = None
+        self._show_jobs()
+
+    def set_summary(self, text, tone=None, retry=False):
+        """The line under the time: what is loaded, or what went wrong (``tone`` error or warning)."""
+        self.summary_label.setText(text)
+        self.summary_label.setToolTip(text)
+        set_tone(self.summary_label, tone)
+        self.retry_link.setVisible(retry)
+
+    # ------------------------------------------------------------ the time
+
+    def at_time(self) -> Optional[datetime]:
+        """The time in the field, or None (and a note) if it does not read."""
+        when = parse_field(self.time_edit.text())
+        if when is None:
+            self.say("Enter the time as YYYY-MM-DD HH:MM:SS, UTC")
+            self.time_edit.setFocus()
+            self.time_edit.selectAll()
+        return when
+
+    def set_time(self, when: datetime):
+        self.time_edit.setText(when.strftime(TIME_FORMAT))
+        self._time_committed()
+
+    @staticmethod
+    def _time_of(field):
+        """The field's text as a UTC QDateTime (invalid if it does not parse)."""
+        value = QDateTime.fromString(field.text().strip() + " UTC", TIME_QT_FORMAT + " t")
+        return value.toUTC() if value.isValid() else value
+
+    def _time_committed(self):
+        when = parse_field(self.time_edit.text())
+        if when is None:
+            return
+        self._refresh_tree_dates(when.date())
+        if not self.frames and not self.loading:
+            # The band shows the range the next Load would cover
+            self.band.set_range(*self.time_range(when))
+            self._show_empty()
+
+    def step_day(self, days):
+        when = parse_field(self.time_edit.text())
+        if when is None:
+            self.at_time()
+            return
+        try:
+            self.set_time(when + timedelta(days=days))
+        except OverflowError:
+            self.say(f"There is no date {'before' if days < 0 else 'after'} {when:%Y-%m-%d}")
+
+    def from_image(self):
+        when = pane_time(self.parent())
+        if when is None:
+            self.say("The image open in SolarViewer has no observation time")
+            return
+        self.set_time(when)
+        self.say(f"Time taken from the image: {when:%Y-%m-%d %H:%M:%S} UTC")
+
+    def span_seconds(self) -> Optional[int]:
+        return SPANS[self.span_group.checkedId()][2]
+
+    def step_seconds(self) -> Optional[int]:
+        return STEPS[self.step_group.checkedId()][2]
+
+    def time_range(self, at: datetime) -> Tuple[datetime, datetime]:
+        """The range the span makes about ``at`` (Day: the whole UTC day)."""
+        span = self.span_seconds()
+        if span is None:
+            start = datetime.combine(at.date(), time())
+            return start, start + timedelta(days=1)
+        return at - timedelta(seconds=span), at + timedelta(seconds=span)
+
+    # ------------------------------------------------------------ the instruments
+
+    def load_instruments(self):
+        """Ask Helioviewer for its instruments, on a thread: the window opens
+        at once, with a spinner in the list until they are in."""
+        self.instruments_problem = ""
         self.instruments_note.hide()
-        if hasattr(self, "instrument_loader"):  # asked again: the note's Retry
-            _park(self.instrument_loader)
+        if self.sources_thread is not None:  # asked again: the note's Retry
+            _park(self.sources_thread)
         self._clear_helioviewer_items()
-        self.all_instruments = []
+        self.sources = []
         row = QTreeWidgetItem()
-        self.instrument_tree.insertTopLevelItem(0, row)
+        self.tree.insertTopLevelItem(0, row)
         row.setFlags(Qt.NoItemFlags)
         row.setFirstColumnSpanned(True)
-        self.instruments_status = ActivityLabel(parent=self.instrument_tree)
+        self.instruments_status = ActivityLabel(parent=self.tree)
         self.instruments_status.start("Loading the instruments…")
-        self.instrument_tree.setItemWidget(row, 0, self.instruments_status)
-        self.instrument_loader = InstrumentLoader()
-        self.instrument_loader.loaded.connect(self._on_instruments_loaded)
-        self.instrument_loader.start()
+        self.tree.setItemWidget(row, 0, self.instruments_status)
+        self.sources_thread = SourcesThread()
+        self.sources_thread.done.connect(lambda sources, problem, t=self.sources_thread: self._on_sources(t, sources, problem))
+        self.sources_thread.start()
 
-    def _on_instruments_loaded(self, instruments, problem):
-        """Fill the list, grouped by observatory."""
-        if self._closing:
+    def _on_sources(self, thread, sources, problem):
+        if self._closing or thread is not self.sources_thread:
             return
+        _park(thread)
         self._clear_helioviewer_items()
-        self.all_instruments = instruments
+        self.sources = list(sources)
         if problem:
             self.instruments_problem = problem
-            self._say_instruments_problem(theme_manager.palette)
-            self.instruments_note.setToolTip(problem)
+            self.instruments_note_label.setToolTip(problem)
             self.instruments_note.show()
-
-        # Observatory names
-        observatory_info = {
-            "SDO": "Solar Dynamics Observatory",
-            "SOHO": "Solar and Heliospheric Observatory",
-            "STEREO_A": "STEREO Ahead",
-            "STEREO_B": "STEREO Behind",
-            "GOES-16": "GOES-16 Satellite",
-            "GOES-17": "GOES-17 Satellite",
-            "GOES-18": "GOES-18 Satellite",
-        }
-
-        # Wavelength descriptions
-        wavelength_descriptions = {
-            "94": "Fe XVIII · 6.3 MK",
-            "131": "Fe VIII/XXI · 0.4/10 MK",
-            "171": "Fe IX · 0.6 MK",
-            "193": "Fe XII/XXIV · 1.6/20 MK",
-            "195": "Fe XII · 1.6 MK",
-            "211": "Fe XIV · 2.0 MK",
-            "284": "Fe XV · 2.0 MK",
-            "304": "He II · 0.05 MK",
-            "335": "Fe XVI · 2.5 MK",
-            "1600": "C IV + cont · 0.1 MK",
-            "1700": "Continuum · 5000 K",
-            "4500": "Continuum · 5000 K",
-            "magnetogram": "Magnetic field",
-            "continuum": "White light",
-            "white-light": "Coronagraph",
-        }
-
-        # Group instruments by observatory
-        obs_groups = {}
-        for nickname, layer_path, observatory, cadence in self.all_instruments:
-            if observatory not in obs_groups:
-                obs_groups[observatory] = []
-            obs_groups[observatory].append((nickname, layer_path, cadence))
-
-        # Create tree items
-        for observatory in sorted(obs_groups.keys()):
-            full_name = observatory_info.get(observatory, observatory)
-
-            # Create observatory node
-            obs_item = QTreeWidgetItem()
-            obs_item.setText(0, observatory)
-            obs_item.setToolTip(0, full_name)
-
-            font = obs_item.font(0)
-            font.setBold(True)
-            obs_item.setFont(0, font)
-
-            # Add instruments under this observatory
-            for nickname, layer_path, cadence in sorted(obs_groups[observatory]):
-                # Format cadence
-                if cadence < 60:
-                    cad_str = f"{cadence} s"
-                elif cadence < 3600:
-                    cad_str = f"{cadence//60} min"
-                else:
-                    cad_str = f"{cadence//3600} h"
-
-                # Get wavelength description
-                desc = ""
-                for wave, wave_desc in wavelength_descriptions.items():
-                    if wave in nickname.lower() or wave in nickname:
-                        desc = wave_desc
-                        break
-
-                # Create instrument item
-                inst_item = QTreeWidgetItem()
-                inst_item.setText(0, nickname)
-                inst_item.setText(1, desc)
-                inst_item.setText(2, cad_str)
-                inst_item.setData(
-                    0, Qt.UserRole, (nickname, layer_path, observatory, cadence)
-                )
-                inst_item.setToolTip(
-                    0,
-                    (
-                        f"{nickname}\nCadence: {cad_str}\n{desc}"
-                        if desc
-                        else f"{nickname}\nCadence: {cad_str}"
-                    ),
-                )
-
-                obs_item.addChild(inst_item)
-
-            place = self.instrument_tree.topLevelItemCount()
+        for observatory, group in catalog.group_by_observatory(self.sources):
+            item = QTreeWidgetItem()
+            item.setText(0, observatory)
+            item.setToolTip(0, catalog.OBSERVATORY_NAMES.get(observatory, observatory))
+            item.setData(0, GROUP_ROLE, True)
+            item.setFlags(Qt.ItemIsEnabled)
+            for source in group:
+                child = QTreeWidgetItem()
+                child.setText(0, source.name)
+                child.setText(1, source.shows)
+                child.setText(2, cadence_text(source.cadence))
+                child.setData(0, SOURCE_ROLE, source)
+                child.setToolTip(0, f"{source.name}\n{source.observatory_name}\nImages usually {cadence_text(source.cadence)} apart")
+                item.addChild(child)
+            place = self.tree.topLevelItemCount()
             if self.lwa_group is not None:  # it stays last
-                place = self.instrument_tree.indexOfTopLevelItem(self.lwa_group)
-            self.instrument_tree.insertTopLevelItem(place, obs_item)
-            obs_item.setFirstColumnSpanned(True)
-
+                place = self.tree.indexOfTopLevelItem(self.lwa_group)
+            self.tree.insertTopLevelItem(place, item)
+            item.setFirstColumnSpanned(True)
         if self.lwa_group is None:
             self._add_lwa_group()
+        self.tree.expandAll()
+        self._size_columns()
+        when = parse_field(self.time_edit.text())
+        if when is not None:
+            self._refresh_tree_dates(when.date())
+        self._filter_tree(self.filter_edit.text())
+        if not self.tree.selectedItems():
+            wanted = self.target.instrument or self.settings.value(KEY.format("instrument"), DEFAULT_INSTRUMENT)
+            self.select_named(wanted) or self.select_named(DEFAULT_INSTRUMENT)
+        if self.tree.selectedItems():
+            self.tree.scrollToItem(self.tree.selectedItems()[0])
+        if self.target.at is not None and self.plan is None and not self.loading and not self.lwa_mode:
+            QTimer.singleShot(0, self.load)  # opened on a time: its images come at once
 
-        # Expand all by default
-        self.instrument_tree.expandAll()
-        self._style_instruments(theme_manager.palette)
-        if self.initial_instrument and not self.get_selected_instruments():
-            self._select_named(self.initial_instrument)
-        if self.instrument_tree.selectedItems():  # (OVRO-LWA's, chosen before these came)
-            self.instrument_tree.scrollToItem(self.instrument_tree.selectedItems()[0])
+    def _size_columns(self):
+        """The three columns in the list's width: the name column as wide as
+        the longest name, but never so wide that what an instrument shows or
+        when it has images is cut off (a long name is elided; its tooltip has
+        it whole)."""
+        metrics = self.tree.fontMetrics()
+        header = self.tree.header()
+        widest = max((metrics.horizontalAdvance(item.text(0)) for _group, item in self._items()), default=80)
+        wanted = widest + 2 * self.tree.indentation() + SPACE_L
+        third = max((metrics.horizontalAdvance(item.text(2)) for _group, item in self._items()), default=40) + SPACE_L
+        room = self.tree.viewport().width() or self.tree.width()
+        if room > 0:
+            wanted = min(wanted, max(120, room - third - SHOWS_LEAST))
+        header.resizeSection(0, wanted)
+        header.resizeSection(2, third)
 
     def _clear_helioviewer_items(self):
-        """Empty the list of all but OVRO-LWA, which is not Helioviewer's."""
-        for i in reversed(range(self.instrument_tree.topLevelItemCount())):
-            item = self.instrument_tree.topLevelItem(i)
-            if item is not self.lwa_group:
-                self.instrument_tree.takeTopLevelItem(i)
+        for i in reversed(range(self.tree.topLevelItemCount())):
+            if self.tree.topLevelItem(i) is not self.lwa_group:
+                self.tree.takeTopLevelItem(i)
 
     def _add_lwa_group(self):
         """OVRO-LWA's daily movie: the montage of its 12 bands, and each band."""
@@ -655,511 +1326,482 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             "Owens Valley Radio Observatory Long Wavelength Array: its daily movie, from the "
             "OVRO-LWA portal (NJIT), not from Helioviewer. Each frame shows at the time it was taken.",
         )
-        font = group.font(0)
-        font.setBold(True)
-        group.setFont(0, font)
+        group.setData(0, GROUP_ROLE, True)
+        group.setFlags(Qt.ItemIsEnabled)
         for entry in lwa.entries():
             item = QTreeWidgetItem()
             item.setText(0, entry[0])
-            item.setText(1, "12 bands, 34-84 MHz" if lwa.view_of(entry) == lwa.MONTAGE else "Radio, one band")
-            item.setText(2, "10-60 s")
-            item.setData(0, Qt.UserRole, entry)
-            item.setToolTip(
-                0,
-                f"{entry[0]}\nFrom OVRO-LWA's daily movie, not from Helioviewer.\n"
-                "Frames come every 10 to 60 s, with gaps.",
-            )
+            item.setText(1, "12 bands, 34–84 MHz" if lwa.view_of(entry) == lwa.MONTAGE else "Radio, one band")
+            item.setText(2, "10–60 s")
+            item.setData(0, SOURCE_ROLE, entry)
+            item.setToolTip(0, f"{entry[0]}\nFrom OVRO-LWA's daily movie, not from Helioviewer.\nFrames come every 10 to 60 s, with gaps.")
             group.addChild(item)
-        self.instrument_tree.addTopLevelItem(group)
+        self.tree.addTopLevelItem(group)
         group.setFirstColumnSpanned(True)
         group.setExpanded(True)
         self.lwa_group = group
-        self._style_instruments(theme_manager.palette)
+        self._size_columns()
+
+    def _items(self):
+        for i in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(i)
+            for j in range(group.childCount()):
+                yield group, group.child(j)
+
+    def _refresh_tree_dates(self, day: date):
+        """Instruments without images of ``day`` are dimmed, with when they have them."""
+        for _group, item in self._items():
+            source = item.data(0, SOURCE_ROLE)
+            if not isinstance(source, catalog.Source):
+                continue
+            note = source.date_note(day)
+            item.setData(0, DIM_ROLE, bool(note))
+            item.setData(1, DIM_ROLE, bool(note))
+            item.setData(2, DIM_ROLE, bool(note))
+            item.setData(2, NOTE_ROLE, bool(note))
+            item.setText(2, note or cadence_text(source.cadence))
+            item.setToolTip(2, f"Images {note}" if note else "")
+        self._size_columns()
+        self.tree.viewport().update()
+
+    def _filter_tree(self, text):
+        words = text.lower().split()
+        for i in range(self.tree.topLevelItemCount()):
+            group = self.tree.topLevelItem(i)
+            shown = 0
+            for j in range(group.childCount()):
+                item = group.child(j)
+                haystack = " ".join((item.text(0), item.text(1), group.text(0), group.toolTip(0))).lower()
+                hide = any(word not in haystack for word in words)
+                item.setHidden(hide)
+                shown += not hide
+            group.setHidden(bool(words) and shown == 0 and group.childCount() > 0)
 
     def _entry_named(self, name):
-        for i in range(self.instrument_tree.topLevelItemCount()):
-            group = self.instrument_tree.topLevelItem(i)
-            for j in range(group.childCount()):
-                data = group.child(j).data(0, Qt.UserRole)
-                if data and data[0] == name:
-                    return group.child(j)
+        for _group, item in self._items():
+            data = item.data(0, SOURCE_ROLE)
+            held = data.name if isinstance(data, catalog.Source) else (data[0] if data else None)
+            if held == name:
+                return item
         return None
 
-    def _select_named(self, name):
+    def select_named(self, name) -> bool:
         """Select the entry ``name``; Helioviewer's are there once they load."""
         if self._entry_named(name) is None and name in {entry[0] for entry in lwa.entries()}:
             self._add_lwa_group()
         item = self._entry_named(name)
-        if item is not None:
-            self.instrument_tree.clearSelection()
-            item.setSelected(True)
-            self.instrument_tree.scrollToItem(item)
+        if item is None:
+            return False
+        self.tree.clearSelection()
+        item.setSelected(True)
+        self.tree.scrollToItem(item)
+        return True
 
-    def _say_instruments_problem(self, palette):
-        self.instruments_note.setText(
-            "Helioviewer did not answer: these are the usual instruments, and "
-            f"may not all have images. <a href='retry' style='color:{palette['link']}'>Retry</a>"
-        )
-
-    def _style_instruments(self, palette):
-        for i in range(self.instrument_tree.topLevelItemCount()):
-            observatory = self.instrument_tree.topLevelItem(i)
-            for j in range(observatory.childCount()):
-                for column in (1, 2):
-                    observatory.child(j).setForeground(column, QColor(palette["text_secondary"]))
-
-    def _style_icons(self, palette):
-        """What holds a colour of its own: the buttons' icons, the list's
-        second text and the note's link."""
-        for button, kind in self._transport_buttons:
-            button.setIcon(transport_icon(kind, palette))
-        self.play_btn.setIcon(transport_icon("pause" if self.playing else "play", palette))
-        for button, icon in self._zoom_buttons:
-            button.setIcon(QIcon(themed_icon(icon)))
-        self._style_instruments(palette)
-        if self.instruments_problem:
-            self._say_instruments_problem(palette)
-
-    def get_selected_instruments(self):
-        """Get currently selected instrument (single selection from tree)."""
-        selected_items = self.instrument_tree.selectedItems()
-        instruments = []
-        for item in selected_items:
-            data = item.data(0, Qt.UserRole)
+    def selected_source(self):
+        """The ``Source`` selected, or OVRO-LWA's entry tuple, or None."""
+        for item in self.tree.selectedItems():
+            data = item.data(0, SOURCE_ROLE)
             if data:
-                instruments.append(data)
-        return instruments
+                return data
+        return None
 
-    def set_all_instruments(self, checked):
-        """Not used in single-selection mode."""
-        pass
+    def selected_name(self) -> str:
+        source = self.selected_source()
+        if source is None:
+            return ""
+        return source.name if isinstance(source, catalog.Source) else source[0]
 
-    def on_instrument_selected(self):
-        """Handle instrument selection change."""
-        self.update_interval_for_instrument()
-        self._allow_difference()
-        if self.frames:
-            self.display_current_frame()
-
-    def _lwa_selected(self):
-        selected = self.get_selected_instruments()
-        return bool(selected) and lwa.is_lwa(selected[0])
-
-    def update_interval_for_instrument(self):
-        """Update interval spinner based on selected instrument's cadence."""
-        selected = self.get_selected_instruments()
-        if selected:
-            nickname, layer_path, observatory, cadence = selected[0]
-            # Set interval to instrument cadence
-            self.interval_spin.setValue(int(cadence))
-            self.interval_spin.setToolTip(
-                "OVRO-LWA frames come at their own times: the interval keeps frames at least this "
-                f"far apart, and {lwa.LEAST_CADENCE} s keeps them all"
-                if lwa.is_lwa(selected[0]) else "Time between frames"
-            )
-
-    def _allow_difference(self):
-        """No difference images of OVRO-LWA: its movie switches between its
-        original and its refraction corrected images from one frame to the
-        next, and the difference would show the switch, not the Sun."""
-        if self._lwa_selected():
-            if self.diff_combo.currentIndex() != 0:
-                self.diff_combo.setCurrentIndex(0)
-            self.diff_combo.setEnabled(False)
-            self.diff_label.setEnabled(False)
-            self.diff_combo.setToolTip(
-                "Not for OVRO-LWA: its frames switch between original and refraction corrected "
-                "images, so a difference would show the switch, not the Sun"
-            )
-        else:
-            self.diff_combo.setToolTip("Select difference map mode (D)")
-            if not self._loading and self.timestamps:
-                self.diff_combo.setEnabled(True)
-                self.diff_label.setEnabled(True)
-
-    def create_image_panel(self, parent_splitter):
-        """Create right panel with image grid and floating zoom controls."""
-        # Container to allow floating overlays
-        panel_container = QWidget()
-        layout = QGridLayout(panel_container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Scroll area (Base layer)
-        self.image_scroll = QScrollArea()
-        scroll = self.image_scroll
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        # Container widget inside scroll area
-        self.image_container = QWidget()
-        self.image_grid = QVBoxLayout(self.image_container)
-
-        # Placeholder
-        self.image_grid.addWidget(empty_note("Choose an instrument and press Load to see its images"), 1)
-
-        scroll.setWidget(self.image_container)
-        layout.addWidget(scroll, 0, 0)
-
-        # Zoom buttons, floating over the bottom right of the image
-        zoom_toolbar = ZoomOverlayFrame()
-        zoom_toolbar.setObjectName("Card")
-        toolbar_layout = QHBoxLayout(zoom_toolbar)
-        toolbar_layout.setContentsMargins(SPACE_XS, SPACE_XS, SPACE_XS, SPACE_XS)
-        toolbar_layout.setSpacing(SPACE_XS)
-        self._zoom_buttons = []
-        for icon, tip, slot in (
-            ("zoom_in.png", "Zoom in (+)", self.zoom_in),
-            ("zoom_out.png", "Zoom out (-)", self.zoom_out),
-            ("reset.png", "Reset zoom (R)", self.reset_zoom),
-        ):
-            button = QPushButton()
-            button.setObjectName("IconOnlyNBGButton")
-            button.setIcon(QIcon(themed_icon(icon)))
-            button.setIconSize(QSize(18, 18))
-            button.setToolTip(tip)
-            button.clicked.connect(slot)
-            toolbar_layout.addWidget(button)
-            self._zoom_buttons.append((button, icon))
-
-        # Container for alignment (Small wrapper to provide a floating offset)
-        self.zoom_controls = QWidget()
-        wrapper_layout = QVBoxLayout(self.zoom_controls)
-        wrapper_layout.setContentsMargins(0, 0, SPACE_L, SPACE_L)
-        wrapper_layout.addWidget(zoom_toolbar)
-        self.zoom_controls.hide()  # until there is an image to zoom
-
-        # Add wrapper to grid - it will overlay the scroll area but only in its own small bounding box
-        layout.addWidget(self.zoom_controls, 0, 0, Qt.AlignBottom | Qt.AlignRight)
-
-        parent_splitter.addWidget(panel_container)
-
-    def create_animation_controls(self, parent_layout):
-        """Create bottom panel with animation controls."""
-        group = QGroupBox("Animation")
-        v_layout = QVBoxLayout(group)
-        v_layout.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
-        
-        # Seekbar
-        self.seekbar = QSlider(Qt.Horizontal)
-        self.seekbar.setRange(0, 0)
-        self.seekbar.setEnabled(False)
-        self.seekbar.setToolTip("Seek through frames")
-        self.seekbar.sliderMoved.connect(self.on_seek)
-        # We also connect valueChanged but only handle it when NOT playing to avoid recursion
-        self.seekbar.valueChanged.connect(self.on_seekbar_value_changed)
-        v_layout.addWidget(self.seekbar)
-
-        layout = QHBoxLayout()
-        layout.setSpacing(SPACE_S)
-
-        # Playback buttons
-        playback = QHBoxLayout()
-        playback.setSpacing(SPACE_XS)
-        self._transport_buttons = []
-        for attribute, kind, tip, slot in (
-            ("first_btn", "first", "First frame (Shift+[)", self.first_frame),
-            ("prev_btn", "previous", "Previous frame ([)", self.prev_frame),
-            ("play_btn", "play", "Play (P / Space)", self.toggle_play),
-            ("next_btn", "next", "Next frame (])", self.next_frame),
-            ("last_btn", "last", "Last frame (Shift+])", self.last_frame),
-        ):
-            button = QPushButton()
-            button.setObjectName("IconOnlyNBGButton")
-            button.setIconSize(QSize(16, 16))
-            button.setToolTip(tip)
-            button.clicked.connect(slot)
-            button.setEnabled(False)
-            playback.addWidget(button)
-            setattr(self, attribute, button)
-            self._transport_buttons.append((button, kind))
-        layout.addLayout(playback)
-
-        layout.addSpacing(SPACE_M)
-
-        # Frame indicator
-        self.frame_label = QLabel("Frame 0 / 0")
-        self.frame_label.setObjectName("Hint")
-        layout.addWidget(self.frame_label)
-
-        layout.addSpacing(SPACE_M)
-
-        # Speed control
-        layout.addWidget(self._form_label("Speed"))
-        self.speed_combo = QComboBox()
-        self.speed_combo.setToolTip("Playback speed (>/<)")
-        self.speed_combo.addItems(["0.25x", "0.5x", "1x", "2x", "4x", "8x", "16x"])
-        self.speed_combo.setCurrentText("1x")
-        self.speed_combo.currentIndexChanged.connect(self.on_speed_changed)
-        layout.addWidget(self.speed_combo)
-
-        layout.addStretch()
-
-        # Difference mode selection
-        self.diff_label = self._form_label("Difference")
-        layout.addWidget(self.diff_label)
-        self.diff_combo = QComboBox()
-        self.diff_combo.addItems(["None", "Base", "Running"])
-        self.diff_combo.setToolTip("Select difference map mode (D)")
-        self.diff_combo.currentIndexChanged.connect(self.on_diff_mode_changed)
-        self.diff_combo.setEnabled(False)
-        self.diff_label.setEnabled(False)
-        layout.addWidget(self.diff_combo)
-        
-        # Crop tool
-        self.crop_btn = QPushButton("Crop")
-        self.crop_btn.setToolTip("Select a region to crop all frames")
-        self.crop_btn.clicked.connect(self.toggle_crop_mode)
-        self.crop_btn.setEnabled(False)
-        layout.addWidget(self.crop_btn)
-
-        self.confirm_crop_btn = QPushButton("Confirm")
-        self.confirm_crop_btn.clicked.connect(self.confirm_crop)
-        self.confirm_crop_btn.setVisible(False)
-        layout.addWidget(self.confirm_crop_btn)
-
-        self.cancel_crop_btn = QPushButton("Cancel")
-        self.cancel_crop_btn.clicked.connect(self.cancel_crop)
-        self.cancel_crop_btn.setVisible(False)
-        layout.addWidget(self.cancel_crop_btn)
-
-        layout.addSpacing(SPACE_XS)
-        layout.addWidget(vrule())
-        layout.addSpacing(SPACE_XS)
-
-        # Save current frame
-        save_frame_btn = QPushButton("Save frame")
-        save_frame_btn.setToolTip("Save current frame (Ctrl+S)")
-        save_frame_btn.clicked.connect(self.save_current_frame)
-        layout.addWidget(save_frame_btn)
-
-       # Export animation
-        export_btn = QPushButton("Export animation")
-        export_btn.setToolTip("Export animation (Ctrl+E)")
-        export_btn.clicked.connect(self.export_animation)
-        layout.addWidget(export_btn)
-
-        # Batch download
-        batch_btn = QPushButton("Batch download")
-        batch_btn.clicked.connect(self.batch_download)
-        layout.addWidget(batch_btn)
-
-        v_layout.addLayout(layout)
-        parent_layout.addWidget(group)
-
-    def on_seek(self, value):
-        """Handle seekbar manual scrubbing."""
-        if not self.timestamps:
+    def _selection_changed(self):
+        source = self.selected_source()
+        if source is None:
             return
-        
-        # Map 0-10000 to frame index
-        total_frames = len(self.timestamps)
-        if total_frames > 1:
-            frame_idx = round(value * (total_frames - 1) / 10000)
-        else:
-            frame_idx = 0
-            
-        if frame_idx != self.current_frame:
-            self.current_frame = frame_idx
-            self.display_current_frame()
-
-    def on_seekbar_value_changed(self, value):
-        """Handle seekbar value change (e.g. from clicking)."""
-        if not self.playing and self.timestamps:
-            total_frames = len(self.timestamps)
-            if total_frames > 1:
-                frame_idx = round(value * (total_frames - 1) / 10000)
-            else:
-                frame_idx = 0
-                
-            if frame_idx != self.current_frame:
-                self.current_frame = frame_idx
-                self.display_current_frame()
-
-    def _update_seekbar_smoothly(self, value):
-        """Helper for QVariantAnimation to update seekbar without triggering loops."""
-        self.seekbar.blockSignals(True)
-        self.seekbar.setValue(value)
-        self.seekbar.blockSignals(False)
-
-    def on_speed_changed(self):
-        """Handle speed change - update animation timer if playing."""
-        if self.playing:
-            # Recalculate interval and restart timer
-            speed_text = self.speed_combo.currentText()
-            speed = float(speed_text.replace("x", ""))
-            interval_ms = int(0.5 * 1000 / speed)  # Base: 2 fps
-            self.animation_timer.setInterval(interval_ms)
-
-    def on_instrument_filter_changed(self):
-        """Handle instrument filter change."""
-        if self.frames:
-            self.display_current_frame()
-
-    def load_time_series(self):
-        """Load time series based on user inputs."""
-        start = self._time_of(self.start_datetime)
-        end = self._time_of(self.end_datetime)
-        interval_sec = self.interval_spin.value()
-
-        if not start.isValid() or not end.isValid():
-            QMessageBox.warning(
-                self, "Invalid time", "Enter times as YYYY-MM-DD HH:MM:SS."
-            )
-            return
-
-        # Validate
-        if start >= end:
-            QMessageBox.warning(
-                self, "Invalid range", "Start time must be before end time."
-            )
-            return
-
-        # Get selected instruments
-        selected_instruments = self.get_selected_instruments()
-        if not selected_instruments:
-            QMessageBox.warning(
-                self, "No instrument", "Choose an instrument first."
-            )
-            return
-
-        if lwa.is_lwa(selected_instruments[0]):
-            movie_day, self.movie_day = self.movie_day, None
-            days = start.date().daysTo(end.date()) + 1
-            if movie_day is None and days > lwa.MOST_DAYS:
-                reply = QMessageBox.question(
-                    self,
-                    "Large request",
-                    f"This range covers {days} days of OVRO-LWA movies. Each day is a download of "
-                    f"5 to 20 MB, kept on this computer.\n\nLoad only the first {lwa.MOST_DAYS} days?",
-                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                    QMessageBox.Yes,
-                )
-                if reply == QMessageBox.Cancel:
-                    return
-                if reply == QMessageBox.Yes:
-                    end = start.addDays(lwa.MOST_DAYS)
-                    self._set_time(self.end_datetime, end)
-            self._load_lwa(start, end, selected_instruments[0], movie_day)
-            return
-
-        # Check for large frame count
-        count = start.secsTo(end) // interval_sec + 1
-        if count > 5000:
-            reply = QMessageBox.question(
-                self,
-                "Large request",
-                f"This time range will generate {count} frames, which may take a long time to load and consumes significant memory.\n\n"
-                "Do you want to limit it to the first 5000 frames?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if reply == QMessageBox.Yes:
-                count = 5000
-
-        # A crop drawn on the old frames ends here
-        if self.crop_mode:
-            self.cancel_crop()
-
-        # Clear old data
-        self.frames.clear()
-        self.failed_downloads.clear()
-        self.current_frame = 0
-
-        # Show progress
-        self.downloads_total = count * len(selected_instruments)
-        self.downloads_done = 0
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, self.downloads_total)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%v of %m")
-        self.load_button.setEnabled(False)
-        self.cancel_button.setVisible(True)
-        self.crop_btn.setEnabled(False)
-        self.diff_combo.setEnabled(False)
-        self.diff_label.setEnabled(False)
-        self.diff_combo.setCurrentIndex(0) # Reset to "None"
-        self._loading = True
-        self._loading_names = {inst[0] for inst in selected_instruments}
-
-        # Queue ALL frames for parallel download
-        if count > 5000:
-            with busy(f"Preparing {count} frames…", self):
-                self._queue_frames(start, interval_sec, count, selected_instruments)
-        else:
-            self._queue_frames(start, interval_sec, count, selected_instruments)
-
-        # Start initial batch of downloads
-        self._process_frame_download_queue()
-
-        #self.seekbar.setRange(0, len(self.timestamps) - 1)
-        # Update seekbar range (High resolution for continuous animation)
-        if len(self.timestamps) > 1:
-            self.seekbar.setRange(0, 10000)
-            self.seekbar.setEnabled(True)
-        else:
-            self.seekbar.setRange(0, 0)
-            self.seekbar.setEnabled(False)
-        self.seekbar.setValue(0)
-
-        # Enable controls (navigation etc) - images will appear as they load
-        self.enable_controls()
-
-    def _load_lwa(self, start, end, entry, movie_day=None):
-        """OVRO-LWA's frames between ``start`` and ``end`` (or all of
-        ``movie_day``'s movie), at their own times, by a thread of its own."""
-        if self.crop_mode:
-            self.cancel_crop()
-        self.frames.clear()
-        self.failed_downloads.clear()
-        self.current_frame = 0
-        self.timestamps = []
-        self.frame_labels = []
-        self.lwa_notes = []
-        self.downloads_total = self.downloads_done = 0
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)
-        self.progress_bar.setFormat("")
-        self.load_button.setEnabled(False)
-        self.cancel_button.setVisible(True)
-        self.crop_btn.setEnabled(False)
-        self.diff_combo.setCurrentIndex(0)
-        self.diff_combo.setEnabled(False)
-        self.diff_label.setEnabled(False)
-        self._loading = True
-        self._loading_names = {entry[0]}
-        self.enable_controls()
-        self._show_lwa_status("Asking OVRO-LWA for the movie…")
-
-        loader = lwa.LwaMovieLoader(
-            lwa.view_of(entry),
-            py_time(start),
-            py_time(end),
-            interval=self.interval_spin.value(),
-            side=self.image_size_spin.value(),
-            movie_day=movie_day,
+        is_lwa = not isinstance(source, catalog.Source)
+        self.settings.setValue(KEY.format("instrument"), self.selected_name())
+        self.fov_row.setEnabled(not is_lwa)
+        self.fov_hint.setText("The movie has its own field" if is_lwa else "")
+        self.fov_hint.setVisible(is_lwa)
+        for button in self.diff_buttons:
+            button.setEnabled(not is_lwa)
+        self.diff_row.setToolTip(
+            "Not for OVRO-LWA: its frames switch between original and refraction corrected images, "
+            "so a difference would show the switch, not the Sun" if is_lwa else ""
         )
+        self.reframe_btn.setEnabled(not is_lwa)
+        if is_lwa and self.diff_mode_name != "None":
+            self.set_diff_mode("None")
+        if not is_lwa:
+            self._fov_for_source(source)
+            if self.overlay is not None and self.overlay[0].source_id == source.source_id:
+                self.remove_overlay()
+
+    # ------------------------------------------------------------ the field of view and the second layer
+
+    def _fov_for_source(self, source):
+        """The preset nearest the instrument's own field."""
+        wanted = source.fov
+        if self.overlay is not None:
+            wanted = max(wanted, self.overlay[0].fov)
+        choices = [(i, arcsec) for i, (_label, arcsec) in enumerate(catalog.FOV_PRESETS)]
+        best = min(choices, key=lambda pair: abs(math.log(pair[1] / wanted)))
+        self.fov_buttons[best[0]].setChecked(True)
+
+    def _radio_label(self) -> str:
+        if self.target.mark is not None:
+            return f"Radio map {self.target.mark[1]:%H:%M}"
+        return "Radio map"
+
+    def request_field(self) -> Tuple[float, float, float, Optional[float]]:
+        """``(fov across, x0, y0, height across or None)`` of the request, in
+        Helioviewer's arcsec: the preset, the radio image's field, or the
+        reframed region."""
+        if self.region is not None:
+            return self.region.width, self.region.x0, self.region.y0, self.region.height
+        chosen = self.fov_group.checkedId()
+        if chosen == len(catalog.FOV_PRESETS) and self.radio_fov is not None:
+            x1, y1, x2, y2 = self.radio_fov
+            return max(abs(x2 - x1), abs(y2 - y1)), (x1 + x2) / 2, (y1 + y2) / 2, None
+        return catalog.FOV_PRESETS[chosen][1], 0.0, 0.0, None
+
+    def frame_width(self) -> int:
+        """The pixels a frame is asked at: the well's width (the view's
+        viewport is not laid out until the first frame shows), 256 to 1200."""
+        width_px = self.well.width() - 2 if self.well.width() > 2 else (self.view.viewport().width() or 1024)
+        return max(256, min(width_px, MOST_WIDTH))
+
+    def request_view(self) -> View:
+        """The view of the next load: the field across the well's width (at most 1200 px)."""
+        width_px = self.frame_width()
+        fov, x0, y0, height = self.request_field()
+        height_px = None if height is None else max(1, round(width_px * height / fov))
+        return View.of_fov(fov, width_px, x0, y0, height_px)
+
+    def _overlay_picked(self, item):
+        source = item.data(0, SOURCE_ROLE)
+        primary = self.selected_source()
+        if not isinstance(source, catalog.Source) or not isinstance(primary, catalog.Source):
+            self.say("A second layer must be one of Helioviewer's instruments")
+            return
+        if source.source_id == primary.source_id:
+            self.say("That is the layer shown already: Ctrl+click another instrument")
+            return
+        self.overlay = (source, self.opacity_slider.value())
+        self.overlay_label.setText(f"Overlay: {source.name}")
+        self.overlay_chip.show()
+        self._fov_for_source(primary)
+        self.say(f"{source.name} laid over {primary.name} at {self.overlay[1]} % · press Load")
+
+    def remove_overlay(self):
+        self.overlay = None
+        self.overlay_chip.hide()
+        primary = self.selected_source()
+        if isinstance(primary, catalog.Source):
+            self._fov_for_source(primary)
+
+    def _opacity_changed(self, value):
+        self.opacity_label.setText(f"{value} %")
+        if self.overlay is not None:
+            self.overlay = (self.overlay[0], int(value))
+
+    def layers(self, source: catalog.Source) -> str:
+        """The request's layer string: the instrument, and the second layer over it."""
+        if self.overlay is None:
+            return source.layer
+        other, opacity = self.overlay
+        return f"{source.layer},[{other.source_id},1,{opacity}]"
+
+    # ------------------------------------------------------------ loading
+
+    def load(self):
+        """Find the images around the time and download them, nearest first."""
+        at = self.at_time()
+        if at is None:
+            return
+        source = self.selected_source()
+        if source is None:
+            self.say("Choose an instrument first")
+            self.tree.setFocus()
+            return
+        self.settings.setValue(KEY.format("span"), self.span_seconds() if self.span_seconds() is not None else "")
+        self.settings.setValue(KEY.format("step"), self.step_seconds() if self.step_seconds() is not None else "")
+        start, end = self.time_range(at)
+        self._stop_everything()
+        self._load_at = at
+        self.retry_link.hide()
+        if isinstance(source, catalog.Source):
+            self._load_helioviewer(source, at, start, end)
+        else:
+            self._load_lwa(source, start, end)
+
+    def _stop_everything(self):
+        """A new load: whatever was running for the last one stops."""
+        self.playback.pause()
+        if self.planner is not None:
+            self.planner.cancel()
+            _park(self.planner)
+            self.planner = None
+        if self.loader.busy:
+            self.loader.cancel()
+        if self.lwa_loader is not None:
+            self._abandon_lwa(self.lwa_loader)
+            self.lwa_loader = None
+        if self.events_thread is not None:
+            _park(self.events_thread)
+            self.events_thread = None
+        self.end_job("frames")
+        self.end_job("plan")
+        self.loading = False
+        self._diff_cache.clear()
+
+    def _load_helioviewer(self, source, at, start, end):
+        self.lwa_mode = False
+        view = self.request_view()
+        self.begin_job("plan", f"Finding {source.name} images…", self._cancel_plan)
+        self.set_summary(f"{source.name} · {span_text(start, end)}")
+        planner = PlanThread(source, start, end, self.step_seconds(), view)
+        planner.done.connect(lambda plan, error, t=planner: self._on_planned(t, source, at, plan, error))
+        self.planner = planner
+        planner.start()
+
+    def _cancel_plan(self):
+        if self.planner is not None:
+            self.planner.cancel()
+            _park(self.planner)
+            self.planner = None
+        self.say("Cancelled")
+
+    def _on_planned(self, thread, source, at, plan, error):
+        if self._closing or thread is not self.planner:
+            return
+        _park(thread)  # it is still ending its run: kept until then, never destroyed running
+        self.planner = None
+        self.end_job("plan")
+        if plan is None:
+            # The one failure that stops everything: the summary says so in the
+            # error tone with Retry, the well keeps the details, and the app's
+            # error dialog names it once
+            text = f"Helioviewer did not answer: the list of {source.name} images could not be fetched. Check the connection and try again."
+            self.set_summary("Helioviewer did not answer", tone="error", retry=True)
+            self._show_message(text, details=error, retry=True)
+            self._enable_transport(False)
+            self.plan = None  # Retry plans again rather than downloading an older plan's frames
+            show_error(self, "Helioviewer did not answer", text, error)
+            return
+        layers = self.layers(source)
+        for frame in plan.frames:
+            frame.layers = layers
+        self.plan = plan
+        self.frames = plan.frames
+        self.frame_notes = {}
+        self.lwa_notes = []
+        self.current = None
+        self.diff_base_index = 0
+        self.view.reset_limb_check()
+        self.view.set_observer(source.observatory)
+        self.toggles.set_earth_view(self.view.earth_view, source.observatory_name)
+        self.caption_name.setText(f"{source.name} · {source.observatory_name}")
+        self.caption_name.setToolTip(f"Overlay: {self.overlay[0].name} at {self.overlay[1]} %, the archive's image nearest each time" if self.overlay else "")
+        set_source_note(self.source_line, HELIOVIEWER_NOTE)
+        self._leave_lwa_look()
+        self.band.set_plan(plan)
+        self._load_goes(plan.start, plan.end)
+        self._fetch_events(plan.start, plan.end)
+        if not plan.frames:
+            self.set_summary(f"No {source.name} images between {span_text(plan.start, plan.end)}" + (f" · {plan.message}" if plan.message else ""), tone="warning")
+            self._enable_transport(False)
+            self._show_message(f"Helioviewer has no {source.name} images in this range.")
+            return
+        nearest = plan.nearest(at)
+        summary = plan_summary(source.name, plan, self.loader.memory_bytes)
+        far = far_note(at, nearest.observed if nearest is not None else None)
+        self.set_summary(f"{summary} · {far}" if far else summary, tone="warning" if far else None)
+        self._enable_transport(True)
+        self.loading = True
+        self.begin_job("frames", f"Downloading 0 of {len(plan.downloads)}", self.cancel_loading)
+        self.loader.start(plan, at=at)
+        self.band.set_current(nearest.index if nearest is not None else 0)
+        if self.current is None:
+            self.show_frame(nearest.index if nearest is not None else 0)
+        self.full_field_link.setVisible(self.region is not None)
+        self._fit_labels()
+
+    def retry_failed(self):
+        """Download again the frames that failed."""
+        if self.plan is None or self.lwa_mode:
+            self.load()
+            return
+        plan = self.plan
+        retry = RetryPlan(source=plan.source, start=plan.start, end=plan.end, step_s=plan.step_s, view=plan.view, frames=plan.frames, message=plan.message, by_closest=plan.by_closest, scale_correction=plan.scale_correction, closest=plan.closest)
+        for frame in plan.frames:
+            if frame.state == FAILED:
+                frame.state, frame.error = PLANNED, ""
+        if not retry.downloads:
+            return
+        self.loading = True
+        self.begin_job("frames", f"Downloading 0 of {len(retry.downloads)}", self.cancel_loading)
+        self.loader.start(retry, at=self._load_at)
+        self.band.refresh()
+        if self.current is not None:
+            self.show_frame(self.current)
+
+    def cancel_loading(self):
+        """Stop the downloads; the frames in are kept."""
+        if self.lwa_loader is not None:
+            self._abandon_lwa(self.lwa_loader)
+            self.lwa_loader = None
+            self._lwa_over(cancelled=True)
+            return
+        if self.loader.busy:
+            self.loader.cancel()  # its finished(True) says the rest
+
+    def _on_frame_ready(self, frame):
+        if self._closing or self.lwa_mode:
+            return
+        self.band.refresh()
+        if self.current is None:
+            self.band.set_current(frame.index)
+        elif frame.index == self.current or frame.index == self._reference_of(self.current):
+            self.show_frame(frame.index if frame.index == self.current else self.current)
+
+    def _reference_of(self, index) -> Optional[int]:
+        """The frame ``index`` is compared with in the difference mode on, or None."""
+        mode = self.diff_mode()
+        if mode == "None" or index is None:
+            return None
+        return self.diff_base_index if mode == "Base" else index - 1
+
+    def _on_frame_failed(self, frame):
+        if self._closing or self.lwa_mode:
+            return
+        self.band.refresh()
+        if frame.index == self.current:
+            self.show_frame(frame.index)
+
+    def _on_progress(self, done, failed, total):
+        if self._closing or self.lwa_mode:
+            return
+        text = f"Downloading {done + failed} of {total}"
+        if failed:
+            text += f" · {failed} failed"
+        self.update_job("frames", text)
+
+    def _on_finished(self, cancelled):
+        if self._closing or self.lwa_mode:
+            return
+        self.loading = False
+        self.end_job("frames")
+        ready = sum(1 for frame in self.frames if frame.state == READY and frame.duplicate_of is None)
+        failed = sum(1 for frame in self.frames if frame.state == FAILED and frame.duplicate_of is None)
+        total = len(self.plan.downloads) if self.plan is not None else len(self.frames)
+        if cancelled:
+            self.say(f"Cancelled · {ready} frame{'s' if ready != 1 else ''} kept")
+        else:
+            text = f"Loaded {ready} of {total}"
+            if failed:
+                text += f" · {failed} failed"
+            self.say(text, ("Retry", self.retry_failed) if failed else None)
+        self.band.refresh()
+        if self.current is not None:
+            self.show_frame(self.current)
+
+    def _ready(self, index) -> bool:
+        if index is None or not 0 <= index < len(self.frames):
+            return False
+        return self.band.is_ready(index)
+
+    # ------------------------------------------------------------ events and GOES
+
+    def _fetch_events(self, start, end):
+        self.events_rows = None
+        self.view.set_events([])
+        thread = EventsFetch(start, end)  # no parent: it may outlive the window, parked until it ends
+        thread.done.connect(lambda rows, error, t=thread: self._events_came(t, rows, error))
+        self.events_thread = thread
+        thread.start()
+
+    def _events_came(self, thread, rows, error):
+        if self._closing or thread is not self.events_thread:
+            return
+        _park(thread)
+        self.events_thread = None
+        if error:
+            self.band.set_events_note(f"The flares could not be fetched: {error}")
+            return
+        self.events_rows = rows
+        self.band.set_events(rows)
+        self.view.set_events(rows)
+
+    def _load_goes(self, start, end):
+        """Solar Activity's saved GOES curves of the days the range touches, if any."""
+        curves = {}
+        day = start.date()
+        while day <= end.date():
+            try:
+                flux = noaa_cache._noaa_cache.load_goes_day(day)
+            except Exception as e:  # a lane, never in the way of the load
+                logger.info("No GOES curve for %s: %s", day, e)
+                flux = None
+            if flux:
+                curves[day] = flux
+            day += timedelta(days=1)
+        self.band.set_goes(curves)
+
+    # ------------------------------------------------------------ OVRO-LWA
+
+    def _load_lwa(self, entry, start, end):
+        """OVRO-LWA's frames between ``start`` and ``end`` (or all of the
+        opener's movie day), at their own times, by a thread of its own."""
+        movie_day, self.target.movie_day = self.target.movie_day, None
+        self.lwa_mode = True
+        self.plan = None
+        self.loader.release()  # Helioviewer's frames go: the movie has a budget of its own
+        self.frames = []
+        self.frame_notes = {}
+        self.lwa_notes = []
+        self.current = None
+        self.band.set_frames([])
+        self.band.set_goes({})
+        self.band.set_events_note("")
+        self.view.set_events([])
+        self.view.set_frame(None)
+        self._enable_transport(False)
+        self.caption_name.setText(f"{entry[0]} · {lwa.OBSERVATORY}")
+        self.caption_name.setToolTip("")
+        set_source_note(self.source_line, LWA_NOTE)
+        self._enter_lwa_look()
+        self.set_summary(f"{entry[0]} · {span_text(start, end)}")
+        self.loading = True
+        self.begin_job("frames", "Asking OVRO-LWA for the movie…", self.cancel_loading)
+        self._show_message("", spinner="Asking OVRO-LWA for the movie…")
+        step = self.step_seconds()
+        side = self.frame_width()
+        loader = lwa.LwaMovieLoader(lwa.view_of(entry), start, end, interval=step or lwa.LEAST_CADENCE, side=side, movie_day=movie_day)
         self.lwa_loader = loader
         loader.stage.connect(lambda text, done, total, l=loader: self._on_lwa_stage(l, text, done, total))
-        loader.planned.connect(lambda plan, l=loader: self._on_lwa_planned(l, entry[0], plan))
+        loader.planned.connect(lambda plan, l=loader: self._on_lwa_planned(l, entry, plan))
         loader.range_found.connect(lambda first, last, l=loader: self._on_lwa_range(l, first, last))
-        loader.frame_ready.connect(lambda idx, image, l=loader: self._on_lwa_frame(l, entry[0], idx, image))
+        loader.frame_ready.connect(lambda idx, image, l=loader: self._on_lwa_frame(l, idx, image))
         loader.failed.connect(lambda text, l=loader: self._on_lwa_failed(l, text))
         loader.done.connect(lambda l=loader: self._on_lwa_done(l))
         loader.start()
 
-    def _show_lwa_status(self, text):
-        """What the OVRO-LWA load is doing, in place of a frame, until it has some."""
-        while self.image_grid.count():
-            child = self.image_grid.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        self.selection_label = None
-        self.zoom_controls.hide()
-        self.lwa_status = ActivityLabel()
-        self.lwa_status.start(text)
-        self.image_grid.addWidget(self.lwa_status, 1, Qt.AlignCenter)
+    def _enter_lwa_look(self):
+        """The movie's frames have no geometry: no overlays, no readout, no
+        Helioviewer link (Use in viewer says so in its entries)."""
+        self.toggles.setEnabled(False)
+        for name in hvw.OVERLAYS:
+            self.view.overlays[name] = False
+        self.view.set_coordinates_known(False)
+        self.view.set_observer("")
+        self.link_btn.setEnabled(False)
+        self.link_btn.setToolTip("Not from Helioviewer: the movie's frames have no view there")
+
+    def _leave_lwa_look(self):
+        self.toggles.setEnabled(True)
+        for name in hvw.OVERLAYS:
+            self.view.overlays[name] = self.toggles.switches[name].isChecked()
+        self.view.set_coordinates_known(True)
+        self.link_btn.setEnabled(True)
+        self.link_btn.setToolTip("The same view on helioviewer.org, to the clipboard")
 
     def _current_lwa(self, loader):
         return not self._closing and loader is self.lwa_loader
@@ -1168,84 +1810,87 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         if not self._current_lwa(loader):
             return
         if text == "Decoding frames":
-            self.downloads_done = done
-            self.progress_bar.setRange(0, max(total, 1))
-            self.progress_bar.setValue(done)
-            self.progress_bar.setFormat("%v of %m frames")
+            self.update_job("frames", f"Decoding {done} of {total} frames")
             return
-        self.progress_bar.setRange(0, total if total else 0)
-        if total:
-            self.progress_bar.setValue(min(done, total))
-        self.progress_bar.setFormat(text)
-        if not self.timestamps and getattr(self, "lwa_status", None) is not None:
-            try:
-                self.lwa_status.start(text)
-            except RuntimeError:  # gone with the grid
-                pass
+        self.update_job("frames", text)
+        if not self.frames:
+            self.message_activity.start(text)
 
-    def _on_lwa_planned(self, loader, name, plan):
-        """The frames to come, at their own times: the seekbar knows them all."""
+    def _on_lwa_planned(self, loader, entry, plan):
+        """The frames to come, at their own times: the band knows them all."""
         if not self._current_lwa(loader):
             return
-        self.timestamps = [utc_time(when) for when in plan.times]
-        self.frame_labels = [
-            f"from the {day} movie" if when is not None else f"frame {number + 1} of the {day} movie"
-            for when, day, number in zip(plan.times, plan.days, plan.numbers)
-        ]
+        self.frames, self.frame_notes = lwa_frames(plan, lwa.view_of(entry))
         self.lwa_notes = list(plan.notes)
-        self.downloads_total = len(self.timestamps)
-        self.progress_bar.setRange(0, max(self.downloads_total, 1))
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%v of %m frames")
-        if len(self.timestamps) > 1:
-            self.seekbar.setRange(0, 10000)
-        else:
-            self.seekbar.setRange(0, 0)
-        self.seekbar.setValue(0)
-        self.enable_controls()
+        self.band.set_frames(self.frames)
+        parts = [entry[0]]
+        if self.frames:
+            parts.append(span_text(self.frames[0].observed, self.frames[-1].observed))
+            parts.append(f"{len(self.frames)} frame{'s' if len(self.frames) != 1 else ''} at their own times")
+        if plan.clip:
+            parts.append("Times not confirmed: the movie's frames do not match its frame list")
+        parts += self.lwa_notes
+        self.set_summary(" · ".join(parts), tone="warning" if plan.clip else None)
+        self._enable_transport(bool(self.frames))
+        if self.frames:
+            at = self._load_at or self.frames[0].observed
+            nearest = min(self.frames, key=lambda f: abs((f.observed - at).total_seconds()))
+            self.band.set_current(nearest.index)
+            if self.current is None:
+                self.show_frame(nearest.index)
 
     def _on_lwa_range(self, loader, first, last):
-        """One day's movie: the times become its own first and last."""
+        """One day's movie: the time becomes its middle, the band its range."""
         if not self._current_lwa(loader):
             return
-        self._set_time(self.start_datetime, utc_time(first))
-        self._set_time(self.end_datetime, utc_time(last))
+        self.time_edit.setText((first + (last - first) / 2).replace(microsecond=0).strftime(TIME_FORMAT))
+        self.band.set_range(first, last)
 
-    def _on_lwa_frame(self, loader, name, idx, image):
-        if not self._current_lwa(loader) or not self._loading:
+    def _on_lwa_frame(self, loader, index, image):
+        if not self._current_lwa(loader) or not 0 <= index < len(self.frames):
             return
-        self.frames.setdefault(idx, {})[name] = QPixmap.fromImage(image)
-        if idx == self.current_frame:
-            self.display_current_frame()
+        frame = self.frames[index]
+        frame.pixmap = QPixmap.fromImage(image)
+        frame.state = READY
+        self.band.refresh()
+        if self.current is None:
+            self.band.set_current(index)
+        elif index == self.current:
+            self.show_frame(index)
 
     def _on_lwa_failed(self, loader, text):
         if not self._current_lwa(loader):
             return
         self.lwa_loader = None
-        _park(loader)  # it may not quite have ended
-        self._loading = False
-        self._end_loading_controls()
-        if self.timestamps:
-            self.display_current_frame()
-        else:
-            self._show_empty("Nothing to show: " + text)
-        QMessageBox.warning(self, "OVRO-LWA", text)
+        _park(loader)
+        self._lwa_over(cancelled=False, error=text)
 
     def _on_lwa_done(self, loader):
         if not self._current_lwa(loader):
             return
         self.lwa_loader = None
-        _park(loader)  # it may not quite have ended
-        self.on_loading_finished()
+        _park(loader)
+        self._lwa_over(cancelled=False)
 
-    def _show_empty(self, text):
-        while self.image_grid.count():
-            child = self.image_grid.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        self.selection_label = None
-        self.zoom_controls.hide()
-        self.image_grid.addWidget(empty_note(text), 1)
+    def _lwa_over(self, cancelled, error=""):
+        self.loading = False
+        self.end_job("frames")
+        ready = sum(1 for frame in self.frames if frame.state == READY)
+        if error:
+            self.set_summary(error, tone="error", retry=True)
+            self.say(error)
+            if not ready:
+                self._show_message(error)
+        elif cancelled:
+            self.say(f"Cancelled · {ready} frame{'s' if ready != 1 else ''} kept")
+        else:
+            self.say(f"Loaded {ready} of {len(self.frames)} OVRO-LWA frames")
+        for frame in self.frames:
+            if frame.state != READY:
+                frame.state = PLANNED
+        self.band.refresh()
+        if self.current is not None:
+            self.show_frame(self.current)
 
     @staticmethod
     def _abandon_lwa(loader):
@@ -1258,509 +1903,379 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
         loader.stop()
         _park(loader)
 
-    def _queue_frames(self, start, interval_sec, count, instruments):
-        self.timestamps = [start.addSecs(i * interval_sec) for i in range(count)]
-        self.frame_labels = []
-        self.lwa_notes = []
-        for frame_idx in range(count):
-            for inst_data in instruments:
-                self.download_queue.append((frame_idx, inst_data))
+    # ------------------------------------------------------------ showing a frame
 
-    def _process_frame_download_queue(self):
-        """Start next frame downloads if under concurrent limit."""
-        while (
-            self.active_downloads < self.max_concurrent_downloads
-            and self.download_queue
-        ):
-            frame_idx, inst_data = self.download_queue.popleft()
-            nickname, layer_path, observatory, description = inst_data
-            timestamp = self.timestamps[frame_idx]
+    def _pixmap_of(self, frame) -> Optional[QPixmap]:
+        """The frame's image: OVRO-LWA's from the frame, Helioviewer's from the
+        loader (None while one dropped from memory is read again)."""
+        if self.lwa_mode:
+            pixmap = frame.pixmap
+            if pixmap is None and frame.duplicate_of is not None and 0 <= frame.duplicate_of < len(self.frames):
+                pixmap = self.frames[frame.duplicate_of].pixmap
+            return pixmap
+        return self.loader.pixmap_of(frame)
 
-            self.active_downloads += 1
-            downloader = ImageDownloader(
-                nickname,
-                layer_path,
-                timestamp,
-                width=self.image_size_spin.value(),
-                height=self.image_size_spin.value(),
-            )
-            downloader.finished.connect(
-                lambda inst, image, idx=frame_idx: self.on_parallel_image_downloaded(
-                    idx, inst, image
-                )
-            )
-            downloader.error.connect(
-                lambda inst, err, idx=frame_idx: self.on_parallel_download_error(
-                    idx, inst, err
-                )
-            )
-            downloader.error.connect(self._on_frame_download_finished)
-            downloader.finished.connect(self._on_frame_download_finished)
-            self.frame_loaders.append(downloader)
-            downloader.start()
-
-    def on_parallel_image_downloaded(self, frame_idx, instrument, image):
-        """Handle parallel image download completion."""
-        if self._closing or not self._loading:
+    def show_frame(self, index):
+        """Frame ``index`` on the well: its picture, or why there is none."""
+        if not 0 <= index < len(self.frames):
             return
-
-        if frame_idx not in self.frames:
-            self.frames[frame_idx] = {}
-
-        self.frames[frame_idx][instrument] = QPixmap.fromImage(image)
-
-        # If this is the current frame, update display
-        if frame_idx == self.current_frame:
-            self.display_current_frame()
-
-    def on_parallel_download_error(self, frame_idx, instrument, error):
-        """Handle parallel download error."""
-        if self._closing or not self._loading:
-            return
-        logger.warning("Error downloading %s for frame %s: %s", instrument, frame_idx, error)
-        self.failed_downloads[(frame_idx, instrument)] = error
-        if frame_idx == self.current_frame:
-            self.display_current_frame()
-
-    def _on_frame_download_finished(self):
-        """Handle download thread finish and start next in queue."""
-        if self._closing:
-            return
-
-        self.active_downloads -= 1
-        if self.active_downloads < 0:
-            self.active_downloads = 0
-
-        # Those that failed count too: the bar ends when the work does
-        self.downloads_done += 1
-        self.progress_bar.setValue(self.downloads_done)
-        if self.failed_downloads:
-            self.progress_bar.setFormat(f"%v of %m, {len(self.failed_downloads)} failed")
-        self.frame_loaders = [l for l in self.frame_loaders if l.isRunning()]
-
-        # Process next in queue
-        self._process_frame_download_queue()
-
-        # Check if all downloads are complete
-        if self.active_downloads == 0 and len(self.download_queue) == 0:
-            if self._loading: # Only call if not already canceled
-                self.on_loading_finished()
-
-    def cancel_loading(self):
-        """Cancel current loading process gracefully."""
-        if not self._loading:
-            return
-
-        self._loading = False
-        self.download_queue.clear()
-        if self.lwa_loader is not None:
-            self._abandon_lwa(self.lwa_loader)
-            self.lwa_loader = None
-        
-        # Safely clear loaders and disconnect signals to prevent race conditions
-        loaders = self.frame_loaders[:]
-        self.frame_loaders = []
-        
-        for loader in loaders:
-            self._abandon(loader)
-        
-        self.active_downloads = 0
-        self.on_loading_finished(canceled=True)
-
-    @staticmethod
-    def _abandon(loader):
-        """Have ``loader`` stop, and hear no more from it."""
-        try:
-            # Disconnect all signals to ensure no UI updates are triggered
-            loader.finished.disconnect()
-            loader.error.disconnect()
-        except Exception:
-            pass
-        loader.stop()
-        # Keep a reference alive until the thread actually exits
-        _park(loader)
-
-    def _end_loading_controls(self):
-        self.progress_bar.setVisible(False)
-        self.load_button.setEnabled(True)
-        self.cancel_button.setVisible(False)
-        self.crop_btn.setEnabled(True)  # Enable crop after all loaded
-        self.diff_combo.setEnabled(True)  # Enable diff after all loaded
-        self.diff_label.setEnabled(True)
-        self._allow_difference()
-
-    def on_loading_finished(self, canceled=False):
-        """Handle loading completion or cancellation."""
-        self._loading = False
-        self._end_loading_controls()
-        if self.timestamps:
-            self.display_current_frame()  # no longer "loading"
-        else:
-            self._show_empty("Nothing loaded")
-
-        summary = f"Loaded {len(self.frames)} frames with selected instruments."
-        if self.frame_labels and self.timestamps:
-            summary = f"Loaded {len(self.frames)} OVRO-LWA frames."
-            loaded = sorted(i for i in self.frames if i < len(self.timestamps))
-            if loaded and self.timestamps[loaded[0]].isValid():
-                summary += (
-                    f"\nFrom {self.timestamps[loaded[0]].toString(TIME_QT_FORMAT)} to "
-                    f"{self.timestamps[loaded[-1]].toString(TIME_QT_FORMAT)} UTC, at their own times."
-                )
-        if self.failed_downloads:
-            summary += f"\nCould not download: {len(self.failed_downloads)}."
-        if canceled:
-            QMessageBox.information(self, "Loading cancelled", summary)
-        else:
-            QMessageBox.information(self, "Loading complete", summary)
-
-    def enable_controls(self):
-        """Enable animation controls."""
-        has_frames = len(self.timestamps) > 0
-        self.first_btn.setEnabled(has_frames)
-        self.prev_btn.setEnabled(has_frames)
-        self.play_btn.setEnabled(has_frames)
-        self.next_btn.setEnabled(has_frames)
-        self.last_btn.setEnabled(has_frames)
-        self.seekbar.setEnabled(has_frames)
-
-        if has_frames:
-            self.display_current_frame()
-
-    def display_current_frame(self):
-        """Display the current frame's image (single instrument, fullscreen)."""
-        if not 0 <= self.current_frame < len(self.timestamps):
-            return
-
-        # Clear grid
-        while self.image_grid.count():
-            child = self.image_grid.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        self.selection_label = None
-
-        frame_data = self.frames.get(self.current_frame, {})
-
-        # Get selected instrument (single selection)
-        selected = self.get_selected_instruments()
-        if not selected:
-            self.zoom_controls.hide()
-            self.image_grid.addWidget(empty_note("Choose an instrument from the list"), 1)
-            return
-
-        nickname, layer_path, observatory, cadence = selected[0]
-
-        # Title with timestamp and instrument
-        title = QLabel(f"{nickname} ({observatory})")
-        title.setAlignment(Qt.AlignCenter)
-        title.setObjectName("SectionTitle")
-        self.image_grid.addWidget(title)
-
-        time_label = QLabel(self.time_text(self.current_frame))
-        time_label.setAlignment(Qt.AlignCenter)
-        time_label.setObjectName("Hint")
-        self.image_grid.addWidget(time_label)
-        if self.lwa_notes and self.frame_labels and nickname in self._loading_names:
-            notes = QLabel(" ".join(self.lwa_notes))
-            notes.setAlignment(Qt.AlignCenter)
-            notes.setWordWrap(True)
-            notes.setObjectName("Tip")
-            self.image_grid.addWidget(notes)
-
-        # Fullscreen image
-        pixmap = frame_data.get(nickname)
-        self.zoom_controls.setVisible(bool(self.frames))
-
-        # Apply difference map if active
-        if self.diff_type != "None" and pixmap:
-            if self.current_frame > 0:
-                # Difference for subsequent frames
-                ref_idx = 0 if self.diff_type == "Base" else self.current_frame - 1
-                ref_data = self.frames.get(ref_idx, {})
-                ref_pixmap = ref_data.get(nickname)
-                if ref_pixmap:
-                    pixmap = self._calculate_difference(pixmap, ref_pixmap)
+        self.current = index
+        if not self.lwa_mode:
+            self.loader.set_current(index)
+        frame = self.frames[index]
+        self._show_caption(frame)
+        pixmap = self._pixmap_of(frame)
+        state = self.band.original(index).state
+        if pixmap is None:
+            rereading = state == READY and not self.lwa_mode and self.loader.rereading(frame)
+            if state == FAILED:
+                self._show_message("This frame could not be downloaded", details=self.band.original(index).error, retry=not self.loading)
+            elif (state == LOADING or rereading) and self.view.frame is not None:
+                pass  # the frame before stays until this one comes
+            elif state == LOADING or rereading:
+                self._show_message("", spinner="Decoding this frame…" if self.lwa_mode else "Downloading this frame…" if state == LOADING else "Reading this frame…")
             else:
-                # Neutral Gray for first frame (representing zero change)
-                gray_pixmap = QPixmap(pixmap.size())
-                gray_pixmap.fill(QColor(128, 128, 128))
-                pixmap = gray_pixmap
-
-        img_label = InteractiveImageLabel(scroll_area=self.image_scroll)
-        img_label.crop_mode = self.crop_mode
-        self.selection_label = img_label if self.crop_mode else None
-
-        img_label.setAlignment(Qt.AlignCenter)
-        waiting = None
-
-        if pixmap:
-            # Display scaled pixmap
-            scaled_size = pixmap.size() * self.zoom_factor
-            scaled_pixmap = pixmap.scaled(
-                scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            img_label.setPixmap(scaled_pixmap)
-            img_label.zoom_factor = self.zoom_factor
-
-        else:
-            error = self.failed_downloads.get((self.current_frame, nickname))
-            if error:
-                img_label.setText("Could not download this frame")
-                img_label.setToolTip(error)
-            elif self._loading and nickname in self._loading_names:
-                waiting = ActivityLabel()
-                waiting.start("Decoding this frame…" if self.frame_labels else "Downloading this frame…")
-            else:
-                img_label.setText("No data loaded for this instrument")
-            img_label.setObjectName("Hint")
-            img_label.setMargin(60)
-
-        # Add with stretch to center vertically
-        if waiting is not None:
-            self.image_grid.addWidget(waiting, 1, Qt.AlignCenter)
-        else:
-            self.image_grid.addWidget(img_label, 1)
-
-        # Update frame label
-        self.frame_label.setText(
-            f"Frame {self.current_frame + 1} / {len(self.timestamps)}"
-        )
-        
-        # Update seekbar position
-        if self.timestamps and len(self.timestamps) > 1:
-            target_val = round(self.current_frame * 10000 / (len(self.timestamps) - 1))
-            
-            if self.playing:
-                # Smooth slide animation during playback
-                self.seekbar_anim.stop()
-                
-                # Get current interval for duration
-                speed_text = self.speed_combo.currentText()
-                speed = float(speed_text.replace("x", ""))
-                interval_ms = int(0.5 * 1000 / speed)
-                
-                # If we just looped back to 0, jump instantly to avoid slow reverse slide
-                if self.current_frame == 0:
-                    self._update_seekbar_smoothly(0)
-                else:
-                    self.seekbar_anim.setDuration(interval_ms)
-                    self.seekbar_anim.setStartValue(self.seekbar.value())
-                    self.seekbar_anim.setEndValue(target_val)
-                    self.seekbar_anim.start()
-            else:
-                # Instant jump if manually seeking or not playing
-                self._update_seekbar_smoothly(target_val)
-        else:
-            self._update_seekbar_smoothly(0)
-
-
-    '''def show_full_image(self, pixmap, title):
-        """Show full resolution image in dialog."""
-        dialog = FullImageDialog(self, pixmap, title)
-        dialog.exec_()'''
-
-    # Animation controls
-    def first_frame(self):
-        """Jump to first frame."""
-        self.current_frame = 0
-        self.display_current_frame()
-
-    def prev_frame(self):
-        """Go to previous frame."""
-        if self.current_frame > 0:
-            self.current_frame -= 1
-            self.display_current_frame()
-
-    def next_frame(self):
-        """Go to next frame."""
-        if self.current_frame < len(self.timestamps) - 1:
-            self.current_frame += 1
-            self.display_current_frame()
-        else:
-            # Loop back to start
-            self.current_frame = 0
-            self.display_current_frame()
-
-    def last_frame(self):
-        """Jump to last frame."""
-        if self.timestamps:
-            self.current_frame = len(self.timestamps) - 1
-            self.display_current_frame()
-
-    def toggle_play(self):
-        """Toggle animation playback."""
-        if not self.timestamps:
+                self._show_message("Not downloaded", retry=not self.loading)
             return
-        if not self.playing:
-            self.playing = True
-            self.play_btn.setIcon(transport_icon("pause", theme_manager.palette))
-            self.play_btn.setToolTip("Pause (P / Space)")
+        shown, note = self._with_difference(index, frame, pixmap)
+        if shown is None:
+            self._show_message(note)
+            return
+        self.view.set_frame(frame if frame.pixmap is shown else dataclasses.replace(frame, pixmap=shown))
+        self.message_activity.stop()
+        self.well.setCurrentWidget(self.view)
+        self._zoom_changed()
 
-            # Get speed
-            speed_text = self.speed_combo.currentText()
-            speed = float(speed_text.replace("x", ""))
-            interval_ms = int(0.5 * 1000 / speed)  # Base: 2 fps
-
-            self.animation_timer.start(interval_ms)
+    def _show_caption(self, frame):
+        self.caption_time.setText(f"{frame.observed:%H:%M:%S} UTC")
+        self.caption_time.setToolTip(self._provenance_tip(frame))
+        if self.lwa_mode:
+            self.caption_offset.setText(self.frame_notes.get(frame.index, ""))
+            set_tone(self.caption_offset, "warning" if self.frame_notes.get(frame.index, "").startswith("Time not confirmed") else None)
         else:
-            self.pause_animation()
+            offset = frame.offset
+            cadence = self.plan.source.cadence if self.plan is not None else 60
+            self.caption_offset.setText(offset_text(offset) if frame.wanted != frame.observed else "")
+            set_tone(self.caption_offset, "warning" if abs(offset) > cadence else None)
+        self.caption_count.setText(f"Frame {frame.index + 1} of {len(self.frames)}")
 
-    def pause_animation(self):
-        """Pause animation."""
-        self.playing = False
-        self.play_btn.setIcon(transport_icon("play", theme_manager.palette))
-        self.play_btn.setToolTip("Play (P / Space)")
-        self.animation_timer.stop()
+    def _provenance_tip(self, frame) -> str:
+        lines = [f"Observed {frame.observed:%Y-%m-%d %H:%M:%S} UTC"]
+        if frame.wanted != frame.observed:
+            lines.append(f"Asked for {frame.wanted:%H:%M:%S} ({offset_text(frame.offset)})")
+        if self.lwa_mode:
+            lines.append(self.frame_notes.get(frame.index, ""))
+            return "\n".join(line for line in lines if line)
+        lines.append(f"Image id {frame.image_id if frame.image_id is not None else 'not looked up yet'} · source {frame.source_id}")
+        lines.append(f"{frame.image_scale:.4g}″/px · scale correction {frame.scale_correction:.4f} · {frame.width}×{frame.height} px at ({frame.x0:g}, {frame.y0:g})″")
+        lines.append(frame.url)
+        return "\n".join(lines)
 
-    # Difference methods
-    def on_diff_mode_changed(self):
-        """Handle difference mode change and refresh display."""
-        with busy("Updating the image…", self):
-            self.diff_type = self.diff_combo.currentText()
-            self.display_current_frame()
+    def _show_message(self, text, spinner=None, details=None, retry=False):
+        """The well's message page: ``text``, a spinner with ``spinner``'s
+        text, Show details… for ``details``, and Retry."""
+        self.message_label.setText(text)
+        self.message_label.setVisible(bool(text))
+        if spinner:
+            self.message_activity.start(spinner)
+            self.message_activity.show()
+        else:
+            self.message_activity.stop()
+            self.message_activity.hide()
+        self._frame_error = details or ""
+        self.details_link.setVisible(bool(details))
+        self.frame_retry_link.setVisible(bool(retry))
+        self.well.setCurrentWidget(self.message)
+
+    def _show_empty(self):
+        when = parse_field(self.time_edit.text())
+        around = f" around {when:%H:%M} UTC" if when is not None else ""
+        self._show_message(f"Choose an instrument and press Load for images{around}.")
+        if not self.summary_label.text():
+            self.set_summary("Pick an instrument, a time and a span, then press Load.")
+
+    def _show_frame_error(self):
+        """Show details…: the error's text, in the app's error dialog (asked for, so not in the way)."""
+        show_error(self, "Helioviewer did not answer", "This is what the request came back with.", self._frame_error)
+
+    def _enable_transport(self, on):
+        for button, _kind in self.transport_buttons:
+            button.setEnabled(on)
+
+    def _cursor_set(self, when):
+        self.time_chosen.emit(when)
+
+    # ------------------------------------------------------------ difference
+
+    def set_diff_mode(self, mode):
+        if mode not in DIFF_MODES or mode == self.diff_mode_name:
+            self._refresh_diff_hint()
+            return
+        if self.lwa_mode and mode != "None":
+            return
+        self.diff_mode_name = mode
+        self.diff_buttons[DIFF_MODES.index(mode)].setChecked(True)
+        if mode == "Base = radio time" and self.target.mark is not None and self.frames:
+            when = self.target.mark[1]
+            self.diff_base_index = min(self.frames, key=lambda f: abs((f.observed - when).total_seconds())).index
+        self._refresh_diff_hint()
+        if self.current is not None:
+            self.show_frame(self.current)
 
     def cycle_diff_mode(self):
-        """Cycle through difference modes."""
-        if self._lwa_selected():
+        if self.lwa_mode:
             return
-        count = self.diff_combo.count()
-        idx = (self.diff_combo.currentIndex() + 1) % count
-        self.diff_combo.setCurrentIndex(idx)
+        modes = [mode for i, mode in enumerate(DIFF_MODES) if not self.diff_buttons[i].isHidden()]
+        self.set_diff_mode(modes[(modes.index(self.diff_mode_name) + 1) % len(modes)])
 
-    def increase_speed(self):
-        """Increase animation speed."""
-        idx = self.speed_combo.currentIndex()
-        if idx < self.speed_combo.count() - 1:
-            self.speed_combo.setCurrentIndex(idx + 1)
+    def set_base_here(self):
+        if self.current is None:
+            return
+        self.diff_base_index = self.current
+        self._diff_cache.clear()
+        self._refresh_diff_hint()
+        self.show_frame(self.current)
 
-    def decrease_speed(self):
-        """Decrease animation speed."""
-        idx = self.speed_combo.currentIndex()
-        if idx > 0:
-            self.speed_combo.setCurrentIndex(idx - 1)
-
-    def setup_shortcuts(self):
-        """Define keyboard shortcuts for common actions."""
-        # Playback
-        QShortcut(QKeySequence("P"), self).activated.connect(self.toggle_play)
-        QShortcut(QKeySequence("Space"), self).activated.connect(self.toggle_play)
-        
-        # Navigation
-        QShortcut(QKeySequence("]"), self).activated.connect(self.next_frame)
-        QShortcut(QKeySequence("["), self).activated.connect(self.prev_frame)
-        QShortcut(QKeySequence("Shift+]"), self).activated.connect(self.last_frame)
-        QShortcut(QKeySequence("Shift+["), self).activated.connect(self.first_frame)
-        
-        # Zoom
-        QShortcut(QKeySequence("+"), self).activated.connect(self.zoom_in)
-        QShortcut(QKeySequence("="), self).activated.connect(self.zoom_in)
-        QShortcut(QKeySequence("-"), self).activated.connect(self.zoom_out)
-        QShortcut(QKeySequence("R"), self).activated.connect(self.reset_zoom)
-        
-        # Speed
-        QShortcut(QKeySequence(">"), self).activated.connect(self.increase_speed)
-        QShortcut(QKeySequence("."), self).activated.connect(self.increase_speed)
-        QShortcut(QKeySequence("<"), self).activated.connect(self.decrease_speed)
-        QShortcut(QKeySequence(","), self).activated.connect(self.decrease_speed)
-        
-        # Image / Diff
-        QShortcut(QKeySequence("D"), self).activated.connect(self.cycle_diff_mode)
-        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.save_current_frame)
-        QShortcut(QKeySequence("Ctrl+E"), self).activated.connect(self.export_animation)
-
-        # Close
-        QShortcut(QKeySequence("Ctrl+Q"), self).activated.connect(self.close)
-
-    def _calculate_difference(self, current_pixmap, reference_pixmap):
-        """Calculate pixel-wise grayscale difference between two pixmaps."""
-        if not current_pixmap or not reference_pixmap:
-            return current_pixmap
-
-        # Only large frames take long enough to say so (and while playing,
-        # the frames moving on say it)
-        if self.playing or current_pixmap.width() * current_pixmap.height() < 2500 ** 2:
-            result = difference_image(current_pixmap.toImage(), reference_pixmap.toImage())
+    def _refresh_diff_hint(self):
+        base = self.diff_mode_name in ("Base", "Base = radio time")
+        if base and 0 <= self.diff_base_index < len(self.frames):
+            self.diff_hint.setText(f"vs {self.frames[self.diff_base_index].observed:%H:%M:%S}")
+            self.diff_hint.show()
         else:
-            with busy("Working out the difference…", self):
-                result = difference_image(current_pixmap.toImage(), reference_pixmap.toImage())
-        return QPixmap.fromImage(result) if result is not None else current_pixmap
+            self.diff_hint.hide()
+        self.set_base_link.setVisible(self.diff_mode_name == "Base")
+        self._fit_labels()
 
-    # Zoom controls
-    def _show_zoomed(self):
-        """Show the frame at the new zoom: scaling a large one takes a while."""
-        if self.image_size_spin.value() * self.zoom_factor > 3000:
-            with busy("Scaling the image…", self):
-                self.display_current_frame()
-        else:
-            self.display_current_frame()
+    def diff_mode(self) -> str:
+        """(For the exports.) "None", "Running" or "Base"."""
+        return "Base" if self.diff_mode_name.startswith("Base") else self.diff_mode_name
+
+    def diff_base(self) -> int:
+        return self.diff_base_index
+
+    def _with_difference(self, index, frame, pixmap):
+        """``(pixmap to show, note)``: the difference against the base or the
+        frame before in the mode on, memoised; None and why when there is nothing to subtract."""
+        mode = self.diff_mode()
+        if mode == "None":
+            return pixmap, ""
+        ref_index = self.diff_base_index if mode == "Base" else index - 1
+        if ref_index < 0 or ref_index == index:
+            return None, "No earlier frame to subtract" if mode == "Running" else "This is the base frame"
+        key = (index, mode, ref_index)
+        held = self._diff_cache.get(key)
+        if held is not None:
+            self._diff_cache.move_to_end(key)
+            return held, ""
+        if not 0 <= ref_index < len(self.frames):
+            return None, "No base frame"
+        reference = self._pixmap_of(self.frames[ref_index])
+        if reference is None:
+            return None, "The frame to subtract has not come yet"
+        image = difference_image(pixmap.toImage(), reference.toImage())
+        if image is None:
+            return pixmap, ""
+        result = QPixmap.fromImage(image)
+        self._diff_cache[key] = result
+        while len(self._diff_cache) > DIFF_CACHE:
+            self._diff_cache.popitem(last=False)
+        return result, ""
+
+    # ------------------------------------------------------------ playback and transport
+
+    def toggle_play(self):
+        self.playback.toggle()
+
+    def _playing_changed(self, playing):
+        self.play_btn.setIcon(transport_icon("pause" if playing else "play", theme_manager.palette))
+        self.play_btn.setToolTip("Pause (P, Space)" if playing else "Play (P, Space)")
+
+    def _check_fps(self, fps):
+        button = self.fps_group.button(fps)
+        if button is not None and not button.isChecked():
+            button.setChecked(True)
+
+    def _fps_changed(self, fps):
+        self._check_fps(fps)
+        self.settings.setValue(KEY.format("fps"), fps)
+
+    def fps(self) -> int:
+        return self.playback.fps
+
+    def first_frame(self):
+        self.band.step_frame(-1, to_end=True)
+
+    def prev_frame(self):
+        self.band.step_frame(-1)
+
+    def next_frame(self):
+        self.band.step_frame(1)
+
+    def last_frame(self):
+        self.band.step_frame(1, to_end=True)
+
+    # ------------------------------------------------------------ zoom and reframe
 
     def zoom_in(self):
-        """Increase zoom factor."""
-        self.zoom_factor *= 1.25
-        if self.zoom_factor > 10.0:
-            self.zoom_factor = 10.0
-        self._show_zoomed()
+        self.view.zoom_in()
 
     def zoom_out(self):
-        """Decrease zoom factor."""
-        self.zoom_factor /= 1.25
-        if self.zoom_factor < 0.1:
-            self.zoom_factor = 0.1
-        self._show_zoomed()
+        self.view.zoom_out()
 
-    def reset_zoom(self):
-        """Reset zoom factor to 1.0."""
-        self.zoom_factor = 1.0
-        self._show_zoomed()
+    def fit(self):
+        self.view.fit()
 
-    def toggle_crop_mode(self):
-        """Enable/disable crop mode and update UI."""
-        if not self.frames:
+    def _zoom_changed(self):
+        self.zoom_label.setText(self.view.zoom_text() if self.view.frame is not None else "—")
+
+    def _reframe_toggled(self, on):
+        if on:
+            if self.view.frame is None or self.lwa_mode:
+                self.reframe_btn.setChecked(False)
+                self.say("Load a frame first, then drag a box on it")
+                return
+            self.playback.pause()
+            self.view.start_reframe()
+        elif self.view.reframing:
+            self.view.cancel_reframe()
+
+    def _reframe_requested(self, region):
+        self.region = region
+        self.load()
+
+    def _reframe_ended(self):
+        if self.reframe_btn.isChecked():
+            self.reframe_btn.setChecked(False)
+
+    def back_to_full_field(self):
+        self.region = None
+        self.full_field_link.hide()
+        self._fit_labels()
+        self.load()
+
+    def _escape(self):
+        if self.view.reframing:
+            self.view.cancel_reframe()
+        elif self.band.cancel_drag():
+            pass
+        elif self.band.axis.zoomed:
+            self.band.axis.whole_range()
+
+    # ------------------------------------------------------------ what the exports ask
+
+    def export_frames(self):
+        return list(self.frames)
+
+    def current_frame_index(self):
+        return self.current or 0
+
+    def source_name(self):
+        if self.lwa_mode and self.frames:
+            held = self.caption_name.text().split(" · ")[0]
+            return held or lwa.ALL_BANDS
+        if self.plan is not None:
+            return self.plan.source.name
+        return self.selected_name() or "Helioviewer"
+
+    def band_zoom(self):
+        axis = self.band.axis
+        if not axis.zoomed:
+            return None
+        return axis.datetime_of(axis.start), axis.datetime_of(axis.end)
+
+    def overlay_painter(self):
+        """``fn(painter, frame, width, height)``: the overlays as the view draws
+        them, for that frame's geometry; None when none is on."""
+        if self.lwa_mode or not any(self.view.overlays.values()) or self.view.overlay_scene() is None:
+            return None
+        paint = hvw.overlay_painter(self.view)
+        template = self.view.overlay_scene()
+
+        def painter_fn(painter, frame, width, height):
+            geometry = hvw.Geometry.of_frame(frame)
+            scene = dataclasses.replace(template, geometry=geometry, observed=frame.observed)
+            paint(painter, QRectF(0, 0, width, height), scene)
+
+        return painter_fn
+
+    def frame_note(self, frame):
+        return self.frame_notes.get(frame.index, "")
+
+    def file_prefix(self):
+        return "ovro" if self.lwa_mode else "helioviewer"
+
+    def images_note(self):
+        if self.lwa_mode:
+            return "OVRO-LWA daily movie frames (NJIT); times from the movie's frame list"
+        return None
+
+    def frames_are_helioviewer(self):
+        return not self.lwa_mode
+
+    # ------------------------------------------------------------ the window
+
+    def _footer_buttons(self):
+        return self.diff_buttons + [self.reframe_btn, self.full_field_link, self.link_btn, self.save_btn, self.use_btn, self.export_btn]
+
+    @staticmethod
+    def _bar_widths(bar, buttons, labels, compact) -> tuple:
+        """The widths ``bar`` wants with every label in full and with the
+        short ones: its hint, plus or minus what the shortened labels and the
+        hidden words give up."""
+        hint = bar.sizeHint().width()
+        metrics = bar.fontMetrics()
+        saved = 0
+        for button in buttons:
+            pair = button.property("labels")
+            if pair and button.isVisibleTo(bar):
+                saved += max(0, metrics.horizontalAdvance(pair[0]) - metrics.horizontalAdvance(pair[1]))
+        for label in labels:
+            saved += label.sizeHint().width() + SPACE_S
+        return (hint + saved, hint) if compact else (hint, hint - saved)
+
+    def _fit_labels(self):
+        """Each bar shortens its labels when its full ones would not fit the
+        window, so nothing is ever cut off: the footer first (it is the
+        wider), then the header too, when the band also drops its flare lane.
+        The bars do not size the window (they would hold it at their full
+        labels); the window itself stops where the short ones end, measured
+        once they are in place."""
+        width = self.width()
+        header_full = self._bar_widths(self.header, self.span_buttons + self.step_buttons, [self.span_label, self.step_label], self._compact)[0]
+        footer_full = self._bar_widths(self.footer, self._footer_buttons(), [self.fps_label], self._footer_compact)[0]
+        self._set_compact(header_full > width or width < NARROW_WIDTH, footer_full > width)
+        header_short = self._bar_widths(self.header, self.span_buttons + self.step_buttons, [self.span_label, self.step_label], self._compact)[1]
+        footer_short = self._bar_widths(self.footer, self._footer_buttons(), [self.fps_label], self._footer_compact)[1]
+        self.setMinimumWidth(max(header_short, footer_short, 0))
+
+    def _set_compact(self, compact, footer=None):
+        footer = compact if footer is None else (footer or compact)
+        if compact == self._compact and footer == self._footer_compact:
             return
+        self._compact, self._footer_compact = compact, footer
+        for button in self.span_buttons + self.step_buttons:
+            self._label(button, compact)
+        for button in self._footer_buttons():
+            self._label(button, footer)
+        self.span_label.setVisible(not compact)
+        self.step_label.setVisible(not compact)
+        self.fps_label.setVisible(not footer)
+        self.band.set_compact(compact)
 
-        self.crop_mode = not self.crop_mode
-        self.crop_btn.setVisible(not self.crop_mode)
-        self.confirm_crop_btn.setVisible(self.crop_mode)
-        self.cancel_crop_btn.setVisible(self.crop_mode)
+    @staticmethod
+    def _label(button, short):
+        labels = button.property("labels")
+        if labels:
+            button.setText(labels[1] if short else labels[0])
 
-        # Pause animation while cropping
-        if self.crop_mode and self.playing:
-            self.pause_animation()
-
-        self.display_current_frame()
-
-    def confirm_crop(self):
-        """Apply the crop to all loaded frames."""
-        if not self.selection_label:
-            return
-
-        crop_rect = self.selection_label.get_selection_rect()
-        if crop_rect.isEmpty():
-            QMessageBox.warning(self, "No selection", "Draw a rectangle to crop.")
-            return
-
-        # Apply crop to all frames
-        total = len(self.frames)
-        with busy(f"Cropping {total} frames…", self) as task:
-            for done, frame_data in enumerate(self.frames.values(), 1):
-                for inst_name, pixmap in frame_data.items():
-                    if pixmap:
-                        frame_data[inst_name] = pixmap.copy(crop_rect)
-                task.update(done=done, total=total)
-
-        QMessageBox.information(
-            self, "Crop applied", f"Cropped {len(self.frames)} frames."
-        )
-
-        # Exit crop mode
-        self.toggle_crop_mode()
-
-    def cancel_crop(self):
-        """Exit crop mode without changes."""
-        self.toggle_crop_mode()
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_labels()
 
     def closeEvent(self, event):
-        """Handle window close."""
+        if self._closing:  # closed once already: there is nothing left to stop
+            event.accept()
+            return
         # An export under way goes first: its dialog says it is stopping
         dialog = self.findChild(WorkDialog)
         if dialog is not None and dialog.isVisible():
@@ -1768,26 +2283,24 @@ class HelioviewerBrowser(HelioviewerExportMixin, QMainWindow):
             dialog.reject()
             event.ignore()
             return
-
-        # Set closing flag first to prevent signal handlers from updating UI
         self._closing = True
-
-        # Clear download queue first to prevent new downloads from starting
-        self.download_queue.clear()
-
-        # Requests cannot be interrupted, and take up to their timeout: the
-        # window does not wait for them
-        for loader in self.frame_loaders:
-            self._abandon(loader)
-        self.frame_loaders.clear()
+        self.playback.pause()
+        self._note_timer.stop()
+        if self.planner is not None:
+            self.planner.cancel()
+            _park(self.planner)
         if self.lwa_loader is not None:
             self._abandon_lwa(self.lwa_loader)
             self.lwa_loader = None
-        _park(self.instrument_loader)  # (its result finds _closing set)
-
-        self.pause_animation()
+        _park(self.events_thread)
+        _park(self.sources_thread)
+        self.loader.close(wait_ms=0)  # a request under way is parked, not waited for
+        self.settings.setValue(KEY.format("splitter"), self.splitter.sizes())
         # The frames go now: the theme's hold on the window can outlast it
-        self.frames.clear()
+        self.view.set_frame(None)
+        self.frames = []
+        self.plan = None
+        self._diff_cache.clear()
         if self.testAttribute(Qt.WA_DeleteOnClose):
             theme_manager.unregister_owner(self)
         event.accept()

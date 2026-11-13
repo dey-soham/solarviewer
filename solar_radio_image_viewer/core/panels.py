@@ -378,7 +378,7 @@ class PanelsMixin:
         self.noaa_events_btn.setToolTip(
             f"Solar activity{when} — NOAA events, active regions, CMEs"
         )
-        self.helioviewer_btn.setToolTip(f"SDO/SOHO images{when}")
+        self.helioviewer_btn.setToolTip(f"Helioviewer images{when} — SDO, SOHO, STEREO and more, with this image's field boxed")
         self.range_unit_label.setText(self.display_unit() if loaded else "")
         self.show_radial_row()
         self.cursor_readout.set_frame_name(self.hpc_btn.current_label() if loaded else "")

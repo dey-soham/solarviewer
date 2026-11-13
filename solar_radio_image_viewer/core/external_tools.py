@@ -7,6 +7,7 @@ import time
 import traceback
 
 from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import QMessageBox
 
 from ..ui.activity import begin_activity
 from ..ui.background import Cancelled, run_in_thread
@@ -27,17 +28,6 @@ TOOLS_SAYING_HELLO = ("dynamic_spectrum_viewer",)
 TOOL_HELLO_S = 20
 # The other tools say nothing: about how long their window takes to appear
 TOOL_START_S = 3
-
-
-def _helioviewer_reachable():
-    """Whether the Helioviewer API answers (on a thread: this waits)."""
-    import requests
-
-    try:
-        requests.get("https://api.helioviewer.org/v2/", timeout=3)
-    except requests.RequestException:
-        return False
-    return True
 
 
 class ExternalToolsMixin:
@@ -260,14 +250,11 @@ read -p "Press Enter to close..."
             )
 
     def open_helioviewer_browser(self):
-        """Open Helioviewer browser window."""
-        try:
-            from PyQt5.QtWidgets import QMessageBox
+        """Open the Helioviewer browser, on the current image's time when it has one."""
+        from .. import helioviewer_api as hv
 
-            # Fast connection check
-            if not run_in_thread(
-                self, "Checking the connection to Helioviewer…", _helioviewer_reachable
-            ):
+        try:
+            if not run_in_thread(self, "Checking the connection to Helioviewer…", hv.helioviewer_reachable):
                 QMessageBox.warning(
                     self,
                     "Connection error",
@@ -276,10 +263,9 @@ read -p "Press Enter to close..."
                 return
 
             with busy("Opening the Helioviewer browser…", self):
-                from ..helioviewer_browser import HelioviewerBrowser
+                from ..helioviewer_browser import open_helioviewer
 
-                browser = HelioviewerBrowser(self)
-                browser.show()
+                open_helioviewer(self, at=self._get_current_tab_datetime())
         except Cancelled:
             self.statusBar().showMessage("Cancelled")
         except Exception:

@@ -619,6 +619,9 @@ class ContextImagesTabMixin:
         header_layout.addWidget(self.images_noon_btn)
         self.images_cursor_btn = link_button("", self.show_images_at_cursor)
         header_layout.addWidget(self.images_cursor_btn)
+        self.browse_btn = link_button("", self.browse_around_cursor)
+        self.browse_btn.setToolTip("Helioviewer's images an hour each side of the cursor, in the Helioviewer browser")
+        header_layout.addWidget(self.browse_btn)
         images_layout.addWidget(self.images_header)
 
         self.images_empty = empty_note("")
@@ -964,17 +967,43 @@ class ContextImagesTabMixin:
             self.show_high_res_image(img)
 
     def _play_lwa_movie(self, img):
-        """The movie's frames from its first to its last, at their own times."""
+        """The movie's frames from its first to its last, at their own times,
+        in the Helioviewer browser, opened at the cursor's time."""
         from .. import helioviewer_lwa as lwa
-        from ..helioviewer_browser import HelioviewerBrowser
+
+        self._open_browser(at=self._cursor_datetime(), instrument=lwa.ALL_BANDS, movie_day=img.proved_day)
+
+    def _cursor_datetime(self):
+        """The cursor on the day shown, as a naive UTC datetime, or None."""
+        cursor = self._cursor_time()
+        if cursor is None or self.shown_date is None:
+            return None
+        return datetime.combine(self.shown_date, cursor)
+
+    def browse_around_cursor(self):
+        """The Helioviewer browser an hour each side of the cursor, the cursor marked."""
+        when = self._cursor_datetime()
+        if when is None:
+            return
+        self._open_browser(at=when, span=3600, mark=("Solar Activity cursor", when))
+
+    def _open_browser(self, **target):
+        """The Helioviewer browser on ``target``; a time it chooses moves this tab's cursor."""
+        from ..helioviewer_browser import open_helioviewer
 
         try:
-            browser = HelioviewerBrowser(self.window(), initial_instrument=lwa.ALL_BANDS, movie_day=img.proved_day)
+            browser = open_helioviewer(self.window(), **target)
         except Exception as e:
             show_error(self, "Could not open the Helioviewer browser", "The window could not be opened.", e)
+            return None
+        browser.time_chosen.connect(self._time_chosen_in_browser)
+        return browser
+
+    def _time_chosen_in_browser(self, when):
+        """The browser's cursor, on this tab's band when it is on the day shown."""
+        if self.shown_date is None or when is None or when.date() != self.shown_date:
             return
-        browser.setAttribute(Qt.WA_DeleteOnClose)  # its frames go with it
-        browser.show()
+        self.day_axis.set_cursor(when.hour + when.minute / 60 + when.second / 3600)
 
     def _show_tile_menu(self, tile, pos, img):
         menu = QMenu(tile)
@@ -1019,6 +1048,9 @@ class ContextImagesTabMixin:
         if offer:
             self.images_cursor_btn.setText(f"Show images at {cursor:%H:%M}")
             self.images_cursor_btn.setEnabled(self.images_lookup is None)
+        self.browse_btn.setVisible(cursor is not None)
+        if cursor is not None:
+            self.browse_btn.setText(f"Browse around {cursor:%H:%M}")
 
     def show_images_at_cursor(self):
         """The images nearest the cursor. A dozen requests, so only when asked."""

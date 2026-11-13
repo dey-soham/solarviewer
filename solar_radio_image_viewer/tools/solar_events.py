@@ -12,16 +12,7 @@ from ..ui.busy import busy
 
 logger = logging.getLogger(__name__)
 
-
-def helioviewer_reachable():
-    """Whether the Helioviewer API answers."""
-    import requests
-
-    try:
-        requests.get("https://api.helioviewer.org/v2/", timeout=3)
-    except requests.RequestException:
-        return False
-    return True
+HELIOVIEWER_SPAN_S = 30 * 60  # the browser opens on this much each side of the image's time
 
 
 class SolarEventsMixin:
@@ -114,67 +105,66 @@ class SolarEventsMixin:
             traceback.print_exc()
             QMessageBox.critical(self, "Error", error_message)
 
+    def radio_field(self):
+        """The image's field ``(x1, y1, x2, y2)`` in arcsec, for a solar
+        (helioprojective) image; None for any other, or without a sky frame."""
+        from ..core import compare_sync
+
+        data = getattr(self, "current_image_data", None)
+        if data is None or compare_sync.frame_kind(self) != "solar":
+            return None
+        height, width = data.shape[:2]
+        one = compare_sync.to_world(self, -0.5, -0.5)
+        other = compare_sync.to_world(self, width - 0.5, height - 0.5)
+        if one is None or other is None:
+            return None
+        return one[0] * 3600, one[1] * 3600, other[0] * 3600, other[1] * 3600
+
     def open_helioviewer_with_time(self):
-        """Open Helioviewer Browser with time range from current file (FITS or CASA)."""
+        """Open the Helioviewer browser on the image's time: its images half
+        an hour each side, the image's field boxed and its time marked."""
+        import os
+
+        from PyQt5.QtWidgets import QMessageBox
+
+        from .. import helioviewer_api as hv
+
         try:
-            from PyQt5.QtWidgets import QMessageBox
-
-            # Fast connection check
-            try:
-                reachable = run_in_thread(
-                    self, "Checking the connection to Helioviewer…", helioviewer_reachable
-                )
-            except Cancelled:
-                self.show_status_message("Cancelled")
-                return
-            if not reachable:
-                QMessageBox.warning(
-                    self,
-                    "Connection error",
-                    "Could not connect to the Helioviewer API.\nPlease check your internet connection and try again.",
-                )
-                return
-
-            from datetime import timedelta
-
-            from PyQt5.QtCore import QDateTime
-
-            with busy("Opening the Helioviewer browser…", self):
-                from ..helioviewer_browser import HelioviewerBrowser
-
-                obs_datetime = self._observation_datetime()
-
-                # Set time range if we found a time
-                initial_start = None
-                initial_end = None
-
-                if obs_datetime:
-                    if not isinstance(obs_datetime, datetime):
-                        obs_datetime = datetime.combine(obs_datetime, time())
-                    start_dt = obs_datetime - timedelta(minutes=30)
-                    end_dt = obs_datetime + timedelta(minutes=30)
-                    initial_start = QDateTime(start_dt)
-                    initial_end = QDateTime(end_dt)
-                    self.show_status_message(
-                        f"Opening the Helioviewer browser for {obs_datetime} (±30 min)"
-                    )
-                else:
-                    self.show_status_message(
-                        "No observation time found in file, using default time range"
-                    )
-
-                # Launch browser
-                browser = HelioviewerBrowser(
-                    self, initial_start=initial_start, initial_end=initial_end
-                )
-                browser.show()
-
-        except Exception as e:
-            import traceback
-
-            from PyQt5.QtWidgets import QMessageBox
-
-            traceback.print_exc()
+            reachable = run_in_thread(self, "Checking the connection to Helioviewer…", hv.helioviewer_reachable)
+        except Cancelled:
+            self.show_status_message("Cancelled")
+            return
+        if not reachable:
             QMessageBox.warning(
-                self, "Error", f"Could not open the Helioviewer browser: {str(e)}"
+                self,
+                "Connection error",
+                "Could not connect to the Helioviewer API.\nPlease check your internet connection and try again.",
             )
+            return
+        try:
+            with busy("Opening the Helioviewer browser…", self):
+                from ..helioviewer_browser import open_helioviewer
+
+                when = self._observation_datetime()
+                if when is not None and not isinstance(when, datetime):
+                    when = datetime.combine(when, time())
+                mark = None
+                if when is not None:
+                    mark = ("Radio image", when)
+                    self.show_status_message(f"Opening the Helioviewer browser around {when:%Y-%m-%d %H:%M:%S} UTC")
+                else:
+                    self.show_status_message("The image has no observation time: the browser opens on today")
+                name = getattr(self, "imagename", None) or ""
+                open_helioviewer(
+                    self,
+                    at=when,
+                    span=HELIOVIEWER_SPAN_S if when is not None else None,
+                    fov=self.radio_field(),
+                    mark=mark,
+                    mark_tip=os.path.basename(name),
+                )
+        except Exception as e:
+            logger.error("Could not open the Helioviewer browser: %s", e, exc_info=True)
+            from ..ui.errors import show_error
+
+            show_error(self, "Could not open the Helioviewer browser", "The window could not be opened.", e)

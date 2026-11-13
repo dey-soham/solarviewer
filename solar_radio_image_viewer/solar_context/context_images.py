@@ -8,7 +8,10 @@ from datetime import date, datetime, time, timezone
 from typing import Callable, List, Optional, Tuple
 import logging
 import re
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urljoin
+
+from .. import helioviewer_api as hv
+from .. import helioviewer_catalog as catalog
 
 logger = logging.getLogger(__name__)
 
@@ -166,17 +169,19 @@ GROUP_MEMBERS = {
 }
 GROUP_OF_TITLE = {title: group for group, titles in GROUP_MEMBERS.items() for title in titles}
 
-# Image scale of the thumbnail (320 px) and of the large view, and the large
-# view's width: Helioviewer scales every instrument to 1 AU, so one scale fits
-# all that show the disk, however far away they are
-DISK_FIELD = (7.5, 1.6, 1600)
-FIELDS = {
-    "LASCO C2": (37.5, 6, 2048),  # Inner coronagraph - needs MORE FoV than before
-    "LASCO C3": (120, 28.0, 2048),  # Outer coronagraph - needs A LOT MORE FoV
-    "SWAP 174": (10.5, 3.2, 1024),  # the corona well above the limb
-    "KCor": (18, 5.6, 1024),
-    "PUNCH": (1040, 162, 2048),
-    "COR2-A": (90, 14, 2048),
+# The large view's width in pixels; the thumbnail is 320. Both show the
+# instrument's default field of view (the shared table in helioviewer_catalog):
+# Helioviewer scales every instrument to 1 AU, so one field fits all that show
+# the disk, however far away they are
+THUMB_SIZE = 320
+FULL_SIZE = 1600
+FULL_SIZES = {
+    "LASCO C2": 2048,
+    "LASCO C3": 2048,
+    "SWAP 174": 1024,
+    "KCor": 1024,
+    "PUNCH": 2048,
+    "COR2-A": 2048,
 }
 
 # Before these a layer has no image of the date, so it is not asked
@@ -278,22 +283,6 @@ def images_of_date(images, day: date) -> Tuple[list, list]:
     return kept, left_out
 
 
-def screenshot_url(date_str: str, layer_path: str, scale, size: int) -> str:
-    """A Helioviewer PNG, centred on the Sun, ``size`` pixels wide at ``scale``."""
-    params = {
-        "date": date_str,
-        "imageScale": str(scale),
-        "layers": layer_path,
-        "x0": "0",
-        "y0": "0",
-        "width": str(size),
-        "height": str(size),
-        "display": "true",
-        "watermark": "false",
-    }
-    return f"https://api.helioviewer.org/v2/takeScreenshot/?{urlencode(params)}"
-
-
 def view_from_header(header: str) -> Tuple[str, str]:
     """Where a spacecraft stood, from an image's FITS header: for the tile and
     for its tooltip. Stonyhurst longitude is its angle from Earth."""
@@ -308,24 +297,19 @@ def view_from_header(header: str) -> Tuple[str, str]:
     return words, f"Seen from {words}, {float(distance.group(1)) / AU_METRES:.2f} AU from the Sun"
 
 
-def _closest_image(session, nickname, date_str, source_id) -> dict:
-    """Helioviewer's closest image to a time, {} if it does not say."""
-    url = f"https://api.helioviewer.org/v2/getClosestImage/?date={date_str}&sourceId={source_id}"
+def _closest_image(nickname, date_str, source_id) -> Optional[hv.Closest]:
+    """Helioviewer's closest image to a time, None if it does not say."""
     try:
-        res = session.get(url, timeout=10)
-        if res.status_code == 200:
-            return res.json()
+        return hv.closest(source_id, date_str)
     except Exception as e:
         logger.warning("Failed to fetch image date for %s: %s", nickname, e)
-    return {}
+    return None
 
 
-def _other_view(session, nickname, image_id) -> Tuple[str, str]:
+def _other_view(nickname, image_id) -> Tuple[str, str]:
     """One more request, for the images that are not seen from Earth."""
     try:
-        res = session.get(f"https://api.helioviewer.org/v2/getJP2Header/?id={image_id}", timeout=10)
-        if res.status_code == 200:
-            return view_from_header(res.text)
+        return view_from_header(hv.jp2_header_xml(image_id))
     except Exception as e:
         logger.warning("Failed to fetch the viewpoint of %s: %s", nickname, e)
     return "", ""
@@ -360,33 +344,26 @@ def fetch_from_helioviewer(
         if progress is not None:
             progress(index, len(chosen))
         nickname, layer_path, observatory, description, source_id = entry
-        thumb_scale, full_scale, full_size = FIELDS.get(nickname, DISK_FIELD)
+        fov = catalog.fov_of_layer(layer_path, nickname)
+        full_size = FULL_SIZES.get(nickname, FULL_SIZE)
 
-        from ..utils import get_global_session
+        found = _closest_image(nickname, date_str, source_id)
 
-        session = get_global_session()
-        found = _closest_image(session, nickname, date_str, source_id)
-
-        image_date = None
-        try:
-            if found.get("date"):
-                image_date = datetime.strptime(found["date"], "%Y-%m-%d %H:%M:%S")
-        except ValueError as e:
-            logger.warning("Failed to read image date for %s: %s", nickname, e)
+        image_date = found.date if found is not None else None
 
         view = ""
-        if nickname in OTHER_VIEW_TITLES and found.get("id"):
-            view, seen_from = _other_view(session, nickname, found["id"])
+        if nickname in OTHER_VIEW_TITLES and found is not None and found.id is not None:
+            view, seen_from = _other_view(nickname, found.id)
             description = f"{description}. {seen_from}" if seen_from else description
-        field = (found.get("width") or 0) * (found.get("scale") or 0)
+        field = found.field_arcsec if found is not None else 0
         if nickname.startswith("XRT") and 0 < field < LEAST_FULL_FIELD:
             description = f"{description}. Pointed at part of the Sun, {field:.0f}″ across"
 
         images.append(
             ContextImage(
                 title=nickname,
-                thumb_url=screenshot_url(date_str, layer_path, thumb_scale, 320),
-                page_url=screenshot_url(date_str, layer_path, full_scale, full_size),
+                thumb_url=hv.screenshot_url(layer_path, date_str, hv.fov_scale(fov, THUMB_SIZE), 0, 0, THUMB_SIZE),
+                page_url=hv.screenshot_url(layer_path, date_str, hv.fov_scale(fov, full_size), 0, 0, full_size),
                 instrument=observatory,
                 description=description,
                 credits="Helioviewer",
@@ -423,7 +400,7 @@ def fetch_from_solarmonitor(event_date: date) -> List[ContextImage]:
         response = session.get(index_url)
 
         if response.status_code != 200:
-            print(f"SolarMonitor index fetch failed: {response.status_code}")
+            logger.warning("SolarMonitor index fetch failed: %s", response.status_code)
             return []
 
         html = response.text
@@ -466,7 +443,7 @@ def fetch_from_solarmonitor(event_date: date) -> List[ContextImage]:
             )
 
     except Exception as e:
-        print(f"Error scraping SolarMonitor: {e}")
+        logger.warning("Error scraping SolarMonitor: %s", e)
 
     return images
 
@@ -540,7 +517,7 @@ def resolve_full_image_url(page_url: str) -> Optional[str]:
                 return urljoin("https://solarmonitor.org/", img_path)
 
     except Exception as e:
-        print(f"Error resolving full image: {e}")
+        logger.warning("Error resolving full image: %s", e)
 
     return None
 

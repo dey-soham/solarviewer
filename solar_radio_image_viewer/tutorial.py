@@ -910,10 +910,10 @@ class TutorialDialog(QDialog):
                 "Helioviewer browser",
                 [
                     "Access via Apps → Helioviewer browser or the sun icon at the top of the inspector",
-                    "Browse solar images by time range",
-                    "Multiple instruments: SDO, SOHO, STEREO, GOES, Solar Orbiter",
-                    "Frame-by-frame navigation with time slider",
-                    "Batch download and MP4 export",
+                    "Opens on the current image's time, with its field boxed on the solar images",
+                    "Instruments from SDO, SOHO, STEREO, GOES, Solar Orbiter and the OVRO-LWA daily movie",
+                    "A time band under the image: click to seek, play, step frame by frame, compare with a base frame",
+                    "Save a frame, export an MP4 or GIF, or open a frame as FITS in the viewer",
                 ],
             )
         )

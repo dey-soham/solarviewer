@@ -57,6 +57,22 @@ def _legacy_dir():
     return Path.home() / ".solarviewer_cache"
 
 
+def _helioviewer_dir():
+    """The Helioviewer browser's frames and FITS files (under ``$XDG_CACHE_HOME`` when that is set)."""
+    from .. import helioviewer_api
+
+    return helioviewer_api.cache_root()
+
+
+def _helioviewer_apart():
+    """Whether the Helioviewer folder lies outside the main cache (counted on its own then)."""
+    try:
+        _helioviewer_dir().relative_to(_cache_root())
+    except ValueError:
+        return True
+    return False
+
+
 def _measure_caches(remote_cache):
     """[(key, name, bytes, files, description)] of each cache."""
 
@@ -104,24 +120,16 @@ def _measure_caches(remote_cache):
         ),
     ]
 
-    # Helioviewer / API JSON Cache
-    json_size = json_count = 0
-    try:
-        if _cache_root().exists():
-            for f in _cache_root().glob("*.json"):
-                if f.is_file():
-                    json_size += f.stat().st_size
-                    json_count += 1
-    except Exception:
-        pass
-    if json_size > 0:
+    # The Helioviewer browser's frames (PNG with a JSON sidecar each) and FITS files
+    helioviewer_size, helioviewer_count = size_of(_helioviewer_dir())
+    if helioviewer_size > 0:
         cache_info.append(
             (
-                "json",
-                "API Metadata Cache",
-                json_size,
-                json_count,
-                "Cached JSON responses from Helioviewer and other APIs",
+                "helioviewer",
+                "Helioviewer Frames",
+                helioviewer_size,
+                helioviewer_count,
+                "Images from the Helioviewer browser, kept to 2 GB (downloaded again when needed)",
             )
         )
 
@@ -158,7 +166,7 @@ _CLEARED_NAMES = {
     "pieces": "Dynamic Spectrum Slices",
     "masks": "Dynamic Spectrum Masks",
     "noaa": "Solar Activity",
-    "json": "API Metadata",
+    "helioviewer": "Helioviewer Frames",
     "sunpy": "Sunpy Data",
     "old": "Legacy Cache",
 }
@@ -169,15 +177,12 @@ def _clear_cache(key, remote_cache):
     try:
         if key == "remote":
             remote_cache.clear_cache()
-        elif key == "json":
-            if _cache_root().exists():
-                for f in _cache_root().glob("*.json"):
-                    f.unlink()
         else:
             folders = {
                 "pieces": [_pieces_dir()],
                 "masks": [_masks_dir()],
                 "noaa": [_cache_root() / "noaa_events"],
+                "helioviewer": [_helioviewer_dir()],
                 "sunpy": _sunpy_dirs(),
                 "old": [_legacy_dir()],
             }[key]
@@ -194,8 +199,12 @@ def _total_cache_size():
     """Bytes in all the caches."""
     total_size = 0
     # 1. Main solarviewer cache (~/.cache/solarviewer): this includes remote
-    # files, noaa events, and json metadata. 2. Sunpy cache. 3. Legacy cache.
-    for folder in (_cache_root(), *_sunpy_dirs(), _legacy_dir()):
+    # files, noaa events, and the Helioviewer frames unless $XDG_CACHE_HOME
+    # puts them elsewhere. 2. Sunpy cache. 3. Legacy cache.
+    folders = [_cache_root(), *_sunpy_dirs(), _legacy_dir()]
+    if _helioviewer_apart():
+        folders.append(_helioviewer_dir())
+    for folder in folders:
         try:
             total_size += _folder_size(folder)[0]
         except Exception:

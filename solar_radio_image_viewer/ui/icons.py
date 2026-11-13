@@ -107,3 +107,41 @@ def _svg_pixmap(path, size, colour=None):
     renderer.render(painter)
     painter.end()
     return pixmap
+
+
+# The playback buttons' shapes on a 16 px square: filled polygons
+_BAR_LEFT = ((3, 3), (5, 3), (5, 13), (3, 13))
+_BAR_RIGHT = ((11, 3), (13, 3), (13, 13), (11, 13))
+TRANSPORT_SHAPES = {
+    "first": (_BAR_LEFT, ((13, 3), (6, 8), (13, 13))),
+    "previous": (((12, 3), (4, 8), (12, 13)),),
+    "play": (((4, 2.5), (13, 8), (4, 13.5)),),
+    "pause": (((4, 3), (7, 3), (7, 13), (4, 13)), ((9, 3), (12, 3), (12, 13), (9, 13))),
+    "next": (((4, 3), (12, 8), (4, 13)),),
+    "last": (((3, 3), (10, 8), (3, 13)), _BAR_RIGHT),
+}
+
+
+def transport_icon(kind, palette):
+    """The icon of a playback button (``first``, ``previous``, ``play``,
+    ``pause``, ``next``, ``last``) in the theme's colours, greyed when its
+    button is disabled. Painted, so it follows a theme change when asked
+    again."""
+    from PyQt5.QtCore import QPointF, Qt
+    from PyQt5.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
+
+    icon = QIcon()
+    for mode, key in ((QIcon.Normal, "text_strong"), (QIcon.Disabled, "disabled")):
+        for scale in (1, 2):
+            pixmap = QPixmap(16 * scale, 16 * scale)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.scale(scale, scale)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(palette[key]))
+            for shape in TRANSPORT_SHAPES[kind]:
+                painter.drawPolygon(QPolygonF([QPointF(x, y) for x, y in shape]))
+            painter.end()
+            icon.addPixmap(pixmap, mode)
+    return icon
