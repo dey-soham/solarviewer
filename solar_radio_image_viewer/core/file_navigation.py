@@ -873,24 +873,93 @@ except Exception:
         before = (self._file_list_index, self.imagename)
         self._file_list_index = new_index
 
-        if self._is_remote_mode:
-            shown = self._load_remote_file(new_path)
-            if not shown and self.imagename == before[1]:
-                self._file_list_index = before[0]  # the image stayed
-        else:
-            self._reset_hpc_state()
-            self.imagename = new_path
-            self.dir_entry.setText(new_path)
-            self.invalidate_contours()
-            # Clear figure to prevent restoring old view limits
-            self.figure.clear()
-            shown = self.on_visualization_changed(dir_load=True)
-            self.update_tab_name_from_path(new_path)
+        # What the step keeps of how the image is looked at: the view (zoom
+        # and pan), the sky frame and unit it was converted to, and with
+        # the range lock on the display (read here: a converted image is
+        # loaded twice, as the file is and then converted)
+        frame, unit, unit_first = self._converted_view()
+        self._step_view = self._view_shown(turned=frame is not None)
+        self._step_display = self._shown_display() if self.range_locked else None
+        # The file as it is stays unseen when a converted view follows it
+        held = (frame or unit) and self.canvas.updatesEnabled()
+        if held:
+            self.canvas.setUpdatesEnabled(False)
+        try:
+            if self._is_remote_mode:
+                shown = self._load_remote_file(new_path)
+                if not shown and self.imagename == before[1]:
+                    self._file_list_index = before[0]  # the image stayed
+            else:
+                self._reset_hpc_state()
+                self.imagename = new_path
+                self.dir_entry.setText(new_path)
+                self.invalidate_contours()
+                # Cleared: the view of the image before is put back by the
+                # drawing itself, where the new one fits it (_step_view)
+                self.figure.clear()
+                shown = self.on_visualization_changed(dir_load=True)
+                self.update_tab_name_from_path(new_path)
+            if shown:
+                self._convert_as_before(frame, unit, unit_first)
+        finally:
+            self._step_view = None
+            self._step_display = None
+            if held:
+                self.canvas.setUpdatesEnabled(True)
+                self.canvas.update()
 
         self._update_nav_buttons()
         if shown:
-            self.show_status_message(f"{done} {os.path.basename(new_path)}")
+            self.show_status_message(self.with_range_note(f"{done} {os.path.basename(new_path)}"))
         return shown
+
+    def _converted_view(self):
+        """(sky frame, unit, unit first) the image shown was converted to
+        with the RA/Dec | Solar XY and Jy/beam | K controls: "radec" or
+        "solar", "jy" or "k", each None where it is shown as the file is;
+        and, converted both ways, whether the unit was converted first."""
+        native = getattr(self, "_native_view", None)
+        if native is None or self.current_image_data is None:
+            return None, None, False
+        kind, scale = self._view_kind()
+        frame = kind if kind and native[0] and kind != native[0] else None
+        unit = scale if scale and native[1] and scale != native[1] else None
+        # (the unit's conversion is shown itself when it came last)
+        unit_first = bool(frame and unit) and self.imagename != getattr(self, "_tb_temp_file", None)
+        return frame, unit, unit_first
+
+    def _convert_as_before(self, frame, unit, unit_first=False):
+        """The image just loaded, converted to the sky frame and unit the
+        one before it was shown in (``_converted_view``), as the controls
+        would, and in the order they did: each control then goes back the
+        way it went for the image before. A conversion that fails says so
+        in the status bar, and the other is not tried; one cancelled
+        leaves the image as the file is, and the next step then converts
+        nothing."""
+        conversions = [(self._to_frame, frame), (self._to_unit, unit)]
+        if unit_first:
+            conversions.reverse()
+        for convert, wanted in conversions:
+            if wanted and not convert(wanted):
+                return
+
+    def _to_frame(self, frame):
+        """Show the image in the sky frame ``frame``; whether it is."""
+        kind = self._view_kind()[0]
+        if kind and kind != frame and self.hpc_btn.isEnabled():
+            quiet, self._quiet_conversion = getattr(self, "_quiet_conversion", False), True
+            try:
+                self.launch_helioprojective_viewer()
+            finally:
+                self._quiet_conversion = quiet
+        return self._view_kind()[0] == frame
+
+    def _to_unit(self, unit):
+        """Show the image in ``unit`` ("jy" or "k"); whether it is."""
+        scale = self._view_kind()[1]
+        if scale and scale != unit and self.tb_btn.isEnabled():
+            self._toggle_tb_mode()
+        return self._view_kind()[1] == unit
 
     def _step_file(self, start, step, done="Loaded"):
         """Load the first image from ``start`` on, ``step`` places at a time:
@@ -917,7 +986,11 @@ except Exception:
         cancelled. Returns what _step_file does; the _on_*_file methods
         return False when there was nothing to do, so None always means
         cancelled."""
-        shown = self._step_file(start, step, done)
+        # (the panes that step with this one take its range once they
+        # have: compare_sync's stepping and frame_stepped)
+        page = getattr(self, "page", None)
+        with page.sync.stepping(self) if page is not None else nullcontext():
+            shown = self._step_file(start, step, done)
         if shown is not None:
             self._stepped(kind)
         if kind in ("prev", "next"):

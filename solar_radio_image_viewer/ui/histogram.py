@@ -5,8 +5,11 @@ values with the display range on it, to set the range by eye.
 A short, wide Matplotlib canvas: the histogram of a sample of the image
 (log counts) as bars, those inside the display range in the accent and
 the rest neutral, and the two range markers, which drag. Dragging emits
-``rangeEdited``. It is drawn as one whole canvas (never blitted in parts),
-so it is right at any display scale.
+``rangeEdited``. The strip spans the bulk of the values and the range,
+and no more: it widens as a marker is pushed past its edge, and narrows
+again once the range comes back. A double click asks for the range of
+the whole image (``fitRequested``). It is drawn as one whole canvas
+(never blitted in parts), so it is right at any display scale.
 """
 
 import numpy as np
@@ -38,6 +41,7 @@ class LevelsHistogram(QWidget):
     dragStarted = pyqtSignal()  # a marker taken hold of
     rangeEdited = pyqtSignal(float, float)  # while a marker is dragged
     rangeChanged = pyqtSignal(float, float)  # when it is let go
+    fitRequested = pyqtSignal()  # a double click: the image's whole range
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,7 +59,10 @@ class LevelsHistogram(QWidget):
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.canvas.setFixedHeight(56)
-        self.canvas.setToolTip("Drag the markers to set the range shown")
+        self.canvas.setToolTip(
+            "Drag the markers to set the range shown.\n"
+            "Double-click for the image's whole range (Auto)."
+        )
         # At a fractional display scale the widget can be a pixel wider
         # than the figure's bitmap; the gap shows the widget's palette,
         # which Matplotlib sets white. An empty one inherits the theme's.
@@ -112,6 +119,25 @@ class LevelsHistogram(QWidget):
     def _bin(self, low, high):
         self._counts, self._edges = np.histogram(self._values, bins=BINS, range=(low, high))
 
+    def _fit(self, widen_only=False):
+        """Bin the bulk of the values and the range, and no more. With
+        ``widen_only`` (a marker is held: the strip does not shrink under
+        the pointer), only if the range has left the bins. Whether the
+        bins changed."""
+        edges = self._edges
+        if edges is None or self._values is None:
+            return False
+        low, high = min(self._bulk[0], self._vmin), max(self._bulk[1], self._vmax)
+        # (a tolerance: the range comes back from the Min/Max fields
+        # rounded, a hair off the edge it was set from)
+        slack = max(edges[-1] - edges[0], high - low) * 1e-5
+        wider = low < edges[0] - slack or high > edges[-1] + slack
+        narrower = low > edges[0] + slack or high < edges[-1] - slack
+        if not (wider or (narrower and not widen_only)):
+            return False
+        self._bin(low, high)
+        return True
+
     def set_range(self, vmin, vmax):
         try:
             vmin, vmax = float(vmin), float(vmax)
@@ -119,15 +145,10 @@ class LevelsHistogram(QWidget):
             return
         if np.isfinite(vmin) and np.isfinite(vmax) and (vmin, vmax) != (self._vmin, self._vmax):
             self._vmin, self._vmax = vmin, vmax
-            edges = self._edges
-            # (a tolerance: the range comes back from the Min/Max fields
-            # rounded, a hair off the edge it was set from)
-            slack = (edges[-1] - edges[0]) * 1e-5 if edges is not None else 0
-            if edges is not None and (vmin < edges[0] - slack or vmax > edges[-1] + slack):
-                # The bins widen to take the range in (and narrow back to
-                # the bulk when it comes back)
-                low, high = self._bulk
-                self._bin(min(low, vmin), max(high, vmax))
+            # The bins take the range in, and come back to the bulk with
+            # it (a preset, Reset, a typed range), but not under a marker
+            # that is being dragged
+            if self._fit(widen_only=self._drag is not None):
                 self._draw()
             else:
                 self._place_markers()
@@ -207,6 +228,13 @@ class LevelsHistogram(QWidget):
         return marker if distances[marker] <= tolerance else None
 
     def _on_press(self, event):
+        if event.button == 1 and event.dblclick:
+            self._drag = None
+            self._push_timer.stop()
+            self.canvas.setCursor(Qt.ArrowCursor)
+            if self._counts is not None:
+                self.fitRequested.emit()
+            return
         if event.button == 1:
             self._drag = self._nearest_marker(event)
             if self._drag:
@@ -266,4 +294,8 @@ class LevelsHistogram(QWidget):
         self._push_timer.stop()
         if self._drag:
             self._drag = None
+            # Let go, the strip comes back to the bulk and the range: a
+            # marker pulled in from far out is then easy to place
+            if self._fit():
+                self._draw()
             self.rangeChanged.emit(self._vmin, self._vmax)

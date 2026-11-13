@@ -479,7 +479,7 @@ class ComparePanel(QWidget):
         self.apply_button = link_button("Apply to all panes", page.apply_display_to_all)
         self.apply_button.setToolTip(
             "Give every pane the active pane's colormap, stretch, gamma and "
-            "overlays, and its range where the units match"
+            "overlays, and its range where the Stokes product and unit match"
         )
         apply_row.addWidget(self.apply_button)
         block_layout.addLayout(apply_row)
@@ -935,7 +935,7 @@ class ImagePage(QWidget):
         button = link_button("Apply to all panes", self.apply_display_to_all)
         button.setToolTip(
             "Give every pane this pane's colormap, stretch, gamma and overlays, "
-            "and its range where the units match"
+            "and its range where the Stokes product and unit match"
         )
         layout.addWidget(button)
         row.hide()
@@ -1266,14 +1266,14 @@ class ImagePage(QWidget):
     def apply_display_to_all(self):
         """Give every pane the active pane's colormap, stretch, gamma and
         overlay switches (not its contours, which are images of their
-        own), and its range where the units match."""
+        own), and its range where the Stokes product and unit match."""
         source = self._active
         if source is None:
             return
         cmap = source.cmap_combo.currentText()
         stretch = source.stretch_combo.currentText()
         gamma = source.gamma_entry.text()
-        unit = source.display_unit()
+        unit = source.range_key()  # (what the range is of)
         try:
             vmin, vmax = float(source.vmin_entry.text()), float(source.vmax_entry.text())
         except ValueError:
@@ -1327,7 +1327,7 @@ class ImagePage(QWidget):
                 pane.gamma_slider.setValue(int(float(gamma) * 20))
             except ValueError:
                 pass
-            if vmin is not None and pane.display_unit() == unit:
+            if vmin is not None and pane.range_key() == unit:
                 pane.show_range(vmin, vmax)
                 pane.show_range_preset(None)
             for box, on in zip(boxes, overlays):

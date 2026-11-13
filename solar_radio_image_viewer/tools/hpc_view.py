@@ -8,6 +8,7 @@ import os
 
 from ..processing.fits_io import is_fits, readable_image_path
 from ..processing.image_meta import casa_info, fits_header
+from ..processing.sky_view import keeps_view
 from ..processing.workers import call_function
 from ..ui.background import Cancelled, run_in_background
 from ..ui.busy import begin_busy, end_busy
@@ -32,8 +33,10 @@ class HpcViewMixin:
     ``update_tab_name_from_path``
     """
 
+    @keeps_view
     def launch_helioprojective_viewer(self):
-        """Toggle between HPC and RA/DEC views in main canvas"""
+        """Toggle between HPC and RA/DEC views in main canvas. A view
+        zoomed in stays on the same part of the sky."""
         if not hasattr(self, "imagename") or not self.imagename:
             self.show_status_message("No image loaded")
             return
@@ -384,6 +387,10 @@ class HpcViewMixin:
     def _reset_hpc_state(self):
         """Reset HPC and TB state when loading a new image"""
         import os
+
+        # The frame and unit the new image is in itself, noted when it is
+        # shown (viewer's _update_visualization)
+        self._native_view = None
 
         # Clear the original imagename reference for HPC
         self._original_imagename = None

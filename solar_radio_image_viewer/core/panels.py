@@ -519,6 +519,7 @@ class PanelsMixin:
         self.levels.dragStarted.connect(self._on_levels_grabbed)
         self.levels.rangeEdited.connect(self._on_levels_dragged)
         self.levels.rangeChanged.connect(self._on_levels_set)
+        self.levels.fitRequested.connect(lambda: self.apply_auto_range("minmax"))
         # The image follows a drag as a quick preview (rendering's
         # begin_range_preview), drawn at most every so often, not on
         # every mouse event
@@ -624,10 +625,50 @@ class PanelsMixin:
             buttons.append(button)
         self.auto_minmax_button, self.auto_percentile_button, self.auto_median_button = buttons
         layout.addWidget(segmented(buttons, stretch=True))
+
+        # The display kept for the images that follow, and back to how
+        # this one opened
+        self.keep_range_switch = QCheckBox("Keep for next images")
+        self.keep_range_switch.setObjectName("Switch")
+        self.keep_range_switch.setToolTip(
+            "<qt>Show the next images in this pane as this one is shown: the same range, "
+            "stretch, gamma and colormap, instead of each image scaled to its own values. "
+            "For stepping through a time series ([ and ]). An image in another unit or "
+            "Stokes product is scaled afresh.</qt>"
+        )
+        self.reset_display_btn = link_button("Reset", self.reset_display)
+        self.reset_display_btn.setToolTip(
+            "Back to how this image opened: its range, stretch, gamma and colormap"
+        )
+        self.reset_display_btn.setAccessibleName("Reset the display")
+        keep_row = QHBoxLayout()
+        keep_row.setContentsMargins(0, 0, 0, 0)
+        keep_row.setSpacing(8)
+        keep_row.addWidget(self.keep_range_switch)
+        keep_row.addStretch()
+        keep_row.addWidget(self.reset_display_btn)
+        layout.addLayout(keep_row)
         return block
 
     def _on_range_typed(self):
-        """A range typed in is no preset's."""
+        """A range typed in is no preset's. A box that holds no number
+        goes back to the value shown, and the status bar says why."""
+        shown = getattr(self, "_last_norm_params", None)
+        for index, (name, entry) in enumerate((("Min", self.vmin_entry), ("Max", self.vmax_entry))):
+            try:
+                ok = math.isfinite(float(entry.text()))
+            except ValueError:
+                ok = False
+            if ok:
+                continue
+            if self.current_image_data is None or shown is None:
+                return
+            typed = entry.text().strip()
+            self.show_range(shown[0], shown[1])
+            self.show_status_message(
+                f"{name} must be a number" + (f" (not \"{typed}\")" if typed else "") + ": the range is unchanged"
+            )
+            return
         self.show_range_preset(None)
         self.update_display()
 

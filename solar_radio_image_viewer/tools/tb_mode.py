@@ -5,6 +5,7 @@ Brightness temperature (TB) mode tool for SolarViewer.
 from PyQt5.QtWidgets import QMessageBox
 
 from ..processing.maps import TEMP_EXPORT_SUFFIX, write_flux_map, write_tb_map
+from ..processing.sky_view import keeps_view
 from ..ui.background import Cancelled, run_in_background
 from ..ui.busy import begin_busy, end_busy
 from ..ui.errors import show_error
@@ -22,8 +23,10 @@ class TbModeMixin:
     ``_temp_file_id``
     """
 
+    @keeps_view
     def _toggle_tb_mode(self):
-        """Toggle between flux (Jy/beam) and brightness temperature (K) view"""
+        """Toggle between flux (Jy/beam) and brightness temperature (K)
+        view; the view (zoom and pan) stays."""
         import os
         import tempfile
 

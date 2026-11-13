@@ -13,7 +13,7 @@ load, a rule in ``detect_instrument``.
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, Optional, Tuple, Union
 
 import matplotlib
@@ -396,20 +396,28 @@ class PresetsMixin:
                 AUTO_RANGES[mode].status_message.format(vmin=vmin, vmax=vmax)
             )
 
-    def apply_instrument_preset(self, instrument, variant=None):
-        """Apply an ``INSTRUMENTS`` preset (colormap, stretch, gamma, range)."""
+    def apply_instrument_preset(self, instrument, variant=None, vrange=None):
+        """Apply an ``INSTRUMENTS`` preset (colormap, stretch, gamma, range);
+        ``vrange`` (vmin, vmax) in place of the preset's range."""
         if self.current_image_data is None:
             return
 
         preset = get_preset(instrument, variant)
         with busy(f"Applying the {preset.label} preset…", self):
-            self._apply_preset(preset)
+            self._apply_preset(preset, vrange)
 
-    def _apply_preset(self, preset):
+    def _apply_preset(self, preset, vrange=None):
         self.set_background_subtraction(preset.background, redraw=False)
         self.set_radial_filter(preset.radial, redraw=False)
-        vmin, vmax = compute_range(self.display_data(), preset.range)
-        self.set_range(vmin, vmax)
+        if vrange is None:
+            vmin, vmax = compute_range(self.display_data(), preset.range)
+            self.set_range(vmin, vmax)
+        else:
+            vmin, vmax = vrange
+        if hasattr(self, "show_range_preset"):
+            # (the preset buttons mark the range's rule when it is one of theirs)
+            own = vrange is None and isinstance(preset.range, str)
+            self.show_range_preset(preset.range if own else None)
 
         gamma = self._current_gamma() if preset.gamma is None else preset.gamma
         cmap = resolve_cmap(preset, self.cmap_combo.currentText())
@@ -430,6 +438,11 @@ class PresetsMixin:
         self.cmap_combo.setCurrentText(cmap)
         self.cmap_combo.blockSignals(False)
         self.gamma_entry.setText(_format_gamma(gamma))
+        slider = getattr(self, "gamma_slider", None)
+        if slider is not None:  # (the slider shows the gamma in the box)
+            slider.blockSignals(True)
+            slider.setValue(round(min(max(gamma, 0.05), 3.0) * 20))
+            slider.blockSignals(False)
         # A redraw still queued from an earlier widget change (schedule_plot)
         # would replace this one with the rounded values in the entry boxes
         if getattr(self, "_plot_timer", None) is not None:
@@ -444,15 +457,66 @@ class PresetsMixin:
                 f"colormap={cmap}, stretch={preset.stretch}"
             )
 
-    def _auto_apply_instrument_preset(self):
-        """Apply the preset matching the loaded image. Returns True if one did."""
+    def _auto_apply_instrument_preset(self, vrange=None):
+        """Apply the preset matching the loaded image (in the range
+        ``vrange`` if given). Returns True if one did."""
         match = detect_instrument(
             getattr(self, "current_header", {}) or {}, self.imagename
         )
         if match is None:
             return False
-        self.apply_instrument_preset(*match)
+        self.apply_instrument_preset(*match, vrange=vrange)
         return True
+
+    # ------------------------------------------------------------- reset
+    def _presets_automatic(self):
+        window = self.window()
+        return hasattr(window, "auto_preset_act") and window.auto_preset_act.isChecked()
+
+    def note_opened_display(self, held=None):
+        """Remember how the image just loaded was opened, for Reset: with
+        its instrument's preset (when presets are applied on opening),
+        else from its minimum to its maximum in the stretch and colormap
+        in use; with the display kept for it (``held``, its vmin and
+        vmax), as that."""
+        self._opened_product = getattr(self, "_range_stokes", None)
+        if self.current_image_data is None:
+            self._opened_display = None
+            return
+        stretch, cmap = self.stretch_combo.currentText(), self.cmap_combo.currentText()
+        if held is not None:
+            self._opened_display = Preset(
+                "", tuple(held), stretch, cmap, None, self._current_gamma(),
+                self.radial_filter, self.background_subtracted,
+            )
+            return
+        match = None
+        if self._presets_automatic():
+            match = detect_instrument(getattr(self, "current_header", {}) or {}, self.imagename)
+        if match is None:
+            self._opened_display = Preset("", "minmax", stretch, cmap, None, self._current_gamma())
+            return
+        preset = get_preset(*match)
+        gamma = self._current_gamma() if preset.gamma is None else preset.gamma
+        self._opened_display = Preset(
+            preset.label, preset.range, preset.stretch, resolve_cmap(preset, cmap), None, gamma,
+            preset.radial, preset.background,
+        )
+
+    def reset_display(self):
+        """Back to how the image opened: its range (worked out again for
+        what is shown now, another Stokes product say), stretch, gamma and
+        colormap, unfiltered unless its preset filters it."""
+        opened = getattr(self, "_opened_display", None)
+        if self.current_image_data is None or opened is None:
+            return
+        if not isinstance(opened.range, str) and getattr(self, "_range_stokes", None) != self._opened_product:
+            # Numbers are of the Stokes product they were given for
+            opened = replace(opened, range="minmax")
+        with busy("Resetting the display…", self):
+            self._apply_preset(opened)
+        if self.window():
+            self.show_status_message("Display reset to how the image opened")
 
 
 class PresetMenuMixin:

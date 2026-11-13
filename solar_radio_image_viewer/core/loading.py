@@ -502,6 +502,9 @@ class LoadingMixin:
             dmin = float(np.nanmin(data))
             dmax = float(np.nanmax(data))
             self.set_range(dmin, dmax)
+            # (min to max of what is drawn, unless a filter changes that)
+            plain = self.radial_filter == "off" and not self.background_subtracted
+            self.show_range_preset("minmax" if plain else None)
             self.plot_from_controls()
 
             self.show_status_message(

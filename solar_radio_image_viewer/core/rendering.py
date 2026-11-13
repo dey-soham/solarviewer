@@ -22,6 +22,7 @@ from ..processing.contour_layers import contour_layer_settings
 from .canvas import READOUT_HINT
 from .display_resolution import draw_at_screen_resolution
 from .presets import display_range
+from ..processing.sky_view import KeptView, limits_for, wcs_kind
 from ..processing.fits_io import is_fits, readable_image_path
 from ..ui.background import Cancelled, run_in_background
 from ..ui.busy import busy
@@ -620,6 +621,15 @@ class RenderingMixin:
 
         wcs_obj = self._get_wcs_object(fits_flag, header, csys, summary)
 
+        # The view of the image this one replaces (the file before it in
+        # a series, or itself before it was converted), where this one
+        # has it: sky_view's limits_for
+        kept_view = getattr(self, "_step_view", None)
+        if kept_view is not None and stored_xlim is None:
+            limits = limits_for(kept_view, data.shape[:2], wcs_obj, header)
+            if limits is not None:
+                stored_xlim, stored_ylim = limits
+
         ax, im = self._draw_image_axes(
             wcs_obj,
             transposed_data,
@@ -681,6 +691,9 @@ class RenderingMixin:
         self._last_rendered_state = state
 
         self._last_norm_params = (vmin_val, vmax_val, stretch, gamma)
+        # What that range is of, as drawn (a view being converted names
+        # its new unit before the new image is loaded)
+        self._shown_key = self.range_key()
 
     @staticmethod
     def _make_norm(stretch, vmin, vmax, gamma):
@@ -802,6 +815,7 @@ class RenderingMixin:
 
                     # Cache new params
                     self._last_norm_params = norm_params
+                    self._shown_key = self.range_key()
 
                     self.canvas.draw()
                     return True
@@ -811,6 +825,25 @@ class RenderingMixin:
                 # Debugging Mismatch (Optional log, keeping it minimal)
                 pass
         return False
+
+    def _view_shown(self, turned=False):
+        """The view of the image shown, for the one that replaces it to
+        keep (sky_view's KeptView), or None without an image."""
+        ax = self._nav_axes() if self.current_image_data is not None else None
+        if ax is None:
+            return None
+        wcs = getattr(ax, "wcs", None)
+        if wcs is not None and getattr(wcs, "naxis", 0) < 2:
+            wcs = None
+        return KeptView(
+            self.current_image_data.shape[:2],
+            ax.get_xlim(),
+            ax.get_ylim(),
+            turned,
+            wcs_kind(wcs),
+            wcs,
+            dict(getattr(self, "current_header", None) or {}),
+        )
 
     def _get_wcs_object(self, fits_flag, header, csys, summary):
         """Build (and cache per current_wcs) a 2D astropy WCS for plotting."""

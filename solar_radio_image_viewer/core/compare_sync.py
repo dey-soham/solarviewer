@@ -15,7 +15,7 @@ other frame keeps its own view):
 - frame stepping: next, previous, first or last in one pane steps every
   linked pane through its own folder (whatever its frame);
 - the intensity range: a range given to one pane goes to the linked
-  panes in the same unit;
+  panes showing the same Stokes product in the same unit;
 - a region drawn in one pane is drawn at the same sky position in the
   panes following it, each with its own statistics.
 """
@@ -42,6 +42,8 @@ from ..tools.preview import contrast_colors, halo_pen, measure_preview
 from ..ui.activity import begin_activity
 from ..ui.busy import busy
 from ..ui.widgets import kicker, kicker_row, link_button, rule, toggle_row
+from ..processing.sky_view import unit_scales as _unit_scales
+from ..processing.sky_view import wcs_kind
 
 logger = logging.getLogger(__name__)
 
@@ -72,27 +74,7 @@ def _axes_wcs(pane):
 def frame_kind(pane):
     """"radec", "solar", or None for an image without a sky frame."""
     _ax, wcs = _axes_wcs(pane)
-    if wcs is None:
-        return None
-    ctype = str(wcs.wcs.ctype[0]).upper()
-    if ctype.startswith("RA"):
-        return "radec"
-    if ctype.startswith("HPLN") or ctype.startswith("SOLAR"):
-        return "solar"
-    return None
-
-
-def _unit_scales(wcs):
-    """Degrees per world unit of the first two axes."""
-    from astropy import units as u
-
-    scales = []
-    for cunit in list(wcs.wcs.cunit)[:2]:
-        try:
-            scales.append(float(u.Unit(str(cunit) or "deg").to(u.deg)))
-        except Exception:
-            scales.append(1.0)
-    return scales
+    return wcs_kind(wcs)
 
 
 def to_world(pane, x, y):
@@ -293,6 +275,7 @@ class PaneSync:
         self.on = {key: default for key, _words, default in SYNC_WAYS}
         self._busy = False
         self._joining = None
+        self._stepping = None  # the pane stepping, whose followers step next
 
     # ------------------------------------------------------------ who
     def can_follow(self, pane, leader):
@@ -396,16 +379,16 @@ class PaneSync:
         if viewer is not None:
             self._give_view(viewer, [pane])
             self.give_regions(viewer, pane)
-        unit = pane.display_unit()
+        key = pane.range_key()
         ranger = next(
             (p for p in others if p.linked and p.current_image_data is not None
              and getattr(p, "_last_norm_params", None) is not None
-             and p.display_unit() == unit),
+             and p.range_key() == key),
             None,
         )
         if ranger is not None:
             vmin, vmax = ranger._last_norm_params[:2]
-            self._give_range(vmin, vmax, unit, [pane])
+            self._give_range(vmin, vmax, key, [pane])
 
     def _take_frame(self, pane, others):
         """``pane`` goes into the sky frame of the first linked pane of
@@ -466,10 +449,25 @@ class PaneSync:
         self._hide_crosshair(pane)
 
     # --------------------------------------------------------- frames
+    @contextmanager
+    def stepping(self, leader):
+        """``leader`` steps to another file. With the panes about to step
+        too (frame_stepped), its new range is not given to the images they
+        are leaving: they take it with their own step."""
+        hold = self.on["frames"] and self.on["range"] and not self._busy and leader.linked
+        if hold:
+            self._stepping = leader
+        try:
+            yield
+        finally:
+            if hold:
+                self._stepping = None
+
     def frame_stepped(self, leader, kind):
         """``leader`` stepped to another file: the linked panes step the
         same way through their own folders, until one is cancelled (a step
-        returning None): Cancel stops the group, not one pane of it."""
+        returning None): Cancel stops the group, not one pane of it. With
+        the range shared, they open in the leader's range."""
         if not self.on["frames"] or self._busy or not leader.linked:
             return
         panes = [
@@ -477,31 +475,41 @@ class PaneSync:
             for pane in self.page.panes
             if pane is not leader and pane.linked and pane._file_list
         ]
+        shown = leader._shown_display() if self.on["range"] else None
         self._busy = True
         task = begin_activity(None, self.page, blocking=False)
         try:
             for index, pane in enumerate(panes, start=1):
                 task.update(label=f"Stepping the linked panes ({index} of {len(panes)})…")
-                if getattr(pane, f"_on_{kind}_file")() is None:
-                    break
+                pane._given_range = shown
+                try:
+                    if getattr(pane, f"_on_{kind}_file")() is None:
+                        break
+                finally:
+                    pane._given_range = None
         finally:
             task.finish()
             self._busy = False
+        if shown is not None:
+            # (the panes that had no file to step to, or took no range)
+            others = [pane for pane in self.page.panes if pane is not leader and pane.linked]
+            self._give_range(shown[1], shown[2], shown[0], others)
 
     # ---------------------------------------------------------- range
     def range_changed(self, leader, vmin, vmax):
-        """``leader`` is shown with this range: the linked panes in the
-        same unit take it."""
-        if leader is self._joining or not leader.linked:
+        """``leader`` is shown with this range: the linked panes showing
+        the same Stokes product in the same unit take it."""
+        if leader is self._joining or leader is self._stepping or not leader.linked:
             return
         panes = [pane for pane in self.page.panes if pane is not leader and pane.linked]
-        self._give_range(vmin, vmax, leader.display_unit(), panes)
+        self._give_range(vmin, vmax, leader.range_key(), panes)
 
-    def _give_range(self, vmin, vmax, unit, panes):
-        """``panes`` with images in ``unit`` are shown from vmin to vmax."""
+    def _give_range(self, vmin, vmax, key, panes):
+        """``panes`` whose images the range is of (``key``, a pane's
+        range_key) are shown from vmin to vmax."""
         if not self.on["range"] or self._busy:
             return
-        panes = [pane for pane in panes if self._needs_range(pane, vmin, vmax, unit)]
+        panes = [pane for pane in panes if self._needs_range(pane, vmin, vmax, key)]
         if not panes:
             return
         self._busy = True
@@ -517,8 +525,8 @@ class PaneSync:
             self._busy = False
 
     @staticmethod
-    def _needs_range(pane, vmin, vmax, unit):
-        if pane.current_image_data is None or pane.display_unit() != unit:
+    def _needs_range(pane, vmin, vmax, key):
+        if pane.current_image_data is None or pane.range_key() != key:
             return False
         shown = getattr(pane, "_last_norm_params", None)
         return shown is None or not np.allclose(shown[:2], (vmin, vmax), rtol=1e-9, atol=0)

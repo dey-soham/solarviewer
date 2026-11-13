@@ -12,6 +12,7 @@ run in subprocesses, scripts and tests without a GUI:
 - ``maps``: brightness temperature <-> flux density maps
 - ``models``: analytic 2D models used for fitting
 - ``norms``: matplotlib normalizations for display stretches (sqrt, asinh, ...)
+- ``sky_view``: the view (zoom and pan) kept from one image to the one replacing it
 - ``immath`` / ``imfit``: CASA tasks run in a subprocess
 
 Submodules are imported explicitly (e.g. ``from .processing.rms import ...``);

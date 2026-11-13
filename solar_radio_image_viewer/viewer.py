@@ -382,6 +382,54 @@ class SolarRadioImageTab(
             self._plot_timer.timeout.connect(self.plot_from_controls)
         self._plot_timer.start(50)
 
+    # ------------------------------------------- what a range is kept by
+    @property
+    def range_locked(self):
+        """Whether the display is kept for the next images (the switch
+        under the range presets)."""
+        switch = getattr(self, "keep_range_switch", None)
+        return switch is not None and switch.isChecked()
+
+    def range_key(self):
+        """What the range shown is of: the Stokes product drawn and its
+        unit. I and V are both in Jy/beam, and no ratio has a unit, so
+        the unit alone does not say whether a range fits another image."""
+        combo = getattr(self, "stokes_combo", None)
+        product = getattr(self, "_range_stokes", None) or (combo.currentText() if combo is not None else "I")
+        return product, self.display_unit()
+
+    def _shown_display(self):
+        """(range_key, vmin, vmax) of the image as it is drawn, or None."""
+        params = getattr(self, "_last_norm_params", None)
+        if self.current_image_data is None or params is None:
+            return None
+        key = getattr(self, "_shown_key", None) or self.range_key()
+        return key, float(params[0]), float(params[1])
+
+    def _display_to_keep(self):
+        """With the lock on, the display the image about to be loaded
+        keeps: the one a file step started from (the views a converted
+        image passes through on the way are not the user's), else the one
+        shown."""
+        if not self.range_locked:
+            return None
+        return getattr(self, "_step_display", None) or self._shown_display()
+
+    def _taken_range(self):
+        """(vmin, vmax) a linked pane handed this one for its step
+        (compare_sync's frame_stepped), if it is of what this image
+        shows; else None."""
+        given = getattr(self, "_given_range", None)
+        if given is None or given[0] != self.range_key():
+            return None
+        return given[1], given[2]
+
+    def with_range_note(self, message):
+        """``message`` (the image is loaded), with why the kept range was
+        not kept if it was not."""
+        note = getattr(self, "_range_note", "")
+        return f"{message} · {note}" if note else message
+
     def _range_in_boxes(self):
         """(low, high) as the Min and Max boxes give it, whichever way round,
         or (None, None) unless both are finite numbers."""
@@ -516,6 +564,8 @@ class SolarRadioImageTab(
                         self.cmap_combo.setCurrentText("viridis")
 
             dropped = None  # (a filter, see keep_display_filters)
+            # What the range lock keeps, read before the image changes
+            kept = self._display_to_keep() if dir_load else None
             # Only reload data if needed (new image, stokes change, etc.)
             # Skip for visualization-only changes (colormap, stretch, gamma, vmin/vmax)
             if reload_data:
@@ -542,42 +592,21 @@ class SolarRadioImageTab(
                 if self.show_contours_checkbox.isChecked() and not self.prepare_contours():
                     self._contours_cancelled()
             if dir_load:
-                mw = self.window()
-                auto_presets = (
-                    hasattr(mw, "auto_preset_act") and mw.auto_preset_act.isChecked()
-                )
-                is_preset_matched = False
-
-                # A new image starts unfiltered, with its background kept;
-                # its preset may change both
-                self.set_background_subtraction(False, redraw=False)
-                self.set_radial_filter("off", redraw=False)
-                if auto_presets:
-                    is_preset_matched = self._auto_apply_instrument_preset()
-
-                if not is_preset_matched:
-                    # Reset to defaults if the previous load was a preset
-                    if getattr(self, "_was_preset_image", False):
-                        if hasattr(self, "cmap_combo"):
-                            self.cmap_combo.blockSignals(True)
-                            self.cmap_combo.setCurrentText("viridis")
-                            self.cmap_combo.blockSignals(False)
-                        if hasattr(self, "stretch_combo"):
-                            self.stretch_combo.blockSignals(True)
-                            self.stretch_combo.setCurrentText("linear")
-                            self.stretch_combo.blockSignals(False)
-                        if hasattr(self, "gamma_entry"):
-                            self.gamma_entry.blockSignals(True)
-                            self.gamma_entry.setText("1.0")
-                            self.gamma_entry.blockSignals(False)
-                        cmap = "viridis"
-                        stretch = "linear"
-                        gamma = 1.0
-
-                    vmin_val = float(np.nanmin(self.display_data()))
-                    vmax_val = float(np.nanmax(self.display_data()))
-                    self.set_range(vmin_val, vmax_val)
-                    # Only call plot_image here - preset methods already call it internally
+                self._range_note = ""
+                held = None
+                if kept is not None:
+                    # The filters that were on are part of what is kept
+                    self.keep_display_filters()
+                    if kept[0] == self.range_key():
+                        held = kept[1:]
+                    else:
+                        self._range_note = "range not kept (another unit or Stokes product)"
+                if held is not None:
+                    # The lock: this image as the last one was shown, its
+                    # range, stretch, colormap and filters (no preset)
+                    vmin_val, vmax_val = self._taken_range() or held
+                    self.show_range(vmin_val, vmax_val)
+                    self.show_range_preset(None)
                     self.plot_image(
                         vmin_val,
                         vmax_val,
@@ -585,10 +614,14 @@ class SolarRadioImageTab(
                         cmap,
                         gamma,
                         tight_layout=tight_layout,
-                        preserve_view=not dir_load,
+                        preserve_view=False,
                     )
-
-                self._was_preset_image = is_preset_matched
+                else:
+                    self._show_new_image(stretch, cmap, gamma, tight_layout)
+                # What Reset goes back to, and what a file step converts again
+                self.note_opened_display((vmin_val, vmax_val) if held is not None else None)
+                if getattr(self, "_native_view", None) is None and self.current_image_data is not None:
+                    self._native_view = self._view_kind()
             elif vmin_val is None or vmax_val is None:
                 self.apply_auto_range("minmax")
             else:
@@ -605,7 +638,7 @@ class SolarRadioImageTab(
             if main_window:
                 if dir_load:
                     img_name = os.path.basename(self.imagename)
-                    self.show_status_message(f"Loaded {img_name}")
+                    self.show_status_message(self.with_range_note(f"Loaded {img_name}"))
                 else:
                     self.show_status_message(dropped or "Display updated")
             if dir_load:
@@ -642,6 +675,74 @@ class SolarRadioImageTab(
                 )
             show_error(self, "Could not show the image", message, traceback.format_exc())
             return False
+
+    def _show_new_image(self, stretch, cmap, gamma, tight_layout):
+        """A new image as it opens with nothing kept: unfiltered, with its
+        instrument's preset or from its minimum to its maximum; in the
+        range a linked pane handed it for its step, if any."""
+        mw = self.window()
+        auto_presets = (
+            hasattr(mw, "auto_preset_act") and mw.auto_preset_act.isChecked()
+        )
+        is_preset_matched = False
+
+        # A new image starts unfiltered, with its background kept;
+        # its preset may change both
+        self.set_background_subtraction(False, redraw=False)
+        self.set_radial_filter("off", redraw=False)
+        given = self._taken_range()
+        if auto_presets:
+            is_preset_matched = self._auto_apply_instrument_preset(given)
+
+        if not is_preset_matched:
+            # Reset to defaults if the previous load was a preset
+            if getattr(self, "_was_preset_image", False):
+                if hasattr(self, "cmap_combo"):
+                    self.cmap_combo.blockSignals(True)
+                    self.cmap_combo.setCurrentText("viridis")
+                    self.cmap_combo.blockSignals(False)
+                if hasattr(self, "stretch_combo"):
+                    self.stretch_combo.blockSignals(True)
+                    self.stretch_combo.setCurrentText("linear")
+                    self.stretch_combo.blockSignals(False)
+                if hasattr(self, "gamma_entry"):
+                    self.gamma_entry.blockSignals(True)
+                    self.gamma_entry.setText("1.0")
+                    self.gamma_entry.blockSignals(False)
+                cmap = "viridis"
+                stretch = "linear"
+                gamma = 1.0
+
+            if given is None:
+                vmin_val = float(np.nanmin(self.display_data()))
+                vmax_val = float(np.nanmax(self.display_data()))
+                self.set_range(vmin_val, vmax_val)
+                self.show_range_preset("minmax")
+            else:
+                vmin_val, vmax_val = given
+                self.show_range(vmin_val, vmax_val)
+                self.show_range_preset(None)
+            # Only call plot_image here - preset methods already call it internally
+            self.plot_image(
+                vmin_val,
+                vmax_val,
+                stretch,
+                cmap,
+                gamma,
+                tight_layout=tight_layout,
+                preserve_view=False,
+            )
+
+        self._was_preset_image = is_preset_matched
+
+    def _view_kind(self):
+        """(sky frame, flux or temperature) of the image as it is drawn:
+        "radec"/"solar"/None and "jy"/"k"/None."""
+        from .core.compare_sync import frame_kind
+
+        unit = (getattr(self, "_current_bunit", "") or "").strip().lower()
+        scale = "k" if unit == "k" else "jy" if "jy" in unit and "beam" in unit else None
+        return frame_kind(self), scale
 
     def set_range(self, vmin_val, vmax_val):
         if self.current_image_data is None:
