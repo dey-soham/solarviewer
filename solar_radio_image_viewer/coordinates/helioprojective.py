@@ -1189,6 +1189,12 @@ def convert_hpc_to_radec(
         ]:
             if key in hpc_header:
                 new_header[key] = hpc_header[key]
+        # The beam turns back with the image (the conversion to
+        # helioprojective turned its position angle by -P)
+        try:
+            new_header["BPA"] = float(hpc_header["BPA"]) + p_angle
+        except (KeyError, TypeError, ValueError):
+            pass
 
         # Handle Stokes and frequency axes based on data dimensions
         if hpc_data.ndim == 3:
