@@ -45,6 +45,68 @@ def tick_font():
     return font
 
 
+def frequency_text(mhz, places=3):
+    """A frequency (MHz) for a readout: 120.200 MHz, or below 1 MHz in
+    kHz (978.6 kHz, 4.167 kHz)."""
+    if abs(mhz) < 1:
+        return f"{mhz * 1000:.4g} kHz"
+    return f"{mhz:.{places}f} MHz"
+
+
+def can_be_logarithmic(freqs):
+    """Whether frequencies can go on a logarithmic axis: all of them known
+    and above zero, and not all the same."""
+    freqs = np.asarray(freqs, dtype=np.float64)
+    return freqs.size > 1 and bool(np.isfinite(freqs).all() and (freqs > 0).all() and np.ptp(freqs) > 0)
+
+
+def prefers_logarithmic(freqs):
+    """Whether channels are better shown on a logarithmic axis: they span
+    more than a decade and crowd toward its low end (the lower half of them
+    within the bottom two fifths of the band), as those of the spacecraft
+    receivers do. On a linear axis such channels are squeezed into a few
+    rows at the bottom, the lowest too narrow to draw."""
+    if not can_be_logarithmic(freqs):
+        return False
+    freqs = np.sort(np.asarray(freqs, dtype=np.float64))
+    low, high = freqs[0], freqs[-1]
+    return bool(freqs.size >= 3 and high > 10 * low and np.median(freqs) - low < 0.4 * (high - low))
+
+
+# Multiples of a power of ten labelled within a decade, from the most to
+# the fewest: the first whose closest two are far enough apart is taken
+_DECADE_TICKS = ((1, 2, 3, 4, 5, 6, 7, 8, 9), (1, 2, 3, 5, 7), (1, 2, 5), (1, 3), (1,))
+
+
+def log_ticks(low, high, size, apart=22):
+    """The values to label on a logarithmic axis ``size`` pixels long that
+    shows 10**low to 10**high, labels ``apart`` pixels from each other at
+    least: round ones, as many as there is room for."""
+    span = high - low
+    if not np.isfinite(span) or span <= 0 or size <= 0:
+        return []
+    if span < 0.5:
+        # Less than a factor of three: evenly spaced round values
+        first, last = 10.0**low, 10.0**high
+        wanted = max(2.0, size / (2.0 * apart))
+        raw = (last - first) / wanted
+        power = 10.0 ** np.floor(np.log10(raw))
+        step = next(m * power for m in (1, 2, 5, 10) if m * power >= raw)
+        # (a value at an end of the axis counts, whatever its last digit)
+        values = np.arange(np.ceil(first / step - 1e-9), np.floor(last / step + 1e-9) + 1) * step
+        return [float(v) for v in values if v > 0]
+    per_decade = size / span
+    decades = range(int(np.floor(low)), int(np.floor(high)) + 1)
+    for multiples in _DECADE_TICKS:
+        closest = min(np.diff(np.log10(multiples + (10,))))
+        if closest * per_decade >= apart:
+            values = [m * 10.0**k for k in decades for m in multiples]
+            return [v for v in values if low - 1e-9 <= np.log10(v) <= high + 1e-9]
+    # (dozens of decades: every few-th power of ten)
+    every = int(np.ceil(apart / per_decade))
+    return [10.0**k for k in decades if k % every == 0 and low <= k <= high]
+
+
 def _write_replacing(fileName, write, cancelled):
     """``write(path)`` to a name beside ``fileName``, which it then replaces,
     or (if ``cancelled`` meanwhile) leaves as it was; off the GUI thread."""
@@ -81,10 +143,11 @@ def _write_profile_csv(fileName, x, values, at_label, along_time, has_axis, sour
                 out.write(f"{f:.6f},{v:.6g}\n" if has_axis else f"{int(f)},{v:.6g}\n")
 
 
-def _write_profile_plot(fileName, x, values, title, x_label, along_time, has_axis, source):
+def _write_profile_plot(fileName, x, values, title, x_label, along_time, has_axis, source, log_x=False):
     """A profile as a figure file (no pyplot or Qt: off the GUI thread), in
     a plain light style whatever the app theme. The style is set on the figure:
-    rcParams are the whole process's, and the window draws with them."""
+    rcParams are the whole process's, and the window draws with them.
+    ``log_x``: a spectrum's frequencies on a logarithmic axis, as shown."""
     from matplotlib import rcParams
     from matplotlib.figure import Figure
     import matplotlib.dates as mdates
@@ -97,6 +160,8 @@ def _write_profile_plot(fileName, x, values, title, x_label, along_time, has_axi
         x = [datetime(1858, 11, 17) + timedelta(seconds=float(t)) for t in x]
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
     ax.plot(x, values, color="#4f46e5", linewidth=1.2)
+    if log_x:
+        ax.set_xscale("log")
     ax.set_xlabel(x_label, color=ink, fontsize=size)
     ax.set_ylabel("Intensity", color=ink, fontsize=size)
     ax.set_title(
@@ -125,10 +190,42 @@ class _AxisLayout:
     each showing the sample that covers it (``grid``)."""
 
     MAX_SEGMENTS = 64
-    GAP = 8.0  # a spacing this many times the typical one is a gap
+    GAP = 8.0  # a spacing this many times the typical one, and those near it, is a gap
+    NEAR = 4  # the spacings on each side of one that are near it
     EVEN = 0.02  # spacing within a stretch varying less than this is even
 
-    def __init__(self, values, n):
+    @classmethod
+    def _gaps(cls, steps):
+        """(which of ``steps`` are gaps, the typical step): ``steps`` are the
+        spacings along an axis, in its order. Nothing was measured in a gap:
+        it is far wider than the spacings of the whole axis and than those
+        near it. Samples that spread out steadily (a receiver whose channels
+        are logarithmic) have none, however wide the last ones get."""
+        steps = np.asarray(steps, dtype=np.float64)
+        positive = steps[steps > 0]
+        typical = float(np.median(positive)) if positive.size else 1.0
+        gap = np.zeros(steps.shape, dtype=bool)
+        wide = np.flatnonzero(steps > cls.GAP * typical)
+        if wide.size:
+            offsets = np.r_[-cls.NEAR : 0, 1 : cls.NEAR + 1]
+            near = wide[:, None] + offsets[None, :]
+            inside = (near >= 0) & (near < steps.size)
+            values = np.where(inside, steps[np.clip(near, 0, steps.size - 1)], np.nan)
+            values[~(values > 0)] = np.nan
+            values.sort(axis=1)  # (those that do not count go last)
+            count = np.isfinite(values).sum(axis=1)
+            # The lower middle one: a few other gaps among them do not hide this one
+            middle = values[np.arange(wide.size), np.maximum(count - 1, 0) // 2]
+            gap[wide] = steps[wide] > cls.GAP * np.where(count > 0, middle, typical)
+        return gap, typical
+
+    def __init__(self, values, n, cells=0):
+        """``cells``: how many cells an uneven axis may be drawn with (four
+        per sample at least)."""
+        if values is not None:
+            values = np.asarray(values, dtype=np.float64)
+            if not np.isfinite(values).all() or (n > 1 and np.ptp(values) == 0):
+                values = None  # nowhere to put the samples: by their number
         if values is None:
             values = np.arange(n, dtype=np.float64)
         c = np.asarray(values, dtype=np.float64)
@@ -136,9 +233,7 @@ class _AxisLayout:
         self.order = np.argsort(c, kind="stable")
         sc = c[self.order]
         d = np.diff(sc)
-        positive = d[d > 0]
-        typical = float(np.median(positive)) if positive.size else 1.0
-        gap = d > self.GAP * typical
+        gap, typical = self._gaps(d)
         # Edges, in sorted order: halfway to the neighbours; at the ends and
         # at gaps, half the spacing on the other side
         left = np.r_[np.nan, d]
@@ -159,7 +254,7 @@ class _AxisLayout:
         self.grid = None
         if self.segments is None:
             self.segments = [(0, n)]
-            self.grid = self._grid(lo_s, hi_s, n)
+            self.grid = self._grid(lo_s, hi_s, n, max(cells, 4 * n))
 
     def _even_stretches(self, c):
         """[(start, stop)] of evenly spaced stretches (in index order), when
@@ -171,9 +266,8 @@ class _AxisLayout:
         if not (np.all(d > 0) or np.all(d < 0)):
             return None
         a = np.abs(d)
-        typical = float(np.median(a))
         starts = [0]
-        for i in np.flatnonzero(a > self.GAP * typical):
+        for i in np.flatnonzero(self._gaps(a)[0]):
             starts.append(int(i) + 1)
         segments = [(s, e) for s, e in zip(starts, starts[1:] + [n]) if e > s]
         if len(segments) > self.MAX_SEGMENTS:
@@ -185,13 +279,14 @@ class _AxisLayout:
         return segments
 
     @staticmethod
-    def _grid(lo_s, hi_s, n):
+    def _grid(lo_s, hi_s, n, limit):
         """(sample of each cell or -1, low, high): cells as fine as the
-        narrowest sample (at most 4 per sample)."""
+        narrowest sample, ``limit`` of them at most (a sample narrower
+        than a cell may then have none, and not be drawn)."""
         low, high = float(lo_s.min()), float(hi_s.max())
         widths = (hi_s - lo_s)[hi_s > lo_s]
         finest = float(widths.min()) if widths.size else (high - low) / max(n, 1)
-        cells = int(min(max(n, np.ceil((high - low) / finest)), 4 * n))
+        cells = int(min(max(n, np.ceil((high - low) / finest)), limit))
         centers = low + (np.arange(cells) + 0.5) * (high - low) / cells
         k = np.searchsorted(lo_s, centers, "right") - 1
         inside = (k >= 0) & (centers <= hi_s[np.clip(k, 0, None)])
@@ -228,6 +323,12 @@ class _AxisLayout:
         b = len(self.centers) if b is None else b
         return float(self.lo[a:b].min()), float(self.hi[a:b].max())
 
+    def finest(self):
+        """The width of the narrowest sample."""
+        widths = self.hi_sorted - self.lo_sorted
+        widths = widths[widths > 0]
+        return float(widths.min()) if widths.size else 1.0
+
 
 class TimeAxisItem(pg.AxisItem):
     """A custom AxisItem that formats MJD seconds into UTC HH:MM:SS strings."""
@@ -244,6 +345,36 @@ class TimeAxisItem(pg.AxisItem):
         return [t.strftime(fmt) for t in times]
 
 
+class FrequencyAxisItem(pg.AxisItem):
+    """The frequency axis. Its positions are MHz, or their log10 on a
+    logarithmic axis; its values read in MHz or in kHz (``factor`` 1000)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.logarithmic = False
+        self.factor = 1.0
+        self.enableAutoSIPrefix(False)  # (the unit is in the label: no "x0.001")
+
+    def set_scale(self, logarithmic, factor):
+        self.logarithmic, self.factor = logarithmic, factor
+        self.setScale(factor)  # (a linear axis's values: MHz times this)
+        self.picture = None
+        self.update()
+
+    def tickValues(self, minVal, maxVal, size):
+        if not self.logarithmic:
+            return super().tickValues(minVal, maxVal, size)
+        low, high = sorted((minVal, maxVal))
+        upright = self.orientation in ("left", "right")
+        values = log_ticks(low, high, size, apart=22 if upright else 64)
+        return [(1.0, [float(np.log10(v)) for v in values])]
+
+    def tickStrings(self, values, scale, spacing):
+        if not self.logarithmic:
+            return super().tickStrings(values, scale, spacing)
+        return [f"{10.0 ** v * self.factor:.6g}" for v in values]
+
+
 class PyQtGraphSpectrumCanvas(QWidget):
     """
     A PyQtGraph-based canvas for GPU-accelerated dynamic spectrum display.
@@ -254,7 +385,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
     crossSectionClicked = pyqtSignal(int, int)  # (time_idx, freq_idx)
     # Signal emitted when cursor moves over the plot: (time_str, freq_str, intensity_val)
     hoverChanged = pyqtSignal(str, str, float)
-    # Drift-rate mode: two points clicked, (t1, f1, t2, f2) in view coordinates
+    # Drift-rate mode: two points clicked, (t1, f1, t2, f2): their times and
+    # frequencies (sample numbers when the data has no axes)
     driftMeasured = pyqtSignal(float, float, float, float)
     # Region mode (Mask, Keep): a click, not a drag, at view (x, y)
     regionClicked = pyqtSignal(float, float)
@@ -306,6 +438,11 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._time_marker = None
         self._extent = None
         self._layouts = None  # (_AxisLayout time, _AxisLayout freq) of the data
+        self._freq_scale = "auto"  # the frequency axis asked for: auto, linear or log
+        self._log_freq = False  # whether it is logarithmic, for the data shown
+        self._freq_unit = "MHz"  # what its values read in
+        self._box_specs = ([], "#3ddc84")  # the outlines asked for (set_boxes)
+        self._selected_spec = None
         self._overlay = None  # flagged share of each sample (0..1), tinted
         self._overlay_items = []
         self._share = None  # (flagged share per channel, frequencies), beside
@@ -350,7 +487,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
 
         # Main plot with custom time axis; no title (the file's name is in
         # the menu bar) and no autoscale button (Reset view in the toolbar)
-        self.plot_item = self.graphics_widget.addPlot(row=0, col=0)
+        self.freq_axis_item = FrequencyAxisItem(orientation="left")
+        self.plot_item = self.graphics_widget.addPlot(row=0, col=0, axisItems={"left": self.freq_axis_item})
         self.plot_item.hideButtons()
         self.plot_item.setMenuEnabled(False)
         self.plot_item.setLabel("left", "MHz")
@@ -547,13 +685,74 @@ class PyQtGraphSpectrumCanvas(QWidget):
         self._data = data
         self._time_axis = time_axis
         self._freq_axis = freq_axis
-        axes = (time_axis, freq_axis) if time_axis is not None and freq_axis is not None else (None, None)
-        self._layouts = (
-            _AxisLayout(axes[0], data.shape[0]),
-            _AxisLayout(axes[1], data.shape[1]),
-        )
+        self._make_layouts()
         if filename:
             self._filename = filename
+
+    # An uneven frequency axis is drawn with up to this many cells, so that
+    # its narrowest channels have one each, while the image drawn stays
+    # under GRID_PIXELS
+    GRID_CELLS = 4096
+    GRID_PIXELS = 50_000_000
+
+    def _make_layouts(self):
+        """Where the samples of the data are along time and frequency, the
+        frequencies on a linear or a logarithmic axis as asked."""
+        data, time_axis, freq_axis = self._data, self._time_axis, self._freq_axis
+        if time_axis is None or freq_axis is None:
+            self._log_freq, self._freq_unit = False, "MHz"
+            self._layouts = (_AxisLayout(None, data.shape[0]), _AxisLayout(None, data.shape[1]))
+            return
+        freqs = np.asarray(freq_axis, dtype=np.float64)
+        wanted = self._freq_scale == "log" or (self._freq_scale == "auto" and prefers_logarithmic(freqs))
+        self._log_freq = wanted and can_be_logarithmic(freqs)
+        known = freqs[np.isfinite(freqs)]
+        self._freq_unit = "kHz" if known.size and np.abs(known).max() < 1 else "MHz"
+        time_layout = _AxisLayout(time_axis, data.shape[0])
+        columns = len(time_layout.grid[0]) if time_layout.grid is not None else data.shape[0]
+        cells = min(self.GRID_CELLS, self.GRID_PIXELS // max(columns, 1))
+        self._layouts = (
+            time_layout,
+            _AxisLayout(np.log10(freqs) if self._log_freq else freqs, data.shape[1], cells),
+        )
+
+    def frequency_scale(self):
+        """The frequency axis of the data shown: "log" or "linear"."""
+        return "log" if self._log_freq else "linear"
+
+    def set_frequency_scale(self, mode):
+        """The frequency axis: "linear", "log", or "auto": logarithmic for
+        channels that crowd toward the low end of more than a decade
+        (prefers_logarithmic). The part of the spectrum in view stays."""
+        self._freq_scale = mode
+        if self._data is None or self._layouts is None:
+            return
+        was = self._log_freq
+        (x0, x1), (y0, y1) = self.plot_item.vb.viewRange()
+        whole = self._extent is None or y1 - y0 >= 0.999 * self._extent[3]
+        shown = (self._freq_at(y0), self._freq_at(y1))
+        self._make_layouts()
+        if self._log_freq == was:
+            return
+        self._clear_drift()
+        self._drift_points = []
+        self.draw_spectrum()
+        low, high = self._layouts[1].extent()
+        if not whole:
+            # The frequencies that were in view, where they are now
+            floor = self._freq_at(low)
+            y0, y1 = (self._y_of(max(f, floor)) for f in shown)
+            low, high = float(np.clip(y0, low, high)), float(np.clip(y1, low, high))
+        if high > low:
+            self.plot_item.vb.setRange(xRange=(x0, x1), yRange=(low, high), padding=0)
+
+    def _y_of(self, freq):
+        """Where a frequency (MHz) is along the frequency axis."""
+        return float(np.log10(max(freq, 1e-300))) if self._log_freq else float(freq)
+
+    def _freq_at(self, y):
+        """The frequency (MHz) at a position along the frequency axis."""
+        return float(10.0**y) if self._log_freq else float(y)
 
     def draw_spectrum(self, fast=False):
         """Render the dynamic spectrum using PyQtGraph (GPU accelerated)."""
@@ -590,6 +789,10 @@ class PyQtGraphSpectrumCanvas(QWidget):
             item.setLevels([0, 255])
             item.setRect(pg.QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
         self._draw_overlay(blocks)
+        self.freq_axis_item.set_scale(self._log_freq, 1000.0 if self._freq_unit == "kHz" else 1.0)
+        self._draw_boxes()
+        self._draw_selected_box()
+        self._draw_share()
 
         (x_low, x_high), (y_low, y_high) = time_layout.extent(), freq_layout.extent()
         width, height = x_high - x_low, y_high - y_low
@@ -607,7 +810,8 @@ class PyQtGraphSpectrumCanvas(QWidget):
                 yMin=float(y_low),
                 yMax=float(y_low + height),
                 minXRange=min(1.0, float(width)),  # at most 1 second
-                minYRange=min(1.0, float(height)),  # at most 1 MHz
+                # at most 1 MHz (a decade), or four of the narrowest channels
+                minYRange=min(1.0, float(height), 4 * freq_layout.finest()),
             )
 
             # Format time axis with UTC labels
@@ -738,16 +942,24 @@ class PyQtGraphSpectrumCanvas(QWidget):
     def set_channel_share(self, share, freqs):
         """The flagged share of each channel (beside the spectrum, sharing
         its frequency axis), or None to hide it."""
-        self._share = None if share is None else (np.asarray(share), np.asarray(freqs))
+        self._share = None if share is None or freqs is None else (np.asarray(share), np.asarray(freqs))
+        self._draw_share()
+
+    def _draw_share(self):
         plot = self.flag_plot
         plot.clear()
-        if self._share is None or freqs is None:
+        if self._share is None:
             plot.hide()
             plot.setMaximumWidth(0)
             return
-        order = np.argsort(self._share[1])
+        share, freqs = self._share
+        order = np.argsort(freqs)
+        # (beside the spectrum: on its frequency axis)
+        heights = np.asarray(freqs, dtype=np.float64)[order]
+        if self._log_freq:
+            heights = np.log10(np.clip(heights, 1e-300, None))
         plot.plot(
-            self._share[0][order] * 100, self._share[1][order],
+            share[order] * 100, heights,
             pen=pg.mkPen(get_palette(getattr(self.main_window, "current_theme", "dark"))["highlight"], width=1.5),
         )
         plot.setMaximumWidth(90)
@@ -761,26 +973,42 @@ class PyQtGraphSpectrumCanvas(QWidget):
             self.flag_plot.getAxis("bottom").setHeight(self.AXIS_HEIGHT)
 
     def set_boxes(self, boxes, color="#3ddc84"):
-        """Dashed outlines of view rectangles (x0, x1, y0, y1)."""
+        """Dashed outlines of regions (x0, x1, f0, f1): from one time and
+        frequency to another (sample numbers when the data has no axes)."""
+        self._box_specs = (list(boxes), color)
+        self._draw_boxes()
+
+    def _box_rect(self, box):
+        """A region's rectangle in the view, whichever way its axis runs."""
+        x0, x1, f0, f1 = box
+        y0, y1 = sorted((self._y_of(f0), self._y_of(f1)))
+        return x0, y0, x1 - x0, y1 - y0
+
+    def _draw_boxes(self):
         for item in self._boxes:
             self.plot_item.vb.removeItem(item)
         self._boxes = []
-        for x0, x1, y0, y1 in boxes:
-            item = QtWidgets.QGraphicsRectItem(x0, y0, x1 - x0, y1 - y0)
+        boxes, color = self._box_specs
+        for box in boxes:
+            item = QtWidgets.QGraphicsRectItem(*self._box_rect(box))
             item.setPen(pg.mkPen(color, width=1.5, style=Qt.DashLine))
             item.setZValue(6)
             self.plot_item.vb.addItem(item)
             self._boxes.append(item)
 
     def set_selected_box(self, box):
-        """A solid highlighted outline of the selected region (x0, x1, y0,
-        y1), or None."""
+        """A solid highlighted outline of the selected region (x0, x1, f0,
+        f1), or None."""
+        self._selected_spec = box
+        self._draw_selected_box()
+
+    def _draw_selected_box(self):
+        box = self._selected_spec
         if getattr(self, "_selected_item", None) is not None:
             self.plot_item.vb.removeItem(self._selected_item)
             self._selected_item = None
         if box is not None:
-            x0, x1, y0, y1 = box
-            item = QtWidgets.QGraphicsRectItem(x0, y0, x1 - x0, y1 - y0)
+            item = QtWidgets.QGraphicsRectItem(*self._box_rect(box))
             item.setPen(pg.mkPen("#ffcc00", width=2.5))
             item.setZValue(7)
             self.plot_item.vb.addItem(item)
@@ -822,7 +1050,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
             time_label = utc.strftime("%H:%M:%S.%f")[:-4]
         except (OverflowError, ValueError):
             time_label = f"{self._time_axis[ti]:.2f}"
-        return time_label, f"{self._freq_axis[fi]:.3f} MHz"
+        return time_label, frequency_text(float(self._freq_axis[fi]))
 
     def _apply_scaling(self, data):
         """Apply intensity scaling (Linear/Log/Sqrt/Gamma) and return normalized float [0, 1]."""
@@ -1141,7 +1369,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         )
         self.plot_item.vb.addItem(line)
         self._drift_items.append(line)
-        self.driftMeasured.emit(t1, f1, t2, f2)
+        self.driftMeasured.emit(t1, self._freq_at(f1), t2, self._freq_at(f2))
 
     def mark_time(self, t):
         """A dashed line at time ``t`` (None removes it)."""
@@ -1252,6 +1480,9 @@ class PyQtGraphSpectrumCanvas(QWidget):
             title = f"Spectrum @ {at_label}"
             x_label = "Frequency (MHz)" if axis is not None else "Frequency index"
 
+        # A spectrum's frequencies as the spectrum shows them
+        log_x = not along_time and axis is not None and self._log_freq
+
         win = QWidget()
         win.setWindowTitle(title)
         fit_to_screen(win, 800, 500)
@@ -1260,8 +1491,11 @@ class PyQtGraphSpectrumCanvas(QWidget):
         if along_time and axis is not None:
             axis_items["bottom"] = TimeAxisItem(orientation="bottom")
             axis_items["bottom"].enableAutoSIPrefix(False)
+        elif log_x:
+            axis_items["bottom"] = FrequencyAxisItem(orientation="bottom")
+            axis_items["bottom"].set_scale(True, 1.0)
         plot = pg.PlotWidget(title=title, axisItems=axis_items)
-        curve = plot.plot(x, values)
+        curve = plot.plot(np.log10(x) if log_x else x, values)
 
         def style(p):
             # As the spectrum's own axes (_apply_canvas_theme_colors)
@@ -1291,7 +1525,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         )
         plot_btn = QPushButton("Save plot…")
         plot_btn.clicked.connect(
-            lambda: self._save_profile_plot(win, x, values, at_label, title, x_label, along_time, axis is not None)
+            lambda: self._save_profile_plot(win, x, values, at_label, title, x_label, along_time, axis is not None, log_x)
         )
         buttons.addWidget(csv_btn)
         buttons.addWidget(plot_btn)
@@ -1340,7 +1574,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         parent.saved_note.setText(f"Saved {os.path.basename(fileName)}")
         self.logger.info(f"Profile saved to {fileName}")
 
-    def _save_profile_plot(self, parent, x, values, at_label, title, x_label, along_time, has_axis):
+    def _save_profile_plot(self, parent, x, values, at_label, title, x_label, along_time, has_axis, log_x=False):
         fileName, chosen = QFileDialog.getSaveFileName(
             parent, "Save profile plot",
             self._profile_file_stem(at_label, along_time) + ".png",
@@ -1354,7 +1588,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
         try:
             self._save_profile(
                 parent, fileName,
-                lambda path: _write_profile_plot(path, x, values, title, x_label, along_time, has_axis, source),
+                lambda path: _write_profile_plot(path, x, values, title, x_label, along_time, has_axis, source, log_x),
             )
         except Cancelled:
             parent.saved_note.setText("Cancelled")
@@ -1401,12 +1635,11 @@ class PyQtGraphSpectrumCanvas(QWidget):
         """1px lines through (x, y) and, 8px down and right of it (left of
         it near the right edge), the chip: 11:35:36 · 120.20 MHz · 0.791."""
         value = "NaN" if val is None or not np.isfinite(val) else f"{val:.3g}"
-        freq = freq_str.replace(" MHz", "")
-        try:
-            freq = f"{float(freq):.2f}"
-        except ValueError:
-            pass
-        self.chip.setText(f"{time_str.split('.')[0]} · {freq} MHz · {value}")
+        freq = freq_str
+        if freq.endswith(" MHz"):  # (two decimals here; kHz and sample numbers as they are)
+            with contextlib.suppress(ValueError):
+                freq = f"{float(freq[:-4]):.2f} MHz"
+        self.chip.setText(f"{time_str.split('.')[0]} · {freq} · {value}")
         self.cross_v.setPos(x)
         self.cross_h.setPos(y)
         vb = self.plot_item.vb
@@ -1515,7 +1748,7 @@ class PyQtGraphSpectrumCanvas(QWidget):
             axis.setStyle(tickLength=0, tickTextOffset=8)
         self.colorbar_plot.getAxis("bottom").setPen(pg.mkPen(QColor(0, 0, 0, 0)))
         left = self.plot_item.getAxis("left")
-        left.setLabel(text="MHz", color=p["text_secondary"], **{"font-size": f"{FONT_META}pt"})
+        left.setLabel(text=self._freq_unit, color=p["text_secondary"], **{"font-size": f"{FONT_META}pt"})
         self.plot_item.vb.setBorder(pg.mkPen(edge, width=1))
         self.flag_plot.vb.setBorder(pg.mkPen(edge, width=1))
         self._style_date_label()

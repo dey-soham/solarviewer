@@ -434,6 +434,7 @@ class MainWindow(
         viewMenu.addAction(self.rangeAct)
         viewMenu.addAction(self.smoothAct)
         viewMenu.addAction(self.swapAct)
+        self._build_frequency_axis_menu(viewMenu)
         viewMenu.addSeparator()
         viewMenu.addAction(self.overviewAct)
         self._build_overview_contrast_menu(viewMenu)
@@ -449,6 +450,55 @@ class MainWindow(
         toolsMenu = menubar.addMenu("&Tools")
         toolsMenu.addAction(self.compareAct)
         toolsMenu.addAction(self.revertAct)
+
+    # View > Frequency axis: (setting, item, what it does)
+    FREQUENCY_AXES = (
+        (
+            "auto", "&Automatic",
+            "Logarithmic for a receiver whose channels crowd toward its low frequencies over "
+            "more than a decade (Wind, STEREO, Parker Solar Probe, Solar Orbiter), linear otherwise",
+        ),
+        ("linear", "&Linear", "The same height for every MHz"),
+        ("log", "L&ogarithmic", "The same height for every decade of frequency"),
+    )
+
+    def _frequency_axis_setting(self):
+        mode = QSettings("SolarViewer", "DynamicSpectrumViewer").value("frequency_axis", "auto")
+        return mode if mode in ("auto", "linear", "log") else "auto"
+
+    def _build_frequency_axis_menu(self, viewMenu):
+        """View > Frequency axis: linear, logarithmic, or whichever suits
+        the file opened; kept for the next time."""
+        from PyQt5.QtWidgets import QActionGroup
+
+        menu = viewMenu.addMenu("&Frequency axis")
+        menu.setStatusTip("Frequencies along a linear or a logarithmic axis")
+        group = QActionGroup(self)
+        current = self._frequency_axis_setting()
+        self.frequencyAxisActs = {}
+        for mode, label, tip in self.FREQUENCY_AXES:
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(mode == current)
+            act.setStatusTip(tip)
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, m=mode: self._set_frequency_axis(m))
+            self.frequencyAxisActs[mode] = act
+
+    def _set_frequency_axis(self, mode):
+        QSettings("SolarViewer", "DynamicSpectrumViewer").setValue("frequency_axis", mode)
+        self.canvas.set_frequency_scale(mode)
+        if self.canvas._data is None:
+            return
+        shown = self.canvas.frequency_scale()
+        if mode == "log" and shown != "log":
+            self.statusBar().showMessage(
+                "A logarithmic axis needs frequencies above zero: this spectrum stays linear", 6000
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Frequency axis: {'logarithmic' if shown == 'log' else 'linear'}", 4000
+            )
 
     def _fill_recent_menu(self):
         """File > Open Recent: the spectra opened lately, then Clear."""
@@ -546,6 +596,7 @@ class MainWindow(
         # The plot (its frequency axis 52px wide: the time bar and the
         # overview start where the image does)
         self.canvas = PyQtGraphSpectrumCanvas(self)
+        self.canvas.set_frequency_scale(self._frequency_axis_setting())
         plotWrap = QWidget()
         plotLayout = QVBoxLayout(plotWrap)
         plotLayout.setContentsMargins(8, 8, 14, 0)
@@ -2033,15 +2084,19 @@ class MainWindow(
         def speed(v):
             return f"{v:,.0f} km/s ({v / 299792.458:.2f} c)" if v is not None else "n/a"
 
+        # (in kHz where MHz would read as zero: the low-frequency receivers)
+        df, rate = d["df"], d["rate"]
+        span = f"{df * 1000:.3g} kHz" if abs(df) < 0.1 else f"{df:.2f} MHz"
+        drift = f"{rate * 1000:.3g} kHz/s" if abs(rate) < 0.01 else f"{rate:.3f} MHz/s"
         text = (
-            f"Δt = {d['dt']:.2f} s, Δf = {d['df']:.2f} MHz\n"
-            f"Drift: {d['rate']:.3f} MHz/s\n"
+            f"Δt = {d['dt']:.2f} s, Δf = {span}\n"
+            f"Drift: {drift}\n"
             f"Fundamental: {speed(d['v_f'])}\n"
             f"Harmonic: {speed(d['v_h'])}"
         )
         self.driftLabel.setText(text)
         self._update_tool_hint()
-        self.statusBar().showMessage(f"Drift: {d['rate']:.3f} MHz/s", 10000)
+        self.statusBar().showMessage(f"Drift: {drift}", 10000)
 
     def resizeEvent(self, event):
         """Handle window resize events to ensure canvas redraws properly"""

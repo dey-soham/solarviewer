@@ -53,7 +53,7 @@
 ### 🔧 Advanced Tools
  
 - **Log Console** — Internal console to view application logs and debugging information
-- **Dynamic Spectra Viewer** — Advanced viewer for radio spectra with RFI masking (ROI/Global), bandpass normalization, and cross-section analysis
+- **Dynamic Spectra Viewer** — Advanced viewer for radio spectra with RFI masking (ROI/Global), bandpass normalization, cross-section analysis, and a linear or logarithmic frequency axis (logarithmic by default for the spacecraft receivers' kHz–MHz channels)
 - **Create Dynamic Spectra** — Build a dynamic spectrum FITS (and PNG) from Measurement Sets (`.ms` or `.MS`; one MS per subband or a single multi-channel MS), on this machine or on an SSH server (direct, or as a Slurm job for large sets). The window runs without casacore; only the machine that runs the engine needs python-casacore (and paramiko is needed for Server mode)
 - **LOFAR/SIMPL Support** — Calibration table visualizer and pipeline log viewer
 - **Coordinate Transformations** — Convert between RA/Dec and helioprojective coordinates
