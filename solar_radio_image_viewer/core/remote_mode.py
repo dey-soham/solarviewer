@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 # clearing them longer, so these run on a thread. Nothing here touches Qt.
 
 
+# Seconds the health check waits after its 1st, 2nd... failed try to
+# connect again before the next (the last one from then on): a server
+# that is down, or a laptop off the network, is not asked every 5 s
+RECONNECT_WAITS = (10, 20, 40, 80, 160, 300)
+
+
+def _wait_text(seconds):
+    return f"{seconds} s" if seconds < 120 else f"{seconds // 60} min"
+
+
 def _folder_size(folder, pattern="*"):
     """(bytes, files) in ``folder``, below it too, of names like ``pattern``."""
     size = count = 0
@@ -141,7 +151,8 @@ def _measure_caches(remote_cache):
                 "Sunpy Data Cache",
                 sunpy_size,
                 sunpy_count,
-                "Downloaded AIA pointing tables, .nc files, etc.",
+                "Everything in ~/sunpy and ~/.sunpy, SunPy's own folders: AIA pointing "
+                "tables, .nc files, and any data downloaded with SunPy outside SolarViewer",
             )
         )
 
@@ -170,6 +181,22 @@ _CLEARED_NAMES = {
     "sunpy": "Sunpy Data",
     "old": "Legacy Cache",
 }
+
+
+def _sunpy_folders_text(format_size):
+    """The SunPy folders that clearing deletes, a line each with what is
+    in it ("" if there are none), for the question asked first."""
+    lines = []
+    for folder in _sunpy_dirs():
+        if not folder.exists():
+            continue
+        try:
+            size, count = _folder_size(folder)
+            held = f"{format_size(size)}, {count} file{'s' * (count != 1)}"
+        except OSError:
+            held = "size unknown"
+        lines.append(f"• {folder}  ({held})")
+    return "\n".join(lines)
 
 
 def _clear_cache(key, remote_cache):
@@ -439,6 +466,9 @@ class RemoteModeMixin:
             self._health_check_timer = QTimer(self)  # Parent to self
             self._health_check_timer.timeout.connect(self._check_connection_health)
 
+        # (a new connection: nothing has failed yet)
+        self._reconnect_failures = 0
+        self._reconnect_not_before = 0.0
         # Check every 5 seconds
         self._health_check_timer.start(5000)
 
@@ -592,6 +622,25 @@ class RemoteModeMixin:
                 )
                 if reply != QMessageBox.Yes:
                     selected_keys.remove("masks")
+                    if not selected_keys:
+                        return
+            if "sunpy" in selected_keys:
+                # These are SunPy's folders, not SolarViewer's alone: say
+                # which, and what else is in them
+                folders = _sunpy_folders_text(self._format_size)
+                reply = QMessageBox.warning(
+                    self,
+                    "Delete SunPy's folders?",
+                    "Clearing the Sunpy Data Cache deletes everything in:\n\n"
+                    f"{folders}\n\n"
+                    "These are SunPy's own folders. Data downloaded with SunPy outside "
+                    "SolarViewer (Fido, sample data) is kept there by default and is "
+                    "deleted too. Delete them?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                ) if folders else QMessageBox.Yes
+                if reply != QMessageBox.Yes:
+                    selected_keys.remove("sunpy")
                     if not selected_keys:
                         return
 
@@ -770,7 +819,10 @@ class RemoteModeMixin:
         def on_ping_result(is_alive):
             if connection is not self.remote_connection:
                 return  # (another server was connected meanwhile: this one was closed)
-            if not is_alive:
+            if is_alive:
+                self._reconnect_failures = 0
+                self._reconnect_not_before = 0.0
+            elif self._may_reconnect(connection):
                 logger.warning("[SSH] Health check: Connection lost, attempting reconnect...")
                 self._reconnect_in_background()
 
@@ -780,6 +832,18 @@ class RemoteModeMixin:
         self._ping_thread = PingThread(self.remote_connection)
         self._ping_thread.result.connect(on_ping_result)
         self._ping_thread.start()
+
+    def _may_reconnect(self, connection):
+        """Whether the health check may connect again by itself now: not
+        once the server has refused the login (only the user can log in
+        again, and a login repeated every few seconds locks an account on
+        a shared server), and after a failed try only once its wait is
+        over (RECONNECT_WAITS)."""
+        import time
+
+        if getattr(connection, "login_refused", ""):
+            return False
+        return time.monotonic() >= getattr(self, "_reconnect_not_before", 0.0)
 
     def _reconnect_in_background(self):
         """Connect again to the server, in a thread: it can take as long as
@@ -805,11 +869,27 @@ class RemoteModeMixin:
                 return  # (another server was connected meanwhile)
             if ok:
                 logger.info("[SSH] Health check: Reconnected successfully")
+                self._reconnect_failures = 0
+                self._reconnect_not_before = 0.0
                 self.statusBar().showMessage("Remote connection restored", 5000)
-            else:
-                logger.warning("[SSH] Health check: Reconnect failed")
+            elif getattr(connection, "login_refused", ""):
+                logger.warning("[SSH] Health check: the server refused the login; not trying again")
                 self.statusBar().showMessage(
-                    "Remote connection lost - click status to reconnect", 10000
+                    "Remote connection lost, and the server refused the login: "
+                    "not trying again - click status to connect",
+                    0,
+                )
+            else:
+                import time
+
+                failures = self._reconnect_failures = getattr(self, "_reconnect_failures", 0) + 1
+                wait = RECONNECT_WAITS[min(failures, len(RECONNECT_WAITS)) - 1]
+                self._reconnect_not_before = time.monotonic() + wait
+                logger.warning(f"[SSH] Health check: Reconnect failed; next try in {wait} s")
+                self.statusBar().showMessage(
+                    f"Remote connection lost - trying again in {_wait_text(wait)} "
+                    "(click status to reconnect)",
+                    10000,
                 )
             self._update_remote_status_indicator()
             self._update_remote_menu_state()

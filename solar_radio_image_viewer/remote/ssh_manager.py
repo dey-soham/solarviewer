@@ -73,11 +73,19 @@ class SSHConnectionError(Exception):
     pass
 
 
+class LoginRefused(SSHConnectionError):
+    """The server refused the login (the password, key or passphrase), or
+    its host key is not the trusted one: connecting again with what is
+    stored fails the same way, and only the user can put it right."""
+
+    pass
+
+
 # Servers the user has trusted in SolarViewer, besides ~/.ssh/known_hosts
 KNOWN_HOSTS_FILE = Path.home() / ".config" / "solarviewer" / "known_hosts"
 
 
-class UnknownHostKey(SSHConnectionError):
+class UnknownHostKey(LoginRefused):
     """The server's host key is not known yet; the user must confirm it
     (``trust_host_key``) before connecting."""
 
@@ -117,6 +125,12 @@ def trust_host_key(hostname, key):
     keys.add(hostname, key.get_name(), key)
     keys.save(str(KNOWN_HOSTS_FILE))
     os.chmod(KNOWN_HOSTS_FILE, 0o600)
+
+
+def _login_refused(error):
+    """Whether ``error`` (of a connect()) is one only the user can put
+    right: a refused login, or a host key that is not the trusted one."""
+    return isinstance(error, LoginRefused) or "authentication" in str(error).lower()
 
 
 @dataclass
@@ -187,6 +201,9 @@ class SSHConnection:
         self._ssh_config: Optional[SSHConfig] = None
         self._last_home: str = ""  # Cached home directory for non-blocking access
         self.last_error: str = ""  # why the last reconnect() failed
+        # Why, if the server refused the login of the last reconnect():
+        # nothing then connects again by itself (see ensure_connected)
+        self.login_refused: str = ""
         # One reconnect() at a time: a health check, the browser's Reconnect
         # and a failed transfer may all try at once, each tearing down the
         # connection the other is making
@@ -371,7 +388,7 @@ class SSHConnection:
             raise
         except paramiko.BadHostKeyException as e:
             self._cleanup()
-            raise SSHConnectionError(
+            raise LoginRefused(
                 f"The host key of {e.hostname} has changed since it was trusted. "
                 "Someone may be impersonating the server. If the server really "
                 "was reinstalled, remove its old key from ~/.ssh/known_hosts "
@@ -379,7 +396,7 @@ class SSHConnection:
             )
         except paramiko.AuthenticationException as e:
             self._cleanup()
-            raise SSHConnectionError(f"Authentication failed: {e}")
+            raise LoginRefused(f"Authentication failed: {e}")
         except paramiko.SSHException as e:
             self._cleanup()
             raise SSHConnectionError(f"SSH error: {e}")
@@ -445,15 +462,17 @@ class SSHConnection:
 
                 # Reconnect with stored params
                 self.connect(**self._connect_params)
-                self.last_error = ""
+                self.last_error = self.login_refused = ""
                 return True
             except SSHConnectionError as e:
                 logger.warning(f"[SSH] Reconnection failed: {e}")
                 self.last_error = str(e)
+                self.login_refused = str(e) if _login_refused(e) else ""
                 return False
             except Exception as e:
                 logger.warning(f"[SSH] Reconnection error: {e}")
                 self.last_error = str(e)
+                self.login_refused = ""
                 return False
 
     @property
@@ -528,6 +547,14 @@ class SSHConnection:
         """
         if self.is_connected():
             return True
+
+        if self.login_refused:
+            # The stored login was refused. Sent again by every health
+            # check and every read, it gets an account locked or an
+            # address banned (fail2ban) on a shared server: reconnect(),
+            # which the user asks for, tries it once more
+            self.last_error = self.login_refused
+            return False
 
         # Try to reconnect
         if self._connect_params:
