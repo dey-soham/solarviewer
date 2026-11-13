@@ -26,6 +26,7 @@
 *   **Reset**: Reset, by the intensity range, puts back the range, stretch, gamma and colormap the image opened with.
 *   **Keep for Next Images**: Holds the intensity range while stepping through a time series; an image in another unit or Stokes product is still scaled afresh.
 *   **Range Histogram**: The histogram widens as a marker is pushed past its edge and comes back once the marker is let go, so a marker dragged far out by accident is easy to place again. Double-click it for the image's whole range.
+*   **ZScale**: The ZScale stretch, in the main window and in videos, now gives the range of the standard (IRAF) algorithm, the one DS9 and astropy use. Its own version gave a range about 2.5 times narrower, which saturated the bright parts: an AIA 171 image went up to 275 where the standard range goes to 705. The samples are taken over the whole image.
 
 ### Stokes Products
 *   **Planes by Label**: Stokes planes are found by their labels. On an image with only I and V, V is shown (it used to appear as Q), and a missing plane is named in a clear message.

@@ -91,12 +91,46 @@ class PowerNorm(Normalize):
         return np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)
 
 
+def zscale_samples(data, count):
+    """About ``count`` values of ``data`` for ZScale (all of them, of an
+    image with no more), blank (NaN, infinite or masked) ones left out.
+
+    Of an image they are taken on a grid of rows and columns over the whole
+    of it, as IRAF takes them. Every k-th value of the flattened image, which
+    is how astropy picks its own, is one single column of an image whose
+    height is a multiple of the count (600 samples of a 600 or 1200 pixel
+    image): its left edge, with nothing of the Sun in it."""
+    values = np.ma.masked_invalid(data, copy=False)
+    if values.size <= count:
+        return values.compressed()
+    if values.ndim == 2:
+        ny, nx = values.shape
+        rows = min(ny, int(np.ceil(np.sqrt(count * ny / nx))))
+        columns = min(nx, int(np.ceil(count / rows)))
+        y = ((np.arange(rows) + 0.5) * ny / rows).astype(int)
+        x = ((np.arange(columns) + 0.5) * nx / columns).astype(int)
+        samples = values[np.ix_(y, x)].compressed()
+        if 2 * samples.size >= count:
+            return samples
+    # Not an image, or one that is mostly blank where the grid falls:
+    # evenly through what values it has
+    values = values.compressed()
+    if values.size <= count:
+        return values
+    return values[np.linspace(0, values.size - 1, count).astype(int)]
+
+
 class ZScaleNorm(Normalize):
     """
-    ZScale normalization using iterative sigma clipping (IRAF algorithm).
+    ZScale normalization (the IRAF algorithm, as DS9 and astropy have it).
 
-    Automatically determines optimal display range by fitting a line to
-    sorted pixel values and rejecting outliers. Widely used in astronomy.
+    The display range is worked out from a sample of the image: a line is
+    fitted to the sorted sample values, the outliers left out of the fit, and
+    the range is the median plus and minus half the sample count times the
+    line's slope over the contrast, kept within the sample's own range.
+
+    The limits are those of ``astropy.visualization.ZScaleInterval``; the
+    samples are picked here, on a grid over the whole image (``zscale_samples``).
 
     Parameters
     ----------
@@ -135,75 +169,30 @@ class ZScaleNorm(Normalize):
         self._zmax = None
 
     def _compute_zscale(self, data):
-        """Compute ZScale limits using iterative sigma clipping."""
+        """The ZScale limits of ``data``; (0, 1) for an image with no values,
+        its smallest and largest value where the algorithm has nothing to go
+        by (a handful of pixels, a constant image) or fails."""
         try:
-            # Flatten data and remove NaNs/Infs
-            flat_data = np.asarray(data).flatten()
-            mask = np.isfinite(flat_data)
-            flat_data = flat_data[mask]
-
-            if flat_data.size == 0:
+            samples = zscale_samples(data, self.num_samples)
+            if samples.size == 0:
                 return 0, 1
+            if samples.size < self.min_npixels:
+                return float(samples.min()), float(samples.max())
 
-            if flat_data.size < self.min_npixels:
-                return float(np.min(flat_data)), float(np.max(flat_data))
+            from astropy.visualization import ZScaleInterval
 
-            # Sample the data if necessary
-            if flat_data.size > self.num_samples:
-                indices = np.linspace(0, flat_data.size - 1, self.num_samples).astype(
-                    int
-                )
-                samples = np.sort(flat_data[indices])
-            else:
-                samples = np.sort(flat_data)
-
-            # Iterative sigma clipping
-            for _ in range(self.max_iterations):
-                if len(samples) < self.min_npixels:
-                    break
-
-                x = np.arange(len(samples))
-                try:
-                    slope, intercept = np.polyfit(x, samples, 1)
-                except (np.linalg.LinAlgError, ValueError):
-                    break
-
-                fitted = slope * x + intercept
-                residuals = samples - fitted
-                sigma = np.std(residuals)
-
-                if sigma == 0:
-                    break
-
-                mask = np.abs(residuals) < self.krej * sigma
-                if np.sum(mask) < self.min_npixels:
-                    break
-
-                new_samples = samples[mask]
-                if new_samples.size == samples.size:
-                    break
-                samples = new_samples
-
-            # Adjust slope by contrast parameter
-            if slope != 0:
-                slope /= self.contrast
-
-            # Use median as pivot
-            median_index = len(samples) // 2
-            median_val = samples[median_index]
-
-            # Compute zscale limits
-            zmin = median_val - slope * median_index
-            zmax = median_val + slope * (len(samples) - median_index)
-
-            # Ensure limits are within data range
-            zmin = max(zmin, samples[0])
-            zmax = min(zmax, samples[-1])
+            # (n_samples: every sample given is used, none picked again)
+            zmin, zmax = ZScaleInterval(
+                n_samples=samples.size,
+                contrast=self.contrast,
+                krej=self.krej,
+                max_iterations=self.max_iterations,
+                min_npixels=self.min_npixels,
+            ).get_limits(samples)
 
             # Ensure zmin < zmax
-            if zmin >= zmax:
-                zmin = samples[0]
-                zmax = samples[-1]
+            if not zmin < zmax:
+                zmin, zmax = samples.min(), samples.max()
 
             return float(zmin), float(zmax)
 
