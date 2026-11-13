@@ -379,20 +379,39 @@ def _uninstall_mac():
 # ==========================================
 
 
+def _is_our_link(path):
+    """Whether ``path`` is a link this installer made: a symlink to a
+    ``solarviewer`` executable. A file (the launcher pip itself put there
+    with ``pip install --user``) or a link to anything else (another
+    program called ``sv``) is not ours to replace or remove."""
+    try:
+        return path.is_symlink() and os.path.basename(os.readlink(path)) == "solarviewer"
+    except OSError:
+        return False
+
+
 def _setup_local_bin_symlinks(executable_path):
     home = Path.home()
     bin_dir = home / ".local" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
+    executable = Path(os.path.abspath(executable_path))
 
     links = ["solarviewer", "sv"]
     for link_name in links:
         target_link = bin_dir / link_name
         try:
+            if target_link == executable:
+                # The launcher found is this very path: replacing it
+                # would delete it and link it to itself
+                continue
             if target_link.exists() or target_link.is_symlink():
+                if not _is_our_link(target_link):
+                    print(f"Left {target_link} as it is (not a link made by SolarViewer)")
+                    continue
                 target_link.unlink()
 
-            target_link.symlink_to(executable_path)
-            print(f"Created symlink: {target_link} -> {executable_path}")
+            target_link.symlink_to(executable)
+            print(f"Created symlink: {target_link} -> {executable}")
         except Exception as e:
             print(f"Warning: Could not create symlink {target_link}: {e}")
 
@@ -446,7 +465,9 @@ def _remove_local_bin_symlinks():
     links = ["solarviewer", "sv"]
     for link_name in links:
         target_link = bin_dir / link_name
-        if target_link.exists() or target_link.is_symlink():
+        # (only the links the install made: a launcher pip put there, or
+        # another program of that name, stays)
+        if _is_our_link(target_link):
             try:
                 target_link.unlink()
                 print(f"Removed symlink: {target_link}")
