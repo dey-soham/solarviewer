@@ -5,9 +5,14 @@ Downloads solar radio dynamic spectra and writes them as FITS files for the
 Dynamic Spectrum Viewer:
 - RSTN spectrographs: Learmonth, San Vito, Palehua, Sagamore Hill, Holloman
 - the e-CALLISTO network of spectrometers
+- OVRO-LWA (15-85 MHz), read out of its daily file for the time asked
+- spacecraft receivers: Wind/WAVES, STEREO/WAVES, Parker Solar Probe
+  FIELDS/RFS and Solar Orbiter RPW, from NASA's SPDF
 
 The package includes:
-- Core downloader module (radio_data_downloader.py)
+- Core downloader module (radio_data_downloader.py: RSTN, e-CALLISTO and
+  the FITS output), ovro_lwa.py and space_radio.py
+- The sources as the window offers them, one entry each (sources.py)
 - Graphical user interface (radio_data_downloader_gui.py)
 """
 

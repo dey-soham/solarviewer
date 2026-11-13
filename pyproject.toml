@@ -46,6 +46,8 @@ dependencies = [
     "requests",
     "packaging",
     "pandas",
+    # the CDF files of the spacecraft radio receivers (Radio Data Downloader)
+    "cdflib>=1.0",
     "parfive",
     "aiohttp",
     "psutil",

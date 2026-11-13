@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
 Radio Data Downloader GUI: the window that downloads solar radio dynamic
-spectra (RSTN spectrographs and e-CALLISTO stations) and writes them as
-FITS files for the Dynamic Spectrum Viewer.
+spectra (RSTN spectrographs, e-CALLISTO stations, OVRO-LWA and the radio
+receivers of Wind, STEREO, Parker Solar Probe and Solar Orbiter) and writes
+them as FITS files for the Dynamic Spectrum Viewer.
 
-It has the solar downloader's shape: the form on the left (station, time
+It has the solar downloader's shape: the form on the left (source, time
 range, folder, processing), on the right what the download will give,
 checked with the archive as the form changes, with the bursts reported on
 the day; during a download the right column shows progress and a log.
+
+What differs from one source to the next is in sources.py: the window asks
+the chosen source.
 """
 
 import os
@@ -44,6 +48,7 @@ except ImportError:
     sys.exit(1)
 
 from . import radio_data_downloader as rdd
+from . import sources
 from ..noaa_events import noaa_events as _noaa_events  # noqa: F401 (loaded here: its package imports Qt, never from a worker thread)
 from ..ui.activity import activity
 from ..ui.date_picker import attach_date_picker
@@ -75,12 +80,7 @@ COUNT_DELAY_MS = 700  # the form settles this long before the archive is asked
 BURST_MARGIN = timedelta(minutes=5)  # around a burst picked from the list
 BURSTS_SHOWN = 8  # before "more"
 THROUGHPUT_MB_S = 2.0  # assumed, for the time estimate
-SECONDS_PER_FILE = {"rstn": 4.0, "ecallisto": 0.6}  # requests and processing
 SETTINGS_GROUP = "RadioDownloader"
-
-NETWORKS = ("rstn", "ecallisto")
-RSTN_NOTE = "25–180 MHz every 3 s"
-ECALLISTO_NOTE = "Each station its own band, about 45–870 MHz · every 0.25 s"
 
 BURST_TYPES = {
     "I": "Type I: short narrow-band bursts (noise storm)",
@@ -92,16 +92,6 @@ BURST_TYPES = {
     "VII": "Type VII: a series of type III and V bursts",
     "CTM": "Continuum",
 }
-
-
-def _hours_text(hours):
-    first, last = hours
-    return f"{first:02d}–{last:02d} UTC"
-
-
-def _years_text(site):
-    first, last = site["first_year"], site["last_year"]
-    return f"{first}–{last}" if last else f"{first} to now"
 
 
 # ---------------------------------------------------------------- workers
@@ -130,19 +120,7 @@ class DownloadWorker(QThread):
             should_stop=lambda: self._cancelled,
         )
         try:
-            if p["network"] == "rstn":
-                path = rdd.rstn_spectrum(
-                    p["station"], p["start"], p["end"], p["output_dir"], whole_day=p["whole_day"],
-                    do_flag=p["clean"] and p["flag_channels"], flag_cal_time=p["clean"] and p["flag_calibration"],
-                    bkg_sub=p["divide_median"], keep_raw=p["keep_raw"], **hooks,
-                )
-                files = [path] if path else []
-            else:
-                files = rdd.ecallisto_spectra(
-                    p["start"], p["end"], p["station"], p["output_dir"], join=p["join"], crop=p["join"],
-                    subtract_background=p["subtract_background"], keep_raw=p["keep_raw"], **hooks,
-                )
-            self.done.emit(files)
+            self.done.emit(sources.SOURCES[p["source"]].download(p, **hooks))
         except rdd.Cancelled:
             self.error.emit("Download cancelled")
         except rdd.ArchiveUnreachable as e:
@@ -193,24 +171,9 @@ def ask_in_background(key, question, slot):
 
 
 def archive_question(key):
-    """What the archive holds for a request: RSTN, the station's day
-    files; e-CALLISTO, every station's files in the window."""
-    if key[0] == "rstn":
-        _, station, start, end, whole_day = key
-
-        def rstn():
-            files = rdd.find_rstn(station, start, end, whole_day)
-            latest = None
-            if not files:  # not published yet, or a gap?
-                try:
-                    latest = rdd.rstn_latest(station)
-                except rdd.ArchiveUnreachable:
-                    pass
-            return files, latest
-
-        return rstn
-    _, start, end = key
-    return lambda: rdd.ecallisto_files(start, end)
+    """What the archive holds for a request (it begins with its source):
+    the source's answer."""
+    return lambda: sources.SOURCES[key[0]].ask(key)
 
 
 def bursts_question(days):
@@ -240,6 +203,7 @@ class RadioDataDownloaderGUI(QDialog):
         self._started = None
         self._log_file = None
         self._fetched = self._written = self._total = 0
+        self._unit = "files"  # what the running download counts
         self._log_lines = []
         self._estimate = {}
         self._found = None  # (key, answer) once the archive has answered
@@ -251,8 +215,7 @@ class RadioDataDownloaderGUI(QDialog):
         self._burst_worker = None
         self._burst_days = None
         self._show_all_bursts = False
-        self._latest = None  # the last day an RSTN station's archive holds, when the request found none
-        self._wanted_station = None  # an e-CALLISTO station to pick once listed
+        self._wanted_station = None  # a station to pick once the archive has listed them
         self._burst_stations = []  # or one of these (a burst picked from the list saw them)
         self._updating = False
         self._window_seconds = 3600
@@ -280,9 +243,8 @@ class RadioDataDownloaderGUI(QDialog):
         self._count_timer.setInterval(COUNT_DELAY_MS)
         self._count_timer.timeout.connect(self._ask_archive)
 
-        network = self._setting("network", "rstn")
-        self._pick(self.network_buttons, self.network_buttons[NETWORKS.index(network) if network in NETWORKS else 0])
-        self.on_network_changed()
+        self.choose_source(self._setting("network", sources.DEFAULT))
+        self.on_source_changed()
         themed(self, self._restyle)
         try:
             set_hand_cursor(self)
@@ -306,24 +268,17 @@ class RadioDataDownloaderGUI(QDialog):
         return value
 
     def _save_settings(self):
-        values = {
-            "network": self.network(),
-            "base_dir": self.base_dir,
-            "rstn_station": self.rstn_combo.currentData(),
-            "clean": self.process_switch.isChecked() if self.network() == "rstn" else None,
-            "flag_channels": self.flag_channels_box.isChecked(),
-            "flag_calibration": self.flag_calibration_box.isChecked(),
-            "divide_median": self.divide_median_box.isChecked(),
-            "join": self.process_switch.isChecked() if self.network() == "ecallisto" else None,
-            "subtract_background": self.background_box.isChecked(),
-            "keep_raw": self.keep_raw_box.isChecked(),
-        }
-        station = self.ecallisto_combo.currentData()
-        if station:
-            values["ecallisto_station"] = station
+        source = self.source()
+        values = {"network": source.key, "base_dir": self.base_dir}
+        values.update({key: box.isChecked() for key, box in self.option_boxes.items()})
+        if source.switch is not None:
+            values[source.switch.setting] = self.process_switch.isChecked()
+        for other in sources.SOURCES.values():  # what was chosen for each source
+            choice = self.choice_combos[other.key].currentData()
+            if choice:
+                values[other.setting] = choice
         for key, value in values.items():
-            if value is not None:
-                self.settings.setValue(f"{SETTINGS_GROUP}/{key}", value)
+            self.settings.setValue(f"{SETTINGS_GROUP}/{key}", value)
 
     # ------------------------------------------------------------ the form
     def _build_form(self):
@@ -332,36 +287,46 @@ class RadioDataDownloaderGUI(QDialog):
         layout.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
         layout.setSpacing(SPACE_L)
 
-        # Station
+        # Source: where the spectrum comes from, and its station or receiver
         block = QVBoxLayout()
         block.setSpacing(SPACE_S)
-        block.addWidget(kicker("Station"))
+        block.addWidget(kicker("Source"))
         row = QHBoxLayout()
         row.setSpacing(SPACE_S)
-        self.network_group, self.network_buttons = _segments(["RSTN", "e-CALLISTO"])
-        self.network_buttons[0].setToolTip(
-            "The US Air Force's Radio Solar Telescope Network spectrographs:\n"
-            "Learmonth, San Vito, Palehua, Sagamore Hill and Holloman"
-        )
-        self.network_buttons[1].setToolTip("The worldwide e-CALLISTO network of solar radio spectrometers")
-        for button in self.network_buttons:
-            button.clicked.connect(lambda _=False, b=button: self._pick(self.network_buttons, b, self.on_network_changed))
-        row.addWidget(self.network_group, 0)
+        self.source_combo = QComboBox()
+        self.source_combo.setToolTip("The instrument or network the spectrum comes from")
+        group = None
+        for source in sources.SOURCES.values():
+            if source.group != group:  # a heading, not to be chosen
+                group = source.group
+                self.source_combo.addItem(group.upper())
+                heading = self.source_combo.model().item(self.source_combo.count() - 1)
+                heading.setFlags(Qt.NoItemFlags)
+                font = heading.font()
+                font.setPointSizeF(font.pointSizeF() * 0.85)
+                heading.setFont(font)
+            self.source_combo.addItem(source.name, source.key)
+            self.source_combo.setItemData(self.source_combo.count() - 1, source.tip, Qt.ToolTipRole)
+        self.source_combo.setMaxVisibleItems(self.source_combo.count())
+        self.source_combo.currentIndexChanged.connect(self.on_source_changed)
+        row.addWidget(self.source_combo, 2)
         self.station_pages = QStackedWidget()
-        self.rstn_combo = QComboBox()
-        for name, site in rdd.RSTN_SITES.items():
-            years = f" · {_years_text(site)}" if site["last_year"] else ""
-            self.rstn_combo.addItem(f"{name} · {site['place']}{years}", name)
-        saved = self.rstn_combo.findData(self._setting("rstn_station", "Learmonth"))
-        self.rstn_combo.setCurrentIndex(max(saved, 0))
-        self.rstn_combo.currentIndexChanged.connect(self.on_station_changed)
-        self.ecallisto_combo = QComboBox()
-        self.ecallisto_combo.setToolTip("The stations with files in this window, as the archive lists them")
-        self.ecallisto_combo.currentIndexChanged.connect(self.on_station_changed)
-        for combo in (self.rstn_combo, self.ecallisto_combo):
+        self.choice_combos = {}
+        for source in sources.SOURCES.values():
+            combo = QComboBox()
+            for text, value, tip in source.choices():
+                combo.addItem(text, value)
+                if tip:
+                    combo.setItemData(combo.count() - 1, tip, Qt.ToolTipRole)
+            if source.listed:
+                combo.setToolTip(f"The {source.picks.lower()}s with files in this window, as the archive lists them")
+            else:
+                combo.setCurrentIndex(max(combo.findData(self._setting(source.setting, "")), 0))
+            combo.currentIndexChanged.connect(self.on_station_changed)
+            self.choice_combos[source.key] = combo
             self.station_pages.addWidget(combo)
-        self.station_pages.setFixedHeight(self.rstn_combo.sizeHint().height())
-        row.addWidget(self.station_pages, 1)
+        self.station_pages.setFixedHeight(self.source_combo.sizeHint().height())
+        row.addWidget(self.station_pages, 3)
         block.addLayout(row)
         self.station_note = _label("", "Meta")
         self.station_note.setWordWrap(True)
@@ -458,9 +423,12 @@ class RadioDataDownloaderGUI(QDialog):
         layout.addLayout(block)
 
         # Processing
-        block = QVBoxLayout()
+        self.processing_block = QWidget()
+        block = QVBoxLayout(self.processing_block)
+        block.setContentsMargins(0, 0, 0, 0)
         block.setSpacing(SPACE_S)
-        block.addWidget(kicker("Processing"))
+        self.processing_kicker = kicker("Processing")
+        block.addWidget(self.processing_kicker)
         self.processing_row = QFrame()
         self.processing_row.setObjectName("Surface")
         row = QHBoxLayout(self.processing_row)
@@ -504,17 +472,19 @@ class RadioDataDownloaderGUI(QDialog):
         self.divide_median_box.setChecked(self._setting("divide_median", False))
         self.background_box.setChecked(self._setting("subtract_background", False))
         self.keep_raw_box.setChecked(self._setting("keep_raw", False))
-        self.option_boxes = (self.flag_channels_box, self.flag_calibration_box, self.divide_median_box,
-                             self.background_box, self.keep_raw_box)
-        for box in self.option_boxes:
+        self.option_boxes = dict(zip(sources.OPTIONS, (
+            self.flag_channels_box, self.flag_calibration_box, self.divide_median_box,
+            self.background_box, self.keep_raw_box,
+        )))
+        for box in self.option_boxes.values():
             box.setObjectName("SmallCheck")
             box.toggled.connect(self.update_summary)
         options.setColumnStretch(2, 1)
         self._options_grid = options
         self.options_row.hide()
         block.addWidget(self.options_row)
-        layout.addLayout(block)
-        layout.addStretch()
+        layout.addWidget(self.processing_block)
+        layout.addStretch(1)  # (all the room left over: the blocks keep their spacing whatever a source shows)
         return self.form
 
     # ------------------------------------------------------ the side column
@@ -719,16 +689,20 @@ class RadioDataDownloaderGUI(QDialog):
         return footer
 
     # ------------------------------------------------------------- state
-    def network(self):
-        return "ecallisto" if self.network_buttons[1].isChecked() else "rstn"
+    def source(self):
+        """The source chosen (an entry of sources.SOURCES)."""
+        return sources.SOURCES.get(self.source_combo.currentData()) or sources.SOURCES[sources.DEFAULT]
 
-    def station(self):
-        """The RSTN station's name, or the e-CALLISTO station's (None for
-        every station, "" before the archive has listed them)."""
-        if self.network() == "rstn":
-            return self.rstn_combo.currentData()
-        data = self.ecallisto_combo.currentData()
-        return None if data == "*" else (data or "")
+    def choose_source(self, key):
+        """Show the source ``key`` (the default one when there is none such)."""
+        index = self.source_combo.findData(key if key in sources.SOURCES else sources.DEFAULT)
+        self.source_combo.setCurrentIndex(index)
+
+    def choice(self):
+        """What the source's second list has chosen: a station, a receiver…
+        ("" while a source that lists what the archive has for the window
+        has not listed it, or has nothing)."""
+        return self.choice_combos[self.source().key].currentData() or ""
 
     def whole_day(self):
         return self.mode_buttons[0].isChecked()
@@ -749,29 +723,21 @@ class RadioDataDownloaderGUI(QDialog):
         return tuple(out)
 
     def times(self):
-        """(start, end) of the request, UT. A whole RSTN day spans the
-        station's file (the hours its records may fall in); a whole
-        e-CALLISTO day, 00:00 to 24:00."""
+        """(start, end) of the request, UT. A whole day is what the source
+        makes of it: 00:00 to 24:00, or the hours its observing day's file
+        may span."""
         if not self.whole_day():
             return self.range_times()
         day = self.day()
         if day is None:
             return None, None
-        midnight = datetime.combine(day, datetime.min.time())
-        if self.network() == "rstn":
-            before, after = rdd.RSTN_SITES[self.station()]["span"]
-            return midnight + timedelta(hours=before), midnight + timedelta(hours=after)
-        return midnight, midnight + timedelta(days=1) - timedelta(seconds=1)
+        return self.source().day_window(self.choice(), day)
 
     def output_dir(self):
         start, _ = self.times()
         day = self.day() if self.whole_day() else (start.date() if start else None)
         stamp = (day or datetime.utcnow().date()).strftime("%Y-%m-%d")
-        if self.network() == "rstn":
-            slug = self.station().lower().replace(" ", "-")
-        else:
-            slug = "ecallisto_" + (self.station() or "all").lower()
-        return os.path.join(self.base_dir, stamp, slug)
+        return os.path.join(self.base_dir, stamp, self.source().folder(self.choice()))
 
     @staticmethod
     def _pick(buttons, chosen, then=None):
@@ -781,44 +747,43 @@ class RadioDataDownloaderGUI(QDialog):
             then()
 
     # ------------------------------------------------------------- events
-    def on_network_changed(self):
-        rstn = self.network() == "rstn"
-        self.station_pages.setCurrentIndex(0 if rstn else 1)
+    def on_source_changed(self, *args):
+        source = self.source()
+        combo = self.choice_combos[source.key]
+        self.station_pages.setCurrentWidget(combo)
+        # (a source with nothing to choose shows no list)
+        self.station_pages.setVisible(source.listed or combo.count() > 1)
         self._updating = True
-        if rstn:
-            self.process_switch.setChecked(self._setting("clean", True))
-        else:
-            self.process_switch.setChecked(self._setting("join", True))
-            if not self._wanted_station:
-                self._wanted_station = self._setting("ecallisto_station", "")
+        if source.switch is not None:
+            self.process_switch.setChecked(self._setting(source.switch.setting, source.switch.default))
+        # (what the archive lists is filled in when it answers: the one chosen
+        # before, in this window or the last time, is wanted again)
+        self._wanted_station = (combo.currentData() or self._setting(source.setting, "")) if source.listed else None
+        self._burst_stations = []
         self._updating = False
-        # the options for this network, two to a row
-        for box in self.option_boxes:
+        # its processing: the switch when it has one, and its options two to a
+        # row (behind "Options" when there is a switch to hang them on)
+        for box in self.option_boxes.values():
             self._options_grid.removeWidget(box)
             box.hide()
-        shown = ((self.flag_channels_box, self.flag_calibration_box, self.divide_median_box, self.keep_raw_box)
-                 if rstn else (self.background_box, self.keep_raw_box))
-        for i, box in enumerate(shown):
-            self._options_grid.addWidget(box, i // 2, i % 2)
-            box.show()
+        for i, key in enumerate(source.options):
+            self._options_grid.addWidget(self.option_boxes[key], i // 2, i % 2)
+            self.option_boxes[key].show()
+        self.processing_block.setVisible(source.switch is not None or bool(source.options))
+        self.processing_row.setVisible(source.switch is not None)
+        self.processing_kicker.setText("PROCESSING" if source.switch is not None else "FILES")
+        self.options_row.setVisible(bool(source.options) and (self._options_open or source.switch is None))
         self.on_processing_changed(self.process_switch.isChecked())
         self.on_station_changed()
 
     def on_station_changed(self, *args):
         if self._updating:
             return
-        if self.network() == "rstn":
-            site = rdd.RSTN_SITES[self.station()]
-            self.station_note.setText(
-                f"{RSTN_NOTE} · {_years_text(site)} · observes about {_hours_text(site['hours'])}"
-            )
-            self.mode_note.setText(f"its observing day, about {_hours_text(site['hours'])}")
-        else:
-            self.station_note.setText(f"{ECALLISTO_NOTE} · 15 min files · {rdd.ECALLISTO_FIRST_YEAR} to now")
-            self.mode_note.setText("00:00 to 24:00 UTC")
-            station = self.ecallisto_combo.currentData()
-            if station and station != "*":
-                self._wanted_station = station
+        source, choice = self.source(), self.choice()
+        self.station_note.setText(source.note(choice))
+        self.mode_note.setText(source.day_note(choice))
+        if source.listed and choice and choice != getattr(source, "every", None):
+            self._wanted_station = choice
         self.mode_note.setVisible(self.whole_day())
         self.update_summary()
 
@@ -840,23 +805,12 @@ class RadioDataDownloaderGUI(QDialog):
         self.update_summary()
 
     def on_processing_changed(self, on):
-        if self.network() == "rstn":
+        switch = self.source().switch
+        if switch is not None:
             self.processing_title.setText(
-                "Clean the spectrum" + _muted(" · flag and fill", theme_manager.palette["text_secondary"])
+                switch.title + _muted(f" · {switch.aside}", theme_manager.palette["text_secondary"])
             )
-            self.processing_desc.setText(
-                "Known bad channels and calibration periods blanked, then filled in along frequency"
-                if on else "The levels as recorded (0–255), nothing blanked"
-            )
-        else:
-            self.processing_title.setText(
-                "Join into one spectrum per receiver"
-                + _muted(" · cut to the window", theme_manager.palette["text_secondary"])
-            )
-            self.processing_desc.setText(
-                "The 15 min files of each focus code joined and cut to the window"
-                if on else "One spectrum per 15 min file, as the archive keeps them"
-            )
+            self.processing_desc.setText(switch.on if on else switch.off)
         if not self._updating:
             self.update_summary()
 
@@ -900,8 +854,9 @@ class RadioDataDownloaderGUI(QDialog):
         self.update_summary()
 
     def use_burst(self, link):
-        """A burst in the list was clicked: its time, with a margin, and for
-        e-CALLISTO a station that saw it when the chosen one did not."""
+        """A burst in the list was clicked: its time, with a margin, and
+        where the stations are those the archive lists (e-CALLISTO) one
+        that saw it when the chosen one did not."""
         if link == "more":
             self._show_all_bursts = not self._show_all_bursts
             self._render_bursts()
@@ -913,10 +868,11 @@ class RadioDataDownloaderGUI(QDialog):
             return
         start = (burst["start"] - BURST_MARGIN).replace(second=0)
         end = (burst["end"] + timedelta(minutes=1) + BURST_MARGIN).replace(second=0)
-        if self.network() == "ecallisto":
+        source = self.source()
+        if source.listed:
             seen = [s.upper() for s in burst["stations"]]
-            current = self.ecallisto_combo.currentData()
-            if not current or current == "*" or current.upper() not in seen:
+            current = self.choice()
+            if not current or current == source.every or current.upper() not in seen:
                 self._wanted_station = burst["stations"][0] if burst["stations"] else None
                 self._burst_stations = list(burst["stations"])
         self.set_window(start, end)
@@ -927,15 +883,13 @@ class RadioDataDownloaderGUI(QDialog):
 
     # ----------------------------------------------------- archive check
     def _request_key(self):
-        """What the archive is asked for the form: RSTN (network, station,
-        start, end, day or None), e-CALLISTO (network, start, end); None
-        when the form does not make a request."""
+        """What the archive is asked for the form: a tuple the source makes
+        (it begins with the source's key); None when the form does not make
+        a request."""
         start, end = self.times()
         if start is None or end is None or end <= start:
             return None
-        if self.network() == "rstn":
-            return ("rstn", self.station(), start, end, self.day() if self.whole_day() else None)
-        return ("ecallisto", start, end)
+        return self.source().request(self.choice(), start, end, self.day() if self.whole_day() else None)
 
     def _ask_archive(self):
         key = self._request_key()
@@ -954,7 +908,7 @@ class RadioDataDownloaderGUI(QDialog):
             answer = None
         else:
             self._found = (key, answer)
-        if key[0] == "ecallisto" and answer is not None:
+        if sources.SOURCES[key[0]].listed and answer is not None:
             self._fill_stations(answer)
         self.update_summary()
 
@@ -964,39 +918,28 @@ class RadioDataDownloaderGUI(QDialog):
             self._count_worker.stopped = True
             self._count_worker = None
 
-    def _fill_stations(self, files):
-        """The e-CALLISTO stations with files in the window, the wanted one
-        chosen (or the one with the most files)."""
-        counts = {}
-        receivers = {}
-        for item in files:
-            counts[item["station"]] = counts.get(item["station"], 0) + 1
-            receivers.setdefault(item["station"], set()).add(item["focus"])
+    def _fill_stations(self, answer):
+        """What the archive lists for the window (e-CALLISTO's stations with
+        files), the wanted one chosen, or the one the source suggests."""
+        source = self.source()
+        combo = self.choice_combos[source.key]
+        items, suggested = source.listing(answer)
         wanted = [s.upper() for s in ([self._wanted_station] if self._wanted_station else [])]
         wanted += [s.upper() for s in self._burst_stations]
         self._updating = True
-        self.ecallisto_combo.clear()
-        if not counts:
-            self.ecallisto_combo.addItem("No station has files in this window", "")
-        for name in sorted(counts, key=str.upper):
-            n, r = counts[name], len(receivers[name])
-            text = f"{name} · {n} file{'s' if n > 1 else ''}" + (f" · {r} receivers" if r > 1 else "")
-            self.ecallisto_combo.addItem(text, name)
-            self.ecallisto_combo.setItemData(
-                self.ecallisto_combo.count() - 1, "Focus codes " + ", ".join(sorted(receivers[name])), Qt.ToolTipRole
-            )
-        if counts:
-            self.ecallisto_combo.addItem(f"Every station · {len(files)} files", "*")
+        combo.clear()
+        for text, value, tip in items:
+            combo.addItem(text, value)
+            if tip:
+                combo.setItemData(combo.count() - 1, tip, Qt.ToolTipRole)
         index = -1
         for name in wanted:
-            index = next((i for i in range(self.ecallisto_combo.count())
-                          if str(self.ecallisto_combo.itemData(i)).upper() == name), -1)
+            index = next((i for i in range(combo.count()) if str(combo.itemData(i)).upper() == name), -1)
             if index >= 0:
                 break
-        if index < 0 and counts:
-            busiest = max(counts, key=lambda s: (counts[s], s))
-            index = self.ecallisto_combo.findData(busiest)
-        self.ecallisto_combo.setCurrentIndex(max(index, 0))
+        if index < 0:
+            index = combo.findData(suggested)
+        combo.setCurrentIndex(max(index, 0))
         self._burst_stations = []
         self._updating = False
         self.on_station_changed()
@@ -1047,8 +990,11 @@ class RadioDataDownloaderGUI(QDialog):
         palette = theme_manager.palette
         secondary, link, accent = palette["text_secondary"], palette["link"], palette["highlight"]
         bursts = self._bursts.get(days)
-        rstn = self.network() == "rstn"
-        station = self.station()
+        chosen = self.source()
+        rstn = chosen.bursts == "noaa"  # its station's reports to NOAA; else e-CALLISTO's list
+        station = self.choice() if (rstn or chosen.listed) else ""
+        if station == getattr(chosen, "every", None):
+            station = ""
         source = f"reported by {_escape(station)}" if rstn else "seen by e-CALLISTO"
         if bursts is None:
             self.bursts_head.setText(f"Bursts {source} · {when}")
@@ -1108,29 +1054,10 @@ class RadioDataDownloaderGUI(QDialog):
                    receivers=None, positions=None)
         if answer is None:
             return out
-        if self.network() == "rstn":
-            files, self._latest = answer
-            out["files"] = len(files)
-            out["spectra"] = 1 if files else 0
-            out["size_mb"] = len(files) * rdd.RSTN_FILE_MB
-            out["names"] = [f["name"] for f in files]
-        else:
-            station = self.station()
-            if station == "":
-                if not answer:  # the archive holds nothing in this window
-                    out["files"] = out["spectra"] = 0
-                return out
-            files = [f for f in answer if station is None or f["station"].upper() == station.upper()]
-            out["files"] = len(files)
-            receivers = sorted({(f["station"], f["focus"]) for f in files})
-            out["receivers"] = receivers
-            out["spectra"] = len(receivers) if self.process_switch.isChecked() else len(files)
-            out["size_mb"] = len(files) * rdd.ECALLISTO_FILE_MB
-            window = (end - start).total_seconds()
-            starts = sorted({f["start"] for f in files})
-            out["positions"] = [max(0.0, (s - start).total_seconds()) / window for s in starts] if window > 0 else []
+        source = self.source()
+        out.update(source.estimate(answer, self.choice(), start, end, self.process_switch.isChecked()))
         if out["files"]:
-            out["seconds"] = out["size_mb"] / THROUGHPUT_MB_S + out["files"] * SECONDS_PER_FILE[self.network()]
+            out["seconds"] = out["size_mb"] / THROUGHPUT_MB_S + out.get("units", out["files"]) * source.seconds_each
         return out
 
     def update_summary(self, *args):
@@ -1138,7 +1065,7 @@ class RadioDataDownloaderGUI(QDialog):
             return
         palette = theme_manager.palette
         secondary, link = palette["text_secondary"], palette["link"]
-        rstn = self.network() == "rstn"
+        source = self.source()
         key = self._request_key()
         if key != self._count_key:  # a new question for the archive
             self._stop_count()
@@ -1155,7 +1082,8 @@ class RadioDataDownloaderGUI(QDialog):
             rs, re_ = self.range_times()
             set_tone(self.start_edit, None if rs is not None else "error")
             set_tone(self.end_edit, None if (re_ is not None and rs is not None and re_ > rs) else "error")
-        station = self.station()
+        station = self.choice()
+        waiting = source.listed and station == ""  # its stations are not listed yet
         checking = not bad_window and est["files"] is None and not failed
         self.archive_spinner.setVisible(checking)
 
@@ -1195,28 +1123,21 @@ class RadioDataDownloaderGUI(QDialog):
             label.setVisible(bool(value))
             label.setText(value or "")
 
-        if rstn:
-            site = rdd.RSTN_SITES[station]
-            put("Station", f"{_escape(station)}" + _muted(f" · {site['place']}", secondary))
-            put("Observes", f"about {_hours_text(site['hours'])}", "Observes")
-        else:
-            receivers = est.get("receivers") or []
-            name = "every station" if station is None else (station or "—")
-            put("Station", _escape(name) + _muted(" · e-CALLISTO", secondary))
-            focus = ", ".join(sorted({f for _, f in receivers})) if receivers and station else ""
-            put("Observes", f"focus code{'s' if len(receivers) > 1 else ''} {focus}" if focus else "", "Receivers")
+        name, aside, row, text = source.describe(station, est)
+        put("Station", _escape(name) + (_muted(f" · {_escape(aside)}", secondary) if aside else ""), "Source")
+        put("Observes", _escape(text), row)
         if bad_window:
             put("Window", "—")
-        elif self.whole_day() and rstn:
+        elif self.whole_day() and source.observing_day:
             put("Window", f"{self.day():%Y-%m-%d}" + _muted(" · its observing day", secondary))
         else:
             fmt = "%m-%d %H:%M"
             put("Window", f"{start:{fmt}} → {end:{fmt if end.date() != start.date() else '%H:%M'}} UTC")
         put("Output", "Dynamic spectrum FITS" + _muted(" · for the Dynamic Spectrum Viewer", secondary))
 
-        # the e-CALLISTO files across the window
+        # the files across the window (e-CALLISTO's 15 min files)
         positions = est.get("positions")
-        self.timeline_box.setVisible(not rstn and bool(positions))
+        self.timeline_box.setVisible(source.timeline and bool(positions))
         if positions:
             self.timeline.set_positions(positions)
             self.timeline_start.setText(f"{start:%H:%M}")
@@ -1224,9 +1145,10 @@ class RadioDataDownloaderGUI(QDialog):
 
         # a note at the foot
         note = ""
-        if rstn and not bad_window and not self.whole_day() and not rdd.rstn_observes(station, start, end):
-            note = (f"{_escape(station)} observes about {_hours_text(rdd.RSTN_SITES[station]['hours'])}; this "
-                    f"window falls in its night. <a href='day' style='color:{link}'>Use its observing day</a>")
+        if source.observing_day and not bad_window and not self.whole_day():
+            night = source.night(station, start, end)
+            if night:
+                note = f"{_escape(night)} <a href='day' style='color:{link}'>Use its observing day</a>"
         self.note_label.setText(note)
         self.note_label.setVisible(bool(note))
 
@@ -1239,7 +1161,7 @@ class RadioDataDownloaderGUI(QDialog):
         self.folder_field.setToolTip(out)
 
         # the button
-        ready = not bad_window and not failed and bool(spectra) and station != ""
+        ready = not bad_window and not failed and bool(spectra) and not waiting
         if spectra:
             noun = "spectrum" if spectra == 1 else "spectra"
             self.download_button.setText(f"Download {spectra} {noun}")
@@ -1247,7 +1169,7 @@ class RadioDataDownloaderGUI(QDialog):
             self.download_button.setText("Download")
         # (e-CALLISTO with no station listed yet would mean every station)
         self.download_button.setEnabled(
-            ready or (not bad_window and est["files"] is None and not failed and station != "")
+            ready or (not bad_window and est["files"] is None and not failed and not waiting)
         )
         self.download_button.setToolTip("" if ready else "Waiting for the archive" if checking else "Nothing to download")
         self._ask_bursts(start, end)
@@ -1261,20 +1183,10 @@ class RadioDataDownloaderGUI(QDialog):
             self.count_label.style().polish(self.count_label)
 
     def _no_data_reason(self):
-        if self.network() == "ecallisto":
-            return "No e-CALLISTO station has files in this window"
-        station = self.station()
-        site = rdd.RSTN_SITES[station]
+        key = self._request_key()
+        answer = self._found[1] if self._found and self._found[0] == key else None
         start, end = self.times()
-        year = (self.day() or start.date()).year
-        if not self.whole_day() and not rdd.rstn_observes(station, start, end):
-            return f"{station} does not observe in this window (about {_hours_text(site['hours'])})"
-        if year < site["first_year"] or (site["last_year"] and year > site["last_year"]):
-            return f"{station}'s archive covers {_years_text(site)}"
-        if self._latest is not None and (self.day() if self.whole_day() else end.date()) > self._latest:
-            return (f"Not published yet: {station}'s archive ends on {self._latest:%Y-%m-%d}. NOAA's burst "
-                    "reports come in real time; the spectra follow weeks later")
-        return f"The archive has no {station} file for this day (the station may have been down)"
+        return self.source().no_data(answer, self.choice(), start, end, self.day() if self.whole_day() else None)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1283,23 +1195,22 @@ class RadioDataDownloaderGUI(QDialog):
 
     # ----------------------------------------------------------- download
     def get_download_parameters(self):
+        """What a download is asked: the source and its choice, the window
+        (``whole_day`` the day when a whole day is asked), the folder,
+        whether the source's processing is ``on`` and every option."""
         start, end = self.times()
-        on = self.process_switch.isChecked()
-        return {
-            "network": self.network(),
-            "station": self.station(),
+        source = self.source()
+        params = {
+            "source": source.key,
+            "choice": self.choice(),
             "start": start,
             "end": end,
-            "whole_day": self.day() if (self.whole_day() and self.network() == "rstn") else None,
+            "whole_day": self.day() if self.whole_day() else None,
             "output_dir": self.output_dir(),
-            "clean": on,
-            "flag_channels": self.flag_channels_box.isChecked(),
-            "flag_calibration": self.flag_calibration_box.isChecked(),
-            "divide_median": self.divide_median_box.isChecked(),
-            "join": on,
-            "subtract_background": self.background_box.isChecked(),
-            "keep_raw": self.keep_raw_box.isChecked(),
+            "on": source.switch is not None and self.process_switch.isChecked(),
         }
+        params.update({key: box.isChecked() for key, box in self.option_boxes.items()})
+        return params
 
     def start_download(self):
         self.update_summary()
@@ -1316,7 +1227,8 @@ class RadioDataDownloaderGUI(QDialog):
             return
         self.files = []
         self._fetched = self._written = 0
-        self._total = self._estimate.get("files") or 0
+        self._total = self._estimate.get("units") or self._estimate.get("files") or 0
+        self._unit = self.source().unit
         self._started = time.time()
         self._log_lines = []
         self.log_view.clear()
@@ -1377,7 +1289,10 @@ class RadioDataDownloaderGUI(QDialog):
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(100)
         else:
-            self.progress_count.setText(f"{self._fetched}" + _muted(f" / {total} files" if total else " files so far", secondary))
+            unit = self._unit
+            self.progress_count.setText(
+                f"{self._fetched}" + _muted(f" / {total} {unit}" if total else f" {unit} so far", secondary)
+            )
             if total and self._started and self._fetched:
                 per_file = (time.time() - self._started) / float(self._fetched)
                 left = per_file * (total - self._fetched)

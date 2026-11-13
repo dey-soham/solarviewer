@@ -14,6 +14,10 @@ Supported:
 - the e-CALLISTO network of spectrometers (about 45-870 MHz, 0.25 s), from
   the FHNW archive
 
+OVRO-LWA is in ovro_lwa.py and the spacecraft receivers (Wind, STEREO,
+Parker Solar Probe, Solar Orbiter) in space_radio.py; both write their
+spectra with write_spectrum here.
+
 A time window is in UT. RSTN stations keep one file per local observing day,
 which can start the evening before or end the morning after in UT; the
 files that may hold the window are read and the window cut out of them.
@@ -99,7 +103,29 @@ def _prefer_ipv4():
     _ipv4_preferred = True
 
 
+_pages = {}
 _listings = {}
+
+
+def _page(url):
+    """The text of a directory page of an archive, None when the archive has
+    no such directory. Raises ArchiveUnreachable when it cannot be asked.
+    Answers are kept for the session."""
+    if url in _pages:
+        return _pages[url]
+    _prefer_ipv4()
+    try:
+        with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_S) as response:
+            html = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            _pages[url] = None
+            return None
+        raise ArchiveUnreachable(f"{url}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise ArchiveUnreachable(f"{url}: {getattr(e, 'reason', e)}") from e
+    _pages[url] = html
+    return html
 
 
 def _listing(url):
@@ -108,17 +134,7 @@ def _listing(url):
     be asked. Answers are kept for the session."""
     if url in _listings:
         return _listings[url]
-    _prefer_ipv4()
-    try:
-        with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_S) as response:
-            html = response.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            _listings[url] = []
-            return []
-        raise ArchiveUnreachable(f"{url}: HTTP {e.code}") from e
-    except (urllib.error.URLError, OSError) as e:
-        raise ArchiveUnreachable(f"{url}: {getattr(e, 'reason', e)}") from e
+    html = _page(url) or ""
     names = [href.rstrip("/") for href in re.findall(r'href="([^"?/][^"?]*)"', html) if "://" not in href]
     _listings[url] = names
     return names

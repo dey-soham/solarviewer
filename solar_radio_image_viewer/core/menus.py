@@ -197,7 +197,7 @@ class MenusMixin:
         self._action(menu, "Solar data…", self.launch_data_downloader_gui,
                      "Download solar images (SDO, SOHO, STEREO, GOES, IRIS) and prepare them")
         self._action(menu, "Radio spectra…", self.launch_radio_data_downloader_gui,
-                     "Download radio spectra (RSTN, e-CALLISTO) as FITS")
+                     "Download radio spectra (RSTN, e-CALLISTO, OVRO-LWA, Wind, STEREO, Parker Solar Probe, Solar Orbiter) as FITS")
 
     def _create_apps_menu(self, menubar):
         """Apps: the other windows SolarViewer ships."""
