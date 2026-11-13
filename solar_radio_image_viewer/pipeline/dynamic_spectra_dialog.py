@@ -53,6 +53,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from . import install_hint
 from ..remote.ssh_manager import UnknownHostKey, trust_host_key
 from ..ui.activity import Spinner, begin_activity
 from ..ui.background import Cancelled, run_in_thread
@@ -576,7 +577,7 @@ def friendly_scan_error(text, remote=False):
     if _casacore_missing(low):
         return (
             "python-casacore is not installed for this Python, so Measurement Sets "
-            "cannot be read on this computer. Install it (pip install python-casacore), "
+            f"cannot be read on this computer. Install it ({install_hint(['casacore'])}), "
             "or switch to Server above to read them there."
         )
     if "permission denied" in low:

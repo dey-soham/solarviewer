@@ -13,7 +13,26 @@ Tools included:
 - Log Viewer: View and filter pipeline log files
 """
 
+import sys
 from importlib.util import find_spec
+
+_PACKAGES = {"casacore": "python-casacore"}  # modules whose package has another name
+
+
+def install_hint(missing, platform=None) -> str:
+    """The commands that install the ``missing`` modules here, one to a line.
+    python-casacore has no wheels for macOS: pip would compile it there,
+    which needs the casacore C++ libraries, so on a Mac it is taken from
+    conda-forge, which has it built."""
+    names = [_PACKAGES.get(module, module) for module in missing]
+    lines = []
+    if (platform or sys.platform) == "darwin" and "python-casacore" in names:
+        names.remove("python-casacore")
+        lines.append("conda install -c conda-forge python-casacore")
+    if names:
+        lines.append("pip install " + " ".join(names))
+    return "\n".join(lines)
+
 
 # Check dependencies for each tool: finding them, not importing them, which
 # would take every tool over a second before it can show anything (and load
@@ -23,11 +42,31 @@ DYNAMIC_SPECTRUM_AVAILABLE = not _missing
 if _missing:
     print(f"[pipeline] Dynamic Spectrum Viewer not available: no {', '.join(_missing)}")
 
-_missing = [m for m in ("seaborn", "casacore") if find_spec(m) is None]
-CALTABLE_VISUALIZER_AVAILABLE = not _missing
-if _missing:
-    print(f"[pipeline] Calibration Table Visualizer not available: no {', '.join(_missing)}")
-    print("  Install with: pip install python-casacore seaborn")
+# (python-casacore is not installed with SolarViewer on macOS: see pyproject.toml)
+CALTABLE_MISSING = [m for m in ("casacore", "seaborn") if find_spec(m) is None]
+CALTABLE_VISUALIZER_AVAILABLE = not CALTABLE_MISSING
+if CALTABLE_MISSING:
+    print(f"[pipeline] Calibration Table Visualizer not available: no {', '.join(CALTABLE_MISSING)}")
+    print("  Install with: " + install_hint(CALTABLE_MISSING).replace("\n", "  and  "))
+
+
+
+def caltable_missing_text(platform=None) -> str:
+    """Why the Calibration Table Visualizer cannot start here, and what
+    installs what it lacks; "" when it can."""
+    if not CALTABLE_MISSING:
+        return ""
+    text = (
+        f"Calibration Table Visualizer requires: {', '.join(CALTABLE_MISSING)}\n\n"
+        f"Install with:\n{install_hint(CALTABLE_MISSING, platform)}"
+    )
+    if (platform or sys.platform) == "darwin" and "casacore" in CALTABLE_MISSING:
+        text += (
+            "\n\npython-casacore is not installed with SolarViewer on a Mac. It needs "
+            "SolarViewer in a conda environment: see “macOS (Apple Silicon)” in INSTALLATION.md."
+        )
+    return text
+
 
 # Log viewer just needs PyQt5 which is always available
 LOG_VIEWER_AVAILABLE = True
@@ -92,12 +131,7 @@ def launch_caltable_visualizer(parent=None):
     if not CALTABLE_VISUALIZER_AVAILABLE:
         from PyQt5.QtWidgets import QMessageBox
 
-        QMessageBox.warning(
-            parent,
-            "Missing Dependencies",
-            "Calibration Table Visualizer requires: casacore, seaborn\n\n"
-            "Install with: pip install python-casacore seaborn",
-        )
+        QMessageBox.warning(parent, "Missing Dependencies", caltable_missing_text())
         return None
 
     from .caltable_visualizer import VisualizationApp

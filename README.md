@@ -97,6 +97,8 @@ python3 -m venv ~/.sv
 
 # Using conda
 # conda create -p ~/.sv python=3.13
+
+# On a Mac, use Python 3.12 in any of these (see "Apple Silicon Macs" below)
 ```
 
 ```bash
@@ -119,6 +121,17 @@ pip install solarviewer
 # Using uv
 # uv pip install solarviewer
 ```
+
+### Apple Silicon Macs
+
+Use **Python 3.12**: CASA publishes its Apple Silicon builds for Python 3.12 (macOS 14 or newer), and for 3.13 only on macOS 15 or newer.
+
+```bash
+uv venv ~/.sv -p 3.12 && source ~/.sv/bin/activate
+uv pip install solarviewer
+```
+
+`python-casacore` is not installed on macOS (it would have to be compiled there). Only the Calibration Table Visualizer and Create Dynamic Spectra with *Run on = This computer* need it; to use them, take it from conda-forge. See [INSTALLATION.md](INSTALLATION.md#macos-apple-silicon).
 
 ### Install from Source
 

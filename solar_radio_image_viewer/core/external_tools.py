@@ -340,6 +340,16 @@ read -p "Press Enter to close..."
         import subprocess
         import sys
 
+        if tool == "caltable_visualizer":
+            # It needs python-casacore, which is not installed with SolarViewer
+            # on a Mac: said here, not left to a process that ends as it starts
+            from ..pipeline import caltable_missing_text
+
+            missing = caltable_missing_text()
+            if missing:
+                QMessageBox.warning(self, "Missing Dependencies", missing)
+                return False
+
         starting = self.__dict__.setdefault("_tools_starting", set())
         if path is None and tool in starting:
             self.statusBar().showMessage(f"{display_name} is still starting", 3000)

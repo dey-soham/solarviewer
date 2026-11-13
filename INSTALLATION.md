@@ -7,7 +7,7 @@ This guide describes how to install SolarViewer and set it up as a native deskto
 ## Prerequisites
 
 - **OS**: Linux or macOS
-- **Python**: 3.10 or higher
+- **Python**: 3.10 or higher (on a Mac: 3.12, see [macOS](#macos-apple-silicon))
 - **CASA**: A valid CASA data directory at `~/.casa/data`
 
 ## 1. Install Codebase
@@ -25,6 +25,8 @@ python3 -m venv ~/.sv
 
 # Using conda:
 # conda create -p ~/.sv python=3.13
+
+# On a Mac, use Python 3.12 in any of these (see "macOS (Apple Silicon)" below)
 ```
 
 ```bash
@@ -53,6 +55,33 @@ pip install .
 ```
 
 After this step, you can run the application from the terminal using `solarviewer` or `sv` **while the environment is active**.
+
+### macOS (Apple Silicon)
+
+**Use Python 3.12.** CASA (`casatools`) publishes its Apple Silicon builds for Python 3.12 on macOS 14 (Sonoma) or newer, and for Python 3.13 only on macOS 15 or newer. With another Python, pip finds no CASA to install.
+
+```bash
+uv venv ~/.sv -p 3.12            # or: python3.12 -m venv ~/.sv
+source ~/.sv/bin/activate
+uv pip install solarviewer       # or: pip install solarviewer
+```
+
+Everything is installed ready-built; nothing is compiled. `python-casacore` is **not** installed on macOS: it has no ready-built package for macOS on PyPI, so pip would have to compile it, which fails unless the casacore C++ libraries are installed. SolarViewer does not need it to open, process and analyse images: CASA carries its own casacore. Two tools do need it:
+
+- the **Calibration Table Visualizer**;
+- **Create Dynamic Spectra** with **Run on = This computer** (with **Run on = Server** this Mac needs nothing more).
+
+Both say so when it is missing. To use them, take python-casacore from conda-forge, which has it built for Apple Silicon, and install SolarViewer into the same environment:
+
+```bash
+conda create -p ~/.sv -c conda-forge python=3.12 python-casacore
+conda activate ~/.sv
+pip install solarviewer
+```
+
+(or, in a conda environment that already has SolarViewer: `conda install -c conda-forge python-casacore`).
+
+Older Macs: for macOS 13 on Apple Silicon and for Intel Macs, CASA's last builds are 6.6.5 for Python 3.10. SolarViewer is not tested there.
 
 ## 2. Desktop Integration
 
@@ -140,10 +169,13 @@ rm -rf ~/.sv
     *   Or run `killall Dock` in the terminal to refresh the icon cache.
 
 ### **Create Dynamic Spectra and python-casacore**
-Create Dynamic Spectra reads Measurement Sets with python-casacore, but only on the machine that runs the engine. With **Run on = Server**, the engine runs inside the server's container (or Python) and this machine needs only `paramiko` (installed with SolarViewer); with **Run on = This computer** it needs python-casacore here. The dialog says so if it is missing. The same window starts from the command line with `createds`. python-casacore is still a SolarViewer dependency because the Calibration Table Visualizer uses it in this process.
+Create Dynamic Spectra reads Measurement Sets with python-casacore, but only on the machine that runs the engine. With **Run on = Server**, the engine runs inside the server's container (or Python) and this machine needs only `paramiko` (installed with SolarViewer); with **Run on = This computer** it needs python-casacore here. The dialog says so if it is missing. The same window starts from the command line with `createds`. On Linux, python-casacore is installed with SolarViewer (the Calibration Table Visualizer needs it too); on macOS it is not, see [macOS (Apple Silicon)](#macos-apple-silicon).
+
+### **`No matching distribution found for casatools` (macOS)**
+The Python of the environment has no CASA build for this Mac. Make the environment with Python 3.12 (see [macOS (Apple Silicon)](#macos-apple-silicon)).
 
 ### **Build Error: `Failed to build python-casacore` (macOS)**
-If you see an error like `Call to scikit_build_core.build.build_wheel failed` or `Casacore: unable to find the header file casa/aips.h`, it means the wrapper cannot find the underlying C++ libraries. This is common on Apple Silicon Macs.
+SolarViewer 1.3 and later do not install python-casacore on macOS, so this comes up only with an older SolarViewer, or when python-casacore is installed with pip on a Mac (`pip install python-casacore`, or `pip install "solarviewer[casacore]"`). An error like `Call to scikit_build_core.build.build_wheel failed` or `Casacore: unable to find the header file casa/aips.h` means the wrapper cannot find the underlying C++ libraries.
 
 **Fix 1: Install via Conda (Recommended)**
 This is the most reliable method as it installs pre-compiled binaries, avoiding all compilation issues.
@@ -168,9 +200,9 @@ If you prefer Homebrew, you must manually install all dependencies and set compi
    export CPLUS_INCLUDE_PATH="$(brew --prefix)/include:$(brew --prefix boost)/include:$(brew --prefix boost-python3)/include"
    export LIBRARY_PATH="$(brew --prefix)/lib:$(brew --prefix boost)/lib:$(brew --prefix boost-python3)/lib"
    ```
-4. Re-install forcing a source build:
+4. Install SolarViewer together with python-casacore, built from source:
    ```bash
-   pip install --no-binary python-casacore solarviewer
+   pip install --no-binary python-casacore "solarviewer[casacore]"
    ```
 
 ### **Environment conflicts in Conda**

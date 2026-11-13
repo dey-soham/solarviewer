@@ -31,7 +31,12 @@ dependencies = [
     "casatasks>=6.4.0",
     "sunpy[image,map,net,timeseries,visualization]>=5.0.0",
     "pillow",
-    "python-casacore",
+    # Not on macOS: it has no wheels there, so pip would compile it, which
+    # needs the casacore C++ libraries and fails on most Macs. Only the
+    # Calibration Table Visualizer and Create Dynamic Spectra (run on this
+    # computer) use it, and both say so when it is missing; CASA carries its
+    # own casacore. On a Mac it comes from conda-forge (see INSTALLATION.md).
+    "python-casacore; sys_platform != 'darwin'",
     "seaborn",
     "imageio>=2.16.0",
     "aiapy>=0.1.0",
@@ -48,6 +53,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "black", "isort", "ruff"]
+# python-casacore where it is not installed by default (macOS), for a Mac
+# that has the casacore libraries to build it against
+casacore = ["python-casacore"]
 
 [project.scripts]
 solarviewer = "solar_radio_image_viewer.main:main"
