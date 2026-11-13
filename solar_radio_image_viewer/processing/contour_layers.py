@@ -202,7 +202,11 @@ def contour_levels(layer, contour_data, abs_max=None, rms=None):
     """(positive, negative) contour levels of ``layer`` for ``contour_data``:
     fractions of the peak, multiples of the RMS in its RMS box, or absolute.
     ``abs_max`` / ``rms`` give the peak / RMS to use instead of the data's.
+    None of either sign for data without a value (a ratio with nothing above
+    its threshold): there is nothing to draw a contour of.
     """
+    if not np.isfinite(contour_data).any():
+        return [], []
     if abs_max is None:
         abs_max = np.nanmax(np.abs(contour_data))
     if layer["level_type"] == "fraction":

@@ -84,6 +84,7 @@ from .ui.busy import busy
 from .processing.contour_layers import default_contour_options, new_contour_layer
 from .processing.prefetch import image_prefetcher
 from .processing.image_data import ImageUnreadable
+from .processing.stokes import SUN_RADIUS_ARCMIN, sun_limit, uses_rms
 from .ui.errors import show_error
 from .processing.plot_style import (
     DEFAULT_BEAM_STYLE,
@@ -427,9 +428,51 @@ class SolarRadioImageTab(
 
     def with_range_note(self, message):
         """``message`` (the image is loaded), with why the kept range was
-        not kept if it was not."""
-        note = getattr(self, "_range_note", "")
-        return f"{message} · {note}" if note else message
+        not kept if it was not, and that the image is blank if it is."""
+        notes = (getattr(self, "_range_note", ""), self.blank_product_note())
+        return " · ".join([message, *filter(None, notes)])
+
+    def blank_product_note(self):
+        """What to say of a ratio or an angle with nothing in it: no pixel
+        reaches the threshold, so every one is blank and the canvas is
+        empty, which without a word looks like a failure. "" of any other
+        image."""
+        data = self.current_image_data
+        stokes = getattr(self, "_range_stokes", None)
+        if data is None or stokes is None or not uses_rms(stokes):
+            return ""
+        if np.isfinite(data).any():
+            return ""
+        threshold = getattr(self, "_loaded_threshold", None)
+        sigma = f" of {threshold:g}σ" if isinstance(threshold, (int, float)) else ""
+        # (an image read without its coordinates has no limit round the Sun)
+        radius = getattr(self, "_loaded_sun_limit", 0.0) if self.current_wcs is not None else 0.0
+        if radius:
+            return (
+                f"{stokes} is blank: no pixel within {radius:g}′ of the Sun reaches "
+                f"the threshold{sigma}. Lower the threshold, or widen the limit "
+                "beside it, to see more"
+            )
+        return (
+            f"{stokes} is blank: no pixel reaches the threshold{sigma}. "
+            "Lower the threshold to see more"
+        )
+
+    def sun_limit(self):
+        """How far from the Sun's centre a ratio or the polarization angle
+        is shown, in arcminutes, as the field beside the threshold has it;
+        0.0 for no limit (the field empty or 0: the whole image). A field
+        that is not a number stands for the limit in use."""
+        entry = getattr(self, "sun_limit_entry", None)
+        if entry is None:
+            return float(SUN_RADIUS_ARCMIN)
+        text = entry.text().strip().rstrip("′'").strip()
+        if not text:
+            return 0.0
+        try:
+            return sun_limit(float(text))
+        except ValueError:
+            return getattr(self, "_sun_limit", float(SUN_RADIUS_ARCMIN))
 
     def _range_in_boxes(self):
         """(low, high) as the Min and Max boxes give it, whichever way round,
@@ -641,7 +684,9 @@ class SolarRadioImageTab(
                     img_name = os.path.basename(self.imagename)
                     self.show_status_message(self.with_range_note(f"Loaded {img_name}"))
                 else:
-                    self.show_status_message(dropped or "Display updated")
+                    self.show_status_message(
+                        self.blank_product_note() or dropped or "Display updated"
+                    )
             if dir_load:
                 # After the caller has rescanned the directory
                 QTimer.singleShot(0, self._prefetch_neighbour_files)
@@ -789,6 +834,37 @@ class SolarRadioImageTab(
             return
         if threshold != getattr(self, "_loaded_threshold", None):
             self.on_visualization_changed()
+
+    def _on_sun_limit_edited(self):
+        """The limit round the Sun was edited: tidy the field and, if the
+        limit changed, read again what depends on it (the ratio or angle
+        shown, and the contours of one), and say what it now is."""
+        limit = self.sun_limit()
+        text = f"{limit:g}"
+        if self.sun_limit_entry.text() != text:
+            self.sun_limit_entry.setText(text)
+        if limit == getattr(self, "_sun_limit", float(SUN_RADIUS_ARCMIN)):
+            return
+        self._sun_limit = limit
+        said = (
+            f"Ratios and the polarization angle are shown within {limit:g}′ of the Sun"
+            if limit
+            else "Ratios and the polarization angle are shown over the whole image"
+        )
+        if self.current_image_data is None:
+            self.show_status_message(said)
+            return
+        # Contours of a ratio were read with the limit there was
+        stale = [
+            layer for layer in self.contour_layers if uses_rms(layer.get("stokes", "I"))
+        ]
+        for layer in stale:
+            layer["contour_data"] = layer["contour_wcs"] = layer["loaded_path"] = None
+        shown = getattr(self, "_range_stokes", None) or self.stokes_combo.currentText()
+        redraw = stale and self.show_contours_checkbox.isChecked()
+        if (uses_rms(shown) or redraw) and not self.on_visualization_changed():
+            return  # (cancelled or failed: that has been said)
+        self.show_status_message(self.blank_product_note() or said)
 
     def update_gamma_value(self):
         """Update gamma from slider - debounced for responsiveness."""

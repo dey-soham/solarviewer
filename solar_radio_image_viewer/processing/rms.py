@@ -71,6 +71,12 @@ def sun_pixel(csys, shape):
 
 
 def remove_pixels_away_from_sun(pix, csys, radius_arcmin=55):
+    """``pix`` ([x, y]) with every pixel further than ``radius_arcmin`` from
+    the Sun's centre blank (NaN); from the image's centre when the Sun is not
+    in the image. Blank, not 0: a 0 is a value (0 degrees is a polarization
+    angle, and a 0 counts in a mean). An array of floats is changed in place
+    and returned; one of whole numbers, which cannot hold a NaN, is returned
+    as a copy in floats."""
     # Use astropy's WCS for coordinate conversion
     from astropy.wcs import WCS
 
@@ -93,5 +99,7 @@ def remove_pixels_away_from_sun(pix, csys, radius_arcmin=55):
     cx, cy = centre if centre is not None else (pix.shape[0] / 2, pix.shape[1] / 2)
     x, y = np.ogrid[: pix.shape[0], : pix.shape[1]]
     mask = (x - cx) ** 2 + (y - cy) ** 2 > pixel_radius**2
-    pix[mask] = 0
+    if pix.dtype.kind not in "fc":
+        pix = pix.astype(float)
+    pix[mask] = np.nan
     return pix

@@ -754,6 +754,8 @@ class ExportsMixin:
                         partial,
                         Stokes=stokes,
                         thres=threshold,
+                        # (a ratio, as it is on screen)
+                        sun_radius_arcmin=current_tab.sun_limit(),
                     )
                     if success:
                         _put_in_place(self, partial, path)

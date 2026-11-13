@@ -33,9 +33,13 @@ def compute_range(data, mode):
     """Return ``(vmin, vmax)`` for ``data`` using a named range mode.
 
     ``mode`` may also be a ``(vmin, vmax)`` tuple, which is returned as-is.
+    A blank image has none: (NaN, NaN), which ``display_range`` makes (0, 1).
     """
     if isinstance(mode, tuple):
         return mode
+    if not np.isfinite(data).any():
+        # A blank image (a ratio with nothing above its threshold): no range
+        return float("nan"), float("nan")
     if mode == "minmax":
         return float(np.nanmin(data)), float(np.nanmax(data))
     if mode == "zero_max":
@@ -59,9 +63,9 @@ def compute_range(data, mode):
 def display_range(vmin, vmax):
     """Make ``(vmin, vmax)`` usable as a colour range: finite, with vmax > vmin.
 
-    A constant map (vmin == vmax, e.g. Lfrac/Vfrac with everything below the
-    threshold) gets a small range centred on its value; an all-NaN map (e.g. a
-    fully masked PANG) gets (0, 1).
+    A constant map (vmin == vmax) gets a small range centred on its value; an
+    all-NaN map (e.g. Lfrac, Vfrac or PANG with everything below the
+    threshold) gets (0, 1).
     """
     vmin, vmax = float(vmin), float(vmax)
     if not (np.isfinite(vmin) and np.isfinite(vmax)):

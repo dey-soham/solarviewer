@@ -67,13 +67,18 @@ def convert_to_hpc(
     height=None,
     observatory=None,
     rms_box=(0, 200, 0, 130),
+    sun_radius_arcmin=60,
 ):
     """
     Convert a FITS file to helioprojective coordinates
     TODO: Redundantly written for ndim>2 and ndim=2, should be refactored
+
+    A ratio (Lfrac, Vfrac...) or the polarization angle is given within
+    ``sun_radius_arcmin`` of the Sun's centre and blank further out; 0 gives
+    it over the whole image.
     """
     maps, csys, psf = convert_to_hpc_planes(
-        fits_file, [Stokes], thres, lat, long, height, observatory, rms_box
+        fits_file, [Stokes], thres, lat, long, height, observatory, rms_box, sun_radius_arcmin
     )
     if maps is None:
         return None, None, None
@@ -89,6 +94,7 @@ def convert_to_hpc_planes(
     height=None,
     observatory=None,
     rms_box=(0, 200, 0, 130),
+    sun_radius_arcmin=60,
 ):
     """
     Like :func:`convert_to_hpc`, for several Stokes products of one image.
@@ -178,7 +184,7 @@ def convert_to_hpc_planes(
             """The ``Stokes`` product as [y, x], the order of the FITS data."""
             planes = read_planes(labels, Stokes, read_plane)
             return stokes_product(
-                Stokes, planes, thres, rms_box, csys, sun_radius_arcmin=60
+                Stokes, planes, thres, rms_box, csys, sun_radius_arcmin=sun_radius_arcmin
             ).T
 
         planes = []
@@ -559,6 +565,7 @@ def convert_and_save_hpc(
     observatory=None,
     overwrite=True,
     temp_suffix="",
+    sun_radius_arcmin=60,
 ):
     """
     Convert a FITS file to helioprojective coordinates and save it as a new FITS file.
@@ -585,6 +592,10 @@ def convert_and_save_hpc(
         Whether to overwrite the output file if it exists. Default is True.
     temp_suffix : str, optional
         Suffix to add to temporary files to avoid conflicts. Default is "".
+    sun_radius_arcmin : float, optional
+        How far from the Sun's centre, in arcminutes, a ratio (Lfrac, Vfrac...)
+        or the polarization angle is given; blank further out. 0 gives it over
+        the whole image. Default is 60.
 
     Returns
     -------
@@ -626,6 +637,7 @@ def convert_and_save_hpc(
             long=long,
             height=height,
             observatory=observatory,
+            sun_radius_arcmin=sun_radius_arcmin,
         )
 
         if map_obj is None:
@@ -1420,6 +1432,13 @@ if __name__ == "__main__":
         "--threshold", type=float, default=10, help="Threshold value (default: 10)"
     )
     convert_parser.add_argument(
+        "--sun-radius",
+        type=float,
+        default=60,
+        help="How far from the Sun's centre, in arcminutes, a ratio (Lfrac, Vfrac...) "
+        "or the polarization angle is given; 0 for the whole image (default: 60)",
+    )
+    convert_parser.add_argument(
         "--lat",
         default=None,
         help="Observer latitude (default: None (Example: -26:42:11.95, MWA))",
@@ -1492,6 +1511,7 @@ if __name__ == "__main__":
             args.output_file,
             Stokes=args.stokes,
             thres=args.threshold,
+            sun_radius_arcmin=args.sun_radius,
             lat=args.lat,
             long=args.long,
             height=args.height,

@@ -22,6 +22,7 @@ from .image_meta import (
     sky_axes,
 )
 from .stokes import (
+    SUN_RADIUS_ARCMIN,
     StokesUnavailable,
     casa_stokes_labels,
     fallback_product,
@@ -81,6 +82,7 @@ def get_pixel_values_from_image(
     rms_box=(0, 200, 0, 130),
     downsample=1,
     target_size=0,
+    sun_radius=SUN_RADIUS_ARCMIN,
 ):
     """
     Retrieve pixel values from a CASA image or FITS file.
@@ -105,6 +107,9 @@ def get_pixel_values_from_image(
       target_size : int, optional
          Target maximum dimension in pixels. If > 0, downsample factor is calculated
          automatically to achieve approximately this size. Default is 0 (disabled).
+      sun_radius : float, optional
+         How far from the Sun's centre, in arcminutes, the derived ratios and
+         the angle are given (blank further out). 0: over the whole image.
 
     Returns:
       pix : numpy.ndarray
@@ -201,7 +206,7 @@ def get_pixel_values_from_image(
         raise RuntimeError(f"Error reading image metadata: {e}")
     ia_tool.close()
 
-    pix = stokes_product(stokes, planes, thres, rms_box, csys)
+    pix = stokes_product(stokes, planes, thres, rms_box, csys, sun_radius)
     return pix, csys, psf
 
 
@@ -259,29 +264,45 @@ def default_rms_box(shape):
 
 
 def read_new_image(
-    imagename, stokes, threshold, rms_box, target_size, fallback_stokes=None
+    imagename,
+    stokes,
+    threshold,
+    rms_box,
+    target_size,
+    fallback_stokes=None,
+    sun_radius=SUN_RADIUS_ARCMIN,
 ):
     """:func:`read_image` for a newly opened image, whose ratios are measured
     against its own RMS box: its shape is known only once read, so such a
     product is read again, in this one job (one wait, one Cancel)."""
-    read = read_image(imagename, stokes, threshold, rms_box, target_size, fallback_stokes)
+    read = read_image(
+        imagename, stokes, threshold, rms_box, target_size, fallback_stokes, sun_radius
+    )
     if read.pix is None or not uses_rms(read.stokes):
         return read
     box = default_rms_box(read.pix.shape)
     if box == list(rms_box):
         return read
-    return read_image(imagename, read.stokes, threshold, tuple(box), target_size)._replace(
-        available=read.available, rms_box=tuple(box)
-    )
+    return read_image(
+        imagename, read.stokes, threshold, tuple(box), target_size, None, sun_radius
+    )._replace(available=read.available, rms_box=tuple(box))
 
 
 def read_image(
-    imagename, stokes, threshold, rms_box, target_size, fallback_stokes=None
+    imagename,
+    stokes,
+    threshold,
+    rms_box,
+    target_size,
+    fallback_stokes=None,
+    sun_radius=SUN_RADIUS_ARCMIN,
 ):
     """
     Read what the viewer shows of ``imagename``, as an :class:`ImageRead`:
     the ``stokes`` product's pixels (downsampled to about ``target_size``
-    pixels if that is not 0), its coordinates, beam and header.
+    pixels if that is not 0), its coordinates, beam and header. A ratio or
+    the angle is given within ``sun_radius`` arcminutes of the Sun's centre
+    (0: over the whole image).
 
     Every file access of a load happens here, so that it can run in a worker
     process (see ``ui/background`` and ``processing/prefetch``). If the image
@@ -298,7 +319,12 @@ def read_image(
         stokes = fallback_product(fallback_stokes, available)
     try:
         pix, csys, psf = get_pixel_values_from_image(
-            imagename, stokes, threshold, rms_box=rms_box, target_size=target_size
+            imagename,
+            stokes,
+            threshold,
+            rms_box=rms_box,
+            target_size=target_size,
+            sun_radius=sun_radius,
         )
         csys_record = csys.torecord()
         info = casa_info(imagename)  # cached by the read above

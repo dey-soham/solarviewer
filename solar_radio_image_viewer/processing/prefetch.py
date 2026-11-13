@@ -16,6 +16,7 @@ from concurrent.futures.process import BrokenProcessPool
 
 from .image_data import read_image
 from .image_meta import file_signature
+from .stokes import SUN_RADIUS_ARCMIN, sun_limit
 from .workers import process_pool_executor
 
 
@@ -28,30 +29,41 @@ class ImagePrefetcher:
         self._lock = threading.Lock()
 
     @staticmethod
-    def _key(imagename, stokes, threshold, rms_box, target_size):
+    def _key(imagename, stokes, threshold, rms_box, target_size, sun_radius):
         return (
             os.path.abspath(imagename),
             stokes,
             float(threshold),
             tuple(rms_box),
             target_size,
+            sun_limit(sun_radius),
         )
 
-    def _submit(self, imagename, stokes, threshold, rms_box, target_size):
+    def _submit(self, imagename, stokes, threshold, rms_box, target_size, sun_radius):
         if self._executor is None:
             self._executor = process_pool_executor(1)
         try:
             return self._executor.submit(
-                read_image, imagename, stokes, threshold, tuple(rms_box), target_size
+                read_image,
+                imagename,
+                stokes,
+                threshold,
+                tuple(rms_box),
+                target_size,
+                None,
+                sun_radius,
             )
         except (BrokenProcessPool, RuntimeError):
             self._executor = None
             return None
 
-    def schedule(self, paths, stokes, threshold, rms_box, target_size):
+    def schedule(
+        self, paths, stokes, threshold, rms_box, target_size, sun_radius=SUN_RADIUS_ARCMIN
+    ):
         """Read ``paths`` in the background, in order, dropping other reads."""
         wanted = {
-            self._key(p, stokes, threshold, rms_box, target_size): p for p in paths
+            self._key(p, stokes, threshold, rms_box, target_size, sun_radius): p
+            for p in paths
         }
         with self._lock:
             for key in list(self._jobs):
@@ -60,7 +72,7 @@ class ImagePrefetcher:
             for key, path in wanted.items():
                 if key not in self._jobs:
                     future = self._submit(
-                        path, stokes, threshold, rms_box, target_size
+                        path, stokes, threshold, rms_box, target_size, sun_radius
                     )
                     if future is not None:
                         self._jobs[key] = future
@@ -89,10 +101,12 @@ class ImagePrefetcher:
                         self._jobs.pop(key, None)
                     self._executor = None
 
-    def take(self, imagename, stokes, threshold, rms_box, target_size):
+    def take(
+        self, imagename, stokes, threshold, rms_box, target_size, sun_radius=SUN_RADIUS_ARCMIN
+    ):
         """The :class:`ImageRead` read in the background for exactly these
         inputs, or None if there is none (or the file changed since)."""
-        key = self._key(imagename, stokes, threshold, rms_box, target_size)
+        key = self._key(imagename, stokes, threshold, rms_box, target_size, sun_radius)
         with self._lock:
             future = self._jobs.pop(key, None)
         if future is None or (not future.done() and future.cancel()):

@@ -160,7 +160,10 @@ class LoadingMixin:
         image_prefetcher.settle(
             imagename, wait=lambda future: wait_for(self, label, future)
         )
-        read = image_prefetcher.take(imagename, stokes, threshold, rms_box, target_size)
+        sun_radius = self.sun_limit()
+        read = image_prefetcher.take(
+            imagename, stokes, threshold, rms_box, target_size, sun_radius
+        )
         if read is None:
             read = run_in_background(
                 self,
@@ -172,6 +175,7 @@ class LoadingMixin:
                 rms_box,
                 target_size,
                 fallback_stokes,
+                sun_radius,
             )
             read.remember()
         return read
@@ -221,6 +225,7 @@ class LoadingMixin:
             self._offer_available_stokes(read.available, stokes, read.stokes)
 
         self._loaded_threshold = threshold
+        self._loaded_sun_limit = self.sun_limit()
         pix = read.pix
         self.current_image_data = pix
         if read.csys_record is not None:
@@ -499,8 +504,10 @@ class LoadingMixin:
         data = self.current_image_data
         if data is not None:
             dropped = self.keep_display_filters()
-            dmin = float(np.nanmin(data))
-            dmax = float(np.nanmax(data))
+            # (a ratio with nothing above its threshold has no pixel at all)
+            finite = np.isfinite(data).any()
+            dmin = float(np.nanmin(data)) if finite else float("nan")
+            dmax = float(np.nanmax(data)) if finite else float("nan")
             self.set_range(dmin, dmax)
             # (min to max of what is drawn, unless a filter changes that)
             plain = self.radial_filter == "off" and not self.background_subtracted
@@ -508,7 +515,8 @@ class LoadingMixin:
             self.plot_from_controls()
 
             self.show_status_message(
-                dropped
+                self.blank_product_note()
+                or dropped
                 or f"Stokes changed to {stokes}, display range: [{dmin:.4g}, {dmax:.4g}]"
             )
 

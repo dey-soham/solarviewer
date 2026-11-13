@@ -530,7 +530,14 @@ class ContoursMixin:
         """Contour data for a Stokes product (I/Q/U/V, X/I, L, Lfrac, PANG):
         returns (data, the image's coordsys)."""
         pix, record = self._contour_job(
-            label, read_contour_stokes, image_path, stokes, threshold, rms_box, target_size
+            label,
+            read_contour_stokes,
+            image_path,
+            stokes,
+            threshold,
+            rms_box,
+            target_size,
+            self.sun_limit(),  # (the tab's: the layers have none of their own)
         )
         return pix, coordsys_from_record(record)
 
@@ -597,6 +604,12 @@ class ContoursMixin:
             image_wcs_obj = getattr(self, "_cached_wcs_obj", None)
 
             contour_data = layer["contour_data"]
+            if not np.isfinite(contour_data).any():
+                # (a ratio or an angle with nothing above its threshold)
+                self.show_status_message(
+                    f"No contours of {name}: it has no pixel above its threshold"
+                )
+                return []
             abs_max = np.nanmax(np.abs(contour_data))
 
             pos_levels, neg_levels = self._compute_contour_levels(

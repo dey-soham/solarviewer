@@ -40,6 +40,10 @@ FITS_STOKES_CODES = {
 STANDARD_STOKES = ("I", "Q", "U", "V")
 CORRELATIONS = ("RR", "LL", "RL", "LR", "XX", "YY", "XY", "YX")
 
+# How far from the Sun's centre a ratio or the polarization angle is given,
+# in arcminutes, unless the user says otherwise (0: over the whole image)
+SUN_RADIUS_ARCMIN = 55
+
 # The planes each product is computed from
 PLANES_NEEDED = {
     "I": ("I",),
@@ -217,43 +221,66 @@ def uses_rms(stokes):
     return stokes not in STANDARD_STOKES and stokes not in CORRELATIONS and stokes != "L"
 
 
-def stokes_product(stokes, planes, thres, rms_box, csys=None, sun_radius_arcmin=55):
+def sun_limit(radius_arcmin):
+    """``radius_arcmin`` as a limit round the Sun: itself if it is one (a
+    positive number), else 0.0, which stands for no limit (None, 0, a
+    negative number, infinity, not a number)."""
+    try:
+        radius = float(radius_arcmin)
+    except (TypeError, ValueError):
+        return 0.0
+    return radius if np.isfinite(radius) and radius > 0 else 0.0
+
+
+def stokes_product(
+    stokes, planes, thres, rms_box, csys=None, sun_radius_arcmin=SUN_RADIUS_ARCMIN
+):
     """The ``stokes`` product from ``planes`` ({label: [x, y] array}, those
     named by ``planes_needed``).
 
-    Ratios and the polarization angle keep only pixels where their numerator
-    (or the polarized intensity) exceeds ``thres`` times its RMS in
-    ``rms_box``, and, given the image's coordinate system ``csys``, only
-    pixels near the Sun.
+    A ratio or the polarization angle is given only where it was measured:
+    where its numerator (or the polarized intensity) reaches ``thres`` times
+    its RMS in ``rms_box`` and, given the image's coordinate system ``csys``,
+    within ``sun_radius_arcmin`` of the Sun's centre (0 or None: anywhere in
+    the image, for emission far from the disk or a Sun that is not where the
+    ephemeris has it). Every other pixel is blank (NaN), as is a ratio over a
+    pixel of exactly 0. A 0 there would be a value like any other: it would
+    count in a region's mean, in the display range, in a contour and in an
+    interpolation.
     """
     from .rms import remove_pixels_away_from_sun
 
     def near_sun(pix):
-        if csys is None:
+        radius = sun_limit(sun_radius_arcmin)
+        if csys is None or not radius:
             return pix
-        return remove_pixels_away_from_sun(pix, csys, sun_radius_arcmin)
+        return remove_pixels_away_from_sun(pix, csys, radius)
 
-    def significant(pix):
-        """``pix`` with values below the threshold set to 0 (a copy, in the
-        plane's precision, at least float32)."""
-        pix = np.array(pix, dtype=np.result_type(pix, np.float32))
-        pix[np.abs(pix) < thres * rms_in_box(pix, rms_box)] = 0
-        return pix
+    def ratio(numerator, denominator):
+        """``numerator`` over ``denominator`` where the numerator reaches the
+        threshold, near the Sun (in the planes' precision, at least
+        float32)."""
+        pix = np.array(numerator, dtype=np.result_type(numerator, np.float32))
+        pix[np.abs(pix) < thres * rms_in_box(pix, rms_box)] = np.nan
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pix = pix / denominator
+        pix[np.isinf(pix)] = np.nan  # (over a pixel of exactly 0)
+        return near_sun(pix)
 
     if stokes in STANDARD_STOKES or stokes in CORRELATIONS:
         return planes[stokes]
     if stokes == "L":
         return np.sqrt(planes["Q"] ** 2 + planes["U"] ** 2)
     if stokes == "Lfrac":
-        return near_sun(significant(np.sqrt(planes["Q"] ** 2 + planes["U"] ** 2)) / planes["I"])
+        return ratio(np.sqrt(planes["Q"] ** 2 + planes["U"] ** 2), planes["I"])
     if stokes in ("Vfrac", "V/I"):
-        return near_sun(significant(planes["V"]) / planes["I"])
+        return ratio(planes["V"], planes["I"])
     if stokes == "Q/I":
-        return near_sun(significant(planes["Q"]) / planes["I"])
+        return ratio(planes["Q"], planes["I"])
     if stokes == "U/I":
-        return near_sun(significant(planes["U"]) / planes["I"])
+        return ratio(planes["U"], planes["I"])
     if stokes == "U/V":
-        return near_sun(significant(planes["U"]) / planes["V"])
+        return ratio(planes["U"], planes["V"])
     if stokes == "PANG":
         q, u = planes["Q"], planes["U"]
         p_rms = np.sqrt(rms_in_box(q, rms_box) ** 2 + rms_in_box(u, rms_box) ** 2)

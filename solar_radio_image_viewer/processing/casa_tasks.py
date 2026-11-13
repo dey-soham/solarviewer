@@ -188,12 +188,19 @@ def write_tb_map_from(imagename, outfile, flux_data):
     return result if tb_data is None else None
 
 
-def read_contour_stokes(imagename, stokes, threshold, rms_box, target_size):
+def read_contour_stokes(imagename, stokes, threshold, rms_box, target_size, sun_radius=None):
     """Contour data for a Stokes product: (pixels, coordsys record), as a
-    worker can send them back."""
+    worker can send them back. A ratio or the angle is given within
+    ``sun_radius`` arcminutes of the Sun (None: the usual 55; 0: anywhere)."""
     from .image_data import get_pixel_values_from_image
+    from .stokes import SUN_RADIUS_ARCMIN
 
     pix, csys, _ = get_pixel_values_from_image(
-        imagename, stokes, threshold, rms_box, target_size=target_size
+        imagename,
+        stokes,
+        threshold,
+        rms_box,
+        target_size=target_size,
+        sun_radius=SUN_RADIUS_ARCMIN if sun_radius is None else sun_radius,
     )
     return pix, csys.torecord()

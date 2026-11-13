@@ -174,7 +174,9 @@ class ContourSettingsDialog(QDialog):
         self.threshold_label = field_label("Threshold (σ)")
         self.threshold_label.setToolTip(
             "Pixels with signal below this many σ (noise RMS) are masked.\n"
-            "Only applies to derived parameters: Q/I, U/I, V/I, Lfrac, Vfrac, PANG."
+            "Only applies to derived parameters: Q/I, U/I, V/I, Lfrac, Vfrac, PANG.\n"
+            "These are also masked further from the Sun than the limit in the "
+            "main window's top bar (Within)."
         )
         stokes_row.addWidget(self.threshold_label)
 

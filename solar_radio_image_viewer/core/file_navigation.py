@@ -360,6 +360,7 @@ class FileNavigationMixin:
             threshold,
             tuple(self.current_rms_box),
             self._load_target_size(),
+            self.sun_limit(),
         )
 
     def _update_nav_buttons(self):

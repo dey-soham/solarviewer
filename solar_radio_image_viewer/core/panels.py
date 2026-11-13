@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QGraphicsOpacityEffect
+from ..processing.stokes import SUN_RADIUS_ARCMIN
 from ..tools.roi_stats import NO_REGION_HINT
 from ..ui.conversion_control import ConversionControl
 from ..ui.cursor_readout import CursorReadout
@@ -197,7 +198,8 @@ class PanelsMixin:
             "the icon to choose one (Ctrl+O)"
         )
         self.dir_entry.setClearButtonEnabled(False)
-        self.dir_entry.setMinimumWidth(self.dir_entry.fontMetrics().averageCharWidth() * 44)
+        # (as wide as the bar's other controls leave at the window's least width)
+        self.dir_entry.setMinimumWidth(self.dir_entry.fontMetrics().averageCharWidth() * 29)
         self.dir_entry.returnPressed.connect(self._open_entered_path)
         self.browse_action = self.dir_entry.addAction(
             QIcon(themed_icon("browse.png")), QLineEdit.LeadingPosition
@@ -222,8 +224,12 @@ class PanelsMixin:
         threshold_tip = (
             "Threshold, in units of the RMS (σ) measured in the RMS box.\n"
             "Lfrac, Vfrac, Q/I, U/I and U/V: pixels whose numerator is below "
-            "threshold × RMS are set to 0.\n"
+            "threshold × RMS are left blank.\n"
             "PANG: pixels whose polarized intensity is below it are left blank.\n"
+            "All six are also blank further from the Sun than the limit "
+            "beside this (Within).\n"
+            "Blank pixels count for nothing in statistics, the display range "
+            "and contours.\n"
             "I, Q, U, V and L are shown as they are."
         )
         thresh_label.setToolTip(threshold_tip)
@@ -234,6 +240,28 @@ class PanelsMixin:
         inline_unit(self.threshold_entry, "σ")
         layout.addWidget(thresh_label)
         layout.addWidget(self.threshold_entry)
+
+        # How far from the Sun a ratio or the angle is shown
+        limit_label = QLabel("Within")
+        limit_label.setObjectName("Hint")
+        limit_tip = (
+            "How far from the Sun's centre Lfrac, Vfrac, Q/I, U/I, U/V and PANG "
+            "are shown, in arcminutes. Further out they are left blank.\n"
+            "0 shows them over the whole image: for emission far from the disk "
+            "(a CME, a moving source), or an image whose Sun is not where the "
+            "ephemeris puts it (no refraction correction).\n"
+            "The centre is the Sun's position at the time of the image, or the "
+            "middle of the image when the Sun is not in it.\n"
+            "I, Q, U, V and L are shown everywhere."
+        )
+        limit_label.setToolTip(limit_tip)
+        self.sun_limit_entry = QLineEdit(f"{SUN_RADIUS_ARCMIN:g}")
+        fit_width_to_text(self.sun_limit_entry, "0000′")
+        self.sun_limit_entry.setToolTip(limit_tip)
+        self.sun_limit_entry.editingFinished.connect(self._on_sun_limit_edited)
+        inline_unit(self.sun_limit_entry, "′")
+        layout.addWidget(limit_label)
+        layout.addWidget(self.sun_limit_entry)
         layout.addWidget(vrule())
 
         # Colormap and stretch
