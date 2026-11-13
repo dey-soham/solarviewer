@@ -6,7 +6,6 @@ from casatools import msmetadata, table, measures, quanta, image
 
 from astropy.io import fits
 from astropy.wcs import WCS
-import scipy.ndimage as ndi
 import argparse
 import multiprocessing
 import shutil
@@ -14,6 +13,7 @@ import hashlib
 from ..processing.workers import process_pool
 from ..processing.fits_io import readable_image_path
 from ..processing.casa_tasks import run_casa_task
+from . import sun_centre
 
 
 def _remove(*paths):
@@ -558,17 +558,21 @@ class SolarPhaseCenter:
         Calculate the phase shift needed to align the apparent solar position with the true position.
 
         At low frequencies, ionospheric refraction shifts the apparent solar position.
-        This method finds WHERE THE SUN APPEARS (apparent position via Gaussian/centroid)
-        and WHERE IT SHOULD BE (true position from ephemeris, or (0,0) for HPC images).
+        This method finds WHERE THE SUN APPEARS (apparent position via Gaussian/centroid,
+        see ``sun_centre``) and WHERE IT SHOULD BE (true position from ephemeris, or
+        (0,0) for HPC images).
 
         Parameters
         ----------
         imagename : str
             Name of the image
         fit_gaussian : bool
-            Perform Gaussian fitting to unresolved Sun to estimate apparent center
+            Fit a Gaussian to the Sun to estimate the apparent center. The fit sees
+            the whole patch of emission round the brightest pixel, however many
+            pixels the Sun is across
         sigma : float
-            If Gaussian fitting is not used, threshold for estimating center of mass
+            If Gaussian fitting is not used, threshold for estimating center of mass:
+            the emission above ``sigma`` times the noise away from the Sun
         is_hpc : bool or None
             If True, image is in helioprojective coordinates (target (0,0) Solar-X/Y).
             If False, image is in RA/Dec (target ephemeris position).
@@ -586,6 +590,8 @@ class SolarPhaseCenter:
             - 'apparent_dec': float - Apparent DEC in degrees (from image)
             - 'needs_shift': bool - Whether phase shift is required
             - 'is_hpc': bool - Whether the image is in helioprojective coordinates
+            - 'warning': str or None - What tells that the Gaussian was fitted to a
+              burst or a bright region and not to the disk (``sun_centre.burst_sign``)
         """
         result = {
             "true_ra": None,
@@ -596,6 +602,7 @@ class SolarPhaseCenter:
             "apparent_dec": None,
             "needs_shift": False,
             "is_hpc": False,
+            "warning": None,
         }
 
         # Convert CASA image to FITS at the start for unified processing
@@ -695,9 +702,7 @@ class SolarPhaseCenter:
         apparent_pix_x = None
         apparent_pix_y = None
 
-        # Center of mass method using the working FITS file
         try:
-            # Calculate RMS for thresholding from FITS data
             data = fits.getdata(working_fits)
 
             # Get 2D data
@@ -708,90 +713,42 @@ class SolarPhaseCenter:
             else:
                 data_2d = data
 
-            valid_data = data_2d[~np.isnan(data_2d)]
-            rms = np.sqrt(np.mean(valid_data**2)) if valid_data.size > 0 else 1.0
-
-            # Apply threshold
-            data_binary = np.zeros_like(data_2d)
-            data_binary[data_2d > sigma * rms] = 1
-
-            # Create circular mask around center (5 degrees radius)
-            circular_mask = self.create_circular_mask(
-                data_binary.shape[0],
-                data_binary.shape[1],
-                center=(int(data_binary.shape[1] / 2), int(data_binary.shape[0] / 2)),
-                radius=int(5 / (self.cellsize / 3600.0)),
-            )
-            data_binary[~circular_mask] = 0
-
-            # Method 1: Try Gaussian fitting with scipy if requested
+            # Method 1: a Gaussian fitted to the Sun, if requested
             if fit_gaussian:
                 try:
-                    from scipy.optimize import curve_fit
-                    from scipy.ndimage import gaussian_filter
-
-                    # Smooth the data slightly for better fitting
-                    smoothed = gaussian_filter(data_2d, sigma=3)
-
-                    # Find initial guess from max position
-                    max_idx = np.unravel_index(np.nanargmax(smoothed), smoothed.shape)
-                    y0, x0 = max_idx[0], max_idx[1]
-
-                    # Define 2D Gaussian function
-                    def gaussian_2d(xy, amplitude, x0, y0, sigma_x, sigma_y, offset):
-                        x, y = xy
-                        g = offset + amplitude * np.exp(
-                            -(
-                                ((x - x0) ** 2) / (2 * sigma_x**2)
-                                + ((y - y0) ** 2) / (2 * sigma_y**2)
-                            )
-                        )
-                        return g.ravel()
-
-                    # Create coordinate grids for fitting region
-                    fit_size = 50  # Fit in a region around the max
-                    y_min = max(0, y0 - fit_size)
-                    y_max = min(data_2d.shape[0], y0 + fit_size)
-                    x_min = max(0, x0 - fit_size)
-                    x_max = min(data_2d.shape[1], x0 + fit_size)
-
-                    y_grid, x_grid = np.mgrid[y_min:y_max, x_min:x_max]
-                    data_region = smoothed[y_min:y_max, x_min:x_max]
-
-                    # Initial parameters
-                    p0 = [
-                        np.nanmax(data_region),
-                        x0,
-                        y0,
-                        20,
-                        20,
-                        np.nanmin(data_region),
-                    ]
-
-                    # Fit the Gaussian
-                    popt, pcov = curve_fit(
-                        gaussian_2d,
-                        (x_grid, y_grid),
-                        data_region.ravel(),
-                        p0=p0,
-                        maxfev=5000,
-                    )
-
-                    apparent_pix_x = int(round(popt[1]))
-                    apparent_pix_y = int(round(popt[2]))
+                    fit = sun_centre.gaussian_centre(data_2d)
+                    apparent_pix_x = int(round(fit.x))
+                    apparent_pix_y = int(round(fit.y))
                     print(
                         f"Gaussian fit center: pixel ({apparent_pix_x}, {apparent_pix_y})"
                     )
+                    result["warning"] = sun_centre.burst_sign(fit, self.cellsize)
+                    if result["warning"]:
+                        print(f"Warning: {result['warning']} {sun_centre.BURST_ADVICE}")
 
                 except Exception as e:
                     print(f"Gaussian fitting failed: {e}, using center-of-mass")
                     fit_gaussian = False  # Fall back to center of mass
 
-            # Method 2: Center of mass (fallback or default)
+            # Method 2: Center of mass (fallback or default): the middle of the
+            # emission above the threshold, within 5 degrees of the image
+            # centre. The threshold counts in the noise away from the Sun: the
+            # RMS of the whole image, the Sun's own values in it, put 10 x RMS
+            # near the peak of an image the Sun fills a good part of
             if apparent_pix_x is None:
-                cy, cx = ndi.center_of_mass(data_binary)
-                apparent_pix_x = int(round(cx))
-                apparent_pix_y = int(round(cy))
+                circular_mask = self.create_circular_mask(
+                    data_2d.shape[0],
+                    data_2d.shape[1],
+                    center=(int(data_2d.shape[1] / 2), int(data_2d.shape[0] / 2)),
+                    radius=int(5 / (self.cellsize / 3600.0)),
+                )
+                centre = sun_centre.centre_of_mass(
+                    data_2d, sigma * sun_centre.threshold_noise(data_2d), circular_mask
+                )
+                if centre is None:
+                    raise ValueError(f"no emission above {sigma:g} x RMS")
+                apparent_pix_x = int(round(centre[0]))
+                apparent_pix_y = int(round(centre[1]))
 
             # Convert pixel position to world coordinates using WCS
             w = WCS(working_fits)
@@ -1550,13 +1507,13 @@ def main():
         "--fit_gaussian",
         action="store_true",
         default=False,
-        help="Use Gaussian fitting for solar center",
+        help="Use Gaussian fitting for solar center (warns when the fit is of a burst, not the disk)",
     )
     parser.add_argument(
         "--sigma",
         type=float,
         default=10,
-        help="Sigma threshold for center-of-mass calculation (default: 10)",
+        help="Threshold for the center-of-mass calculation, in units of the noise away from the Sun (default: 10)",
     )
     parser.add_argument(
         "--apply_shift",

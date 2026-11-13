@@ -99,7 +99,10 @@ class PhaseShiftDialog(BatchWindow):
         row, self.method_buttons, _ = self.choice_row(
             "Find the Sun by",
             ("Gaussian fit", "Centre of mass"),
-            ("Fit a 2-D Gaussian to the disk", "The centroid of the emission above a threshold"),
+            (
+                "Fit a 2-D Gaussian to the whole Sun. A burst draws it away: you are told when one does",
+                "The middle of the emission above a threshold. A burst moves it little",
+            ),
             then=self._update_method_options,
         )
         layout.addLayout(row)
@@ -113,7 +116,10 @@ class PhaseShiftDialog(BatchWindow):
         self.sigma_spinbox.setValue(10.0)
         self.sigma_spinbox.setSingleStep(0.5)
         self.sigma_spinbox.setSuffix(" × RMS")
-        self.sigma_spinbox.setToolTip("Only emission above this is taken into the centre of mass")
+        self.sigma_spinbox.setToolTip(
+            "Only emission above this many times the noise is taken into the centre of mass.\n"
+            "The noise is measured away from the Sun."
+        )
         self.sigma_spinbox.valueChanged.connect(self.update_summary)
         sigma_row.addWidget(self.sigma_spinbox)
         sigma_row.addStretch()
@@ -368,6 +374,24 @@ class PhaseShiftDialog(BatchWindow):
             self.log(
                 f"Sun at RA {phase_result.get('true_ra', 0):.4f}°, Dec {phase_result.get('true_dec', 0):.4f}°"
             )
+        warning = phase_result.get("warning")
+        if warning:
+            # (found by the Gaussian fit: a burst, or a region far brighter than the disk)
+            from ..coordinates.sun_centre import BURST_ADVICE
+
+            self.log(f"Warning: {warning}")
+            if (
+                QMessageBox.warning(
+                    self,
+                    "The reference image may show a burst",
+                    f"{warning}\n\n{BURST_ADVICE}\n\nShift anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                != QMessageBox.Yes
+            ):
+                self.note_label.setText("Not shifted: the reference image may show a burst")
+                return
         if not phase_result.get("needs_shift", False):
             self.log("No significant shift needed")
             if (
