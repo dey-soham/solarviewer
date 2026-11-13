@@ -68,6 +68,9 @@ class HelpMixin:
 
         dialog = UpdateDialog(self)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
+        # Installed, or not wanted: the note in the status bar goes
+        for signal in (dialog.updated, dialog.skipped):
+            signal.connect(lambda *_: self.update_btn.setVisible(False) if hasattr(self, "update_btn") else None)
         dialog.destroyed.connect(
             lambda: (
                 self._open_dialogs.remove(dialog)

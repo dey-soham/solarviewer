@@ -39,7 +39,7 @@ from .ui.geometry import fit_to_screen
 from .ui.icons import get_resource_path, launcher_icon, themed_icon
 from .ui.document_tabs import DocumentTabs
 from .ui.widgets import StatusDotButton, button_bar
-from .utils.update_checker import check_for_updates
+from .utils.update_checker import CHECK_AT_STARTUP, SKIPPED as SKIPPED_UPDATE, check_for_updates
 from .version import __version__
 from .tools import (
     RegionMode,
@@ -107,9 +107,10 @@ def _preload_display_modules():
 
 
 class CheckUpdateThread(QThread):
-    """Background thread to check for updates on PyPI."""
+    """Background thread to check for updates: on PyPI for a release, on its
+    remote for a copy from git."""
 
-    update_available = pyqtSignal(str)  # Emits latest version string
+    update_available = pyqtSignal(str)  # Emits what is newer: a version, or the new commits
 
     def run(self):
         try:
@@ -1237,10 +1238,12 @@ class SolarRadioImageViewerApp(
         self.update_btn.clicked.connect(self._on_update_clicked)
         self.statusBar().addPermanentWidget(self.update_btn)
 
-        # Start update check in background
+        # Start update check in background (unless turned off: Preferences,
+        # or the switch in Help > Check for updates)
         self._update_thread = CheckUpdateThread()
         self._update_thread.update_available.connect(self._on_update_available)
-        self._update_thread.start()
+        if self.settings.value(CHECK_AT_STARTUP, True, type=bool):
+            self._update_thread.start()
 
         # Import what the first image will need while the user picks one
         # (once the window is built: imports running beside its building
@@ -1380,13 +1383,16 @@ class SolarRadioImageViewerApp(
                     break
 
     def _on_update_available(self, latest_ver):
-        """Show the update button when an update is found."""
+        """Show the update button when an update is found (one the user
+        asked not to hear of again stays unannounced)."""
+        self.latest_version = latest_ver
+        if latest_ver == self.settings.value(SKIPPED_UPDATE, ""):
+            return
         self.update_btn.setText(f"Update available: {latest_ver}")
         self.update_btn.setToolTip(
-            f"A new version ({latest_ver}) is available! Click to learn more."
+            f"Newer than this copy: {latest_ver}. Click for what is new and to update."
         )
         self.update_btn.setVisible(True)
-        self.latest_version = latest_ver
 
     def _on_update_clicked(self):
         """Show the software update dialog."""

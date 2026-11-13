@@ -299,6 +299,28 @@ def _quiet_wayland(kind, context, message):
     _quiet_start(kind, context, message, _QT_NOISE + _WAYLAND_NOISE)
 
 
+def restart_application():
+    """Close SolarViewer and start it again as it was started."""
+    # The command as it was typed: sys.argv loses a "python -m"
+    python = sys.executable
+    args = sys.orig_argv[1:]
+    QSettings(*SETTINGS).sync()  # (exec does not wait for QSettings to write)
+
+    def start_new_instance():
+        os.execv(python, [python] + args)
+
+    app = QApplication.instance()
+    if app:
+        # Connected last, so that what is already waiting for the quit
+        # (the batch runner, a pip update) still runs. Closing the windows
+        # stops the workers and removes the tabs' temporary files.
+        app.aboutToQuit.connect(start_new_instance)
+        app.closeAllWindows()
+        app.quit()
+    else:
+        start_new_instance()
+
+
 def apply_theme(app=None):
     """Style ``app`` (the running application) in the current theme: the Qt
     palette, the stylesheet and, if Matplotlib is loaded, its colours."""

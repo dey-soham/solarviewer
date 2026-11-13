@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QDoubleSpinBox,
+    QCheckBox,
     QComboBox,
     QMessageBox,
     QApplication,
@@ -14,7 +15,8 @@ from PyQt5.QtCore import Qt
 import os
 import sys
 
-from ..ui.app import display_scale, saved_window_system, smallest_ui_scale
+from ..ui.app import display_scale, restart_application, saved_window_system, smallest_ui_scale
+from ..utils.update_checker import CHECK_AT_STARTUP
 from ..ui.geometry import fit_width_to_text
 from ..ui.widgets import button_bar, dialog_layout
 from ..ui.styles import SPACE_M, SPACE_XS, set_hand_cursor
@@ -127,6 +129,8 @@ class PreferencesDialog(QDialog):
         if sys.platform.startswith("linux"):
             layout.addWidget(self._window_system_group())
 
+        layout.addWidget(self._updates_group())
+
         # Restart notice
         notice_text = QLabel("Changes here take effect after the application restarts.")
         notice_text.setObjectName("Hint")
@@ -138,6 +142,24 @@ class PreferencesDialog(QDialog):
         # Button box
         box, _ = button_bar(primary=("OK", self._save_and_close), secondary=("Cancel", self.reject))
         layout.addWidget(box)
+
+    def _updates_group(self):
+        """Whether SolarViewer looks for a newer version when it starts."""
+        group = QGroupBox("Updates")
+        group_layout = QVBoxLayout(group)
+        group_layout.setContentsMargins(SPACE_M, SPACE_XS, SPACE_M, SPACE_XS)
+        self.check_updates = QCheckBox("Check for updates when SolarViewer starts")
+        self.check_updates.setObjectName("Switch")
+        self.check_updates.setChecked(self.settings.value(CHECK_AT_STARTUP, True, type=bool))
+        group_layout.addWidget(self.check_updates)
+        hint = QLabel(
+            "One short question to PyPI (or, for a copy from git, to its remote) at each "
+            "start. Off: nothing is asked; Help > Check for updates still looks."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        group_layout.addWidget(hint)
+        return group
 
     def _window_system_group(self):
         """Wayland or X11, for the next start."""
@@ -203,6 +225,7 @@ class PreferencesDialog(QDialog):
         )
 
         self.settings.setValue("ui_scale_factor", scale)
+        self.settings.setValue(CHECK_AT_STARTUP, self.check_updates.isChecked())
         changes = []
         if abs(scale - current_scale) > 0.01:
             changes.append(f"UI scale changed to {scale:.2f}x.")
@@ -243,26 +266,7 @@ class PreferencesDialog(QDialog):
 
     def _do_restart(self):
         """Perform application restart."""
-        import sys
-        import os
-
-        # The command as it was typed: sys.argv loses a "python -m"
-        python = sys.executable
-        args = sys.orig_argv[1:]
         self.settings.sync()  # (exec does not wait for QSettings to write)
-
-        def start_new_instance():
-            os.execv(python, [python] + args)
-
-        app = QApplication.instance()
-        if app:
-            # Connected last, so that what is already waiting for the quit
-            # (the batch runner, a pip update) still runs. Closing the windows
-            # stops the workers and removes the tabs' temporary files.
-            app.aboutToQuit.connect(start_new_instance)
-            app.closeAllWindows()
-            app.quit()
-        else:
-            start_new_instance()
+        restart_application()
 
 
